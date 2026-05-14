@@ -15,6 +15,7 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
@@ -104,6 +105,34 @@ class FaultHandlers {
   static nlohmann::json build_sovd_fault_response(const nlohmann::json & fault_json,
                                                   const nlohmann::json & env_data_json,
                                                   const std::string & entity_path);
+
+  /**
+   * @brief Scope check used by per-entity fault routes.
+   *
+   * Returns true iff every entry in `fault["reporting_sources"]` is in scope
+   * for `source_fqns`. A source matches a scope FQN when it equals the FQN
+   * or is a strict path-child (i.e. `<fqn>/<...>`), so similarly named nodes
+   * like `/ns/node` and `/ns/node_extra` are not conflated.
+   *
+   * The "all sources must match" semantic (rather than "any source") is
+   * deliberate: it blocks two cross-entity escalation paths.
+   *
+   * 1. GET would otherwise return a response whose `reporting_sources` and
+   *    environment data carry identities of nodes the caller has no
+   *    business reading.
+   * 2. DELETE would otherwise let a viewer of entity A clear the aggregated
+   *    fault record for a fault that entity B also reports, because the
+   *    underlying `ClearFault.srv` has no scope argument.
+   *
+   * An empty scope set, an empty `reporting_sources` array, a missing
+   * `reporting_sources` field, or any non-string source entry all return
+   * false - there is no vacuous "all match" case.
+   *
+   * Public for direct unit testing; called by `handle_get_fault`,
+   * `handle_clear_fault`, and indirectly via `filter_faults_by_sources` by
+   * the collection routes.
+   */
+  static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 
  private:
   HandlerContext & ctx_;

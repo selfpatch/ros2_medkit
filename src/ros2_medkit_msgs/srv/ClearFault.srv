@@ -21,6 +21,14 @@
 
 # Request fields
 string fault_code        # The fault_code to clear
+
+# Disable auto-cleanup of correlated symptom faults. When false (default),
+# clearing a root-cause fault also clears every symptom the correlation engine
+# attributes to it (auto_clear_with_root rules). When true, only the requested
+# fault_code is cleared and `auto_cleared_codes` in the response is empty.
+# Set this from scoped per-entity DELETE routes so a viewer of one entity
+# cannot cascade-clear symptom faults reported by apps in other entities.
+bool skip_correlation_auto_clear
 ---
 # Response fields
 bool success             # True if the fault was found and cleared

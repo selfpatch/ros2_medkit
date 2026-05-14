@@ -347,6 +347,93 @@ void HandlerContext::send_json(httplib::Response & res, const json & data) {
   res.set_content(data.dump(2), "application/json");
 }
 
+namespace {
+
+void collect_app_fqn(const ThreadSafeEntityCache & cache, const std::string & app_id, std::set<std::string> & out) {
+  auto app = cache.get_app(app_id);
+  if (!app) {
+    return;
+  }
+  auto fqn = app->effective_fqn();
+  if (fqn.empty()) {
+    return;
+  }
+  out.insert(std::move(fqn));
+}
+
+void collect_component_app_fqns(const ThreadSafeEntityCache & cache, const std::string & comp_id,
+                                std::set<std::string> & out) {
+  for (const auto & app_id : cache.get_apps_for_component(comp_id)) {
+    collect_app_fqn(cache, app_id, out);
+  }
+}
+
+void collect_area_app_fqns(const ThreadSafeEntityCache & cache, const std::string & area_id,
+                           std::set<std::string> & out) {
+  // BFS over (area, subareas...) so a top-level area whose components live in
+  // nested subareas still resolves to the union of every descendant's apps.
+  // Without the recursion, e.g. `/areas/powertrain/...` returns an empty set
+  // when components are attached to `engine` (subarea of `powertrain`).
+  std::vector<std::string> pending = {area_id};
+  std::set<std::string> visited;
+  while (!pending.empty()) {
+    auto current = std::move(pending.back());
+    pending.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    for (const auto & comp_id : cache.get_components_for_area(current)) {
+      collect_component_app_fqns(cache, comp_id, out);
+    }
+    for (const auto & sub_id : cache.get_subareas(current)) {
+      pending.push_back(sub_id);
+    }
+  }
+}
+
+void collect_function_app_fqns(const ThreadSafeEntityCache & cache, const std::string & function_id,
+                               std::set<std::string> & out) {
+  // Function.hosts can contain either App IDs or Component IDs; the indexed
+  // lookups in the cache only resolve the App-host case (function_to_apps_),
+  // so we walk the raw `hosts` list and dispatch per host kind ourselves.
+  auto func = cache.get_function(function_id);
+  if (!func) {
+    return;
+  }
+  for (const auto & host_id : func->hosts) {
+    if (cache.get_app(host_id)) {
+      collect_app_fqn(cache, host_id, out);
+    } else if (cache.get_component(host_id)) {
+      collect_component_app_fqns(cache, host_id, out);
+    }
+    // Unknown host - silently skip; it would have been flagged by manifest validation.
+  }
+}
+
+}  // namespace
+
+std::set<std::string> HandlerContext::resolve_entity_source_fqns(const ThreadSafeEntityCache & cache,
+                                                                 const EntityInfo & entity) {
+  std::set<std::string> fqns;
+  switch (entity.type) {
+    case EntityType::APP:
+      collect_app_fqn(cache, entity.id, fqns);
+      break;
+    case EntityType::COMPONENT:
+      collect_component_app_fqns(cache, entity.id, fqns);
+      break;
+    case EntityType::AREA:
+      collect_area_app_fqns(cache, entity.id, fqns);
+      break;
+    case EntityType::FUNCTION:
+      collect_function_app_fqns(cache, entity.id, fqns);
+      break;
+    case EntityType::UNKNOWN:
+      break;
+  }
+  return fqns;
+}
+
 std::vector<std::string> HandlerContext::resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                                const std::vector<std::string> & app_ids) {
   // Order-preserving dedup: two app_ids that resolve to the same effective_fqn

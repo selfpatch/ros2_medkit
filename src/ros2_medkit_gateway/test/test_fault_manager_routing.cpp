@@ -88,8 +88,9 @@ class MockFaultServiceTransport : public FaultServiceTransport {
     return r;
   }
 
-  FaultResult clear_fault(const std::string & fault_code) override {
+  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) override {
     last_clear_code_ = fault_code;
+    last_clear_skip_correlation_ = skip_correlation_auto_clear;
     ++clear_calls_;
     FaultResult r;
     r.success = clear_success_;
@@ -180,6 +181,7 @@ class MockFaultServiceTransport : public FaultServiceTransport {
   json clear_data_ = json{{"success", true}, {"message", "ok"}};
   std::string clear_error_;
   std::string last_clear_code_;
+  bool last_clear_skip_correlation_ = false;
   int clear_calls_ = 0;
 
   bool snapshots_success_ = true;
@@ -314,6 +316,33 @@ TEST(FaultManagerRoutingTest, ClearFaultDelegatesAndReturnsAutoClearedCodes) {
   EXPECT_EQ(mock->last_clear_code_, "ROOT");
   ASSERT_TRUE(r.data.contains("auto_cleared_codes"));
   EXPECT_EQ(r.data["auto_cleared_codes"].size(), 2u);
+}
+
+TEST(FaultManagerRoutingTest, ClearFaultDefaultsToCorrelationAutoClear) {
+  // Global `DELETE /api/v1/faults` and any unscoped caller should preserve
+  // the legacy auto-clear-with-root behaviour (skip flag defaults to false).
+  auto mock = std::make_shared<MockFaultServiceTransport>();
+  mock->clear_success_ = true;
+  FaultManager mgr(mock);
+
+  mgr.clear_fault("ROOT");
+
+  EXPECT_EQ(mock->last_clear_code_, "ROOT");
+  EXPECT_FALSE(mock->last_clear_skip_correlation_);
+}
+
+TEST(FaultManagerRoutingTest, ClearFaultForwardsSkipCorrelationFlag) {
+  // Per-entity DELETE routes call `clear_fault(code, /*skip=*/true)` so the
+  // fault manager does NOT cascade-clear correlated symptoms reported by
+  // apps outside the addressed entity. Pin the routing here.
+  auto mock = std::make_shared<MockFaultServiceTransport>();
+  mock->clear_success_ = true;
+  FaultManager mgr(mock);
+
+  mgr.clear_fault("ROOT", /*skip_correlation_auto_clear=*/true);
+
+  EXPECT_EQ(mock->last_clear_code_, "ROOT");
+  EXPECT_TRUE(mock->last_clear_skip_correlation_);
 }
 
 TEST(FaultManagerRoutingTest, GetSnapshotsRoutesTopicFilter) {

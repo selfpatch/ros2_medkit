@@ -41,8 +41,8 @@ FaultResult FaultManager::get_fault(const std::string & fault_code, const std::s
   return transport_->get_fault(fault_code, source_id);
 }
 
-FaultResult FaultManager::clear_fault(const std::string & fault_code) {
-  return transport_->clear_fault(fault_code);
+FaultResult FaultManager::clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) {
+  return transport_->clear_fault(fault_code, skip_correlation_auto_clear);
 }
 
 FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {

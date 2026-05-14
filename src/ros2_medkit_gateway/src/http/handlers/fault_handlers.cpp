@@ -40,29 +40,33 @@ namespace handlers {
 
 namespace {
 
-/// Helper to filter faults JSON array by a set of namespace prefixes
-/// Keeps faults where any reporting_source starts with any of the given prefixes
-json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_prefixes) {
+/// Check if a ROS node FQN falls within the entity's source FQN set.
+///
+/// A node is in scope iff it equals one of the entity's owned FQNs, OR is a
+/// strict path-child of one (i.e., `<owned-fqn>/<...>`). We deliberately do
+/// NOT use raw `rfind(prefix, 0)` because that would let `/ns/node_extra`
+/// pass for an entity owning `/ns/node`. Path boundary is enforced by
+/// requiring the byte after the prefix to be `/`.
+bool source_matches_scope(const std::string & src, const std::set<std::string> & scope_fqns) {
+  for (const auto & fqn : scope_fqns) {
+    if (src == fqn) {
+      return true;
+    }
+    if (src.size() > fqn.size() && src.compare(0, fqn.size(), fqn) == 0 && src[fqn.size()] == '/') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Filter a faults JSON array down to faults whose every reporting source is
+/// in the entity's scope. Shares the same all-sources / path-boundary
+/// semantics as `FaultHandlers::fault_in_source_scope` so per-entity
+/// collection routes and per-fault routes agree on what counts as "in scope".
+json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_fqns) {
   json filtered = json::array();
   for (const auto & fault : faults_array) {
-    if (!fault.contains("reporting_sources")) {
-      continue;
-    }
-    const auto & sources = fault["reporting_sources"];
-    bool matches = false;
-    for (const auto & src : sources) {
-      const std::string src_str = src.get<std::string>();
-      for (const auto & prefix : source_prefixes) {
-        if (src_str.rfind(prefix, 0) == 0) {
-          matches = true;
-          break;
-        }
-      }
-      if (matches) {
-        break;
-      }
-    }
-    if (matches) {
+    if (FaultHandlers::fault_in_source_scope(fault, source_fqns)) {
       filtered.push_back(fault);
     }
   }
@@ -165,6 +169,28 @@ json extract_primary_value(const std::string & message_type, const json & full_d
 }
 
 }  // namespace
+
+bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std::string> & source_fqns) {
+  if (source_fqns.empty()) {
+    return false;
+  }
+  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
+    return false;
+  }
+  const auto & sources = fault["reporting_sources"];
+  if (sources.empty()) {
+    return false;
+  }
+  for (const auto & src : sources) {
+    if (!src.is_string()) {
+      return false;
+    }
+    if (!source_matches_scope(src.get<std::string>(), source_fqns)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // Static method: Build SOVD-compliant fault response from transport-supplied JSON.
 //
@@ -405,9 +431,12 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Parse correlation query parameters
-    bool include_muted = req.get_param_value("include_muted") == "true";
-    bool include_clusters = req.get_param_value("include_clusters") == "true";
+    // Note: include_muted / include_clusters URL params are intentionally
+    // ignored on per-entity routes - the underlying service returns
+    // correlation metadata computed across the entire fault manager, so
+    // emitting it on a scoped response would leak cross-entity data
+    // (review finding N1). The global `GET /faults` route is the only place
+    // these flags are honored.
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
@@ -415,10 +444,10 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
     // Functions don't have a single namespace_path (it is always empty in EntityInfo)
     // because they host apps from potentially different namespaces.
     // Instead, we collect the FQNs of all host apps and filter by reporting_source.
-    if (entity_info.type == EntityType::FUNCTION) {
+    if (entity_info.type == EntityType::FUNCTION || entity_info.type == EntityType::COMPONENT) {
       // Get all faults (no namespace filter)
       auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                           filter.include_healed, include_muted, include_clusters);
+                                           filter.include_healed, /*include_muted=*/false, /*include_clusters=*/false);
 
       if (!result.success) {
         HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
@@ -426,30 +455,26 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         return;
       }
 
-      // Collect host app FQNs for filtering
+      // Resolve FQN set via the shared helper so subareas (Areas) and
+      // component-hosted Functions are handled the same way as the per-fault
+      // routes - the previous Function branch only walked
+      // `get_entity_configurations` and dropped component hosts; the previous
+      // Component branch was correct but is now consolidated for parity.
       const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto agg_configs = cache.get_entity_configurations(entity_id);
-      std::set<std::string> host_fqns;
-      for (const auto & node : agg_configs.nodes) {
-        if (!node.node_fqn.empty()) {
-          host_fqns.insert(node.node_fqn);
-        }
-      }
+      auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      // Filter faults to only those from function's host apps
-      json filtered_faults = filter_faults_by_sources(result.data["faults"], host_fqns);
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], source_fqns);
 
-      // Build response
       json response = {{"items", filtered_faults}};
 
       XMedkit ext;
       ext.entity_id(entity_id);
-      ext.add("aggregation_level", "function");
+      const bool is_function = entity_info.type == EntityType::FUNCTION;
+      ext.add("aggregation_level", is_function ? "function" : "component");
       ext.add("aggregated", true);
-      ext.add("host_count", host_fqns.size());
-      // Include source app IDs for cross-referencing aggregated results
+      ext.add(is_function ? "host_count" : "app_count", source_fqns.size());
       json source_ids = json::array();
-      for (const auto & fqn : host_fqns) {
+      for (const auto & fqn : source_fqns) {
         source_ids.push_back(fqn);
       }
       ext.add("aggregation_sources", source_ids);
@@ -461,64 +486,11 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // For Components, aggregate faults from all hosted apps
-    // Components group Apps, so we filter by the apps' FQNs rather than namespace (which is too broad)
-    if (entity_info.type == EntityType::COMPONENT) {
-      // Get all faults (no namespace filter)
-      auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                           filter.include_healed, include_muted, include_clusters);
-
-      if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
-                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
-        return;
-      }
-
-      // Collect hosted app FQNs for filtering
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto app_ids = cache.get_apps_for_component(entity_id);
-      std::set<std::string> app_fqns;
-      for (const auto & app_id : app_ids) {
-        auto app = cache.get_app(app_id);
-        if (app) {
-          auto fqn = app->effective_fqn();
-          if (!fqn.empty()) {
-            app_fqns.insert(std::move(fqn));
-          }
-        }
-      }
-
-      // Filter faults to only those from component's hosted apps
-      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
-
-      // Build response
-      json response = {{"items", filtered_faults}};
-
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "component");
-      ext.add("aggregated", true);
-      ext.add("app_count", app_fqns.size());
-      // Include source app FQNs for cross-referencing aggregated results
-      json source_fqns = json::array();
-      for (const auto & fqn : app_fqns) {
-        source_fqns.push_back(fqn);
-      }
-      ext.add("aggregation_sources", source_fqns);
-
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      ext.add("count", response["items"].size());
-      response["x-medkit"] = ext.build();
-      HandlerContext::send_json(res, response);
-      return;
-    }
-
     // For Areas, aggregate faults from all apps in all components within the area
     // This is an x-medkit extension - SOVD spec does not define fault collections for Areas
     if (entity_info.type == EntityType::AREA) {
-      // Get all faults (no namespace filter)
       auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                           filter.include_healed, include_muted, include_clusters);
+                                           filter.include_healed, /*include_muted=*/false, /*include_clusters=*/false);
 
       if (!result.success) {
         HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
@@ -526,36 +498,23 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
         return;
       }
 
-      // Collect FQNs from all apps in all components belonging to this area
+      // Resolve via the shared helper so the BFS over `get_subareas()` reaches
+      // components attached to nested subareas (the demo manifest puts every
+      // component on a subarea, so a direct `get_components_for_area` walk
+      // would resolve to the empty set and silently 404 every area route).
       const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto comp_ids = cache.get_components_for_area(entity_id);
-      std::set<std::string> app_fqns;
-      for (const auto & comp_id : comp_ids) {
-        auto app_ids = cache.get_apps_for_component(comp_id);
-        for (const auto & app_id : app_ids) {
-          auto app = cache.get_app(app_id);
-          if (app) {
-            auto fqn = app->effective_fqn();
-            if (!fqn.empty()) {
-              app_fqns.insert(std::move(fqn));
-            }
-          }
-        }
-      }
+      auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      // Filter faults to only those from the area's apps
       json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
 
-      // Build response
       json response = {{"items", filtered_faults}};
 
       XMedkit ext;
       ext.entity_id(entity_id);
       ext.add("aggregation_level", "area");
       ext.add("aggregated", true);
-      ext.add("component_count", comp_ids.size());
+      ext.add("component_count", cache.get_components_for_area(entity_id).size());
       ext.add("app_count", app_fqns.size());
-      // Include source app FQNs for cross-referencing aggregated results
       json area_source_fqns = json::array();
       for (const auto & fqn : app_fqns) {
         area_source_fqns.push_back(fqn);
@@ -569,33 +528,37 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // For Apps, use namespace_path filtering
-    std::string namespace_path = entity_info.namespace_path;
-    auto result =
-        fault_mgr->list_faults(namespace_path, filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                               filter.include_healed, include_muted, include_clusters);
+    // For Apps, scope by the app's effective FQN set. We can't reuse the
+    // transport-level prefix filter (`list_faults(namespace_path, ...)`)
+    // because an App with a wildcard `ros_binding.namespace_pattern` produces
+    // an empty effective_fqn, the transport silently disables the filter, and
+    // every fault in the system would be returned. Same bug class as #395 for
+    // Components - fix it the same way.
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+    // include_muted / include_clusters intentionally NOT forwarded: the
+    // service returns muted/cluster aggregates computed across the entire
+    // fault manager, not against the entity's app FQN set, so emitting them
+    // on a per-entity response would leak cross-entity correlation metadata
+    // (review finding N1). Clients that need system-wide correlation data
+    // use the global `GET /faults` route.
+    auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
+                                         filter.include_healed,
+                                         /*include_muted=*/false, /*include_clusters=*/false);
 
     if (result.success) {
+      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+
       // Format: items array at top level
-      json response = {{"items", result.data["faults"]}};
+      json response = {{"items", filtered_faults}};
 
       // x-medkit extension for ros2_medkit-specific fields
       XMedkit ext;
       ext.entity_id(entity_id);
-      ext.add("source_id", namespace_path);
-
-      // Include detailed correlation data if requested and present
-      if (result.data.contains("muted_faults")) {
-        ext.add("muted_faults", result.data["muted_faults"]);
-      }
-      if (result.data.contains("clusters")) {
-        ext.add("clusters", result.data["clusters"]);
-      }
+      ext.add("source_id", entity_info.namespace_path);
 
       merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
       ext.add("count", response["items"].size());
-      ext.add("muted_count", result.data["muted_count"]);
-      ext.add("cluster_count", result.data["cluster_count"]);
       response["x-medkit"] = ext.build();
       HandlerContext::send_json(res, response);
     } else {
@@ -672,17 +635,34 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    std::string namespace_path = entity_info.namespace_path;
-
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    // Use get_fault_with_env to get fault with environment data
-    auto result = fault_mgr->get_fault_with_env(fault_code, namespace_path);
+    // Fetch the fault without manager-level scope filter. The transport's
+    // `source_id` prefix match silently disables itself when the entity has
+    // an empty namespace_path (synthetic / host-derived components, manifest
+    // components without a `namespace` field, Areas, Functions), so we
+    // re-scope here against the actual FQNs the entity owns. See #395.
+    auto result = fault_mgr->get_fault_with_env(fault_code, "");
 
     if (result.success) {
       // Build SOVD-compliant response from the transport-supplied JSON shape.
       // The transport handed back `result.data = { "fault": {...}, "environment_data": {...} }`.
       const auto & fault_json = result.data.value("fault", json::object());
+
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+      if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
+        HandlerContext::send_error(
+            res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+            {{"details",
+              "Fault is not in scope for this entity: every reporting source must be one of the entity's "
+              "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
+              "to prevent cross-entity disclosure"},
+             {entity_info.id_field, entity_id},
+             {"fault_code", fault_code}});
+        return;
+      }
+
       const auto & env_data_json = result.data.value("environment_data", json::object());
       auto response = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 
@@ -769,7 +749,46 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     }
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
-    auto result = fault_mgr->clear_fault(fault_code);
+
+    // Verify the fault is in this entity's scope BEFORE clearing. The
+    // underlying ClearFault.srv has no scope argument, so without this
+    // check a DELETE on one entity's route would clear faults owned by
+    // any other entity that happens to share the fault_code. See #395.
+    auto get_result = fault_mgr->get_fault_with_env(fault_code, "");
+    if (!get_result.success) {
+      if (get_result.error_message.find("not found") != std::string::npos ||
+          get_result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(
+            res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+            {{"details", get_result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(
+            res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to clear fault",
+            {{"details", get_result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
+      }
+      return;
+    }
+
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+    const auto & fault_json = get_result.data.value("fault", json::object());
+    if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
+      HandlerContext::send_error(
+          res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+          {{"details",
+            "Fault is not in scope for this entity: every reporting source must be one of the entity's "
+            "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
+            "to prevent cross-entity disclosure"},
+           {entity_info.id_field, entity_id},
+           {"fault_code", fault_code}});
+      return;
+    }
+
+    // Pass `skip_correlation_auto_clear=true` so this scoped DELETE cannot
+    // cascade-clear correlated symptom fault codes that may be reported by
+    // apps in other entities. The cluster-wide clear behaviour is preserved
+    // on the global `DELETE /api/v1/faults` route below.
+    auto result = fault_mgr->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
 
     if (result.success) {
       // Format: return 204 No Content on successful delete
@@ -867,91 +886,28 @@ void FaultHandlers::handle_clear_all_faults(const httplib::Request & req, httpli
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    // For non-App entities (Functions, Components, Areas), namespace_path is
-    // either empty or too broad for accurate filtering. Use the same FQN-based
-    // approach as handle_list_faults: collect host app FQNs and filter by
-    // reporting_source match.
-    json faults_to_clear;
-
-    if (entity_info.type == EntityType::FUNCTION) {
-      auto result = fault_mgr->list_faults("");
-      if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
-                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
-        return;
-      }
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto agg_configs = cache.get_entity_configurations(entity_id);
-      std::set<std::string> host_fqns;
-      for (const auto & node : agg_configs.nodes) {
-        if (!node.node_fqn.empty()) {
-          host_fqns.insert(node.node_fqn);
-        }
-      }
-      faults_to_clear = filter_faults_by_sources(result.data["faults"], host_fqns);
-
-    } else if (entity_info.type == EntityType::COMPONENT) {
-      auto result = fault_mgr->list_faults("");
-      if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
-                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
-        return;
-      }
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto app_ids = cache.get_apps_for_component(entity_id);
-      std::set<std::string> app_fqns;
-      for (const auto & app_id : app_ids) {
-        auto app = cache.get_app(app_id);
-        if (app) {
-          auto fqn = app->effective_fqn();
-          if (!fqn.empty()) {
-            app_fqns.insert(std::move(fqn));
-          }
-        }
-      }
-      faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
-
-    } else if (entity_info.type == EntityType::AREA) {
-      auto result = fault_mgr->list_faults("");
-      if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
-                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
-        return;
-      }
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
-      auto comp_ids = cache.get_components_for_area(entity_id);
-      std::set<std::string> app_fqns;
-      for (const auto & comp_id : comp_ids) {
-        auto app_ids_inner = cache.get_apps_for_component(comp_id);
-        for (const auto & app_id : app_ids_inner) {
-          auto app = cache.get_app(app_id);
-          if (app) {
-            auto fqn = app->effective_fqn();
-            if (!fqn.empty()) {
-              app_fqns.insert(std::move(fqn));
-            }
-          }
-        }
-      }
-      faults_to_clear = filter_faults_by_sources(result.data["faults"], app_fqns);
-
-    } else {
-      // Apps: use namespace_path filtering directly
-      auto result = fault_mgr->list_faults(entity_info.namespace_path);
-      if (!result.success) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
-                                   {{"details", result.error_message}, {entity_info.id_field, entity_id}});
-        return;
-      }
-      faults_to_clear = result.data["faults"];
+    // Same scope rules as `handle_list_faults` and `handle_get_fault`: every
+    // entity type resolves through `HandlerContext::resolve_entity_source_fqns`
+    // so the area BFS, function-hosting-component expansion, and wildcard-app
+    // empty-set behavior stay consistent across all four fault routes.
+    auto result = fault_mgr->list_faults("");
+    if (!result.success) {
+      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
+                                 {{"details", result.error_message}, {entity_info.id_field, entity_id}});
+      return;
     }
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto entity_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+    json faults_to_clear = filter_faults_by_sources(result.data["faults"], entity_fqns);
 
-    // Clear each matching fault
+    // Clear each matching fault. Use `skip_correlation_auto_clear=true` for
+    // the same reason as the single-fault DELETE: keep this entity's clear
+    // from cascading into correlated symptoms reported by other entities.
     if (faults_to_clear.is_array()) {
       for (const auto & fault : faults_to_clear) {
         if (fault.contains("fault_code")) {
           std::string fault_code = fault["fault_code"].get<std::string>();
-          auto clear_result = fault_mgr->clear_fault(fault_code);
+          auto clear_result = fault_mgr->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
           if (!clear_result.success) {
             RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", fault_code.c_str(),
                         entity_id.c_str(), clear_result.error_message.c_str());

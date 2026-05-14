@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tl/expected.hpp>
@@ -338,6 +339,44 @@ class HandlerContext {
    */
   static std::vector<std::string> resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                         const std::vector<std::string> & app_ids);
+
+  /**
+   * @brief Resolve an entity to the set of source FQNs it owns.
+   *
+   * Returns the FQNs of every ROS 2 node within the entity's scope. Used by
+   * fault handlers to filter `reporting_sources` so that per-entity routes
+   * never expose faults reported from outside the addressed entity.
+   *
+   * Mapping per entity type:
+   * - App: the app's `effective_fqn()` (single entry, or empty set if unbound
+   *   or if `ros_binding.namespace_pattern` is a wildcard - by design
+   *   `effective_fqn()` returns "" for those, so the entity simply has no
+   *   addressable ROS node and the scope check excludes every fault).
+   * - Component: `effective_fqn()` of every hosted app via
+   *   `get_apps_for_component()`.
+   * - Area: `effective_fqn()` of every app under the area, walking
+   *   `get_subareas()` recursively so nested areas (e.g. ``powertrain ->
+   *   engine``) resolve to the union of their descendants' apps.
+   * - Function: `effective_fqn()` of every app the function hosts directly
+   *   plus, for hosts that are component IDs, the apps inside those
+   *   components.
+   * - Unknown: empty set.
+   *
+   * Apps whose `effective_fqn()` is empty are silently dropped from the set
+   * so the scope check cannot match arbitrary FQNs against an empty prefix.
+   *
+   * An empty result means "no apps are in scope" and callers must NEVER
+   * interpret that as "no filter" - any fault must be treated as out of
+   * scope. The exact response (404 for per-fault routes, an empty `items`
+   * array for collection lists, 204 for collection clears) is up to the
+   * caller.
+   *
+   * @param cache Entity cache for lookups
+   * @param entity Resolved entity info (from `validate_entity_for_route`)
+   * @return Set of FQNs that uniquely scopes faults to this entity
+   */
+  static std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & cache,
+                                                          const EntityInfo & entity);
 
  private:
   GatewayNode * node_;

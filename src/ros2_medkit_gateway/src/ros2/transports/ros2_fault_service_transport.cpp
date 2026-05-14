@@ -281,7 +281,7 @@ FaultResult Ros2FaultServiceTransport::get_fault(const std::string & fault_code,
   return result;
 }
 
-FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code) {
+FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) {
   std::lock_guard<std::mutex> lock(clear_mutex_);
   FaultResult result;
 
@@ -294,6 +294,7 @@ FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_cod
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
+  request->skip_correlation_auto_clear = skip_correlation_auto_clear;
 
   auto future = clear_fault_client_->async_send_request(request);
 
