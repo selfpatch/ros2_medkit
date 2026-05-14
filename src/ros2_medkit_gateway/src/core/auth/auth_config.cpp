@@ -47,6 +47,8 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/hosts",
            "GET:/api/v1/components/*/depends-on",
            "GET:/api/v1/apps/*/depends-on",
+           "GET:/api/v1/apps/*/is-located-on",
+           "GET:/api/v1/apps/*/belongs-to",
            "GET:/api/v1/functions/*/hosts",
            // Data: all entity types
            "GET:/api/v1/components/*/data",
@@ -186,6 +188,8 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/hosts",
            "GET:/api/v1/components/*/depends-on",
            "GET:/api/v1/apps/*/depends-on",
+           "GET:/api/v1/apps/*/is-located-on",
+           "GET:/api/v1/apps/*/belongs-to",
            "GET:/api/v1/functions/*/hosts",
            // Data: all entity types (read)
            "GET:/api/v1/components/*/data",
@@ -386,6 +390,8 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/components/*/hosts",
            "GET:/api/v1/components/*/depends-on",
            "GET:/api/v1/apps/*/depends-on",
+           "GET:/api/v1/apps/*/is-located-on",
+           "GET:/api/v1/apps/*/belongs-to",
            "GET:/api/v1/functions/*/hosts",
            // Data: all entity types (read)
            "GET:/api/v1/components/*/data",
