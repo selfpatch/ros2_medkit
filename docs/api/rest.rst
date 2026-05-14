@@ -280,7 +280,7 @@ Apps
 ``GET /api/v1/apps/{app_id}/belongs-to``
    Return the area that contains this app via its parent component.
 
-   Per SOVD (ISO 17978-3 §7.6, see :ref:`sovd-api-discovery`), the corresponding
+   Per SOVD (ISO 17978-3 §7.6), the corresponding
    ``belongs-to`` URI reference in ``GET /apps/{app_id}`` is only emitted when
    the app has a parent component (i.e. is not standalone). Standalone apps do
    not expose this subresource in HATEOAS and the endpoint will return an empty
