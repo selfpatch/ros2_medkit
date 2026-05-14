@@ -40,55 +40,33 @@ namespace handlers {
 
 namespace {
 
-/// Check if a single fault's reporting_sources intersects the given prefix set.
-/// Returns true when any reporting_source starts with any prefix. An empty
-/// prefix set always returns false ("nothing is in scope"), so callers must
-/// supply the entity's own FQN set explicitly - a fault is in scope only when
-/// the entity owns at least one app that reported it.
-bool fault_in_source_scope(const json & fault, const std::set<std::string> & source_prefixes) {
-  if (source_prefixes.empty()) {
-    return false;
-  }
-  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
-    return false;
-  }
-  for (const auto & src : fault["reporting_sources"]) {
-    if (!src.is_string()) {
-      continue;
+/// Check if a ROS node FQN falls within the entity's source FQN set.
+///
+/// A node is in scope iff it equals one of the entity's owned FQNs, OR is a
+/// strict path-child of one (i.e., `<owned-fqn>/<...>`). We deliberately do
+/// NOT use raw `rfind(prefix, 0)` because that would let `/ns/node_extra`
+/// pass for an entity owning `/ns/node`. Path boundary is enforced by
+/// requiring the byte after the prefix to be `/`.
+bool source_matches_scope(const std::string & src, const std::set<std::string> & scope_fqns) {
+  for (const auto & fqn : scope_fqns) {
+    if (src == fqn) {
+      return true;
     }
-    const auto src_str = src.get<std::string>();
-    for (const auto & prefix : source_prefixes) {
-      if (src_str.rfind(prefix, 0) == 0) {
-        return true;
-      }
+    if (src.size() > fqn.size() && src.compare(0, fqn.size(), fqn) == 0 && src[fqn.size()] == '/') {
+      return true;
     }
   }
   return false;
 }
 
-/// Helper to filter faults JSON array by a set of namespace prefixes
-/// Keeps faults where any reporting_source starts with any of the given prefixes
-json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_prefixes) {
+/// Filter a faults JSON array down to faults whose every reporting source is
+/// in the entity's scope. Shares the same all-sources / path-boundary
+/// semantics as `FaultHandlers::fault_in_source_scope` so per-entity
+/// collection routes and per-fault routes agree on what counts as "in scope".
+json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_fqns) {
   json filtered = json::array();
   for (const auto & fault : faults_array) {
-    if (!fault.contains("reporting_sources")) {
-      continue;
-    }
-    const auto & sources = fault["reporting_sources"];
-    bool matches = false;
-    for (const auto & src : sources) {
-      const std::string src_str = src.get<std::string>();
-      for (const auto & prefix : source_prefixes) {
-        if (src_str.rfind(prefix, 0) == 0) {
-          matches = true;
-          break;
-        }
-      }
-      if (matches) {
-        break;
-      }
-    }
-    if (matches) {
+    if (FaultHandlers::fault_in_source_scope(fault, source_fqns)) {
       filtered.push_back(fault);
     }
   }
@@ -191,6 +169,28 @@ json extract_primary_value(const std::string & message_type, const json & full_d
 }
 
 }  // namespace
+
+bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std::string> & source_fqns) {
+  if (source_fqns.empty()) {
+    return false;
+  }
+  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
+    return false;
+  }
+  const auto & sources = fault["reporting_sources"];
+  if (sources.empty()) {
+    return false;
+  }
+  for (const auto & src : sources) {
+    if (!src.is_string()) {
+      return false;
+    }
+    if (!source_matches_scope(src.get<std::string>(), source_fqns)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // Static method: Build SOVD-compliant fault response from transport-supplied JSON.
 //
@@ -721,7 +721,7 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
 
       const auto & cache = ctx_.node()->get_thread_safe_cache();
       auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-      if (!fault_in_source_scope(fault_json, source_fqns)) {
+      if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
         HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
                                    {{"details", "Fault is not reported by any app within this entity's scope"},
                                     {entity_info.id_field, entity_id},
@@ -838,7 +838,7 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     const auto & fault_json = get_result.data.value("fault", json::object());
-    if (!fault_in_source_scope(fault_json, source_fqns)) {
+    if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
       HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
                                  {{"details", "Fault is not reported by any app within this entity's scope"},
                                   {entity_info.id_field, entity_id},

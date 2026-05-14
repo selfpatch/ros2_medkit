@@ -1358,6 +1358,68 @@ TEST(ResolveEntitySourceFqnsTest, FunctionAggregatesHostedAppFqns) {
   EXPECT_EQ(fqns, expected);
 }
 
+TEST(ResolveEntitySourceFqnsTest, AreaWalksNestedSubareasRecursively) {
+  // Real manifests put components under subareas (e.g. demo manifest attaches
+  // components to `engine` which is a subarea of `powertrain`). A query for
+  // the top-level area must walk subareas, otherwise the demo would 404 on
+  // every `/areas/powertrain/...` fault read.
+  ThreadSafeEntityCache cache;
+  Area powertrain;
+  powertrain.id = "powertrain";
+  powertrain.namespace_path = "/powertrain";
+  Area engine;
+  engine.id = "engine";
+  engine.namespace_path = "/powertrain/engine";
+  engine.parent_area_id = "powertrain";
+  Area perception;
+  perception.id = "perception";
+  perception.namespace_path = "/perception";
+  cache.update_areas({powertrain, engine, perception});
+
+  Component engine_ecu;
+  engine_ecu.id = "engine-ecu";
+  engine_ecu.area = "engine";  // attached to subarea, NOT to top-level
+  Component lidar_unit;
+  lidar_unit.id = "lidar-unit";
+  lidar_unit.area = "perception";
+  cache.update_components({engine_ecu, lidar_unit});
+
+  cache.update_apps({
+      make_owned_app("engine-temp-sensor", "engine-ecu", "temp_sensor", "/powertrain/engine"),
+      make_owned_app("lidar-sensor", "lidar-unit", "lidar_sensor", "/perception/lidar"),
+  });
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "powertrain"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, FunctionHostingComponentExpandsToComponentApps) {
+  // Function.hosts can carry component IDs as well as app IDs (see
+  // function.hpp). The cache's function_to_apps_ index only resolves
+  // app-host entries, so the helper must reach into Function.hosts itself
+  // and expand component hosts to the apps they own.
+  ThreadSafeEntityCache cache;
+  cache.update_components({Component{}});  // touch to ensure indexes settle
+  Component drive_ecu;
+  drive_ecu.id = "drive-ecu";
+  cache.update_components({drive_ecu});
+
+  cache.update_apps({
+      make_owned_app("planner", "drive-ecu", "planner_node", "/drive"),
+      make_owned_app("localizer", "drive-ecu", "localizer_node", "/drive"),
+      make_owned_app("standalone", "", "standalone_node", "/misc"),
+  });
+
+  Function autonomy;
+  autonomy.id = "autonomy";
+  autonomy.hosts = {"drive-ecu", "standalone"};  // mix of component + app host
+  cache.update_functions({autonomy});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "autonomy"));
+  std::set<std::string> expected{"/drive/planner_node", "/drive/localizer_node", "/misc/standalone_node"};
+  EXPECT_EQ(fqns, expected);
+}
+
 TEST(ResolveEntitySourceFqnsTest, FunctionWithUnboundHostsReturnsOnlyResolvedFqns) {
   // Function.hosts referencing an app that does not produce an effective_fqn
   // (no bound_fqn and no ros_binding) must be skipped, not return empty FQNs

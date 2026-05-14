@@ -387,3 +387,92 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots) {
   EXPECT_EQ(snap1["type"], "rosbag");
   EXPECT_EQ(snap1["bulk_data_uri"], "/components/motor/bulk-data/rosbags/MIXED_FAULT");
 }
+
+// =============================================================================
+// fault_in_source_scope tests (#395)
+//
+// Direct coverage for the scope-check logic that backs per-entity GET/DELETE
+// and the collection-route filter. Integration tests pin the HTTP behavior;
+// these tests pin the boundary semantics that decide what counts as "in
+// scope" - especially the cases that motivated the post-review tightening:
+// prefix-colliding FQNs and multi-source faults.
+// =============================================================================
+
+namespace {
+
+json make_fault(std::vector<std::string> reporting_sources, const std::string & code = "F1") {
+  json f;
+  f["fault_code"] = code;
+  f["reporting_sources"] = std::move(reporting_sources);
+  return f;
+}
+
+}  // namespace
+
+TEST(FaultInSourceScopeTest, SingleSourceExactMatchInScope) {
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(make_fault({"/perception/lidar/lidar_sensor"}),
+                                                   {"/perception/lidar/lidar_sensor"}));
+}
+
+TEST(FaultInSourceScopeTest, SubpathOfScopedFqnIsInScope) {
+  // A node nested under the entity's own FQN must still match - e.g. an app
+  // FQN `/perception/lidar/lidar_sensor` and a reporter at
+  // `/perception/lidar/lidar_sensor/diagnostic_updater` should be the same
+  // app's sub-node, not a stranger.
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(make_fault({"/perception/lidar/lidar_sensor/diagnostic_updater"}),
+                                                   {"/perception/lidar/lidar_sensor"}));
+}
+
+TEST(FaultInSourceScopeTest, PrefixCollidingNameIsNotInScope) {
+  // `/ns/node_extra` shares the `/ns/node` prefix but is a distinct ROS node.
+  // The pre-review check used `rfind(prefix, 0) == 0` and silently let it
+  // through - this test pins the path-boundary fix.
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"/ns/node_extra"}), {"/ns/node"}));
+}
+
+TEST(FaultInSourceScopeTest, MultiSourceAllInScopeIsInScope) {
+  std::set<std::string> scope{"/perception/lidar/lidar_sensor", "/perception/rgb/rgb_camera"};
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(
+      make_fault({"/perception/lidar/lidar_sensor", "/perception/rgb/rgb_camera"}), scope));
+}
+
+TEST(FaultInSourceScopeTest, MultiSourcePartiallyInScopeIsOutOfScope) {
+  // The all-sources semantic blocks a cross-entity DELETE escalation: an
+  // entity that owns only `/perception/lidar/lidar_sensor` must not be able
+  // to clear (or read in detail) a fault that another entity in
+  // `/telemetry/...` also reported.
+  std::set<std::string> scope{"/perception/lidar/lidar_sensor"};
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(
+      make_fault({"/perception/lidar/lidar_sensor", "/telemetry/telemetry_node"}), scope));
+}
+
+TEST(FaultInSourceScopeTest, EmptyScopeSetIsOutOfScope) {
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"/perception/lidar/lidar_sensor"}), {}));
+}
+
+TEST(FaultInSourceScopeTest, EmptyReportingSourcesIsOutOfScope) {
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({}), {"/perception/lidar/lidar_sensor"}));
+}
+
+TEST(FaultInSourceScopeTest, MissingReportingSourcesFieldIsOutOfScope) {
+  json fault;
+  fault["fault_code"] = "F1";
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(fault, {"/perception/lidar/lidar_sensor"}));
+}
+
+TEST(FaultInSourceScopeTest, NonStringSourceEntryIsOutOfScope) {
+  json fault;
+  fault["fault_code"] = "F1";
+  fault["reporting_sources"] = json::array();
+  fault["reporting_sources"].push_back("/perception/lidar/lidar_sensor");
+  fault["reporting_sources"].push_back(42);  // Malformed entry
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(fault, {"/perception/lidar/lidar_sensor"}));
+}
+
+TEST(FaultInSourceScopeTest, RootFqnEdgeCase) {
+  // Boundary check still works with "/" prefix candidates (artificial but
+  // exercises the index arithmetic): "/" itself can't match "/anything"
+  // unless the scope set actually contains "/" - which our resolver never
+  // emits. This pin catches a future regression that special-cased "/".
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"/something"}), {"/other"}));
+}

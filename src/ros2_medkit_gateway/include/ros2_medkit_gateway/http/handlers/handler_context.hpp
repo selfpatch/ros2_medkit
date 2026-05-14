@@ -350,16 +350,26 @@ class HandlerContext {
    * Mapping per entity type:
    * - App: the app's `effective_fqn()` (single entry, or empty set if unbound
    *   or if `ros_binding.namespace_pattern` is a wildcard - by design
-   *   `effective_fqn()` returns "" for those, so the scope filter treats them
-   *   as having no addressable node and any fault read becomes a 404)
-   * - Component: `effective_fqn()` of every hosted app via `get_apps_for_component()`
-   * - Area: `effective_fqn()` of every app in every component under the area
-   * - Function: non-empty `node_fqn` of every entry in the function's aggregation
-   *   configuration (entries with empty `node_fqn` are skipped)
-   * - Unknown: empty set
+   *   `effective_fqn()` returns "" for those, so the entity simply has no
+   *   addressable ROS node and the scope check excludes every fault).
+   * - Component: `effective_fqn()` of every hosted app via
+   *   `get_apps_for_component()`.
+   * - Area: `effective_fqn()` of every app under the area, walking
+   *   `get_subareas()` recursively so nested areas (e.g. ``powertrain ->
+   *   engine``) resolve to the union of their descendants' apps.
+   * - Function: `effective_fqn()` of every app the function hosts directly
+   *   plus, for hosts that are component IDs, the apps inside those
+   *   components.
+   * - Unknown: empty set.
    *
-   * An empty result means "no apps are in scope" and callers must treat any
-   * fault as out-of-scope (i.e., return 404), never as "no filter".
+   * Apps whose `effective_fqn()` is empty are silently dropped from the set
+   * so the scope check cannot match arbitrary FQNs against an empty prefix.
+   *
+   * An empty result means "no apps are in scope" and callers must NEVER
+   * interpret that as "no filter" - any fault must be treated as out of
+   * scope. The exact response (404 for per-fault routes, an empty `items`
+   * array for collection lists, 204 for collection clears) is up to the
+   * caller.
    *
    * @param cache Entity cache for lookups
    * @param entity Resolved entity info (from `validate_entity_for_route`)
