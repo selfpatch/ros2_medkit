@@ -764,6 +764,7 @@ Real-time fault event stream using Server-Sent Events (SSE). Clients receive ins
 - **Automatic reconnection**: Supports `Last-Event-ID` header for seamless reconnection
 - **Keepalive**: Sends `:keepalive` comment every 30 seconds to prevent timeouts
 - **Event buffer**: Buffers up to 100 recent events for reconnecting clients
+- **Entity context (SOVD payload extension)**: When the gateway can resolve the fault's first reporting source back to an entity, the payload carries an `x-medkit` object with `entity_type` and `entity_id` fields so consumers can hit `/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}` directly without enumerating entities
 
 **Event Types:**
 - `fault_confirmed` - Fault transitioned to CONFIRMED status
@@ -781,12 +782,14 @@ curl -N http://localhost:8080/api/v1/faults/stream
 
 id: 1
 event: fault_confirmed
-data: {"event_type":"fault_confirmed","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830000.123}
+data: {"event_type":"fault_confirmed","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830000.123,"x-medkit":{"entity_type":"apps","entity_id":"motor_controller"}}
 
 id: 2
 event: fault_cleared
-data: {"event_type":"fault_cleared","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830060.456}
+data: {"event_type":"fault_cleared","fault":{"fault_code":"MOTOR_OVERHEAT",...},"timestamp":1735830060.456,"x-medkit":{"entity_type":"apps","entity_id":"motor_controller"}}
 ```
+
+**SOVD payload extension `x-medkit.entity_*`** (non-standard, SOVD-compatible): Resolution is best-effort and snapshotted at event arrival. Manifest and hybrid discovery use the linking result; runtime-only discovery falls back to the FQN's last segment and only emits the fields when an App with that ID exists in the cache. When no entity can be resolved (no reporting sources, orphan source, etc.), the entire `x-medkit` object is omitted and the consumer must fall back to discovery.
 
 **Response (503 Service Unavailable - Client Limit Reached):**
 ```json

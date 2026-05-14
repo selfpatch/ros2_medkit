@@ -28,7 +28,9 @@
 #include <unistd.h>
 
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
@@ -37,10 +39,12 @@
 
 using json = nlohmann::json;
 using namespace std::chrono_literals;
+using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::SSEClientTracker;
+using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::SSEFaultHandler;
@@ -413,6 +417,199 @@ TEST_F(SSEFaultHandlerTest, NonPositiveKeepaliveOverrideLogsWarning) {
   auto logs = testing::internal::GetCapturedStderr();
 
   EXPECT_NE(logs.find("Non-positive SSE keepalive override"), std::string::npos);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamOmitsXMedkitWhenNoMatchingApp) {
+  // Empty cache: reporting source ("/apps/temp_sensor") has no manifest mapping
+  // and no App with id "temp_sensor" exists in runtime cache, so the
+  // ``x-medkit`` payload extension is not emitted (consumer falls back to
+  // discovery).
+  enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "NO_OWNER", 10));
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  EXPECT_FALSE(payload.contains("x-medkit"));
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForRuntimeApp) {
+  // Runtime_only fallback: synthetic App with id matching the reporting
+  // source's last segment exists in the cache, so the ``x-medkit`` payload
+  // extension points consumers straight at
+  // /apps/temp_sensor/bulk-data/rosbags/<fault_code>.
+  App app;
+  app.id = "temp_sensor";
+  app.name = "temp_sensor";
+  app.source = "heuristic";
+  app.bound_fqn = "/apps/temp_sensor";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "WITH_OWNER", 20));
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "temp_sensor");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForManifestApp) {
+  // Manifest/hybrid mode: linking populates node_to_app with the ROS FQN ->
+  // manifest app id mapping. The fault's reporting source uses the ROS FQN
+  // form (with leading slash), but the manifest app id can be arbitrary (here
+  // "diagnostic-bridge" with a hyphen, to model the FQN/id naming mismatch
+  // called out in #380).
+  App app;
+  app.id = "diagnostic-bridge";
+  app.name = "diagnostic_bridge";
+  app.source = "manifest";
+  app.bound_fqn = "/bridge/diagnostic_bridge";
+  std::unordered_map<std::string, std::string> node_to_app{{"/bridge/diagnostic_bridge", "diagnostic-bridge"}};
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {app}, {}, node_to_app);
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "BRIDGE_FAULT", 30);
+  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "diagnostic-bridge");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamSnapshotsEntityContextAtEnqueue) {
+  // The core design claim of #380: entity resolution is pinned at enqueue
+  // time so a discovery refresh between enqueue and stream replay cannot
+  // flip the entity reported to consumers. Enqueue with a matching App in
+  // the cache, then mutate the cache to remove it, then replay - the
+  // x-medkit object must still reflect the snapshot.
+  App app;
+  app.id = "temp_sensor";
+  app.name = "temp_sensor";
+  app.source = "heuristic";
+  app.bound_fqn = "/apps/temp_sensor";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SNAPSHOTTED", 50));
+
+  // Discovery refresh: remove the App. Without snapshot-at-enqueue, a
+  // replay would now see an empty cache and omit x-medkit.
+  cache.update_apps({});
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "temp_sensor");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamResolvesManifestFqnWithoutLeadingSlash) {
+  // gateway_node's node_resolver tries both FQN forms; the linking layer may
+  // store keys without the leading '/' (e.g. when the manifest declares
+  // namespace-only FQNs). The handler must try the slash-stripped form so
+  // /bridge/diagnostic_bridge resolves against a node_to_app key of
+  // "bridge/diagnostic_bridge".
+  App app;
+  app.id = "diagnostic-bridge";
+  app.name = "diagnostic_bridge";
+  app.source = "manifest";
+  app.bound_fqn = "/bridge/diagnostic_bridge";
+  std::unordered_map<std::string, std::string> node_to_app{{"bridge/diagnostic_bridge", "diagnostic-bridge"}};
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {app}, {}, node_to_app);
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "SLASH_STRIP", 60);
+  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "diagnostic-bridge");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamResolvesRuntimeCollisionRenamedApp) {
+  // Runtime discovery renames collision-prone nodes to <ns_prefix>_<name>
+  // (see ros2_runtime_introspection.cpp). The fallback must also try this
+  // form so faults from those apps still get a usable x-medkit context.
+  App app;
+  app.id = "bridge_diagnostic_bridge";
+  app.name = "diagnostic_bridge";
+  app.source = "heuristic";
+  app.bound_fqn = "/bridge/diagnostic_bridge";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "COLLISION", 70);
+  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "bridge_diagnostic_bridge");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamOmitsXMedkitWhenReportingSourcesEmpty) {
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "ORPHAN", 40);
+  event.fault.reporting_sources.clear();
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  EXPECT_FALSE(payload.contains("x-medkit"));
+
+  release_stream(res);
 }
 
 TEST_F(SSEFaultHandlerTest, DisconnectReleasesTrackedClientSlot) {

@@ -20,7 +20,10 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
@@ -111,8 +114,33 @@ class SSEFaultHandler {
   /// Callback for fault events from ROS 2 topic
   void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
 
+  /// Resolved owning entity for a fault. Populates the ``x-medkit`` SOVD
+  /// payload-extension object on outgoing SSE events.
+  struct EntityContext {
+    std::string type;
+    std::string id;
+  };
+
+  /// Buffered queue entry. ``entity`` is resolved at enqueue time so a
+  /// discovery refresh between enqueue and stream-out cannot retroactively
+  /// flip the entity reported to consumers.
+  struct QueuedEvent {
+    uint64_t id;
+    ros2_medkit_msgs::msg::FaultEvent event;
+    std::optional<EntityContext> entity;
+  };
+
   /// Format a fault event as SSE message
-  static std::string format_sse_event(const ros2_medkit_msgs::msg::FaultEvent & event, uint64_t event_id);
+  static std::string format_sse_event(const QueuedEvent & queued);
+
+  /// Resolve the owning entity for a fault, snapshotting the cache. Manifest
+  /// / hybrid mode uses the cache's node-to-app index; runtime mode falls
+  /// back to the FQN's last segment, and for collision-disambiguated runtime
+  /// apps also to ``<ns_prefix>_<name>`` per
+  /// ros2_runtime_introspection.cpp's renaming rule. Only emits a value when
+  /// an App with the resolved id actually exists in the cache - returns
+  /// ``std::nullopt`` otherwise so the consumer falls back to discovery.
+  std::optional<EntityContext> resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fault) const;
 
   HandlerContext & ctx_;
   std::shared_ptr<SSEClientTracker> client_tracker_;
@@ -123,7 +151,7 @@ class SSEFaultHandler {
   /// Event queue for broadcasting to clients
   mutable std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
-  std::deque<std::pair<uint64_t, ros2_medkit_msgs::msg::FaultEvent>> event_queue_;
+  std::deque<QueuedEvent> event_queue_;
 
   /// Monotonically increasing event ID for Last-Event-ID support
   std::atomic<uint64_t> next_event_id_{1};
