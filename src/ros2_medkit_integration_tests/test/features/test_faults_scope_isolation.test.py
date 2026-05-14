@@ -71,6 +71,20 @@ class TestFaultsScopeIsolation(GatewayTestCase):
 
     def setUp(self):
         super().setUp()
+        # Verify both components exist before running scope-leak assertions.
+        # Without this, a 404 from an undiscovered entity would be
+        # indistinguishable from a 404 produced by the scope filter, and the
+        # regression test would silently pass even if the fix was reverted.
+        for comp_id in (LIDAR_OWNER_COMPONENT, OTHER_COMPONENT):
+            response = requests.get(
+                f'{self.BASE_URL}/components/{comp_id}', timeout=10,
+            )
+            self.assertEqual(
+                response.status_code, 200,
+                f'Precondition failed: component {comp_id} was not discovered '
+                f'(GET returned {response.status_code}); the 404 assertions '
+                f'below would pass for the wrong reason.',
+            )
         # The lidar app reports LIDAR_RANGE_INVALID deterministically when
         # launched with faulty params. Wait until the gateway sees it on the
         # owning app before exercising the per-component routes.
