@@ -158,6 +158,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("MOTOR_OVERHEAT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(result.error_message.empty());
@@ -191,6 +192,7 @@ TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("NAMESPACED_FAULT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_EQ(result.data["fault_code"], "NAMESPACED_FAULT");
@@ -220,6 +222,7 @@ TEST_F(FaultManagerTest, InvalidFaultManagerNamespaceFallsBackToRootServicePath)
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("INVALID_NAMESPACE_FAULT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_EQ(result.data["service_path"], "/fault_manager/get_snapshots");
@@ -241,6 +244,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   fault_manager.get_snapshots("TEST_FAULT", "/specific_topic");
+  stop_spinning();
 
   EXPECT_EQ(received_topic, "/specific_topic");
 }
@@ -258,6 +262,7 @@ TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("NONEXISTENT_FAULT");
+  stop_spinning();
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.error_message, "Fault not found");
@@ -276,6 +281,7 @@ TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("TEST_FAULT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   // When JSON parsing fails, raw_data should be returned
@@ -296,6 +302,7 @@ TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_snapshots("TEST_FAULT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(result.data.is_object());
@@ -334,6 +341,7 @@ TEST_F(FaultManagerTest, GetRosbagSuccess) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("TEST_ROSBAG_FAULT");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(result.data.contains("file_path"));
@@ -367,6 +375,7 @@ TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("NAMESPACED_ROSBAG");
+  stop_spinning();
 
   EXPECT_TRUE(result.success);
   EXPECT_EQ(result.data["file_path"], "/tmp/NAMESPACED_ROSBAG");
@@ -580,6 +589,7 @@ TEST_F(FaultManagerTest, GetRosbagNotFound) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   auto result = fault_manager.get_rosbag("NONEXISTENT_FAULT");
+  stop_spinning();
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.error_message, "No rosbag file available for fault");
