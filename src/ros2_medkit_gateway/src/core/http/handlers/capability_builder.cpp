@@ -41,6 +41,10 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "hosts";
     case Capability::DEPENDS_ON:
       return "depends-on";
+    case Capability::IS_LOCATED_ON:
+      return "is-located-on";
+    case Capability::BELONGS_TO:
+      return "belongs-to";
     case Capability::LOGS:
       return "logs";
     case Capability::BULK_DATA:

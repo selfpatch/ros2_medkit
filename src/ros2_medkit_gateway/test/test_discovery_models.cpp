@@ -250,6 +250,33 @@ TEST_F(AppModelTest, ToJson_ExternalWhenTrue) {
   EXPECT_EQ(j["x-medkit"]["external"], true);
 }
 
+// @verifies REQ_INTEROP_105 REQ_INTEROP_106
+TEST_F(AppModelTest, ToCapabilities_ContainsRelationshipLinks) {
+  json j = app_.to_capabilities("http://localhost:8080/api/v1");
+
+  // Both is-located-on and belongs-to are gated on the same component_id
+  // condition - handler emits the same set in handle_get_app, so
+  // to_capabilities must stay in sync for notification and snapshot
+  // consumers that go through the model.
+  EXPECT_EQ(j["is-located-on"], "http://localhost:8080/api/v1/components/navigation_server");
+  EXPECT_EQ(j["belongs-to"], "http://localhost:8080/api/v1/apps/nav2/belongs-to");
+  EXPECT_EQ(j["depends-on"], "http://localhost:8080/api/v1/apps/nav2/depends-on");
+}
+
+TEST_F(AppModelTest, ToCapabilities_OmitsRelationshipLinksWhenAppIsStandalone) {
+  App standalone;
+  standalone.id = "standalone";
+  standalone.name = "Standalone";
+  standalone.source = "manifest";
+  // No component_id, no depends_on - mirrors discovery_handlers.cpp gating.
+
+  json j = standalone.to_capabilities("http://localhost:8080/api/v1");
+
+  EXPECT_FALSE(j.contains("is-located-on"));
+  EXPECT_FALSE(j.contains("belongs-to"));
+  EXPECT_FALSE(j.contains("depends-on"));
+}
+
 TEST_F(AppModelTest, ToJson_OmitsEmptyOptionalFields) {
   App minimal;
   minimal.id = "test";

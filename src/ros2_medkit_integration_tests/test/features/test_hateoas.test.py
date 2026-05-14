@@ -415,21 +415,20 @@ class TestHateoas(GatewayTestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'App not found')
+        # validate_entity_for_route emits the generic Entity not found shape
+        # so the gateway can also forward unknown apps to peers when running
+        # in an aggregation cluster.
+        self.assertEqual(data['message'], 'Entity not found')
         self.assertIn('parameters', data)
-        self.assertIn('app_id', data['parameters'])
-        self.assertEqual(data['parameters'].get('app_id'), 'nonexistent_app')
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
     def test_is_located_on_apps_has_href(self):
         """GET /apps/{id}/is-located-on returns 0-or-1 component hrefs."""
         # @verifies REQ_INTEROP_105
-        response = requests.get(
-            f'{self.BASE_URL}/apps/engine-temp-sensor/is-located-on',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 200)
+        # poll_endpoint adds retry under sanitizer/CI load - the gateway may
+        # take a moment to discover entities after launch.
+        data = self.poll_endpoint('/apps/engine-temp-sensor/is-located-on')
 
-        data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
         self.assertEqual(data['_links']['self'], '/api/v1/apps/engine-temp-sensor/is-located-on')
@@ -457,20 +456,16 @@ class TestHateoas(GatewayTestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'App not found')
+        self.assertEqual(data['message'], 'Entity not found')
         self.assertIn('parameters', data)
-        self.assertEqual(data['parameters'].get('app_id'), 'nonexistent_app')
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
     def test_belongs_to_apps_returns_parent_area(self):
         """GET /apps/{id}/belongs-to returns the parent area via component."""
         # @verifies REQ_INTEROP_106
-        response = requests.get(
-            f'{self.BASE_URL}/apps/engine-temp-sensor/belongs-to',
-            timeout=10
-        )
-        self.assertEqual(response.status_code, 200)
+        # poll_endpoint adds retry under sanitizer/CI load.
+        data = self.poll_endpoint('/apps/engine-temp-sensor/belongs-to')
 
-        data = response.json()
         self.assertIn('items', data)
         self.assertIn('_links', data)
         self.assertEqual(data['_links']['self'], '/api/v1/apps/engine-temp-sensor/belongs-to')
@@ -495,9 +490,9 @@ class TestHateoas(GatewayTestCase):
 
         data = response.json()
         self.assertIn('error_code', data)
-        self.assertEqual(data['message'], 'App not found')
+        self.assertEqual(data['message'], 'Entity not found')
         self.assertIn('parameters', data)
-        self.assertEqual(data['parameters'].get('app_id'), 'nonexistent_app')
+        self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
     # ------------------------------------------------------------------
     # Functions (test_81)

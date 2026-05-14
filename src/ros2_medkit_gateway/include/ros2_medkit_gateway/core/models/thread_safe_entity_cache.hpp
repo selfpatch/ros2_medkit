@@ -208,6 +208,28 @@ class ThreadSafeEntityCache {
   std::optional<App> get_app(const std::string & id) const;
   std::optional<Function> get_function(const std::string & id) const;
 
+  /// Atomic snapshot of an App together with its parent Component and Area.
+  ///
+  /// Three sequential get_app/get_component/get_area calls each acquire a
+  /// fresh shared_lock and a writer refresh can advance the generation
+  /// between them, so handlers that traverse App -> Component -> Area can
+  /// observe a mixed-generation view (e.g. app from gen N, component from
+  /// N+1, area from N). This helper resolves the chain under a single
+  /// shared_lock so the result is internally consistent.
+  ///
+  /// `app` is empty if `app_id` is not in the cache. `component` is empty if
+  /// the app has no `component_id` or the referenced component is missing.
+  /// `area` is empty if the component has no `area` or the referenced area
+  /// is missing. The two latter cases are distinguishable from "no parent"
+  /// because `app.component_id` / `component.area` remain set on the
+  /// returned models.
+  struct AppLinksSnapshot {
+    std::optional<App> app;
+    std::optional<Component> component;
+    std::optional<Area> area;
+  };
+  AppLinksSnapshot get_app_with_links(const std::string & id) const;
+
   // --- Check existence (O(1)) ---
   bool has_area(const std::string & id) const;
   bool has_component(const std::string & id) const;

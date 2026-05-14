@@ -52,6 +52,8 @@ class CapabilityBuilder {
     RELATED_APPS,          ///< Entity has related apps (components only)
     HOSTS,                 ///< Entity has host apps (functions/components)
     DEPENDS_ON,            ///< Entity has dependencies (components only)
+    IS_LOCATED_ON,         ///< Entity has parent component (apps only)
+    BELONGS_TO,            ///< Entity has parent area (apps only)
     LOGS,                  ///< Entity has application log entries (components and apps)
     BULK_DATA,             ///< Entity has bulk data endpoints (rosbags)
     CYCLIC_SUBSCRIPTIONS,  ///< Entity has cyclic subscription endpoints

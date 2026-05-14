@@ -29,8 +29,11 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
           ResourceCollection::LOGS,           ResourceCollection::TRIGGERS,  ResourceCollection::SCRIPTS,
           ResourceCollection::UPDATES,
       };
-      // SERVER resources
-      caps.resources_ = {"docs", "version-info", "logs", "belongs-to", "depends-on", "data-categories", "data-groups"};
+      // SERVER resources. SOVD (ISO 17978-3 §7.6) does not define
+      // /belongs-to for server, only for apps - advertising it here would
+      // make supports_resource("belongs-to") return true and clients would
+      // get 404 when following it.
+      caps.resources_ = {"docs", "version-info", "logs", "depends-on", "data-categories", "data-groups"};
       break;
 
     case SovdEntityType::AREA:
@@ -56,8 +59,11 @@ EntityCapabilities EntityCapabilities::for_type(SovdEntityType type) {
           ResourceCollection::LOGS,           ResourceCollection::TRIGGERS,  ResourceCollection::SCRIPTS,
           ResourceCollection::UPDATES,
       };
-      caps.resources_ = {"docs",       "logs",          "hosts",           "belongs-to",
-                         "depends-on", "subcomponents", "data-categories", "data-groups"};
+      // SOVD (ISO 17978-3 §7.6) defines /belongs-to only for apps; component
+      // exposes parent area via /is-located-on (which is itself app-only in
+      // the spec, but ros2_medkit treats it as the canonical area pointer).
+      // Listing belongs-to here would be a 404 promise.
+      caps.resources_ = {"docs", "logs", "hosts", "depends-on", "subcomponents", "data-categories", "data-groups"};
       break;
 
     case SovdEntityType::APP:

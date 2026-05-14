@@ -159,6 +159,40 @@ std::optional<App> ThreadSafeEntityCache::get_app(const std::string & id) const 
   return std::nullopt;
 }
 
+ThreadSafeEntityCache::AppLinksSnapshot ThreadSafeEntityCache::get_app_with_links(const std::string & id) const {
+  AppLinksSnapshot snapshot;
+  std::shared_lock lock(mutex_);
+
+  auto app_it = app_index_.find(id);
+  if (app_it == app_index_.end() || app_it->second >= apps_.size()) {
+    return snapshot;
+  }
+  snapshot.app = apps_[app_it->second];
+
+  const auto & component_id = snapshot.app->component_id;
+  if (component_id.empty()) {
+    return snapshot;
+  }
+
+  auto comp_it = component_index_.find(component_id);
+  if (comp_it == component_index_.end() || comp_it->second >= components_.size()) {
+    return snapshot;  // component referenced but missing - leave .component empty
+  }
+  snapshot.component = components_[comp_it->second];
+
+  const auto & area_id = snapshot.component->area;
+  if (area_id.empty()) {
+    return snapshot;
+  }
+
+  auto area_it = area_index_.find(area_id);
+  if (area_it == area_index_.end() || area_it->second >= areas_.size()) {
+    return snapshot;  // area referenced but missing
+  }
+  snapshot.area = areas_[area_it->second];
+  return snapshot;
+}
+
 std::optional<Function> ThreadSafeEntityCache::get_function(const std::string & id) const {
   std::shared_lock lock(mutex_);
   auto it = function_index_.find(id);

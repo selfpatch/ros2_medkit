@@ -125,6 +125,7 @@ json App::to_capabilities(const std::string & base_url) const {
   // Relationships (SOVD standard)
   if (!component_id.empty()) {
     j["is-located-on"] = base_url + "/components/" + component_id;
+    j["belongs-to"] = app_base + "/belongs-to";
   }
   if (!depends_on.empty()) {
     j["depends-on"] = app_base + "/depends-on";

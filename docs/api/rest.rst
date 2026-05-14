@@ -280,13 +280,22 @@ Apps
 ``GET /api/v1/apps/{app_id}/belongs-to``
    Return the area that contains this app via its parent component.
 
+   Per SOVD (ISO 17978-3 §7.6, see :ref:`sovd-api-discovery`), the corresponding
+   ``belongs-to`` URI reference in ``GET /apps/{app_id}`` is only emitted when
+   the app has a parent component (i.e. is not standalone). Standalone apps do
+   not expose this subresource in HATEOAS and the endpoint will return an empty
+   ``items`` collection if called directly.
+
    The response follows the standard ``items`` wrapper and returns:
 
-   - ``0`` items when the app has no associated host component
+   - ``0`` items when the app has no associated host component (standalone app)
    - ``0`` items when the parent component has no assigned area
    - ``1`` item when the area is resolved
    - ``1`` item with ``x-medkit.missing=true`` when the parent component references
      an area that cannot currently be resolved
+   - ``1`` item with ``x-medkit.missing=true`` and ``x-medkit.unresolved_component``
+     set to the dangling component id when the app references a parent component
+     that cannot currently be resolved (manifest broken / component removed)
 
    **Example Response:**
 
