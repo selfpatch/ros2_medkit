@@ -79,8 +79,10 @@ class FaultManager {
   /// Get a specific fault by code (JSON result - "fault" body only).
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id = "");
 
-  /// Clear a fault.
-  FaultResult clear_fault(const std::string & fault_code);
+  /// Clear a fault. When `skip_correlation_auto_clear` is true the fault
+  /// manager will not cascade-clear correlated symptom fault codes - per-entity
+  /// DELETE routes set this to keep their clear inside the entity boundary.
+  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear = false);
 
   /// Get snapshots for a fault (optional topic filter).
   FaultResult get_snapshots(const std::string & fault_code, const std::string & topic = "");
