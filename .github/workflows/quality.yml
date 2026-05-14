@@ -231,6 +231,12 @@ jobs:
         run: |
           rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
           apt-get clean
+          # Container-level cleanup so the ASan build (large debug-info
+          # binaries) has room on the overlay filesystem. The host /
+          # is only ~14 GB on github-hosted runners.
+          rm -rf /var/cache/apt/* /var/lib/apt/lists/* || true
+          rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* || true
+          df -h /
 
       - name: Install Git
         run: |
@@ -271,10 +277,18 @@ jobs:
           CCACHE_SLOPPINESS: pch_defines,time_macros
         run: |
           source /opt/ros/jazzy/setup.bash
+          # RelWithDebInfo (not Debug): Debug uses -O0 which produces
+          # binaries ~2x the size of -O1, and the ASan/UBSan instrumentation
+          # already inflates them several times over. On github-hosted
+          # runners (~14 GB /) the linker hits 'No space left on device' on
+          # PR branches that miss the ccache warm-up. The sanitizer cmake
+          # module overrides optimisation back to -O1 either way, so this
+          # only changes debug info size.
           colcon build --symlink-install \
-            --cmake-args -DCMAKE_BUILD_TYPE=Debug -DSANITIZER=asan,ubsan \
+            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSANITIZER=asan,ubsan \
             --event-handlers console_direct+
           ccache -s
+          df -h /
 
       - name: Extend test timeouts for ASan overhead
         run: |
