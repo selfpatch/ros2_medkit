@@ -530,9 +530,12 @@ void FaultManagerNode::handle_clear_fault(
     return;
   }
 
-  // Process through correlation engine first (to get auto-clear list)
+  // Process through correlation engine first (to get auto-clear list).
+  // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
+  // correlated symptom fault codes. Per-entity DELETE routes set it to true
+  // so they cannot reach across entity boundaries via the correlation graph.
   std::vector<std::string> auto_cleared_codes;
-  if (correlation_engine_) {
+  if (correlation_engine_ && !request->skip_correlation_auto_clear) {
     auto clear_result = correlation_engine_->process_clear(request->fault_code);
     auto_cleared_codes = clear_result.auto_cleared_codes;
   }

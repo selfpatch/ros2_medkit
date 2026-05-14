@@ -70,7 +70,7 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
 
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id) override;
 
-  FaultResult clear_fault(const std::string & fault_code) override;
+  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) override;
 
   FaultResult get_snapshots(const std::string & fault_code, const std::string & topic) override;
 

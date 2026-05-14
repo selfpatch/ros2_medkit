@@ -47,7 +47,12 @@ class FaultServiceTransport {
 
   virtual FaultResult get_fault(const std::string & fault_code, const std::string & source_id) = 0;
 
-  virtual FaultResult clear_fault(const std::string & fault_code) = 0;
+  /// Clear a fault by its fault_code.
+  /// `skip_correlation_auto_clear`, when true, asks the fault manager to NOT
+  /// cascade-clear correlated symptom fault codes. Per-entity DELETE routes
+  /// set this to true so the clear cannot reach faults reported by apps
+  /// outside the addressed entity via the correlation graph.
+  virtual FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear = false) = 0;
 
   virtual FaultResult get_snapshots(const std::string & fault_code, const std::string & topic) = 0;
 
