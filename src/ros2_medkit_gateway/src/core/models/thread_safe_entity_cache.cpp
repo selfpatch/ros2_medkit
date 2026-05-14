@@ -193,6 +193,29 @@ ThreadSafeEntityCache::AppLinksSnapshot ThreadSafeEntityCache::get_app_with_link
   return snapshot;
 }
 
+ThreadSafeEntityCache::AppDependenciesSnapshot
+ThreadSafeEntityCache::get_app_with_dependencies(const std::string & id) const {
+  AppDependenciesSnapshot snapshot;
+  std::shared_lock lock(mutex_);
+
+  auto app_it = app_index_.find(id);
+  if (app_it == app_index_.end() || app_it->second >= apps_.size()) {
+    return snapshot;
+  }
+  snapshot.app = apps_[app_it->second];
+
+  snapshot.dependencies.reserve(snapshot.app->depends_on.size());
+  for (const auto & dep_id : snapshot.app->depends_on) {
+    auto dep_it = app_index_.find(dep_id);
+    if (dep_it != app_index_.end() && dep_it->second < apps_.size()) {
+      snapshot.dependencies.emplace_back(dep_id, apps_[dep_it->second]);
+    } else {
+      snapshot.dependencies.emplace_back(dep_id, std::nullopt);
+    }
+  }
+  return snapshot;
+}
+
 std::optional<Function> ThreadSafeEntityCache::get_function(const std::string & id) const {
   std::shared_lock lock(mutex_);
   auto it = function_index_.find(id);

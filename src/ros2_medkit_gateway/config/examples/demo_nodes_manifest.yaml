@@ -74,6 +74,14 @@ areas:
         namespace: /perception/lidar
         description: "LiDAR sensor system"
 
+  # Isolated area used by HATEOAS edge-case manifest entries below; not bound
+  # to a running ROS 2 node, exists only to give the unresolved/standalone/
+  # area-less tests deterministic targets.
+  - id: hateoas-edge-area
+    name: "HATEOAS Edge Area"
+    namespace: /hateoas_edge
+    description: "Reserved for integration test edge cases"
+
 # =============================================================================
 # COMPONENTS - Hardware units
 # =============================================================================
@@ -135,6 +143,20 @@ components:
     name: "LiDAR Unit"
     type: "sensor"
     area: lidar
+
+  # HATEOAS edge-case fixtures (manifest-only, no runtime nodes).
+  # See test_hateoas.test.py for the corresponding test cases.
+  - id: hateoas-component-no-area
+    name: "HATEOAS Edge: component without area"
+    type: "sensor"
+    # area intentionally omitted - exercises the
+    # 'parent component resolved but has no area_id' branch.
+
+  # Note: the 'dangling area reference' branch (component points at a
+  # non-existent area id) is covered by unit test
+  # AppBelongsToReturnsMissingItemWhenAreaUnresolved. We can't seed a
+  # component with a missing area_id here because manifest validator R006
+  # rejects it and disables manifest-driven discovery for the whole suite.
     description: "360° laser scanner with fault reporting"
 
 # =============================================================================
@@ -230,6 +252,28 @@ apps:
     ros_binding:
       node_name: lidar_sensor
       namespace: /perception/lidar
+
+  # === HATEOAS edge-case apps (manifest-only, no ros_binding) ===
+  # Each targets a specific branch of handle_app_belongs_to /
+  # handle_app_is_located_on so the integration suite exercises the same
+  # shapes the unit tests cover.
+  - id: hateoas-app-standalone
+    name: "HATEOAS Edge: standalone app"
+    category: "fixture"
+    description: "App without a parent component (is_located_on omitted)"
+
+  # Note: the 'unresolved parent component' branch is covered by unit test
+  # AppBelongsToReturnsMissingItemWhenParentComponentUnresolved instead - the
+  # manifest validator (R007) rejects apps that reference a non-existent
+  # component even with manifest_strict_validation=false, so we can't seed it
+  # here as an integration fixture without disabling discovery for the rest
+  # of the suite.
+
+  - id: hateoas-app-on-area-less-component
+    name: "HATEOAS Edge: app on component without area"
+    category: "fixture"
+    description: "Parent component resolves but has no area_id assigned"
+    is_located_on: hateoas-component-no-area
 
 # =============================================================================
 # FUNCTIONS - High-level capabilities

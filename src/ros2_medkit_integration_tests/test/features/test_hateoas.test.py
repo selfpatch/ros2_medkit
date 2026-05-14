@@ -495,6 +495,50 @@ class TestHateoas(GatewayTestCase):
         self.assertEqual(data['parameters'].get('entity_id'), 'nonexistent_app')
 
     # ------------------------------------------------------------------
+    # HATEOAS edge cases: standalone / broken-ref / missing-area apps.
+    # Fixtures defined in demo_nodes_manifest.yaml (hateoas-app-*).
+    # ------------------------------------------------------------------
+
+    def test_belongs_to_standalone_app_returns_empty(self):
+        """Standalone app (no parent component) returns 200 with empty items.
+
+        @verifies REQ_INTEROP_106
+        """
+        data = self.poll_endpoint('/apps/hateoas-app-standalone/belongs-to')
+        self.assertEqual(data['items'], [])
+        self.assertEqual(data['x-medkit']['total_count'], 0)
+
+    def test_belongs_to_app_on_area_less_component_returns_empty(self):
+        """Component without area assignment returns 200 with empty items.
+
+        @verifies REQ_INTEROP_106
+        """
+        data = self.poll_endpoint('/apps/hateoas-app-on-area-less-component/belongs-to')
+        self.assertEqual(data['items'], [])
+        self.assertEqual(data['x-medkit']['total_count'], 0)
+
+    # Note: the 'unresolved parent component' branch on /belongs-to and
+    # /is-located-on is covered by the unit tests
+    # AppBelongsToReturnsMissingItemWhenParentComponentUnresolved and
+    # AppIsLocatedOnReturnsMissingItemWhenHostComponentUnresolved instead -
+    # the manifest validator rejects an app that points at a non-existent
+    # component, so we can't seed that scenario as an integration fixture.
+
+    # Note: the 'dangling area reference' branch is covered by unit test
+    # AppBelongsToReturnsMissingItemWhenAreaUnresolved - manifest validator
+    # R006 rejects a component that points at a non-existent area, so we
+    # can't seed that scenario as an integration fixture without disabling
+    # manifest-driven discovery for the whole suite.
+
+    def test_is_located_on_standalone_app_returns_empty(self):
+        """Standalone app returns 200 with empty items on /is-located-on too.
+
+        @verifies REQ_INTEROP_105
+        """
+        data = self.poll_endpoint('/apps/hateoas-app-standalone/is-located-on')
+        self.assertEqual(data['items'], [])
+
+    # ------------------------------------------------------------------
     # Functions (test_81)
     # ------------------------------------------------------------------
 
