@@ -92,6 +92,8 @@ class TestGapFillConfig(GatewayTestCase):
         for area_id in area_ids:
             self.assertIn(area_id, [
                 'powertrain', 'chassis', 'body', 'perception',
+                # HATEOAS edge-case fixture, manifest-only.
+                'hateoas-edge-area',
             ], f"Unexpected area found in top-level listing: {area_id}")
 
     def test_only_manifest_components_present(self):
@@ -109,6 +111,8 @@ class TestGapFillConfig(GatewayTestCase):
             'brake-ecu', 'brake-pressure-sensor-hw', 'brake-actuator-hw',
             'door-sensor-hw', 'light-module',
             'lidar-unit',
+            # HATEOAS edge-case fixture (component without area assignment).
+            'hateoas-component-no-area',
         ]
         for comp_id in component_ids:
             self.assertIn(

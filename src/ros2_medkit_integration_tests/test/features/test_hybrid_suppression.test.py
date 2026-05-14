@@ -58,21 +58,34 @@ from ros2_medkit_test_utils.launch_helpers import (
 MANIFEST_ALL_AREAS = {
     'powertrain', 'engine', 'chassis', 'brakes', 'body', 'door',
     'front-left-door', 'lights', 'perception', 'lidar',
+    # HATEOAS edge-case fixture (manifest-only)
+    'hateoas-edge-area',
 }
 # Only top-level areas appear in GET /areas; subareas are filtered
 MANIFEST_TOP_LEVEL_AREAS = {
     'powertrain', 'chassis', 'body', 'perception',
+    'hateoas-edge-area',
 }
 MANIFEST_SUBAREAS = MANIFEST_ALL_AREAS - MANIFEST_TOP_LEVEL_AREAS
 MANIFEST_COMPONENTS = {
     'engine-ecu', 'temp-sensor-hw', 'rpm-sensor-hw', 'brake-ecu',
     'brake-pressure-sensor-hw', 'brake-actuator-hw', 'door-sensor-hw',
     'light-module', 'lidar-unit',
+    # HATEOAS edge-case fixture (component without area assignment)
+    'hateoas-component-no-area',
 }
 MANIFEST_APPS = {
     'engine-temp-sensor', 'engine-rpm-sensor', 'engine-calibration-service',
     'engine-long-calibration', 'brake-pressure-sensor', 'brake-actuator',
     'door-status-sensor', 'light-controller', 'lidar-sensor',
+    # HATEOAS edge-case fixtures (manifest-only, no ros_binding)
+    'hateoas-app-standalone', 'hateoas-app-on-area-less-component',
+}
+# Subset that has a ros_binding and therefore can be is_online once the
+# runtime nodes are launched. Manifest-only fixtures (no binding) are
+# present in the cache but never reach online state.
+MANIFEST_APPS_WITH_BINDING = MANIFEST_APPS - {
+    'hateoas-app-standalone', 'hateoas-app-on-area-less-component',
 }
 MANIFEST_FUNCTIONS = {
     'engine-monitoring', 'engine-calibration', 'brake-system',
@@ -260,6 +273,11 @@ class TestHybridSuppression(GatewayTestCase):
         Even with allow_heuristic_apps=false (gap-fill blocking runtime
         apps from the entity tree), the linker must still receive the
         unfiltered runtime apps so it can bind manifest apps to live nodes.
+
+        Apps in ``MANIFEST_APPS_WITH_BINDING`` must be online; manifest-only
+        fixtures (no ros_binding) are exempt - they are present in the cache
+        but never reach online state because no runtime node was launched
+        for them.
         """
         # @verifies REQ_INTEROP_003
         data = self.poll_endpoint_until(
@@ -267,10 +285,13 @@ class TestHybridSuppression(GatewayTestCase):
             lambda d: d if all(
                 a.get('x-medkit', {}).get('is_online', False)
                 for a in d.get('items', [])
+                if a['id'] in MANIFEST_APPS_WITH_BINDING
             ) and len(d.get('items', [])) == len(MANIFEST_APPS) else None,
             timeout=30.0,
         )
         for app in data['items']:
+            if app['id'] not in MANIFEST_APPS_WITH_BINDING:
+                continue
             x_medkit = app.get('x-medkit', {})
             is_online = x_medkit.get('is_online', False)
             self.assertTrue(
