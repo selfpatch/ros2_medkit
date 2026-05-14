@@ -106,6 +106,14 @@ def create_gateway_node(*, port=DEFAULT_PORT, extra_params=None, coverage=True):
         output='screen',
         parameters=[params],
         additional_env=get_coverage_env() if coverage else {},
+        # Default SIGINT->SIGTERM escalation is 5s and SIGTERM->SIGKILL is 5s.
+        # Under TSan/ASan the gateway shutdown sequence (mdns stop, REST server
+        # stop, transport teardown, plugin shutdown) easily exceeds 5s on slower
+        # CI runners, causing launch_testing to escalate to SIGKILL and the
+        # TestShutdown.test_exit_codes check to report -9. The process still
+        # shuts down cleanly given enough time, so widen both windows.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
 
