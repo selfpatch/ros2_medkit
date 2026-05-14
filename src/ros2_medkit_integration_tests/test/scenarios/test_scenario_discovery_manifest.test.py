@@ -382,6 +382,8 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
             'engine-ecu', 'temp-sensor-hw', 'rpm-sensor-hw',
             'brake-ecu', 'brake-pressure-sensor-hw', 'brake-actuator-hw',
             'door-sensor-hw', 'light-module', 'lidar-unit',
+            # HATEOAS edge-case fixture (component without area assignment).
+            'hateoas-component-no-area',
         }
         data = self.get_json('/components')
         actual_ids = {c['id'] for c in data['items']}
