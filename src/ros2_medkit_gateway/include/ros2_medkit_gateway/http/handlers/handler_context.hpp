@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tl/expected.hpp>
@@ -338,6 +339,30 @@ class HandlerContext {
    */
   static std::vector<std::string> resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                         const std::vector<std::string> & app_ids);
+
+  /**
+   * @brief Resolve an entity to the set of source FQNs it owns.
+   *
+   * Returns the FQNs of every ROS 2 node within the entity's scope. Used by
+   * fault handlers to filter `reporting_sources` so that per-entity routes
+   * never expose faults reported from outside the addressed entity.
+   *
+   * Mapping per entity type:
+   * - App: the app's `effective_fqn()` (single entry, or empty set if unbound)
+   * - Component: `effective_fqn()` of every hosted app via `get_apps_for_component()`
+   * - Area: `effective_fqn()` of every app in every component under the area
+   * - Function: `node_fqn` of every entry in the function's aggregation configuration
+   * - Unknown: empty set
+   *
+   * An empty result means "no apps are in scope" and callers must treat any
+   * fault as out-of-scope (i.e., return 404), never as "no filter".
+   *
+   * @param cache Entity cache for lookups
+   * @param entity Resolved entity info (from `validate_entity_for_route`)
+   * @return Set of FQNs that uniquely scopes faults to this entity
+   */
+  static std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & cache,
+                                                          const EntityInfo & entity);
 
  private:
   GatewayNode * node_;

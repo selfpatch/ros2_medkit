@@ -40,6 +40,32 @@ namespace handlers {
 
 namespace {
 
+/// Check if a single fault's reporting_sources intersects the given prefix set.
+/// Returns true when any reporting_source starts with any prefix. An empty
+/// prefix set always returns false ("nothing is in scope"), so callers must
+/// supply the entity's own FQN set explicitly - a fault is in scope only when
+/// the entity owns at least one app that reported it.
+bool fault_in_source_scope(const json & fault, const std::set<std::string> & source_prefixes) {
+  if (source_prefixes.empty()) {
+    return false;
+  }
+  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
+    return false;
+  }
+  for (const auto & src : fault["reporting_sources"]) {
+    if (!src.is_string()) {
+      continue;
+    }
+    const auto src_str = src.get<std::string>();
+    for (const auto & prefix : source_prefixes) {
+      if (src_str.rfind(prefix, 0) == 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// Helper to filter faults JSON array by a set of namespace prefixes
 /// Keeps faults where any reporting_source starts with any of the given prefixes
 json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_prefixes) {
@@ -672,17 +698,30 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    std::string namespace_path = entity_info.namespace_path;
-
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    // Use get_fault_with_env to get fault with environment data
-    auto result = fault_mgr->get_fault_with_env(fault_code, namespace_path);
+    // Fetch the fault without manager-level scope filter. The transport's
+    // `source_id` prefix match silently disables itself when the entity has
+    // an empty namespace_path (synthetic / host-derived components, manifest
+    // components without a `namespace` field, Areas, Functions), so we
+    // re-scope here against the actual FQNs the entity owns. See #395.
+    auto result = fault_mgr->get_fault_with_env(fault_code, "");
 
     if (result.success) {
       // Build SOVD-compliant response from the transport-supplied JSON shape.
       // The transport handed back `result.data = { "fault": {...}, "environment_data": {...} }`.
       const auto & fault_json = result.data.value("fault", json::object());
+
+      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+      if (!fault_in_source_scope(fault_json, source_fqns)) {
+        HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+                                   {{"details", "Fault is not reported by any app within this entity's scope"},
+                                    {entity_info.id_field, entity_id},
+                                    {"fault_code", fault_code}});
+        return;
+      }
+
       const auto & env_data_json = result.data.value("environment_data", json::object());
       auto response = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 
@@ -769,6 +808,37 @@ void FaultHandlers::handle_clear_fault(const httplib::Request & req, httplib::Re
     }
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
+
+    // Verify the fault is in this entity's scope BEFORE clearing. The
+    // underlying ClearFault.srv has no scope argument, so without this
+    // check a DELETE on one entity's route would clear faults owned by
+    // any other entity that happens to share the fault_code. See #395.
+    auto get_result = fault_mgr->get_fault_with_env(fault_code, "");
+    if (!get_result.success) {
+      if (get_result.error_message.find("not found") != std::string::npos ||
+          get_result.error_message.find("Fault not found") != std::string::npos) {
+        HandlerContext::send_error(
+            res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+            {{"details", get_result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
+      } else {
+        HandlerContext::send_error(
+            res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to clear fault",
+            {{"details", get_result.error_message}, {entity_info.id_field, entity_id}, {"fault_code", fault_code}});
+      }
+      return;
+    }
+
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+    const auto & fault_json = get_result.data.value("fault", json::object());
+    if (!fault_in_source_scope(fault_json, source_fqns)) {
+      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+                                 {{"details", "Fault is not reported by any app within this entity's scope"},
+                                  {entity_info.id_field, entity_id},
+                                  {"fault_code", fault_code}});
+      return;
+    }
+
     auto result = fault_mgr->clear_fault(fault_code);
 
     if (result.success) {
