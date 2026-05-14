@@ -1231,6 +1231,114 @@ TEST(ResolveAppHostFqnsTest, DuplicateEffectiveFqnsAreDeduplicated) {
   EXPECT_EQ(fqns[1], "/powertrain/engine/rpm_sensor");
 }
 
+// =============================================================================
+// resolve_entity_source_fqns tests
+//
+// The helper underpins #395's per-entity fault scope check. It must reject
+// faults that come from outside the entity (empty result -> caller returns
+// 404) AND must collect the FQNs of every hosted ROS node so that
+// reporting-source matching covers all the apps the entity actually owns.
+// =============================================================================
+
+namespace {
+
+EntityInfo make_entity_info(EntityType t, const std::string & id) {
+  EntityInfo ei;
+  ei.type = t;
+  ei.id = id;
+  return ei;
+}
+
+App make_owned_app(const std::string & app_id, const std::string & component_id, const std::string & node_name,
+                   const std::string & ns) {
+  App a = make_app_with_binding(app_id, node_name, ns);
+  a.component_id = component_id;
+  return a;
+}
+
+}  // namespace
+
+TEST(ResolveEntitySourceFqnsTest, AppReturnsItsOwnFqn) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "temp_sensor"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, AppMissingFromCacheYieldsEmptySet) {
+  ThreadSafeEntityCache cache;
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "gone"));
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveEntitySourceFqnsTest, ComponentAggregatesHostedAppFqns) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_owned_app("temp-sensor", "temp-hw", "temp_sensor", "/powertrain/engine"),
+      make_owned_app("rpm-sensor", "rpm-hw", "rpm_sensor", "/powertrain/engine"),
+      make_owned_app("lidar-sensor", "lidar-unit", "lidar_sensor", "/perception/lidar"),
+  });
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "temp-hw"));
+  // The lidar app must not appear: the bug under #395 was that an empty
+  // namespace_path on the addressed component silently disabled the scope
+  // filter and exposed faults from unrelated apps.
+  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, ComponentWithoutHostedAppsReturnsEmptySet) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_owned_app("temp-sensor", "temp-hw", "temp_sensor", "/powertrain/engine")});
+
+  // Querying a different component yields an empty set, NOT "no filter".
+  // Callers (fault handlers) treat empty as out-of-scope -> 404.
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "lidar-unit"));
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveEntitySourceFqnsTest, AreaCollectsAppsFromAllComponentsInArea) {
+  ThreadSafeEntityCache cache;
+  Component comp_a;
+  comp_a.id = "temp-hw";
+  comp_a.area = "engine";
+  Component comp_b;
+  comp_b.id = "rpm-hw";
+  comp_b.area = "engine";
+  Component comp_off_area;
+  comp_off_area.id = "lidar-unit";
+  comp_off_area.area = "perception";
+  cache.update_components({comp_a, comp_b, comp_off_area});
+  cache.update_apps({
+      make_owned_app("temp-sensor", "temp-hw", "temp_sensor", "/powertrain/engine"),
+      make_owned_app("rpm-sensor", "rpm-hw", "rpm_sensor", "/powertrain/engine"),
+      make_owned_app("lidar-sensor", "lidar-unit", "lidar_sensor", "/perception/lidar"),
+  });
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "engine"));
+  std::set<std::string> expected{"/powertrain/engine/temp_sensor", "/powertrain/engine/rpm_sensor"};
+  EXPECT_EQ(fqns, expected);
+}
+
+TEST(ResolveEntitySourceFqnsTest, UnknownEntityTypeReturnsEmptySet) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::UNKNOWN, "anything"));
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveEntitySourceFqnsTest, AppsWithEmptyEffectiveFqnAreSkipped) {
+  ThreadSafeEntityCache cache;
+  App no_binding;
+  no_binding.id = "no_binding";
+  no_binding.component_id = "comp-x";
+  App ok = make_owned_app("ok", "comp-x", "ok_node", "/ns");
+  cache.update_apps({no_binding, ok});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "comp-x"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/ns/ok_node"});
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

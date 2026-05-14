@@ -347,6 +347,59 @@ void HandlerContext::send_json(httplib::Response & res, const json & data) {
   res.set_content(data.dump(2), "application/json");
 }
 
+namespace {
+
+void collect_app_fqn(const ThreadSafeEntityCache & cache, const std::string & app_id, std::set<std::string> & out) {
+  auto app = cache.get_app(app_id);
+  if (!app) {
+    return;
+  }
+  auto fqn = app->effective_fqn();
+  if (fqn.empty()) {
+    return;
+  }
+  out.insert(std::move(fqn));
+}
+
+}  // namespace
+
+std::set<std::string> HandlerContext::resolve_entity_source_fqns(const ThreadSafeEntityCache & cache,
+                                                                 const EntityInfo & entity) {
+  std::set<std::string> fqns;
+  switch (entity.type) {
+    case EntityType::APP: {
+      collect_app_fqn(cache, entity.id, fqns);
+      break;
+    }
+    case EntityType::COMPONENT: {
+      for (const auto & app_id : cache.get_apps_for_component(entity.id)) {
+        collect_app_fqn(cache, app_id, fqns);
+      }
+      break;
+    }
+    case EntityType::AREA: {
+      for (const auto & comp_id : cache.get_components_for_area(entity.id)) {
+        for (const auto & app_id : cache.get_apps_for_component(comp_id)) {
+          collect_app_fqn(cache, app_id, fqns);
+        }
+      }
+      break;
+    }
+    case EntityType::FUNCTION: {
+      auto agg_configs = cache.get_entity_configurations(entity.id);
+      for (const auto & node : agg_configs.nodes) {
+        if (!node.node_fqn.empty()) {
+          fqns.insert(node.node_fqn);
+        }
+      }
+      break;
+    }
+    case EntityType::UNKNOWN:
+      break;
+  }
+  return fqns;
+}
+
 std::vector<std::string> HandlerContext::resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                                const std::vector<std::string> & app_ids) {
   // Order-preserving dedup: two app_ids that resolve to the same effective_fqn

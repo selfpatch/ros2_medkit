@@ -7,6 +7,7 @@ Unreleased
 
 **Fixes:**
 
+* ``GET /api/v1/{entity-path}/faults/{fault_code}`` and ``DELETE /api/v1/{entity-path}/faults/{fault_code}`` no longer leak faults across entities. The previous implementation relied on a prefix match against the entity's ``namespace_path`` and silently disabled the scope filter when the entity had an empty ``namespace_path`` (host-derived / synthetic components, manifest components without a ``namespace`` field, Areas, Functions), exposing - and on ``DELETE``, clearing - faults reported by apps that belonged to entirely different entities. Both handlers now resolve the addressed entity to its hosted-app FQN set and return ``404 Resource Not Found`` when the fault's ``reporting_sources`` does not intersect that set. The underlying ``GetFault.srv`` / ``ClearFault.srv`` contract is unchanged. Any client that previously received a ``200`` / ``204`` for a fault outside an entity's scope will now get a ``404`` (`#395 <https://github.com/selfpatch/ros2_medkit/issues/395>`_)
 * ``GET /api/v1/updates/{id}/status`` no longer returns ``404`` for a registered-but-idle package; ``POST /api/v1/updates`` now seeds a ``pending`` status, so the endpoint returns ``200 {"status": "pending"}`` immediately after registration. ``404`` is reserved for packages that are not registered. Clients that used ``404`` as a signal for "registered but nothing started yet" must adapt (`#378 <https://github.com/selfpatch/ros2_medkit/issues/378>`_)
 
 **Features:**
