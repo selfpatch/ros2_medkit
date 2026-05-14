@@ -32,7 +32,6 @@ import unittest
 
 from ament_index_python.packages import get_package_share_directory
 import launch_testing
-import launch_testing.actions
 import requests
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
@@ -92,14 +91,20 @@ class TestFaultsScopeIsolation(GatewayTestCase):
         )
 
     def test_get_fault_returns_200_on_owning_component(self):
-        """GET on the component that hosts the reporting app must return the fault."""
+        """GET on the component that hosts the reporting app must return the fault.
+
+        @verifies REQ_INTEROP_013
+        """
         data = self.get_json(
             f'/components/{LIDAR_OWNER_COMPONENT}/faults/{LIDAR_FAULT_CODE}'
         )
         self.assertEqual(data.get('item', {}).get('code'), LIDAR_FAULT_CODE)
 
     def test_clear_fault_returns_404_on_unrelated_component(self):
-        """DELETE on a different component must not clear another entity's fault."""
+        """DELETE on a different component must not clear another entity's fault.
+
+        @verifies REQ_INTEROP_015
+        """
         response = requests.delete(
             f'{self.BASE_URL}/components/{OTHER_COMPONENT}/faults/{LIDAR_FAULT_CODE}',
             timeout=10,
@@ -115,6 +120,26 @@ class TestFaultsScopeIsolation(GatewayTestCase):
         self.assertIn(
             LIDAR_FAULT_CODE, codes,
             'Unrelated DELETE must not clear faults outside its scope',
+        )
+
+    def test_zzz_clear_fault_returns_204_on_owning_component(self):
+        """DELETE on the owning component clears the fault.
+
+        Named `_zzz_` so unittest's alphabetic ordering runs this last - it is
+        destructive (clears the lidar fault from the global FaultManager). The
+        lidar_sensor demo re-reports LIDAR_RANGE_INVALID continuously, so this
+        does not break other test runs, but in-suite siblings rely on the fault
+        being present via the setUp `wait_for_fault` poll.
+
+        @verifies REQ_INTEROP_015
+        """
+        response = requests.delete(
+            f'{self.BASE_URL}/components/{LIDAR_OWNER_COMPONENT}/faults/{LIDAR_FAULT_CODE}',
+            timeout=10,
+        )
+        self.assertEqual(
+            response.status_code, 204,
+            f'Expected 204, got {response.status_code} body={response.text}',
         )
 
 

@@ -1339,6 +1339,43 @@ TEST(ResolveEntitySourceFqnsTest, AppsWithEmptyEffectiveFqnAreSkipped) {
   EXPECT_EQ(fqns, std::set<std::string>{"/ns/ok_node"});
 }
 
+TEST(ResolveEntitySourceFqnsTest, FunctionAggregatesHostedAppFqns) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_app_with_binding("nav-planner", "planner", "/perception/nav"),
+      make_app_with_binding("nav-localizer", "localizer", "/perception/nav"),
+      make_app_with_binding("unrelated", "telemetry", "/telemetry"),
+  });
+  Function autonomy;
+  autonomy.id = "autonomous-navigation";
+  autonomy.name = "Autonomous Navigation";
+  autonomy.hosts = {"nav-planner", "nav-localizer"};
+  cache.update_functions({autonomy});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(
+      cache, make_entity_info(EntityType::FUNCTION, "autonomous-navigation"));
+  std::set<std::string> expected{"/perception/nav/planner", "/perception/nav/localizer"};
+  EXPECT_EQ(fqns, expected);
+}
+
+TEST(ResolveEntitySourceFqnsTest, FunctionWithUnboundHostsReturnsOnlyResolvedFqns) {
+  // Function.hosts referencing an app that does not produce an effective_fqn
+  // (no bound_fqn and no ros_binding) must be skipped, not return empty FQNs
+  // - they would prefix-match everything in `fault_in_source_scope` and the
+  // scope check would let any fault through.
+  ThreadSafeEntityCache cache;
+  App unbound;
+  unbound.id = "unbound";
+  cache.update_apps({unbound, make_app_with_binding("planner", "planner", "/perception/nav")});
+  Function f;
+  f.id = "func-x";
+  f.hosts = {"unbound", "planner"};
+  cache.update_functions({f});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "func-x"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/perception/nav/planner"});
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
