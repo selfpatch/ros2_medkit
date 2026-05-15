@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
@@ -34,11 +35,12 @@ namespace ros2_medkit_gateway::ros2 {
 /**
  * @brief rclcpp adapter implementing FaultServiceTransport.
  *
- * Owns the seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances and the
- * seven per-client mutexes that previously lived inside FaultManager. Each
- * mutex serialises one service direction so read operations (list, get) are
- * not blocked by slow write operations (report_fault triggers snapshot
- * capture inside the fault manager node).
+ * Owns seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances scoped to a
+ * dedicated `MutuallyExclusive` callback group, plus a private
+ * `SingleThreadedExecutor` that drives that group. Each RPC blocks on
+ * `executor_.spin_until_future_complete()` so the client's pending-request
+ * cleanup and the response destruction happen on the calling thread instead
+ * of racing with whichever external executor spins the host node.
  *
  * Performs the ros2_medkit_msgs <-> JSON translation internally, returning
  * neutral FaultResult and FaultWithEnvJsonResult structures so the FaultManager
@@ -85,6 +87,15 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
  private:
   rclcpp::Node * node_;
 
+  /// Dedicated callback group for all fault service clients. Created with
+  /// `automatically_add_to_executor_with_node = false` so the host node's
+  /// executor does not spin these clients - we drive them ourselves.
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
+
+  /// Private single-threaded executor that owns `callback_group_` and is
+  /// driven inline via `spin_until_future_complete()` on each RPC.
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_client_;
@@ -96,16 +107,11 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
   double service_timeout_sec_{5.0};
   std::string fault_manager_base_path_{"/fault_manager"};
 
-  /// Per-client mutexes for thread-safe service calls.
-  /// Split by service client so that read operations (list, get) are not blocked
-  /// by slow write operations (report_fault with snapshot capture).
-  mutable std::mutex report_mutex_;
-  mutable std::mutex list_mutex_;
-  mutable std::mutex get_mutex_;
-  mutable std::mutex clear_mutex_;
-  mutable std::mutex snapshots_mutex_;
-  mutable std::mutex rosbag_mutex_;
-  mutable std::mutex list_rosbags_mutex_;
+  /// Serialises access to `executor_`. `SingleThreadedExecutor::spin_until_future_complete()`
+  /// is not safe for concurrent callers on the same executor, so all RPCs take
+  /// this mutex for the duration of the synchronous spin. Replaces the seven
+  /// per-client mutexes that previously gated each method.
+  mutable std::mutex executor_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway::ros2

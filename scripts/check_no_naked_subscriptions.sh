@@ -52,6 +52,7 @@ ALLOWED_LEGACY_FILES=(
   "${FAULT_MANAGER_ROOT}/src/snapshot_capture.cpp"                 # uses LockedSubscriptionGuard (in-place serialisation)
   "${FAULT_MANAGER_ROOT}/include/ros2_medkit_fault_manager/snapshot_capture.hpp"  # comment references the guarded API
   "${FAULT_MANAGER_ROOT}/src/rosbag_capture.cpp"                   # bag-recorder spawns its own node + executor, no shared rcl hash map
+  "${GATEWAY_ROOT}/src/ros2/transports/ros2_fault_service_transport.cpp"  # issue #399: single-threaded callback group at construction for synchronous service-client spin
 )
 
 LEGACY_PATTERN=""
