@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
@@ -34,11 +35,12 @@ namespace ros2_medkit_gateway::ros2 {
 /**
  * @brief rclcpp adapter implementing FaultServiceTransport.
  *
- * Owns the seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances and the
- * seven per-client mutexes that previously lived inside FaultManager. Each
- * mutex serialises one service direction so read operations (list, get) are
- * not blocked by slow write operations (report_fault triggers snapshot
- * capture inside the fault manager node).
+ * Owns seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances created on a
+ * private `rclcpp::Node` plus a private `SingleThreadedExecutor` that drives
+ * that node. Each RPC blocks on `executor_->spin_until_future_complete()`, so
+ * the client's pending-request cleanup and the response destruction both run
+ * on the calling thread instead of racing with whatever executor spins the
+ * host gateway node.
  *
  * Performs the ros2_medkit_msgs <-> JSON translation internally, returning
  * neutral FaultResult and FaultWithEnvJsonResult structures so the FaultManager
@@ -47,8 +49,10 @@ namespace ros2_medkit_gateway::ros2 {
 class Ros2FaultServiceTransport : public FaultServiceTransport {
  public:
   /**
-   * @param node Non-owning ROS node used for client creation and to derive
-   *             the configured fault_manager namespace.
+   * @param node Non-owning ROS node used to read the service timeout
+   *             parameter and to derive the configured fault_manager
+   *             namespace. The service clients themselves live on a private
+   *             node owned by this transport.
    */
   explicit Ros2FaultServiceTransport(rclcpp::Node * node);
 
@@ -85,6 +89,15 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
  private:
   rclcpp::Node * node_;
 
+  /// Private node hosting the fault service clients. Kept off the host node's
+  /// executor so the gateway's MultiThreadedExecutor never processes these
+  /// clients' responses concurrently with our synchronous spin.
+  std::shared_ptr<rclcpp::Node> client_node_;
+
+  /// Private single-threaded executor that drives `client_node_`, spun inline
+  /// via `spin_until_future_complete()` on each RPC.
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_client_;
@@ -96,16 +109,11 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
   double service_timeout_sec_{5.0};
   std::string fault_manager_base_path_{"/fault_manager"};
 
-  /// Per-client mutexes for thread-safe service calls.
-  /// Split by service client so that read operations (list, get) are not blocked
-  /// by slow write operations (report_fault with snapshot capture).
-  mutable std::mutex report_mutex_;
-  mutable std::mutex list_mutex_;
-  mutable std::mutex get_mutex_;
-  mutable std::mutex clear_mutex_;
-  mutable std::mutex snapshots_mutex_;
-  mutable std::mutex rosbag_mutex_;
-  mutable std::mutex list_rosbags_mutex_;
+  /// Serialises access to `executor_`. `SingleThreadedExecutor::spin_until_future_complete()`
+  /// is not safe for concurrent callers on the same executor, so all RPCs take
+  /// this mutex for the duration of the synchronous spin. Replaces the seven
+  /// per-client mutexes that previously gated each method.
+  mutable std::mutex executor_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway::ros2
