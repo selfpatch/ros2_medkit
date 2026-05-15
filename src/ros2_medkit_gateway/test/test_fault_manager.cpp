@@ -168,6 +168,40 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   EXPECT_TRUE(result.data["topics"].contains("/joint_states"));
 }
 
+// Regression guard: Ros2FaultServiceTransport must drive its service clients
+// on its own private executor. The transport's host node (node_) is left
+// unspun here - the mock service runs on a separate node with its own spin
+// thread - so the RPC can only complete if the transport spins its private
+// client node itself.
+TEST_F(FaultManagerTest, GetSnapshotsDrivesPrivateClientWithoutSpinningHostNode) {
+  auto service_node = std::make_shared<rclcpp::Node>("mock_fault_service_node_" + std::to_string(test_counter_++));
+  auto service = service_node->create_service<GetSnapshots>(
+      "/fault_manager/get_snapshots", [](const std::shared_ptr<GetSnapshots::Request> & request,
+                                         const std::shared_ptr<GetSnapshots::Response> & response) {
+        response->success = true;
+        nlohmann::json snapshot_data;
+        snapshot_data["fault_code"] = request->fault_code;
+        response->data = snapshot_data.dump();
+      });
+
+  rclcpp::executors::SingleThreadedExecutor service_executor;
+  service_executor.add_node(service_node);
+  std::thread service_thread([&service_executor]() {
+    service_executor.spin();
+  });
+
+  // node_ is deliberately never spun by this test.
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+  auto result = fault_manager.get_snapshots("SELF_DRIVEN_FAULT");
+
+  service_executor.cancel();
+  service_thread.join();
+
+  EXPECT_TRUE(result.success);
+  EXPECT_TRUE(result.error_message.empty());
+  EXPECT_EQ(result.data["fault_code"], "SELF_DRIVEN_FAULT");
+}
+
 // @verifies REQ_INTEROP_088
 TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
   node_ = std::make_shared<rclcpp::Node>(

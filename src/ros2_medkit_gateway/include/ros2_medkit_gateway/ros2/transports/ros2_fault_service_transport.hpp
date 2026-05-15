@@ -35,12 +35,12 @@ namespace ros2_medkit_gateway::ros2 {
 /**
  * @brief rclcpp adapter implementing FaultServiceTransport.
  *
- * Owns seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances scoped to a
- * dedicated `MutuallyExclusive` callback group, plus a private
- * `SingleThreadedExecutor` that drives that group. Each RPC blocks on
- * `executor_.spin_until_future_complete()` so the client's pending-request
- * cleanup and the response destruction happen on the calling thread instead
- * of racing with whichever external executor spins the host node.
+ * Owns seven `rclcpp::Client<ros2_medkit_msgs::srv::*>` instances created on a
+ * private `rclcpp::Node` plus a private `SingleThreadedExecutor` that drives
+ * that node. Each RPC blocks on `executor_->spin_until_future_complete()`, so
+ * the client's pending-request cleanup and the response destruction both run
+ * on the calling thread instead of racing with whatever executor spins the
+ * host gateway node.
  *
  * Performs the ros2_medkit_msgs <-> JSON translation internally, returning
  * neutral FaultResult and FaultWithEnvJsonResult structures so the FaultManager
@@ -49,8 +49,10 @@ namespace ros2_medkit_gateway::ros2 {
 class Ros2FaultServiceTransport : public FaultServiceTransport {
  public:
   /**
-   * @param node Non-owning ROS node used for client creation and to derive
-   *             the configured fault_manager namespace.
+   * @param node Non-owning ROS node used to read the service timeout
+   *             parameter and to derive the configured fault_manager
+   *             namespace. The service clients themselves live on a private
+   *             node owned by this transport.
    */
   explicit Ros2FaultServiceTransport(rclcpp::Node * node);
 
@@ -87,13 +89,13 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
  private:
   rclcpp::Node * node_;
 
-  /// Dedicated callback group for all fault service clients. Created with
-  /// `automatically_add_to_executor_with_node = false` so the host node's
-  /// executor does not spin these clients - we drive them ourselves.
-  rclcpp::CallbackGroup::SharedPtr callback_group_;
+  /// Private node hosting the fault service clients. Kept off the host node's
+  /// executor so the gateway's MultiThreadedExecutor never processes these
+  /// clients' responses concurrently with our synchronous spin.
+  std::shared_ptr<rclcpp::Node> client_node_;
 
-  /// Private single-threaded executor that owns `callback_group_` and is
-  /// driven inline via `spin_until_future_complete()` on each RPC.
+  /// Private single-threaded executor that drives `client_node_`, spun inline
+  /// via `spin_until_future_complete()` on each RPC.
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
 
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_client_;

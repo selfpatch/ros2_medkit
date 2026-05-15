@@ -34,44 +34,39 @@ Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node
   }
   fault_manager_base_path_ = build_fault_manager_base_path(node_);
 
-  // Dedicated callback group for all fault clients. `false` keeps it out of
-  // the host node's main executor so the production gateway's
-  // MultiThreadedExecutor cannot race with our synchronous spin on the
-  // pending-request cleanup path (see issue #399).
-  callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-
+  // The fault service clients live on a private node driven by a private
+  // executor. The host gateway node's MultiThreadedExecutor therefore never
+  // processes these clients, so the client's pending-request cleanup cannot
+  // race against the calling thread destroying the response shared_ptr - both
+  // happen inline on the caller's thread inside spin_until_future_complete().
+  client_node_ = std::make_shared<rclcpp::Node>(std::string(node_->get_name()) + "_fault_clients");
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
-  executor_->add_callback_group(callback_group_, node_->get_node_base_interface());
+  executor_->add_node(client_node_);
 
-  // Portable across Humble/Jazzy/Rolling - `rclcpp::ServicesQoS` only exists from Iron onwards.
-  const auto service_qos = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_services_default));
-
-  report_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ReportFault>(
-      fault_manager_base_path_ + "/report_fault", service_qos, callback_group_);
-  get_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::GetFault>(fault_manager_base_path_ + "/get_fault",
-                                                                            service_qos, callback_group_);
-  list_faults_client_ = node_->create_client<ros2_medkit_msgs::srv::ListFaults>(
-      fault_manager_base_path_ + "/list_faults", service_qos, callback_group_);
-  clear_fault_client_ = node_->create_client<ros2_medkit_msgs::srv::ClearFault>(
-      fault_manager_base_path_ + "/clear_fault", service_qos, callback_group_);
-  get_snapshots_client_ = node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>(
-      fault_manager_base_path_ + "/get_snapshots", service_qos, callback_group_);
-  get_rosbag_client_ = node_->create_client<ros2_medkit_msgs::srv::GetRosbag>(fault_manager_base_path_ + "/get_rosbag",
-                                                                              service_qos, callback_group_);
-  list_rosbags_client_ = node_->create_client<ros2_medkit_msgs::srv::ListRosbags>(
-      fault_manager_base_path_ + "/list_rosbags", service_qos, callback_group_);
+  report_fault_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::ReportFault>(fault_manager_base_path_ + "/report_fault");
+  get_fault_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::GetFault>(fault_manager_base_path_ + "/get_fault");
+  list_faults_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::ListFaults>(fault_manager_base_path_ + "/list_faults");
+  clear_fault_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::ClearFault>(fault_manager_base_path_ + "/clear_fault");
+  get_snapshots_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::GetSnapshots>(fault_manager_base_path_ + "/get_snapshots");
+  get_rosbag_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::GetRosbag>(fault_manager_base_path_ + "/get_rosbag");
+  list_rosbags_client_ =
+      client_node_->create_client<ros2_medkit_msgs::srv::ListRosbags>(fault_manager_base_path_ + "/list_rosbags");
 
   RCLCPP_INFO(node_->get_logger(), "Ros2FaultServiceTransport initialized (base_path=%s, timeout=%.1fs)",
               fault_manager_base_path_.c_str(), service_timeout_sec_);
 }
 
 Ros2FaultServiceTransport::~Ros2FaultServiceTransport() {
-  // Tear down under the executor mutex so any in-flight RPC sees a consistent
-  // view, then drop the executor before the clients/callback group so it can
-  // unregister cleanly while the underlying entities still exist.
+  // Tear down under the executor mutex so any in-flight RPC has finished. Drop
+  // the clients first, then the executor, then the node, so the executor never
+  // references a freed node.
   std::lock_guard<std::mutex> lock(executor_mutex_);
-
-  executor_.reset();
 
   report_fault_client_.reset();
   get_fault_client_.reset();
@@ -81,7 +76,8 @@ Ros2FaultServiceTransport::~Ros2FaultServiceTransport() {
   get_rosbag_client_.reset();
   list_rosbags_client_.reset();
 
-  callback_group_.reset();
+  executor_.reset();
+  client_node_.reset();
 }
 
 bool Ros2FaultServiceTransport::wait_for_services(std::chrono::duration<double> timeout) {
@@ -97,13 +93,7 @@ bool Ros2FaultServiceTransport::is_available() const {
 FaultResult Ros2FaultServiceTransport::report_fault(const std::string & fault_code, uint8_t severity,
                                                     const std::string & description, const std::string & source_id) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!report_fault_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "ReportFault service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
   request->fault_code = fault_code;
@@ -112,16 +102,23 @@ FaultResult Ros2FaultServiceTransport::report_fault(const std::string & fault_co
   request->description = description;
   request->source_id = source_id;
 
-  std::lock_guard<std::mutex> lock(executor_mutex_);
-  auto future = report_fault_client_->async_send_request(request);
-
-  if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
-    result.success = false;
-    result.error_message = "ReportFault service call timed out";
-    return result;
+  ros2_medkit_msgs::srv::ReportFault::Response::SharedPtr response;
+  {
+    std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!report_fault_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "ReportFault service not available";
+      return result;
+    }
+    auto future = report_fault_client_->async_send_request(request);
+    if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
+      result.success = false;
+      result.error_message = "ReportFault service call timed out";
+      return result;
+    }
+    response = future.get();
   }
 
-  auto response = future.get();
   result.success = response->accepted;
   result.data = {{"accepted", response->accepted}};
   if (!response->accepted) {
@@ -135,13 +132,7 @@ FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id
                                                    bool include_confirmed, bool include_cleared, bool include_healed,
                                                    bool include_muted, bool include_clusters) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!list_faults_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "ListFaults service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ListFaults::Request>();
   request->filter_by_severity = false;
@@ -164,17 +155,20 @@ FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id
   request->include_muted = include_muted;
   request->include_clusters = include_clusters;
 
-  std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> response;
+  ros2_medkit_msgs::srv::ListFaults::Response::SharedPtr response;
   {
     std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!list_faults_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "ListFaults service not available";
+      return result;
+    }
     auto future = list_faults_client_->async_send_request(request);
-
     if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
       result.success = false;
       result.error_message = "ListFaults service call timed out";
       return result;
     }
-
     response = future.get();
   }
 
@@ -240,28 +234,25 @@ FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id
 FaultWithEnvJsonResult Ros2FaultServiceTransport::get_fault_with_env(const std::string & fault_code,
                                                                      const std::string & source_id) {
   FaultWithEnvJsonResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!get_fault_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "GetFault service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
   request->fault_code = fault_code;
 
-  std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> response;
+  ros2_medkit_msgs::srv::GetFault::Response::SharedPtr response;
   {
     std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!get_fault_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "GetFault service not available";
+      return result;
+    }
     auto future = get_fault_client_->async_send_request(request);
-
     if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
       result.success = false;
       result.error_message = "GetFault service call timed out";
       return result;
     }
-
     response = future.get();
   }
 
@@ -310,27 +301,28 @@ FaultResult Ros2FaultServiceTransport::get_fault(const std::string & fault_code,
 
 FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!clear_fault_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "ClearFault service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
 
-  std::lock_guard<std::mutex> lock(executor_mutex_);
-  auto future = clear_fault_client_->async_send_request(request);
-
-  if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
-    result.success = false;
-    result.error_message = "ClearFault service call timed out";
-    return result;
+  ros2_medkit_msgs::srv::ClearFault::Response::SharedPtr response;
+  {
+    std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!clear_fault_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "ClearFault service not available";
+      return result;
+    }
+    auto future = clear_fault_client_->async_send_request(request);
+    if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
+      result.success = false;
+      result.error_message = "ClearFault service call timed out";
+      return result;
+    }
+    response = future.get();
   }
 
-  auto response = future.get();
   result.success = response->success;
   result.data = {{"success", response->success}, {"message", response->message}};
   if (!response->success) {
@@ -346,29 +338,26 @@ FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_cod
 
 FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_code, const std::string & topic) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!get_snapshots_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "GetSnapshots service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetSnapshots::Request>();
   request->fault_code = fault_code;
   request->topic = topic;
 
-  std::shared_ptr<ros2_medkit_msgs::srv::GetSnapshots::Response> response;
+  ros2_medkit_msgs::srv::GetSnapshots::Response::SharedPtr response;
   {
     std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!get_snapshots_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "GetSnapshots service not available";
+      return result;
+    }
     auto future = get_snapshots_client_->async_send_request(request);
-
     if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
       result.success = false;
       result.error_message = "GetSnapshots service call timed out";
       return result;
     }
-
     response = future.get();
   }
 
@@ -393,28 +382,25 @@ FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_c
 
 FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & fault_code) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!get_rosbag_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "GetRosbag service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbag::Request>();
   request->fault_code = fault_code;
 
-  std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> response;
+  ros2_medkit_msgs::srv::GetRosbag::Response::SharedPtr response;
   {
     std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!get_rosbag_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "GetRosbag service not available";
+      return result;
+    }
     auto future = get_rosbag_client_->async_send_request(request);
-
     if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
       result.success = false;
       result.error_message = "GetRosbag service call timed out";
       return result;
     }
-
     response = future.get();
   }
 
@@ -434,28 +420,25 @@ FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & fault_code
 
 FaultResult Ros2FaultServiceTransport::list_rosbags(const std::string & entity_fqn) {
   FaultResult result;
-
-  auto timeout = std::chrono::duration<double>(service_timeout_sec_);
-  if (!list_rosbags_client_->wait_for_service(timeout)) {
-    result.success = false;
-    result.error_message = "ListRosbags service not available";
-    return result;
-  }
+  const auto timeout = std::chrono::duration<double>(service_timeout_sec_);
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ListRosbags::Request>();
   request->entity_fqn = entity_fqn;
 
-  std::shared_ptr<ros2_medkit_msgs::srv::ListRosbags::Response> response;
+  ros2_medkit_msgs::srv::ListRosbags::Response::SharedPtr response;
   {
     std::lock_guard<std::mutex> lock(executor_mutex_);
+    if (!list_rosbags_client_->wait_for_service(timeout)) {
+      result.success = false;
+      result.error_message = "ListRosbags service not available";
+      return result;
+    }
     auto future = list_rosbags_client_->async_send_request(request);
-
     if (executor_->spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS) {
       result.success = false;
       result.error_message = "ListRosbags service call timed out";
       return result;
     }
-
     response = future.get();
   }
 
