@@ -635,6 +635,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)
   target_link_libraries(test_x_medkit gateway_ros2)
 
+  # DTO contract core (pure C++17, no ROS node)
+  ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
+  target_link_libraries(test_dto_contract gateway_core)
+
   # Add rate limiter tests
   ament_add_gtest(test_rate_limiter test/test_rate_limiter.cpp)
   target_link_libraries(test_rate_limiter gateway_ros2)
