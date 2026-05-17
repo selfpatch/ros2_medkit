@@ -19,6 +19,7 @@
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 
@@ -93,4 +94,35 @@ TEST(JsonWriter, WritesPresentOptional) {
   Sample s{"area_1", std::string{"hello"}};
   const auto j = dto::JsonWriter<Sample>::write(s);
   EXPECT_EQ(j.at("note"), "hello");
+}
+
+TEST(JsonReader, DecodesValidObject) {
+  const auto j = nlohmann::json{{"id", "x"}, {"note", "n"}};
+  const auto result = dto::JsonReader<Sample>::read(j);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->id, "x");
+  ASSERT_TRUE(result->note.has_value());
+  EXPECT_EQ(*result->note, "n");
+}
+
+TEST(JsonReader, ReportsMissingRequiredField) {
+  const auto j = nlohmann::json{{"note", "n"}};
+  const auto result = dto::JsonReader<Sample>::read(j);
+  ASSERT_FALSE(result.has_value());
+  ASSERT_EQ(result.error().size(), 1u);
+  EXPECT_EQ(result.error()[0].field, "id");
+}
+
+TEST(JsonReader, ReportsWrongType) {
+  const auto j = nlohmann::json{{"id", 123}};
+  const auto result = dto::JsonReader<Sample>::read(j);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error()[0].field, "id");
+}
+
+TEST(JsonReader, IgnoresUnknownFields) {
+  const auto j = nlohmann::json{{"id", "x"}, {"bogus", 1}};
+  const auto result = dto::JsonReader<Sample>::read(j);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->id, "x");
 }
