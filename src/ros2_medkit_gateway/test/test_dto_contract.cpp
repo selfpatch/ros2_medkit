@@ -19,6 +19,7 @@
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 
 namespace dto = ros2_medkit_gateway::dto;
@@ -79,4 +80,17 @@ TEST(SchemaWriter, RequiredListExcludesOptionalFields) {
   const auto & req = schema.at("required");
   EXPECT_NE(std::find(req.begin(), req.end(), "id"), req.end());
   EXPECT_EQ(std::find(req.begin(), req.end(), "note"), req.end());
+}
+
+TEST(JsonWriter, WritesRequiredFieldsAndSkipsEmptyOptional) {
+  Sample s{"area_1", std::nullopt};
+  const auto j = dto::JsonWriter<Sample>::write(s);
+  EXPECT_EQ(j.at("id"), "area_1");
+  EXPECT_FALSE(j.contains("note"));
+}
+
+TEST(JsonWriter, WritesPresentOptional) {
+  Sample s{"area_1", std::string{"hello"}};
+  const auto j = dto::JsonWriter<Sample>::write(s);
+  EXPECT_EQ(j.at("note"), "hello");
 }
