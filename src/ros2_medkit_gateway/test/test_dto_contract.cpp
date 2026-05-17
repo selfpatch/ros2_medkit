@@ -19,6 +19,7 @@
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/schema_writer.hpp"
 
 namespace dto = ros2_medkit_gateway::dto;
 
@@ -63,4 +64,19 @@ TEST(DtoContract, FieldEnumPopulatesVocabularyAndDtoName) {
   EXPECT_EQ(f.enum_count, 2u);
   EXPECT_EQ(f.enum_values[0], "red");
   EXPECT_EQ(dto::dto_name<Sample>, "Sample");
+}
+
+TEST(SchemaWriter, BuildsObjectSchemaWithProperties) {
+  const auto schema = dto::SchemaWriter<Sample>::schema();
+  EXPECT_EQ(schema.at("type"), "object");
+  EXPECT_TRUE(schema.at("properties").contains("id"));
+  EXPECT_TRUE(schema.at("properties").contains("note"));
+  EXPECT_EQ(schema.at("properties").at("id").at("type"), "string");
+}
+
+TEST(SchemaWriter, RequiredListExcludesOptionalFields) {
+  const auto schema = dto::SchemaWriter<Sample>::schema();
+  const auto & req = schema.at("required");
+  EXPECT_NE(std::find(req.begin(), req.end(), "id"), req.end());
+  EXPECT_EQ(std::find(req.begin(), req.end(), "note"), req.end());
 }
