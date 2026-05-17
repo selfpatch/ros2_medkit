@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/sample.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 
 namespace dto = ros2_medkit_gateway::dto;
@@ -31,6 +32,12 @@ struct Sample {
   std::optional<std::string> note;
 };
 inline constexpr std::string_view kSampleColors[] = {"red", "green"};
+
+struct ScalarSample {
+  std::string id;
+  bool active;
+  int count;
+};
 }  // namespace
 
 template <>
@@ -39,6 +46,14 @@ inline constexpr auto dto::dto_fields<Sample> =
 
 template <>
 inline constexpr std::string_view dto::dto_name<Sample> = "Sample";
+
+template <>
+inline constexpr auto dto::dto_fields<ScalarSample> =
+    std::make_tuple(dto::field("id", &ScalarSample::id), dto::field("active", &ScalarSample::active),
+                    dto::field("count", &ScalarSample::count));
+
+template <>
+inline constexpr std::string_view dto::dto_name<ScalarSample> = "ScalarSample";
 
 TEST(DtoContract, FieldFactoryDerivesPresenceFromOptional) {
   constexpr auto fields = dto::dto_fields<Sample>;
@@ -125,4 +140,31 @@ TEST(JsonReader, IgnoresUnknownFields) {
   const auto result = dto::JsonReader<Sample>::read(j);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->id, "x");
+}
+
+TEST(DtoSample, RoundTripsThroughWriterAndReader) {
+  const Sample s = dto::make_sample<Sample>();
+  const auto j = dto::JsonWriter<Sample>::write(s);
+  const auto back = dto::JsonReader<Sample>::read(j);
+  ASSERT_TRUE(back.has_value());
+  EXPECT_EQ(back->id, s.id);
+}
+
+TEST(DtoSample, SampleContainsEveryRequiredSchemaKey) {
+  const Sample s = dto::make_sample<Sample>();
+  const auto j = dto::JsonWriter<Sample>::write(s);
+  const auto schema = dto::SchemaWriter<Sample>::schema();
+  for (const auto & req : schema.at("required")) {
+    EXPECT_TRUE(j.contains(req.get<std::string>())) << req;
+  }
+}
+
+TEST(DtoSample, SynthesizesScalarMembers) {
+  const ScalarSample s = dto::make_sample<ScalarSample>();
+  const auto j = dto::JsonWriter<ScalarSample>::write(s);
+  const auto back = dto::JsonReader<ScalarSample>::read(j);
+  ASSERT_TRUE(back.has_value());
+  EXPECT_EQ(back->id, s.id);
+  EXPECT_EQ(back->active, s.active);
+  EXPECT_EQ(back->count, s.count);
 }
