@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/sample.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 
@@ -167,4 +168,9 @@ TEST(DtoSample, SynthesizesScalarMembers) {
   EXPECT_EQ(back->id, s.id);
   EXPECT_EQ(back->active, s.active);
   EXPECT_EQ(back->count, s.count);
+}
+
+TEST(DtoRegistry, CollectsNamedSchemas) {
+  const auto schemas = dto::collect_component_schemas();
+  EXPECT_TRUE(schemas.is_object());
 }
