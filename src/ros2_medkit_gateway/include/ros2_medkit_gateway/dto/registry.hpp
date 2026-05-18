@@ -19,6 +19,7 @@
 #include <tuple>
 #include <utility>
 
+#include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
@@ -57,7 +58,9 @@ using AllDtos =
                Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest,
                // Cyclic subscription domain DTOs
                CyclicSubscription, Collection<CyclicSubscription>, CyclicSubscriptionCreateRequest,
-               CyclicSubscriptionUpdateRequest>;
+               CyclicSubscriptionUpdateRequest,
+               // Bulk-data domain DTOs
+               BulkDataCategoryList, BulkDataDescriptor, Collection<BulkDataDescriptor>>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
