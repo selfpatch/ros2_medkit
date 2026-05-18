@@ -53,15 +53,6 @@ class SchemaBuilder {
   /// Wrap an item schema in a SOVD collection response: {"items": [item_schema]}
   static nlohmann::json items_wrapper(const nlohmann::json & item_schema);
 
-  /// Log entry schema
-  static nlohmann::json log_entry_schema();
-
-  /// Log entry list response schema. Wraps `items` and declares the
-  /// `x-medkit` aggregation metadata that LogHandlers::handle_get_logs
-  /// emits on FUNCTION / AREA / COMPONENT responses (aggregation_level,
-  /// aggregated, app_count, host_count, component_count, aggregation_sources).
-  static nlohmann::json log_entry_list_schema();
-
   /// Health endpoint response schema
   static nlohmann::json health_schema();
 
@@ -91,9 +82,6 @@ class SchemaBuilder {
 
   /// Software update status schema
   static nlohmann::json update_status_schema();
-
-  /// Log configuration schema (GET/PUT)
-  static nlohmann::json log_configuration_schema();
 
   /// Script control request schema (PUT /scripts/{id}/executions/{id})
   static nlohmann::json script_control_request_schema();

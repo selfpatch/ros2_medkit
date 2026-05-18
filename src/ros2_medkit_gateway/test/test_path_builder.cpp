@@ -362,14 +362,12 @@ TEST_F(PathBuilderTest, LogsHasLevelQueryParam) {
   EXPECT_TRUE(has_level);
 }
 
-TEST_F(PathBuilderTest, LogsReturnsLogEntryItems) {
+TEST_F(PathBuilderTest, LogsReturnsLogEntryListRef) {
+  // After DTO migration build_logs_collection emits a $ref to LogEntryList.
   auto result = path_builder_.build_logs_collection("apps/sensor");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_TRUE(item_schema["properties"].contains("timestamp"));
-  EXPECT_TRUE(item_schema["properties"].contains("severity"));
-  EXPECT_TRUE(item_schema["properties"].contains("message"));
-  EXPECT_TRUE(item_schema["properties"].contains("context"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/LogEntryList");
 }
 
 // =============================================================================

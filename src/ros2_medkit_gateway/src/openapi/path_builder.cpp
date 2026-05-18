@@ -423,8 +423,7 @@ nlohmann::json PathBuilder::build_logs_collection(const std::string & entity_pat
 
   get_op["parameters"] = std::move(params);
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::log_entry_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("LogEntryList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
