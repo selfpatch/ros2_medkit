@@ -58,20 +58,27 @@ inline constexpr std::string_view dto_name<XMedkitRos2> = "XMedkitRos2";
 // XMedkitArea - x-medkit payload for Area entities.
 //
 // Populated by handle_get_area / handle_list_areas:
-//   ros2.namespace  <- area.namespace_path
-//   parent_area_id  <- area.parent_area_id  (detail only, via ext.add())
-//   contributors    <- area.contributors    (detail only)
+//   ros2.namespace       <- area.namespace_path
+//   parent_area_id       <- area.parent_area_id  (detail only, via ext.add())
+//   contributors         <- area.contributors    (detail only)
+//
+// Also used in sub-collection responses (handle_app_belongs_to):
+//   missing              <- true when area reference cannot be resolved
+//   unresolved_component <- component_id that could not be resolved (belongs-to only)
 // ---------------------------------------------------------------------------
 struct XMedkitArea {
   std::optional<XMedkitRos2> ros2;
   std::optional<std::string> parent_area_id;
   std::optional<std::vector<std::string>> contributors;
+  std::optional<bool> missing;                      // broken reference sentinel
+  std::optional<std::string> unresolved_component;  // belongs-to: unresolvable parent component id
 };
 
 template <>
 inline constexpr auto dto_fields<XMedkitArea> =
     std::make_tuple(field("ros2", &XMedkitArea::ros2), field("parent_area_id", &XMedkitArea::parent_area_id),
-                    field("contributors", &XMedkitArea::contributors));
+                    field("contributors", &XMedkitArea::contributors), field("missing", &XMedkitArea::missing),
+                    field("unresolved_component", &XMedkitArea::unresolved_component));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitArea> = "XMedkitArea";
@@ -92,6 +99,9 @@ inline constexpr std::string_view dto_name<XMedkitArea> = "XMedkitArea";
 //   contributors      <- comp.contributors
 //   capabilities      <- capabilities JSON array (via ext.add())
 //
+// Also used in sub-collection responses (depends-on, subcomponents, hosts, contains, etc.):
+//   missing           <- true when component reference cannot be resolved
+//
 // Note: "parentComponentId" uses camelCase on the wire per discovery_handlers.cpp.
 // "dependsOn" uses camelCase on the wire per discovery_handlers.cpp.
 // ---------------------------------------------------------------------------
@@ -106,6 +116,7 @@ struct XMedkitComponent {
   std::optional<std::string> description;
   std::optional<std::vector<std::string>> contributors;
   std::optional<nlohmann::json> capabilities;  // free-form JSON array
+  std::optional<bool> missing;                 // broken reference sentinel
 };
 
 template <>
@@ -114,7 +125,8 @@ inline constexpr auto dto_fields<XMedkitComponent> = std::make_tuple(
     field("type", &XMedkitComponent::type), field("parentComponentId", &XMedkitComponent::parent_component_id),
     field("dependsOn", &XMedkitComponent::depends_on), field("area", &XMedkitComponent::area),
     field("variant", &XMedkitComponent::variant), field("description", &XMedkitComponent::description),
-    field("contributors", &XMedkitComponent::contributors), field("capabilities", &XMedkitComponent::capabilities));
+    field("contributors", &XMedkitComponent::contributors), field("capabilities", &XMedkitComponent::capabilities),
+    field("missing", &XMedkitComponent::missing));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent";
@@ -128,6 +140,9 @@ inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent
 //   ros2.node     <- app.bound_fqn
 //   component_id  <- app.component_id
 //   contributors  <- app.contributors  (detail only)
+//
+// Also used in sub-collection responses (depends-on, hosts, function-hosts):
+//   missing       <- true when app reference cannot be resolved
 // ---------------------------------------------------------------------------
 struct XMedkitApp {
   std::optional<XMedkitRos2> ros2;
@@ -135,13 +150,14 @@ struct XMedkitApp {
   std::optional<bool> is_online;
   std::optional<std::string> component_id;
   std::optional<std::vector<std::string>> contributors;
+  std::optional<bool> missing;  // broken reference sentinel
 };
 
 template <>
 inline constexpr auto dto_fields<XMedkitApp> =
     std::make_tuple(field("ros2", &XMedkitApp::ros2), field("source", &XMedkitApp::source),
                     field("is_online", &XMedkitApp::is_online), field("component_id", &XMedkitApp::component_id),
-                    field("contributors", &XMedkitApp::contributors));
+                    field("contributors", &XMedkitApp::contributors), field("missing", &XMedkitApp::missing));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitApp> = "XMedkitApp";

@@ -372,15 +372,19 @@ inline constexpr std::string_view dto_name<FunctionDetail> = "FunctionDetail";
 
 /// Generic collection wrapper used for every entity list response.
 /// The "items" array element type T is one of the *ListItem DTOs above.
+/// The optional "links" member carries the free-form "_links" object emitted
+/// by sub-collection handlers (subareas, contains, hosts, depends-on, etc.).
 template <class T>
 struct Collection {
   std::vector<T> items;
   std::optional<XMedkitCollection> x_medkit;  // wire key: "x-medkit"
+  std::optional<nlohmann::json> links;        // wire key: "_links"
 };
 
 template <class T>
 inline constexpr auto dto_fields<Collection<T>> =
-    std::make_tuple(field("items", &Collection<T>::items), field("x-medkit", &Collection<T>::x_medkit));
+    std::make_tuple(field("items", &Collection<T>::items), field("x-medkit", &Collection<T>::x_medkit),
+                    field("_links", &Collection<T>::links));
 
 // dto_name per concrete instantiation (no runtime string concatenation):
 template <>
