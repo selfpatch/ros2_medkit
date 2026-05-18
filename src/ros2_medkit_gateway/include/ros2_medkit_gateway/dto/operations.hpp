@@ -177,7 +177,7 @@ struct ExecutionUpdateRequest {
 
 template <>
 inline constexpr auto dto_fields<ExecutionUpdateRequest> =
-    std::make_tuple(field_enum("capability", &ExecutionUpdateRequest::capability, kExecutionCapabilityValues));
+    std::make_tuple(field("capability", &ExecutionUpdateRequest::capability));
 
 template <>
 inline constexpr std::string_view dto_name<ExecutionUpdateRequest> = "ExecutionUpdateRequest";

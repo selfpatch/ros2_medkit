@@ -544,8 +544,8 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionMissingCapabilityReturns400)
 
   handlers_->handle_update_execution(req, res);
 
-  // parse_body<ExecutionUpdateRequest> validates the required 'capability' field
-  // and returns ERR_INVALID_REQUEST on missing/invalid fields.
+  // parse_body<ExecutionUpdateRequest> requires the 'capability' field and
+  // returns ERR_INVALID_REQUEST when it is absent.
   EXPECT_EQ(res.status, 400);
   auto body = parse_json(res);
   EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
