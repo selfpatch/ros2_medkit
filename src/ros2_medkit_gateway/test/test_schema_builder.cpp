@@ -641,6 +641,9 @@ TEST(SchemaBuilderStaticTest, DataWriteRequestSchemaComesFromDto) {
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchemaComesFromDto) {
   // ExecutionUpdateRequest is now generated from the DTO; verify via component_schemas().
+  // capability is a plain string field (no enum constraint) so that custom
+  // x-vendor-* capabilities pass parse_body and reach the handler's own
+  // validation logic.
   const auto & schemas = SchemaBuilder::component_schemas();
   ASSERT_TRUE(schemas.count("ExecutionUpdateRequest") > 0);
   const auto & schema = schemas.at("ExecutionUpdateRequest");
@@ -648,10 +651,7 @@ TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchemaComesFromDto) {
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("capability"));
   EXPECT_EQ(schema["properties"]["capability"]["type"], "string");
-  ASSERT_TRUE(schema["properties"]["capability"].contains("enum"));
-  auto enum_vals = schema["properties"]["capability"]["enum"].get<std::vector<std::string>>();
-  EXPECT_EQ(enum_vals.size(), 4u);
-  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "stop"), enum_vals.end());
+  EXPECT_FALSE(schema["properties"]["capability"].contains("enum"));
 
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
