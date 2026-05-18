@@ -53,120 +53,6 @@ nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) 
           {"required", {"items"}}};
 }
 
-nlohmann::json SchemaBuilder::health_schema() {
-  nlohmann::json linking_schema = {{"type", "object"},
-                                   {"properties",
-                                    {{"linked_count", {{"type", "integer"}}},
-                                     {"orphan_count", {{"type", "integer"}}},
-                                     {"binding_conflicts", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                                     {"warnings", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
-
-  nlohmann::json discovery_schema = {{"type", "object"},
-                                     {"properties",
-                                      {{"mode", {{"type", "string"}}},
-                                       {"strategy", {{"type", "string"}}},
-                                       {"pipeline", {{"type", "object"}}},
-                                       {"linking", linking_schema}}},
-                                     {"description", "Discovery subsystem status"}};
-
-  nlohmann::json peer_status_schema = {{"type", "object"}, {"additionalProperties", true}};
-
-  nlohmann::json aggregation_warning_schema = {
-      {"type", "object"},
-      {"description",
-       "Operator-actionable aggregation warning. Codes are documented in "
-       "docs/api/warning_codes.rst and stable across releases."},
-      {"properties",
-       {{"code",
-         {{"type", "string"}, {"description", "Stable machine-readable identifier, e.g. 'leaf_id_collision'."}}},
-        {"message", {{"type", "string"}, {"description", "Human-readable description including remediation hints."}}},
-        {"entity_ids",
-         {{"type", "array"},
-          {"items", {{"type", "string"}}},
-          {"description", "SOVD entity IDs affected by the warning."}}},
-        {"peer_names",
-         {{"type", "array"},
-          {"items", {{"type", "string"}}},
-          {"description", "Aggregation peers involved in the anomaly."}}}}},
-      {"required", {"code", "message", "entity_ids", "peer_names"}}};
-
-  return {
-      {"type", "object"},
-      {"properties",
-       {{"status", {{"type", "string"}}},
-        {"timestamp", {{"type", "integer"}}},
-        {"discovery", discovery_schema},
-        {"peers",
-         {{"type", "array"},
-          {"items", peer_status_schema},
-          {"description", "Aggregation peer status (x-medkit extension; present only when aggregation is enabled)."}}},
-        {"warnings",
-         {{"type", "array"},
-          {"items", aggregation_warning_schema},
-          {"description",
-           "Operator-actionable aggregation warnings (x-medkit extension; always an array when "
-           "aggregation is enabled, empty when there are no active warnings)."}}}}},
-      {"required", {"status"}}};
-}
-
-nlohmann::json SchemaBuilder::version_info_schema() {
-  nlohmann::json vendor_info_schema = {
-      {"type", "object"},
-      {"properties", {{"version", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
-      {"required", {"version", "name"}}};
-
-  nlohmann::json info_entry_schema = {
-      {"type", "object"},
-      {"properties",
-       {{"version", {{"type", "string"}}}, {"base_uri", {{"type", "string"}}}, {"vendor_info", vendor_info_schema}}},
-      {"required", {"version", "base_uri"}}};
-
-  return {{"type", "object"},
-          {"properties", {{"items", {{"type", "array"}, {"items", info_entry_schema}}}}},
-          {"required", {"items"}}};
-}
-
-nlohmann::json SchemaBuilder::root_overview_schema() {
-  nlohmann::json capabilities_schema = {{"type", "object"},
-                                        {"properties",
-                                         {{"discovery", {{"type", "boolean"}}},
-                                          {"data_access", {{"type", "boolean"}}},
-                                          {"operations", {{"type", "boolean"}}},
-                                          {"async_actions", {{"type", "boolean"}}},
-                                          {"configurations", {{"type", "boolean"}}},
-                                          {"faults", {{"type", "boolean"}}},
-                                          {"logs", {{"type", "boolean"}}},
-                                          {"bulk_data", {{"type", "boolean"}}},
-                                          {"cyclic_subscriptions", {{"type", "boolean"}}},
-                                          {"locking", {{"type", "boolean"}}},
-                                          {"triggers", {{"type", "boolean"}}},
-                                          {"updates", {{"type", "boolean"}}},
-                                          {"authentication", {{"type", "boolean"}}},
-                                          {"tls", {{"type", "boolean"}}},
-                                          {"scripts", {{"type", "boolean"}}},
-                                          {"vendor_extensions", {{"type", "boolean"}}}}}};
-
-  nlohmann::json auth_schema = {{"type", "object"},
-                                {"properties",
-                                 {{"enabled", {{"type", "boolean"}}},
-                                  {"algorithm", {{"type", "string"}}},
-                                  {"require_auth_for", {{"type", "string"}}}}}};
-
-  nlohmann::json tls_schema = {
-      {"type", "object"}, {"properties", {{"enabled", {{"type", "boolean"}}}, {"min_version", {{"type", "string"}}}}}};
-
-  return {{"type", "object"},
-          {"properties",
-           {{"name", {{"type", "string"}}},
-            {"version", {{"type", "string"}}},
-            {"api_base", {{"type", "string"}}},
-            {"endpoints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-            {"capabilities", capabilities_schema},
-            {"auth", auth_schema},
-            {"tls", tls_schema}}},
-          {"required", {"name", "version", "api_base", "endpoints", "capabilities"}}};
-}
-
 nlohmann::json SchemaBuilder::generic_object_schema() {
   return {{"type", "object"}};
 }
@@ -192,10 +78,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"GenericError", generic_error()},
         // Logs - LogEntry, LogEntryList, LogConfiguration, LogContext, LogListXMedkit
         // now come from DTO (dto/logs.hpp).
-        // Server
-        {"HealthStatus", health_schema()},
-        {"VersionInfo", version_info_schema()},
-        {"RootOverview", root_overview_schema()},
+        // Health / Root - HealthStatus, VersionInfo, RootOverview and sub-DTOs
+        // now come from DTO (dto/health.hpp).
         // Operations - OperationItem, OperationDetail, OperationExecution,
         // ExecutionUpdateRequest now come from DTO (dto/operations.hpp).
         // OperationExecutionList is kept here as a thin wrapper over the DTO type.

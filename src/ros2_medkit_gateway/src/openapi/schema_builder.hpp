@@ -53,15 +53,6 @@ class SchemaBuilder {
   /// Wrap an item schema in a SOVD collection response: {"items": [item_schema]}
   static nlohmann::json items_wrapper(const nlohmann::json & item_schema);
 
-  /// Health endpoint response schema
-  static nlohmann::json health_schema();
-
-  /// Version-info endpoint response schema (SOVD 7.4.1)
-  static nlohmann::json version_info_schema();
-
-  /// API root overview response schema (GET /)
-  static nlohmann::json root_overview_schema();
-
   /// Generic object schema (for dynamic ROS 2 message payloads)
   static nlohmann::json generic_object_schema();
 

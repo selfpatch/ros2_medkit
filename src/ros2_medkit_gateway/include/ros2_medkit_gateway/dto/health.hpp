@@ -33,13 +33,16 @@ namespace dto {
 // Wire shape (from health_handlers.cpp handle_health):
 //   linked_count      - number of runtime nodes linked to manifest apps (integer)
 //   orphan_count      - number of unlinked runtime nodes (integer)
-//   binding_conflicts - list of conflict description strings (array of strings)
-//   warnings          - optional list of warning strings
+//   binding_conflicts - number of binding conflict events (integer)
+//                       NOTE: the old health_schema() declared this as
+//                       array<string>, but the handler always emitted size_t.
+//                       The DTO matches the actual wire format.
+//   warnings          - optional list of diagnostic warning strings
 // =============================================================================
 struct HealthDiscoveryLinking {
   int64_t linked_count{0};
   int64_t orphan_count{0};
-  std::vector<std::string> binding_conflicts;
+  int64_t binding_conflicts{0};
   std::optional<std::vector<std::string>> warnings;
 };
 

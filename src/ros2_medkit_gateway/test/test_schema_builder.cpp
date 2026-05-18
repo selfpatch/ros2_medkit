@@ -425,46 +425,67 @@ TEST(SchemaBuilderStaticTest, LogEntryListRegistered) {
   EXPECT_NE(std::find(required.begin(), required.end(), "items"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, HealthSchema) {
-  auto schema = SchemaBuilder::health_schema();
+TEST(SchemaBuilderStaticTest, HealthSchemaComesFromDto) {
+  // Health, HealthDiscovery, etc. now come from the DTO (dto/health.hpp).
+  // DTO-generated schema name is "HealthStatus" (dto_name<Health>).
+  namespace dto = ros2_medkit_gateway::dto;
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("HealthStatus") > 0) << "HealthStatus schema must be registered";
+  const auto & schema = schemas.at("HealthStatus");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("status"));
   EXPECT_TRUE(schema["properties"].contains("timestamp"));
+  // discovery is a $ref to HealthDiscovery (not inline in the HealthStatus schema)
   EXPECT_TRUE(schema["properties"].contains("discovery"));
   EXPECT_EQ(schema["properties"]["status"]["type"], "string");
   EXPECT_EQ(schema["properties"]["timestamp"]["type"], "integer");
 
-  // Discovery subfields
-  auto & discovery = schema["properties"]["discovery"];
-  EXPECT_EQ(discovery["type"], "object");
-  EXPECT_TRUE(discovery["properties"].contains("mode"));
-  EXPECT_TRUE(discovery["properties"].contains("strategy"));
-  EXPECT_EQ(discovery["properties"]["mode"]["type"], "string");
-  EXPECT_EQ(discovery["properties"]["strategy"]["type"], "string");
-
-  // Required
+  // Required: status and timestamp
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "status"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "timestamp"), required.end());
+
+  // HealthDiscovery sub-DTO must also be registered (discovery field is a $ref)
+  ASSERT_TRUE(schemas.count("HealthDiscovery") > 0) << "HealthDiscovery schema must be registered";
+  const auto & disc_schema = schemas.at("HealthDiscovery");
+  EXPECT_EQ(disc_schema["type"], "object");
+  ASSERT_TRUE(disc_schema.contains("properties"));
+  EXPECT_TRUE(disc_schema["properties"].contains("mode"));
+  EXPECT_TRUE(disc_schema["properties"].contains("strategy"));
+  EXPECT_EQ(disc_schema["properties"]["mode"]["type"], "string");
+  EXPECT_EQ(disc_schema["properties"]["strategy"]["type"], "string");
 }
 
-TEST(SchemaBuilderStaticTest, VersionInfoSchema) {
-  auto schema = SchemaBuilder::version_info_schema();
+TEST(SchemaBuilderStaticTest, VersionInfoSchemaComesFromDto) {
+  // VersionInfo, VersionInfoEntry, VersionInfoVendor now come from the DTO (dto/health.hpp).
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("VersionInfo") > 0) << "VersionInfo schema must be registered";
+  const auto & schema = schemas.at("VersionInfo");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   ASSERT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should have version, base_uri, and vendor_info
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_EQ(item_schema["type"], "object");
-  EXPECT_TRUE(item_schema["properties"].contains("version"));
-  EXPECT_TRUE(item_schema["properties"].contains("base_uri"));
-  EXPECT_TRUE(item_schema["properties"].contains("vendor_info"));
+  // items array items are a $ref to VersionInfoEntry (DTO-generated, not inline)
+  ASSERT_TRUE(schema["properties"]["items"].contains("items"));
+  const auto & item_ref = schema["properties"]["items"]["items"];
+  ASSERT_TRUE(item_ref.contains("$ref"));
+  EXPECT_EQ(item_ref.at("$ref"), "#/components/schemas/VersionInfoEntry");
 
-  // vendor_info should have version and name
-  auto & vendor_schema = item_schema["properties"]["vendor_info"];
+  // VersionInfoEntry sub-DTO must also be registered
+  ASSERT_TRUE(schemas.count("VersionInfoEntry") > 0) << "VersionInfoEntry schema must be registered";
+  const auto & entry_schema = schemas.at("VersionInfoEntry");
+  EXPECT_EQ(entry_schema["type"], "object");
+  ASSERT_TRUE(entry_schema.contains("properties"));
+  EXPECT_TRUE(entry_schema["properties"].contains("version"));
+  EXPECT_TRUE(entry_schema["properties"].contains("base_uri"));
+  EXPECT_TRUE(entry_schema["properties"].contains("vendor_info"));
+
+  // vendor_info is a $ref to VersionInfoVendor
+  ASSERT_TRUE(schemas.count("VersionInfoVendor") > 0) << "VersionInfoVendor schema must be registered";
+  const auto & vendor_schema = schemas.at("VersionInfoVendor");
   EXPECT_EQ(vendor_schema["type"], "object");
   EXPECT_TRUE(vendor_schema["properties"].contains("version"));
   EXPECT_TRUE(vendor_schema["properties"].contains("name"));
