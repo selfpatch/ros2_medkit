@@ -29,46 +29,12 @@ namespace ros2_medkit_gateway {
 namespace dto {
 
 // =============================================================================
-// TriggerCondition - sub-schema for the trigger condition object.
-//
-// The wire shape for "trigger_condition" is a flat object where condition_type
-// is a required field and any remaining fields are free-form condition
-// parameters (additionalProperties: true).  This DTO captures condition_type
-// for schema-validation purposes; the free-form extras are carried in
-// condition_params as a raw JSON value.
-//
-// Wire keys:
-//   condition_type  - required string discriminator (e.g. "OnChange", "EnterRange")
-//   condition_params - optional free-form JSON object with any extra params
-//                      (these are MERGED into the flat object on the wire,
-//                       not nested under a "condition_params" key)
-//
-// Note: when building the wire JSON this DTO is NOT used as a nested struct
-// inside Trigger - the handler merges condition_type + condition_params into
-// a single flat JSON object that is stored in Trigger.trigger_condition.
-// This DTO exists solely to contribute "TriggerCondition" to the OpenAPI
-// components/schemas catalog.
-// =============================================================================
-struct TriggerCondition {
-  std::string condition_type;
-  std::optional<nlohmann::json> condition_params;  // free-form extras merged on the wire
-};
-
-template <>
-inline constexpr auto dto_fields<TriggerCondition> =
-    std::make_tuple(field("condition_type", &TriggerCondition::condition_type),
-                    field("condition_params", &TriggerCondition::condition_params));
-
-template <>
-inline constexpr std::string_view dto_name<TriggerCondition> = "TriggerCondition";
-
-// =============================================================================
 // Trigger - SOVD trigger CRUD response object.
 //
 // Emitted by handle_create (201), handle_list (items element),
 // handle_get (200), handle_update (200).
 //
-// Wire keys (from TriggerHandlers::trigger_to_json):
+// Wire keys (from trigger_info_to_dto):
 //   id               - trigger UUID (required)
 //   status           - enum: "active"|"terminated" (required)
 //   observed_resource - resource URI being observed (required)

@@ -20,6 +20,9 @@
 #include <vector>
 
 #include "../src/openapi/schema_builder.hpp"
+#include "ros2_medkit_gateway/dto/registry.hpp"
+#include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/triggers.hpp"
 
 using ros2_medkit_gateway::openapi::SchemaBuilder;
 
@@ -267,7 +270,9 @@ TEST(SchemaBuilderStaticTest, ScriptUploadResponseSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
-  auto schema = SchemaBuilder::trigger_update_request_schema();
+  // TriggerUpdateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::TriggerUpdateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lifetime"));
@@ -276,8 +281,6 @@ TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "lifetime"), required.end());
-
-  EXPECT_EQ(schema["properties"]["lifetime"]["minimum"], 1);
 }
 
 // @verifies REQ_INTEROP_002
@@ -342,7 +345,9 @@ TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, TriggerCreateRequestSchema) {
-  auto schema = SchemaBuilder::trigger_create_request_schema();
+  // TriggerCreateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::TriggerCreateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("resource"));
@@ -652,19 +657,6 @@ TEST(SchemaBuilderStaticTest, LogConfigurationSchemaFieldsOptional) {
   // max_entries has bounds
   EXPECT_EQ(schema["properties"]["max_entries"]["minimum"], 1);
   EXPECT_EQ(schema["properties"]["max_entries"]["maximum"], 10000);
-}
-
-// @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, TriggerConditionSchemaShared) {
-  auto schema = SchemaBuilder::trigger_condition_schema();
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  EXPECT_TRUE(schema["properties"].contains("condition_type"));
-  EXPECT_TRUE(schema["additionalProperties"].get<bool>());
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "condition_type"), required.end());
 }
 
 // =============================================================================

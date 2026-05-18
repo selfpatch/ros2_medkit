@@ -53,7 +53,7 @@ using AllDtos =
                // Lock domain DTOs
                Lock, Collection<Lock>, AcquireLockRequest, ExtendLockRequest,
                // Trigger domain DTOs
-               TriggerCondition, Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest>;
+               Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>

@@ -220,32 +220,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::trigger_condition_schema() {
-  return {{"type", "object"},
-          {"properties", {{"condition_type", {{"type", "string"}}}}},
-          {"required", {"condition_type"}},
-          {"additionalProperties", true}};
-}
-
-nlohmann::json SchemaBuilder::trigger_schema() {
-  auto condition_schema = trigger_condition_schema();
-
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"status", {{"type", "string"}, {"enum", {"active", "terminated"}}}},
-            {"observed_resource", {{"type", "string"}, {"description", "Resource URI being observed"}}},
-            {"event_source", {{"type", "string"}, {"description", "Server-generated event source URI"}}},
-            {"protocol", {{"type", "string"}, {"description", "Transport protocol"}}},
-            {"trigger_condition", condition_schema},
-            {"multishot", {{"type", "boolean"}, {"description", "Whether trigger fires multiple times"}}},
-            {"persistent", {{"type", "boolean"}, {"description", "Whether trigger survives server restarts"}}},
-            {"lifetime", {{"type", "number"}, {"description", "Trigger lifetime in seconds"}}},
-            {"path", {{"type", "string"}, {"description", "Notification delivery path"}}},
-            {"log_settings", {{"type", "object"}}}}},
-          {"required", {"id", "status", "observed_resource", "event_source", "protocol", "trigger_condition"}}};
-}
-
 nlohmann::json SchemaBuilder::cyclic_subscription_schema() {
   return {
       {"type", "object"},
@@ -288,29 +262,6 @@ nlohmann::json SchemaBuilder::script_upload_response_schema() {
   return {{"type", "object"},
           {"properties", {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
           {"required", {"id", "name"}}};
-}
-
-nlohmann::json SchemaBuilder::trigger_update_request_schema() {
-  return {
-      {"type", "object"},
-      {"properties", {{"lifetime", {{"type", "integer"}, {"minimum", 1}, {"description", "New lifetime in seconds"}}}}},
-      {"required", {"lifetime"}}};
-}
-
-nlohmann::json SchemaBuilder::trigger_create_request_schema() {
-  auto condition_schema = trigger_condition_schema();
-
-  return {{"type", "object"},
-          {"properties",
-           {{"resource", {{"type", "string"}, {"description", "Resource URI to observe"}}},
-            {"trigger_condition", condition_schema},
-            {"protocol", {{"type", "string"}, {"description", "Transport protocol (default: sse)"}}},
-            {"multishot", {{"type", "boolean"}}},
-            {"persistent", {{"type", "boolean"}}},
-            {"lifetime", {{"type", "integer"}, {"minimum", 1}}},
-            {"path", {{"type", "string"}}},
-            {"log_settings", {{"type", "object"}}}}},
-          {"required", {"resource", "trigger_condition"}}};
 }
 
 nlohmann::json SchemaBuilder::cyclic_subscription_create_request_schema() {
@@ -440,11 +391,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         // ExecutionUpdateRequest now come from DTO (dto/operations.hpp).
         // OperationExecutionList is kept here as a thin wrapper over the DTO type.
         {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
-        // Triggers
-        {"Trigger", trigger_schema()},
-        {"TriggerList", items_wrapper_ref("Trigger")},
-        {"TriggerUpdateRequest", trigger_update_request_schema()},
-        {"TriggerCreateRequest", trigger_create_request_schema()},
+        // Triggers - Trigger, TriggerList, TriggerCreateRequest, TriggerUpdateRequest
+        // now come from DTO (dto/triggers.hpp).
         // Subscriptions
         {"CyclicSubscription", cyclic_subscription_schema()},
         {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
