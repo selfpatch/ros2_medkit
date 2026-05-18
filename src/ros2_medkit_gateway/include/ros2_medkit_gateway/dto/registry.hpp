@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/locks.hpp"
+#include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
@@ -60,7 +61,9 @@ using AllDtos =
                CyclicSubscription, Collection<CyclicSubscription>, CyclicSubscriptionCreateRequest,
                CyclicSubscriptionUpdateRequest,
                // Bulk-data domain DTOs
-               BulkDataCategoryList, BulkDataDescriptor, Collection<BulkDataDescriptor>>;
+               BulkDataCategoryList, BulkDataDescriptor, Collection<BulkDataDescriptor>,
+               // Log domain DTOs
+               LogContext, LogEntry, Collection<LogEntry>, LogListXMedkit, LogConfiguration>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
