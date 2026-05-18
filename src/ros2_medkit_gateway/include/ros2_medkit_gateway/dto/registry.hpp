@@ -31,6 +31,7 @@
 #include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/scripts.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
@@ -63,7 +64,9 @@ using AllDtos =
                // Bulk-data domain DTOs
                BulkDataCategoryList, BulkDataDescriptor, Collection<BulkDataDescriptor>,
                // Log domain DTOs
-               LogContext, LogEntry, Collection<LogEntry>, LogListXMedkit, LogConfiguration>;
+               LogContext, LogEntry, Collection<LogEntry>, LogListXMedkit, LogConfiguration,
+               // Script domain DTOs
+               ScriptMetadata, Collection<ScriptMetadata>, ScriptExecution, ScriptUploadResponse, ScriptControlRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
