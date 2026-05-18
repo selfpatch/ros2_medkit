@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -98,7 +99,7 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     const auto areas = cache.get_areas();
 
-    json items = json::array();
+    dto::Collection<dto::AreaListItem> response;
     for (const auto & area : areas) {
       // Subareas (with parent_area_id) are only visible via
       // GET /areas/{id}/subareas, not in the top-level list.
@@ -106,33 +107,35 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
         continue;
       }
 
-      json area_item;
-      area_item["id"] = area.id;
-      area_item["name"] = area.name.empty() ? area.id : area.name;
-      area_item["href"] = "/api/v1/areas/" + area.id;
+      dto::AreaListItem item;
+      item.id = area.id;
+      item.name = area.name.empty() ? area.id : area.name;
+      item.href = "/api/v1/areas/" + area.id;
+      item.type = "area";
 
       if (!area.description.empty()) {
-        area_item["description"] = area.description;
+        item.description = area.description;
       }
       if (!area.tags.empty()) {
-        area_item["tags"] = area.tags;
+        item.tags = area.tags;
       }
 
-      XMedkit ext;
-      ext.ros2_namespace(area.namespace_path);
-      area_item["x-medkit"] = ext.build();
+      if (!area.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = area.namespace_path;
+        dto::XMedkitArea ext;
+        ext.ros2 = ros2;
+        item.x_medkit = ext;
+      }
 
-      items.push_back(area_item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, response);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
     RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
