@@ -70,9 +70,6 @@ class CyclicSubscriptionHandlers {
   /// GET /{entity}/cyclic-subscriptions/{id}/events — SSE event stream
   void handle_events(const httplib::Request & req, httplib::Response & res);
 
-  /// Convert subscription info to JSON response
-  static nlohmann::json subscription_to_json(const CyclicSubscriptionInfo & info, const std::string & event_source);
-
   /// Parse resource URI to extract entity type, entity id, collection, and resource path.
   static tl::expected<ParsedResourceUri, std::string> parse_resource_uri(const std::string & resource);
 

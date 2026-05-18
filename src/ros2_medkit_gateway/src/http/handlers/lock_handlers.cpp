@@ -109,20 +109,6 @@ static std::string to_sovd_error_code(const std::string & lock_code) {
   return lock_code;  // Pass through if no mapping
 }
 
-json LockHandlers::lock_to_json(const LockInfo & lock, const std::string & client_id) {
-  json result;
-  result["id"] = lock.lock_id;
-  result["owned"] = !client_id.empty() && lock.client_id == client_id;
-
-  // scopes field is conditional - only present when lock has specific scopes
-  if (!lock.scopes.empty()) {
-    result["scopes"] = lock.scopes;
-  }
-
-  result["lock_expiration"] = format_expiration(lock.expires_at);
-  return result;
-}
-
 /**
  * @brief Build a typed Lock DTO from a LockInfo.
  */

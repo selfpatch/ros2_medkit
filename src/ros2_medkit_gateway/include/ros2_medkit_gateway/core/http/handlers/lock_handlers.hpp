@@ -83,14 +83,6 @@ class LockHandlers {
    */
   void handle_release_lock(const httplib::Request & req, httplib::Response & res);
 
-  /**
-   * @brief Format a LockInfo as SOVD-compliant JSON
-   * @param lock Lock information
-   * @param client_id Optional client ID for "owned" field
-   * @return JSON object with lock details
-   */
-  static nlohmann::json lock_to_json(const LockInfo & lock, const std::string & client_id = "");
-
   /// Format a time_point as ISO 8601 UTC string
   static std::string format_expiration(std::chrono::steady_clock::time_point expires_at);
 

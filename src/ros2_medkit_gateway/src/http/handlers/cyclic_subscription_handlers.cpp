@@ -369,11 +369,6 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-nlohmann::json CyclicSubscriptionHandlers::subscription_to_json(const CyclicSubscriptionInfo & info,
-                                                                const std::string & event_source) {
-  return dto::JsonWriter<dto::CyclicSubscription>::write(subscription_to_dto(info, event_source));
-}
-
 std::string CyclicSubscriptionHandlers::build_event_source(const CyclicSubscriptionInfo & info) {
   return std::string(API_BASE_PATH) + "/" + info.entity_type + "/" + info.entity_id + "/cyclic-subscriptions/" +
          info.id + "/events";

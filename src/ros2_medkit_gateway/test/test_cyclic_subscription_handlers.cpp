@@ -16,7 +16,6 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
-#include <vector>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/cyclic_subscription_handlers.hpp"
@@ -167,64 +166,6 @@ TEST(ParseResourceUriTest, UpdatesListNotSubscribable) {
   // /api/v1/updates (list endpoint) is not subscribable
   auto result = CyclicSubscriptionHandlers::parse_resource_uri("/api/v1/updates");
   EXPECT_FALSE(result.has_value());
-}
-
-// --- subscription_to_json ---
-
-// @verifies REQ_INTEROP_089
-TEST(CyclicSubscriptionJsonTest, ContainsAllRequiredFields) {
-  CyclicSubscriptionInfo info;
-  info.id = "sub_001";
-  info.entity_id = "temp_sensor";
-  info.entity_type = "apps";
-  info.resource_uri = "/api/v1/apps/temp_sensor/data/temperature";
-  info.protocol = "sse";
-  info.interval = CyclicInterval::NORMAL;
-
-  std::string event_source = "/api/v1/apps/temp_sensor/cyclic-subscriptions/sub_001/events";
-  auto j = CyclicSubscriptionHandlers::subscription_to_json(info, event_source);
-
-  EXPECT_EQ(j["id"], "sub_001");
-  EXPECT_EQ(j["observed_resource"], info.resource_uri);
-  EXPECT_EQ(j["event_source"], event_source);
-  EXPECT_EQ(j["protocol"], "sse");
-  EXPECT_EQ(j["interval"], "normal");
-}
-
-TEST(CyclicSubscriptionJsonTest, AllIntervalValuesSerialize) {
-  CyclicSubscriptionInfo info;
-  info.id = "sub_001";
-  info.entity_type = "apps";
-  info.entity_id = "e";
-
-  for (const auto & [interval, expected] : std::vector<std::pair<CyclicInterval, std::string>>{
-           {CyclicInterval::FAST, "fast"}, {CyclicInterval::NORMAL, "normal"}, {CyclicInterval::SLOW, "slow"}}) {
-    info.interval = interval;
-    auto j = CyclicSubscriptionHandlers::subscription_to_json(info, "/events");
-    EXPECT_EQ(j["interval"], expected);
-  }
-}
-
-// @verifies REQ_INTEROP_089
-TEST(CyclicSubscriptionJsonTest, ServerLevelUpdateResource) {
-  CyclicSubscriptionInfo info;
-  info.id = "sub_updates_001";
-  info.entity_id = "temp_sensor";
-  info.entity_type = "apps";
-  info.resource_uri = "/api/v1/updates/ADAS-v2/status";
-  info.collection = "updates";
-  info.resource_path = "ADAS-v2";
-  info.protocol = "sse";
-  info.interval = CyclicInterval::SLOW;
-
-  std::string event_source = "/api/v1/apps/temp_sensor/cyclic-subscriptions/sub_updates_001/events";
-  auto j = CyclicSubscriptionHandlers::subscription_to_json(info, event_source);
-
-  EXPECT_EQ(j["id"], "sub_updates_001");
-  EXPECT_EQ(j["observed_resource"], "/api/v1/updates/ADAS-v2/status");
-  EXPECT_EQ(j["event_source"], event_source);
-  EXPECT_EQ(j["protocol"], "sse");
-  EXPECT_EQ(j["interval"], "slow");
 }
 
 // --- Error response format (via HandlerContext static helpers) ---
