@@ -77,9 +77,6 @@ class SchemaBuilder {
   /// Binary content schema (for file downloads)
   static nlohmann::json binary_schema();
 
-  /// Cyclic subscription schema (CRUD responses)
-  static nlohmann::json cyclic_subscription_schema();
-
   /// Script metadata schema (list/get)
   static nlohmann::json script_metadata_schema();
 
@@ -94,9 +91,6 @@ class SchemaBuilder {
 
   /// Script upload response schema (minimal: id + name)
   static nlohmann::json script_upload_response_schema();
-
-  /// Cyclic subscription create request schema
-  static nlohmann::json cyclic_subscription_create_request_schema();
 
   /// Software update list schema (items: [string])
   static nlohmann::json update_list_schema();

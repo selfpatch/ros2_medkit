@@ -891,7 +891,7 @@ void RESTServer::setup_routes() {
           .tag("Subscriptions")
           .summary(std::string("Update cyclic subscription for ") + et.singular)
           .description(std::string("Updates a subscription configuration on this ") + et.singular + ".")
-          .request_body("Subscription update", SB::ref("CyclicSubscription"))
+          .request_body("Subscription update", SB::ref("CyclicSubscriptionUpdateRequest"))
           .response(200, "Updated subscription", SB::ref("CyclicSubscription"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Subscription");
 

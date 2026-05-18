@@ -473,8 +473,7 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
   get_op["description"] = "Returns all active cyclic subscriptions for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::cyclic_subscription_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("CyclicSubscriptionList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -490,9 +489,9 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
   post_op["description"] = "Create a new cyclic subscription to stream data changes via SSE.";
   post_op["requestBody"]["required"] = true;
   post_op["requestBody"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::cyclic_subscription_create_request_schema();
+      SchemaBuilder::ref("CyclicSubscriptionCreateRequest");
   post_op["responses"]["201"]["description"] = "Subscription created";
-  post_op["responses"]["201"]["content"]["application/json"]["schema"] = SchemaBuilder::cyclic_subscription_schema();
+  post_op["responses"]["201"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("CyclicSubscription");
 
   auto post_errors = error_responses();
   for (auto & [code, val] : post_errors.items()) {

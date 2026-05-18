@@ -220,18 +220,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::cyclic_subscription_schema() {
-  return {
-      {"type", "object"},
-      {"properties",
-       {{"id", {{"type", "string"}}},
-        {"observed_resource", {{"type", "string"}, {"description", "Resource URI being observed"}}},
-        {"event_source", {{"type", "string"}, {"description", "Server-generated event source URI"}}},
-        {"protocol", {{"type", "string"}, {"description", "Transport protocol"}}},
-        {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}, {"description", "Polling interval"}}}}},
-      {"required", {"id", "observed_resource", "event_source", "protocol", "interval"}}};
-}
-
 nlohmann::json SchemaBuilder::script_metadata_schema() {
   return {{"type", "object"},
           {"properties",
@@ -262,16 +250,6 @@ nlohmann::json SchemaBuilder::script_upload_response_schema() {
   return {{"type", "object"},
           {"properties", {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
           {"required", {"id", "name"}}};
-}
-
-nlohmann::json SchemaBuilder::cyclic_subscription_create_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"resource", {{"type", "string"}, {"description", "Resource URI to subscribe to"}}},
-            {"interval", {{"type", "string"}, {"enum", {"fast", "normal", "slow"}}}},
-            {"duration", {{"type", "integer"}, {"minimum", 1}, {"description", "Subscription duration in seconds"}}},
-            {"protocol", {{"type", "string"}, {"description", "Transport protocol (default: sse)"}}}}},
-          {"required", {"resource", "interval", "duration"}}};
 }
 
 nlohmann::json SchemaBuilder::bulk_data_category_list_schema() {
@@ -393,10 +371,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
         // Triggers - Trigger, TriggerList, TriggerCreateRequest, TriggerUpdateRequest
         // now come from DTO (dto/triggers.hpp).
-        // Subscriptions
-        {"CyclicSubscription", cyclic_subscription_schema()},
-        {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
-        {"CyclicSubscriptionCreateRequest", cyclic_subscription_create_request_schema()},
+        // Subscriptions - CyclicSubscription, CyclicSubscriptionList, CyclicSubscriptionCreateRequest,
+        // CyclicSubscriptionUpdateRequest now come from DTO (dto/cyclic_subscriptions.hpp).
         // Locking - Lock, LockList, AcquireLockRequest, ExtendLockRequest now come from DTO (dto/locks.hpp).
         // Scripts
         {"ScriptMetadata", script_metadata_schema()},

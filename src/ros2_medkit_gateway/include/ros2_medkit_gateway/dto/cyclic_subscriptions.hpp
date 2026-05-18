@@ -75,11 +75,11 @@ struct CyclicSubscriptionCreateRequest {
 };
 
 template <>
-inline constexpr auto dto_fields<CyclicSubscriptionCreateRequest> = std::make_tuple(
-    field("resource", &CyclicSubscriptionCreateRequest::resource),
-    field_enum("interval", &CyclicSubscriptionCreateRequest::interval, kCyclicSubscriptionIntervalValues),
-    field("duration", &CyclicSubscriptionCreateRequest::duration),
-    field("protocol", &CyclicSubscriptionCreateRequest::protocol));
+inline constexpr auto dto_fields<CyclicSubscriptionCreateRequest> =
+    std::make_tuple(field("resource", &CyclicSubscriptionCreateRequest::resource),
+                    field("interval", &CyclicSubscriptionCreateRequest::interval),
+                    field("duration", &CyclicSubscriptionCreateRequest::duration),
+                    field("protocol", &CyclicSubscriptionCreateRequest::protocol));
 
 template <>
 inline constexpr std::string_view dto_name<CyclicSubscriptionCreateRequest> = "CyclicSubscriptionCreateRequest";
@@ -98,9 +98,9 @@ struct CyclicSubscriptionUpdateRequest {
 };
 
 template <>
-inline constexpr auto dto_fields<CyclicSubscriptionUpdateRequest> = std::make_tuple(
-    field_enum("interval", &CyclicSubscriptionUpdateRequest::interval, kCyclicSubscriptionIntervalValues),
-    field("duration", &CyclicSubscriptionUpdateRequest::duration));
+inline constexpr auto dto_fields<CyclicSubscriptionUpdateRequest> =
+    std::make_tuple(field("interval", &CyclicSubscriptionUpdateRequest::interval),
+                    field("duration", &CyclicSubscriptionUpdateRequest::duration));
 
 template <>
 inline constexpr std::string_view dto_name<CyclicSubscriptionUpdateRequest> = "CyclicSubscriptionUpdateRequest";

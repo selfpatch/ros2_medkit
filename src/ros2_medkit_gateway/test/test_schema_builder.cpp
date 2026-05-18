@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../src/openapi/schema_builder.hpp"
+#include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
@@ -315,7 +316,9 @@ TEST(SchemaBuilderStaticTest, BulkDataDescriptorSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
-  auto schema = SchemaBuilder::cyclic_subscription_create_request_schema();
+  // CyclicSubscriptionCreateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::CyclicSubscriptionCreateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("resource"));
@@ -332,15 +335,13 @@ TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
   EXPECT_NE(std::find(required.begin(), required.end(), "duration"), required.end());
   EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
 
-  // Verify interval enum constraint
+  // interval uses plain field (no enum constraint) - bespoke handler validation
+  // produces ERR_INVALID_PARAMETER with parameter detail for unknown values.
   EXPECT_EQ(schema["properties"]["interval"]["type"], "string");
-  ASSERT_TRUE(schema["properties"]["interval"].contains("enum"));
-  auto enum_vals = schema["properties"]["interval"]["enum"].get<std::vector<std::string>>();
-  EXPECT_EQ(enum_vals.size(), 3u);
+  EXPECT_FALSE(schema["properties"]["interval"].contains("enum"));
 
-  // Verify duration type and minimum
+  // Verify duration type (DTO: integer; minimum is not emitted by SchemaWriter)
   EXPECT_EQ(schema["properties"]["duration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["duration"]["minimum"], 1);
 }
 
 // @verifies REQ_INTEROP_002

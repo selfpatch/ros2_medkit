@@ -395,10 +395,12 @@ TEST_F(PathBuilderTest, CyclicSubscriptionsHasGetAndPost) {
 }
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsPostHasRequestBody) {
+  // CyclicSubscriptionCreateRequest is now a DTO - request body schema is a $ref.
   auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
   ASSERT_TRUE(result["post"].contains("requestBody"));
   auto req_schema = result["post"]["requestBody"]["content"]["application/json"]["schema"];
-  EXPECT_TRUE(req_schema["properties"].contains("resource"));
+  ASSERT_TRUE(req_schema.contains("$ref"));
+  EXPECT_EQ(req_schema["$ref"], "#/components/schemas/CyclicSubscriptionCreateRequest");
 }
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsPostReturns201) {
