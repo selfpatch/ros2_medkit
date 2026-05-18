@@ -23,6 +23,7 @@
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
@@ -36,7 +37,8 @@ using AllDtos =
                AreaListItem, AreaDetail, ComponentListItem, ComponentDetail, AppListItem, AppDetail, FunctionListItem,
                FunctionDetail, Collection<AreaListItem>, Collection<ComponentListItem>, Collection<AppListItem>,
                Collection<FunctionListItem>, FaultListItem, Collection<FaultListItem>, FaultStatus, FaultItem,
-               FaultEnvironmentData, FaultXMedkit, FaultDetail>;
+               FaultEnvironmentData, FaultXMedkit, FaultDetail, XMedkitOperationItem, OperationItem,
+               Collection<OperationItem>, OperationDetail, OperationExecution, ExecutionUpdateRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
