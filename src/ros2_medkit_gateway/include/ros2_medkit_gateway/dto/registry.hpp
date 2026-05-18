@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/dto/health.hpp"
 #include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
@@ -72,7 +73,10 @@ using AllDtos =
                // Software update domain DTOs
                UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus,
                // Auth domain DTOs
-               AuthCredentials, AuthTokenResponse>;
+               AuthCredentials, AuthTokenResponse,
+               // Health / Root domain DTOs
+               HealthDiscoveryLinking, HealthDiscovery, HealthAggregationWarning, Health, VersionInfoVendor,
+               VersionInfoEntry, XMedkitVersionInfo, VersionInfo, RootCapabilities, RootAuth, RootTls, RootOverview>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
