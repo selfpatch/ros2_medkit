@@ -19,6 +19,7 @@
 #include <tuple>
 #include <utility>
 
+#include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
@@ -39,7 +40,11 @@ using AllDtos =
                Collection<FunctionListItem>, FaultListItem, Collection<FaultListItem>, FaultListXMedkit,
                FaultListAggXMedkit, FaultStatus, FaultItem, FaultEnvironmentData, FaultXMedkit, FaultDetail,
                XMedkitOperationItem, XMedkitOperationExecution, OperationItem, Collection<OperationItem>,
-               OperationDetail, OperationExecution, ExecutionUpdateRequest>;
+               OperationDetail, OperationExecution, ExecutionUpdateRequest,
+               // Configuration domain DTOs
+               ConfigXMedkitItem, ConfigurationMetaData, Collection<ConfigurationMetaData>, ConfigListXMedkit,
+               ConfigValueXMedkit, ConfigurationReadValue, ConfigurationWriteRequest, ConfigurationDeleteResultItem,
+               ConfigurationDeleteMultiStatus>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
