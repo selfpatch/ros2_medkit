@@ -170,15 +170,20 @@ inline constexpr std::string_view dto_name<ConfigurationReadValue> = "Configurat
 // Parsed by handle_set_configuration via parse_body<ConfigurationWriteRequest>.
 //
 // Wire keys (SOVD convention, from config_handlers.cpp):
-//   data - configuration value to set (free-form: any JSON scalar or object)
+//   data  - configuration value to set (free-form: any JSON scalar or object)
+//   value - legacy alias accepted as fallback (used by older clients)
+//
+// At least one of "data" or "value" must be present; handler enforces this
+// after parse and prefers "data" when both are supplied.
 // =============================================================================
 struct ConfigurationWriteRequest {
-  nlohmann::json data;  // free-form: any JSON value
+  std::optional<nlohmann::json> data;   // preferred
+  std::optional<nlohmann::json> value;  // legacy alias, accepted as a fallback
 };
 
 template <>
 inline constexpr auto dto_fields<ConfigurationWriteRequest> =
-    std::make_tuple(field("data", &ConfigurationWriteRequest::data));
+    std::make_tuple(field("data", &ConfigurationWriteRequest::data), field("value", &ConfigurationWriteRequest::value));
 
 template <>
 inline constexpr std::string_view dto_name<ConfigurationWriteRequest> = "ConfigurationWriteRequest";
@@ -261,6 +266,7 @@ struct dto_sample<ConfigurationWriteRequest> {
   static ConfigurationWriteRequest make() {
     ConfigurationWriteRequest obj;
     obj.data = nlohmann::json{42};  // non-null: int scalar representative value
+    // value intentionally omitted; data is the preferred field
     return obj;
   }
 };

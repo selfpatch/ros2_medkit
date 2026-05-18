@@ -552,7 +552,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("List configurations for ") + et.singular)
         .description(std::string("Lists all ROS 2 node parameters for this ") + et.singular + ".")
-        .response(200, "Configuration list", SB::ref("ConfigurationMetaDataList"))
+        .response(200, "Configuration list", SB::ref("ConfigurationList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Configurations");
 
     reg.get(entity_path + "/configurations/{config_id}",
@@ -572,7 +572,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
         .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
-        .request_body("Configuration value", SB::ref("ConfigurationWriteValue"))
+        .request_body("Configuration value", SB::ref("ConfigurationWriteRequest"))
         .response(200, "Updated configuration", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
 

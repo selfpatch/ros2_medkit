@@ -293,12 +293,12 @@ TEST_F(PathBuilderTest, ConfigurationsHasGetAndDelete) {
   EXPECT_FALSE(result.contains("put"));
 }
 
-TEST_F(PathBuilderTest, ConfigurationsGetReturnsItemsWrapper) {
+TEST_F(PathBuilderTest, ConfigurationsGetReturnsConfigurationListRef) {
+  // build_configurations_collection now emits a $ref to ConfigurationList DTO schema.
   auto result = path_builder_.build_configurations_collection("apps/sensor");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/ConfigurationList");
 }
 
 TEST_F(PathBuilderTest, ConfigurationsDeleteHasSummary) {

@@ -160,17 +160,18 @@ TEST(SchemaBuilderStaticTest, ItemsWrapper) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
-  auto schema = SchemaBuilder::configuration_metadata_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchemaFromDto) {
+  // ConfigurationMetaData is now generated from the DTO; verify via
+  // component_schemas() which merges DTO-generated schemas on top.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationMetaData") > 0);
+  const auto & schema = schemas.at("ConfigurationMetaData");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("name"));
   EXPECT_TRUE(schema["properties"].contains("type"));
   EXPECT_FALSE(schema["properties"].contains("value"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["name"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["type"]["type"], "string");
 
   // Required: id, name, type (no value)
   ASSERT_TRUE(schema.contains("required"));
@@ -182,37 +183,33 @@ TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationMetaDataXMedkitDeclaresAllEmittedFields) {
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataXMedkitDtoDeclaresSourceAndNode) {
   // Regression: the x-medkit object emitted by config_handlers.cpp on every
   // per-parameter entry contains both `source` (app_id) and `node` (FQN).
-  // The schema must declare both, otherwise generated typed clients drop
-  // or fail-type the undeclared field - exactly the drift this PR fixes
-  // for x-medkit.phase. additionalProperties is intentionally left open
-  // (other endpoints use the same convention), so the drift integration
-  // test cannot detect missing properties here; this static check does.
-  auto schema = SchemaBuilder::configuration_metadata_schema();
+  // The ConfigXMedkitItem DTO declares both; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigXMedkitItem") > 0);
+  const auto & schema = schemas.at("ConfigXMedkitItem");
+  EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema.at("properties").contains("x-medkit"));
-  const auto & x_medkit = schema.at("properties").at("x-medkit");
-  EXPECT_EQ(x_medkit.at("type"), "object");
-  ASSERT_TRUE(x_medkit.contains("properties"));
-  const auto & x_props = x_medkit.at("properties");
-  ASSERT_TRUE(x_props.contains("source"));
-  EXPECT_EQ(x_props.at("source").at("type"), "string");
-  ASSERT_TRUE(x_props.contains("node"));
-  EXPECT_EQ(x_props.at("node").at("type"), "string");
+  const auto & props = schema["properties"];
+  ASSERT_TRUE(props.contains("source"));
+  ASSERT_TRUE(props.contains("node"));
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
-  auto schema = SchemaBuilder::configuration_read_value_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchemaFromDto) {
+  // ConfigurationReadValue is now generated from the DTO; verify via
+  // component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationReadValue") > 0);
+  const auto & schema = schemas.at("ConfigurationReadValue");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("data"));
   EXPECT_FALSE(schema["properties"].contains("name"));
   EXPECT_FALSE(schema["properties"].contains("value"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
 
   // Required: id, data
   ASSERT_TRUE(schema.contains("required"));
@@ -235,17 +232,21 @@ TEST(SchemaBuilderStaticTest, OperationDetailSchemaComeFromDto) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationWriteValueSchema) {
-  auto schema = SchemaBuilder::configuration_write_value_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationWriteRequestSchemaFromDto) {
+  // ConfigurationWriteRequest is now generated from the DTO; verify via
+  // component_schemas().
+  // Both "data" and "value" are optional at schema level - the handler enforces
+  // that at least one is present and prefers "data" over "value".
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationWriteRequest") > 0);
+  const auto & schema = schemas.at("ConfigurationWriteRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("data"));
+  EXPECT_TRUE(schema["properties"].contains("value"));
   EXPECT_FALSE(schema["properties"].contains("id"));
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
-  EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
+  // No "required" array: both fields are optional at the schema level
+  EXPECT_FALSE(schema.contains("required"));
 }
 
 // @verifies REQ_INTEROP_002

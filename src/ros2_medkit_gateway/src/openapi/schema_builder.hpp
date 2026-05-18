@@ -53,15 +53,6 @@ class SchemaBuilder {
   /// Wrap an item schema in a SOVD collection response: {"items": [item_schema]}
   static nlohmann::json items_wrapper(const nlohmann::json & item_schema);
 
-  /// Configuration metadata schema (list endpoint - SOVD ConfigurationMetaData)
-  static nlohmann::json configuration_metadata_schema();
-
-  /// Configuration read value schema (GET detail response - SOVD ReadValue)
-  static nlohmann::json configuration_read_value_schema();
-
-  /// Configuration write value schema (PUT request body - only data field)
-  static nlohmann::json configuration_write_value_schema();
-
   /// Log entry schema
   static nlohmann::json log_entry_schema();
 
@@ -127,9 +118,6 @@ class SchemaBuilder {
 
   /// Trigger create request schema (client-supplied fields only)
   static nlohmann::json trigger_create_request_schema();
-
-  /// Configuration delete-all multi-status response schema (207)
-  static nlohmann::json configuration_delete_multi_status_schema();
 
   /// Cyclic subscription create request schema
   static nlohmann::json cyclic_subscription_create_request_schema();

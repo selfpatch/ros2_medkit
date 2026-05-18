@@ -20,7 +20,8 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/dto/config.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -244,12 +245,14 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
       json response;
       response["items"] = json::array();
 
-      XMedkit ext;
-      ext.entity_id(entity_id).source("runtime");
-      ext.add("aggregation_level", agg_configs.aggregation_level);
-      ext.add("is_aggregated", agg_configs.is_aggregated);
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      response["x-medkit"] = ext.build();
+      dto::ConfigListXMedkit xm;
+      xm.entity_id = entity_id;
+      xm.source = "runtime";
+      xm.aggregation_level = agg_configs.aggregation_level;
+      xm.is_aggregated = agg_configs.is_aggregated;
+      auto xm_json = dto::JsonWriter<dto::ConfigListXMedkit>::write(xm);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+      response["x-medkit"] = std::move(xm_json);
 
       HandlerContext::send_json(res, response);
       return;
@@ -311,14 +314,21 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
 
             // Add source info for aggregated configurations
             if (agg_configs.is_aggregated) {
-              config_meta["x-medkit"] = {{"source", node_info.app_id}};
+              dto::ConfigXMedkitItem item_xm;
+              item_xm.source = node_info.app_id;
+              config_meta["x-medkit"] = dto::JsonWriter<dto::ConfigXMedkitItem>::write(item_xm);
             }
 
             items.push_back(config_meta);
 
             // Also track full parameter info
             json param_with_source = param;
-            param_with_source["x-medkit"] = {{"source", node_info.app_id}, {"node", node_info.node_fqn}};
+            {
+              dto::ConfigXMedkitItem param_xm;
+              param_xm.source = node_info.app_id;
+              param_xm.node = node_info.node_fqn;
+              param_with_source["x-medkit"] = dto::JsonWriter<dto::ConfigXMedkitItem>::write(param_xm);
+            }
             all_parameters.push_back(param_with_source);
           }
         }
@@ -336,19 +346,25 @@ void ConfigHandlers::handle_list_configurations(const httplib::Request & req, ht
       return;
     }
 
-    // Build x-medkit extension
-    XMedkit ext;
-    ext.entity_id(entity_id).source("runtime");
-    ext.add("parameters", all_parameters);
-    ext.add("aggregation_level", agg_configs.aggregation_level);
-    ext.add("is_aggregated", agg_configs.is_aggregated);
-    ext.add("source_ids", agg_configs.source_ids);
-    ext.add("queried_nodes", queried_nodes);
+    // Build x-medkit extension (typed DTO)
+    dto::ConfigListXMedkit xm;
+    xm.entity_id = entity_id;
+    xm.source = "runtime";
+    xm.parameters = all_parameters;
+    xm.aggregation_level = agg_configs.aggregation_level;
+    xm.is_aggregated = agg_configs.is_aggregated;
+    if (!agg_configs.source_ids.empty()) {
+      xm.source_ids = agg_configs.source_ids;
+    }
+    if (!queried_nodes.empty()) {
+      xm.queried_nodes = queried_nodes;
+    }
 
     json response;
     response["items"] = items;
-    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-    response["x-medkit"] = ext.build();
+    auto xm_json = dto::JsonWriter<dto::ConfigListXMedkit>::write(xm);
+    merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+    response["x-medkit"] = std::move(xm_json);
     HandlerContext::send_json(res, response);
 
   } catch (const std::exception & e) {
@@ -411,17 +427,19 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       auto result = config_mgr->get_parameter(node_info->node_fqn, parsed.param_name);
 
       if (result.success) {
-        json response;
-        response["id"] = param_id;
-        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
+        dto::ConfigValueXMedkit xm;
+        xm.ros2 = dto::XMedkitRos2{};
+        xm.ros2->node = node_info->node_fqn;
+        xm.entity_id = entity_id;
+        xm.source = "runtime";
+        xm.parameter = result.data;
+        xm.source_app = parsed.app_id;
 
-        XMedkit ext;
-        ext.ros2_node(node_info->node_fqn).entity_id(entity_id).source("runtime");
-        ext.add("parameter", result.data);
-        ext.add("source_app", parsed.app_id);
-        response["x-medkit"] = ext.build();
-
-        HandlerContext::send_json(res, response);
+        dto::ConfigurationReadValue resp_dto;
+        resp_dto.id = param_id;
+        resp_dto.data = result.data.contains("value") ? result.data["value"] : result.data;
+        resp_dto.x_medkit = std::move(xm);
+        HandlerContext::send_dto(res, resp_dto);
       } else {
         auto err = classify_parameter_error(result);
         HandlerContext::send_error(res, err.status_code, err.error_code,
@@ -440,19 +458,21 @@ void ConfigHandlers::handle_get_configuration(const httplib::Request & req, http
       auto result = config_mgr->get_parameter(node_info.node_fqn, parsed.param_name);
 
       if (result.success) {
-        json response;
-        response["id"] = parsed.param_name;
-        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
-
-        XMedkit ext;
-        ext.ros2_node(node_info.node_fqn).entity_id(entity_id).source("runtime");
-        ext.add("parameter", result.data);
+        dto::ConfigValueXMedkit xm;
+        xm.ros2 = dto::XMedkitRos2{};
+        xm.ros2->node = node_info.node_fqn;
+        xm.entity_id = entity_id;
+        xm.source = "runtime";
+        xm.parameter = result.data;
         if (agg_configs.is_aggregated) {
-          ext.add("source_app", node_info.app_id);
+          xm.source_app = node_info.app_id;
         }
-        response["x-medkit"] = ext.build();
 
-        HandlerContext::send_json(res, response);
+        dto::ConfigurationReadValue resp_dto;
+        resp_dto.id = parsed.param_name;
+        resp_dto.data = result.data.contains("value") ? result.data["value"] : result.data;
+        resp_dto.x_medkit = std::move(xm);
+        HandlerContext::send_dto(res, resp_dto);
         return;
       }
 
@@ -510,25 +530,21 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
       return;
     }
 
-    // Parse request body before checking entity existence
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 {{"details", e.what()}});
-      return;
+    // Parse and validate request body via typed DTO.
+    // Both "data" and "value" fields are optional at the DTO level so that
+    // legacy clients sending {"value": ...} are not rejected by parse_body.
+    // We enforce "at least one present" here and prefer "data" over "value".
+    auto body_opt = ctx_.parse_body<dto::ConfigurationWriteRequest>(req, res);
+    if (!body_opt) {
+      return;  // 400 already sent by parse_body
     }
-
-    // SOVD uses "data" field, but also support legacy "value" field
-    json value;
-    if (body.contains("data")) {
-      value = body["data"];
-    } else if (body.contains("value")) {
-      value = body["value"];
+    json config_value;
+    if (body_opt->data.has_value()) {
+      config_value = *body_opt->data;
+    } else if (body_opt->value.has_value()) {
+      config_value = *body_opt->value;
     } else {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing 'data' field",
-                                 {{"details", "Request body must contain 'data' field"}});
+      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Request body must contain a 'data' field");
       return;
     }
 
@@ -561,19 +577,21 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     // Helper to handle set result and send response
     auto handle_set_result = [&](const auto & result, const std::string & node_fqn, const std::string & app_id) {
       if (result.success) {
-        json response;
-        response["id"] = param_id;
-        response["data"] = result.data.contains("value") ? result.data["value"] : result.data;
-
-        XMedkit ext;
-        ext.ros2_node(node_fqn).entity_id(entity_id).source("runtime");
-        ext.add("parameter", result.data);
+        dto::ConfigValueXMedkit xm;
+        xm.ros2 = dto::XMedkitRos2{};
+        xm.ros2->node = node_fqn;
+        xm.entity_id = entity_id;
+        xm.source = "runtime";
+        xm.parameter = result.data;
         if (agg_configs.is_aggregated) {
-          ext.add("source_app", app_id);
+          xm.source_app = app_id;
         }
-        response["x-medkit"] = ext.build();
 
-        HandlerContext::send_json(res, response);
+        dto::ConfigurationReadValue resp_dto;
+        resp_dto.id = param_id;
+        resp_dto.data = result.data.contains("value") ? result.data["value"] : result.data;
+        resp_dto.x_medkit = std::move(xm);
+        HandlerContext::send_dto(res, resp_dto);
         return true;
       }
 
@@ -590,7 +608,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
         return;
       }
 
-      auto result = config_mgr->set_parameter(node_info->node_fqn, parsed.param_name, value);
+      auto result = config_mgr->set_parameter(node_info->node_fqn, parsed.param_name, config_value);
       handle_set_result(result, node_info->node_fqn, parsed.app_id);
       return;
     }
@@ -598,7 +616,7 @@ void ConfigHandlers::handle_set_configuration(const httplib::Request & req, http
     // For non-aggregated: use the single node
     if (!agg_configs.is_aggregated && !agg_configs.nodes.empty()) {
       const auto & node_info = agg_configs.nodes[0];
-      auto result = config_mgr->set_parameter(node_info.node_fqn, parsed.param_name, value);
+      auto result = config_mgr->set_parameter(node_info.node_fqn, parsed.param_name, config_value);
       handle_set_result(result, node_info.node_fqn, node_info.app_id);
       return;
     }
@@ -735,29 +753,26 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
 
     auto config_mgr = ctx_.node()->get_configuration_manager();
     bool all_success = true;
-    json multi_status = json::array();
+    dto::ConfigurationDeleteMultiStatus multi_status_dto;
+    multi_status_dto.entity_id = entity_id;
 
     // Reset all parameters on all nodes
     for (const auto & node_info : agg_configs.nodes) {
       auto result = config_mgr->reset_all_parameters(node_info.node_fqn);
+      dto::ConfigurationDeleteResultItem entry;
+      entry.node = node_info.node_fqn;
+      entry.app_id = node_info.app_id;
       if (!result.success) {
         all_success = false;
-        json status_entry;
-        status_entry["node"] = node_info.node_fqn;
-        status_entry["app_id"] = node_info.app_id;
-        status_entry["success"] = false;
-        status_entry["error"] = result.error_message;
-        multi_status.push_back(status_entry);
+        entry.success = false;
+        entry.error = result.error_message;
       } else {
-        json status_entry;
-        status_entry["node"] = node_info.node_fqn;
-        status_entry["app_id"] = node_info.app_id;
-        status_entry["success"] = true;
+        entry.success = true;
         if (result.data.is_object() || result.data.is_array()) {
-          status_entry["details"] = result.data;
+          entry.details = result.data;
         }
-        multi_status.push_back(status_entry);
       }
+      multi_status_dto.results.push_back(std::move(entry));
     }
 
     if (all_success) {
@@ -765,11 +780,9 @@ void ConfigHandlers::handle_delete_all_configurations(const httplib::Request & r
       res.status = 204;
     } else {
       // Partial success - return 207 Multi-Status
-      json response;
-      response["entity_id"] = entity_id;
-      response["results"] = multi_status;
       res.status = 207;
-      res.set_content(response.dump(2), "application/json");
+      res.set_content(dto::JsonWriter<dto::ConfigurationDeleteMultiStatus>::write(multi_status_dto).dump(2),
+                      "application/json");
     }
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to reset configurations",

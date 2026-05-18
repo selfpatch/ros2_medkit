@@ -331,8 +331,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
   get_op["description"] = "Returns all configuration parameters for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::configuration_metadata_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("ConfigurationList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -349,7 +348,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
   delete_op["responses"]["204"]["description"] = "All parameters deleted";
   delete_op["responses"]["207"]["description"] = "Partial success - some nodes failed";
   delete_op["responses"]["207"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::configuration_delete_multi_status_schema();
+      SchemaBuilder::ref("ConfigurationDeleteMultiStatus");
 
   auto del_errors = error_responses();
   for (auto & [code, val] : del_errors.items()) {

@@ -53,40 +53,6 @@ nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) 
           {"required", {"items"}}};
 }
 
-nlohmann::json SchemaBuilder::configuration_metadata_schema() {
-  return {
-      {"type", "object"},
-      {"properties",
-       {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
-        {"name", {{"type", "string"}, {"description", "Parameter name"}}},
-        {"type", {{"type", "string"}, {"description", "Parameter type (e.g. 'parameter')"}}},
-        {"x-medkit",
-         {{"type", "object"},
-          {"description", "Vendor extensions (medkit)"},
-          {"properties",
-           {{"source",
-             {{"type", "string"},
-              {"description", "App ID that owns this parameter (only present in aggregated configurations)"}}},
-            {"node",
-             {{"type", "string"},
-              {"description", "Node FQN providing this parameter (only present in aggregated configurations)"}}}}}}}}},
-      {"required", {"id", "name", "type"}}};
-}
-
-nlohmann::json SchemaBuilder::configuration_read_value_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}, {"description", "Configuration parameter ID"}}},
-            {"data", {{"description", "Configuration value (type varies by parameter)"}}}}},
-          {"required", {"id", "data"}}};
-}
-
-nlohmann::json SchemaBuilder::configuration_write_value_schema() {
-  return {{"type", "object"},
-          {"properties", {{"data", {{"description", "Configuration value to set (type varies by parameter)"}}}}},
-          {"required", {"data"}}};
-}
-
 nlohmann::json SchemaBuilder::log_entry_schema() {
   nlohmann::json context_schema = {{"type", "object"},
                                    {"properties",
@@ -392,20 +358,6 @@ nlohmann::json SchemaBuilder::trigger_create_request_schema() {
           {"required", {"resource", "trigger_condition"}}};
 }
 
-nlohmann::json SchemaBuilder::configuration_delete_multi_status_schema() {
-  nlohmann::json result_entry = {{"type", "object"},
-                                 {"properties",
-                                  {{"node", {{"type", "string"}}},
-                                   {"app_id", {{"type", "string"}}},
-                                   {"success", {{"type", "boolean"}}},
-                                   {"error", {{"type", "string"}}}}}};
-
-  return {
-      {"type", "object"},
-      {"properties", {{"entity_id", {{"type", "string"}}}, {"results", {{"type", "array"}, {"items", result_entry}}}}},
-      {"required", {"entity_id", "results"}}};
-}
-
 nlohmann::json SchemaBuilder::cyclic_subscription_create_request_schema() {
   return {{"type", "object"},
           {"properties",
@@ -529,12 +481,6 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
     std::map<std::string, nlohmann::json> m = {
         // Core types
         {"GenericError", generic_error()},
-        // Configuration
-        {"ConfigurationMetaData", configuration_metadata_schema()},
-        {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
-        {"ConfigurationReadValue", configuration_read_value_schema()},
-        {"ConfigurationWriteValue", configuration_write_value_schema()},
-        {"ConfigurationDeleteMultiStatus", configuration_delete_multi_status_schema()},
         // Logs
         {"LogEntry", log_entry_schema()},
         {"LogEntryList", log_entry_list_schema()},
