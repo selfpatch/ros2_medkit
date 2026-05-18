@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/triggers.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
@@ -50,7 +51,9 @@ using AllDtos =
                // Data domain DTOs
                XMedkitDataItem, DataItem, Collection<DataItem>, DataListXMedkit, DataWriteRequest,
                // Lock domain DTOs
-               Lock, Collection<Lock>, AcquireLockRequest, ExtendLockRequest>;
+               Lock, Collection<Lock>, AcquireLockRequest, ExtendLockRequest,
+               // Trigger domain DTOs
+               TriggerCondition, Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
