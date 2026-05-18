@@ -14,6 +14,8 @@
 
 #include "schema_builder.hpp"
 
+#include "ros2_medkit_gateway/dto/registry.hpp"
+
 namespace ros2_medkit_gateway {
 namespace openapi {
 
@@ -666,71 +668,81 @@ nlohmann::json SchemaBuilder::items_wrapper_ref(const std::string & schema_name)
 }
 
 const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas() {
-  static const std::map<std::string, nlohmann::json> schemas = {
-      // Core types
-      {"GenericError", generic_error()},
-      {"EntityDetail", entity_detail_schema()},
-      {"EntityList", items_wrapper_ref("EntityDetail")},
-      // Faults
-      {"FaultListItem", fault_list_item_schema()},
-      {"FaultDetail", fault_detail_schema()},
-      {"FaultList", items_wrapper_ref("FaultListItem")},
-      // Configuration
-      {"ConfigurationMetaData", configuration_metadata_schema()},
-      {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
-      {"ConfigurationReadValue", configuration_read_value_schema()},
-      {"ConfigurationWriteValue", configuration_write_value_schema()},
-      {"ConfigurationDeleteMultiStatus", configuration_delete_multi_status_schema()},
-      // Logs
-      {"LogEntry", log_entry_schema()},
-      {"LogEntryList", log_entry_list_schema()},
-      {"LogConfiguration", log_configuration_schema()},
-      // Server
-      {"HealthStatus", health_schema()},
-      {"VersionInfo", version_info_schema()},
-      {"RootOverview", root_overview_schema()},
-      // Data
-      {"DataItem", data_item_schema()},
-      {"DataItemList", items_wrapper_ref("DataItem")},
-      {"DataWriteRequest", data_write_request_schema()},
-      // Operations
-      {"OperationItem", operation_item_schema()},
-      {"OperationItemList", items_wrapper_ref("OperationItem")},
-      {"OperationDetail", operation_detail_schema()},
-      {"OperationExecution", operation_execution_schema()},
-      {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
-      {"ExecutionUpdateRequest", execution_update_request_schema()},
-      // Triggers
-      {"Trigger", trigger_schema()},
-      {"TriggerList", items_wrapper_ref("Trigger")},
-      {"TriggerUpdateRequest", trigger_update_request_schema()},
-      {"TriggerCreateRequest", trigger_create_request_schema()},
-      // Subscriptions
-      {"CyclicSubscription", cyclic_subscription_schema()},
-      {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
-      {"CyclicSubscriptionCreateRequest", cyclic_subscription_create_request_schema()},
-      // Locking
-      {"Lock", lock_schema()},
-      {"LockList", items_wrapper_ref("Lock")},
-      {"AcquireLockRequest", acquire_lock_request_schema()},
-      {"ExtendLockRequest", extend_lock_request_schema()},
-      // Scripts
-      {"ScriptMetadata", script_metadata_schema()},
-      {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
-      {"ScriptUploadResponse", script_upload_response_schema()},
-      {"ScriptExecution", script_execution_schema()},
-      {"ScriptControlRequest", script_control_request_schema()},
-      // Bulk Data
-      {"BulkDataCategoryList", bulk_data_category_list_schema()},
-      {"BulkDataDescriptor", bulk_data_descriptor_schema()},
-      {"BulkDataDescriptorList", items_wrapper_ref("BulkDataDescriptor")},
-      // Updates
-      {"UpdateList", update_list_schema()},
-      {"UpdateStatus", update_status_schema()},
-      // Auth
-      {"AuthTokenResponse", auth_token_response_schema()},
-      {"AuthCredentials", auth_credentials_schema()},
-  };
+  static const std::map<std::string, nlohmann::json> schemas = []() {
+    std::map<std::string, nlohmann::json> m = {
+        // Core types
+        {"GenericError", generic_error()},
+        {"EntityDetail", entity_detail_schema()},
+        {"EntityList", items_wrapper_ref("EntityDetail")},
+        // Faults
+        {"FaultListItem", fault_list_item_schema()},
+        {"FaultDetail", fault_detail_schema()},
+        {"FaultList", items_wrapper_ref("FaultListItem")},
+        // Configuration
+        {"ConfigurationMetaData", configuration_metadata_schema()},
+        {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},
+        {"ConfigurationReadValue", configuration_read_value_schema()},
+        {"ConfigurationWriteValue", configuration_write_value_schema()},
+        {"ConfigurationDeleteMultiStatus", configuration_delete_multi_status_schema()},
+        // Logs
+        {"LogEntry", log_entry_schema()},
+        {"LogEntryList", log_entry_list_schema()},
+        {"LogConfiguration", log_configuration_schema()},
+        // Server
+        {"HealthStatus", health_schema()},
+        {"VersionInfo", version_info_schema()},
+        {"RootOverview", root_overview_schema()},
+        // Data
+        {"DataItem", data_item_schema()},
+        {"DataItemList", items_wrapper_ref("DataItem")},
+        {"DataWriteRequest", data_write_request_schema()},
+        // Operations
+        {"OperationItem", operation_item_schema()},
+        {"OperationItemList", items_wrapper_ref("OperationItem")},
+        {"OperationDetail", operation_detail_schema()},
+        {"OperationExecution", operation_execution_schema()},
+        {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
+        {"ExecutionUpdateRequest", execution_update_request_schema()},
+        // Triggers
+        {"Trigger", trigger_schema()},
+        {"TriggerList", items_wrapper_ref("Trigger")},
+        {"TriggerUpdateRequest", trigger_update_request_schema()},
+        {"TriggerCreateRequest", trigger_create_request_schema()},
+        // Subscriptions
+        {"CyclicSubscription", cyclic_subscription_schema()},
+        {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
+        {"CyclicSubscriptionCreateRequest", cyclic_subscription_create_request_schema()},
+        // Locking
+        {"Lock", lock_schema()},
+        {"LockList", items_wrapper_ref("Lock")},
+        {"AcquireLockRequest", acquire_lock_request_schema()},
+        {"ExtendLockRequest", extend_lock_request_schema()},
+        // Scripts
+        {"ScriptMetadata", script_metadata_schema()},
+        {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
+        {"ScriptUploadResponse", script_upload_response_schema()},
+        {"ScriptExecution", script_execution_schema()},
+        {"ScriptControlRequest", script_control_request_schema()},
+        // Bulk Data
+        {"BulkDataCategoryList", bulk_data_category_list_schema()},
+        {"BulkDataDescriptor", bulk_data_descriptor_schema()},
+        {"BulkDataDescriptorList", items_wrapper_ref("BulkDataDescriptor")},
+        // Updates
+        {"UpdateList", update_list_schema()},
+        {"UpdateStatus", update_status_schema()},
+        // Auth
+        {"AuthTokenResponse", auth_token_response_schema()},
+        {"AuthCredentials", auth_credentials_schema()},
+    };
+    // DTO-contract schemas, merged on top of the hand-written factories. The DTO
+    // version wins on a name collision (currently only "GenericError"). Each
+    // domain migration task removes its now-redundant factory call later.
+    auto dto_schemas = dto::collect_component_schemas();
+    for (auto & [name, schema] : dto_schemas.items()) {
+      m[name] = schema;
+    }
+    return m;
+  }();
   return schemas;
 }
 
