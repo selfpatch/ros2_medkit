@@ -21,6 +21,7 @@
 
 #include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
@@ -53,7 +54,10 @@ using AllDtos =
                // Lock domain DTOs
                Lock, Collection<Lock>, AcquireLockRequest, ExtendLockRequest,
                // Trigger domain DTOs
-               Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest>;
+               Trigger, Collection<Trigger>, TriggerCreateRequest, TriggerUpdateRequest,
+               // Cyclic subscription domain DTOs
+               CyclicSubscription, Collection<CyclicSubscription>, CyclicSubscriptionCreateRequest,
+               CyclicSubscriptionUpdateRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
