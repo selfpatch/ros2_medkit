@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../src/openapi/schema_builder.hpp"
+#include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
@@ -286,7 +287,9 @@ TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
-  auto schema = SchemaBuilder::bulk_data_category_list_schema();
+  // BulkDataCategoryList is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::BulkDataCategoryList>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("items"));
@@ -296,7 +299,9 @@ TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, BulkDataDescriptorSchema) {
-  auto schema = SchemaBuilder::bulk_data_descriptor_schema();
+  // BulkDataDescriptor is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::BulkDataDescriptor>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));

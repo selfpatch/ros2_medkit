@@ -252,24 +252,6 @@ nlohmann::json SchemaBuilder::script_upload_response_schema() {
           {"required", {"id", "name"}}};
 }
 
-nlohmann::json SchemaBuilder::bulk_data_category_list_schema() {
-  return items_wrapper({{"type", "string"}});
-}
-
-nlohmann::json SchemaBuilder::bulk_data_descriptor_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
-            {"size", {{"type", "integer"}}},
-            {"mimetype", {{"type", "string"}, {"description", "MIME type of the file"}}},
-            {"creation_date",
-             {{"type", "string"}, {"format", "date-time"}, {"description", "ISO 8601 creation timestamp"}}},
-            {"description", {{"type", "string"}, {"description", "Human-readable description"}}},
-            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
-          {"required", {"id", "name"}}};
-}
-
 nlohmann::json SchemaBuilder::update_list_schema() {
   return items_wrapper({{"type", "string"}});
 }
@@ -380,10 +362,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"ScriptUploadResponse", script_upload_response_schema()},
         {"ScriptExecution", script_execution_schema()},
         {"ScriptControlRequest", script_control_request_schema()},
-        // Bulk Data
-        {"BulkDataCategoryList", bulk_data_category_list_schema()},
-        {"BulkDataDescriptor", bulk_data_descriptor_schema()},
-        {"BulkDataDescriptorList", items_wrapper_ref("BulkDataDescriptor")},
+        // Bulk Data - BulkDataCategoryList, BulkDataDescriptor, BulkDataDescriptorList
+        // now come from DTO (dto/bulkdata.hpp).
         // Updates
         {"UpdateList", update_list_schema()},
         {"UpdateStatus", update_status_schema()},

@@ -83,12 +83,6 @@ class SchemaBuilder {
   /// Script execution status schema
   static nlohmann::json script_execution_schema();
 
-  /// Bulk-data category list schema (items are bare strings)
-  static nlohmann::json bulk_data_category_list_schema();
-
-  /// Bulk-data descriptor schema
-  static nlohmann::json bulk_data_descriptor_schema();
-
   /// Script upload response schema (minimal: id + name)
   static nlohmann::json script_upload_response_schema();
 

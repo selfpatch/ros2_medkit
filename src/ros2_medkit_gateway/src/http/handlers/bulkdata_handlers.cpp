@@ -23,6 +23,8 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/dto/bulkdata.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 namespace ros2_medkit_gateway {
@@ -52,19 +54,17 @@ void BulkDataHandlers::handle_list_categories(const httplib::Request & req, http
   }
 
   // Build categories list: "rosbags" always available + BulkDataStore categories
-  nlohmann::json categories = nlohmann::json::array();
-  categories.push_back("rosbags");  // Always available via FaultManager
+  dto::BulkDataCategoryList response;
+  response.items.push_back("rosbags");  // Always available via FaultManager
 
   auto * store = ctx_.bulk_data_store();
   if (store) {
     for (const auto & cat : store->list_categories()) {
-      categories.push_back(cat);
+      response.items.push_back(cat);
     }
   }
 
-  nlohmann::json response = {{"items", categories}};
-
-  HandlerContext::send_json(res, response);
+  HandlerContext::send_dto(res, response);
 }
 
 void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, httplib::Response & res) {
@@ -128,7 +128,7 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
       }
     }
 
-    nlohmann::json items = nlohmann::json::array();
+    dto::Collection<dto::BulkDataDescriptor> response;
 
     for (const auto & rosbag : all_rosbags) {
       std::string fault_code = rosbag.value("fault_code", "");
@@ -147,18 +147,18 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
         created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
       }
 
-      nlohmann::json descriptor = {
-          {"id", bulk_data_id},
-          {"name", fault_code + " recording " + format_timestamp_ns(created_at_ns)},
-          {"mimetype", get_rosbag_mimetype(format)},
-          {"size", size_bytes},
-          {"creation_date", format_timestamp_ns(created_at_ns)},
-          {"x-medkit", {{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}}}};
-      items.push_back(descriptor);
+      dto::BulkDataDescriptor descriptor;
+      descriptor.id = bulk_data_id;
+      descriptor.name = fault_code + " recording " + format_timestamp_ns(created_at_ns);
+      descriptor.mimetype = get_rosbag_mimetype(format);
+      descriptor.size = size_bytes;
+      descriptor.creation_date = format_timestamp_ns(created_at_ns);
+      descriptor.x_medkit =
+          nlohmann::json{{"fault_code", fault_code}, {"duration_sec", duration_sec}, {"format", format}};
+      response.items.push_back(std::move(descriptor));
     }
 
-    nlohmann::json response = {{"items", items}};
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, response);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
     auto * store = ctx_.bulk_data_store();
@@ -168,25 +168,23 @@ void BulkDataHandlers::handle_list_descriptors(const httplib::Request & req, htt
     }
 
     auto items_list = store->list_items(entity_info->entity_id, category);
-    nlohmann::json json_items = nlohmann::json::array();
+    dto::Collection<dto::BulkDataDescriptor> response;
     for (const auto & item : items_list) {
-      nlohmann::json desc = {
-          {"id", item.id},
-          {"name", item.name},
-          {"mimetype", item.mime_type},
-          {"size", item.size},
-          {"creation_date", item.created},
-      };
+      dto::BulkDataDescriptor desc;
+      desc.id = item.id;
+      desc.name = item.name;
+      desc.mimetype = item.mime_type;
+      desc.size = item.size;
+      desc.creation_date = item.created;
       if (!item.description.empty()) {
-        desc["description"] = item.description;
+        desc.description = item.description;
       }
       if (!item.metadata.empty()) {
-        desc["x-medkit"] = item.metadata;
+        desc.x_medkit = item.metadata;
       }
-      json_items.push_back(desc);
+      response.items.push_back(std::move(desc));
     }
-    nlohmann::json response = {{"items", json_items}};
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, response);
   }
 }
 
@@ -290,24 +288,25 @@ void BulkDataHandlers::handle_upload(const httplib::Request & req, httplib::Resp
     return;
   }
 
-  // Build response JSON
-  const auto & desc = *result;
-  nlohmann::json descriptor_json = {{"id", desc.id},
-                                    {"name", desc.name},
-                                    {"mimetype", desc.mime_type},
-                                    {"size", desc.size},
-                                    {"creation_date", desc.created}};
-  if (!desc.description.empty()) {
-    descriptor_json["description"] = desc.description;
+  // Build response DTO
+  const auto & stored = *result;
+  dto::BulkDataDescriptor descriptor;
+  descriptor.id = stored.id;
+  descriptor.name = stored.name;
+  descriptor.mimetype = stored.mime_type;
+  descriptor.size = stored.size;
+  descriptor.creation_date = stored.created;
+  if (!stored.description.empty()) {
+    descriptor.description = stored.description;
   }
-  if (!desc.metadata.empty()) {
-    descriptor_json["x-medkit"] = desc.metadata;
+  if (!stored.metadata.empty()) {
+    descriptor.x_medkit = stored.metadata;
   }
 
   // Return 201 Created with Location header
   res.status = 201;
-  res.set_header("Location", req.path + "/" + desc.id);
-  HandlerContext::send_json(res, descriptor_json);
+  res.set_header("Location", req.path + "/" + stored.id);
+  HandlerContext::send_dto(res, descriptor);
 }
 
 void BulkDataHandlers::handle_delete(const httplib::Request & req, httplib::Response & res) {

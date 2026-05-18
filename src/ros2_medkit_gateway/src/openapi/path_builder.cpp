@@ -448,7 +448,7 @@ nlohmann::json PathBuilder::build_bulk_data_collection(const std::string & entit
   get_op["description"] = "Returns available bulk data categories (e.g., rosbags) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::bulk_data_category_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("BulkDataCategoryList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
