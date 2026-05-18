@@ -34,7 +34,7 @@ using AllDtos = std::tuple<
 
 namespace detail {
 template <class Tuple, std::size_t... I>
-nlohmann::json collect_impl(std::index_sequence<I...>) {
+nlohmann::json collect_impl(std::index_sequence<I...> /*seq*/) {
   nlohmann::json schemas = nlohmann::json::object();
   ((schemas[std::string(dto_name<std::tuple_element_t<I, Tuple>>)] =
         SchemaWriter<std::tuple_element_t<I, Tuple>>::schema()),

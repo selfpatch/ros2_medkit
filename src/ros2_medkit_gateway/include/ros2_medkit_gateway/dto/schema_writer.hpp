@@ -31,7 +31,7 @@ nlohmann::json schema_of();  // forward declaration
 
 namespace detail {
 template <class Variant, std::size_t... I>
-nlohmann::json variant_schema(std::index_sequence<I...>) {
+nlohmann::json variant_schema(std::index_sequence<I...> /*seq*/) {
   return nlohmann::json{{"oneOf", nlohmann::json::array({schema_of<std::variant_alternative_t<I, Variant>>()...})}};
 }
 }  // namespace detail
