@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/sample.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
 namespace dto = ros2_medkit_gateway::dto;
 
@@ -210,4 +211,144 @@ TEST(DtoEnums, EntityTypeVocabularyHasFourValues) {
 
 TEST(DtoEnums, CyclicSubscriptionIntervalHasThreeValues) {
   EXPECT_EQ(std::size(dto::kCyclicSubscriptionIntervalValues), 3u);
+}
+
+// =============================================================================
+// XMedkit DTOs
+// =============================================================================
+
+TEST(XMedkitDtos, XMedkitRos2IsDto) {
+  EXPECT_TRUE(dto::is_dto_v<dto::XMedkitRos2>);
+  EXPECT_EQ(dto::dto_name<dto::XMedkitRos2>, "XMedkitRos2");
+}
+
+TEST(XMedkitDtos, XMedkitRos2NamespaceKeyIsMappedCorrectly) {
+  // The C++ member is `ns` but the wire key must be "namespace".
+  dto::XMedkitRos2 r2;
+  r2.ns = "/sensors";
+  const auto j = dto::JsonWriter<dto::XMedkitRos2>::write(r2);
+  EXPECT_TRUE(j.contains("namespace"));
+  EXPECT_EQ(j.at("namespace"), "/sensors");
+  EXPECT_FALSE(j.contains("ns"));
+}
+
+TEST(XMedkitDtos, XMedkitAreaNestedRos2IsSerializedCorrectly) {
+  dto::XMedkitArea area;
+  dto::XMedkitRos2 r2;
+  r2.ns = "/perception";
+  area.ros2 = r2;
+  area.contributors = std::vector<std::string>{"local", "peer:robot2"};
+
+  const auto j = dto::JsonWriter<dto::XMedkitArea>::write(area);
+
+  // Nested "ros2" object must be present with the "namespace" sub-key.
+  ASSERT_TRUE(j.contains("ros2"));
+  EXPECT_TRUE(j.at("ros2").contains("namespace"));
+  EXPECT_EQ(j.at("ros2").at("namespace"), "/perception");
+
+  // optional parent_area_id is absent when not set
+  EXPECT_FALSE(j.contains("parent_area_id"));
+
+  // contributors are serialized
+  ASSERT_TRUE(j.contains("contributors"));
+  EXPECT_EQ(j.at("contributors").size(), 2u);
+}
+
+TEST(XMedkitDtos, XMedkitAreaSchemaHasRos2RefProperty) {
+  const auto schema = dto::SchemaWriter<dto::XMedkitArea>::schema();
+  ASSERT_EQ(schema.at("type"), "object");
+  ASSERT_TRUE(schema.at("properties").contains("ros2"));
+  // Nested DTO renders as a $ref in schema.
+  const auto & ros2_prop = schema.at("properties").at("ros2");
+  EXPECT_TRUE(ros2_prop.contains("$ref"));
+  EXPECT_EQ(ros2_prop.at("$ref"), "#/components/schemas/XMedkitRos2");
+}
+
+TEST(XMedkitDtos, XMedkitComponentIsDto) {
+  EXPECT_TRUE(dto::is_dto_v<dto::XMedkitComponent>);
+  EXPECT_EQ(dto::dto_name<dto::XMedkitComponent>, "XMedkitComponent");
+}
+
+TEST(XMedkitDtos, XMedkitComponentCamelCaseWireKeys) {
+  dto::XMedkitComponent comp;
+  comp.parent_component_id = "parent_comp";
+  comp.depends_on = std::vector<std::string>{"dep_a", "dep_b"};
+
+  const auto j = dto::JsonWriter<dto::XMedkitComponent>::write(comp);
+
+  EXPECT_TRUE(j.contains("parentComponentId"));
+  EXPECT_EQ(j.at("parentComponentId"), "parent_comp");
+  EXPECT_TRUE(j.contains("dependsOn"));
+  EXPECT_EQ(j.at("dependsOn").size(), 2u);
+}
+
+TEST(XMedkitDtos, XMedkitAppIsDto) {
+  EXPECT_TRUE(dto::is_dto_v<dto::XMedkitApp>);
+  EXPECT_EQ(dto::dto_name<dto::XMedkitApp>, "XMedkitApp");
+}
+
+TEST(XMedkitDtos, XMedkitAppRoundTrip) {
+  dto::XMedkitApp app;
+  dto::XMedkitRos2 r2;
+  r2.node = "/sensors/camera";
+  app.ros2 = r2;
+  app.source = "runtime";
+  app.is_online = true;
+  app.component_id = "sensors_comp";
+
+  const auto j = dto::JsonWriter<dto::XMedkitApp>::write(app);
+  EXPECT_EQ(j.at("source"), "runtime");
+  EXPECT_EQ(j.at("is_online"), true);
+  EXPECT_EQ(j.at("component_id"), "sensors_comp");
+  ASSERT_TRUE(j.contains("ros2"));
+  EXPECT_EQ(j.at("ros2").at("node"), "/sensors/camera");
+}
+
+TEST(XMedkitDtos, XMedkitFunctionIsDto) {
+  EXPECT_TRUE(dto::is_dto_v<dto::XMedkitFunction>);
+  EXPECT_EQ(dto::dto_name<dto::XMedkitFunction>, "XMedkitFunction");
+}
+
+TEST(XMedkitDtos, XMedkitFunctionHostsSerializedAsArray) {
+  dto::XMedkitFunction func;
+  func.source = "manifest";
+  func.hosts = std::vector<std::string>{"app_a", "app_b"};
+  func.description = "Navigation function";
+
+  const auto j = dto::JsonWriter<dto::XMedkitFunction>::write(func);
+  EXPECT_EQ(j.at("source"), "manifest");
+  ASSERT_TRUE(j.contains("hosts"));
+  EXPECT_EQ(j.at("hosts").size(), 2u);
+  EXPECT_EQ(j.at("description"), "Navigation function");
+}
+
+TEST(XMedkitDtos, XMedkitCollectionIsDto) {
+  EXPECT_TRUE(dto::is_dto_v<dto::XMedkitCollection>);
+  EXPECT_EQ(dto::dto_name<dto::XMedkitCollection>, "XMedkitCollection");
+}
+
+TEST(XMedkitDtos, XMedkitCollectionTotalCount) {
+  dto::XMedkitCollection col;
+  col.total_count = 42u;
+
+  const auto j = dto::JsonWriter<dto::XMedkitCollection>::write(col);
+  ASSERT_TRUE(j.contains("total_count"));
+  EXPECT_EQ(j.at("total_count"), 42u);
+  EXPECT_FALSE(j.contains("contributors"));
+}
+
+TEST(XMedkitDtos, AllXMedkitSchemasAreObjects) {
+  const auto area_schema = dto::SchemaWriter<dto::XMedkitArea>::schema();
+  const auto comp_schema = dto::SchemaWriter<dto::XMedkitComponent>::schema();
+  const auto app_schema = dto::SchemaWriter<dto::XMedkitApp>::schema();
+  const auto func_schema = dto::SchemaWriter<dto::XMedkitFunction>::schema();
+  const auto coll_schema = dto::SchemaWriter<dto::XMedkitCollection>::schema();
+  const auto ros2_schema = dto::SchemaWriter<dto::XMedkitRos2>::schema();
+
+  EXPECT_EQ(area_schema.at("type"), "object");
+  EXPECT_EQ(comp_schema.at("type"), "object");
+  EXPECT_EQ(app_schema.at("type"), "object");
+  EXPECT_EQ(func_schema.at("type"), "object");
+  EXPECT_EQ(coll_schema.at("type"), "object");
+  EXPECT_EQ(ros2_schema.at("type"), "object");
 }
