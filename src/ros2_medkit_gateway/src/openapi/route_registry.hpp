@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/dto/contract.hpp"
+
 namespace ros2_medkit_gateway {
 namespace openapi {
 
@@ -38,6 +40,20 @@ class RouteEntry {
   RouteEntry & response(int status_code, const std::string & desc, const nlohmann::json & schema);
   RouteEntry & request_body(const std::string & desc, const nlohmann::json & schema,
                             const std::string & content_type = "application/json");
+
+  /// Typed response: the schema is a $ref to the DTO's component schema.
+  template <class T>
+  RouteEntry & response(int status_code, const std::string & desc) {
+    return response(status_code, desc,
+                    nlohmann::json{{"$ref", "#/components/schemas/" + std::string(dto::dto_name<T>)}});
+  }
+
+  /// Typed request body: the schema is a $ref to the DTO's component schema.
+  template <class T>
+  RouteEntry & request_body(const std::string & desc) {
+    return request_body(desc, nlohmann::json{{"$ref", "#/components/schemas/" + std::string(dto::dto_name<T>)}});
+  }
+
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
   RouteEntry & header_param(const std::string & name, const std::string & desc, bool required = true,
