@@ -476,7 +476,7 @@ void RESTServer::setup_routes() {
         .tag("Operations")
         .summary(std::string("List operations for ") + et.singular)
         .description(std::string("Lists all ROS 2 services and actions available on this ") + et.singular + ".")
-        .response(200, "Operation list", SB::ref("OperationItemList"))
+        .response(200, "Operation list", SB::ref("OperationList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Operations");
 
     reg.get(entity_path + "/operations/{operation_id}",

@@ -213,8 +213,7 @@ nlohmann::json PathBuilder::build_operations_collection(const std::string & enti
   get_op["parameters"] = build_query_params_for_collection();
 
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::operation_item_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OperationList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -305,7 +304,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
   post_op["requestBody"]["content"]["application/json"]["schema"] =
       schema_builder_.from_ros_msg(action.type + "_SendGoal_Request");
   post_op["responses"]["202"]["description"] = "Action accepted";
-  post_op["responses"]["202"]["content"]["application/json"]["schema"] = SchemaBuilder::operation_execution_schema();
+  post_op["responses"]["202"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OperationExecution");
 
   auto post_errors = error_responses();
   for (auto & [code, val] : post_errors.items()) {

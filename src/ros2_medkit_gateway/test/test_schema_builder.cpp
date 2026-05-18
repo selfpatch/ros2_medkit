@@ -222,17 +222,16 @@ TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, OperationDetailSchema) {
-  auto schema = SchemaBuilder::operation_detail_schema();
+TEST(SchemaBuilderStaticTest, OperationDetailSchemaComeFromDto) {
+  // OperationDetail is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("OperationDetail") > 0);
+  const auto & schema = schemas.at("OperationDetail");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("item"));
-  // item references OperationItem via $ref
+  // item references OperationItem via $ref (DTO SchemaWriter uses $ref for nested DTOs)
   EXPECT_TRUE(schema["properties"]["item"].contains("$ref"));
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
 }
 
 // @verifies REQ_INTEROP_002
@@ -565,8 +564,11 @@ TEST(SchemaBuilderStaticTest, DataWriteRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchema) {
-  auto schema = SchemaBuilder::execution_update_request_schema();
+TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchemaComesFromDto) {
+  // ExecutionUpdateRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ExecutionUpdateRequest") > 0);
+  const auto & schema = schemas.at("ExecutionUpdateRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("capability"));

@@ -89,15 +89,6 @@ class SchemaBuilder {
   /// Binary content schema (for file downloads)
   static nlohmann::json binary_schema();
 
-  /// Operation item in collection list
-  static nlohmann::json operation_item_schema();
-
-  /// Operation detail schema (wraps OperationItem in {item: ...})
-  static nlohmann::json operation_detail_schema();
-
-  /// Operation execution status
-  static nlohmann::json operation_execution_schema();
-
   /// Trigger schema (CRUD responses)
   static nlohmann::json trigger_schema();
 
@@ -154,9 +145,6 @@ class SchemaBuilder {
 
   /// Data write request schema (PUT /data/{id})
   static nlohmann::json data_write_request_schema();
-
-  /// Execution update request schema (PUT /operations/{id}/executions/{id})
-  static nlohmann::json execution_update_request_schema();
 
   /// Script control request schema (PUT /scripts/{id}/executions/{id})
   static nlohmann::json script_control_request_schema();

@@ -149,4 +149,45 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   }
 }
 
+/// Overload for handlers that have been migrated off the XMedkit fluent
+/// builder.  The partial/failed_peers aggregation metadata is written
+/// directly into `ext_json` (a JSON object) instead of going through XMedkit.
+inline void merge_peer_items(AggregationManager * agg, const httplib::Request & req, nlohmann::json & result,
+                             nlohmann::json & ext_json) {
+  if (agg == nullptr) {
+    return;
+  }
+  if (req.has_header("X-Medkit-No-Fan-Out")) {
+    return;
+  }
+  if (agg->healthy_peer_count() == 0) {
+    return;
+  }
+  std::optional<std::vector<std::string>> contributors_buffer;
+  const std::vector<std::string> * target_peers = nullptr;
+  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
+    contributors_buffer = agg->get_peer_contributors(*entity_id);
+    if (contributors_buffer->empty()) {
+      return;
+    }
+    target_peers = &contributors_buffer.value();
+  }
+  auto fan_path = build_fan_out_path(req);
+  auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"), target_peers);
+  if (fan_result.merged_items.is_array() && !fan_result.merged_items.empty()) {
+    if (!result.contains("items") || !result["items"].is_array()) {
+      result["items"] = nlohmann::json::array();
+    }
+    for (const auto & item : fan_result.merged_items) {
+      if (item.is_object()) {
+        result["items"].push_back(item);
+      }
+    }
+  }
+  if (fan_result.is_partial) {
+    ext_json["partial"] = true;
+    ext_json["failed_peers"] = fan_result.failed_peers;
+  }
+}
+
 }  // namespace ros2_medkit_gateway

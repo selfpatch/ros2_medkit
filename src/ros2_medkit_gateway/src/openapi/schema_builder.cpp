@@ -264,31 +264,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::operation_item_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
-            {"proximity_proof_required", {{"type", "boolean"}, {"description", "Whether proximity proof is needed"}}},
-            {"asynchronous_execution", {{"type", "boolean"}, {"description", "Whether operation runs asynchronously"}}},
-            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
-          {"required", {"id", "name"}}};
-}
-
-nlohmann::json SchemaBuilder::operation_detail_schema() {
-  return {{"type", "object"}, {"properties", {{"item", ref("OperationItem")}}}, {"required", {"item"}}};
-}
-
-nlohmann::json SchemaBuilder::operation_execution_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"status", {{"type", "string"}, {"enum", {"pending", "running", "completed", "failed"}}}},
-            {"progress", {{"type", "number"}}},
-            {"result", {{"type", "object"}}}}},
-          {"required", {"id", "status"}}};
-}
-
 nlohmann::json SchemaBuilder::trigger_condition_schema() {
   return {{"type", "object"},
           {"properties", {{"condition_type", {{"type", "string"}}}}},
@@ -512,16 +487,6 @@ nlohmann::json SchemaBuilder::data_write_request_schema() {
           {"required", {"type", "data"}}};
 }
 
-nlohmann::json SchemaBuilder::execution_update_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"capability",
-             {{"type", "string"},
-              {"enum", {"stop", "execute", "freeze", "reset"}},
-              {"description", "Control command for the running execution"}}}}},
-          {"required", {"capability"}}};
-}
-
 nlohmann::json SchemaBuilder::script_control_request_schema() {
   return {{"type", "object"},
           {"properties",
@@ -582,13 +547,10 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"DataItem", data_item_schema()},
         {"DataItemList", items_wrapper_ref("DataItem")},
         {"DataWriteRequest", data_write_request_schema()},
-        // Operations
-        {"OperationItem", operation_item_schema()},
-        {"OperationItemList", items_wrapper_ref("OperationItem")},
-        {"OperationDetail", operation_detail_schema()},
-        {"OperationExecution", operation_execution_schema()},
+        // Operations - OperationItem, OperationDetail, OperationExecution,
+        // ExecutionUpdateRequest now come from DTO (dto/operations.hpp).
+        // OperationExecutionList is kept here as a thin wrapper over the DTO type.
         {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
-        {"ExecutionUpdateRequest", execution_update_request_schema()},
         // Triggers
         {"Trigger", trigger_schema()},
         {"TriggerList", items_wrapper_ref("Trigger")},

@@ -209,13 +209,14 @@ TEST_F(PathBuilderTest, OperationsCollectionHasGet) {
   EXPECT_TRUE(result["get"]["responses"].contains("200"));
 }
 
-TEST_F(PathBuilderTest, OperationsCollectionResponseHasItems) {
+TEST_F(PathBuilderTest, OperationsCollectionResponseRefersToOperationList) {
+  // build_operations_collection now uses SchemaBuilder::ref("OperationList") - a $ref to
+  // the DTO-generated Collection<OperationItem> schema.
   AggregatedOperations ops;
   auto result = path_builder_.build_operations_collection("apps/engine", ops);
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/OperationList");
 }
 
 // =============================================================================
