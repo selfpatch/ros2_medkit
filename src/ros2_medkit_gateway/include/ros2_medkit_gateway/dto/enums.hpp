@@ -40,11 +40,11 @@ inline constexpr std::string_view kTriggerStatusValues[] = {"active", "terminate
 /// Cyclic subscription interval (cyclic_subscription_schema).
 inline constexpr std::string_view kCyclicSubscriptionIntervalValues[] = {"fast", "normal", "slow"};
 
-/// Update internal lifecycle phase (update_status_schema - x-medkit.phase).
+/// Update internal lifecycle phase (XMedkitUpdate.phase / UpdateStatus x-medkit).
 inline constexpr std::string_view kUpdatePhaseValues[] = {"none",     "preparing", "prepared", "executing",
                                                           "executed", "failed",    "deleting"};
 
-/// Update status (update_status_schema).
+/// Update status (UpdateStatus.status).
 inline constexpr std::string_view kUpdateStatusValues[] = {"pending", "inProgress", "completed", "failed"};
 
 /// Log severity filter (log_configuration_schema).

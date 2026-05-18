@@ -16,8 +16,7 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-
-using json = nlohmann::json;
+#include "ros2_medkit_gateway/dto/updates.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -34,8 +33,25 @@ bool UpdateHandlers::check_backend(httplib::Response & res) {
   return true;
 }
 
-json UpdateHandlers::status_to_json(const UpdateStatusInfo & status) {
-  return update_status_to_json(status);
+static dto::UpdateStatus to_update_status_dto(const UpdateStatusInfo & info) {
+  dto::UpdateStatus dto;
+  dto.status = update_status_to_string(info.status);
+  dto.x_medkit.phase = update_phase_to_string(info.phase);
+  if (info.progress.has_value()) {
+    dto.progress = *info.progress;
+  }
+  if (info.sub_progress.has_value()) {
+    std::vector<dto::UpdateSubProgress> sub;
+    sub.reserve(info.sub_progress->size());
+    for (const auto & sp : *info.sub_progress) {
+      sub.push_back({sp.name, sp.progress});
+    }
+    dto.sub_progress = std::move(sub);
+  }
+  if (info.error_message.has_value()) {
+    dto.error = *info.error_message;
+  }
+  return dto;
 }
 
 void UpdateHandlers::handle_list_updates(const httplib::Request & req, httplib::Response & res) {
@@ -58,9 +74,7 @@ void UpdateHandlers::handle_list_updates(const httplib::Request & req, httplib::
       return;
     }
 
-    json response;
-    response["items"] = *result;
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, dto::UpdateList{std::move(*result)});
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -96,10 +110,10 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
   }
 
   try {
-    json body;
+    nlohmann::json body;
     try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error &) {
+      body = nlohmann::json::parse(req.body);
+    } catch (const nlohmann::json::parse_error &) {
       HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
       return;
     }
@@ -139,7 +153,7 @@ void UpdateHandlers::handle_register_update(const httplib::Request & req, httpli
       return;
     }
 
-    json response = {{"id", id}};
+    nlohmann::json response = {{"id", id}};
     HandlerContext::send_json(res, response);
     res.status = 201;
     res.set_header("Location", api_path("/updates/" + id));
@@ -337,7 +351,7 @@ void UpdateHandlers::handle_get_status(const httplib::Request & req, httplib::Re
       HandlerContext::send_error(res, 404, ERR_X_MEDKIT_UPDATE_NOT_FOUND, result.error().message);
       return;
     }
-    HandlerContext::send_json(res, status_to_json(*result));
+    HandlerContext::send_dto(res, to_update_status_dto(*result));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }

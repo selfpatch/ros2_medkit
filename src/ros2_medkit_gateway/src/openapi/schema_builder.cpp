@@ -175,44 +175,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::update_list_schema() {
-  return items_wrapper({{"type", "string"}});
-}
-
-nlohmann::json SchemaBuilder::update_status_schema() {
-  nlohmann::json sub_progress_schema = {
-      {"type", "object"},
-      {"properties", {{"name", {{"type", "string"}}}, {"progress", {{"type", "number"}}}}},
-      {"required", {"name", "progress"}}};
-
-  nlohmann::json x_medkit_schema = {
-      {"type", "object"},
-      {"description", "Vendor extensions (medkit)"},
-      {"properties",
-       {{"phase",
-         {{"type", "string"},
-          {"enum", {"none", "preparing", "prepared", "executing", "executed", "failed", "deleting"}},
-          {"description", "Internal lifecycle phase, distinguishes prepare-completed from execute-completed"}}}}},
-      {"required", {"phase"}}};
-
-  // x-medkit is optional in the SOVD payload (clients may ignore vendor
-  // extensions; same convention as FaultDetail x-medkit extension).
-  // When the gateway DOES emit the x-medkit object,
-  // however, ``phase`` is mandatory inside it - that scope is enforced by
-  // the inner ``required: {phase}`` above, NOT by listing x-medkit in the
-  // parent's required list. The drift test in test_openapi_response_drift
-  // covers regression on the emit side. If x-medkit is ever dropped from
-  // the parent properties, the inner required must be revisited too.
-  return {{"type", "object"},
-          {"properties",
-           {{"status", {{"type", "string"}, {"enum", {"pending", "inProgress", "completed", "failed"}}}},
-            {"progress", {{"type", "number"}}},
-            {"sub_progress", {{"type", "array"}, {"items", sub_progress_schema}}},
-            {"error", {{"type", "string"}}},
-            {"x-medkit", x_medkit_schema}}},
-          {"required", {"status"}}};
-}
-
 nlohmann::json SchemaBuilder::auth_token_response_schema() {
   return {{"type", "object"},
           {"properties",
@@ -264,9 +226,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         // ScriptControlRequest now come from DTO (dto/scripts.hpp).
         // Bulk Data - BulkDataCategoryList, BulkDataDescriptor, BulkDataDescriptorList
         // now come from DTO (dto/bulkdata.hpp).
-        // Updates
-        {"UpdateList", update_list_schema()},
-        {"UpdateStatus", update_status_schema()},
+        // Updates - UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus
+        // now come from DTO (dto/updates.hpp).
         // Auth
         {"AuthTokenResponse", auth_token_response_schema()},
         {"AuthCredentials", auth_credentials_schema()},

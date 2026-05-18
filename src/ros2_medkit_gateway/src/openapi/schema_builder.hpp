@@ -68,12 +68,6 @@ class SchemaBuilder {
   /// Binary content schema (for file downloads)
   static nlohmann::json binary_schema();
 
-  /// Software update list schema (items: [string])
-  static nlohmann::json update_list_schema();
-
-  /// Software update status schema
-  static nlohmann::json update_status_schema();
-
   /// Auth token response schema
   static nlohmann::json auth_token_response_schema();
 
