@@ -434,11 +434,12 @@ generic ``XMedkitCollection`` type. The entity list endpoints (areas, components
 apps, functions) emit exactly that struct, so their generated schemas are
 accurate. The fault, config, data, and log list endpoints, however, emit a
 richer domain-specific collection x-medkit (``FaultListXMedkit``,
-``ConfigListXMedkit``, ``DataListXMedkit``, ``LogListXMedkit`` - carrying
-aggregation counts, peer provenance, and similar metadata). Those domain structs
-are defined and registered in ``AllDtos``, but the ``FaultList`` / ``ConfigList``
-/ ``DataList`` / ``LogList`` response schemas still type their ``x-medkit``
-property as ``XMedkitCollection``, so a generated client does not see the richer
+``FaultListAggXMedkit``, ``ConfigListXMedkit``, ``DataListXMedkit``,
+``LogListXMedkit`` - carrying aggregation counts, peer provenance, and similar
+metadata). Those domain structs are defined and registered in ``AllDtos``, but
+the ``FaultList`` / ``FaultListAgg`` / ``ConfigList`` / ``DataList`` / ``LogList``
+response schemas still type their ``x-medkit`` property as
+``XMedkitCollection``, so a generated client does not see the richer
 fields from the schema alone. The wire payload remains a valid instance of the
 published schema (JSON Schema allows additional properties by default), so this
 is a schema-precision gap, not a contract violation. A future refinement could

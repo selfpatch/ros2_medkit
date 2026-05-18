@@ -83,9 +83,14 @@ constexpr Field<C, M> field(std::string_view key, M C::*ptr, Presence p, std::st
 }
 
 /// Enum-constrained field: `values` must be an inline constexpr std::string_view array.
+/// M must be std::string or std::optional<std::string>; JsonReader::check_enum only
+/// fires for string members, so field_enum on any other type would silently skip
+/// enforcement.
 template <class C, class M, std::size_t N>
 constexpr Field<C, M> field_enum(std::string_view key, M C::*ptr, const std::string_view (&values)[N],
                                  std::string_view desc = std::string_view{}) {
+  static_assert(std::is_same_v<M, std::string> || std::is_same_v<M, std::optional<std::string>>,
+                "field_enum requires a std::string or std::optional<std::string> member");
   return Field<C, M>{key, ptr, default_presence<M>(), desc, values, N};
 }
 
