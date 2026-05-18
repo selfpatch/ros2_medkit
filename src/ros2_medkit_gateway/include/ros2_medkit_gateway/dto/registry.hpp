@@ -36,9 +36,10 @@ using AllDtos =
     std::tuple<GenericError, XMedkitRos2, XMedkitArea, XMedkitComponent, XMedkitApp, XMedkitFunction, XMedkitCollection,
                AreaListItem, AreaDetail, ComponentListItem, ComponentDetail, AppListItem, AppDetail, FunctionListItem,
                FunctionDetail, Collection<AreaListItem>, Collection<ComponentListItem>, Collection<AppListItem>,
-               Collection<FunctionListItem>, FaultListItem, Collection<FaultListItem>, FaultStatus, FaultItem,
-               FaultEnvironmentData, FaultXMedkit, FaultDetail, XMedkitOperationItem, XMedkitOperationExecution,
-               OperationItem, Collection<OperationItem>, OperationDetail, OperationExecution, ExecutionUpdateRequest>;
+               Collection<FunctionListItem>, FaultListItem, Collection<FaultListItem>, FaultListXMedkit,
+               FaultListAggXMedkit, FaultStatus, FaultItem, FaultEnvironmentData, FaultXMedkit, FaultDetail,
+               XMedkitOperationItem, XMedkitOperationExecution, OperationItem, Collection<OperationItem>,
+               OperationDetail, OperationExecution, ExecutionUpdateRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>

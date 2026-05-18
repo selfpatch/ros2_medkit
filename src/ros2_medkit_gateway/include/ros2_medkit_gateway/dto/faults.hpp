@@ -127,6 +127,90 @@ template <>
 inline constexpr std::string_view dto_name<FaultEnvironmentData> = "FaultEnvironmentData";
 
 // =============================================================================
+// FaultListXMedkit - x-medkit vendor extension on fault list responses:
+//   handle_list_all_faults (global, no entity_id) and
+//   handle_list_faults APP branch (per-app, has entity_id + source_id).
+//
+// Wire keys:
+//   count           - total items in the response (required after fan-out merge)
+//   muted_count     - number of muted/correlated faults (from FaultManager)
+//   cluster_count   - number of fault clusters (from FaultManager)
+//   entity_id       - SOVD entity ID (optional; absent for global endpoint)
+//   source_id       - namespace_path used for filtering (optional; App only)
+//   muted_faults    - detailed muted fault list (optional; only if requested)
+//   clusters        - detailed cluster list (optional; only if requested)
+//   partial         - true when a fan-out peer request failed (optional)
+//   failed_peers    - list of peer addresses that returned errors (optional)
+// =============================================================================
+struct FaultListXMedkit {
+  int64_t count{0};
+  std::optional<int64_t> muted_count;
+  std::optional<int64_t> cluster_count;
+  std::optional<std::string> entity_id;
+  std::optional<std::string> source_id;
+  std::optional<nlohmann::json> muted_faults;  // free-form: FaultManager output
+  std::optional<nlohmann::json> clusters;      // free-form: FaultManager output
+  std::optional<bool> partial;
+  std::optional<std::vector<std::string>> failed_peers;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultListXMedkit> =
+    std::make_tuple(field("count", &FaultListXMedkit::count), field("muted_count", &FaultListXMedkit::muted_count),
+                    field("cluster_count", &FaultListXMedkit::cluster_count),
+                    field("entity_id", &FaultListXMedkit::entity_id), field("source_id", &FaultListXMedkit::source_id),
+                    field("muted_faults", &FaultListXMedkit::muted_faults),
+                    field("clusters", &FaultListXMedkit::clusters), field("partial", &FaultListXMedkit::partial),
+                    field("failed_peers", &FaultListXMedkit::failed_peers));
+
+template <>
+inline constexpr std::string_view dto_name<FaultListXMedkit> = "FaultListXMedkit";
+
+// =============================================================================
+// FaultListAggXMedkit - x-medkit vendor extension on aggregated fault list
+// responses: handle_list_faults FUNCTION / COMPONENT / AREA branches.
+//
+// Wire keys:
+//   entity_id           - SOVD entity ID being queried
+//   aggregation_level   - one of: "function", "component", "area"
+//   aggregated          - always true (signals multi-source aggregation)
+//   host_count          - number of host apps (Function only)
+//   app_count           - number of apps (Component / Area)
+//   component_count     - number of components (Area only)
+//   aggregation_sources - FQNs used for filtering (array of strings)
+//   count               - total items after fan-out merge
+//   partial             - true when a fan-out peer request failed (optional)
+//   failed_peers        - list of peer addresses that returned errors (optional)
+// =============================================================================
+struct FaultListAggXMedkit {
+  std::optional<std::string> entity_id;
+  std::optional<std::string> aggregation_level;
+  std::optional<bool> aggregated;
+  std::optional<int64_t> host_count;
+  std::optional<int64_t> app_count;
+  std::optional<int64_t> component_count;
+  std::optional<std::vector<std::string>> aggregation_sources;
+  int64_t count{0};
+  std::optional<bool> partial;
+  std::optional<std::vector<std::string>> failed_peers;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultListAggXMedkit> =
+    std::make_tuple(field("entity_id", &FaultListAggXMedkit::entity_id),
+                    field("aggregation_level", &FaultListAggXMedkit::aggregation_level),
+                    field("aggregated", &FaultListAggXMedkit::aggregated),
+                    field("host_count", &FaultListAggXMedkit::host_count),
+                    field("app_count", &FaultListAggXMedkit::app_count),
+                    field("component_count", &FaultListAggXMedkit::component_count),
+                    field("aggregation_sources", &FaultListAggXMedkit::aggregation_sources),
+                    field("count", &FaultListAggXMedkit::count), field("partial", &FaultListAggXMedkit::partial),
+                    field("failed_peers", &FaultListAggXMedkit::failed_peers));
+
+template <>
+inline constexpr std::string_view dto_name<FaultListAggXMedkit> = "FaultListAggXMedkit";
+
+// =============================================================================
 // FaultXMedkit - x-medkit vendor extension inside FaultDetail
 //
 // Wire keys (from build_sovd_fault_response):

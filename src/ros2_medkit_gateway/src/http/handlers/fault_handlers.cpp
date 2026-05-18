@@ -28,7 +28,6 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
@@ -313,18 +312,18 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
       // Format: items array at top level
       json response = {{"items", result.data["faults"]}};
 
-      // x-medkit extension for ros2_medkit-specific fields
-      XMedkit ext;
-      ext.add("count", result.data["count"]);
-      ext.add("muted_count", result.data["muted_count"]);
-      ext.add("cluster_count", result.data["cluster_count"]);
+      // x-medkit extension for ros2_medkit-specific fields (typed DTO)
+      dto::FaultListXMedkit xm;
+      xm.count = result.data.value("count", static_cast<int64_t>(0));
+      xm.muted_count = result.data.value("muted_count", static_cast<int64_t>(0));
+      xm.cluster_count = result.data.value("cluster_count", static_cast<int64_t>(0));
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
-        ext.add("muted_faults", result.data["muted_faults"]);
+        xm.muted_faults = result.data["muted_faults"];
       }
       if (result.data.contains("clusters")) {
-        ext.add("clusters", result.data["clusters"]);
+        xm.clusters = result.data["clusters"];
       }
 
       // Fan-out to peers: faults are managed by FaultManager, not cached,
@@ -337,14 +336,12 @@ void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib
           }
         }
         if (fan_result.is_partial) {
-          ext.add("partial", true);
-          ext.add("failed_peers", fan_result.failed_peers);
+          xm.partial = true;
+          xm.failed_peers = fan_result.failed_peers;
         }
       }
 
-      if (!ext.empty()) {
-        response["x-medkit"] = ext.build();
-      }
+      response["x-medkit"] = dto::JsonWriter<dto::FaultListXMedkit>::write(xm);
 
       res.status = 200;
       HandlerContext::send_json(res, response);
@@ -457,21 +454,23 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       // Build response
       json response = {{"items", filtered_faults}};
 
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "function");
-      ext.add("aggregated", true);
-      ext.add("host_count", host_fqns.size());
-      // Include source app IDs for cross-referencing aggregated results
-      json source_ids = json::array();
-      for (const auto & fqn : host_fqns) {
-        source_ids.push_back(fqn);
+      // x-medkit extension (typed DTO)
+      dto::FaultListAggXMedkit xm;
+      xm.entity_id = entity_id;
+      xm.aggregation_level = "function";
+      xm.aggregated = true;
+      xm.host_count = static_cast<int64_t>(host_fqns.size());
+      {
+        std::vector<std::string> sources(host_fqns.begin(), host_fqns.end());
+        if (!sources.empty()) {
+          xm.aggregation_sources = std::move(sources);
+        }
       }
-      ext.add("aggregation_sources", source_ids);
 
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      ext.add("count", response["items"].size());
-      response["x-medkit"] = ext.build();
+      auto xm_json = dto::JsonWriter<dto::FaultListAggXMedkit>::write(xm);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+      xm_json["count"] = static_cast<int64_t>(response["items"].size());
+      response["x-medkit"] = std::move(xm_json);
       HandlerContext::send_json(res, response);
       return;
     }
@@ -509,21 +508,23 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       // Build response
       json response = {{"items", filtered_faults}};
 
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "component");
-      ext.add("aggregated", true);
-      ext.add("app_count", app_fqns.size());
-      // Include source app FQNs for cross-referencing aggregated results
-      json source_fqns = json::array();
-      for (const auto & fqn : app_fqns) {
-        source_fqns.push_back(fqn);
+      // x-medkit extension (typed DTO)
+      dto::FaultListAggXMedkit xm;
+      xm.entity_id = entity_id;
+      xm.aggregation_level = "component";
+      xm.aggregated = true;
+      xm.app_count = static_cast<int64_t>(app_fqns.size());
+      {
+        std::vector<std::string> sources(app_fqns.begin(), app_fqns.end());
+        if (!sources.empty()) {
+          xm.aggregation_sources = std::move(sources);
+        }
       }
-      ext.add("aggregation_sources", source_fqns);
 
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      ext.add("count", response["items"].size());
-      response["x-medkit"] = ext.build();
+      auto xm_json = dto::JsonWriter<dto::FaultListAggXMedkit>::write(xm);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+      xm_json["count"] = static_cast<int64_t>(response["items"].size());
+      response["x-medkit"] = std::move(xm_json);
       HandlerContext::send_json(res, response);
       return;
     }
@@ -564,22 +565,24 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       // Build response
       json response = {{"items", filtered_faults}};
 
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("aggregation_level", "area");
-      ext.add("aggregated", true);
-      ext.add("component_count", comp_ids.size());
-      ext.add("app_count", app_fqns.size());
-      // Include source app FQNs for cross-referencing aggregated results
-      json area_source_fqns = json::array();
-      for (const auto & fqn : app_fqns) {
-        area_source_fqns.push_back(fqn);
+      // x-medkit extension (typed DTO)
+      dto::FaultListAggXMedkit xm;
+      xm.entity_id = entity_id;
+      xm.aggregation_level = "area";
+      xm.aggregated = true;
+      xm.component_count = static_cast<int64_t>(comp_ids.size());
+      xm.app_count = static_cast<int64_t>(app_fqns.size());
+      {
+        std::vector<std::string> sources(app_fqns.begin(), app_fqns.end());
+        if (!sources.empty()) {
+          xm.aggregation_sources = std::move(sources);
+        }
       }
-      ext.add("aggregation_sources", area_source_fqns);
 
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      ext.add("count", response["items"].size());
-      response["x-medkit"] = ext.build();
+      auto xm_json = dto::JsonWriter<dto::FaultListAggXMedkit>::write(xm);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+      xm_json["count"] = static_cast<int64_t>(response["items"].size());
+      response["x-medkit"] = std::move(xm_json);
       HandlerContext::send_json(res, response);
       return;
     }
@@ -594,24 +597,25 @@ void FaultHandlers::handle_list_faults(const httplib::Request & req, httplib::Re
       // Format: items array at top level
       json response = {{"items", result.data["faults"]}};
 
-      // x-medkit extension for ros2_medkit-specific fields
-      XMedkit ext;
-      ext.entity_id(entity_id);
-      ext.add("source_id", namespace_path);
+      // x-medkit extension for ros2_medkit-specific fields (typed DTO)
+      dto::FaultListXMedkit xm;
+      xm.entity_id = entity_id;
+      xm.source_id = namespace_path;
 
       // Include detailed correlation data if requested and present
       if (result.data.contains("muted_faults")) {
-        ext.add("muted_faults", result.data["muted_faults"]);
+        xm.muted_faults = result.data["muted_faults"];
       }
       if (result.data.contains("clusters")) {
-        ext.add("clusters", result.data["clusters"]);
+        xm.clusters = result.data["clusters"];
       }
 
-      merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-      ext.add("count", response["items"].size());
-      ext.add("muted_count", result.data["muted_count"]);
-      ext.add("cluster_count", result.data["cluster_count"]);
-      response["x-medkit"] = ext.build();
+      auto xm_json = dto::JsonWriter<dto::FaultListXMedkit>::write(xm);
+      merge_peer_items(ctx_.aggregation_manager(), req, response, xm_json);
+      xm_json["count"] = static_cast<int64_t>(response["items"].size());
+      xm_json["muted_count"] = result.data.value("muted_count", static_cast<int64_t>(0));
+      xm_json["cluster_count"] = result.data.value("cluster_count", static_cast<int64_t>(0));
+      response["x-medkit"] = std::move(xm_json);
       HandlerContext::send_json(res, response);
     } else {
       HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
