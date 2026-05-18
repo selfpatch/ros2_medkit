@@ -469,15 +469,16 @@ Key Files
 ``include/ros2_medkit_gateway/http/handlers/handler_context.hpp``
     ``HandlerContext::send_dto<T>()`` and ``HandlerContext::parse_body<T>()``.
 
-Domain headers (``dto/errors.hpp``, ``dto/entities.hpp``, ``dto/faults.hpp``,
-``dto/operations.hpp``, ``dto/config.hpp``, ``dto/locks.hpp``,
-``dto/triggers.hpp``, ``dto/logs.hpp``, ``dto/scripts.hpp``,
-``dto/updates.hpp``, ``dto/auth.hpp``, ``dto/health.hpp``,
-``dto/bulkdata.hpp``, ``dto/cyclic_subscriptions.hpp``,
-``dto/data.hpp``, ``dto/x_medkit.hpp``)
-    Per-domain struct definitions with co-located ``dto_fields`` and
-    ``dto_name`` specializations. ``dto/errors.hpp`` holds ``GenericError``,
-    the error response DTO used by every endpoint.
+Domain headers
+    ``dto/errors.hpp``, ``dto/entities.hpp``, ``dto/faults.hpp``,
+    ``dto/operations.hpp``, ``dto/config.hpp``, ``dto/locks.hpp``,
+    ``dto/triggers.hpp``, ``dto/logs.hpp``, ``dto/scripts.hpp``,
+    ``dto/updates.hpp``, ``dto/auth.hpp``, ``dto/health.hpp``,
+    ``dto/bulkdata.hpp``, ``dto/cyclic_subscriptions.hpp``,
+    ``dto/data.hpp``, ``dto/x_medkit.hpp`` - per-domain struct definitions
+    with co-located ``dto_fields`` and ``dto_name`` specializations.
+    ``dto/errors.hpp`` holds ``GenericError``, the error response DTO used
+    by every endpoint.
 
 ``dto/enums.hpp``
     Enum-vocabulary header. Contains the ``constexpr string_view`` arrays
