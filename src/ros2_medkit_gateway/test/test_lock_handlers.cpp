@@ -390,7 +390,8 @@ TEST_F(LockHandlersTest, AcquireLockWithMissingExpirationReturns400) {
 
   EXPECT_EQ(res.status, 400);
   auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  // parse_body uses ERR_INVALID_REQUEST for missing required fields
+  EXPECT_EQ(body["error_code"], "invalid-request");
 }
 
 TEST_F(LockHandlersTest, AcquireLockWithZeroExpirationReturns400) {

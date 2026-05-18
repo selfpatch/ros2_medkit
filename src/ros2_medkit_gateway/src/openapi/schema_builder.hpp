@@ -83,15 +83,6 @@ class SchemaBuilder {
   /// Cyclic subscription schema (CRUD responses)
   static nlohmann::json cyclic_subscription_schema();
 
-  /// Lock schema (CRUD responses)
-  static nlohmann::json lock_schema();
-
-  /// Lock acquire request schema (POST /locks)
-  static nlohmann::json acquire_lock_request_schema();
-
-  /// Lock extend request schema (PUT /locks/{id})
-  static nlohmann::json extend_lock_request_schema();
-
   /// Script metadata schema (list/get)
   static nlohmann::json script_metadata_schema();
 

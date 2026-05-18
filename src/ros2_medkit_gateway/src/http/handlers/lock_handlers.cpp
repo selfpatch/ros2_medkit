@@ -20,6 +20,7 @@
 #include <sstream>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -122,6 +123,20 @@ json LockHandlers::lock_to_json(const LockInfo & lock, const std::string & clien
   return result;
 }
 
+/**
+ * @brief Build a typed Lock DTO from a LockInfo.
+ */
+static dto::Lock lock_info_to_dto(const LockInfo & lock, const std::string & client_id) {
+  dto::Lock dto;
+  dto.id = lock.lock_id;
+  dto.owned = !client_id.empty() && lock.client_id == client_id;
+  if (!lock.scopes.empty()) {
+    dto.scopes = lock.scopes;
+  }
+  dto.lock_expiration = LockHandlers::format_expiration(lock.expires_at);
+  return dto;
+}
+
 // ============================================================================
 // Handler implementations
 // ============================================================================
@@ -153,39 +168,23 @@ void LockHandlers::handle_acquire_lock(const httplib::Request & req, httplib::Re
       return;
     }
 
-    // Parse request body
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 json{{"details", e.what()}});
-      return;
+    // Parse and validate request body via DTO
+    auto body_opt = ctx_.parse_body<dto::AcquireLockRequest>(req, res);
+    if (!body_opt) {
+      return;  // 400 already sent by parse_body
     }
 
-    // Extract lock_expiration (required)
-    if (!body.contains("lock_expiration") || !body["lock_expiration"].is_number_integer()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-    int expiration_seconds = body["lock_expiration"].get<int>();
-    if (expiration_seconds <= 0) {
+    // Validate lock_expiration is positive
+    if (body_opt->lock_expiration <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
                                  json{{"details", "lock_expiration must be a positive integer (seconds)"}});
       return;
     }
 
-    // Extract scopes (optional)
+    // Validate individual scope strings
     std::vector<std::string> scopes;
-    if (body.contains("scopes") && body["scopes"].is_array()) {
-      for (const auto & scope : body["scopes"]) {
-        if (!scope.is_string()) {
-          HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid scope value",
-                                     json{{"details", "Each scope must be a string"}});
-          return;
-        }
-        auto scope_str = scope.get<std::string>();
+    if (body_opt->scopes.has_value()) {
+      for (const auto & scope_str : *body_opt->scopes) {
         if (valid_lock_scopes().find(scope_str) == valid_lock_scopes().end()) {
           HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown lock scope: " + scope_str, [&]() {
             std::string scope_list;
@@ -203,20 +202,16 @@ void LockHandlers::handle_acquire_lock(const httplib::Request & req, httplib::Re
       }
     }
 
-    // Extract break_lock (optional, default false)
-    bool break_lock = false;
-    if (body.contains("break_lock") && body["break_lock"].is_boolean()) {
-      break_lock = body["break_lock"].get<bool>();
-    }
+    bool break_lock = body_opt->break_lock.value_or(false);
 
     // Acquire the lock
-    auto result = lock_manager_->acquire(entity_id, client_id, scopes, expiration_seconds, break_lock);
+    auto result = lock_manager_->acquire(entity_id, client_id, scopes, body_opt->lock_expiration, break_lock);
 
     if (result.has_value()) {
-      auto response = lock_to_json(*result, client_id);
+      auto lock_dto = lock_info_to_dto(*result, client_id);
       res.status = 201;
       res.set_header("Location", req.path + "/" + result->lock_id);
-      res.set_content(response.dump(2), "application/json");
+      HandlerContext::send_dto(res, lock_dto);
     } else {
       const auto & err = result.error();
       HandlerContext::send_error(res, err.status_code, to_sovd_error_code(err.code), err.message,
@@ -257,15 +252,13 @@ void LockHandlers::handle_list_locks(const httplib::Request & req, httplib::Resp
     // Get lock for this entity
     auto lock = lock_manager_->get_lock(entity_id);
 
-    json response;
-    response["items"] = json::array();
-
+    dto::Collection<dto::Lock> response;
     if (lock) {
-      response["items"].push_back(lock_to_json(*lock, client_id));
+      response.items.push_back(lock_info_to_dto(*lock, client_id));
     }
 
     res.status = 200;
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, response);
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list locks",
@@ -309,7 +302,7 @@ void LockHandlers::handle_get_lock(const httplib::Request & req, httplib::Respon
     }
 
     res.status = 200;
-    HandlerContext::send_json(res, lock_to_json(*lock, client_id));
+    HandlerContext::send_dto(res, lock_info_to_dto(*lock, client_id));
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get lock",
@@ -356,30 +349,20 @@ void LockHandlers::handle_extend_lock(const httplib::Request & req, httplib::Res
       return;
     }
 
-    // Parse request body for new expiration
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 json{{"details", e.what()}});
-      return;
+    // Parse and validate request body via DTO
+    auto body_opt = ctx_.parse_body<dto::ExtendLockRequest>(req, res);
+    if (!body_opt) {
+      return;  // 400 already sent by parse_body
     }
 
-    if (!body.contains("lock_expiration") || !body["lock_expiration"].is_number_integer()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-    int additional_seconds = body["lock_expiration"].get<int>();
-    if (additional_seconds <= 0) {
+    if (body_opt->lock_expiration <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
                                  json{{"details", "lock_expiration must be a positive integer (seconds)"}});
       return;
     }
 
     // Extend the lock
-    auto result = lock_manager_->extend(entity_id, client_id, additional_seconds);
+    auto result = lock_manager_->extend(entity_id, client_id, body_opt->lock_expiration);
 
     if (result.has_value()) {
       res.status = 204;

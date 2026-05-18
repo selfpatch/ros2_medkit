@@ -91,6 +91,9 @@ class LockHandlers {
    */
   static nlohmann::json lock_to_json(const LockInfo & lock, const std::string & client_id = "");
 
+  /// Format a time_point as ISO 8601 UTC string
+  static std::string format_expiration(std::chrono::steady_clock::time_point expires_at);
+
  private:
   HandlerContext & ctx_;
   LockManager * lock_manager_;
@@ -100,9 +103,6 @@ class LockHandlers {
 
   /// Extract and validate X-Client-Id header. Returns client_id or empty on error (error sent).
   std::optional<std::string> require_client_id(const httplib::Request & req, httplib::Response & res);
-
-  /// Format a time_point as ISO 8601 UTC string
-  static std::string format_expiration(std::chrono::steady_clock::time_point expires_at);
 };
 
 }  // namespace handlers

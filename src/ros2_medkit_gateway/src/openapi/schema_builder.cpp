@@ -258,41 +258,6 @@ nlohmann::json SchemaBuilder::cyclic_subscription_schema() {
       {"required", {"id", "observed_resource", "event_source", "protocol", "interval"}}};
 }
 
-nlohmann::json SchemaBuilder::lock_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"owned", {{"type", "boolean"}}},
-            {"scopes", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-            {"lock_expiration", {{"type", "string"}, {"format", "date-time"}}}}},
-          {"required", {"id", "owned", "lock_expiration"}}};
-}
-
-nlohmann::json SchemaBuilder::acquire_lock_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"lock_expiration",
-             {{"type", "integer"}, {"minimum", 1}, {"example", 300}, {"description", "Lock duration in seconds"}}},
-            {"scopes",
-             {{"type", "array"},
-              {"items", {{"type", "string"}}},
-              {"description", "Lock scopes (e.g. 'configurations', 'operations')"}}},
-            {"break_lock",
-             {{"type", "boolean"}, {"description", "Force-acquire by breaking an existing lock (default: false)"}}}}},
-          {"required", {"lock_expiration"}}};
-}
-
-nlohmann::json SchemaBuilder::extend_lock_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"lock_expiration",
-             {{"type", "integer"},
-              {"minimum", 1},
-              {"example", 120},
-              {"description", "Additional seconds to extend the lock"}}}}},
-          {"required", {"lock_expiration"}}};
-}
-
 nlohmann::json SchemaBuilder::script_metadata_schema() {
   return {{"type", "object"},
           {"properties",
@@ -484,11 +449,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"CyclicSubscription", cyclic_subscription_schema()},
         {"CyclicSubscriptionList", items_wrapper_ref("CyclicSubscription")},
         {"CyclicSubscriptionCreateRequest", cyclic_subscription_create_request_schema()},
-        // Locking
-        {"Lock", lock_schema()},
-        {"LockList", items_wrapper_ref("Lock")},
-        {"AcquireLockRequest", acquire_lock_request_schema()},
-        {"ExtendLockRequest", extend_lock_request_schema()},
+        // Locking - Lock, LockList, AcquireLockRequest, ExtendLockRequest now come from DTO (dto/locks.hpp).
         // Scripts
         {"ScriptMetadata", script_metadata_schema()},
         {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},

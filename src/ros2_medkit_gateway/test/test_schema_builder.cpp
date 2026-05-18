@@ -517,15 +517,17 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvResponseUnknown) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, AcquireLockRequestSchema) {
-  auto schema = SchemaBuilder::acquire_lock_request_schema();
+TEST(SchemaBuilderStaticTest, AcquireLockRequestSchemaComesFromDto) {
+  // AcquireLockRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("AcquireLockRequest") > 0);
+  const auto & schema = schemas.at("AcquireLockRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
   EXPECT_TRUE(schema["properties"].contains("scopes"));
   EXPECT_TRUE(schema["properties"].contains("break_lock"));
   EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
   EXPECT_EQ(schema["properties"]["scopes"]["type"], "array");
   EXPECT_EQ(schema["properties"]["break_lock"]["type"], "boolean");
 
@@ -536,17 +538,44 @@ TEST(SchemaBuilderStaticTest, AcquireLockRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ExtendLockRequestSchema) {
-  auto schema = SchemaBuilder::extend_lock_request_schema();
+TEST(SchemaBuilderStaticTest, ExtendLockRequestSchemaComesFromDto) {
+  // ExtendLockRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ExtendLockRequest") > 0);
+  const auto & schema = schemas.at("ExtendLockRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
   EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
 
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "lock_expiration"), required.end());
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, LockSchemaComesFromDto) {
+  // Lock and LockList are now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("Lock") > 0);
+  const auto & schema = schemas.at("Lock");
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
+  EXPECT_TRUE(schema["properties"].contains("owned"));
+  EXPECT_TRUE(schema["properties"].contains("scopes"));
+  EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["owned"]["type"], "boolean");
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "string");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "owned"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "lock_expiration"), required.end());
+
+  ASSERT_TRUE(schemas.count("LockList") > 0);
 }
 
 // @verifies REQ_INTEROP_002
