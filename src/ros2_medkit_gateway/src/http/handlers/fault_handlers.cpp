@@ -31,6 +31,8 @@
 #include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
+#include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -171,19 +173,28 @@ json extract_primary_value(const std::string & message_type, const json & full_d
 // The transport adapter performs ros2_medkit_msgs -> JSON translation; the
 // handler post-processes the intermediate snapshot shape (freeze_frame parse,
 // rosbag bulk_data_uri) using the entity_path it has at request time.
-json FaultHandlers::build_sovd_fault_response(const json & fault_json, const json & env_data_json,
-                                              const std::string & entity_path) {
-  json response;
-
+dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_json, const json & env_data_json,
+                                                          const std::string & entity_path) {
   const std::string fault_code = fault_json.value("fault_code", "");
   const std::string status = fault_json.value("status", "");
   const uint8_t severity = fault_json.value("severity", static_cast<uint8_t>(0));
 
-  // === SOVD "item" structure ===
-  response["item"] = {{"code", fault_code},
-                      {"fault_name", fault_json.value("description", "")},
-                      {"severity", severity},
-                      {"status", build_status_object(status)}};
+  // === Build dto::FaultItem ===
+  dto::FaultDetail detail;
+
+  detail.item.code = fault_code;
+  const std::string description = fault_json.value("description", "");
+  if (!description.empty()) {
+    detail.item.fault_name = description;
+  }
+  detail.item.severity = static_cast<int64_t>(severity);
+
+  // Build FaultStatus from raw status string
+  auto status_obj = build_status_object(status);
+  detail.item.status.aggregated_status = status_obj.value("aggregatedStatus", "cleared");
+  detail.item.status.test_failed = status_obj.value("testFailed", std::string{});
+  detail.item.status.confirmed_dtc = status_obj.value("confirmedDTC", std::string{});
+  detail.item.status.pending_dtc = status_obj.value("pendingDTC", std::string{});
 
   // === SOVD "environment_data" ===
   json snapshots = json::array();
@@ -251,27 +262,31 @@ json FaultHandlers::build_sovd_fault_response(const json & fault_json, const jso
     }
   }
 
-  json env_obj;
   if (env_data_json.contains("extended_data_records")) {
-    env_obj["extended_data_records"] = env_data_json["extended_data_records"];
+    detail.environment_data.extended_data_records = env_data_json["extended_data_records"];
   } else {
-    env_obj["extended_data_records"] = {{"first_occurrence", ""}, {"last_occurrence", ""}};
+    detail.environment_data.extended_data_records = json{{"first_occurrence", ""}, {"last_occurrence", ""}};
   }
-  env_obj["snapshots"] = snapshots;
-  response["environment_data"] = env_obj;
+  detail.environment_data.snapshots = snapshots;
 
   // === x-medkit extensions ===
-  json reporting_sources = json::array();
+  std::vector<std::string> reporting_sources;
   if (fault_json.contains("reporting_sources") && fault_json["reporting_sources"].is_array()) {
-    reporting_sources = fault_json["reporting_sources"];
+    for (const auto & src : fault_json["reporting_sources"]) {
+      reporting_sources.push_back(src.get<std::string>());
+    }
   }
 
-  response["x-medkit"] = {{"occurrence_count", fault_json.value("occurrence_count", static_cast<uint64_t>(0))},
-                          {"reporting_sources", reporting_sources},
-                          {"severity_label", severity_to_label(severity)},
-                          {"status_raw", status}};
+  dto::FaultXMedkit xm;
+  xm.occurrence_count = static_cast<int64_t>(fault_json.value("occurrence_count", static_cast<uint64_t>(0)));
+  if (!reporting_sources.empty()) {
+    xm.reporting_sources = std::move(reporting_sources);
+  }
+  xm.severity_label = severity_to_label(severity);
+  xm.status_raw = status;
+  detail.x_medkit = std::move(xm);
 
-  return response;
+  return detail;
 }
 
 void FaultHandlers::handle_list_all_faults(const httplib::Request & req, httplib::Response & res) {
@@ -684,9 +699,9 @@ void FaultHandlers::handle_get_fault(const httplib::Request & req, httplib::Resp
       // The transport handed back `result.data = { "fault": {...}, "environment_data": {...} }`.
       const auto & fault_json = result.data.value("fault", json::object());
       const auto & env_data_json = result.data.value("environment_data", json::object());
-      auto response = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
+      auto detail = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 
-      HandlerContext::send_json(res, response);
+      HandlerContext::send_dto(res, detail);
     } else {
       // Check if it's a "not found" error
       if (result.error_message.find("not found") != std::string::npos ||

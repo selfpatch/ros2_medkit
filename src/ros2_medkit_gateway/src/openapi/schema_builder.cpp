@@ -44,83 +44,7 @@ nlohmann::json SchemaBuilder::from_ros_srv_response(const std::string & srv_type
 }
 
 nlohmann::json SchemaBuilder::generic_error() {
-  return {
-      {"type", "object"},
-      {"properties",
-       {{"error_code", {{"type", "string"}}}, {"message", {{"type", "string"}}}, {"parameters", {{"type", "object"}}}}},
-      {"required", {"error_code", "message"}}};
-}
-
-nlohmann::json SchemaBuilder::fault_list_item_schema() {
-  return {
-      {"type", "object"},
-      {"properties",
-       {{"fault_code", {{"type", "string"}}},
-        {"severity", {{"type", "integer"}, {"description", "Numeric severity level"}}},
-        {"severity_label", {{"type", "string"}, {"enum", {"INFO", "WARN", "ERROR", "CRITICAL"}}}},
-        {"description", {{"type", "string"}}},
-        {"first_occurred", {{"type", "number"}, {"description", "Unix timestamp (seconds with nanosecond fraction)"}}},
-        {"last_occurred", {{"type", "number"}, {"description", "Unix timestamp (seconds with nanosecond fraction)"}}},
-        {"occurrence_count", {{"type", "integer"}}},
-        {"status", {{"type", "string"}}},
-        {"reporting_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}}}},
-      {"required", {"fault_code", "severity", "status"}}};
-}
-
-nlohmann::json SchemaBuilder::fault_detail_schema() {
-  // SOVD nested structure from FaultHandlers::build_sovd_fault_response
-  nlohmann::json status_schema = {
-      {"type", "object"},
-      {"properties",
-       {{"aggregatedStatus", {{"type", "string"}, {"enum", {"active", "passive", "cleared"}}}},
-        {"testFailed", {{"type", "string"}}},
-        {"confirmedDTC", {{"type", "string"}}},
-        {"pendingDTC", {{"type", "string"}}}}},
-      {"required", {"aggregatedStatus"}}};
-
-  nlohmann::json item_schema = {{"type", "object"},
-                                {"properties",
-                                 {{"code", {{"type", "string"}}},
-                                  {"fault_name", {{"type", "string"}}},
-                                  {"severity", {{"type", "integer"}}},
-                                  {"status", status_schema}}},
-                                {"required", {"code", "severity", "status"}}};
-
-  nlohmann::json snapshot_schema = {{"type", "object"},
-                                    {"properties",
-                                     {{"type", {{"type", "string"}}},
-                                      {"name", {{"type", "string"}}},
-                                      {"data", {{"description", "Snapshot data"}}},
-                                      {"bulk_data_uri", {{"type", "string"}}},
-                                      {"size_bytes", {{"type", "integer"}}},
-                                      {"duration_sec", {{"type", "number"}}},
-                                      {"format", {{"type", "string"}}},
-                                      {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}}};
-
-  nlohmann::json env_data_schema = {{"type", "object"},
-                                    {"properties",
-                                     {{"extended_data_records",
-                                       {{"type", "object"},
-                                        {"properties",
-                                         {{"first_occurrence", {{"type", "string"}, {"format", "date-time"}}},
-                                          {"last_occurrence", {{"type", "string"}, {"format", "date-time"}}}}}}},
-                                      {"snapshots", {{"type", "array"}, {"items", snapshot_schema}}}}}};
-
-  nlohmann::json x_medkit_schema = {{"type", "object"},
-                                    {"additionalProperties", true},
-                                    {"properties",
-                                     {{"occurrence_count", {{"type", "integer"}}},
-                                      {"reporting_sources", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                                      {"severity_label", {{"type", "string"}}},
-                                      {"status_raw", {{"type", "string"}}}}}};
-
-  return {{"type", "object"},
-          {"properties", {{"item", item_schema}, {"environment_data", env_data_schema}, {"x-medkit", x_medkit_schema}}},
-          {"required", {"item", "environment_data"}}};
-}
-
-nlohmann::json SchemaBuilder::fault_list_schema() {
-  return items_wrapper(fault_list_item_schema());
+  return dto::SchemaWriter<dto::GenericError>::schema();
 }
 
 nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) {
@@ -556,7 +480,7 @@ nlohmann::json SchemaBuilder::update_status_schema() {
       {"required", {"phase"}}};
 
   // x-medkit is optional in the SOVD payload (clients may ignore vendor
-  // extensions; matches the convention in fault_detail_schema).
+  // extensions; same convention as FaultDetail x-medkit extension).
   // When the gateway DOES emit the x-medkit object,
   // however, ``phase`` is mandatory inside it - that scope is enforced by
   // the inner ``required: {phase}`` above, NOT by listing x-medkit in the
@@ -640,10 +564,6 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
     std::map<std::string, nlohmann::json> m = {
         // Core types
         {"GenericError", generic_error()},
-        // Faults
-        {"FaultListItem", fault_list_item_schema()},
-        {"FaultDetail", fault_detail_schema()},
-        {"FaultList", items_wrapper_ref("FaultListItem")},
         // Configuration
         {"ConfigurationMetaData", configuration_metadata_schema()},
         {"ConfigurationMetaDataList", items_wrapper_ref("ConfigurationMetaData")},

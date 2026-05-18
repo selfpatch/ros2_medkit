@@ -28,6 +28,8 @@ using ros2_medkit_gateway::openapi::SchemaBuilder;
 // =============================================================================
 
 TEST(SchemaBuilderStaticTest, GenericErrorSchema) {
+  // generic_error() now delegates to SchemaWriter<dto::GenericError>::schema().
+  // The DTO is the source of truth; the test asserts the DTO-generated shape.
   auto schema = SchemaBuilder::generic_error();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
@@ -36,17 +38,26 @@ TEST(SchemaBuilderStaticTest, GenericErrorSchema) {
   EXPECT_TRUE(schema["properties"].contains("parameters"));
   EXPECT_EQ(schema["properties"]["error_code"]["type"], "string");
   EXPECT_EQ(schema["properties"]["message"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["parameters"]["type"], "object");
+  // parameters is std::optional<nlohmann::json>: schema_of<json> = {} (free-form, no type constraint).
+  // This is intentional - parameters accepts any JSON object per the SOVD spec.
+  EXPECT_TRUE(schema["properties"]["parameters"].is_object());
 
-  // Required fields
+  // Required fields: error_code and message; parameters is optional.
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "error_code"), required.end());
   EXPECT_NE(std::find(required.begin(), required.end(), "message"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "parameters"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultListItemSchema) {
-  auto schema = SchemaBuilder::fault_list_item_schema();
+// Fault schemas are now emitted by the DTO layer (dto::collect_component_schemas).
+// Tests assert against the registered schemas in component_schemas() instead of
+// the deleted factory functions.
+
+TEST(SchemaBuilderStaticTest, FaultListItemRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultListItem") > 0) << "FaultListItem must be in component_schemas()";
+  const auto & schema = schemas.at("FaultListItem");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("fault_code"));
@@ -62,53 +73,51 @@ TEST(SchemaBuilderStaticTest, FaultListItemSchema) {
   EXPECT_EQ(schema["properties"]["severity"]["type"], "integer");
   EXPECT_EQ(schema["properties"]["status"]["type"], "string");
   EXPECT_EQ(schema["properties"]["reporting_sources"]["type"], "array");
+
+  // Required fields: fault_code and status
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "fault_code"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "status"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultDetailSchema) {
-  auto schema = SchemaBuilder::fault_detail_schema();
+TEST(SchemaBuilderStaticTest, FaultDetailRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultDetail") > 0) << "FaultDetail must be in component_schemas()";
+  const auto & schema = schemas.at("FaultDetail");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  // SOVD nested structure
+  // SOVD nested structure: item, environment_data, x-medkit
   EXPECT_TRUE(schema["properties"].contains("item"));
   EXPECT_TRUE(schema["properties"].contains("environment_data"));
   EXPECT_TRUE(schema["properties"].contains("x-medkit"));
 
-  // item subfields
-  auto & item = schema["properties"]["item"];
-  EXPECT_EQ(item["type"], "object");
-  EXPECT_TRUE(item["properties"].contains("code"));
-  EXPECT_TRUE(item["properties"].contains("fault_name"));
-  EXPECT_TRUE(item["properties"].contains("severity"));
-  EXPECT_TRUE(item["properties"].contains("status"));
-  EXPECT_EQ(item["properties"]["status"]["type"], "object");
-  EXPECT_TRUE(item["properties"]["status"]["properties"].contains("aggregatedStatus"));
+  // item is a $ref to FaultItem
+  EXPECT_TRUE(schema["properties"]["item"].contains("$ref"));
 
-  // environment_data subfields
-  auto & env = schema["properties"]["environment_data"];
-  EXPECT_EQ(env["type"], "object");
-  EXPECT_TRUE(env["properties"].contains("extended_data_records"));
-  EXPECT_TRUE(env["properties"].contains("snapshots"));
+  // environment_data is a $ref to FaultEnvironmentData
+  EXPECT_TRUE(schema["properties"]["environment_data"].contains("$ref"));
 
-  // x-medkit subfields
-  auto & xmedkit = schema["properties"]["x-medkit"];
-  EXPECT_EQ(xmedkit["type"], "object");
-  EXPECT_TRUE(xmedkit["properties"].contains("occurrence_count"));
-  EXPECT_TRUE(xmedkit["properties"].contains("reporting_sources"));
-  EXPECT_TRUE(xmedkit["properties"].contains("severity_label"));
-  EXPECT_TRUE(xmedkit["properties"].contains("status_raw"));
+  // Required: item, environment_data
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "environment_data"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultListSchema) {
-  auto schema = SchemaBuilder::fault_list_schema();
+TEST(SchemaBuilderStaticTest, FaultListRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultList") > 0) << "FaultList must be in component_schemas()";
+  const auto & schema = schemas.at("FaultList");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   ASSERT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should contain the fault list item schema
+  // Items array references FaultListItem via $ref
   auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_EQ(item_schema["type"], "object");
-  EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
+  ASSERT_TRUE(item_schema.contains("$ref"));
+  EXPECT_EQ(item_schema["$ref"], "#/components/schemas/FaultListItem");
 }
 
 // AreaDetail / AreaList etc. are now emitted by the DTO layer (dto::collect_component_schemas).

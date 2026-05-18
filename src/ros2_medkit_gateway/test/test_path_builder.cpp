@@ -325,14 +325,12 @@ TEST_F(PathBuilderTest, FaultsHasGetAndDelete) {
 }
 
 TEST_F(PathBuilderTest, FaultsGetReturnsFaultList) {
+  // build_faults_collection now emits a $ref to the registered FaultList DTO schema.
   auto result = path_builder_.build_faults_collection("apps/engine");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  // Items should be fault objects
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
+  // The schema is a $ref to FaultList, not an inline object.
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/FaultList");
 }
 
 TEST_F(PathBuilderTest, FaultsDeleteReturns204) {

@@ -376,7 +376,7 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
       entity_path.empty() ? "Returns all faults." : "Returns all faults associated with this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::fault_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("FaultList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
