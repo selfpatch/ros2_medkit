@@ -47,9 +47,6 @@ class UpdateHandlers {
 
   /// Check backend loaded, send 501 if not. Returns true if OK.
   bool check_backend(httplib::Response & res);
-
-  /// Convert UpdateStatusInfo to JSON
-  static nlohmann::json status_to_json(const UpdateStatusInfo & status);
 };
 
 }  // namespace handlers

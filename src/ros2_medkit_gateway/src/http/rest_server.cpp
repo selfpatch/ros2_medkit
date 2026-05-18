@@ -351,7 +351,7 @@ void RESTServer::setup_routes() {
       .tag("Discovery")
       .summary("List areas")
       .description("Lists all discovered areas in the system.")
-      .response(200, "Area list", SB::ref("EntityList"))
+      .response(200, "Area list", SB::ref("AreaList"))
       .operation_id("listAreas");
 
   reg.get("/apps",
@@ -361,7 +361,7 @@ void RESTServer::setup_routes() {
       .tag("Discovery")
       .summary("List apps")
       .description("Lists all discovered apps (ROS 2 nodes) in the system.")
-      .response(200, "App list", SB::ref("EntityList"))
+      .response(200, "App list", SB::ref("AppList"))
       .operation_id("listApps");
 
   reg.get("/components",
@@ -371,7 +371,7 @@ void RESTServer::setup_routes() {
       .tag("Discovery")
       .summary("List components")
       .description("Lists all discovered components in the system.")
-      .response(200, "Component list", SB::ref("EntityList"))
+      .response(200, "Component list", SB::ref("ComponentList"))
       .operation_id("listComponents");
 
   reg.get("/functions",
@@ -381,7 +381,7 @@ void RESTServer::setup_routes() {
       .tag("Discovery")
       .summary("List functions")
       .description("Lists all discovered functions in the system.")
-      .response(200, "Function list", SB::ref("EntityList"))
+      .response(200, "Function list", SB::ref("FunctionList"))
       .operation_id("listFunctions");
 
   // === Per-entity-type resource routes ===
@@ -395,14 +395,16 @@ void RESTServer::setup_routes() {
     const char * type;
     const char * singular;
     HandlerFn detail_handler;
+    const char * collection_schema_name;  // DTO name for Collection<XxxListItem>
+    const char * detail_schema_name;      // DTO name for XxxDetail
   };
 
   // clang-format off
   std::vector<EntityHandlers> entity_types = {
-      {"areas", "area", [this](auto & req, auto & res) { discovery_handlers_->handle_get_area(req, res); }},
-      {"components", "component", [this](auto & req, auto & res) { discovery_handlers_->handle_get_component(req, res); }},
-      {"apps", "app", [this](auto & req, auto & res) { discovery_handlers_->handle_get_app(req, res); }},
-      {"functions", "function", [this](auto & req, auto & res) { discovery_handlers_->handle_get_function(req, res); }},
+      {"areas",      "area",      [this](auto & req, auto & res) { discovery_handlers_->handle_get_area(req, res); },      "AreaList",      "AreaDetail"},
+      {"components", "component", [this](auto & req, auto & res) { discovery_handlers_->handle_get_component(req, res); }, "ComponentList", "ComponentDetail"},
+      {"apps",       "app",       [this](auto & req, auto & res) { discovery_handlers_->handle_get_app(req, res); },       "AppList",       "AppDetail"},
+      {"functions",  "function",  [this](auto & req, auto & res) { discovery_handlers_->handle_get_function(req, res); },  "FunctionList",  "FunctionDetail"},
   };
   // clang-format on
 
@@ -463,7 +465,7 @@ void RESTServer::setup_routes() {
         .tag("Data")
         .summary(std::string("List data items for ") + et.singular)
         .description(std::string("Lists all data items (ROS 2 topics) available on this ") + et.singular + ".")
-        .response(200, "Data item list", SB::ref("DataItemList"))
+        .response(200, "Data item list", SB::ref("DataList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Data");
 
     // --- Operations ---
@@ -474,7 +476,7 @@ void RESTServer::setup_routes() {
         .tag("Operations")
         .summary(std::string("List operations for ") + et.singular)
         .description(std::string("Lists all ROS 2 services and actions available on this ") + et.singular + ".")
-        .response(200, "Operation list", SB::ref("OperationItemList"))
+        .response(200, "Operation list", SB::ref("OperationList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Operations");
 
     reg.get(entity_path + "/operations/{operation_id}",
@@ -550,7 +552,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("List configurations for ") + et.singular)
         .description(std::string("Lists all ROS 2 node parameters for this ") + et.singular + ".")
-        .response(200, "Configuration list", SB::ref("ConfigurationMetaDataList"))
+        .response(200, "Configuration list", SB::ref("ConfigurationList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Configurations");
 
     reg.get(entity_path + "/configurations/{config_id}",
@@ -570,7 +572,7 @@ void RESTServer::setup_routes() {
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
         .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
-        .request_body("Configuration value", SB::ref("ConfigurationWriteValue"))
+        .request_body("Configuration value", SB::ref("ConfigurationWriteRequest"))
         .response(200, "Updated configuration", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
 
@@ -889,7 +891,7 @@ void RESTServer::setup_routes() {
           .tag("Subscriptions")
           .summary(std::string("Update cyclic subscription for ") + et.singular)
           .description(std::string("Updates a subscription configuration on this ") + et.singular + ".")
-          .request_body("Subscription update", SB::ref("CyclicSubscription"))
+          .request_body("Subscription update", SB::ref("CyclicSubscriptionUpdateRequest"))
           .response(200, "Updated subscription", SB::ref("CyclicSubscription"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Subscription");
 
@@ -1064,7 +1066,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List components in area")
           .description("Lists components belonging to this area.")
-          .response(200, "Component list", SB::ref("EntityList"))
+          .response(200, "Component list", SB::ref("ComponentList"))
           .operation_id("listAreaComponents");
 
       reg.get(entity_path + "/subareas",
@@ -1074,7 +1076,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List subareas")
           .description("Lists subareas within this area.")
-          .response(200, "Subarea list", SB::ref("EntityList"))
+          .response(200, "Subarea list", SB::ref("AreaList"))
           .operation_id("listSubareas");
 
       reg.get(entity_path + "/contains",
@@ -1084,7 +1086,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List entities contained in area")
           .description("Lists all entities contained in this area.")
-          .response(200, "Contained entities", SB::ref("EntityList"))
+          .response(200, "Contained entities", SB::ref("ComponentList"))
           .operation_id("listAreaContains");
     }
 
@@ -1096,7 +1098,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List subcomponents")
           .description("Lists subcomponents of this component.")
-          .response(200, "Subcomponent list", SB::ref("EntityList"))
+          .response(200, "Subcomponent list", SB::ref("ComponentList"))
           .operation_id("listSubcomponents");
 
       reg.get(entity_path + "/hosts",
@@ -1106,7 +1108,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List component hosts")
           .description("Lists apps hosted by this component.")
-          .response(200, "Host list", SB::ref("EntityList"))
+          .response(200, "Host list", SB::ref("AppList"))
           .operation_id("listComponentHosts");
 
       reg.get(entity_path + "/depends-on",
@@ -1116,7 +1118,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List component dependencies")
           .description("Lists components this component depends on.")
-          .response(200, "Dependency list", SB::ref("EntityList"))
+          .response(200, "Dependency list", SB::ref("ComponentList"))
           .operation_id("listComponentDependencies");
     }
 
@@ -1128,7 +1130,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("Get app host component")
           .description("Returns the component hosting this app as a single-element collection.")
-          .response(200, "Host component(s)", SB::ref("EntityList"))
+          .response(200, "Host component(s)", SB::ref("ComponentList"))
           .operation_id("getAppHost");
 
       reg.get(entity_path + "/belongs-to",
@@ -1140,7 +1142,7 @@ void RESTServer::setup_routes() {
           .description(
               "Returns the area this app belongs to via its parent component, as a 0-or-1 element "
               "collection.")
-          .response(200, "Parent area", SB::ref("EntityList"))
+          .response(200, "Parent area", SB::ref("AreaList"))
           .operation_id("getAppArea");
 
       reg.get(entity_path + "/depends-on",
@@ -1150,7 +1152,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List app dependencies")
           .description("Lists apps this app depends on.")
-          .response(200, "Dependency list", SB::ref("EntityList"))
+          .response(200, "Dependency list", SB::ref("AppList"))
           .operation_id("listAppDependencies");
     }
 
@@ -1162,7 +1164,7 @@ void RESTServer::setup_routes() {
           .tag("Discovery")
           .summary("List function hosts")
           .description("Lists components hosting this function.")
-          .response(200, "Host list", SB::ref("EntityList"))
+          .response(200, "Host list", SB::ref("AppList"))
           .operation_id("listFunctionHosts");
     }
 
@@ -1171,7 +1173,7 @@ void RESTServer::setup_routes() {
         .tag("Discovery")
         .summary(std::string("Get ") + et.singular + " details")
         .description(std::string("Returns ") + et.singular + " details with capabilities and resource collection URIs.")
-        .response(200, "Entity details with capabilities", SB::ref("EntityDetail"))
+        .response(200, "Entity details with capabilities", SB::ref(et.detail_schema_name))
         .operation_id(std::string("get") + capitalize(et.singular));
   }
 

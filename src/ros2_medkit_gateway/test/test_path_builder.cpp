@@ -47,12 +47,11 @@ TEST_F(PathBuilderTest, EntityCollectionHasGet) {
 }
 
 TEST_F(PathBuilderTest, EntityCollectionHasItemsSchema) {
+  // The response schema is now a $ref to the DTO-generated collection schema.
   auto result = path_builder_.build_entity_collection("components");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
+  ASSERT_TRUE(schema.contains("$ref")) << "Entity collection schema should be a $ref to the DTO collection type";
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/ComponentList");
 }
 
 TEST_F(PathBuilderTest, EntityCollectionHasQueryParams) {
@@ -210,13 +209,14 @@ TEST_F(PathBuilderTest, OperationsCollectionHasGet) {
   EXPECT_TRUE(result["get"]["responses"].contains("200"));
 }
 
-TEST_F(PathBuilderTest, OperationsCollectionResponseHasItems) {
+TEST_F(PathBuilderTest, OperationsCollectionResponseRefersToOperationList) {
+  // build_operations_collection now uses SchemaBuilder::ref("OperationList") - a $ref to
+  // the DTO-generated Collection<OperationItem> schema.
   AggregatedOperations ops;
   auto result = path_builder_.build_operations_collection("apps/engine", ops);
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/OperationList");
 }
 
 // =============================================================================
@@ -293,12 +293,12 @@ TEST_F(PathBuilderTest, ConfigurationsHasGetAndDelete) {
   EXPECT_FALSE(result.contains("put"));
 }
 
-TEST_F(PathBuilderTest, ConfigurationsGetReturnsItemsWrapper) {
+TEST_F(PathBuilderTest, ConfigurationsGetReturnsConfigurationListRef) {
+  // build_configurations_collection now emits a $ref to ConfigurationList DTO schema.
   auto result = path_builder_.build_configurations_collection("apps/sensor");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/ConfigurationList");
 }
 
 TEST_F(PathBuilderTest, ConfigurationsDeleteHasSummary) {
@@ -326,14 +326,12 @@ TEST_F(PathBuilderTest, FaultsHasGetAndDelete) {
 }
 
 TEST_F(PathBuilderTest, FaultsGetReturnsFaultList) {
+  // build_faults_collection now emits a $ref to the registered FaultList DTO schema.
   auto result = path_builder_.build_faults_collection("apps/engine");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  // Items should be fault objects
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
+  // The schema is a $ref to FaultList, not an inline object.
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/FaultList");
 }
 
 TEST_F(PathBuilderTest, FaultsDeleteReturns204) {
@@ -364,14 +362,12 @@ TEST_F(PathBuilderTest, LogsHasLevelQueryParam) {
   EXPECT_TRUE(has_level);
 }
 
-TEST_F(PathBuilderTest, LogsReturnsLogEntryItems) {
+TEST_F(PathBuilderTest, LogsReturnsLogEntryListRef) {
+  // After DTO migration build_logs_collection emits a $ref to LogEntryList.
   auto result = path_builder_.build_logs_collection("apps/sensor");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_TRUE(item_schema["properties"].contains("timestamp"));
-  EXPECT_TRUE(item_schema["properties"].contains("severity"));
-  EXPECT_TRUE(item_schema["properties"].contains("message"));
-  EXPECT_TRUE(item_schema["properties"].contains("context"));
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/LogEntryList");
 }
 
 // =============================================================================
@@ -397,10 +393,12 @@ TEST_F(PathBuilderTest, CyclicSubscriptionsHasGetAndPost) {
 }
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsPostHasRequestBody) {
+  // CyclicSubscriptionCreateRequest is now a DTO - request body schema is a $ref.
   auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
   ASSERT_TRUE(result["post"].contains("requestBody"));
   auto req_schema = result["post"]["requestBody"]["content"]["application/json"]["schema"];
-  EXPECT_TRUE(req_schema["properties"].contains("resource"));
+  ASSERT_TRUE(req_schema.contains("$ref"));
+  EXPECT_EQ(req_schema["$ref"], "#/components/schemas/CyclicSubscriptionCreateRequest");
 }
 
 TEST_F(PathBuilderTest, CyclicSubscriptionsPostReturns201) {

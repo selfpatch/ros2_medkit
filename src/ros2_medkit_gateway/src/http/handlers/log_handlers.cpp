@@ -22,7 +22,8 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 namespace ros2_medkit_gateway {
@@ -80,10 +81,10 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
     json result;
     result["items"] = json::array();
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "function");
-    ext.add("aggregated", true);
+    dto::LogListXMedkit xm;
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "function";
+    xm.aggregated = true;
 
     if (func && !func->hosts.empty()) {
       auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, func->hosts);
@@ -95,17 +96,15 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
           return;
         }
         result["items"] = std::move(*logs);
-        ext.add("host_count", host_fqns.size());
-        nlohmann::json log_source_fqns = nlohmann::json::array();
-        for (const auto & fqn : host_fqns) {
-          log_source_fqns.push_back(fqn);
-        }
-        ext.add("aggregation_sources", log_source_fqns);
+        xm.host_count = static_cast<int64_t>(host_fqns.size());
+        std::vector<std::string> sources(host_fqns.begin(), host_fqns.end());
+        xm.aggregation_sources = std::move(sources);
       }
     }
 
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
+    auto xm_json = dto::JsonWriter<dto::LogListXMedkit>::write(xm);
+    merge_peer_items(ctx_.aggregation_manager(), req, result, xm_json);
+    result["x-medkit"] = std::move(xm_json);
     HandlerContext::send_json(res, result);
     return;
   }
@@ -125,10 +124,10 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     }
 
     json result;
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "area");
-    ext.add("aggregated", true);
+    dto::LogListXMedkit xm;
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "area";
+    xm.aggregated = true;
 
     if (!host_fqns.empty()) {
       auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
@@ -137,13 +136,10 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
         return;
       }
       result["items"] = std::move(*logs);
-      ext.add("component_count", comp_ids.size());
-      ext.add("app_count", host_fqns.size());
-      nlohmann::json area_log_source_fqns = nlohmann::json::array();
-      for (const auto & fqn : host_fqns) {
-        area_log_source_fqns.push_back(fqn);
-      }
-      ext.add("aggregation_sources", area_log_source_fqns);
+      xm.component_count = static_cast<int64_t>(comp_ids.size());
+      xm.app_count = static_cast<int64_t>(host_fqns.size());
+      std::vector<std::string> sources(host_fqns.begin(), host_fqns.end());
+      xm.aggregation_sources = std::move(sources);
     } else {
       auto logs = log_mgr->get_logs({entity.fqn}, true, min_severity, context_filter, entity_id);
       if (!logs) {
@@ -153,8 +149,9 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       result["items"] = std::move(*logs);
     }
 
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
+    auto xm_json = dto::JsonWriter<dto::LogListXMedkit>::write(xm);
+    merge_peer_items(ctx_.aggregation_manager(), req, result, xm_json);
+    result["x-medkit"] = std::move(xm_json);
     HandlerContext::send_json(res, result);
     return;
   }
@@ -173,10 +170,10 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
 
     json result;
     result["items"] = json::array();
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "component");
-    ext.add("aggregated", true);
+    dto::LogListXMedkit xm;
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "component";
+    xm.aggregated = true;
 
     if (!host_fqns.empty()) {
       auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
@@ -185,12 +182,9 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
         return;
       }
       result["items"] = std::move(*logs);
-      ext.add("app_count", host_fqns.size());
-      nlohmann::json comp_log_source_fqns = nlohmann::json::array();
-      for (const auto & fqn : host_fqns) {
-        comp_log_source_fqns.push_back(fqn);
-      }
-      ext.add("aggregation_sources", comp_log_source_fqns);
+      xm.app_count = static_cast<int64_t>(host_fqns.size());
+      std::vector<std::string> sources(host_fqns.begin(), host_fqns.end());
+      xm.aggregation_sources = std::move(sources);
     } else if (!entity.fqn.empty()) {
       // Manifest component without hosted apps - keep the original
       // namespace prefix path so manifest-only deployments still work.
@@ -202,8 +196,9 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
       result["items"] = std::move(*logs);
     }
 
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
+    auto xm_json = dto::JsonWriter<dto::LogListXMedkit>::write(xm);
+    merge_peer_items(ctx_.aggregation_manager(), req, result, xm_json);
+    result["x-medkit"] = std::move(xm_json);
     HandlerContext::send_json(res, result);
     return;
   }
@@ -220,10 +215,11 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
   json result;
   result["items"] = std::move(*logs);
 
-  XMedkit ext;
-  merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-  if (!ext.empty()) {
-    result["x-medkit"] = ext.build();
+  dto::LogListXMedkit xm;
+  auto xm_json = dto::JsonWriter<dto::LogListXMedkit>::write(xm);
+  merge_peer_items(ctx_.aggregation_manager(), req, result, xm_json);
+  if (!xm_json.empty()) {
+    result["x-medkit"] = std::move(xm_json);
   }
   HandlerContext::send_json(res, result);
 }
@@ -256,10 +252,10 @@ void LogHandlers::handle_get_logs_configuration(const httplib::Request & req, ht
     return;
   }
 
-  json result;
-  result["severity_filter"] = cfg->severity_filter;
-  result["max_entries"] = cfg->max_entries;
-  HandlerContext::send_json(res, result);
+  dto::LogConfiguration response;
+  response.severity_filter = cfg->severity_filter;
+  response.max_entries = static_cast<int64_t>(cfg->max_entries);
+  HandlerContext::send_dto(res, response);
 }
 
 // ---------------------------------------------------------------------------
@@ -289,39 +285,21 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
     return;
   }
 
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::parse_error &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body");
+  auto body = ctx_.parse_body<dto::LogConfiguration>(req, res);
+  if (!body) {
     return;
   }
 
   std::optional<std::string> severity_filter;
   std::optional<size_t> max_entries;
 
-  if (body.contains("severity_filter")) {
-    if (!body["severity_filter"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "severity_filter must be a string");
-      return;
-    }
-    severity_filter = body["severity_filter"].get<std::string>();
+  if (body->severity_filter.has_value()) {
+    severity_filter = body->severity_filter;
   }
 
-  static constexpr long long kMaxEntriesCap = 10000;
-  if (body.contains("max_entries")) {
-    const auto & me = body["max_entries"];
-    if (!me.is_number_integer() && !me.is_number_unsigned()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be a positive integer");
-      return;
-    }
-    long long val = 0;
-    try {
-      val = me.get<long long>();
-    } catch (const nlohmann::json::exception &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries value out of range");
-      return;
-    }
+  static constexpr int64_t kMaxEntriesCap = 10000;
+  if (body->max_entries.has_value()) {
+    const int64_t val = *body->max_entries;
     if (val <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0");
       return;
@@ -331,13 +309,6 @@ void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, ht
       return;
     }
     max_entries = static_cast<size_t>(val);
-  }
-
-  // Warn about unrecognized fields (helps debug camelCase typos like "severityFilter")
-  for (const auto & [key, _] : body.items()) {
-    if (key != "severity_filter" && key != "max_entries") {
-      RCLCPP_DEBUG(HandlerContext::logger(), "PUT /logs/configuration: ignoring unrecognized field '%s'", key.c_str());
-    }
   }
 
   const auto err = log_mgr->update_config(entity_id, severity_filter, max_entries);

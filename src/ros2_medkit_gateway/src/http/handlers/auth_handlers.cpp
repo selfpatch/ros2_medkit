@@ -16,11 +16,27 @@
 
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/dto/auth.hpp"
 
 using json = nlohmann::json;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace {
+
+/// Build an AuthTokenResponse DTO from a TokenResponse (auth_models.hpp).
+dto::AuthTokenResponse to_auth_token_response(const TokenResponse & tr) {
+  dto::AuthTokenResponse resp;
+  resp.access_token = tr.access_token;
+  resp.token_type = tr.token_type;
+  resp.expires_in = tr.expires_in;
+  resp.scope = tr.scope;
+  resp.refresh_token = tr.refresh_token;
+  return resp;
+}
+
+}  // namespace
 
 void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::Response & res) {
   try {
@@ -31,7 +47,7 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
       return;
     }
 
-    // Parse request using DRY helper
+    // Parse request using DRY helper (content-type-aware: JSON and form-urlencoded)
     auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
     if (!parse_result) {
       res.status = 400;
@@ -70,7 +86,7 @@ void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::
     auto result = auth_manager->authenticate(auth_req.client_id.value(), auth_req.client_secret.value());
 
     if (result) {
-      HandlerContext::send_json(res, result->to_json());
+      HandlerContext::send_dto(res, to_auth_token_response(*result));
     } else {
       res.status = 401;
       res.set_content(result.error().to_json().dump(2), "application/json");
@@ -90,7 +106,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
       return;
     }
 
-    // Parse request using DRY helper
+    // Parse request using DRY helper (content-type-aware: JSON and form-urlencoded)
     auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
     if (!parse_result) {
       res.status = 400;
@@ -123,7 +139,7 @@ void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Resp
     auto result = auth_manager->refresh_access_token(auth_req.refresh_token.value());
 
     if (result) {
-      HandlerContext::send_json(res, result->to_json());
+      HandlerContext::send_dto(res, to_auth_token_response(*result));
     } else {
       res.status = 401;
       res.set_content(result.error().to_json().dump(2), "application/json");

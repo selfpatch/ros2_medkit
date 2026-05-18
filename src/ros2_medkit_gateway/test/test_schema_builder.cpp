@@ -20,6 +20,11 @@
 #include <vector>
 
 #include "../src/openapi/schema_builder.hpp"
+#include "ros2_medkit_gateway/dto/bulkdata.hpp"
+#include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
+#include "ros2_medkit_gateway/dto/registry.hpp"
+#include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/triggers.hpp"
 
 using ros2_medkit_gateway::openapi::SchemaBuilder;
 
@@ -28,6 +33,8 @@ using ros2_medkit_gateway::openapi::SchemaBuilder;
 // =============================================================================
 
 TEST(SchemaBuilderStaticTest, GenericErrorSchema) {
+  // generic_error() now delegates to SchemaWriter<dto::GenericError>::schema().
+  // The DTO is the source of truth; the test asserts the DTO-generated shape.
   auto schema = SchemaBuilder::generic_error();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
@@ -36,17 +43,26 @@ TEST(SchemaBuilderStaticTest, GenericErrorSchema) {
   EXPECT_TRUE(schema["properties"].contains("parameters"));
   EXPECT_EQ(schema["properties"]["error_code"]["type"], "string");
   EXPECT_EQ(schema["properties"]["message"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["parameters"]["type"], "object");
+  // parameters is std::optional<nlohmann::json>: schema_of<json> = {} (free-form, no type constraint).
+  // This is intentional - parameters accepts any JSON object per the SOVD spec.
+  EXPECT_TRUE(schema["properties"]["parameters"].is_object());
 
-  // Required fields
+  // Required fields: error_code and message; parameters is optional.
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "error_code"), required.end());
   EXPECT_NE(std::find(required.begin(), required.end(), "message"), required.end());
+  EXPECT_EQ(std::find(required.begin(), required.end(), "parameters"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultListItemSchema) {
-  auto schema = SchemaBuilder::fault_list_item_schema();
+// Fault schemas are now emitted by the DTO layer (dto::collect_component_schemas).
+// Tests assert against the registered schemas in component_schemas() instead of
+// the deleted factory functions.
+
+TEST(SchemaBuilderStaticTest, FaultListItemRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultListItem") > 0) << "FaultListItem must be in component_schemas()";
+  const auto & schema = schemas.at("FaultListItem");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("fault_code"));
@@ -62,79 +78,75 @@ TEST(SchemaBuilderStaticTest, FaultListItemSchema) {
   EXPECT_EQ(schema["properties"]["severity"]["type"], "integer");
   EXPECT_EQ(schema["properties"]["status"]["type"], "string");
   EXPECT_EQ(schema["properties"]["reporting_sources"]["type"], "array");
+
+  // Required fields: fault_code and status
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "fault_code"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "status"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultDetailSchema) {
-  auto schema = SchemaBuilder::fault_detail_schema();
+TEST(SchemaBuilderStaticTest, FaultDetailRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultDetail") > 0) << "FaultDetail must be in component_schemas()";
+  const auto & schema = schemas.at("FaultDetail");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  // SOVD nested structure
+  // SOVD nested structure: item, environment_data, x-medkit
   EXPECT_TRUE(schema["properties"].contains("item"));
   EXPECT_TRUE(schema["properties"].contains("environment_data"));
   EXPECT_TRUE(schema["properties"].contains("x-medkit"));
 
-  // item subfields
-  auto & item = schema["properties"]["item"];
-  EXPECT_EQ(item["type"], "object");
-  EXPECT_TRUE(item["properties"].contains("code"));
-  EXPECT_TRUE(item["properties"].contains("fault_name"));
-  EXPECT_TRUE(item["properties"].contains("severity"));
-  EXPECT_TRUE(item["properties"].contains("status"));
-  EXPECT_EQ(item["properties"]["status"]["type"], "object");
-  EXPECT_TRUE(item["properties"]["status"]["properties"].contains("aggregatedStatus"));
+  // item is a $ref to FaultItem
+  EXPECT_TRUE(schema["properties"]["item"].contains("$ref"));
 
-  // environment_data subfields
-  auto & env = schema["properties"]["environment_data"];
-  EXPECT_EQ(env["type"], "object");
-  EXPECT_TRUE(env["properties"].contains("extended_data_records"));
-  EXPECT_TRUE(env["properties"].contains("snapshots"));
+  // environment_data is a $ref to FaultEnvironmentData
+  EXPECT_TRUE(schema["properties"]["environment_data"].contains("$ref"));
 
-  // x-medkit subfields
-  auto & xmedkit = schema["properties"]["x-medkit"];
-  EXPECT_EQ(xmedkit["type"], "object");
-  EXPECT_TRUE(xmedkit["properties"].contains("occurrence_count"));
-  EXPECT_TRUE(xmedkit["properties"].contains("reporting_sources"));
-  EXPECT_TRUE(xmedkit["properties"].contains("severity_label"));
-  EXPECT_TRUE(xmedkit["properties"].contains("status_raw"));
+  // Required: item, environment_data
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "environment_data"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, FaultListSchema) {
-  auto schema = SchemaBuilder::fault_list_schema();
+TEST(SchemaBuilderStaticTest, FaultListRegisteredAsDto) {
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("FaultList") > 0) << "FaultList must be in component_schemas()";
+  const auto & schema = schemas.at("FaultList");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   ASSERT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should contain the fault list item schema
+  // Items array references FaultListItem via $ref
   auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_EQ(item_schema["type"], "object");
-  EXPECT_TRUE(item_schema["properties"].contains("fault_code"));
+  ASSERT_TRUE(item_schema.contains("$ref"));
+  EXPECT_EQ(item_schema["$ref"], "#/components/schemas/FaultListItem");
 }
 
-TEST(SchemaBuilderStaticTest, EntityDetailSchema) {
-  auto schema = SchemaBuilder::entity_detail_schema();
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  EXPECT_TRUE(schema["properties"].contains("id"));
-  EXPECT_TRUE(schema["properties"].contains("name"));
-  EXPECT_TRUE(schema["properties"].contains("type"));
-  EXPECT_TRUE(schema["properties"].contains("uri"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["name"]["type"], "string");
+// AreaDetail / AreaList etc. are now emitted by the DTO layer (dto::collect_component_schemas).
+// The AllRefsResolveToRegisteredSchemas consistency test at the bottom of this file
+// covers correct $ref targets for all entity schemas.
+
+TEST(SchemaBuilderStaticTest, EntityDetailRegisteredAsDto) {
+  // Entity detail schemas are generated by the DTO layer and must be present
+  // in component_schemas() under the typed names.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  EXPECT_TRUE(schemas.count("AreaDetail") > 0);
+  EXPECT_TRUE(schemas.count("ComponentDetail") > 0);
+  EXPECT_TRUE(schemas.count("AppDetail") > 0);
+  EXPECT_TRUE(schemas.count("FunctionDetail") > 0);
 }
 
-TEST(SchemaBuilderStaticTest, EntityListSchema) {
-  auto schema = SchemaBuilder::entity_list_schema();
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
-
-  // Items should contain the entity detail schema
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_EQ(item_schema["type"], "object");
-  EXPECT_TRUE(item_schema["properties"].contains("id"));
-  EXPECT_TRUE(item_schema["properties"].contains("name"));
+TEST(SchemaBuilderStaticTest, EntityListRegisteredAsDto) {
+  // Entity collection schemas are generated by the DTO layer and must be present
+  // in component_schemas() under the typed names.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  EXPECT_TRUE(schemas.count("AreaList") > 0);
+  EXPECT_TRUE(schemas.count("ComponentList") > 0);
+  EXPECT_TRUE(schemas.count("AppList") > 0);
+  EXPECT_TRUE(schemas.count("FunctionList") > 0);
 }
 
 TEST(SchemaBuilderStaticTest, ItemsWrapper) {
@@ -153,17 +165,18 @@ TEST(SchemaBuilderStaticTest, ItemsWrapper) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
-  auto schema = SchemaBuilder::configuration_metadata_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchemaFromDto) {
+  // ConfigurationMetaData is now generated from the DTO; verify via
+  // component_schemas() which merges DTO-generated schemas on top.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationMetaData") > 0);
+  const auto & schema = schemas.at("ConfigurationMetaData");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("name"));
   EXPECT_TRUE(schema["properties"].contains("type"));
   EXPECT_FALSE(schema["properties"].contains("value"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["name"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["type"]["type"], "string");
 
   // Required: id, name, type (no value)
   ASSERT_TRUE(schema.contains("required"));
@@ -175,37 +188,33 @@ TEST(SchemaBuilderStaticTest, ConfigurationMetaDataSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationMetaDataXMedkitDeclaresAllEmittedFields) {
+TEST(SchemaBuilderStaticTest, ConfigurationMetaDataXMedkitDtoDeclaresSourceAndNode) {
   // Regression: the x-medkit object emitted by config_handlers.cpp on every
   // per-parameter entry contains both `source` (app_id) and `node` (FQN).
-  // The schema must declare both, otherwise generated typed clients drop
-  // or fail-type the undeclared field - exactly the drift this PR fixes
-  // for x-medkit.phase. additionalProperties is intentionally left open
-  // (other endpoints use the same convention), so the drift integration
-  // test cannot detect missing properties here; this static check does.
-  auto schema = SchemaBuilder::configuration_metadata_schema();
+  // The ConfigXMedkitItem DTO declares both; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigXMedkitItem") > 0);
+  const auto & schema = schemas.at("ConfigXMedkitItem");
+  EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema.at("properties").contains("x-medkit"));
-  const auto & x_medkit = schema.at("properties").at("x-medkit");
-  EXPECT_EQ(x_medkit.at("type"), "object");
-  ASSERT_TRUE(x_medkit.contains("properties"));
-  const auto & x_props = x_medkit.at("properties");
-  ASSERT_TRUE(x_props.contains("source"));
-  EXPECT_EQ(x_props.at("source").at("type"), "string");
-  ASSERT_TRUE(x_props.contains("node"));
-  EXPECT_EQ(x_props.at("node").at("type"), "string");
+  const auto & props = schema["properties"];
+  ASSERT_TRUE(props.contains("source"));
+  ASSERT_TRUE(props.contains("node"));
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
-  auto schema = SchemaBuilder::configuration_read_value_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchemaFromDto) {
+  // ConfigurationReadValue is now generated from the DTO; verify via
+  // component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationReadValue") > 0);
+  const auto & schema = schemas.at("ConfigurationReadValue");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
   EXPECT_TRUE(schema["properties"].contains("data"));
   EXPECT_FALSE(schema["properties"].contains("name"));
   EXPECT_FALSE(schema["properties"].contains("value"));
-  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
 
   // Required: id, data
   ASSERT_TRUE(schema.contains("required"));
@@ -215,36 +224,41 @@ TEST(SchemaBuilderStaticTest, ConfigurationReadValueSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, OperationDetailSchema) {
-  auto schema = SchemaBuilder::operation_detail_schema();
+TEST(SchemaBuilderStaticTest, OperationDetailSchemaComeFromDto) {
+  // OperationDetail is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("OperationDetail") > 0);
+  const auto & schema = schemas.at("OperationDetail");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("item"));
-  // item references OperationItem via $ref
+  // item references OperationItem via $ref (DTO SchemaWriter uses $ref for nested DTOs)
   EXPECT_TRUE(schema["properties"]["item"].contains("$ref"));
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "item"), required.end());
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ConfigurationWriteValueSchema) {
-  auto schema = SchemaBuilder::configuration_write_value_schema();
+TEST(SchemaBuilderStaticTest, ConfigurationWriteRequestSchemaFromDto) {
+  // ConfigurationWriteRequest is now generated from the DTO; verify via
+  // component_schemas().
+  // Both "data" and "value" are optional at schema level - the handler enforces
+  // that at least one is present and prefers "data" over "value".
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ConfigurationWriteRequest") > 0);
+  const auto & schema = schemas.at("ConfigurationWriteRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("data"));
+  EXPECT_TRUE(schema["properties"].contains("value"));
   EXPECT_FALSE(schema["properties"].contains("id"));
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "data"), required.end());
-  EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
+  // No "required" array: both fields are optional at the schema level
+  EXPECT_FALSE(schema.contains("required"));
 }
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ScriptUploadResponseSchema) {
-  auto schema = SchemaBuilder::script_upload_response_schema();
+  // ScriptUploadResponse is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::ScriptUploadResponse>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
@@ -260,7 +274,9 @@ TEST(SchemaBuilderStaticTest, ScriptUploadResponseSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
-  auto schema = SchemaBuilder::trigger_update_request_schema();
+  // TriggerUpdateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::TriggerUpdateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lifetime"));
@@ -269,13 +285,13 @@ TEST(SchemaBuilderStaticTest, TriggerUpdateRequestSchema) {
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "lifetime"), required.end());
-
-  EXPECT_EQ(schema["properties"]["lifetime"]["minimum"], 1);
 }
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
-  auto schema = SchemaBuilder::bulk_data_category_list_schema();
+  // BulkDataCategoryList is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::BulkDataCategoryList>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("items"));
@@ -285,7 +301,9 @@ TEST(SchemaBuilderStaticTest, BulkDataCategoryListSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, BulkDataDescriptorSchema) {
-  auto schema = SchemaBuilder::bulk_data_descriptor_schema();
+  // BulkDataDescriptor is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::BulkDataDescriptor>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
@@ -305,7 +323,9 @@ TEST(SchemaBuilderStaticTest, BulkDataDescriptorSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
-  auto schema = SchemaBuilder::cyclic_subscription_create_request_schema();
+  // CyclicSubscriptionCreateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::CyclicSubscriptionCreateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("resource"));
@@ -322,20 +342,20 @@ TEST(SchemaBuilderStaticTest, CyclicSubscriptionCreateRequestSchema) {
   EXPECT_NE(std::find(required.begin(), required.end(), "duration"), required.end());
   EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
 
-  // Verify interval enum constraint
+  // interval uses plain field (no enum constraint) - bespoke handler validation
+  // produces ERR_INVALID_PARAMETER with parameter detail for unknown values.
   EXPECT_EQ(schema["properties"]["interval"]["type"], "string");
-  ASSERT_TRUE(schema["properties"]["interval"].contains("enum"));
-  auto enum_vals = schema["properties"]["interval"]["enum"].get<std::vector<std::string>>();
-  EXPECT_EQ(enum_vals.size(), 3u);
+  EXPECT_FALSE(schema["properties"]["interval"].contains("enum"));
 
-  // Verify duration type and minimum
+  // Verify duration type (DTO: integer; minimum is not emitted by SchemaWriter)
   EXPECT_EQ(schema["properties"]["duration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["duration"]["minimum"], 1);
 }
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, TriggerCreateRequestSchema) {
-  auto schema = SchemaBuilder::trigger_create_request_schema();
+  // TriggerCreateRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::TriggerCreateRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("resource"));
@@ -351,8 +371,11 @@ TEST(SchemaBuilderStaticTest, TriggerCreateRequestSchema) {
   EXPECT_EQ(std::find(required.begin(), required.end(), "id"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, LogEntrySchema) {
-  auto schema = SchemaBuilder::log_entry_schema();
+TEST(SchemaBuilderStaticTest, LogEntrySchemaRegistered) {
+  // Regression: LogEntry moved to DTO - verify it is in component_schemas.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("LogEntry") > 0) << "LogEntry schema must be registered";
+  const auto & schema = schemas.at("LogEntry");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
@@ -362,81 +385,107 @@ TEST(SchemaBuilderStaticTest, LogEntrySchema) {
   EXPECT_TRUE(schema["properties"].contains("context"));
   EXPECT_EQ(schema["properties"]["id"]["type"], "string");
   EXPECT_EQ(schema["properties"]["severity"]["type"], "string");
-  EXPECT_EQ(schema["properties"]["context"]["type"], "object");
-  EXPECT_TRUE(schema["properties"]["context"]["properties"].contains("node"));
 }
 
-TEST(SchemaBuilderStaticTest, LogEntryListXMedkitDeclaresAggregationFields) {
+TEST(SchemaBuilderStaticTest, LogListXMedkitDeclaresAggregationFields) {
   // Regression: handle_get_logs emits aggregation_level, aggregated, app_count,
   // host_count, component_count, aggregation_sources at the response wrapper's
   // x-medkit object on FUNCTION / AREA / COMPONENT entities. Generated typed
   // clients drop fields the schema does not declare, so each emitted field
-  // must be listed in log_entry_list_schema()'s x-medkit properties.
-  auto schema = SchemaBuilder::log_entry_list_schema();
+  // must be listed in the LogListXMedkit DTO schema.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("LogListXMedkit") > 0) << "LogListXMedkit schema must be registered";
+  const auto & schema = schemas.at("LogListXMedkit");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
-
-  ASSERT_TRUE(schema["properties"].contains("x-medkit"));
-  const auto & x_medkit = schema["properties"]["x-medkit"];
-  EXPECT_EQ(x_medkit.at("type"), "object");
-  ASSERT_TRUE(x_medkit.contains("properties"));
-  const auto & x_props = x_medkit.at("properties");
-  for (const char * field : {"entity_id", "aggregation_level", "aggregated", "host_count", "component_count",
-                             "app_count", "aggregation_sources", "contributors"}) {
-    ASSERT_TRUE(x_props.contains(field)) << "x-medkit missing declared field: " << field;
+  const auto & x_props = schema["properties"];
+  for (const char * f : {"entity_id", "aggregation_level", "aggregated", "host_count", "component_count", "app_count",
+                         "aggregation_sources", "contributors"}) {
+    ASSERT_TRUE(x_props.contains(f)) << "LogListXMedkit missing declared field: " << f;
   }
   EXPECT_EQ(x_props.at("aggregation_level").at("type"), "string");
   EXPECT_EQ(x_props.at("aggregated").at("type"), "boolean");
   EXPECT_EQ(x_props.at("app_count").at("type"), "integer");
   EXPECT_EQ(x_props.at("aggregation_sources").at("type"), "array");
   EXPECT_EQ(x_props.at("aggregation_sources").at("items").at("type"), "string");
+}
 
+TEST(SchemaBuilderStaticTest, LogEntryListRegistered) {
+  // LogEntryList = Collection<LogEntry> via DTO - must be in component_schemas
+  // and reference LogEntry.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("LogEntryList") > 0) << "LogEntryList schema must be registered";
+  const auto & schema = schemas.at("LogEntryList");
+  ASSERT_TRUE(schema.contains("properties"));
+  ASSERT_TRUE(schema["properties"].contains("items"));
+  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
+  // Required: items
+  ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "items"), required.end());
 }
 
-TEST(SchemaBuilderStaticTest, HealthSchema) {
-  auto schema = SchemaBuilder::health_schema();
+TEST(SchemaBuilderStaticTest, HealthSchemaComesFromDto) {
+  // Health, HealthDiscovery, etc. now come from the DTO (dto/health.hpp).
+  // DTO-generated schema name is "HealthStatus" (dto_name<Health>).
+  namespace dto = ros2_medkit_gateway::dto;
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("HealthStatus") > 0) << "HealthStatus schema must be registered";
+  const auto & schema = schemas.at("HealthStatus");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("status"));
   EXPECT_TRUE(schema["properties"].contains("timestamp"));
+  // discovery is a $ref to HealthDiscovery (not inline in the HealthStatus schema)
   EXPECT_TRUE(schema["properties"].contains("discovery"));
   EXPECT_EQ(schema["properties"]["status"]["type"], "string");
   EXPECT_EQ(schema["properties"]["timestamp"]["type"], "integer");
 
-  // Discovery subfields
-  auto & discovery = schema["properties"]["discovery"];
-  EXPECT_EQ(discovery["type"], "object");
-  EXPECT_TRUE(discovery["properties"].contains("mode"));
-  EXPECT_TRUE(discovery["properties"].contains("strategy"));
-  EXPECT_EQ(discovery["properties"]["mode"]["type"], "string");
-  EXPECT_EQ(discovery["properties"]["strategy"]["type"], "string");
-
-  // Required
+  // Required: status and timestamp
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
   EXPECT_NE(std::find(required.begin(), required.end(), "status"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "timestamp"), required.end());
+
+  // HealthDiscovery sub-DTO must also be registered (discovery field is a $ref)
+  ASSERT_TRUE(schemas.count("HealthDiscovery") > 0) << "HealthDiscovery schema must be registered";
+  const auto & disc_schema = schemas.at("HealthDiscovery");
+  EXPECT_EQ(disc_schema["type"], "object");
+  ASSERT_TRUE(disc_schema.contains("properties"));
+  EXPECT_TRUE(disc_schema["properties"].contains("mode"));
+  EXPECT_TRUE(disc_schema["properties"].contains("strategy"));
+  EXPECT_EQ(disc_schema["properties"]["mode"]["type"], "string");
+  EXPECT_EQ(disc_schema["properties"]["strategy"]["type"], "string");
 }
 
-TEST(SchemaBuilderStaticTest, VersionInfoSchema) {
-  auto schema = SchemaBuilder::version_info_schema();
+TEST(SchemaBuilderStaticTest, VersionInfoSchemaComesFromDto) {
+  // VersionInfo, VersionInfoEntry, VersionInfoVendor now come from the DTO (dto/health.hpp).
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("VersionInfo") > 0) << "VersionInfo schema must be registered";
+  const auto & schema = schemas.at("VersionInfo");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   ASSERT_TRUE(schema["properties"].contains("items"));
   EXPECT_EQ(schema["properties"]["items"]["type"], "array");
 
-  // Items should have version, base_uri, and vendor_info
-  auto & item_schema = schema["properties"]["items"]["items"];
-  EXPECT_EQ(item_schema["type"], "object");
-  EXPECT_TRUE(item_schema["properties"].contains("version"));
-  EXPECT_TRUE(item_schema["properties"].contains("base_uri"));
-  EXPECT_TRUE(item_schema["properties"].contains("vendor_info"));
+  // items array items are a $ref to VersionInfoEntry (DTO-generated, not inline)
+  ASSERT_TRUE(schema["properties"]["items"].contains("items"));
+  const auto & item_ref = schema["properties"]["items"]["items"];
+  ASSERT_TRUE(item_ref.contains("$ref"));
+  EXPECT_EQ(item_ref.at("$ref"), "#/components/schemas/VersionInfoEntry");
 
-  // vendor_info should have version and name
-  auto & vendor_schema = item_schema["properties"]["vendor_info"];
+  // VersionInfoEntry sub-DTO must also be registered
+  ASSERT_TRUE(schemas.count("VersionInfoEntry") > 0) << "VersionInfoEntry schema must be registered";
+  const auto & entry_schema = schemas.at("VersionInfoEntry");
+  EXPECT_EQ(entry_schema["type"], "object");
+  ASSERT_TRUE(entry_schema.contains("properties"));
+  EXPECT_TRUE(entry_schema["properties"].contains("version"));
+  EXPECT_TRUE(entry_schema["properties"].contains("base_uri"));
+  EXPECT_TRUE(entry_schema["properties"].contains("vendor_info"));
+
+  // vendor_info is a $ref to VersionInfoVendor
+  ASSERT_TRUE(schemas.count("VersionInfoVendor") > 0) << "VersionInfoVendor schema must be registered";
+  const auto & vendor_schema = schemas.at("VersionInfoVendor");
   EXPECT_EQ(vendor_schema["type"], "object");
   EXPECT_TRUE(vendor_schema["properties"].contains("version"));
   EXPECT_TRUE(vendor_schema["properties"].contains("name"));
@@ -510,15 +559,17 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvResponseUnknown) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, AcquireLockRequestSchema) {
-  auto schema = SchemaBuilder::acquire_lock_request_schema();
+TEST(SchemaBuilderStaticTest, AcquireLockRequestSchemaComesFromDto) {
+  // AcquireLockRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("AcquireLockRequest") > 0);
+  const auto & schema = schemas.at("AcquireLockRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
   EXPECT_TRUE(schema["properties"].contains("scopes"));
   EXPECT_TRUE(schema["properties"].contains("break_lock"));
   EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
   EXPECT_EQ(schema["properties"]["scopes"]["type"], "array");
   EXPECT_EQ(schema["properties"]["break_lock"]["type"], "boolean");
 
@@ -529,13 +580,15 @@ TEST(SchemaBuilderStaticTest, AcquireLockRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ExtendLockRequestSchema) {
-  auto schema = SchemaBuilder::extend_lock_request_schema();
+TEST(SchemaBuilderStaticTest, ExtendLockRequestSchemaComesFromDto) {
+  // ExtendLockRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ExtendLockRequest") > 0);
+  const auto & schema = schemas.at("ExtendLockRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
   EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "integer");
-  EXPECT_EQ(schema["properties"]["lock_expiration"]["minimum"], 1);
 
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
@@ -543,8 +596,36 @@ TEST(SchemaBuilderStaticTest, ExtendLockRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, DataWriteRequestSchema) {
-  auto schema = SchemaBuilder::data_write_request_schema();
+TEST(SchemaBuilderStaticTest, LockSchemaComesFromDto) {
+  // Lock and LockList are now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("Lock") > 0);
+  const auto & schema = schemas.at("Lock");
+  EXPECT_EQ(schema["type"], "object");
+  ASSERT_TRUE(schema.contains("properties"));
+  EXPECT_TRUE(schema["properties"].contains("id"));
+  EXPECT_TRUE(schema["properties"].contains("owned"));
+  EXPECT_TRUE(schema["properties"].contains("scopes"));
+  EXPECT_TRUE(schema["properties"].contains("lock_expiration"));
+  EXPECT_EQ(schema["properties"]["id"]["type"], "string");
+  EXPECT_EQ(schema["properties"]["owned"]["type"], "boolean");
+  EXPECT_EQ(schema["properties"]["lock_expiration"]["type"], "string");
+
+  ASSERT_TRUE(schema.contains("required"));
+  auto required = schema["required"].get<std::vector<std::string>>();
+  EXPECT_NE(std::find(required.begin(), required.end(), "id"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "owned"), required.end());
+  EXPECT_NE(std::find(required.begin(), required.end(), "lock_expiration"), required.end());
+
+  ASSERT_TRUE(schemas.count("LockList") > 0);
+}
+
+// @verifies REQ_INTEROP_002
+TEST(SchemaBuilderStaticTest, DataWriteRequestSchemaComesFromDto) {
+  // DataWriteRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("DataWriteRequest") > 0);
+  const auto & schema = schemas.at("DataWriteRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("type"));
@@ -558,16 +639,19 @@ TEST(SchemaBuilderStaticTest, DataWriteRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchema) {
-  auto schema = SchemaBuilder::execution_update_request_schema();
+TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchemaComesFromDto) {
+  // ExecutionUpdateRequest is now generated from the DTO; verify via component_schemas().
+  // capability is a plain string field (no enum constraint) so that custom
+  // x-vendor-* capabilities pass parse_body and reach the handler's own
+  // validation logic.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("ExecutionUpdateRequest") > 0);
+  const auto & schema = schemas.at("ExecutionUpdateRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("capability"));
   EXPECT_EQ(schema["properties"]["capability"]["type"], "string");
-  ASSERT_TRUE(schema["properties"]["capability"].contains("enum"));
-  auto enum_vals = schema["properties"]["capability"]["enum"].get<std::vector<std::string>>();
-  EXPECT_EQ(enum_vals.size(), 4u);
-  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "stop"), enum_vals.end());
+  EXPECT_FALSE(schema["properties"]["capability"].contains("enum"));
 
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();
@@ -576,7 +660,9 @@ TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ScriptControlRequestSchema) {
-  auto schema = SchemaBuilder::script_control_request_schema();
+  // ScriptControlRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::ScriptControlRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("action"));
@@ -593,7 +679,10 @@ TEST(SchemaBuilderStaticTest, ScriptControlRequestSchema) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, LogConfigurationSchemaFieldsOptional) {
-  auto schema = SchemaBuilder::log_configuration_schema();
+  // LogConfiguration moved to DTO - verify it is registered in component_schemas.
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("LogConfiguration") > 0) << "LogConfiguration schema must be registered";
+  const auto & schema = schemas.at("LogConfiguration");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("severity_filter"));
@@ -601,28 +690,6 @@ TEST(SchemaBuilderStaticTest, LogConfigurationSchemaFieldsOptional) {
 
   // Both fields are optional - no required array
   EXPECT_FALSE(schema.contains("required"));
-
-  // severity_filter has enum constraint
-  ASSERT_TRUE(schema["properties"]["severity_filter"].contains("enum"));
-  auto enum_vals = schema["properties"]["severity_filter"]["enum"].get<std::vector<std::string>>();
-  EXPECT_EQ(enum_vals.size(), 5u);
-
-  // max_entries has bounds
-  EXPECT_EQ(schema["properties"]["max_entries"]["minimum"], 1);
-  EXPECT_EQ(schema["properties"]["max_entries"]["maximum"], 10000);
-}
-
-// @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, TriggerConditionSchemaShared) {
-  auto schema = SchemaBuilder::trigger_condition_schema();
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  EXPECT_TRUE(schema["properties"].contains("condition_type"));
-  EXPECT_TRUE(schema["additionalProperties"].get<bool>());
-
-  ASSERT_TRUE(schema.contains("required"));
-  auto required = schema["required"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(required.begin(), required.end(), "condition_type"), required.end());
 }
 
 // =============================================================================

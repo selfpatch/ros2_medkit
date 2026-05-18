@@ -23,7 +23,6 @@
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -101,33 +100,26 @@ inline std::string build_fan_out_path(const httplib::Request & req) {
   return path;
 }
 
+/// Fan-out GET to peer gateways and merge their items into `result["items"]`.
+/// Aggregation metadata (partial, failed_peers) is written into `ext_json`
+/// (a plain JSON object that callers fold into the response x-medkit block).
 inline void merge_peer_items(AggregationManager * agg, const httplib::Request & req, nlohmann::json & result,
-                             XMedkit & ext) {
+                             nlohmann::json & ext_json) {
   if (agg == nullptr) {
     return;
   }
   if (req.has_header("X-Medkit-No-Fan-Out")) {
     return;
   }
-  // Skip fan-out when no healthy peers to avoid blocking the httplib handler
-  // thread on network I/O (up to timeout_ms per request). With fan-out on all
-  // per-entity collection endpoints, concurrent requests during a peer outage
-  // could exhaust httplib's thread pool if we don't bail out early here.
   if (agg->healthy_peer_count() == 0) {
     return;
   }
-  // For per-entity collection paths, target only the peers that host or
-  // contribute to the entity (routed leaves and merged / hierarchical
-  // entities). Local-only entities produce an empty target list and skip
-  // fan-out entirely, avoiding spurious `partial: true` / `failed_peers`
-  // from peers that do not own the entity. Global collection endpoints
-  // (paths without an entity id) keep fan-out-to-all behavior.
   std::optional<std::vector<std::string>> contributors_buffer;
   const std::vector<std::string> * target_peers = nullptr;
   if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
     contributors_buffer = agg->get_peer_contributors(*entity_id);
     if (contributors_buffer->empty()) {
-      return;  // local-only: no peer hosts this entity
+      return;
     }
     target_peers = &contributors_buffer.value();
   }
@@ -144,8 +136,8 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
     }
   }
   if (fan_result.is_partial) {
-    ext.add("partial", true);
-    ext.add("failed_peers", fan_result.failed_peers);
+    ext_json["partial"] = true;
+    ext_json["failed_peers"] = fan_result.failed_peers;
   }
 }
 

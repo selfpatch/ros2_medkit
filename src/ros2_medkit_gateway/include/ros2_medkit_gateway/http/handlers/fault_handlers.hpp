@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
@@ -101,9 +102,9 @@ class FaultHandlers {
    * @param entity_path Entity path used to construct rosbag bulk_data_uri.
    * @return SOVD-compliant JSON response
    */
-  static nlohmann::json build_sovd_fault_response(const nlohmann::json & fault_json,
-                                                  const nlohmann::json & env_data_json,
-                                                  const std::string & entity_path);
+  static dto::FaultDetail build_sovd_fault_response(const nlohmann::json & fault_json,
+                                                    const nlohmann::json & env_data_json,
+                                                    const std::string & entity_path);
 
  private:
   HandlerContext & ctx_;

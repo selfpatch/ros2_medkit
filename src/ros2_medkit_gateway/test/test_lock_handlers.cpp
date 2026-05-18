@@ -135,51 +135,6 @@ TEST(LockHandlersStaticTest, LockingDisabledReturns501) {
   EXPECT_EQ(body["error_code"], "not-implemented");
 }
 
-TEST(LockHandlersStaticTest, LockToJsonWithMatchingClientShowsOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_1";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.scopes = {"configurations"};
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "client_a");
-  EXPECT_EQ(j["id"], "lock_1");
-  EXPECT_TRUE(j["owned"].get<bool>());
-  ASSERT_TRUE(j.contains("scopes"));
-  EXPECT_EQ(j["scopes"].size(), 1);
-  EXPECT_EQ(j["scopes"][0], "configurations");
-  EXPECT_TRUE(j.contains("lock_expiration"));
-  auto expiration = j["lock_expiration"].get<std::string>();
-  EXPECT_TRUE(expiration.find("T") != std::string::npos);
-  EXPECT_TRUE(expiration.find("Z") != std::string::npos);
-}
-
-TEST(LockHandlersStaticTest, LockToJsonWithDifferentClientShowsNotOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_2";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.scopes = {};
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "client_b");
-  EXPECT_FALSE(j["owned"].get<bool>());
-  // Empty scopes should not produce "scopes" field
-  EXPECT_FALSE(j.contains("scopes"));
-}
-
-TEST(LockHandlersStaticTest, LockToJsonWithEmptyClientShowsNotOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_3";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "");
-  EXPECT_FALSE(j["owned"].get<bool>());
-}
-
 // ============================================================================
 // Full handler tests (with GatewayNode for entity validation)
 // ============================================================================
@@ -390,7 +345,8 @@ TEST_F(LockHandlersTest, AcquireLockWithMissingExpirationReturns400) {
 
   EXPECT_EQ(res.status, 400);
   auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  // parse_body uses ERR_INVALID_REQUEST for missing required fields
+  EXPECT_EQ(body["error_code"], "invalid-request");
 }
 
 TEST_F(LockHandlersTest, AcquireLockWithZeroExpirationReturns400) {

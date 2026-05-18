@@ -33,6 +33,15 @@ import unittest
 import launch_testing
 import requests
 
+# Humble (Ubuntu 22.04) ships python3-jsonschema 3.2 which only has draft-7;
+# Jazzy/Rolling (Ubuntu 24.04) ship 4.10+ with Draft202012. Prefer the newest
+# draft for OpenAPI 3.1 alignment, fall back to Draft7 on Humble. The
+# properties we validate (required, type, properties) behave identically.
+try:
+    from jsonschema.validators import Draft202012Validator as _Validator
+except ImportError:
+    from jsonschema.validators import Draft7Validator as _Validator
+
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
@@ -212,6 +221,20 @@ _KNOWN_BUSINESS_400_PATTERNS = [
     'Resource URI must reference the same entity',
     # [spec limitation] Config value type depends on actual ROS 2 parameter type
     'Failed to set parameter',
+    # [spec limitation] ConfigurationWriteRequest has both 'data' and 'value' as
+    # optional, but the handler requires at least one to be present. The OpenAPI
+    # schema cannot express "at least one of" across optional fields without
+    # oneOf/anyOf which would break generated client ergonomics.
+    'Request body must contain a',
+    # [spec limitation] TriggerCreateRequest.trigger_condition is a free-form
+    # JSON object (nlohmann::json field) so the schema cannot declare
+    # condition_type as a required sub-field. The handler validates it at runtime.
+    'Missing or invalid',
+    # [spec limitation] CyclicSubscriptionCreateRequest.interval has no enum in
+    # the OpenAPI schema (it is plain field so that invalid values reach
+    # parse_interval and produce ERR_INVALID_PARAMETER, not generic
+    # invalid-request). The generator sends "test_value" which is rejected.
+    'Invalid interval',
 ]
 
 
@@ -403,6 +426,224 @@ class TestOpenApiCallability(GatewayTestCase):
                 f'{len(failures)} endpoint(s) rejected spec-conformant '
                 f'requests:\n  {detail}'
             )
+
+    def test_x_medkit_sub_schemas_present_in_spec(self):
+        """The spec must expose typed x-medkit sub-schemas from issue #338.
+
+        Verifies that ``components/schemas`` in the live spec contains the
+        DTO-generated schemas for the Area x-medkit extension:
+
+        - ``XMedkitArea`` must exist and its ``properties`` must contain a
+          ``"ros2"`` key (a ``$ref`` to ``XMedkitRos2``).
+        - ``XMedkitRos2`` must exist and its ``properties`` must contain a
+          ``"namespace"`` key (the ROS 2 namespace field).
+        - ``AreaListItem`` must exist and its ``properties`` must contain an
+          ``"x-medkit"`` key that references ``XMedkitArea``.
+
+        These assertions confirm that the DTO contract layer (issue #338) is
+        wired to the OpenAPI spec builder: the spec is derived from the same
+        types that the handlers use to serialise responses.
+
+        @verifies REQ_INTEROP_002
+        """
+        spec = self._fetch_spec()
+        schemas = spec.get('components', {}).get('schemas', {})
+
+        # --- XMedkitArea ---
+        self.assertIn(
+            'XMedkitArea', schemas,
+            'components/schemas must contain "XMedkitArea" (issue #338 DTO schema)'
+        )
+        area_xm = schemas['XMedkitArea']
+        area_xm_props = area_xm.get('properties', {})
+        self.assertIn(
+            'ros2', area_xm_props,
+            'XMedkitArea.properties must contain "ros2" (nested ROS 2 sub-object)'
+        )
+        ros2_ref = area_xm_props['ros2']
+        self.assertIn(
+            '$ref', ros2_ref,
+            'XMedkitArea.properties.ros2 must be a $ref (not inlined)'
+        )
+        self.assertIn(
+            'XMedkitRos2', ros2_ref['$ref'],
+            'XMedkitArea.properties.ros2.$ref must point to XMedkitRos2'
+        )
+
+        # --- XMedkitRos2 ---
+        self.assertIn(
+            'XMedkitRos2', schemas,
+            'components/schemas must contain "XMedkitRos2"'
+        )
+        ros2_props = schemas['XMedkitRos2'].get('properties', {})
+        self.assertIn(
+            'namespace', ros2_props,
+            'XMedkitRos2.properties must contain "namespace" (ROS 2 namespace field)'
+        )
+
+        # --- AreaListItem ---
+        self.assertIn(
+            'AreaListItem', schemas,
+            'components/schemas must contain "AreaListItem"'
+        )
+        ali_props = schemas['AreaListItem'].get('properties', {})
+        self.assertIn(
+            'x-medkit', ali_props,
+            'AreaListItem.properties must contain "x-medkit" key'
+        )
+        xm_ref = ali_props['x-medkit']
+        self.assertIn(
+            '$ref', xm_ref,
+            'AreaListItem.properties["x-medkit"] must be a $ref to XMedkitArea'
+        )
+        self.assertIn(
+            'XMedkitArea', xm_ref['$ref'],
+            'AreaListItem.properties["x-medkit"].$ref must point to XMedkitArea'
+        )
+
+    # ------------------------------------------------------------------
+    # Schema $ref resolution for live response validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _inline_refs(schema, schemas, seen=None):
+        """Recursively inline $refs into a schema for jsonschema validation.
+
+        Raises ``ValueError`` on cycles or unresolvable references so the
+        caller can detect a broken spec rather than silently accept any payload.
+        """
+        if seen is None:
+            seen = set()
+        if isinstance(schema, dict):
+            if '$ref' in schema:
+                ref = schema['$ref']
+                if ref in seen:
+                    raise ValueError(f'Cycle in $ref chain: {ref}')
+                if not ref.startswith('#/components/schemas/'):
+                    raise ValueError(f'Unsupported $ref form: {ref}')
+                name = ref.rsplit('/', 1)[-1]
+                target = schemas.get(name)
+                if target is None:
+                    raise ValueError(f'Unknown $ref target: {ref}')
+                return TestOpenApiCallability._inline_refs(
+                    target, schemas, seen | {ref}
+                )
+            return {
+                k: TestOpenApiCallability._inline_refs(v, schemas, seen)
+                for k, v in schema.items()
+            }
+        if isinstance(schema, list):
+            return [
+                TestOpenApiCallability._inline_refs(item, schemas, seen)
+                for item in schema
+            ]
+        return schema
+
+    def _validate_against_spec(self, body, schema, schemas):
+        """Validate *body* against *schema* with $refs inlined.
+
+        Returns a list of ``jsonschema.ValidationError`` instances (empty on
+        success). Raises ``ValueError`` if the schema contains a bad $ref.
+        """
+        inlined = self._inline_refs(schema, schemas)
+        validator = _Validator(inlined)
+        return sorted(validator.iter_errors(body), key=lambda e: e.path)
+
+    def _response_schema_for(self, spec, path, method='get'):
+        """Return the 200 response JSON schema for *path* + *method*, or None."""
+        path_item = spec.get('paths', {}).get(path, {})
+        operation = path_item.get(method)
+        if not operation:
+            return None
+        response_200 = operation.get('responses', {}).get('200', {})
+        return (
+            response_200
+            .get('content', {})
+            .get('application/json', {})
+            .get('schema')
+        )
+
+    def test_live_entity_responses_conform_to_spec(self):
+        """Live responses from core entity endpoints must validate against the spec.
+
+        Covers the GET endpoints for the domains migrated in issue #338:
+        - ``GET /areas``         (AreaList schema)
+        - ``GET /components``    (ComponentList schema)
+        - ``GET /apps``          (AppList schema)
+        - ``GET /health``        (Health schema)
+        - ``GET /version-info``  (VersionInfo schema)
+        - ``GET /apps/{id}``     (AppDetail schema, using temp_sensor fixture)
+        - ``GET /apps/{id}/faults`` (FaultList schema)
+        - ``GET /apps/{id}/operations`` (OperationList schema)
+        - ``GET /apps/{id}/data``       (DataList schema)
+
+        A schema mismatch means the handler's wire output no longer matches
+        its DTO schema - a real contract bug introduced by the migration.
+
+        @verifies REQ_INTEROP_002
+        """
+        spec = self._fetch_spec()
+        schemas = spec.get('components', {}).get('schemas', {})
+        violations = []
+        validated = 0
+
+        # Paths to validate: (spec_path, live_url_path)
+        # Concrete entity paths are derived from discovered entity IDs.
+        app_id = self._entity_map.get('apps', 'temp_sensor')
+        endpoints_to_check = [
+            ('/areas', '/areas'),
+            ('/components', '/components'),
+            ('/apps', '/apps'),
+            ('/health', '/health'),
+            ('/version-info', '/version-info'),
+            ('/apps/{app_id}', f'/apps/{app_id}'),
+            ('/apps/{app_id}/faults', f'/apps/{app_id}/faults'),
+            ('/apps/{app_id}/operations', f'/apps/{app_id}/operations'),
+            ('/apps/{app_id}/data', f'/apps/{app_id}/data'),
+        ]
+
+        for spec_path, live_path in endpoints_to_check:
+            schema = self._response_schema_for(spec, spec_path)
+            if schema is None:
+                # No 200 schema declared - skip (callability test covers 400s)
+                continue
+
+            resp = requests.get(f'{self.BASE_URL}{live_path}', timeout=10)
+            if resp.status_code != 200:
+                # Entity may not exist for this fixture - skip this path.
+                continue
+            if 'application/json' not in resp.headers.get('content-type', ''):
+                continue
+
+            body = resp.json()
+            try:
+                errors = self._validate_against_spec(body, schema, schemas)
+            except ValueError as exc:
+                violations.append(f'GET {live_path}: spec error: {exc}')
+                continue
+
+            if errors:
+                detail = '; '.join(
+                    f'{".".join(str(p) for p in e.absolute_path) or "<root>"}: '
+                    f'{e.message}'
+                    for e in errors[:5]
+                )
+                violations.append(
+                    f'GET {live_path}: schema drift against {spec_path}: {detail}'
+                )
+            else:
+                validated += 1
+
+        self.assertGreater(
+            validated, 0,
+            'No endpoints validated - entity discovery or spec fixture broken?'
+        )
+        self.assertFalse(
+            violations,
+            f'{len(violations)} live response(s) do not conform to the spec '
+            f'(validated {validated} successfully):\n'
+            + '\n'.join(violations),
+        )
 
 
 @launch_testing.post_shutdown_test()

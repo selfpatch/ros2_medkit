@@ -19,10 +19,11 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
@@ -112,24 +113,23 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
                  entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
 
     // Build response with services and actions
-    json operations = json::array();
+    dto::Collection<dto::OperationItem> collection;
 
     // Get type introspection for schema info
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     auto type_introspection = data_access_mgr->get_type_introspection();
 
     for (const auto & svc : ops.services) {
-      // Response format
-      json svc_json = {
-          {"id", svc.name}, {"name", svc.name}, {"proximity_proof_required", false}, {"asynchronous_execution", false}};
-
       // Build x-medkit extension with ROS2-specific data
-      auto x_medkit = XMedkit()
-                          .ros2_service(svc.full_path)
-                          .ros2_type(svc.type)
-                          .ros2_kind("service")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
+      dto::XMedkitRos2 ros2;
+      ros2.service = svc.full_path;
+      ros2.type = svc.type;
+      ros2.kind = "service";
+
+      dto::XMedkitOperationItem x_medkit;
+      x_medkit.ros2 = ros2;
+      x_medkit.entity_id = entity_id;
+      x_medkit.source = "ros2_medkit_gateway";
 
       // Build type_info with request/response schemas for services
       try {
@@ -139,56 +139,64 @@ void OperationHandlers::handle_list_operations(const httplib::Request & req, htt
         auto response_info = type_introspection->get_type_info(svc.type + "_Response");
         type_info_json["request"] = request_info.schema;
         type_info_json["response"] = response_info.schema;
-        x_medkit.add("type_info", type_info_json);
+        x_medkit.type_info = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
                      e.what());
       }
 
-      svc_json["x-medkit"] = x_medkit.build();
-      operations.push_back(svc_json);
+      dto::OperationItem item;
+      item.id = svc.name;
+      item.name = svc.name;
+      item.proximity_proof_required = false;
+      item.asynchronous_execution = false;
+      item.x_medkit = x_medkit;
+      collection.items.push_back(std::move(item));
     }
 
     for (const auto & act : ops.actions) {
-      // Response format
-      json act_json = {
-          {"id", act.name}, {"name", act.name}, {"proximity_proof_required", false}, {"asynchronous_execution", true}};
-
       // Build x-medkit extension with ROS2-specific data
-      auto x_medkit = XMedkit()
-                          .ros2_action(act.full_path)
-                          .ros2_type(act.type)
-                          .ros2_kind("action")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
+      dto::XMedkitRos2 ros2;
+      ros2.action = act.full_path;
+      ros2.type = act.type;
+      ros2.kind = "action";
+
+      dto::XMedkitOperationItem x_medkit;
+      x_medkit.ros2 = ros2;
+      x_medkit.entity_id = entity_id;
+      x_medkit.source = "ros2_medkit_gateway";
 
       // Build type_info with goal/result/feedback schemas for actions
       try {
         json type_info_json;
         // Action types: pkg/action/Type -> Goal: pkg/action/Type_Goal, etc.
-        auto goal_info = type_introspection->get_type_info(act.type + "_Goal");
+        auto goal_info_entry = type_introspection->get_type_info(act.type + "_Goal");
         auto result_info = type_introspection->get_type_info(act.type + "_Result");
         auto feedback_info = type_introspection->get_type_info(act.type + "_Feedback");
-        type_info_json["goal"] = goal_info.schema;
+        type_info_json["goal"] = goal_info_entry.schema;
         type_info_json["result"] = result_info.schema;
         type_info_json["feedback"] = feedback_info.schema;
-        x_medkit.add("type_info", type_info_json);
+        x_medkit.type_info = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
                      e.what());
       }
 
-      act_json["x-medkit"] = x_medkit.build();
-      operations.push_back(act_json);
+      dto::OperationItem item;
+      item.id = act.name;
+      item.name = act.name;
+      item.proximity_proof_required = false;
+      item.asynchronous_execution = true;
+      item.x_medkit = x_medkit;
+      collection.items.push_back(std::move(item));
     }
 
-    // Return response with items array
-    json response;
-    response["items"] = operations;
-    XMedkit ext;
-    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-    if (!ext.empty()) {
-      response["x-medkit"] = ext.build();
+    // Serialize to JSON, apply aggregation fan-out, then send
+    json response = dto::JsonWriter<dto::Collection<dto::OperationItem>>::write(collection);
+    json ext_json = json::object();
+    merge_peer_items(ctx_.aggregation_manager(), req, response, ext_json);
+    if (!ext_json.empty()) {
+      response["x-medkit"] = ext_json;
     }
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -308,21 +316,19 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     auto type_introspection = data_access_mgr->get_type_introspection();
 
-    // Build response
-    json item;
+    // Build OperationDetail DTO
+    dto::OperationDetail detail;
 
     if (service_info.has_value()) {
-      item["id"] = service_info->name;
-      item["name"] = service_info->name;
-      item["proximity_proof_required"] = false;
-      item["asynchronous_execution"] = false;
+      dto::XMedkitRos2 ros2;
+      ros2.service = service_info->full_path;
+      ros2.type = service_info->type;
+      ros2.kind = "service";
 
-      auto x_medkit = XMedkit()
-                          .ros2_service(service_info->full_path)
-                          .ros2_type(service_info->type)
-                          .ros2_kind("service")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
+      dto::XMedkitOperationItem x_medkit;
+      x_medkit.ros2 = ros2;
+      x_medkit.entity_id = entity_id;
+      x_medkit.source = "ros2_medkit_gateway";
 
       try {
         json type_info_json;
@@ -330,46 +336,50 @@ void OperationHandlers::handle_get_operation(const httplib::Request & req, httpl
         auto response_info = type_introspection->get_type_info(service_info->type + "_Response");
         type_info_json["request"] = request_info.schema;
         type_info_json["response"] = response_info.schema;
-        x_medkit.add("type_info", type_info_json);
+        x_medkit.type_info = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s",
                      service_info->type.c_str(), e.what());
       }
 
-      item["x-medkit"] = x_medkit.build();
+      detail.item.id = service_info->name;
+      detail.item.name = service_info->name;
+      detail.item.proximity_proof_required = false;
+      detail.item.asynchronous_execution = false;
+      detail.item.x_medkit = x_medkit;
     } else {
-      item["id"] = action_info->name;
-      item["name"] = action_info->name;
-      item["proximity_proof_required"] = false;
-      item["asynchronous_execution"] = true;
+      dto::XMedkitRos2 ros2;
+      ros2.action = action_info->full_path;
+      ros2.type = action_info->type;
+      ros2.kind = "action";
 
-      auto x_medkit = XMedkit()
-                          .ros2_action(action_info->full_path)
-                          .ros2_type(action_info->type)
-                          .ros2_kind("action")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
+      dto::XMedkitOperationItem x_medkit;
+      x_medkit.ros2 = ros2;
+      x_medkit.entity_id = entity_id;
+      x_medkit.source = "ros2_medkit_gateway";
 
       try {
         json type_info_json;
-        auto goal_info = type_introspection->get_type_info(action_info->type + "_Goal");
+        auto goal_info_entry = type_introspection->get_type_info(action_info->type + "_Goal");
         auto result_info = type_introspection->get_type_info(action_info->type + "_Result");
         auto feedback_info = type_introspection->get_type_info(action_info->type + "_Feedback");
-        type_info_json["goal"] = goal_info.schema;
+        type_info_json["goal"] = goal_info_entry.schema;
         type_info_json["result"] = result_info.schema;
         type_info_json["feedback"] = feedback_info.schema;
-        x_medkit.add("type_info", type_info_json);
+        x_medkit.type_info = type_info_json;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", action_info->type.c_str(),
                      e.what());
       }
 
-      item["x-medkit"] = x_medkit.build();
+      detail.item.id = action_info->name;
+      detail.item.name = action_info->name;
+      detail.item.proximity_proof_required = false;
+      detail.item.asynchronous_execution = true;
+      detail.item.x_medkit = x_medkit;
     }
 
-    json response;
-    response["item"] = item;
-    HandlerContext::send_json(res, response);
+    HandlerContext::send_dto(res, detail);
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get operation details",
@@ -549,7 +559,9 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
 
       if (action_result.success && action_result.goal_accepted) {
         // Return 202 Accepted with Location header for async operations
-        json response = {{"id", action_result.goal_id}, {"status", "running"}};
+        dto::OperationExecution exec_dto;
+        exec_dto.id = action_result.goal_id;
+        exec_dto.status = "running";
 
         // Add Location header pointing to execution status endpoint
         std::string base_path = (entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
@@ -558,7 +570,7 @@ void OperationHandlers::handle_create_execution(const httplib::Request & req, ht
         res.set_header("Location", location);
 
         res.status = 202;
-        res.set_content(response.dump(), "application/json");
+        res.set_content(dto::JsonWriter<dto::OperationExecution>::write(exec_dto).dump(), "application/json");
       } else if (action_result.success && !action_result.goal_accepted) {
         HandlerContext::send_error(
             res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, "Goal rejected",
@@ -709,23 +721,28 @@ void OperationHandlers::handle_get_execution(const httplib::Request & req, httpl
       return;
     }
 
-    // Response
-    json response = {{"status", sovd_status_from_ros2(goal_info->status)}, {"capability", "execute"}};
+    // Build OperationExecution DTO for the response
+    dto::OperationExecution exec_dto;
+    exec_dto.status = sovd_status_from_ros2(goal_info->status);
+    exec_dto.capability = "execute";
 
     // Add feedback as parameters if available
     if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
-      response["parameters"] = goal_info->last_feedback;
+      exec_dto.parameters = goal_info->last_feedback;
     }
 
     // Add x-medkit extension for ROS2-specific details
-    auto x_medkit = XMedkit()
-                        .add("goal_id", execution_id)
-                        .add("ros2_status", action_status_to_string(goal_info->status))
-                        .ros2_action(goal_info->action_path)
-                        .ros2_type(goal_info->action_type);
-    response["x-medkit"] = x_medkit.build();
+    dto::XMedkitRos2 exec_ros2;
+    exec_ros2.action = goal_info->action_path;
+    exec_ros2.type = goal_info->action_type;
 
-    HandlerContext::send_json(res, response);
+    dto::XMedkitOperationExecution exec_x_medkit;
+    exec_x_medkit.goal_id = execution_id;
+    exec_x_medkit.ros2_status = action_status_to_string(goal_info->status);
+    exec_x_medkit.ros2 = exec_ros2;
+    exec_dto.x_medkit = exec_x_medkit;
+
+    HandlerContext::send_dto(res, exec_dto);
 
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get execution status",
@@ -841,25 +858,12 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
       }
     }
 
-    // Parse request body
-    json body = json::object();
-    if (!req.body.empty()) {
-      try {
-        body = json::parse(req.body);
-      } catch (const json::parse_error & e) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                   {{"details", e.what()}});
-        return;
-      }
+    // Parse and validate request body via DTO
+    auto body_opt = ctx_.parse_body<dto::ExecutionUpdateRequest>(req, res);
+    if (!body_opt) {
+      return;  // 400 already sent by parse_body
     }
-
-    // Validate required 'capability' field
-    if (!body.contains("capability") || !body["capability"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing required 'capability' field");
-      return;
-    }
-
-    std::string capability = body["capability"].get<std::string>();
+    const std::string capability = body_opt->capability;
 
     auto operation_mgr = ctx_.node()->get_operation_manager();
     auto goal_info = operation_mgr->get_tracked_goal(execution_id);
@@ -885,9 +889,12 @@ void OperationHandlers::handle_update_execution(const httplib::Request & req, ht
         std::string location = base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
         res.set_header("Location", location);
 
-        json response = {{"id", execution_id}, {"status", "running"}};  // Canceling is still "running" in SOVD terms
+        // Canceling is still "running" in SOVD terms
+        dto::OperationExecution exec_dto;
+        exec_dto.id = execution_id;
+        exec_dto.status = "running";
         res.status = 202;
-        res.set_content(response.dump(), "application/json");
+        res.set_content(dto::JsonWriter<dto::OperationExecution>::write(exec_dto).dump(), "application/json");
       } else {
         std::string error_msg;
         switch (result.return_code) {

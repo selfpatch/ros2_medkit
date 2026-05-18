@@ -19,6 +19,42 @@
 namespace ros2_medkit_gateway {
 namespace openapi {
 
+namespace {
+/// Map entity-type keyword (e.g. "areas") to its DTO collection schema name.
+std::string entity_type_to_list_name(const std::string & entity_type) {
+  if (entity_type == "areas") {
+    return "AreaList";
+  }
+  if (entity_type == "components") {
+    return "ComponentList";
+  }
+  if (entity_type == "apps") {
+    return "AppList";
+  }
+  if (entity_type == "functions") {
+    return "FunctionList";
+  }
+  return "AreaList";  // safe fallback
+}
+
+/// Map entity-type keyword (e.g. "areas") to its DTO detail schema name.
+std::string entity_type_to_detail_name(const std::string & entity_type) {
+  if (entity_type == "areas") {
+    return "AreaDetail";
+  }
+  if (entity_type == "components") {
+    return "ComponentDetail";
+  }
+  if (entity_type == "apps") {
+    return "AppDetail";
+  }
+  if (entity_type == "functions") {
+    return "FunctionDetail";
+  }
+  return "AreaDetail";  // safe fallback
+}
+}  // namespace
+
 PathBuilder::PathBuilder(const SchemaBuilder & schema_builder, bool auth_enabled)
   : schema_builder_(schema_builder), auth_enabled_(auth_enabled) {
 }
@@ -36,7 +72,8 @@ nlohmann::json PathBuilder::build_entity_collection(const std::string & entity_t
   get_op["description"] = "Returns the collection of " + entity_type + " entities.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::entity_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::ref(entity_type_to_list_name(entity_type));
 
   // Merge error responses
   auto errors = error_responses();
@@ -71,7 +108,8 @@ nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type,
         nlohmann::json::array({build_path_param(singular + "_id", "The " + singular + " identifier")});
   }
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::entity_detail_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::ref(entity_type_to_detail_name(entity_type));
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -97,8 +135,7 @@ nlohmann::json PathBuilder::build_data_collection(const std::string & entity_pat
   get_op["parameters"] = build_query_params_for_collection();
 
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::data_item_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("DataList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -175,8 +212,7 @@ nlohmann::json PathBuilder::build_operations_collection(const std::string & enti
   get_op["parameters"] = build_query_params_for_collection();
 
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::operation_item_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OperationList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -267,7 +303,7 @@ nlohmann::json PathBuilder::build_operation_item(const std::string & /*entity_pa
   post_op["requestBody"]["content"]["application/json"]["schema"] =
       schema_builder_.from_ros_msg(action.type + "_SendGoal_Request");
   post_op["responses"]["202"]["description"] = "Action accepted";
-  post_op["responses"]["202"]["content"]["application/json"]["schema"] = SchemaBuilder::operation_execution_schema();
+  post_op["responses"]["202"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OperationExecution");
 
   auto post_errors = error_responses();
   for (auto & [code, val] : post_errors.items()) {
@@ -294,8 +330,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
   get_op["description"] = "Returns all configuration parameters for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::configuration_metadata_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("ConfigurationList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -312,7 +347,7 @@ nlohmann::json PathBuilder::build_configurations_collection(const std::string & 
   delete_op["responses"]["204"]["description"] = "All parameters deleted";
   delete_op["responses"]["207"]["description"] = "Partial success - some nodes failed";
   delete_op["responses"]["207"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::configuration_delete_multi_status_schema();
+      SchemaBuilder::ref("ConfigurationDeleteMultiStatus");
 
   auto del_errors = error_responses();
   for (auto & [code, val] : del_errors.items()) {
@@ -338,7 +373,7 @@ nlohmann::json PathBuilder::build_faults_collection(const std::string & entity_p
       entity_path.empty() ? "Returns all faults." : "Returns all faults associated with this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::fault_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("FaultList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -388,8 +423,7 @@ nlohmann::json PathBuilder::build_logs_collection(const std::string & entity_pat
 
   get_op["parameters"] = std::move(params);
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::log_entry_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("LogEntryList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -413,7 +447,7 @@ nlohmann::json PathBuilder::build_bulk_data_collection(const std::string & entit
   get_op["description"] = "Returns available bulk data categories (e.g., rosbags) for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::bulk_data_category_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("BulkDataCategoryList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -438,8 +472,7 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
   get_op["description"] = "Returns all active cyclic subscriptions for this entity.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::items_wrapper(SchemaBuilder::cyclic_subscription_schema());
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("CyclicSubscriptionList");
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {
@@ -455,9 +488,9 @@ nlohmann::json PathBuilder::build_cyclic_subscriptions_collection(const std::str
   post_op["description"] = "Create a new cyclic subscription to stream data changes via SSE.";
   post_op["requestBody"]["required"] = true;
   post_op["requestBody"]["content"]["application/json"]["schema"] =
-      SchemaBuilder::cyclic_subscription_create_request_schema();
+      SchemaBuilder::ref("CyclicSubscriptionCreateRequest");
   post_op["responses"]["201"]["description"] = "Subscription created";
-  post_op["responses"]["201"]["content"]["application/json"]["schema"] = SchemaBuilder::cyclic_subscription_schema();
+  post_op["responses"]["201"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("CyclicSubscription");
 
   auto post_errors = error_responses();
   for (auto & [code, val] : post_errors.items()) {

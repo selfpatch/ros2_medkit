@@ -23,6 +23,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/dto/triggers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -36,6 +37,45 @@ TriggerHandlers::TriggerHandlers(HandlerContext & ctx, TriggerManager & trigger_
 }
 
 // ---------------------------------------------------------------------------
+// Private helper: build a typed Trigger DTO from a TriggerInfo.
+// ---------------------------------------------------------------------------
+static dto::Trigger trigger_info_to_dto(const TriggerInfo & info, const std::string & event_source) {
+  dto::Trigger dto;
+  dto.id = info.id;
+  dto.status = (info.status == TriggerStatus::ACTIVE) ? "active" : "terminated";
+  dto.observed_resource = info.resource_uri;
+  dto.event_source = event_source;
+  dto.protocol = info.protocol;
+
+  // Build the flat trigger_condition JSON: condition_type + merged condition_params.
+  json condition;
+  condition["condition_type"] = info.condition_type;
+  if (info.condition_params.is_object()) {
+    for (auto & [key, val] : info.condition_params.items()) {
+      condition[key] = val;
+    }
+  }
+  dto.trigger_condition = condition;
+
+  dto.multishot = info.multishot;
+  dto.persistent = info.persistent;
+
+  if (info.lifetime_sec.has_value()) {
+    dto.lifetime = info.lifetime_sec.value();
+  }
+
+  if (!info.path.empty()) {
+    dto.path = info.path;
+  }
+
+  if (info.log_settings.has_value()) {
+    dto.log_settings = *info.log_settings;
+  }
+
+  return dto;
+}
+
+// ---------------------------------------------------------------------------
 // POST - create trigger
 // ---------------------------------------------------------------------------
 void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Response & res) {
@@ -45,44 +85,36 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  // Parse and validate request body via DTO.
+  auto body_opt = ctx_.parse_body<dto::TriggerCreateRequest>(req, res);
+  if (!body_opt) {
+    return;  // 400 already sent by parse_body
   }
+  const auto & body = *body_opt;
 
-  // Validate required fields
-  if (!body.contains("resource") || !body["resource"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
-                               {{"parameter", "resource"}});
-    return;
-  }
-
-  if (!body.contains("trigger_condition") || !body["trigger_condition"].is_object()) {
+  // Validate trigger_condition is an object.
+  if (!body.trigger_condition.is_object()) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'trigger_condition'",
                                {{"parameter", "trigger_condition"}});
     return;
   }
 
-  auto trigger_condition = body["trigger_condition"];
-  if (!trigger_condition.contains("condition_type") || !trigger_condition["condition_type"].is_string()) {
+  auto trigger_condition_json = body.trigger_condition;
+  if (!trigger_condition_json.contains("condition_type") || !trigger_condition_json["condition_type"].is_string()) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Missing or invalid 'condition_type' in trigger_condition",
                                {{"parameter", "trigger_condition.condition_type"}});
     return;
   }
 
-  std::string condition_type = trigger_condition["condition_type"].get<std::string>();
+  std::string condition_type = trigger_condition_json["condition_type"].get<std::string>();
 
-  // Extract condition_params (everything in trigger_condition except condition_type)
-  json condition_params = trigger_condition;
+  // Extract condition_params (everything in trigger_condition except condition_type).
+  json condition_params = trigger_condition_json;
   condition_params.erase("condition_type");
 
-  // Parse resource URI
-  std::string resource = body["resource"].get<std::string>();
+  // Parse resource URI.
+  const std::string & resource = body.resource;
   auto parsed = parse_resource_uri(resource);
   if (!parsed) {
     HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
@@ -90,7 +122,7 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  // Validate resource URI references the same entity as the route
+  // Validate resource URI references the same entity as the route.
   std::string entity_type = extract_entity_type(req);
   if (parsed->entity_type != entity_type || parsed->entity_id != entity_id) {
     HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ENTITY_MISMATCH,
@@ -99,7 +131,7 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  // Validate collection
+  // Validate collection.
   static const std::unordered_set<std::string> known_collections = {"data", "faults", "operations", "updates", "logs"};
   if (known_collections.find(parsed->collection) == known_collections.end() &&
       parsed->collection.substr(0, 2) != "x-") {
@@ -110,13 +142,8 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  // Parse optional fields
-  std::string path;
-  if (body.contains("path") && body["path"].is_string()) {
-    path = body["path"].get<std::string>();
-  }
-
-  // Validate JSON Pointer path
+  // Validate path (JSON Pointer).
+  std::string path = body.path.value_or(std::string{});
   if (!path.empty()) {
     if (path.size() > 1024) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Path too long (max 1024)", {{"parameter", "path"}});
@@ -131,31 +158,20 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     }
   }
 
-  std::string protocol = "sse";
-  if (body.contains("protocol") && body["protocol"].is_string()) {
-    protocol = body["protocol"].get<std::string>();
-  }
-
-  // Validate protocol
+  // Validate protocol (default: sse).
+  std::string protocol = body.protocol.value_or(std::string{"sse"});
   if (protocol != "sse") {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unsupported protocol. Supported: 'sse'",
                                {{"parameter", "protocol"}, {"value", protocol}});
     return;
   }
 
-  bool multishot = false;
-  if (body.contains("multishot") && body["multishot"].is_boolean()) {
-    multishot = body["multishot"].get<bool>();
-  }
-
-  bool persistent = false;
-  if (body.contains("persistent") && body["persistent"].is_boolean()) {
-    persistent = body["persistent"].get<bool>();
-  }
+  bool multishot = body.multishot.value_or(false);
+  bool persistent = body.persistent.value_or(false);
 
   std::optional<int> lifetime_sec;
-  if (body.contains("lifetime") && body["lifetime"].is_number_integer()) {
-    lifetime_sec = body["lifetime"].get<int>();
+  if (body.lifetime.has_value()) {
+    lifetime_sec = body.lifetime.value();
     if (*lifetime_sec <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer (seconds)",
                                  {{"parameter", "lifetime"}, {"value", *lifetime_sec}});
@@ -164,8 +180,8 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
   }
 
   std::optional<json> log_settings;
-  if (body.contains("log_settings") && body["log_settings"].is_object()) {
-    log_settings = body["log_settings"];
+  if (body.log_settings.has_value() && body.log_settings->is_object()) {
+    log_settings = body.log_settings;
   }
 
   // For data triggers, resolve the resource_path URI segment to a full ROS 2 topic name.
@@ -195,7 +211,7 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     }
   }
 
-  // Build create request
+  // Build create request.
   TriggerCreateRequest create_req;
   create_req.entity_id = entity_id;
   create_req.entity_type = entity_type;
@@ -241,10 +257,8 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
   }
 
   auto event_source = build_event_source(*result);
-  auto response_json = trigger_to_json(*result, event_source);
-
   res.status = 201;
-  HandlerContext::send_json(res, response_json);
+  HandlerContext::send_dto(res, trigger_info_to_dto(*result, event_source));
 }
 
 // ---------------------------------------------------------------------------
@@ -258,14 +272,12 @@ void TriggerHandlers::handle_list(const httplib::Request & req, httplib::Respons
   }
 
   auto triggers = trigger_mgr_.list(entity_id);
-  json items = json::array();
+  dto::Collection<dto::Trigger> response;
   for (const auto & trig : triggers) {
-    items.push_back(trigger_to_json(trig, build_event_source(trig)));
+    response.items.push_back(trigger_info_to_dto(trig, build_event_source(trig)));
   }
 
-  json response;
-  response["items"] = items;
-  HandlerContext::send_json(res, response);
+  HandlerContext::send_dto(res, response);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +297,7 @@ void TriggerHandlers::handle_get(const httplib::Request & req, httplib::Response
     return;
   }
 
-  HandlerContext::send_json(res, trigger_to_json(*trig, build_event_source(*trig)));
+  HandlerContext::send_dto(res, trigger_info_to_dto(*trig, build_event_source(*trig)));
 }
 
 // ---------------------------------------------------------------------------
@@ -300,30 +312,21 @@ void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Respo
 
   auto trigger_id = req.matches[2].str();
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  // Parse and validate request body via DTO.
+  auto body_opt = ctx_.parse_body<dto::TriggerUpdateRequest>(req, res);
+  if (!body_opt) {
+    return;  // 400 already sent by parse_body
   }
+  const auto & body = *body_opt;
 
-  if (!body.contains("lifetime") || !body["lifetime"].is_number_integer()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'lifetime'",
-                               {{"parameter", "lifetime"}});
-    return;
-  }
-
-  int new_lifetime = body["lifetime"].get<int>();
-
+  int new_lifetime = body.lifetime;
   if (new_lifetime <= 0) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer",
                                {{"parameter", "lifetime"}, {"value", new_lifetime}});
     return;
   }
 
-  // Verify trigger exists and belongs to this entity before updating
+  // Verify trigger exists and belongs to this entity before updating.
   auto existing = trigger_mgr_.get(trigger_id);
   if (!existing || existing->entity_id != entity_id) {
     HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
@@ -342,7 +345,7 @@ void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  HandlerContext::send_json(res, trigger_to_json(*result, build_event_source(*result)));
+  HandlerContext::send_dto(res, trigger_info_to_dto(*result, build_event_source(*result)));
 }
 
 // ---------------------------------------------------------------------------
@@ -458,45 +461,6 @@ void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Respo
       [tracker](bool /*success*/) {
         tracker->disconnect();
       });
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-json TriggerHandlers::trigger_to_json(const TriggerInfo & info, const std::string & event_source) {
-  json j;
-  j["id"] = info.id;
-  j["status"] = (info.status == TriggerStatus::ACTIVE) ? "active" : "terminated";
-  j["observed_resource"] = info.resource_uri;
-  j["event_source"] = event_source;
-  j["protocol"] = info.protocol;
-
-  json condition;
-  condition["condition_type"] = info.condition_type;
-  // Merge condition_params into the condition object
-  if (info.condition_params.is_object()) {
-    for (auto & [key, val] : info.condition_params.items()) {
-      condition[key] = val;
-    }
-  }
-  j["trigger_condition"] = condition;
-
-  j["multishot"] = info.multishot;
-  j["persistent"] = info.persistent;
-
-  if (info.lifetime_sec.has_value()) {
-    j["lifetime"] = info.lifetime_sec.value();
-  }
-
-  if (!info.path.empty()) {
-    j["path"] = info.path;
-  }
-
-  if (info.log_settings.has_value()) {
-    j["log_settings"] = *info.log_settings;
-  }
-
-  return j;
 }
 
 std::string TriggerHandlers::build_event_source(const TriggerInfo & info) {

@@ -19,6 +19,8 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/scripts.hpp"
 
 using json = nlohmann::json;
 
@@ -86,52 +88,28 @@ void ScriptHandlers::send_script_error(httplib::Response & res, const ScriptBack
   }
 }
 
-json ScriptHandlers::script_info_to_json(const ScriptInfo & info, const std::string & base_path) {
-  json obj;
-  obj["id"] = info.id;
-  obj["name"] = info.name;
-  obj["description"] = info.description;
-  obj["href"] = api_path(base_path + "/scripts/" + info.id);
-  obj["managed"] = info.managed;
-  obj["proximity_proof_required"] = info.proximity_proof_required;
-  if (info.parameters_schema.has_value()) {
-    obj["parameters_schema"] = info.parameters_schema.value();
-  } else {
-    obj["parameters_schema"] = nullptr;
-  }
-  return obj;
+dto::ScriptMetadata ScriptHandlers::script_info_to_dto(const ScriptInfo & info, const std::string & base_path) {
+  dto::ScriptMetadata meta;
+  meta.id = info.id;
+  meta.name = info.name;
+  meta.description = info.description;
+  meta.href = api_path(base_path + "/scripts/" + info.id);
+  meta.managed = info.managed;
+  meta.proximity_proof_required = info.proximity_proof_required;
+  meta.parameters_schema = info.parameters_schema;
+  return meta;
 }
 
-json ScriptHandlers::execution_info_to_json(const ExecutionInfo & info) {
-  json obj;
-  obj["id"] = info.id;
-  obj["status"] = info.status;
-  if (info.progress.has_value()) {
-    obj["progress"] = info.progress.value();
-  } else {
-    obj["progress"] = nullptr;
-  }
-  if (info.started_at.has_value()) {
-    obj["started_at"] = info.started_at.value();
-  } else {
-    obj["started_at"] = nullptr;
-  }
-  if (info.completed_at.has_value()) {
-    obj["completed_at"] = info.completed_at.value();
-  } else {
-    obj["completed_at"] = nullptr;
-  }
-  if (info.output_parameters.has_value()) {
-    obj["parameters"] = info.output_parameters.value();
-  } else {
-    obj["parameters"] = nullptr;
-  }
-  if (info.error.has_value()) {
-    obj["error"] = info.error.value();
-  } else {
-    obj["error"] = nullptr;
-  }
-  return obj;
+dto::ScriptExecution ScriptHandlers::execution_info_to_dto(const ExecutionInfo & info) {
+  dto::ScriptExecution exec;
+  exec.id = info.id;
+  exec.status = info.status;
+  exec.progress = info.progress;
+  exec.started_at = info.started_at;
+  exec.completed_at = info.completed_at;
+  exec.parameters = info.output_parameters;
+  exec.error = info.error;
+  return exec;
 }
 
 void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::Response & res) {
@@ -160,14 +138,14 @@ void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::
       return;
     }
 
-    json items = json::array();
+    dto::Collection<dto::ScriptMetadata> collection;
+    collection.items.reserve(result->size());
     for (const auto & info : *result) {
-      items.push_back(script_info_to_json(info, base_path));
+      collection.items.push_back(script_info_to_dto(info, base_path));
     }
 
-    json response;
-    response["items"] = items;
-
+    // Serialize the DTO collection, then append _links for discoverability.
+    auto response = dto::JsonWriter<dto::Collection<dto::ScriptMetadata>>::write(collection);
     auto self_href = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts");
     response["_links"] = {{"self", self_href}, {"parent", api_path("/" + entity_type_segment + "/" + entity_id)}};
 
@@ -228,9 +206,13 @@ void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib:
     auto entity_type_segment = entity_type_from_path(req);
     auto script_path = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id);
 
+    dto::ScriptUploadResponse upload_resp;
+    upload_resp.id = result->id;
+    upload_resp.name = result->name;
+
     res.status = 201;
     res.set_header("Location", script_path);
-    HandlerContext::send_json(res, json{{"id", result->id}, {"name", result->name}});
+    HandlerContext::send_dto(res, upload_resp);
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -267,7 +249,7 @@ void ScriptHandlers::handle_get_script(const httplib::Request & req, httplib::Re
       return;
     }
 
-    HandlerContext::send_json(res, script_info_to_json(*result, base_path));
+    HandlerContext::send_dto(res, script_info_to_dto(*result, base_path));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -366,7 +348,7 @@ void ScriptHandlers::handle_start_execution(const httplib::Request & req, httpli
 
     res.status = 202;
     res.set_header("Location", exec_path);
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    HandlerContext::send_dto(res, execution_info_to_dto(*result));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -405,7 +387,7 @@ void ScriptHandlers::handle_get_execution(const httplib::Request & req, httplib:
       return;
     }
 
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    HandlerContext::send_dto(res, execution_info_to_dto(*result));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }
@@ -438,27 +420,18 @@ void ScriptHandlers::handle_control_execution(const httplib::Request & req, http
       return;
     }
 
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
+    auto body = ctx_.parse_body<dto::ScriptControlRequest>(req, res);
+    if (!body) {
       return;
     }
 
-    if (!body.contains("action") || !body["action"].is_string() || body["action"].get<std::string>().empty()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: action");
-      return;
-    }
-
-    auto action = body["action"].get<std::string>();
-    auto result = script_mgr_->control_execution(entity_id, script_id, execution_id, action);
+    auto result = script_mgr_->control_execution(entity_id, script_id, execution_id, body->action);
     if (!result) {
       send_script_error(res, result.error());
       return;
     }
 
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    HandlerContext::send_dto(res, execution_info_to_dto(*result));
   } catch (const std::exception & e) {
     HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
   }

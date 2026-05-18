@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -39,6 +40,20 @@ CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, Sub
 }
 
 // ---------------------------------------------------------------------------
+// Internal helper: build a CyclicSubscription DTO from CyclicSubscriptionInfo
+// ---------------------------------------------------------------------------
+static dto::CyclicSubscription subscription_to_dto(const CyclicSubscriptionInfo & info,
+                                                   const std::string & event_source) {
+  dto::CyclicSubscription sub;
+  sub.id = info.id;
+  sub.observed_resource = info.resource_uri;
+  sub.event_source = event_source;
+  sub.protocol = info.protocol;
+  sub.interval = interval_to_string(info.interval);
+  return sub;
+}
+
+// ---------------------------------------------------------------------------
 // POST — create subscription
 // ---------------------------------------------------------------------------
 void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, httplib::Response & res) {
@@ -48,39 +63,15 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
     return;
   }
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  // Parse JSON body via DTO.
+  auto body_opt = ctx_.parse_body<dto::CyclicSubscriptionCreateRequest>(req, res);
+  if (!body_opt) {
+    return;  // 400 already sent by parse_body
   }
-
-  // Validate required fields
-  if (!body.contains("resource") || !body["resource"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
-                               {{"parameter", "resource"}});
-    return;
-  }
-
-  if (!body.contains("interval") || !body["interval"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'interval'",
-                               {{"parameter", "interval"}});
-    return;
-  }
-
-  if (!body.contains("duration") || !body["duration"].is_number_integer()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'duration'",
-                               {{"parameter", "duration"}});
-    return;
-  }
+  const auto & body = *body_opt;
 
   // Validate protocol (optional, defaults to "sse")
-  std::string protocol = "sse";
-  if (body.contains("protocol")) {
-    protocol = body["protocol"].get<std::string>();
-  }
+  std::string protocol = body.protocol.value_or(std::string{"sse"});
 
   // Check transport is registered
   auto * transport = transport_registry_.get_transport(protocol);
@@ -93,16 +84,16 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   // Parse interval
   CyclicInterval interval;
   try {
-    interval = parse_interval(body["interval"].get<std::string>());
+    interval = parse_interval(body.interval);
   } catch (const std::invalid_argument &) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
-                               {{"parameter", "interval"}, {"value", body["interval"]}});
+                               {{"parameter", "interval"}, {"value", body.interval}});
     return;
   }
 
   // Validate duration
-  int duration = body["duration"].get<int>();
+  int duration = body.duration;
   if (duration <= 0) {
     HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
                                {{"parameter", "duration"}, {"value", duration}});
@@ -116,7 +107,7 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   }
 
   // Parse resource URI to extract collection and resource path
-  std::string resource = body["resource"].get<std::string>();
+  const std::string & resource = body.resource;
   auto parsed = parse_resource_uri(resource);
   if (!parsed) {
     HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
@@ -191,10 +182,8 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
     return;
   }
 
-  auto response_json = subscription_to_json(*result, *event_source_result);
-
   res.status = 201;
-  HandlerContext::send_json(res, response_json);
+  HandlerContext::send_dto(res, subscription_to_dto(*result, *event_source_result));
 }
 
 // ---------------------------------------------------------------------------
@@ -208,14 +197,12 @@ void CyclicSubscriptionHandlers::handle_list(const httplib::Request & req, httpl
   }
 
   auto subs = sub_mgr_.list(entity_id);
-  json items = json::array();
+  dto::Collection<dto::CyclicSubscription> response;
   for (const auto & sub : subs) {
-    items.push_back(subscription_to_json(sub, build_event_source(sub)));
+    response.items.push_back(subscription_to_dto(sub, build_event_source(sub)));
   }
 
-  json response;
-  response["items"] = items;
-  HandlerContext::send_json(res, response);
+  HandlerContext::send_dto(res, response);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +223,7 @@ void CyclicSubscriptionHandlers::handle_get(const httplib::Request & req, httpli
     return;
   }
 
-  HandlerContext::send_json(res, subscription_to_json(*sub, build_event_source(*sub)));
+  HandlerContext::send_dto(res, subscription_to_dto(*sub, build_event_source(*sub)));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,32 +238,30 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
 
   auto sub_id = req.matches[2].str();
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  // Parse JSON body via DTO.
+  auto body_opt = ctx_.parse_body<dto::CyclicSubscriptionUpdateRequest>(req, res);
+  if (!body_opt) {
+    return;  // 400 already sent by parse_body
   }
+  const auto & body = *body_opt;
 
   // Parse optional interval
   std::optional<CyclicInterval> new_interval;
-  if (body.contains("interval") && body["interval"].is_string()) {
+  if (body.interval.has_value()) {
     try {
-      new_interval = parse_interval(body["interval"].get<std::string>());
+      new_interval = parse_interval(*body.interval);
     } catch (const std::invalid_argument &) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
                                  "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
-                                 {{"parameter", "interval"}, {"value", body["interval"]}});
+                                 {{"parameter", "interval"}, {"value", *body.interval}});
       return;
     }
   }
 
-  // Parse optional duration
+  // Validate optional duration
   std::optional<int> new_duration;
-  if (body.contains("duration") && body["duration"].is_number_integer()) {
-    new_duration = body["duration"].get<int>();
+  if (body.duration.has_value()) {
+    new_duration = *body.duration;
     if (*new_duration <= 0) {
       HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
                                  {{"parameter", "duration"}, {"value", *new_duration}});
@@ -305,7 +290,7 @@ void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, htt
     return;
   }
 
-  HandlerContext::send_json(res, subscription_to_json(*result, build_event_source(*result)));
+  HandlerContext::send_dto(res, subscription_to_dto(*result, build_event_source(*result)));
 }
 
 // ---------------------------------------------------------------------------
@@ -384,17 +369,6 @@ void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, htt
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-json CyclicSubscriptionHandlers::subscription_to_json(const CyclicSubscriptionInfo & info,
-                                                      const std::string & event_source) {
-  json j;
-  j["id"] = info.id;
-  j["observed_resource"] = info.resource_uri;
-  j["event_source"] = event_source;
-  j["protocol"] = info.protocol;
-  j["interval"] = interval_to_string(info.interval);
-  return j;
-}
-
 std::string CyclicSubscriptionHandlers::build_event_source(const CyclicSubscriptionInfo & info) {
   return std::string(API_BASE_PATH) + "/" + info.entity_type + "/" + info.entity_id + "/cyclic-subscriptions/" +
          info.id + "/events";

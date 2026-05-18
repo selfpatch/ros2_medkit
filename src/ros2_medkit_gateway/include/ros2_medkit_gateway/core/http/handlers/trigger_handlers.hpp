@@ -70,9 +70,6 @@ class TriggerHandlers {
   /// GET /{entity}/triggers/{id}/events - SSE event stream
   void handle_events(const httplib::Request & req, httplib::Response & res);
 
-  /// Convert trigger info to JSON response
-  static nlohmann::json trigger_to_json(const TriggerInfo & info, const std::string & event_source);
-
   /// Parse resource URI for triggers (includes areas in addition to apps/components/functions).
   static tl::expected<TriggerParsedResourceUri, std::string> parse_resource_uri(const std::string & resource);
 
