@@ -68,12 +68,6 @@ class SchemaBuilder {
   /// Binary content schema (for file downloads)
   static nlohmann::json binary_schema();
 
-  /// Auth token response schema
-  static nlohmann::json auth_token_response_schema();
-
-  /// Auth credentials request body schema
-  static nlohmann::json auth_credentials_schema();
-
   /// Returns a $ref JSON object pointing to a named component schema.
   static nlohmann::json ref(const std::string & schema_name);
 

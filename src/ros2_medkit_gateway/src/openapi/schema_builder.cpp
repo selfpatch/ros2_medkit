@@ -175,23 +175,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::auth_token_response_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"access_token", {{"type", "string"}}},
-            {"token_type", {{"type", "string"}}},
-            {"expires_in", {{"type", "integer"}}},
-            {"scope", {{"type", "string"}}},
-            {"refresh_token", {{"type", "string"}}}}},
-          {"required", {"access_token", "token_type", "expires_in"}}};
-}
-
-nlohmann::json SchemaBuilder::auth_credentials_schema() {
-  return {{"type", "object"},
-          {"properties", {{"username", {{"type", "string"}}}, {"password", {{"type", "string"}}}}},
-          {"required", {"username", "password"}}};
-}
-
 nlohmann::json SchemaBuilder::ref(const std::string & schema_name) {
   return {{"$ref", "#/components/schemas/" + schema_name}};
 }
@@ -228,9 +211,7 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         // now come from DTO (dto/bulkdata.hpp).
         // Updates - UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus
         // now come from DTO (dto/updates.hpp).
-        // Auth
-        {"AuthTokenResponse", auth_token_response_schema()},
-        {"AuthCredentials", auth_credentials_schema()},
+        // Auth - AuthCredentials, AuthTokenResponse now come from DTO (dto/auth.hpp).
     };
     // DTO-contract schemas, merged on top of the hand-written factories. The DTO
     // version wins on a name collision (currently only "GenericError"). Each
