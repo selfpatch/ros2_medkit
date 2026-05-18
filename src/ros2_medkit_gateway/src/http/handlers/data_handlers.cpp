@@ -21,9 +21,10 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/dto/data.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
@@ -86,54 +87,63 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     auto type_introspection = data_access_mgr->get_type_introspection();
 
-    // Build items array with ValueMetadata format
-    json items = json::array();
+    // Build items array with ValueMetadata format (typed DTO)
+    dto::Collection<dto::DataItem> collection;
 
     for (const auto & topic : aggregated.topics) {
-      json item;
+      dto::DataItem di;
       // SOVD required fields - use topic.name directly as ID (clients URL-encode for GET/PUT)
-      item["id"] = topic.name;
-      item["name"] = topic.name;
-      item["category"] = "currentData";
+      di.id = topic.name;
+      di.name = topic.name;
+      di.category = "currentData";
 
-      // x-medkit extension for ROS2-specific data
-      XMedkit ext;
-      ext.ros2_topic(topic.name).add_ros2("direction", topic.direction);
+      // x-medkit extension for ROS2-specific data (typed DTO)
+      dto::XMedkitDataItem item_xm;
+      dto::XMedkitRos2 ros2_meta;
+      ros2_meta.topic = topic.name;
+      ros2_meta.direction = topic.direction;
 
       // Add type info if available (use cached topic types for O(1) lookup)
       std::string topic_type = cache.get_topic_type(topic.name);
       if (!topic_type.empty()) {
-        ext.ros2_type(topic_type);
+        ros2_meta.type = topic_type;
         try {
           auto type_info = type_introspection->get_type_info(topic_type);
           json type_info_obj;
           type_info_obj["schema"] = type_info.schema;
           type_info_obj["default_value"] = type_info.default_value;
-          ext.type_info(type_info_obj);
+          item_xm.type_info = type_info_obj;
         } catch (const std::exception & e) {
           RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic.name.c_str(),
                        e.what());
         }
       }
-
-      item["x-medkit"] = ext.build();
-      items.push_back(item);
+      item_xm.ros2 = ros2_meta;
+      di.x_medkit = item_xm;
+      collection.items.push_back(di);
     }
 
-    // Build response with x-medkit for total_count
-    json response;
-    response["items"] = items;
+    // Build response JSON from collection, then attach typed collection x-medkit
+    json response = dto::JsonWriter<dto::Collection<dto::DataItem>>::write(collection);
 
-    XMedkit resp_ext;
-    resp_ext.entity_id(entity_id);
+    // Fan-out peer merge: use JSON-overload to avoid the legacy XMedkit builder
+    json ext_json = json::object();
+    merge_peer_items(ctx_.aggregation_manager(), req, response, ext_json);
+
+    dto::DataListXMedkit resp_xm;
+    resp_xm.entity_id = entity_id;
     if (aggregated.is_aggregated) {
-      resp_ext.add("aggregated", true);
-      resp_ext.add("aggregation_sources", aggregated.source_ids);
-      resp_ext.add("aggregation_level", aggregated.aggregation_level);
+      resp_xm.aggregated = true;
+      resp_xm.aggregation_sources = aggregated.source_ids;
+      resp_xm.aggregation_level = aggregated.aggregation_level;
     }
-    merge_peer_items(ctx_.aggregation_manager(), req, response, resp_ext);
-    resp_ext.add("total_count", response["items"].size());
-    response["x-medkit"] = resp_ext.build();
+    resp_xm.total_count = response["items"].size();
+    // Merge any partial/failed_peers injected by merge_peer_items into the typed xm
+    json resp_xm_json = dto::JsonWriter<dto::DataListXMedkit>::write(resp_xm);
+    for (const auto & [k, v] : ext_json.items()) {
+      resp_xm_json[k] = v;
+    }
+    response["x-medkit"] = resp_xm_json;
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {
@@ -240,11 +250,13 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       response["data"] = json::object();
     }
 
-    // Build x-medkit extension with ROS2-specific data
-    XMedkit ext;
-    ext.ros2_topic(full_topic_path).entity_id(entity_id);
+    // Build typed x-medkit extension with ROS2-specific data
+    dto::XMedkitDataItem xm;
+    dto::XMedkitRos2 ros2_meta;
+    ros2_meta.topic = full_topic_path;
+    xm.entity_id = entity_id;
     if (!sample.message_type.empty()) {
-      ext.ros2_type(sample.message_type);
+      ros2_meta.type = sample.message_type;
 
       // Add type_info schema for the message type
       auto type_introspection = data_access_mgr->get_type_introspection();
@@ -253,17 +265,18 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
         json type_info_obj;
         type_info_obj["schema"] = type_info.schema;
         type_info_obj["default_value"] = type_info.default_value;
-        ext.type_info(type_info_obj);
+        xm.type_info = type_info_obj;
       } catch (const std::exception & e) {
         RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
                      e.what());
       }
     }
-    ext.add("timestamp", sample.timestamp_ns);
-    ext.add("publisher_count", sample.publisher_count);
-    ext.add("subscriber_count", sample.subscriber_count);
-    ext.add("status", sample.has_data ? "data" : "metadata_only");
-    response["x-medkit"] = ext.build();
+    xm.ros2 = ros2_meta;
+    xm.timestamp = sample.timestamp_ns;
+    xm.publisher_count = static_cast<std::int64_t>(sample.publisher_count);
+    xm.subscriber_count = static_cast<std::int64_t>(sample.subscriber_count);
+    xm.status = json(sample.has_data ? "data" : "metadata_only");
+    response["x-medkit"] = dto::JsonWriter<dto::XMedkitDataItem>::write(xm);
 
     HandlerContext::send_json(res, response);
   } catch (const TopicNotAvailableException & e) {
@@ -352,31 +365,13 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
       return;
     }
 
-    // Parse request body
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 {{"details", e.what()}});
-      return;
+    // Parse and validate request body via DTO (checks type:string + data:json required)
+    auto body_opt = ctx_.parse_body<dto::DataWriteRequest>(req, res);
+    if (!body_opt) {
+      return;  // 400 already sent by parse_body
     }
-
-    // Validate required fields: type and data
-    if (!body.contains("type") || !body["type"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'type' field",
-                                 {{"details", "Request body must contain 'type' string field"}});
-      return;
-    }
-
-    if (!body.contains("data")) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing 'data' field",
-                                 {{"details", "Request body must contain 'data' field"}});
-      return;
-    }
-
-    std::string msg_type = body["type"].get<std::string>();
-    json data = body["data"];
+    const std::string & msg_type = body_opt->type;
+    const json & data = body_opt->data;
 
     // Validate message type format (e.g., std_msgs/msg/Float32)
     auto slash_count = static_cast<size_t>(std::count(msg_type.begin(), msg_type.end(), '/'));
@@ -401,20 +396,24 @@ void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::R
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
     json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
 
-    // Build response with x-medkit extension (id must match what list returns for round-trip)
+    // Build response with typed x-medkit extension (id must match what list returns for round-trip)
     json response;
     response["id"] = full_topic_path;
     response["data"] = data;  // Echo back the written data
 
-    XMedkit ext;
-    ext.ros2_topic(full_topic_path).ros2_type(msg_type).entity_id(entity_id);
+    dto::XMedkitDataItem xm;
+    dto::XMedkitRos2 ros2_meta;
+    ros2_meta.topic = full_topic_path;
+    ros2_meta.type = msg_type;
+    xm.ros2 = ros2_meta;
+    xm.entity_id = entity_id;
     if (result.contains("status")) {
-      ext.add("status", result["status"]);
+      xm.status = result["status"];
     }
-    if (result.contains("publisher_created")) {
-      ext.add("publisher_created", result["publisher_created"]);
+    if (result.contains("publisher_created") && result["publisher_created"].is_boolean()) {
+      xm.publisher_created = result["publisher_created"].get<bool>();
     }
-    response["x-medkit"] = ext.build();
+    response["x-medkit"] = dto::JsonWriter<dto::XMedkitDataItem>::write(xm);
 
     HandlerContext::send_json(res, response);
   } catch (const std::exception & e) {

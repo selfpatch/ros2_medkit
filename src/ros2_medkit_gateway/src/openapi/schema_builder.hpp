@@ -71,9 +71,6 @@ class SchemaBuilder {
   /// API root overview response schema (GET /)
   static nlohmann::json root_overview_schema();
 
-  /// Data item in collection list
-  static nlohmann::json data_item_schema();
-
   /// Generic object schema (for dynamic ROS 2 message payloads)
   static nlohmann::json generic_object_schema();
 
@@ -130,9 +127,6 @@ class SchemaBuilder {
 
   /// Log configuration schema (GET/PUT)
   static nlohmann::json log_configuration_schema();
-
-  /// Data write request schema (PUT /data/{id})
-  static nlohmann::json data_write_request_schema();
 
   /// Script control request schema (PUT /scripts/{id}/executions/{id})
   static nlohmann::json script_control_request_schema();

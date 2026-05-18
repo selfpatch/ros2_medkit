@@ -550,8 +550,11 @@ TEST(SchemaBuilderStaticTest, ExtendLockRequestSchema) {
 }
 
 // @verifies REQ_INTEROP_002
-TEST(SchemaBuilderStaticTest, DataWriteRequestSchema) {
-  auto schema = SchemaBuilder::data_write_request_schema();
+TEST(SchemaBuilderStaticTest, DataWriteRequestSchemaComesFromDto) {
+  // DataWriteRequest is now generated from the DTO; verify via component_schemas().
+  const auto & schemas = SchemaBuilder::component_schemas();
+  ASSERT_TRUE(schemas.count("DataWriteRequest") > 0);
+  const auto & schema = schemas.at("DataWriteRequest");
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("type"));

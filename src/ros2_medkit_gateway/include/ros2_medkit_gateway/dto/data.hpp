@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -31,25 +32,47 @@ namespace ros2_medkit_gateway {
 namespace dto {
 
 // =============================================================================
-// XMedkitDataItem - x-medkit vendor extension on each item inside the data
-// collection list ("items" array).  Emitted by handle_list_data per-topic.
+// XMedkitDataItem - x-medkit vendor extension emitted on data collection list
+// items (handle_list_data per-topic), on data write responses
+// (handle_put_data_item), and on data read responses (handle_get_data_item).
 //
-// Wire keys (from data_handlers.cpp per-item XMedkit builder calls):
+// Wire keys for list items (from handle_list_data per-item XMedkit builder):
 //   ros2.topic     - ROS 2 topic path (via ext.ros2_topic())
 //   ros2.direction - topic direction: "publish" | "subscribe" | "both"
-//                    (via ext.add_ros2("direction", ...))
+//                    (via ext.add_ros2("direction", ...); maps to XMedkitRos2::direction)
 //   ros2.type      - ROS 2 message type string (via ext.ros2_type())
 //   type_info      - dynamic type schema + default_value (free-form JSON;
 //                    only present when type introspection succeeds)
+//
+// Additional keys for write responses (from handle_put_data_item):
+//   entity_id         - SOVD entity ID (via ext.entity_id())
+//   status            - publish result status (via ext.add("status", ...))
+//   publisher_created - true when a new publisher was created (via ext.add(...))
+//
+// Additional keys for read responses (from handle_get_data_item):
+//   timestamp        - sample timestamp in nanoseconds since epoch (int64)
+//   publisher_count  - number of publishers on the topic at sample time (int64)
+//   subscriber_count - number of subscribers on the topic at sample time (int64)
 // =============================================================================
 struct XMedkitDataItem {
   std::optional<XMedkitRos2> ros2;
-  std::optional<nlohmann::json> type_info;  // free-form: dynamic ROS IDL schema
+  std::optional<nlohmann::json> type_info;       // free-form: dynamic ROS IDL schema
+  std::optional<std::string> entity_id;          // SOVD entity ID (write + read responses)
+  std::optional<nlohmann::json> status;          // publish result / sample status
+  std::optional<bool> publisher_created;         // true when publisher created (write responses)
+  std::optional<std::int64_t> timestamp;         // sample timestamp in ns (read responses)
+  std::optional<std::int64_t> publisher_count;   // publisher count at sample time (read responses)
+  std::optional<std::int64_t> subscriber_count;  // subscriber count at sample time (read responses)
 };
 
 template <>
 inline constexpr auto dto_fields<XMedkitDataItem> =
-    std::make_tuple(field("ros2", &XMedkitDataItem::ros2), field("type_info", &XMedkitDataItem::type_info));
+    std::make_tuple(field("ros2", &XMedkitDataItem::ros2), field("type_info", &XMedkitDataItem::type_info),
+                    field("entity_id", &XMedkitDataItem::entity_id), field("status", &XMedkitDataItem::status),
+                    field("publisher_created", &XMedkitDataItem::publisher_created),
+                    field("timestamp", &XMedkitDataItem::timestamp),
+                    field("publisher_count", &XMedkitDataItem::publisher_count),
+                    field("subscriber_count", &XMedkitDataItem::subscriber_count));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitDataItem> = "XMedkitDataItem";
@@ -79,7 +102,7 @@ template <>
 inline constexpr std::string_view dto_name<DataItem> = "DataItem";
 
 // =============================================================================
-// XMedkitDataList - x-medkit vendor extension on the data collection list
+// DataListXMedkit - x-medkit vendor extension on the data collection list
 // response (the top-level response object from handle_list_data).
 //
 // Wire keys (from data_handlers.cpp handle_list_data response-level XMedkit):
@@ -89,7 +112,7 @@ inline constexpr std::string_view dto_name<DataItem> = "DataItem";
 //   aggregation_level  - aggregation level string when aggregated
 //   total_count        - total number of items in the response
 // =============================================================================
-struct XMedkitDataList {
+struct DataListXMedkit {
   std::optional<std::string> entity_id;
   std::optional<bool> aggregated;
   std::optional<std::vector<std::string>> aggregation_sources;
@@ -98,14 +121,14 @@ struct XMedkitDataList {
 };
 
 template <>
-inline constexpr auto dto_fields<XMedkitDataList> =
-    std::make_tuple(field("entity_id", &XMedkitDataList::entity_id), field("aggregated", &XMedkitDataList::aggregated),
-                    field("aggregation_sources", &XMedkitDataList::aggregation_sources),
-                    field("aggregation_level", &XMedkitDataList::aggregation_level),
-                    field("total_count", &XMedkitDataList::total_count));
+inline constexpr auto dto_fields<DataListXMedkit> =
+    std::make_tuple(field("entity_id", &DataListXMedkit::entity_id), field("aggregated", &DataListXMedkit::aggregated),
+                    field("aggregation_sources", &DataListXMedkit::aggregation_sources),
+                    field("aggregation_level", &DataListXMedkit::aggregation_level),
+                    field("total_count", &DataListXMedkit::total_count));
 
 template <>
-inline constexpr std::string_view dto_name<XMedkitDataList> = "XMedkitDataList";
+inline constexpr std::string_view dto_name<DataListXMedkit> = "DataListXMedkit";
 
 // =============================================================================
 // DataWriteRequest - PUT request body for /{entity}/data/{id}.

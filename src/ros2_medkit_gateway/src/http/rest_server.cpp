@@ -465,7 +465,7 @@ void RESTServer::setup_routes() {
         .tag("Data")
         .summary(std::string("List data items for ") + et.singular)
         .description(std::string("Lists all data items (ROS 2 topics) available on this ") + et.singular + ".")
-        .response(200, "Data item list", SB::ref("DataItemList"))
+        .response(200, "Data item list", SB::ref("DataList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Data");
 
     // --- Operations ---

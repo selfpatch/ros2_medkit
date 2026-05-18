@@ -42,6 +42,7 @@ struct XMedkitRos2 {
   std::optional<std::string> service;
   std::optional<std::string> action;
   std::optional<std::string> kind;
+  std::optional<std::string> direction;  // topic data direction: "publish"|"subscribe"|"both"
 };
 
 template <>
@@ -49,7 +50,7 @@ inline constexpr auto dto_fields<XMedkitRos2> =
     std::make_tuple(field("node", &XMedkitRos2::node), field("namespace", &XMedkitRos2::ns),
                     field("type", &XMedkitRos2::type), field("topic", &XMedkitRos2::topic),
                     field("service", &XMedkitRos2::service), field("action", &XMedkitRos2::action),
-                    field("kind", &XMedkitRos2::kind));
+                    field("kind", &XMedkitRos2::kind), field("direction", &XMedkitRos2::direction));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitRos2> = "XMedkitRos2";

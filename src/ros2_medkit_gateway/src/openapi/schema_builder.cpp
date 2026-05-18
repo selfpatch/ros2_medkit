@@ -212,16 +212,6 @@ nlohmann::json SchemaBuilder::root_overview_schema() {
           {"required", {"name", "version", "api_base", "endpoints", "capabilities"}}};
 }
 
-nlohmann::json SchemaBuilder::data_item_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
-            {"category", {{"type", "string"}}},
-            {"x-medkit", {{"type", "object"}, {"additionalProperties", true}}}}},
-          {"required", {"id", "name"}}};
-}
-
 nlohmann::json SchemaBuilder::generic_object_schema() {
   return {{"type", "object"}};
 }
@@ -431,14 +421,6 @@ nlohmann::json SchemaBuilder::log_configuration_schema() {
             {"max_entries", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}}}}}};
 }
 
-nlohmann::json SchemaBuilder::data_write_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"type", {{"type", "string"}, {"description", "ROS 2 message type (e.g. 'std_msgs/msg/Float32')"}}},
-            {"data", {{"description", "Message value to publish"}}}}},
-          {"required", {"type", "data"}}};
-}
-
 nlohmann::json SchemaBuilder::script_control_request_schema() {
   return {{"type", "object"},
           {"properties",
@@ -489,10 +471,6 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         {"HealthStatus", health_schema()},
         {"VersionInfo", version_info_schema()},
         {"RootOverview", root_overview_schema()},
-        // Data
-        {"DataItem", data_item_schema()},
-        {"DataItemList", items_wrapper_ref("DataItem")},
-        {"DataWriteRequest", data_write_request_schema()},
         // Operations - OperationItem, OperationDetail, OperationExecution,
         // ExecutionUpdateRequest now come from DTO (dto/operations.hpp).
         // OperationExecutionList is kept here as a thin wrapper over the DTO type.

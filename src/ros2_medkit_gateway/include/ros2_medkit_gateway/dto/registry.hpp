@@ -47,7 +47,7 @@ using AllDtos =
                ConfigValueXMedkit, ConfigurationReadValue, ConfigurationWriteRequest, ConfigurationDeleteResultItem,
                ConfigurationDeleteMultiStatus,
                // Data domain DTOs
-               XMedkitDataItem, DataItem, Collection<DataItem>, XMedkitDataList, DataWriteRequest>;
+               XMedkitDataItem, DataItem, Collection<DataItem>, DataListXMedkit, DataWriteRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
