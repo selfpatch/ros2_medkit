@@ -19,6 +19,8 @@
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/enums.hpp"
+#include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/registry.hpp"
@@ -173,4 +175,39 @@ TEST(DtoSample, SynthesizesScalarMembers) {
 TEST(DtoRegistry, CollectsNamedSchemas) {
   const auto schemas = dto::collect_component_schemas();
   EXPECT_TRUE(schemas.is_object());
+}
+
+TEST(DtoErrors, GenericErrorIsDtoWithCorrectFields) {
+  EXPECT_TRUE(dto::is_dto_v<dto::GenericError>);
+  EXPECT_EQ(dto::dto_name<dto::GenericError>, "GenericError");
+
+  const auto schema = dto::SchemaWriter<dto::GenericError>::schema();
+  EXPECT_EQ(schema.at("type"), "object");
+  EXPECT_TRUE(schema.at("properties").contains("error_code"));
+  EXPECT_TRUE(schema.at("properties").contains("message"));
+  EXPECT_TRUE(schema.at("properties").contains("parameters"));
+
+  // error_code and message are required; parameters is optional
+  const auto & req = schema.at("required");
+  EXPECT_NE(std::find(req.begin(), req.end(), "error_code"), req.end());
+  EXPECT_NE(std::find(req.begin(), req.end(), "message"), req.end());
+  EXPECT_EQ(std::find(req.begin(), req.end(), "parameters"), req.end());
+}
+
+TEST(DtoErrors, GenericErrorRoundTrips) {
+  dto::GenericError e{"x-medkit-entity-not-found", "Entity not found", std::nullopt};
+  const auto j = dto::JsonWriter<dto::GenericError>::write(e);
+  EXPECT_EQ(j.at("error_code"), "x-medkit-entity-not-found");
+  EXPECT_EQ(j.at("message"), "Entity not found");
+  EXPECT_FALSE(j.contains("parameters"));
+}
+
+TEST(DtoEnums, EntityTypeVocabularyHasFourValues) {
+  EXPECT_EQ(std::size(dto::kEntityTypeValues), 4u);
+  EXPECT_EQ(dto::kEntityTypeValues[0], "area");
+  EXPECT_EQ(dto::kEntityTypeValues[3], "function");
+}
+
+TEST(DtoEnums, CyclicSubscriptionIntervalHasThreeValues) {
+  EXPECT_EQ(std::size(dto::kCyclicSubscriptionIntervalValues), 3u);
 }
