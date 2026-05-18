@@ -256,7 +256,9 @@ TEST(SchemaBuilderStaticTest, ConfigurationWriteRequestSchemaFromDto) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ScriptUploadResponseSchema) {
-  auto schema = SchemaBuilder::script_upload_response_schema();
+  // ScriptUploadResponse is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::ScriptUploadResponse>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("id"));
@@ -637,7 +639,9 @@ TEST(SchemaBuilderStaticTest, ExecutionUpdateRequestSchemaComesFromDto) {
 
 // @verifies REQ_INTEROP_002
 TEST(SchemaBuilderStaticTest, ScriptControlRequestSchema) {
-  auto schema = SchemaBuilder::script_control_request_schema();
+  // ScriptControlRequest is now a DTO - verify via SchemaWriter.
+  namespace dto = ros2_medkit_gateway::dto;
+  auto schema = dto::SchemaWriter<dto::ScriptControlRequest>::schema();
   EXPECT_EQ(schema["type"], "object");
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("action"));

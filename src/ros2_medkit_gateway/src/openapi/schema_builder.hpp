@@ -68,23 +68,11 @@ class SchemaBuilder {
   /// Binary content schema (for file downloads)
   static nlohmann::json binary_schema();
 
-  /// Script metadata schema (list/get)
-  static nlohmann::json script_metadata_schema();
-
-  /// Script execution status schema
-  static nlohmann::json script_execution_schema();
-
-  /// Script upload response schema (minimal: id + name)
-  static nlohmann::json script_upload_response_schema();
-
   /// Software update list schema (items: [string])
   static nlohmann::json update_list_schema();
 
   /// Software update status schema
   static nlohmann::json update_status_schema();
-
-  /// Script control request schema (PUT /scripts/{id}/executions/{id})
-  static nlohmann::json script_control_request_schema();
 
   /// Auth token response schema
   static nlohmann::json auth_token_response_schema();

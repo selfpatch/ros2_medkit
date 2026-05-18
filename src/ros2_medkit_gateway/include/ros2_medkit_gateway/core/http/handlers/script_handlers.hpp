@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/dto/scripts.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
@@ -42,8 +43,8 @@ class ScriptHandlers {
   void send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err);
   static bool is_valid_resource_id(const std::string & id);
   static std::string entity_type_from_path(const httplib::Request & req);
-  static nlohmann::json script_info_to_json(const ScriptInfo & info, const std::string & base_path);
-  static nlohmann::json execution_info_to_json(const ExecutionInfo & info);
+  static dto::ScriptMetadata script_info_to_dto(const ScriptInfo & info, const std::string & base_path);
+  static dto::ScriptExecution execution_info_to_dto(const ExecutionInfo & info);
 };
 
 }  // namespace handlers

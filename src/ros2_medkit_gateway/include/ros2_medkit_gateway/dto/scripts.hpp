@@ -81,7 +81,7 @@ inline constexpr std::string_view dto_name<Collection<ScriptMetadata>> = "Script
 // Wire shape (from script_execution_schema() + execution_info_to_json()):
 //   id           - execution ID (required)
 //   status       - execution status string (required)
-//   progress     - optional float progress (0.0-1.0)
+//   progress     - optional integer progress value (0-100; matches ExecutionInfo)
 //   started_at   - optional ISO 8601 start timestamp string
 //   completed_at - optional ISO 8601 completion timestamp string
 //   parameters   - optional free-form output parameters JSON object
@@ -95,7 +95,7 @@ inline constexpr std::string_view dto_name<Collection<ScriptMetadata>> = "Script
 struct ScriptExecution {
   std::string id;
   std::string status;
-  std::optional<double> progress;
+  std::optional<int> progress;
   std::optional<std::string> started_at;
   std::optional<std::string> completed_at;
   std::optional<nlohmann::json> parameters;  // free-form: runtime output parameters

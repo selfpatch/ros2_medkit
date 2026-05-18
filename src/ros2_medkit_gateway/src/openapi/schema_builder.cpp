@@ -175,38 +175,6 @@ nlohmann::json SchemaBuilder::binary_schema() {
   return {{"type", "string"}, {"format", "binary"}};
 }
 
-nlohmann::json SchemaBuilder::script_metadata_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
-            {"description", {{"type", "string"}}},
-            {"href", {{"type", "string"}}},
-            {"managed", {{"type", "boolean"}}},
-            {"proximity_proof_required", {{"type", "boolean"}}},
-            {"parameters_schema", {{"type", {"object", "null"}}}}}},
-          {"required", {"id", "name"}}};
-}
-
-nlohmann::json SchemaBuilder::script_execution_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"status", {{"type", "string"}}},
-            {"progress", {{"type", "number"}}},
-            {"started_at", {{"type", "string"}}},
-            {"completed_at", {{"type", "string"}}},
-            {"parameters", {{"type", "object"}}},
-            {"error", {{"type", "object"}}}}},
-          {"required", {"id", "status"}}};
-}
-
-nlohmann::json SchemaBuilder::script_upload_response_schema() {
-  return {{"type", "object"},
-          {"properties", {{"id", {{"type", "string"}}}, {"name", {{"type", "string"}}}}},
-          {"required", {"id", "name"}}};
-}
-
 nlohmann::json SchemaBuilder::update_list_schema() {
   return items_wrapper({{"type", "string"}});
 }
@@ -243,16 +211,6 @@ nlohmann::json SchemaBuilder::update_status_schema() {
             {"error", {{"type", "string"}}},
             {"x-medkit", x_medkit_schema}}},
           {"required", {"status"}}};
-}
-
-nlohmann::json SchemaBuilder::script_control_request_schema() {
-  return {{"type", "object"},
-          {"properties",
-           {{"action",
-             {{"type", "string"},
-              {"enum", {"stop", "forced_termination"}},
-              {"description", "Control action for the running script execution"}}}}},
-          {"required", {"action"}}};
 }
 
 nlohmann::json SchemaBuilder::auth_token_response_schema() {
@@ -302,12 +260,8 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
         // Subscriptions - CyclicSubscription, CyclicSubscriptionList, CyclicSubscriptionCreateRequest,
         // CyclicSubscriptionUpdateRequest now come from DTO (dto/cyclic_subscriptions.hpp).
         // Locking - Lock, LockList, AcquireLockRequest, ExtendLockRequest now come from DTO (dto/locks.hpp).
-        // Scripts
-        {"ScriptMetadata", script_metadata_schema()},
-        {"ScriptMetadataList", items_wrapper_ref("ScriptMetadata")},
-        {"ScriptUploadResponse", script_upload_response_schema()},
-        {"ScriptExecution", script_execution_schema()},
-        {"ScriptControlRequest", script_control_request_schema()},
+        // Scripts - ScriptMetadata, ScriptMetadataList, ScriptExecution, ScriptUploadResponse,
+        // ScriptControlRequest now come from DTO (dto/scripts.hpp).
         // Bulk Data - BulkDataCategoryList, BulkDataDescriptor, BulkDataDescriptorList
         // now come from DTO (dto/bulkdata.hpp).
         // Updates
