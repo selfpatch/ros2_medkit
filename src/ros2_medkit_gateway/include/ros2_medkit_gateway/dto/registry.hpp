@@ -19,6 +19,7 @@
 #include <tuple>
 #include <utility>
 
+#include "ros2_medkit_gateway/dto/auth.hpp"
 #include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
@@ -69,7 +70,9 @@ using AllDtos =
                // Script domain DTOs
                ScriptMetadata, Collection<ScriptMetadata>, ScriptExecution, ScriptUploadResponse, ScriptControlRequest,
                // Software update domain DTOs
-               UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus>;
+               UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus,
+               // Auth domain DTOs
+               AuthCredentials, AuthTokenResponse>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
