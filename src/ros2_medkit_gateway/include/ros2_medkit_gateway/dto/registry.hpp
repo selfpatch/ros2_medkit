@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/scripts.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
+#include "ros2_medkit_gateway/dto/updates.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
@@ -66,7 +67,9 @@ using AllDtos =
                // Log domain DTOs
                LogContext, LogEntry, Collection<LogEntry>, LogListXMedkit, LogConfiguration,
                // Script domain DTOs
-               ScriptMetadata, Collection<ScriptMetadata>, ScriptExecution, ScriptUploadResponse, ScriptControlRequest>;
+               ScriptMetadata, Collection<ScriptMetadata>, ScriptExecution, ScriptUploadResponse, ScriptControlRequest,
+               // Software update domain DTOs
+               UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
