@@ -97,7 +97,6 @@ inline constexpr std::string_view dto_name<Collection<LogEntry>> = "LogEntryList
 // LogListXMedkit - typed x-medkit vendor extension on log list responses.
 //
 // Emitted by handle_get_logs on FUNCTION / AREA / COMPONENT / APP entities.
-// Wire keys (from log_handlers.cpp XMedkit builder usages):
 //
 //   entity_id           - SOVD entity ID (all aggregating entity types)
 //   aggregation_level   - "function"|"area"|"component" (aggregating entities)

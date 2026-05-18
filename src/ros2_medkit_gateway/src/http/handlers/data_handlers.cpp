@@ -126,7 +126,6 @@ void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Respo
     // Build response JSON from collection, then attach typed collection x-medkit
     json response = dto::JsonWriter<dto::Collection<dto::DataItem>>::write(collection);
 
-    // Fan-out peer merge: use JSON-overload to avoid the legacy XMedkit builder
     json ext_json = json::object();
     merge_peer_items(ctx_.aggregation_manager(), req, response, ext_json);
 

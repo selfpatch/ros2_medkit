@@ -78,7 +78,6 @@ inline constexpr std::string_view dto_name<ConfigurationMetaData> = "Configurati
 // ConfigListXMedkit - x-medkit vendor extension on configuration list responses.
 // Emitted by handle_list_configurations (root of the response object).
 //
-// Wire keys (from config_handlers.cpp XMedkit builder calls):
 //   entity_id         - SOVD entity ID being queried
 //   source            - always "runtime"
 //   aggregation_level - level string from EntityCache (e.g. "app", "component")
@@ -118,7 +117,6 @@ inline constexpr std::string_view dto_name<ConfigListXMedkit> = "ConfigListXMedk
 // value responses.  Emitted by handle_get_configuration and
 // handle_set_configuration.
 //
-// Wire keys (from config_handlers.cpp XMedkit builder calls):
 //   ros2        - nested ROS 2 metadata sub-object (node FQN)
 //   entity_id   - SOVD entity ID
 //   source      - always "runtime"

@@ -310,7 +310,12 @@ class HandlerContext {
                                 const nlohmann::json & extra_params = {});
 
   /**
-   * @brief Send JSON success response
+   * @brief Send JSON success response (escape-hatch for raw JSON payloads)
+   *
+   * Prefer send_dto<T> for typed responses. Use send_json only when the
+   * payload cannot be represented as a DTO: dynamic ROS message payloads
+   * (data/update read handlers), fan-out merged responses, or OpenAPI spec
+   * blobs.
    */
   static void send_json(httplib::Response & res, const nlohmann::json & data);
 

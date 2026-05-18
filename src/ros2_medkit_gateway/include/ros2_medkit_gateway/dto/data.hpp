@@ -36,20 +36,20 @@ namespace dto {
 // items (handle_list_data per-topic), on data write responses
 // (handle_put_data_item), and on data read responses (handle_get_data_item).
 //
-// Wire keys for list items (from handle_list_data per-item XMedkit builder):
-//   ros2.topic     - ROS 2 topic path (via ext.ros2_topic())
+// Wire keys for list items:
+//   ros2.topic     - ROS 2 topic path
 //   ros2.direction - topic direction: "publish" | "subscribe" | "both"
-//                    (via ext.add_ros2("direction", ...); maps to XMedkitRos2::direction)
-//   ros2.type      - ROS 2 message type string (via ext.ros2_type())
+//                    (maps to XMedkitRos2::direction)
+//   ros2.type      - ROS 2 message type string
 //   type_info      - dynamic type schema + default_value (free-form JSON;
 //                    only present when type introspection succeeds)
 //
-// Additional keys for write responses (from handle_put_data_item):
-//   entity_id         - SOVD entity ID (via ext.entity_id())
-//   status            - publish result status (via ext.add("status", ...))
-//   publisher_created - true when a new publisher was created (via ext.add(...))
+// Additional keys for write responses (handle_put_data_item):
+//   entity_id         - SOVD entity ID
+//   status            - publish result status
+//   publisher_created - true when a new publisher was created
 //
-// Additional keys for read responses (from handle_get_data_item):
+// Additional keys for read responses (handle_get_data_item):
 //   timestamp        - sample timestamp in nanoseconds since epoch (int64)
 //   publisher_count  - number of publishers on the topic at sample time (int64)
 //   subscriber_count - number of subscribers on the topic at sample time (int64)

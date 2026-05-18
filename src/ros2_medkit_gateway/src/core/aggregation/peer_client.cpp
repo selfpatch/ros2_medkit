@@ -252,10 +252,10 @@ App parse_app(const nlohmann::json & j) {
 
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    // Vendor fallback: gateway emits x-medkit.component_id (snake_case) via
-    // XMedkit builder in discovery_handlers.cpp. Only used if the SOVD
-    // standard is-located-on field is absent. Validated for the same
-    // reasons as component_id_from_located_on - the value is peer-provided.
+    // Vendor fallback: gateway emits x-medkit.component_id (snake_case) in
+    // discovery_handlers.cpp. Only used if the SOVD standard is-located-on
+    // field is absent. Validated for the same reasons as
+    // component_id_from_located_on - the value is peer-provided.
     if (app.component_id.empty()) {
       auto candidate = xm.value("component_id", "");
       if (is_valid_entity_id(candidate)) {

@@ -73,33 +73,12 @@ nlohmann::json SchemaBuilder::items_wrapper_ref(const std::string & schema_name)
 
 const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas() {
   static const std::map<std::string, nlohmann::json> schemas = []() {
+    // All domain schemas come from the DTO registry (dto/registry.hpp).
+    // The only hand-written survivor is OperationExecutionList: it is a thin
+    // items-wrapper over the OperationExecution DTO and has no dedicated DTO type.
     std::map<std::string, nlohmann::json> m = {
-        // Core types
-        {"GenericError", generic_error()},
-        // Logs - LogEntry, LogEntryList, LogConfiguration, LogContext, LogListXMedkit
-        // now come from DTO (dto/logs.hpp).
-        // Health / Root - HealthStatus, VersionInfo, RootOverview and sub-DTOs
-        // now come from DTO (dto/health.hpp).
-        // Operations - OperationItem, OperationDetail, OperationExecution,
-        // ExecutionUpdateRequest now come from DTO (dto/operations.hpp).
-        // OperationExecutionList is kept here as a thin wrapper over the DTO type.
         {"OperationExecutionList", items_wrapper_ref("OperationExecution")},
-        // Triggers - Trigger, TriggerList, TriggerCreateRequest, TriggerUpdateRequest
-        // now come from DTO (dto/triggers.hpp).
-        // Subscriptions - CyclicSubscription, CyclicSubscriptionList, CyclicSubscriptionCreateRequest,
-        // CyclicSubscriptionUpdateRequest now come from DTO (dto/cyclic_subscriptions.hpp).
-        // Locking - Lock, LockList, AcquireLockRequest, ExtendLockRequest now come from DTO (dto/locks.hpp).
-        // Scripts - ScriptMetadata, ScriptMetadataList, ScriptExecution, ScriptUploadResponse,
-        // ScriptControlRequest now come from DTO (dto/scripts.hpp).
-        // Bulk Data - BulkDataCategoryList, BulkDataDescriptor, BulkDataDescriptorList
-        // now come from DTO (dto/bulkdata.hpp).
-        // Updates - UpdateList, UpdateSubProgress, XMedkitUpdate, UpdateStatus
-        // now come from DTO (dto/updates.hpp).
-        // Auth - AuthCredentials, AuthTokenResponse now come from DTO (dto/auth.hpp).
     };
-    // DTO-contract schemas, merged on top of the hand-written factories. The DTO
-    // version wins on a name collision (currently only "GenericError"). Each
-    // domain migration task removes its now-redundant factory call later.
     auto dto_schemas = dto::collect_component_schemas();
     for (auto & [name, schema] : dto_schemas.items()) {
       m[name] = schema;

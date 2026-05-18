@@ -631,10 +631,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_handler_context gateway_ros2)
   medkit_set_test_domain(test_handler_context)
 
-  # Add x-medkit extension tests
-  ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)
-  target_link_libraries(test_x_medkit gateway_ros2)
-
   # DTO contract core (pure C++17, no ROS node)
   ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
   target_link_libraries(test_dto_contract gateway_core)
@@ -933,7 +929,6 @@ if(BUILD_TESTING)
       test_manifest_manager
       test_capability_builder
       test_handler_context
-      test_x_medkit
       test_rate_limiter
       test_auth_config
       test_data_access_manager

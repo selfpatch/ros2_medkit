@@ -112,7 +112,7 @@ TEST(FanOutHelpers, merge_peer_items_null_aggregation_manager_is_noop) {
   req.path = "/api/v1/test";
   json result;
   result["items"] = json::array({{"id", "local1"}});
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(nullptr, req, result, ext);
 
@@ -126,7 +126,7 @@ TEST(FanOutHelpers, merge_peer_items_skips_when_no_fan_out_header_set) {
   req.headers.emplace("X-Medkit-No-Fan-Out", "1");
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   // Even with a non-null pointer, should skip due to header.
   // We pass a bogus pointer since it should never be dereferenced.
@@ -142,7 +142,7 @@ TEST(FanOutHelpers, merge_peer_items_null_agg_does_not_touch_result) {
   req.path = "/api/v1/test";
   json result;
   // No "items" key at all
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(nullptr, req, result, ext);
 
@@ -224,7 +224,7 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
   req.path = "/api/v1/functions/f1/logs";
   json result;
   result["items"] = json::array({{{"id", "local_log_1"}}});
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -260,17 +260,16 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
   req.path = "/api/v1/functions/f1/logs";
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
   EXPECT_EQ(result["items"].size(), 0u);
   EXPECT_FALSE(ext.empty());
-  auto built = ext.build();
-  EXPECT_TRUE(built.value("partial", false));
-  ASSERT_TRUE(built.contains("failed_peers"));
-  EXPECT_EQ(built["failed_peers"].size(), 1u);
-  EXPECT_EQ(built["failed_peers"][0], "failing_peer");
+  EXPECT_TRUE(ext.value("partial", false));
+  ASSERT_TRUE(ext.contains("failed_peers"));
+  EXPECT_EQ(ext["failed_peers"].size(), 1u);
+  EXPECT_EQ(ext["failed_peers"][0], "failing_peer");
 }
 
 TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_data) {
@@ -300,7 +299,7 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
   req.path = "/api/v1/apps/a/data";
   json result;
   // No "items" key - merge_peer_items should create it
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -400,7 +399,7 @@ TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
   req.path = "/api/v1/components/local-only-comp/logs";
   json result;
   result["items"] = json::array({{{"id", "local_log"}}});
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -442,7 +441,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_
   req.path = "/api/v1/areas/root/logs";
   json result;
   result["items"] = json::array({{{"id", "local_log"}}});
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -498,7 +497,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_routed_leaf_owner) {
   req.path = "/api/v1/apps/temp_sensor/logs";
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -557,7 +556,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_listed_contributors) {
   req.path = "/api/v1/areas/vehicle/faults";
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
@@ -620,18 +619,17 @@ TEST(FanOutHelpers, merge_peer_items_partial_only_when_contributor_fails) {
   req.path = "/api/v1/components/cluster/logs";
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 
   ASSERT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "ok_log");
   ASSERT_FALSE(ext.empty());
-  auto built = ext.build();
-  EXPECT_TRUE(built.value("partial", false));
-  ASSERT_TRUE(built.contains("failed_peers"));
-  ASSERT_EQ(built["failed_peers"].size(), 1u);
-  EXPECT_EQ(built["failed_peers"][0], "peer_broken")
+  EXPECT_TRUE(ext.value("partial", false));
+  ASSERT_TRUE(ext.contains("failed_peers"));
+  ASSERT_EQ(ext["failed_peers"].size(), 1u);
+  EXPECT_EQ(ext["failed_peers"][0], "peer_broken")
       << "peer_bystander was not a contributor and must not appear in failed_peers";
 }
 
@@ -662,7 +660,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_global_endpoints_without_entit
   req.path = "/api/v1/faults";
   json result;
   result["items"] = json::array();
-  XMedkit ext;
+  json ext;
 
   merge_peer_items(&agg, req, result, ext);
 

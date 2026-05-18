@@ -32,7 +32,6 @@ namespace dto {
 // XMedkitOperationItem - x-medkit vendor extension on OperationItem responses
 // (handle_list_operations / handle_get_operation).
 //
-// Wire keys (from XMedkit builder in those handlers):
 //   ros2        - nested ROS 2 metadata sub-object (service|action path, type,
 //                 kind)
 //   entity_id   - SOVD entity the operation belongs to
@@ -62,7 +61,6 @@ inline constexpr std::string_view dto_name<XMedkitOperationItem> = "XMedkitOpera
 // XMedkitOperationExecution - x-medkit vendor extension on OperationExecution
 // responses (handle_get_execution).
 //
-// Wire keys (from handle_get_execution XMedkit builder):
 //   goal_id     - UUID of the tracked ROS 2 action goal
 //   ros2_status - raw ROS 2 goal status string (accepted|executing|canceling|
 //                 succeeded|canceled|aborted|unknown)
