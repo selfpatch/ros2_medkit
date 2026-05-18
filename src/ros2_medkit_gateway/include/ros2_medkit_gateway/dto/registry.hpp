@@ -21,6 +21,7 @@
 
 #include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
@@ -44,7 +45,9 @@ using AllDtos =
                // Configuration domain DTOs
                ConfigXMedkitItem, ConfigurationMetaData, Collection<ConfigurationMetaData>, ConfigListXMedkit,
                ConfigValueXMedkit, ConfigurationReadValue, ConfigurationWriteRequest, ConfigurationDeleteResultItem,
-               ConfigurationDeleteMultiStatus>;
+               ConfigurationDeleteMultiStatus,
+               // Data domain DTOs
+               XMedkitDataItem, DataItem, Collection<DataItem>, XMedkitDataList, DataWriteRequest>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>
