@@ -20,17 +20,20 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
+#include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
 namespace ros2_medkit_gateway {
 namespace dto {
 
 /// The single compile-time list of every named DTO. Each domain header
 /// (Phase 2/3) appends its types here. Order is irrelevant.
-using AllDtos = std::tuple<
-    // entity + x-medkit + error DTOs appended in Task 10, then one block
-    // per domain in Phase 3.
-    >;
+using AllDtos = std::tuple<GenericError, XMedkitRos2, XMedkitArea, XMedkitComponent, XMedkitApp, XMedkitFunction,
+                           XMedkitCollection, AreaListItem, AreaDetail, ComponentListItem, ComponentDetail, AppListItem,
+                           AppDetail, FunctionListItem, FunctionDetail, Collection<AreaListItem>,
+                           Collection<ComponentListItem>, Collection<AppListItem>, Collection<FunctionListItem>>;
 
 namespace detail {
 template <class Tuple, std::size_t... I>

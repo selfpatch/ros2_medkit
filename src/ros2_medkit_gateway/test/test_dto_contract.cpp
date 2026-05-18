@@ -19,6 +19,7 @@
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/enums.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
@@ -351,4 +352,28 @@ TEST(XMedkitDtos, AllXMedkitSchemasAreObjects) {
   EXPECT_EQ(func_schema.at("type"), "object");
   EXPECT_EQ(coll_schema.at("type"), "object");
   EXPECT_EQ(ros2_schema.at("type"), "object");
+}
+
+// =============================================================================
+// All-DTO registry round-trip test
+// =============================================================================
+
+template <class Tuple, std::size_t I>
+void check_one() {
+  using D = std::tuple_element_t<I, Tuple>;
+  EXPECT_FALSE(dto::dto_name<D>.empty()) << "DTO at index " << I;
+  const auto schema = dto::SchemaWriter<D>::schema();
+  EXPECT_EQ(schema.at("type"), "object") << dto::dto_name<D>;
+  const D s = dto::make_sample<D>();
+  const auto j = dto::JsonWriter<D>::write(s);
+  EXPECT_TRUE(dto::JsonReader<D>::read(j).has_value()) << dto::dto_name<D>;
+}
+
+template <class Tuple, std::size_t... I>
+void check_all(std::index_sequence<I...> /*seq*/) {
+  (check_one<Tuple, I>(), ...);
+}
+
+TEST(DtoRegistry, EveryRegisteredDtoRoundTrips) {
+  check_all<dto::AllDtos>(std::make_index_sequence<std::tuple_size_v<dto::AllDtos>>{});
 }
