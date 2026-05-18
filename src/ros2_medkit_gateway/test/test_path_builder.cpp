@@ -47,12 +47,11 @@ TEST_F(PathBuilderTest, EntityCollectionHasGet) {
 }
 
 TEST_F(PathBuilderTest, EntityCollectionHasItemsSchema) {
+  // The response schema is now a $ref to the DTO-generated collection schema.
   auto result = path_builder_.build_entity_collection("components");
   auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  EXPECT_EQ(schema["type"], "object");
-  ASSERT_TRUE(schema.contains("properties"));
-  ASSERT_TRUE(schema["properties"].contains("items"));
-  EXPECT_EQ(schema["properties"]["items"]["type"], "array");
+  ASSERT_TRUE(schema.contains("$ref")) << "Entity collection schema should be a $ref to the DTO collection type";
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/ComponentList");
 }
 
 TEST_F(PathBuilderTest, EntityCollectionHasQueryParams) {

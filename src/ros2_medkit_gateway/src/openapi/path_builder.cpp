@@ -19,6 +19,42 @@
 namespace ros2_medkit_gateway {
 namespace openapi {
 
+namespace {
+/// Map entity-type keyword (e.g. "areas") to its DTO collection schema name.
+std::string entity_type_to_list_name(const std::string & entity_type) {
+  if (entity_type == "areas") {
+    return "AreaList";
+  }
+  if (entity_type == "components") {
+    return "ComponentList";
+  }
+  if (entity_type == "apps") {
+    return "AppList";
+  }
+  if (entity_type == "functions") {
+    return "FunctionList";
+  }
+  return "AreaList";  // safe fallback
+}
+
+/// Map entity-type keyword (e.g. "areas") to its DTO detail schema name.
+std::string entity_type_to_detail_name(const std::string & entity_type) {
+  if (entity_type == "areas") {
+    return "AreaDetail";
+  }
+  if (entity_type == "components") {
+    return "ComponentDetail";
+  }
+  if (entity_type == "apps") {
+    return "AppDetail";
+  }
+  if (entity_type == "functions") {
+    return "FunctionDetail";
+  }
+  return "AreaDetail";  // safe fallback
+}
+}  // namespace
+
 PathBuilder::PathBuilder(const SchemaBuilder & schema_builder, bool auth_enabled)
   : schema_builder_(schema_builder), auth_enabled_(auth_enabled) {
 }
@@ -36,7 +72,8 @@ nlohmann::json PathBuilder::build_entity_collection(const std::string & entity_t
   get_op["description"] = "Returns the collection of " + entity_type + " entities.";
   get_op["parameters"] = build_query_params_for_collection();
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::entity_list_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::ref(entity_type_to_list_name(entity_type));
 
   // Merge error responses
   auto errors = error_responses();
@@ -71,7 +108,8 @@ nlohmann::json PathBuilder::build_entity_detail(const std::string & entity_type,
         nlohmann::json::array({build_path_param(singular + "_id", "The " + singular + " identifier")});
   }
   get_op["responses"]["200"]["description"] = "Successful response";
-  get_op["responses"]["200"]["content"]["application/json"]["schema"] = SchemaBuilder::entity_detail_schema();
+  get_op["responses"]["200"]["content"]["application/json"]["schema"] =
+      SchemaBuilder::ref(entity_type_to_detail_name(entity_type));
 
   auto errors = error_responses();
   for (auto & [code, val] : errors.items()) {

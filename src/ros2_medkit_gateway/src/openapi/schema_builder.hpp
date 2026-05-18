@@ -59,12 +59,6 @@ class SchemaBuilder {
   /// Fault list response schema (items wrapper around fault_list_item_schema)
   static nlohmann::json fault_list_schema();
 
-  /// Single entity detail schema
-  static nlohmann::json entity_detail_schema();
-
-  /// Entity list response schema (items wrapper around entity_detail_schema)
-  static nlohmann::json entity_list_schema();
-
   /// Wrap an item schema in a SOVD collection response: {"items": [item_schema]}
   static nlohmann::json items_wrapper(const nlohmann::json & item_schema);
 

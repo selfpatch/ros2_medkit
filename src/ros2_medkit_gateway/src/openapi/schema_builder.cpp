@@ -123,38 +123,6 @@ nlohmann::json SchemaBuilder::fault_list_schema() {
   return items_wrapper(fault_list_item_schema());
 }
 
-nlohmann::json SchemaBuilder::entity_detail_schema() {
-  // Aggregation provenance surfaced on every merged entity (x-medkit vendor
-  // extension). Present only when non-empty; ordering is stable ("local"
-  // first when present, then "peer:<name>" entries alphabetically) so that
-  // clients and snapshot tests can rely on it. See design/aggregation.rst.
-  nlohmann::json x_medkit_schema = {
-      {"type", "object"},
-      {"properties",
-       {{"contributors",
-         {{"type", "array"},
-          {"items", {{"type", "string"}}},
-          {"description",
-           "Aggregation provenance: 'local' and/or 'peer:<name>' entries naming the sources that "
-           "contributed to this merged entity. Sorted with 'local' first and 'peer:*' entries "
-           "alphabetically. Present only when aggregation is active and the entity has at least "
-           "one known source."}}}}},
-      {"additionalProperties", true}};
-
-  return {{"type", "object"},
-          {"properties",
-           {{"id", {{"type", "string"}}},
-            {"name", {{"type", "string"}}},
-            {"type", {{"type", "string"}}},
-            {"uri", {{"type", "string"}}},
-            {"x-medkit", x_medkit_schema}}},
-          {"required", {"id", "name"}}};
-}
-
-nlohmann::json SchemaBuilder::entity_list_schema() {
-  return items_wrapper(entity_detail_schema());
-}
-
 nlohmann::json SchemaBuilder::items_wrapper(const nlohmann::json & item_schema) {
   return {{"type", "object"},
           {"properties", {{"items", {{"type", "array"}, {"items", item_schema}}}}},
@@ -588,8 +556,8 @@ nlohmann::json SchemaBuilder::update_status_schema() {
       {"required", {"phase"}}};
 
   // x-medkit is optional in the SOVD payload (clients may ignore vendor
-  // extensions; matches the convention in fault_detail_schema and
-  // entity_detail_schema). When the gateway DOES emit the x-medkit object,
+  // extensions; matches the convention in fault_detail_schema).
+  // When the gateway DOES emit the x-medkit object,
   // however, ``phase`` is mandatory inside it - that scope is enforced by
   // the inner ``required: {phase}`` above, NOT by listing x-medkit in the
   // parent's required list. The drift test in test_openapi_response_drift
@@ -672,8 +640,6 @@ const std::map<std::string, nlohmann::json> & SchemaBuilder::component_schemas()
     std::map<std::string, nlohmann::json> m = {
         // Core types
         {"GenericError", generic_error()},
-        {"EntityDetail", entity_detail_schema()},
-        {"EntityList", items_wrapper_ref("EntityDetail")},
         // Faults
         {"FaultListItem", fault_list_item_schema()},
         {"FaultDetail", fault_detail_schema()},
