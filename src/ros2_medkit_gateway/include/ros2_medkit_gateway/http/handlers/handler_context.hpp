@@ -35,6 +35,8 @@
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -338,6 +340,38 @@ class HandlerContext {
    */
   static std::vector<std::string> resolve_app_host_fqns(const ThreadSafeEntityCache & cache,
                                                         const std::vector<std::string> & app_ids);
+
+  /// Serialize a DTO to a 200 JSON response.
+  template <class T>
+  static void send_dto(httplib::Response & res, const T & dto_obj) {
+    send_json(res, dto::JsonWriter<T>::write(dto_obj));
+  }
+
+  /// Parse + validate a request body into a DTO. On failure sends a 400
+  /// GenericError and returns nullopt.
+  template <class T>
+  std::optional<T> parse_body(const httplib::Request & req, httplib::Response & res) {
+    nlohmann::json body;
+    try {
+      body = nlohmann::json::parse(req.body);
+    } catch (const nlohmann::json::parse_error &) {
+      send_error(res, 400, ERR_INVALID_REQUEST, "Request body is not valid JSON");
+      return std::nullopt;
+    }
+    auto parsed = dto::JsonReader<T>::read(body);
+    if (parsed.has_value()) {
+      return parsed.value();
+    }
+    std::string detail;
+    for (const auto & e : parsed.error()) {
+      if (!detail.empty()) {
+        detail += "; ";
+      }
+      detail += e.field + ": " + e.message;
+    }
+    send_error(res, 400, ERR_INVALID_REQUEST, detail);
+    return std::nullopt;
+  }
 
  private:
   GatewayNode * node_;
