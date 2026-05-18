@@ -77,6 +77,28 @@ When disabled, all ``/docs`` endpoints return HTTP 501.
 
 See :doc:`/config/server` for the full parameter reference.
 
+How Schemas Are Generated
+--------------------------
+
+The ``components/schemas`` object in every ``/docs`` response is generated
+automatically from the DTO registry. Each response and request type in the
+gateway is declared as a plain C++ struct with a ``constexpr dto_fields<T>``
+descriptor tuple. The ``SchemaWriter<T>`` visitor folds over this tuple at
+compile time to produce the OpenAPI JSON Schema entry, and the
+``AllDtos`` registry in ``dto/registry.hpp`` lists every named type so that
+``collect_component_schemas()`` can populate the full schema map without
+any hand-written schema factories.
+
+The same descriptor is used for serialization (``JsonWriter<T>``) and
+request-body validation (``JsonReader<T>``), so the wire shape and the
+published schema are always derived from the same source. Genuinely dynamic
+payloads - such as live ROS 2 message data and free-form fault environment
+records - are typed as ``nlohmann::json`` members and appear in the schema
+as unconstrained objects (``{}``).
+
+For the full design of the DTO contract layer, see
+:doc:`/design/ros2_medkit_gateway/dto_contract`.
+
 See Also
 --------
 
