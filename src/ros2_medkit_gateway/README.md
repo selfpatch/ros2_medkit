@@ -1592,7 +1592,7 @@ All rcl subscription create/destroy calls must go through
 `Ros2SubscriptionSlot::create_typed` / `create_generic` (defined in
 `ros2_common/`). Calling `node->create_subscription<T>()`,
 `create_generic_subscription()`, or `create_callback_group()` anywhere
-else triggers the race from issue #375 and SIGSEGVs on Rolling under
+else triggers the race from issue #375 and SIGSEGVs on Rolling/Lyrical under
 concurrent HTTP load.
 
 The regression gate is `scripts/check_no_naked_subscriptions.sh`. It

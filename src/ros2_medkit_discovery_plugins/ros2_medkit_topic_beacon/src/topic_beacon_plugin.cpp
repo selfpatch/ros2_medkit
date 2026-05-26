@@ -33,9 +33,10 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
 TopicBeaconPlugin::~TopicBeaconPlugin() noexcept {
-  // On Rolling, ~rclcpp::Subscription can throw graph_listener::NodeNotFoundError
-  // once rclcpp::shutdown() has invalidated the context. An exception
-  // escaping a destructor calls std::terminate(), so swallow it here.
+  // On Lyrical (originally observed on Rolling), ~rclcpp::Subscription can throw
+  // graph_listener::NodeNotFoundError once rclcpp::shutdown() has invalidated
+  // the context. An exception escaping a destructor calls std::terminate(),
+  // so swallow it here.
   try {
     shutdown();
   } catch (...) {
@@ -113,9 +114,9 @@ void TopicBeaconPlugin::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  // ~rclcpp::Subscription can throw on Rolling when the rclcpp context
-  // was torn down before us; swallow so plugin_manager shutdown and the
-  // plugin destructor calling back into us do not abort the process.
+  // ~rclcpp::Subscription can throw on Lyrical (and Rolling) when the rclcpp
+  // context was torn down before us; swallow so plugin_manager shutdown and
+  // the plugin destructor calling back into us do not abort the process.
   try {
     subscription_.reset();
   } catch (...) {

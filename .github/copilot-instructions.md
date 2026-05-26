@@ -4,7 +4,7 @@
 
 **ros2_medkit** is a ROS 2 diagnostics gateway that exposes ROS 2 system information via a RESTful HTTP API aligned with the **SOVD (Service-Oriented Vehicle Diagnostics)** specification. It models robots as a diagnostic entity tree: **Area -> Component -> App**, with optional **Function** groupings.
 
-**Tech Stack**: C++17, ROS 2 Jazzy/Humble/Rolling, Ubuntu 24.04/22.04
+**Tech Stack**: C++17, ROS 2 Jazzy/Humble/Lyrical Luth, Ubuntu 26.04/24.04/22.04
 
 ## Package Structure
 
@@ -294,7 +294,7 @@ Every code change must include corresponding tests. A feature without tests is n
 - **Flag** new `.cpp` source files under `src/core/` that aren't picked up by `gateway_core`'s `GLOB_RECURSE` source list, or new ROS-adapter `.cpp` files that aren't added to the `gateway_ros2` STATIC library target in CMakeLists.txt.
 - **Flag** any `#include <rclcpp/...>` or message-package include in a file under `core/` - the layer must stay middleware-neutral. The `gateway_core_purity` linter and `test_gateway_core_smoke` link test enforce this; do not paper over their failures.
 - **Flag** new test targets that don't link to `gateway_ros2` (the default), unless the test is intentionally a core-only smoke test linking `gateway_core` directly.
-- **Flag** use of `ament_target_dependencies()` - use `medkit_target_dependencies()` instead (removed in Rolling).
+- **Flag** use of `ament_target_dependencies()` - use `medkit_target_dependencies()` instead (deprecated in Kilted, removed in ament_cmake 2.8.5+ which Lyrical ships).
 - **Flag** direct `find_package(yaml-cpp)` or `find_package(httplib)` - use `medkit_find_yaml_cpp()` / `medkit_find_cpp_httplib()` for multi-distro compatibility.
 
 ### Documentation

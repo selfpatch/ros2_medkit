@@ -8,9 +8,10 @@ The gateway's original ``NativeTopicSampler`` created a short-lived
 ``rclcpp::GenericSubscription`` for every ``/data`` sample call. Under concurrent
 HTTP load, multiple cpp-httplib handler threads invoked
 ``Node::create_generic_subscription()`` on the same node, racing inside rcl's
-internal hash map and corrupting its linked entries. The symptom was a Rolling
-SIGSEGV in ``test_data_read`` (issue #375) and intermittent non-deterministic
-crashes on sample-heavy deployments.
+internal hash map and corrupting its linked entries. The symptom was a SIGSEGV
+in ``test_data_read`` (issue #375, first reproduced on the Rolling distro that
+later became Lyrical) and intermittent non-deterministic crashes on sample-heavy
+deployments.
 
 This document describes the replacement architecture: a single-writer
 subscription executor, a RAII slot handle, and a per-topic pool.
@@ -92,7 +93,7 @@ Public API (summary):
 Graph change detection uses the public ``rclcpp::Node::get_graph_event()`` API
 and a wall timer polling ``event->check_and_clear()`` on the subscription
 node. Internal ``GraphListener`` is intentionally avoided - it is not a stable
-public API across Humble / Jazzy / Rolling.
+public API across Humble / Jazzy / Lyrical Luth.
 
 Shutdown drains the queue: the worker processes any already-enqueued tasks so
 pending ``run_sync`` promises are fulfilled before the worker exits. Bounded
@@ -226,8 +227,8 @@ executor::
     node.reset();                // ~GatewayNode with executor still alive
     rclcpp::shutdown();
 
-``remove_node`` + explicit ``node.reset()`` are required on rolling / newer
-jazzy: rclcpp aborts with ``Node ... needs to be associated with an executor``
+``remove_node`` + explicit ``node.reset()`` are required on Lyrical / newer
+Jazzy: rclcpp aborts with ``Node ... needs to be associated with an executor``
 if ``~GatewayNode`` touches a service client while stack-unwind has already
 destroyed the executor.
 

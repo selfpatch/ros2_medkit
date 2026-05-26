@@ -5,7 +5,8 @@
 # callback-group creation APIs from gateway and fault_manager code outside
 # `ros2_common/` is forbidden because it bypasses Ros2SubscriptionExecutor's
 # serial worker (or fault_manager's LockedSubscriptionGuard) and reintroduces
-# the rcl hash-map race that triggered SIGSEGV on Rolling.
+# the rcl hash-map race that triggered SIGSEGV on Rolling (still applicable
+# on Lyrical and any future distro that ships the same rcl hash-map code).
 #
 # Callers in the gateway must go through:
 #   ros2_medkit_gateway::ros2_common::Ros2SubscriptionSlot::create_typed / create_generic

@@ -303,7 +303,7 @@ class Ros2SubscriptionExecutor final {
   std::array<int, kMaxGraphListeners> graph_in_flight_{};
   std::condition_variable graph_in_flight_cv_;
 
-  // Public rclcpp graph API - stable across Humble / Jazzy / Rolling
+  // Public rclcpp graph API - stable across Humble / Jazzy / Lyrical
   rclcpp::Event::SharedPtr graph_event_;
 
   // Dedicated auxiliary thread driving the watchdog and graph-event polling.

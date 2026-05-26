@@ -271,7 +271,7 @@ providing access to gateway data and utilities:
      ``create_generic_subscription()``, or ``create_callback_group()``
      directly on this node. Issue #375 showed that concurrent rcl
      mutations on the gateway node race its internal hash map and
-     SIGSEGV under load on Rolling. The regression gate in
+     SIGSEGV under load on Rolling/Lyrical. The regression gate in
      ``scripts/check_no_naked_subscriptions.sh`` is run in CI and will
      fail PRs that add such calls outside the allowlist. Use
      ``ros2_medkit_gateway::ros2_common::Ros2SubscriptionSlot::create_typed``

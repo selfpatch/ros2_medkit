@@ -35,9 +35,10 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
 ParameterBeaconPlugin::~ParameterBeaconPlugin() noexcept {
-  // On Rolling, ~rclcpp::Node can throw graph_listener::NodeNotFoundError
-  // once rclcpp::shutdown() has invalidated the context. An exception
-  // escaping a destructor calls std::terminate(), so swallow it here.
+  // On Lyrical (originally observed on Rolling), ~rclcpp::Node can throw
+  // graph_listener::NodeNotFoundError once rclcpp::shutdown() has invalidated
+  // the context. An exception escaping a destructor calls std::terminate(),
+  // so swallow it here.
   try {
     shutdown();
   } catch (...) {
@@ -157,8 +158,8 @@ void ParameterBeaconPlugin::shutdown() {
     backoff_counts_.clear();
     skip_remaining_.clear();
   }
-  // ~rclcpp::Node can throw graph_listener::NodeNotFoundError on Rolling
-  // when the context was already torn down by rclcpp::shutdown(). Swallow
+  // ~rclcpp::Node can throw graph_listener::NodeNotFoundError on Lyrical
+  // (and Rolling) when the context was already torn down by rclcpp::shutdown(). Swallow
   // it so the plugin_manager shutdown sequence (and the plugin destructor
   // that calls back into us) does not abort the process.
   try {

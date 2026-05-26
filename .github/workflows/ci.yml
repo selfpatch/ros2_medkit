@@ -15,8 +15,8 @@ jobs:
         include:
           - ros_distro: humble
             os_image: ubuntu:jammy
-          - ros_distro: rolling
-            os_image: ubuntu:noble
+          - ros_distro: lyrical
+            os_image: ubuntu:resolute
     container:
       image: ${{ matrix.os_image }}
     timeout-minutes: 60
@@ -58,11 +58,12 @@ jobs:
           fi
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
-          # Linters (clang-tidy / clang-format) are gated to the Jazzy lint job
-          # in quality.yml, but multiple package.xml files still list them as
-          # <test_depend>. Their rosdep keys are not registered for noble
-          # (Rolling), which breaks rosdep install on that runner. Skip them
-          # on every distro this workflow targets - the linters never run here.
+          # Linters (clang-tidy / clang-format) only run in the Jazzy quality
+          # job (quality.yml). Multiple package.xml files still list them as
+          # <test_depend>, so we skip the rosdep keys here to keep build-and-
+          # test runners from pulling in linter packages they never use. Also
+          # defensive against transient binary-deb gaps on newly-released
+          # distros.
           rosdep install --from-paths src --ignore-src -y \
             --skip-keys "ament_cmake_clang_tidy ament_cmake_clang_format"
 
@@ -85,10 +86,11 @@ jobs:
           # FastRTPS 2.6 on Humble has a known use-after-free in the
           # discovery-teardown path (EDP::unpairWriterProxy) that segfaults
           # peer nodes when the gateway shuts down, so we force CycloneDDS
-          # there. Rolling + Jazzy ship a newer FastRTPS without that bug
-          # and hit a separate iceoryx-shared-memory crash under CycloneDDS
-          # during shutdown ("string capacity was zero for allocated data"),
-          # so on those distros we keep the default FastRTPS.
+          # there. Lyrical ships a newer FastRTPS without that bug and hits
+          # a separate iceoryx-shared-memory crash under CycloneDDS during
+          # shutdown ("string capacity was zero for allocated data"), so on
+          # Lyrical we keep the default FastRTPS. (Jazzy still uses
+          # CycloneDDS - see jazzy-test job below for its rationale.)
           RMW_IMPLEMENTATION: ${{ matrix.ros_distro == 'humble' && 'rmw_cyclonedds_cpp' || '' }}
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash

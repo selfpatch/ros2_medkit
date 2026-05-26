@@ -43,9 +43,9 @@ jobs:
             os_image: ubuntu:jammy
           - ros_distro: jazzy
             os_image: ubuntu:noble
-          - ros_distro: rolling
-            os_image: ubuntu:noble
-    continue-on-error: ${{ matrix.ros_distro == 'rolling' }}
+          - ros_distro: lyrical
+            os_image: ubuntu:resolute
+    continue-on-error: ${{ matrix.ros_distro == 'lyrical' }}
     container:
       image: ${{ matrix.os_image }}
     timeout-minutes: 60
@@ -84,8 +84,8 @@ jobs:
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           rosdep update
           # Skip nav2_msgs (vda5050_agent declares it; not available on all
-          # distros) and the linter rosdep keys. The clang_format / clang_tidy
-          # keys are not registered for noble (Rolling), and the upstream
+          # distros) and the linter rosdep keys. Linters only run in the Jazzy
+          # quality job, so we don't need them installed here. The upstream
           # medkit packages have already been switched to QUIET + FOUND for
           # those find_package calls so the build degrades gracefully without
           # the linter packages installed.

@@ -44,7 +44,7 @@ inline rclcpp::Logger opcua_client_logger() {
 // Pre-gate for traces whose stream-build cost is non-trivial (e.g. per-arg
 // loops). RCLCPP_DEBUG_STREAM constructs the std::stringstream
 // unconditionally, so for hot paths we check the effective level first.
-// Uses the rcutils-level API (available in Humble through Rolling) instead
+// Uses the rcutils-level API (available in Humble through Lyrical) instead
 // of rclcpp::Logger::get_effective_level (Jazzy+ only).
 inline bool client_debug_enabled() {
   return rcutils_logging_logger_is_enabled_for("opcua.client", RCUTILS_LOG_SEVERITY_DEBUG);

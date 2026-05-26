@@ -17,7 +17,7 @@
 # =============================================================================
 #
 # Centralizes all dependency resolution workarounds for supporting multiple
-# ROS 2 distributions (Humble, Jazzy, Rolling) in a single place.
+# ROS 2 distributions (Humble, Jazzy, Lyrical) in a single place.
 #
 # Usage (in each package's CMakeLists.txt):
 #   find_package(ros2_medkit_cmake REQUIRED)
@@ -31,7 +31,7 @@
 #   medkit_target_dependencies(target ...) - Drop-in ament_target_dependencies replacement
 #
 # Variables set by medkit_detect_compat_defs():
-#   MEDKIT_RCLCPP_VERSION_MAJOR     — integer (e.g., 16 for Humble, 28 for Jazzy)
+#   MEDKIT_RCLCPP_VERSION_MAJOR     — integer (16=Humble, 28=Jazzy, 32+=Lyrical)
 #   MEDKIT_ROSBAG2_OLD_TIMESTAMP    — ON if rosbag2_storage < 0.22.0 (Humble)
 #
 
@@ -40,9 +40,11 @@ include_guard(GLOBAL)
 # ---------------------------------------------------------------------------
 # medkit_find_yaml_cpp()
 # ---------------------------------------------------------------------------
-# Jazzy's yaml_cpp_vendor exports a namespaced yaml-cpp::yaml-cpp cmake target.
-# Humble's yaml_cpp_vendor bundles yaml-cpp but does NOT export the cmake target.
-# This macro creates an IMPORTED INTERFACE target when find_package doesn't.
+# Jazzy's and Lyrical's yaml_cpp_vendor export a namespaced yaml-cpp::yaml-cpp
+# cmake target (Jazzy directly; Lyrical via its Findyaml-cpp.cmake module that
+# aliases the upstream yaml-cpp 0.8+ target). Humble's yaml_cpp_vendor bundles
+# yaml-cpp but does NOT export the cmake target. This macro creates an IMPORTED
+# INTERFACE target when find_package doesn't.
 #
 # Prerequisite: find_package(yaml_cpp_vendor REQUIRED) must be called before.
 # ---------------------------------------------------------------------------
@@ -120,7 +122,7 @@ endmacro()
 # Call AFTER find_package(rclcpp) and optionally find_package(rosbag2_storage).
 #
 # Sets:
-#   MEDKIT_RCLCPP_VERSION_MAJOR  — integer (16=Humble, 21+=Iron, 28+=Jazzy)
+#   MEDKIT_RCLCPP_VERSION_MAJOR  — integer (16=Humble, 21+=Iron, 28+=Jazzy, 32+=Lyrical)
 #   MEDKIT_ROSBAG2_OLD_TIMESTAMP — ON if rosbag2_storage < 0.22.0 (Humble)
 # ---------------------------------------------------------------------------
 macro(medkit_detect_compat_defs)
@@ -166,11 +168,14 @@ endfunction()
 # ---------------------------------------------------------------------------
 # medkit_target_dependencies(target [PUBLIC|PRIVATE|INTERFACE] dep1 dep2 ...)
 # ---------------------------------------------------------------------------
-# Drop-in replacement for ament_target_dependencies that works on Rolling
-# (where ament_target_dependencies was removed from ament_cmake).
+# Drop-in replacement for ament_target_dependencies that works on Lyrical
+# (ament_target_dependencies was deprecated in Kilted / ament_cmake 2.7.3
+# and removed in ament_cmake 2.8.5+, which Lyrical ships).
 #
 # On Humble/Jazzy: delegates to ament_target_dependencies (available).
-# On Rolling:      uses target_link_libraries with ${dep_TARGETS}.
+# On Lyrical:      uses target_link_libraries with ${dep_TARGETS}.
+# The branch is selected at runtime via if(COMMAND ament_target_dependencies)
+# so any future distro keeps working regardless of where the removal lands.
 #
 # When no visibility keyword (PUBLIC/PRIVATE/INTERFACE) is passed, the macro
 # uses the plain target_link_libraries signature. This avoids conflicts with
@@ -185,7 +190,7 @@ macro(medkit_target_dependencies target)
   if(COMMAND ament_target_dependencies)
     ament_target_dependencies(${target} ${ARGN})
   else()
-    # Rolling fallback: resolve dependency targets explicitly.
+    # Lyrical fallback: resolve dependency targets explicitly.
     #
     # CMake forbids mixing the "plain" and "keyword" (PUBLIC/PRIVATE/INTERFACE)
     # signatures of target_link_libraries on the same target.

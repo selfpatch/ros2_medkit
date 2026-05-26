@@ -52,9 +52,9 @@ import launch_testing
 import requests
 
 # Humble (Ubuntu 22.04) ships python3-jsonschema 3.2 which only has draft-7;
-# Jazzy/Rolling (Ubuntu 24.04) ship 4.10+ with Draft202012. Prefer the newest
-# draft for OpenAPI 3.1 alignment, fall back to Draft7 on Humble. The properties
-# we validate (required, type, properties) behave identically across drafts.
+# Jazzy (Ubuntu 24.04) / Lyrical Luth (Ubuntu 26.04) ship 4.10+ with Draft202012.
+# Prefer the newest draft for OpenAPI 3.1 alignment, fall back to Draft7 on Humble.
+# The properties we validate (required, type, properties) behave identically across drafts.
 try:
     from jsonschema.validators import Draft202012Validator as _Validator
 except ImportError:

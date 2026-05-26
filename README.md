@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue)](https://docs.ros.org/en/jazzy/)
 [![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)](https://docs.ros.org/en/humble/)
-[![ROS 2 Rolling](https://img.shields.io/badge/ROS%202-Rolling-orange)](https://docs.ros.org/en/rolling/)
+[![ROS 2 Lyrical Luth](https://img.shields.io/badge/ROS%202-Lyrical%20Luth-blue)](https://docs.ros.org/en/lyrical/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 [![Quality Level 3](https://img.shields.io/badge/Quality-Level%203-yellow)](QUALITY_DECLARATION.md)
 
@@ -42,7 +42,7 @@ cd selfpatch_demos/demos/turtlebot3_integration
 
 Open `http://localhost:3000` in your browser. You will see a TurtleBot3 with Nav2, organized into a browsable entity tree with live faults, topic data, and parameter access.
 
-**Build from source** (ROS 2 Jazzy, Humble, or Rolling):
+**Build from source** (ROS 2 Jazzy, Humble, or Lyrical Luth):
 
 ```bash
 source /opt/ros/jazzy/setup.bash   # or humble - adjust for your distro
@@ -148,8 +148,8 @@ This entity model follows the **SOVD (Service-Oriented Vehicle Diagnostics)** st
 
 ## 📋 Requirements
 
-- **OS:** Ubuntu 24.04 LTS (Jazzy / Rolling) or Ubuntu 22.04 LTS (Humble)
-- **ROS 2:** Jazzy Jalisco, Humble Hawksbill, or Rolling (experimental)
+- **OS:** Ubuntu 26.04 LTS (Resolute Raccoon, for Lyrical Luth), Ubuntu 24.04 LTS (Noble, for Jazzy), or Ubuntu 22.04 LTS (Jammy, for Humble)
+- **ROS 2:** Jazzy Jalisco, Humble Hawksbill, or Lyrical Luth (LTS, released May 2026)
 - **Compiler:** GCC 11+ (C++17 support)
 - **Build System:** colcon + ament_cmake
 

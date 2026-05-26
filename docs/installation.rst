@@ -2,7 +2,7 @@ Installation
 ============
 
 This guide covers installation of ros2_medkit on Ubuntu 24.04 with ROS 2 Jazzy,
-Ubuntu 22.04 with ROS 2 Humble, or Ubuntu 24.04 with ROS 2 Rolling.
+Ubuntu 22.04 with ROS 2 Humble, or Ubuntu 26.04 with ROS 2 Lyrical Luth.
 
 System Requirements
 -------------------
@@ -14,25 +14,25 @@ System Requirements
    * - Requirement
      - Version
    * - Operating System
-     - Ubuntu 24.04 LTS (Noble) or Ubuntu 22.04 LTS (Jammy)
+     - Ubuntu 26.04 LTS (Resolute), Ubuntu 24.04 LTS (Noble), or Ubuntu 22.04 LTS (Jammy)
    * - ROS 2 Distribution
-     - Jazzy, Humble, or Rolling
+     - Jazzy, Humble, or Lyrical Luth
    * - C++ Compiler
      - GCC 11+ (C++17 support required)
    * - CMake
      - 3.22+
    * - Python
-     - 3.10+ (Humble) / 3.12+ (Jazzy / Rolling)
+     - 3.10+ (Humble) / 3.12+ (Jazzy) / 3.14+ (Lyrical Luth)
 
 Prerequisites
 -------------
 
-**ROS 2 Jazzy, Humble, or Rolling** must be installed and sourced. Follow the official installation guide
+**ROS 2 Jazzy, Humble, or Lyrical Luth** must be installed and sourced. Follow the official installation guide
 for your distribution:
 
 - Jazzy: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
 - Humble: https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
-- Rolling: https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html
+- Lyrical Luth: https://docs.ros.org/en/lyrical/Installation/Ubuntu-Install-Debs.html
 
 .. note::
 
@@ -136,8 +136,8 @@ ROS 2 distributions:
    # Humble
    docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-humble:latest
 
-   # Rolling
-   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-rolling:latest
+   # Lyrical Luth
+   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-lyrical:latest
 
 The gateway will be available at http://localhost:8080/api/v1/health.
 

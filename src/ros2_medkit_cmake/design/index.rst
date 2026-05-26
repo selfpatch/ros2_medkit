@@ -41,7 +41,7 @@ The package provides four CMake modules installed to the ament index:
    - ``medkit_find_cpp_httplib()`` - Finds cpp-httplib >= 0.14 via pkg-config, cmake config, or vendored fallback (``VENDORED_DIR`` param)
    - ``medkit_detect_compat_defs()`` - Detects rclcpp and rosbag2 versions, sets ``MEDKIT_RCLCPP_VERSION_MAJOR`` and ``MEDKIT_ROSBAG2_OLD_TIMESTAMP``
    - ``medkit_apply_compat_defs(target)`` - Applies compile definitions based on detected versions
-   - ``medkit_target_dependencies(target ...)`` - Drop-in replacement for ``ament_target_dependencies`` that also works on Rolling (where ``ament_target_dependencies`` was removed)
+   - ``medkit_target_dependencies(target ...)`` - Drop-in replacement for ``ament_target_dependencies`` that also works on Lyrical (where ``ament_target_dependencies`` was removed)
 
 Design Decisions
 ----------------
@@ -60,5 +60,5 @@ Multi-Distro Strategy
 
 Rather than maintaining separate branches per ROS 2 distribution, the compat
 module detects version numbers at configure time and adapts. This keeps a single
-source tree building on Humble, Jazzy, and Rolling without ``#ifdef`` proliferation
+source tree building on Humble, Jazzy, and Lyrical Luth without ``#ifdef`` proliferation
 in application code.

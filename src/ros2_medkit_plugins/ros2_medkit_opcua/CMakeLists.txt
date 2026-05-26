@@ -133,9 +133,9 @@ if(BUILD_TESTING)
   )
   ament_lint_auto_find_test_dependencies()
 
-  # ci.yml skips the ament_cmake_clang_format rosdep key on Humble + Rolling
-  # (linters only run in the Jazzy quality job), so QUIET + FOUND check
-  # avoids hard-failing on those runners.
+  # ci.yml skips the ament_cmake_clang_format rosdep key in the build-and-test
+  # job (linters only run in the Jazzy quality job), so QUIET + FOUND check
+  # avoids hard-failing when the package is not installed.
   find_package(ament_cmake_clang_format QUIET)
   if(ament_cmake_clang_format_FOUND)
     file(GLOB_RECURSE _format_files

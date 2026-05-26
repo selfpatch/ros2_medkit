@@ -138,7 +138,7 @@ if(BUILD_TESTING)
 
   # Configure clang-format manually for non-vendored files only.
   # ament_cmake_clang_format is intentionally only installed in the Jazzy
-  # quality job (ci.yml skips its rosdep key on Humble + Rolling), so use
+  # quality job (ci.yml skips its rosdep key in the build-and-test job), so use
   # QUIET + FOUND check instead of REQUIRED to gracefully degrade on the
   # build-and-test runners without breaking the build.
   find_package(ament_cmake_clang_format QUIET)

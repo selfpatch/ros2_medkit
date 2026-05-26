@@ -80,7 +80,7 @@ int main(int argc, char ** argv) {
     // Stand up the ROS 2 subscription executor + topic data provider.
     // Issue #375: all subscription create/destroy calls are funneled through the
     // serial worker owned by sub_exec, eliminating the rcl hash-map race that
-    // previously killed /data on Rolling when concurrent HTTP handler threads
+    // previously killed /data on Rolling (now Lyrical) when concurrent HTTP handler threads
     // created subscriptions on the same node.
     const auto exec_cfg = declare_executor_config(*node);
     const auto dp_cfg = declare_data_provider_config(*node);
@@ -104,7 +104,7 @@ int main(int argc, char ** argv) {
 
     // Teardown order (issue #375): stack-unwind destructs executor before node
     // which leaves ~GatewayNode running against a dead executor. Newer rclcpp
-    // (rolling; recent jazzy patch releases) asserts 'node needs to be
+    // (Lyrical; recent Jazzy patch releases) asserts 'node needs to be
     // associated with an executor' and aborts with exit -6 when the managers'
     // shutdown paths touch service clients. Explicit teardown avoids that:
     //   1. detach the provider from GatewayNode so the managers stop using it
