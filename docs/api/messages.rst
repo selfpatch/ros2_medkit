@@ -210,7 +210,8 @@ Clear/acknowledge a fault.
 
 .. code-block:: text
 
-   string fault_code   # Fault code to clear
+   string fault_code                # Fault code to clear
+   bool   skip_correlation_auto_clear  # Opt out of correlation cascade clear
 
 **Response:**
 
@@ -219,6 +220,26 @@ Clear/acknowledge a fault.
    bool success            # True if fault was found and cleared
    string message          # Status message or error description
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
+
+When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a
+root-cause fault also clears every symptom that the correlation engine
+attributes to it via ``auto_clear_with_root`` rules; the cleared
+symptom codes are returned in ``auto_cleared_codes``. When ``true``,
+only the requested ``fault_code`` is cleared and ``auto_cleared_codes``
+is empty. The gateway's per-entity ``DELETE
+/{entity-path}/faults/{fault_code}`` route sets this to ``true`` so
+that an operator with access to one entity cannot cascade-clear
+correlated symptoms reported by apps in other entities. The global
+``DELETE /api/v1/faults/{fault_code}`` route leaves it ``false`` so
+cluster-wide clearing still works.
+
+.. note::
+
+   Added in ``ros2_medkit_msgs`` post-0.4.0. Adding a request field
+   changes the service type hash, so out-of-tree callers that invoke
+   ``/fault_manager/clear_fault`` directly via ``ros2 service call`` or
+   a generated client must rebuild against the new ``ros2_medkit_msgs``
+   release to keep talking to ``fault_manager``.
 
 ListFaults.srv
 ~~~~~~~~~~~~~~

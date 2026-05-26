@@ -24,10 +24,16 @@ ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
 ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
   "{statuses: ['CONFIRMED']}"
 
-# Clear a fault
+# Clear a fault (cascade-clears correlated symptoms by default)
 ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
-  "{fault_code: 'MOTOR_OVERHEAT'}"
+  "{fault_code: 'MOTOR_OVERHEAT', skip_correlation_auto_clear: false}"
+
+# Clear without touching correlated symptoms
+ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
+  "{fault_code: 'MOTOR_OVERHEAT', skip_correlation_auto_clear: true}"
 ```
+
+> **Note:** The `skip_correlation_auto_clear` request field was added post-0.4.0. Adding a request field changes the service type hash, so callers built against `ros2_medkit_msgs` 0.4.0 or earlier must rebuild to keep talking to `fault_manager`.
 
 ## Services
 
