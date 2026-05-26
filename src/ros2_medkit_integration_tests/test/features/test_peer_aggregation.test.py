@@ -104,6 +104,11 @@ def generate_test_description():
             'server.port': PEER_PORT,
         }],
         additional_env=peer_domain_env,
+        # Match create_gateway_node()'s TSan/ASan-safe shutdown windows.
+        # Default 5s SIGINT->SIGTERM escalation is insufficient under
+        # sanitizers and causes SIGKILL with exit -9.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     # Demo nodes: each set runs in its gateway's DDS domain.

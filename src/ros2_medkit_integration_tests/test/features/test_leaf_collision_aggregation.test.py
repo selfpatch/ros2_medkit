@@ -138,6 +138,12 @@ def _gateway(port, name, manifest_path, domain, aggregation_peers=None):
         output='screen',
         parameters=[params],
         additional_env={'ROS_DOMAIN_ID': str(domain)},
+        # Match create_gateway_node()'s TSan/ASan-safe shutdown windows.
+        # Under sanitizers the gateway teardown sequence (mdns stop, REST
+        # server stop, transport shutdown, plugin shutdown) routinely
+        # exceeds launch's 5s default, causing SIGKILL with exit -9.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
 

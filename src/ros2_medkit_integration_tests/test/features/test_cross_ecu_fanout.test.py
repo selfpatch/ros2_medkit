@@ -198,6 +198,11 @@ def generate_test_description():
             'discovery.manifest_strict_validation': False,
         }],
         additional_env=peer_domain_env,
+        # Match create_gateway_node()'s TSan/ASan-safe shutdown windows.
+        # Default 5s SIGINT->SIGTERM escalation is insufficient under
+        # sanitizers and causes SIGKILL with exit -9.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     primary_fault_mgr = launch_ros.actions.Node(
