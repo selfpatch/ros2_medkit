@@ -270,6 +270,10 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
   if (fault.reporting_sources.empty()) {
     return std::nullopt;
   }
+  // reporting_sources is a set; debounced faults can carry several co-reporters
+  // (e.g. node_a and node_b raising the same fault_code). .front() picks the
+  // lexicographically-first FQN, not a defined owner - any co-reporter's
+  // rosbag is fetchable, so this remains a valid hint, just not authoritative.
   const auto & raw_fqn = fault.reporting_sources.front();
   if (raw_fqn.empty()) {
     return std::nullopt;
@@ -316,6 +320,12 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
     return std::nullopt;
   }
 
+  // entity_type is hardcoded "apps" because apps are the leaf reporters in
+  // SOVD - reporting_sources always carries ROS node FQNs which map to apps.
+  // Components own faults transitively via their hosted apps; consumers can
+  // walk up the hierarchy via /apps/<id> -> belongs_to if they need the
+  // owning component. Manifest-only components without a bound node have no
+  // FQN match here and fall back to plain discovery - by design.
   return EntityContext{"apps", std::move(entity_id)};
 }
 

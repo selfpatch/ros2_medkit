@@ -170,8 +170,15 @@ class SSEFaultHandlerTest : public ::testing::Test {
     int server_port = reserve_local_port();
     ASSERT_NE(server_port, 0);
 
+    // Per-test fault_manager namespace gives every TEST_F a unique events
+    // topic (/test<N>/fault_manager/events). Without this, all tests share
+    // /fault_manager/events, so a stale publisher/subscription in the same
+    // DDS domain could leak messages across tests when the suite is run
+    // alongside other gateway test binaries.
+    const int test_id = test_counter_++;
     auto options = rclcpp::NodeOptions{}.automatically_declare_parameters_from_overrides(false).parameter_overrides({
         {"server.port", server_port},
+        {"fault_manager.namespace", "test" + std::to_string(test_id)},
     });
 
     node_ = std::make_shared<GatewayNode>(options);
@@ -184,8 +191,7 @@ class SSEFaultHandlerTest : public ::testing::Test {
     tracker_ = std::make_shared<SSEClientTracker>(4);
     handler_ = std::make_unique<SSEFaultHandler>(*ctx_, tracker_);
 
-    publisher_node_ =
-        std::make_shared<rclcpp::Node>("test_sse_fault_handler_publisher_" + std::to_string(test_counter_++));
+    publisher_node_ = std::make_shared<rclcpp::Node>("test_sse_fault_handler_publisher_" + std::to_string(test_id));
     fault_events_topic_ = ros2_medkit_gateway::build_fault_manager_events_topic(node_.get());
     publisher_ = publisher_node_->create_publisher<FaultEvent>(fault_events_topic_, rclcpp::QoS(100).reliable());
 
@@ -496,6 +502,46 @@ TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForManifestApp) {
   ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
   EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
   EXPECT_EQ(payload["x-medkit"]["entity_id"], "diagnostic-bridge");
+
+  release_stream(res);
+}
+
+TEST_F(SSEFaultHandlerTest, StreamPrefersManifestMatchOverRuntimeFallback) {
+  // Manifest match must win over the runtime heuristic when both could apply
+  // to the same FQN. Seed both: (1) a manifest node_to_app entry mapping
+  // "/bridge/diagnostic_bridge" -> "manifest-bridge", and (2) a runtime-style
+  // App whose id matches the FQN's last segment ("diagnostic_bridge"). The
+  // resolver tries manifest first - if anyone ever flips the ordering, the
+  // x-medkit emits the runtime id and this test catches it.
+  App manifest_app;
+  manifest_app.id = "manifest-bridge";
+  manifest_app.name = "diagnostic_bridge";
+  manifest_app.source = "manifest";
+  manifest_app.bound_fqn = "/bridge/diagnostic_bridge";
+
+  App runtime_app;
+  runtime_app.id = "diagnostic_bridge";
+  runtime_app.name = "diagnostic_bridge";
+  runtime_app.source = "heuristic";
+  runtime_app.bound_fqn = "/bridge/diagnostic_bridge";
+
+  std::unordered_map<std::string, std::string> node_to_app{{"/bridge/diagnostic_bridge", "manifest-bridge"}};
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {manifest_app, runtime_app}, {}, node_to_app);
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "PRECEDENCE", 35);
+  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto output = read_stream_once(res, 1);
+  auto payload = parse_sse_payload(output);
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "manifest-bridge");
 
   release_stream(res);
 }
