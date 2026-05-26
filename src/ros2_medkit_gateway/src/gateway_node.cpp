@@ -1537,7 +1537,26 @@ GatewayNode::~GatewayNode() {
   if (config_mgr_) {
     config_mgr_->shutdown();
   }
-  // 9. Normal member destruction (managers safe - all transports stopped)
+  // 9. Cancel the graph timers and drop our graph_event_ reference before
+  //    any other member destruction begins. rclcpp's graph listener thread
+  //    holds shared_ptrs to all registered graph events (graph_events_ in
+  //    NodeGraph) and may concurrently iterate them via notify_graph_change()
+  //    while we're tearing down. TSan flagged a Write/Read race on the
+  //    Event's control block between that thread and our shared_ptr release
+  //    during automatic member destruction (see TestGatewayNode TSan run).
+  //    Doing the reset here gives the timer a chance to drain before its
+  //    [this]-captured graph_event_ disappears, and shrinks the window where
+  //    the graph listener can still see a live shared_ptr from us.
+  if (graph_check_timer_) {
+    graph_check_timer_->cancel();
+    graph_check_timer_.reset();
+  }
+  if (backstop_timer_) {
+    backstop_timer_->cancel();
+    backstop_timer_.reset();
+  }
+  graph_event_.reset();
+  // 10. Normal member destruction (managers safe - all transports stopped)
 }
 
 const ThreadSafeEntityCache & GatewayNode::get_thread_safe_cache() const {

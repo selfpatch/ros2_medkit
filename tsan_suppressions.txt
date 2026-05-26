@@ -41,6 +41,16 @@ called_from_lib:libcpp-httplib.so
 # test teardown when executor threads race with node destruction.
 mutex:__gthread_mutex_unlock
 
+# rclcpp: NodeGraph::notify_graph_change() iterates the per-context vector
+# of graph events (held as Event::WeakPtr) from the graph listener thread
+# while a node is being destroyed in another thread, racing on the Event's
+# shared_ptr control block. Triggered by TestGatewayNode where many nodes
+# are created/destroyed in sequence while the per-process GraphListener
+# keeps running. We already reset graph_event_ before automatic member
+# destruction (see ~GatewayNode); this suppression covers the remaining
+# library-side window we cannot tighten without changing rclcpp.
+race:rclcpp::node_interfaces::NodeGraph::notify_graph_change
+
 
 # rclcpp: lock-order-inversion in Context::add_on_shutdown_callback
 # during test TearDownTestSuite when rclcpp::shutdown() races with
