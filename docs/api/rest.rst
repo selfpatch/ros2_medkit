@@ -638,6 +638,23 @@ Query and manage faults.
    Faults are reported by ROS 2 nodes via the FaultReporter library, not via REST API.
    The gateway queries faults from the ros2_medkit_fault_manager node.
 
+.. note::
+
+   **Per-entity fault scope (``/{entity-path}/faults`` routes).** The gateway keys
+   faults by ``fault_code`` only, and a fault's ``reporting_sources`` set is the
+   union of every app that has reported that code. Per-entity routes apply a
+   strict all-sources scope check: a fault is in scope for an entity iff **every**
+   entry in ``reporting_sources`` is an app owned by that entity (exact FQN
+   match, or strict path-child).
+
+   This means a ``fault_code`` reported by apps in two different entities
+   (for example ``SENSOR_TIMEOUT`` reported by both the lidar and the
+   temperature sensor app) is **not** visible or clearable through either
+   entity's per-entity routes - per-fault routes return ``404``, collection
+   responses omit it, and per-entity ``DELETE`` skips it. To see, list, or
+   clear such shared faults use the global ``GET /api/v1/faults`` /
+   ``DELETE /api/v1/faults`` routes.
+
 ``GET /api/v1/faults``
    List all faults across the system.
 

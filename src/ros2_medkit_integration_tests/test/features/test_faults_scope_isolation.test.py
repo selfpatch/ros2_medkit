@@ -41,7 +41,19 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 LIDAR_FAULT_CODE = 'LIDAR_RANGE_INVALID'
 LIDAR_OWNER_COMPONENT = 'lidar-unit'
+LIDAR_REPORTING_APP_FQN = '/perception/lidar/lidar_sensor'
 OTHER_COMPONENT = 'temp-sensor-hw'
+
+# JSON keys that only appear in the success-shape fault detail body
+# (FaultHandlers::build_sovd_fault_response). If any of these surface in a
+# 404 response body, the handler has switched the status code but is still
+# serializing the out-of-scope fault, defeating the non-disclosure property.
+LEAKED_BODY_KEYS = (
+    'item',
+    'environment_data',
+    'reporting_sources',
+    'snapshots',
+)
 
 
 def generate_test_description():
@@ -90,6 +102,29 @@ class TestFaultsScopeIsolation(GatewayTestCase):
         # owning app before exercising the per-component routes.
         self.wait_for_fault('/apps/lidar-sensor', LIDAR_FAULT_CODE)
 
+    def assert_body_does_not_leak_fault(self, response):
+        """Assert a 404 response body carries no out-of-scope fault detail.
+
+        The security property under test is non-disclosure: a regression
+        that returns 404 while still serializing the fault snapshot would
+        leak environment data, snapshots, and the owning app's FQN. Check
+        both the SOVD success-shape JSON keys and the raw owner-FQN string
+        so a future shape change cannot silently re-introduce the leak.
+        """
+        body_text = response.text
+        body_json = response.json()
+        for key in LEAKED_BODY_KEYS:
+            self.assertNotIn(
+                key, body_json,
+                f'404 body must not carry success-shape key {key!r}: '
+                f'body={body_text}',
+            )
+        self.assertNotIn(
+            LIDAR_REPORTING_APP_FQN, body_text,
+            f'404 body must not disclose the out-of-scope reporting app FQN '
+            f'{LIDAR_REPORTING_APP_FQN!r}: body={body_text}',
+        )
+
     def test_get_fault_returns_404_on_unrelated_component(self):
         """GET on a different component must not return another entity's fault.
 
@@ -103,6 +138,7 @@ class TestFaultsScopeIsolation(GatewayTestCase):
             response.status_code, 404,
             f'Expected 404, got {response.status_code} body={response.text}',
         )
+        self.assert_body_does_not_leak_fault(response)
 
     def test_get_fault_returns_200_on_owning_component(self):
         """GET on the component that hosts the reporting app must return the fault.
@@ -127,6 +163,7 @@ class TestFaultsScopeIsolation(GatewayTestCase):
             response.status_code, 404,
             f'Expected 404, got {response.status_code} body={response.text}',
         )
+        self.assert_body_does_not_leak_fault(response)
 
         # Verify the fault is still present on the owning app afterwards.
         listing = self.get_json('/apps/lidar-sensor/faults')
