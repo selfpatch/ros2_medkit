@@ -93,7 +93,7 @@ Public API (summary):
 Graph change detection uses the public ``rclcpp::Node::get_graph_event()`` API
 and a wall timer polling ``event->check_and_clear()`` on the subscription
 node. Internal ``GraphListener`` is intentionally avoided - it is not a stable
-public API across Humble / Jazzy / Lyrical Luth.
+public API across Humble / Jazzy / Lyrical.
 
 Shutdown drains the queue: the worker processes any already-enqueued tasks so
 pending ``run_sync`` promises are fulfilled before the worker exits. Bounded

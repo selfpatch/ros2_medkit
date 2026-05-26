@@ -60,5 +60,5 @@ Multi-Distro Strategy
 
 Rather than maintaining separate branches per ROS 2 distribution, the compat
 module detects version numbers at configure time and adapts. This keeps a single
-source tree building on Humble, Jazzy, and Lyrical Luth without ``#ifdef`` proliferation
+source tree building on Humble, Jazzy, and Lyrical without ``#ifdef`` proliferation
 in application code.

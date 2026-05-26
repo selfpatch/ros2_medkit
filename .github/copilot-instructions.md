@@ -4,7 +4,7 @@
 
 **ros2_medkit** is a ROS 2 diagnostics gateway that exposes ROS 2 system information via a RESTful HTTP API aligned with the **SOVD (Service-Oriented Vehicle Diagnostics)** specification. It models robots as a diagnostic entity tree: **Area -> Component -> App**, with optional **Function** groupings.
 
-**Tech Stack**: C++17, ROS 2 Jazzy/Humble/Lyrical Luth, Ubuntu 26.04/24.04/22.04
+**Tech Stack**: C++17, ROS 2 Jazzy/Humble/Lyrical, Ubuntu 26.04/24.04/22.04
 
 ## Package Structure
 

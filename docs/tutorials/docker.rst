@@ -33,7 +33,7 @@ Images are available for all supported ROS 2 distributions:
      - ``ghcr.io/selfpatch/ros2_medkit-jazzy:latest``
    * - Humble
      - ``ghcr.io/selfpatch/ros2_medkit-humble:latest``
-   * - Lyrical Luth
+   * - Lyrical
      - ``ghcr.io/selfpatch/ros2_medkit-lyrical:latest``
 
 Each image includes the gateway and all open-core packages:

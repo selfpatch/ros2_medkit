@@ -107,7 +107,7 @@ Open `coverage_html/index.html` in your browser.
 
 #### CI/CD
 
-All PRs are tested on Ubuntu 24.04 (Jazzy) with parallel lint + test jobs, plus Humble and Lyrical Luth. Coverage is uploaded to Codecov on push to main. All CI jobs use ccache.
+All PRs are tested on Ubuntu 24.04 (Jazzy) with parallel lint + test jobs, plus Humble and Lyrical. Coverage is uploaded to Codecov on push to main. All CI jobs use ccache.
 
 ### Pull Request Checklist
 

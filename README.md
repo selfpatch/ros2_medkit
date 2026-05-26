@@ -42,7 +42,7 @@ cd selfpatch_demos/demos/turtlebot3_integration
 
 Open `http://localhost:3000` in your browser. You will see a TurtleBot3 with Nav2, organized into a browsable entity tree with live faults, topic data, and parameter access.
 
-**Build from source** (ROS 2 Jazzy, Humble, or Lyrical Luth):
+**Build from source** (ROS 2 Jazzy, Humble, or Lyrical):
 
 ```bash
 source /opt/ros/jazzy/setup.bash   # or humble - adjust for your distro
@@ -148,7 +148,7 @@ This entity model follows the **SOVD (Service-Oriented Vehicle Diagnostics)** st
 
 ## 📋 Requirements
 
-- **OS:** Ubuntu 26.04 LTS (Resolute Raccoon, for Lyrical Luth), Ubuntu 24.04 LTS (Noble, for Jazzy), or Ubuntu 22.04 LTS (Jammy, for Humble)
+- **OS:** Ubuntu 26.04 LTS (Resolute, for Lyrical), Ubuntu 24.04 LTS (Noble, for Jazzy), or Ubuntu 22.04 LTS (Jammy, for Humble)
 - **ROS 2:** Jazzy Jalisco, Humble Hawksbill, or Lyrical Luth (LTS, released May 2026)
 - **Compiler:** GCC 11+ (C++17 support)
 - **Build System:** colcon + ament_cmake
