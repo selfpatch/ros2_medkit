@@ -64,13 +64,18 @@ def generate_test_certificates(output_dir: str) -> dict:
     key_file = os.path.join(output_dir, 'key.pem')
     ca_file = os.path.join(output_dir, 'ca.pem')
 
-    # Generate CA key and certificate
+    # Generate CA key and certificate.
+    # `basicConstraints` + `keyUsage` are required by Python 3.14 / OpenSSL
+    # on Ubuntu 26.04 (Resolute) - omitting them triggers
+    # "CA cert does not include key usage extension" during HTTPS verify.
     subprocess.run([
         'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
         '-keyout', os.path.join(output_dir, 'ca_key.pem'),
         '-out', ca_file,
         '-days', '1', '-nodes',
-        '-subj', '/C=US/ST=Test/L=Test/O=Test/CN=TestCA'
+        '-subj', '/C=US/ST=Test/L=Test/O=Test/CN=TestCA',
+        '-addext', 'basicConstraints=critical,CA:TRUE',
+        '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
     ], check=True, capture_output=True)
 
     # Generate server key
