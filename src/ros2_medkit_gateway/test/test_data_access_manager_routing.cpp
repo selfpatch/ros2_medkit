@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -162,7 +163,10 @@ TEST(DataAccessManagerRoutingTest, NativeSampleAlwaysIncludesNanosecondTimestamp
   ASSERT_TRUE(with_data["timestamp"].is_number_integer());
   const auto ts_data = with_data["timestamp"].get<int64_t>();
   EXPECT_GT(ts_data, static_cast<int64_t>(1e18));  // would only ever be true for ns
-  EXPECT_LT(ts_data, static_cast<int64_t>(1e20));
+  // Upper bound stays inside int64_t range: 1e20 exceeds INT64_MAX and the
+  // narrowing cast is UB (gcc 15 / Lyrical materialises it as INT64_MIN,
+  // making the comparison silently fail).
+  EXPECT_LT(ts_data, std::numeric_limits<int64_t>::max());
 
   // status == "metadata_only"
   mock->sample_publishers_ = 0;
@@ -172,7 +176,7 @@ TEST(DataAccessManagerRoutingTest, NativeSampleAlwaysIncludesNanosecondTimestamp
   ASSERT_TRUE(meta["timestamp"].is_number_integer());
   const auto ts_meta = meta["timestamp"].get<int64_t>();
   EXPECT_GT(ts_meta, static_cast<int64_t>(1e18));
-  EXPECT_LT(ts_meta, static_cast<int64_t>(1e20));
+  EXPECT_LT(ts_meta, std::numeric_limits<int64_t>::max());
 }
 
 // Failure-path coverage: publish() in the real transport throws on
