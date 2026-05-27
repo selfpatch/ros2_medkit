@@ -74,13 +74,18 @@ endmacro()
 # ---------------------------------------------------------------------------
 # medkit_find_cpp_httplib()
 # ---------------------------------------------------------------------------
-# Finds cpp-httplib >= 0.14 through a multi-tier fallback chain:
+# Finds cpp-httplib in the [0.14, 0.20) range through a multi-tier fallback chain:
 #   1. pkg-config (Jazzy/Noble system package)
 #   2. cmake find_package(httplib) (source builds, Pixi)
-#   3. VENDORED_DIR parameter (bundled header-only copy)
+#   3. VENDORED_DIR parameter (bundled header-only copy, currently 0.14.3)
 #
 # On Humble/Jammy the system package is 0.10.x (too old); the vendored
 # fallback in ros2_medkit_gateway handles this automatically.
+#
+# On Lyrical/Resolute the system package is 0.26.x which removed the
+# multipart `Request::has_file` / `get_file_value` API used by
+# BulkDataHandlers, so we cap pkg-config at < 0.20 and fall back to the
+# vendored copy until the handler is migrated to the newer API.
 #
 # Creates a unified alias target `cpp_httplib_target` for consumers.
 # ---------------------------------------------------------------------------
@@ -89,6 +94,10 @@ macro(medkit_find_cpp_httplib)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib>=0.14)
+    if(cpp_httplib_FOUND AND cpp_httplib_VERSION VERSION_GREATER_EQUAL "0.20")
+      message(STATUS "[MedkitCompat] cpp-httplib: system package ${cpp_httplib_VERSION} removes the multipart Request::has_file API; falling back to vendored 0.14")
+      unset(cpp_httplib_FOUND)
+    endif()
   endif()
   if(cpp_httplib_FOUND)
     add_library(cpp_httplib_target ALIAS PkgConfig::cpp_httplib)
