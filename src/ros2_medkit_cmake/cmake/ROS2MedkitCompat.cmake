@@ -96,7 +96,10 @@ macro(medkit_find_cpp_httplib)
     pkg_check_modules(cpp_httplib IMPORTED_TARGET cpp-httplib>=0.14)
     if(cpp_httplib_FOUND AND cpp_httplib_VERSION VERSION_GREATER_EQUAL "0.20")
       message(STATUS "[MedkitCompat] cpp-httplib: system package ${cpp_httplib_VERSION} removes the multipart Request::has_file API; falling back to vendored 0.14")
-      unset(cpp_httplib_FOUND)
+      # `unset` in a macro does not clear caller-scope variables set by
+      # pkg_check_modules, so explicitly mask FOUND to redirect through the
+      # find_package / VENDORED_DIR fallback chain below.
+      set(cpp_httplib_FOUND FALSE)
     endif()
   endif()
   if(cpp_httplib_FOUND)
