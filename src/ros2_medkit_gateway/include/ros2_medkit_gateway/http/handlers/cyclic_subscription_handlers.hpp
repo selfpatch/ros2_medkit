@@ -14,15 +14,18 @@
 
 #pragma once
 
-#include <httplib.h>
-
-#include <nlohmann/json.hpp>
 #include <string>
+#include <utility>
+
+#include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
+#include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -39,12 +42,22 @@ struct ParsedResourceUri {
  * @brief HTTP handlers for cyclic subscription CRUD and SSE streaming.
  *
  * Implements SOVD cyclic subscription endpoints:
- * - POST /{entity}/cyclic-subscriptions — create subscription
- * - GET /{entity}/cyclic-subscriptions — list subscriptions
- * - GET /{entity}/cyclic-subscriptions/{id} — get subscription
- * - PUT /{entity}/cyclic-subscriptions/{id} — update subscription
- * - DELETE /{entity}/cyclic-subscriptions/{id} — delete subscription
- * - GET /{entity}/cyclic-subscriptions/{id}/events — SSE stream
+ * - POST /{entity}/cyclic-subscriptions - create subscription
+ * - GET /{entity}/cyclic-subscriptions - list subscriptions
+ * - GET /{entity}/cyclic-subscriptions/{id} - get subscription
+ * - PUT /{entity}/cyclic-subscriptions/{id} - update subscription
+ * - DELETE /{entity}/cyclic-subscriptions/{id} - delete subscription
+ * - GET /{entity}/cyclic-subscriptions/{id}/events - SSE stream
+ *
+ * All 6 routes follow the PR-403 typed RouteRegistry convention:
+ *
+ *   http::Result<dto::TResponse> X(const http::TypedRequest & req [, dto::TBody body]);
+ *
+ * The SSE event-stream route uses the `reg.sse<>` escape hatch and returns a
+ * `Result<SseStream>` factory; the framework drives the chunked content
+ * provider. The transport's `make_sse_stream` builds the `next_event` closure.
+ * CRUD POST uses the attachments variant so it can override the status to 201
+ * without re-introducing a `httplib::Response &` parameter.
  */
 class CyclicSubscriptionHandlers {
  public:
@@ -52,26 +65,33 @@ class CyclicSubscriptionHandlers {
                              ResourceSamplerRegistry & sampler_registry, TransportRegistry & transport_registry,
                              int max_duration_sec);
 
-  /// POST /{entity}/cyclic-subscriptions — create subscription
-  void handle_create(const httplib::Request & req, httplib::Response & res);
+  /// POST /{entity}/cyclic-subscriptions - create subscription.
+  ///
+  /// On success returns the new `CyclicSubscription` body with a 201 status
+  /// override.
+  http::Result<std::pair<dto::CyclicSubscription, http::ResponseAttachments>>
+  post_subscription(const http::TypedRequest & req, dto::CyclicSubscriptionCreateRequest body);
 
-  /// GET /{entity}/cyclic-subscriptions — list all subscriptions for entity
-  void handle_list(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/cyclic-subscriptions - list all subscriptions for entity.
+  http::Result<dto::Collection<dto::CyclicSubscription>> get_subscriptions(const http::TypedRequest & req);
 
-  /// GET /{entity}/cyclic-subscriptions/{id} — get single subscription
-  void handle_get(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/cyclic-subscriptions/{id} - get single subscription.
+  http::Result<dto::CyclicSubscription> get_subscription(const http::TypedRequest & req);
 
-  /// PUT /{entity}/cyclic-subscriptions/{id} — update subscription
-  void handle_update(const httplib::Request & req, httplib::Response & res);
+  /// PUT /{entity}/cyclic-subscriptions/{id} - update subscription.
+  http::Result<dto::CyclicSubscription> put_subscription(const http::TypedRequest & req,
+                                                         dto::CyclicSubscriptionUpdateRequest body);
 
-  /// DELETE /{entity}/cyclic-subscriptions/{id} — delete subscription
-  void handle_delete(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity}/cyclic-subscriptions/{id} - delete subscription.
+  http::Result<http::NoContent> del_subscription(const http::TypedRequest & req);
 
-  /// GET /{entity}/cyclic-subscriptions/{id}/events — SSE event stream
-  void handle_events(const httplib::Request & req, httplib::Response & res);
-
-  /// Convert subscription info to JSON response
-  static nlohmann::json subscription_to_json(const CyclicSubscriptionInfo & info, const std::string & event_source);
+  /// GET /{entity}/cyclic-subscriptions/{id}/events - SSE event stream.
+  ///
+  /// Returns a `SseStream` whose `next_event` callback the framework drives via
+  /// cpp-httplib's chunked content provider. On validation failure the factory
+  /// returns `tl::unexpected(ErrorInfo)` and the framework renders a SOVD
+  /// GenericError.
+  http::Result<http::SseStream> sse_subscription_events(const http::TypedRequest & req);
 
   /// Parse resource URI to extract entity type, entity id, collection, and resource path.
   static tl::expected<ParsedResourceUri, std::string> parse_resource_uri(const std::string & resource);
@@ -81,7 +101,7 @@ class CyclicSubscriptionHandlers {
   static std::string build_event_source(const CyclicSubscriptionInfo & info);
 
   /// Extract entity type string ("apps" or "components") from request path
-  static std::string extract_entity_type(const httplib::Request & req);
+  static std::string extract_entity_type(const std::string & path);
 
   HandlerContext & ctx_;
   SubscriptionManager & sub_mgr_;

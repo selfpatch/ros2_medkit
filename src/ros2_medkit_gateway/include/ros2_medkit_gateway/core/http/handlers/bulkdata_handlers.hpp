@@ -14,12 +14,14 @@
 
 #pragma once
 
-#include <httplib.h>
-
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -27,8 +29,16 @@ namespace handlers {
 /**
  * @brief HTTP handlers for SOVD bulk-data endpoints.
  *
- * Provides handlers for listing bulk-data categories, descriptors,
- * and downloading bulk-data files (rosbags) for any entity type.
+ * PR-403 commit 25: 11 bulk-data routes migrated to the typed RouteRegistry
+ * API. Every handler returns `http::Result<T>` (or a `pair<T,
+ * ResponseAttachments>` for the upload route that needs to emit 201 +
+ * Location). The download route uses `reg.binary_download` so it can emit
+ * `Content-Disposition`, set `supports_ranges`, and supply a chunked content
+ * provider without touching `httplib::Response`. The upload route uses
+ * `reg.multipart_upload<BulkDataDescriptor>` so multipart parsing remains
+ * inside the framework while the handler stays typed. Wire format is
+ * unchanged byte-for-byte, including the rosbag MIME-type-by-format mapping
+ * and the Content-Disposition filename sanitisation.
  *
  * Supports SOVD entity paths:
  * - /apps/{id}/bulk-data[/{category}[/{id}]]
@@ -45,65 +55,21 @@ class BulkDataHandlers {
    */
   explicit BulkDataHandlers(HandlerContext & ctx);
 
-  /**
-   * @brief GET {entity-path}/bulk-data - List bulk-data categories.
-   *
-   * Returns available bulk-data categories for an entity.
-   * Currently only "rosbags" category is supported.
-   *
-   * @param req HTTP request
-   * @param res HTTP response
-   */
-  void handle_list_categories(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/bulk-data - list bulk-data categories.
+  http::Result<dto::BulkDataCategoryList> list_categories(const http::TypedRequest & req);
 
-  /**
-   * @brief GET {entity-path}/bulk-data/{category} - List bulk-data descriptors.
-   *
-   * Returns BulkDataDescriptor array for the specified category.
-   * For "rosbags" category, returns descriptors for all rosbags
-   * associated with faults from this entity.
-   *
-   * @param req HTTP request
-   * @param res HTTP response
-   */
-  void handle_list_descriptors(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/bulk-data/{category_id} - list bulk-data descriptors.
+  http::Result<dto::Collection<dto::BulkDataDescriptor>> list_descriptors(const http::TypedRequest & req);
 
-  /**
-   * @brief GET {entity-path}/bulk-data/{category}/{id} - Download bulk-data file.
-   *
-   * Downloads the bulk-data file (rosbag) identified by the ID.
-   * Validates that the rosbag belongs to the specified entity.
-   *
-   * @param req HTTP request
-   * @param res HTTP response
-   */
-  void handle_download(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/bulk-data/{category_id}/{file_id} - binary download.
+  http::Result<http::BinaryResponse> download(const http::TypedRequest & req);
 
-  /**
-   * @brief POST {entity-path}/bulk-data/{category} - Upload bulk-data file.
-   *
-   * Accepts multipart/form-data with:
-   * - "file" (required): the file to upload
-   * - "description" (optional): text description
-   * - "metadata" (optional): JSON string with additional metadata
-   *
-   * Returns 201 with ItemDescriptor JSON on success.
-   *
-   * @param req HTTP request
-   * @param res HTTP response
-   */
-  void handle_upload(const httplib::Request & req, httplib::Response & res);
+  /// POST /{entity}/bulk-data/{category_id} - multipart upload, 201 + Location.
+  http::Result<std::pair<dto::BulkDataDescriptor, http::ResponseAttachments>> upload(const http::TypedRequest & req,
+                                                                                     const http::MultipartBody & body);
 
-  /**
-   * @brief DELETE {entity-path}/bulk-data/{category}/{id} - Delete bulk-data file.
-   *
-   * Removes an uploaded bulk-data item. Returns 204 on success, 404 if not found.
-   * Only items uploaded via POST can be deleted (rosbags managed by fault system cannot).
-   *
-   * @param req HTTP request
-   * @param res HTTP response
-   */
-  void handle_delete(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity}/bulk-data/{category_id}/{file_id} - 204 No Content.
+  http::Result<http::NoContent> remove(const http::TypedRequest & req);
 
   /**
    * @brief Get MIME type for rosbag format.
@@ -124,16 +90,6 @@ class BulkDataHandlers {
    * to keep the handler's public surface unchanged.
    */
   std::vector<std::string> get_source_filters(const EntityInfo & entity) const;
-
-  /**
-   * @brief Stream file contents to HTTP response.
-   * @param res HTTP response to write to
-   * @param file_path Path to file to stream (can be file or rosbag directory)
-   * @param content_type MIME type for Content-Type header
-   * @return true if successful, false if file could not be read
-   */
-  bool stream_file_to_response(httplib::Response & res, const std::string & file_path,
-                               const std::string & content_type);
 
   /**
    * @brief Resolve rosbag file path from storage path.

@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/script_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
@@ -43,6 +44,8 @@ using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::ScriptHandlers;
+namespace dto = ros2_medkit_gateway::dto;
+namespace http = ros2_medkit_gateway::http;
 
 namespace {
 
@@ -172,6 +175,12 @@ std::string write_temp_manifest(const std::string & contents) {
   return path_template;
 }
 
+// Build a request whose `matches` array carries the per-route capture groups.
+// The typed handler reads `req.path_param("N")` (1-indexed by regex group), so
+// the captures must be populated by `std::regex_match` against the per-route
+// pattern - the production framework wires this through cpp-httplib's regex
+// router. We replicate that wiring here so the test exercises the same typed
+// surface as the framework.
 httplib::Request make_list_request(const std::string & entity_type, const std::string & entity_id) {
   httplib::Request req;
   req.path = "/api/v1/" + entity_type + "/" + entity_id + "/scripts";
@@ -205,6 +214,11 @@ httplib::Request make_execution_request(const std::string & entity_type, const s
 
 // =============================================================================
 // Test fixture - no backend (tests 501 responses with null HandlerContext)
+//
+// PR-403 commit 24: all 8 handlers now return `http::Result<T>`. Tests inspect
+// the typed ErrorInfo directly instead of round-tripping through httplib::
+// Response. The 501 short-circuit fires before any path-capture lookup, so a
+// default-constructed TypedRequest is enough.
 // =============================================================================
 
 class ScriptHandlersNoBackendTest : public ::testing::Test {
@@ -213,73 +227,84 @@ class ScriptHandlersNoBackendTest : public ::testing::Test {
   AuthConfig auth_{};
   TlsConfig tls_{};
   HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
-  // Null script manager -> check_backend returns 501
+  // Null script manager -> the typed handlers short-circuit with 501.
   ScriptHandlers handlers_{ctx_, nullptr};
+
+  static httplib::Request empty_request() {
+    return httplib::Request{};
+  }
 };
 
 // @verifies REQ_INTEROP_040
 TEST_F(ScriptHandlersNoBackendTest, UploadReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_upload_script(req, res);
-  EXPECT_EQ(res.status, 501);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_NOT_IMPLEMENTED);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.upload_script(typed, http::MultipartBody{});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_NOT_IMPLEMENTED);
 }
 
 // @verifies REQ_INTEROP_041
 TEST_F(ScriptHandlersNoBackendTest, ListReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_list_scripts(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.list_scripts(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // @verifies REQ_INTEROP_042
 TEST_F(ScriptHandlersNoBackendTest, GetReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_get_script(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.get_script(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // @verifies REQ_INTEROP_043
 TEST_F(ScriptHandlersNoBackendTest, DeleteReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_delete_script(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.delete_script(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // @verifies REQ_INTEROP_044
 TEST_F(ScriptHandlersNoBackendTest, StartExecutionReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_start_execution(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.start_execution(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // @verifies REQ_INTEROP_046
 TEST_F(ScriptHandlersNoBackendTest, GetExecutionReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_get_execution(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.get_execution(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // @verifies REQ_INTEROP_047
 TEST_F(ScriptHandlersNoBackendTest, ControlExecutionReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_control_execution(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.control_execution(typed, dto::ScriptControlRequest{});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 TEST_F(ScriptHandlersNoBackendTest, DeleteExecutionReturns501WhenNoBackend) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_delete_execution(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers_.delete_execution(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // Also test with a ScriptManager that has no backend set
@@ -287,10 +312,11 @@ TEST_F(ScriptHandlersNoBackendTest, ScriptManagerWithoutBackendReturns501) {
   ScriptManager manager;  // has_backend() returns false
   ScriptHandlers handlers(ctx_, &manager);
 
-  httplib::Request req;
-  httplib::Response res;
-  handlers.handle_list_scripts(req, res);
-  EXPECT_EQ(res.status, 501);
+  auto req = empty_request();
+  http::TypedRequest typed(req);
+  auto result = handlers.list_scripts(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
 }
 
 // =============================================================================
@@ -358,35 +384,40 @@ class ScriptHandlersErrorMappingTest : public ::testing::Test {
     }
   }
 
-  /// Helper: call handle_get_script with entity "ecu" and trigger the mock error
-  void call_get_script_with_error(ScriptBackendError err, httplib::Response & res) {
+  /// Helper: call get_script with entity "ecu" and trigger the mock error.
+  /// Returns the typed Result<T> so each test can inspect status + code.
+  http::Result<dto::ScriptMetadata> call_get_script_with_error(ScriptBackendError err, httplib::Request & req_storage) {
     mock_provider_->succeed = false;
     mock_provider_->error_code = err;
     mock_provider_->error_message = "test error";
 
-    auto req = make_script_request("components", "ecu", "test_script");
-    handlers_->handle_get_script(req, res);
+    req_storage = make_script_request("components", "ecu", "test_script");
+    http::TypedRequest typed(req_storage);
+    return handlers_->get_script(typed);
   }
 
-  /// Helper: call handle_delete_script with entity "ecu" and trigger the mock error
-  void call_delete_script_with_error(ScriptBackendError err, httplib::Response & res) {
+  /// Helper: call delete_script with entity "ecu" and trigger the mock error.
+  http::Result<http::NoContent> call_delete_script_with_error(ScriptBackendError err, httplib::Request & req_storage) {
     mock_provider_->succeed = false;
     mock_provider_->error_code = err;
     mock_provider_->error_message = "test error";
 
-    auto req = make_script_request("components", "ecu", "test_script");
-    handlers_->handle_delete_script(req, res);
+    req_storage = make_script_request("components", "ecu", "test_script");
+    http::TypedRequest typed(req_storage);
+    return handlers_->delete_script(typed);
   }
 
-  /// Helper: call handle_start_execution with entity "ecu" and trigger the mock error
-  void call_start_execution_with_error(ScriptBackendError err, httplib::Response & res) {
+  /// Helper: call start_execution with entity "ecu" and trigger the mock error.
+  http::Result<std::pair<dto::ScriptExecution, http::ResponseAttachments>>
+  call_start_execution_with_error(ScriptBackendError err, httplib::Request & req_storage) {
     mock_provider_->succeed = false;
     mock_provider_->error_code = err;
     mock_provider_->error_message = "test error";
 
-    auto req = make_script_request("components", "ecu", "test_script");
-    req.body = R"({"execution_type": "now"})";
-    handlers_->handle_start_execution(req, res);
+    req_storage = make_script_request("components", "ecu", "test_script");
+    req_storage.body = R"({"execution_type": "now"})";
+    http::TypedRequest typed(req_storage);
+    return handlers_->start_execution(typed);
   }
 
   CorsConfig cors_{};
@@ -405,62 +436,60 @@ class ScriptHandlersErrorMappingTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_042
 TEST_F(ScriptHandlersErrorMappingTest, NotFoundMapsTo404) {
-  httplib::Response res;
-  call_get_script_with_error(ScriptBackendError::NotFound, res);
-  EXPECT_EQ(res.status, 404);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
+  httplib::Request req;
+  auto result = call_get_script_with_error(ScriptBackendError::NotFound, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
 }
 
 // @verifies REQ_INTEROP_043
 TEST_F(ScriptHandlersErrorMappingTest, ManagedScriptMapsTo409) {
-  httplib::Response res;
-  call_delete_script_with_error(ScriptBackendError::ManagedScript, res);
-  EXPECT_EQ(res.status, 409);
-  auto body = json::parse(res.body);
-  // Vendor-specific error codes are wrapped
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_MANAGED);
+  httplib::Request req;
+  auto result = call_delete_script_with_error(ScriptBackendError::ManagedScript, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  // Vendor-specific code: the renderer in the typed router wraps it as a
+  // vendor-error envelope on the wire, but at the typed surface the ErrorInfo
+  // still carries the bare vendor code.
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SCRIPT_MANAGED);
 }
 
 // @verifies REQ_INTEROP_044
 TEST_F(ScriptHandlersErrorMappingTest, AlreadyRunningMapsTo409) {
-  httplib::Response res;
-  call_delete_script_with_error(ScriptBackendError::AlreadyRunning, res);
-  EXPECT_EQ(res.status, 409);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_RUNNING);
+  httplib::Request req;
+  auto result = call_delete_script_with_error(ScriptBackendError::AlreadyRunning, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SCRIPT_RUNNING);
 }
 
 // @verifies REQ_INTEROP_044
 TEST_F(ScriptHandlersErrorMappingTest, ConcurrencyLimitMapsTo429) {
-  httplib::Response res;
-  call_start_execution_with_error(ScriptBackendError::ConcurrencyLimit, res);
-  EXPECT_EQ(res.status, 429);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_CONCURRENCY_LIMIT);
+  httplib::Request req;
+  auto result = call_start_execution_with_error(ScriptBackendError::ConcurrencyLimit, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 429);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SCRIPT_CONCURRENCY_LIMIT);
 }
 
 // @verifies REQ_INTEROP_040
 TEST_F(ScriptHandlersErrorMappingTest, FileTooLargeMapsTo413) {
   // Upload handler needs multipart file field - use get_script with FileTooLarge instead
-  // since send_script_error is shared across all handlers
-  httplib::Response res;
-  call_get_script_with_error(ScriptBackendError::FileTooLarge, res);
-  EXPECT_EQ(res.status, 413);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_FILE_TOO_LARGE);
+  // since the backend-error mapping is shared across all handlers.
+  httplib::Request req;
+  auto result = call_get_script_with_error(ScriptBackendError::FileTooLarge, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 413);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SCRIPT_FILE_TOO_LARGE);
 }
 
 TEST_F(ScriptHandlersErrorMappingTest, InternalErrorMapsTo500) {
-  httplib::Response res;
-  call_get_script_with_error(ScriptBackendError::Internal, res);
-  EXPECT_EQ(res.status, 500);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INTERNAL_ERROR);
+  httplib::Request req;
+  auto result = call_get_script_with_error(ScriptBackendError::Internal, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 500);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INTERNAL_ERROR);
 }
 
 // =============================================================================
@@ -473,24 +502,34 @@ TEST_F(ScriptHandlersErrorMappingTest, UploadReturns201WithLocation) {
 
   auto req = make_list_request("components", "ecu");
   req.set_header("Content-Type", "multipart/form-data; boundary=----WebKitFormBoundary");
-  // Upload needs multipart file data
+
+  http::MultipartBody body;
   httplib::MultipartFormData file_part;
   file_part.name = "file";
   file_part.filename = "diag.py";
   file_part.content = "#!/usr/bin/env python3\nprint('hello')";
   file_part.content_type = "application/octet-stream";
-  req.files.emplace("file", file_part);
+  body.parts.push_back(std::move(file_part));
 
-  httplib::Response res;
-  handlers_->handle_upload_script(req, res);
+  http::TypedRequest typed(req);
+  auto result = handlers_->upload_script(typed, body);
 
-  EXPECT_EQ(res.status, 201);
-  EXPECT_FALSE(res.get_header_value("Location").empty());
-  EXPECT_NE(res.get_header_value("Location").find("/scripts/uploaded_001"), std::string::npos);
+  ASSERT_TRUE(result.has_value());
+  const auto & [upload_resp, att] = result.value();
+  EXPECT_EQ(att.status_override.value_or(0), 201);
 
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["id"], "uploaded_001");
-  EXPECT_EQ(body["name"], "Uploaded Script");
+  // Location header is appended to ResponseAttachments::headers.
+  bool found_location = false;
+  for (const auto & [name, value] : att.headers) {
+    if (name == "Location") {
+      found_location = true;
+      EXPECT_NE(value.find("/scripts/uploaded_001"), std::string::npos);
+    }
+  }
+  EXPECT_TRUE(found_location);
+
+  EXPECT_EQ(upload_resp.id, "uploaded_001");
+  EXPECT_EQ(upload_resp.name, "Uploaded Script");
 }
 
 // @verifies REQ_INTEROP_040
@@ -499,19 +538,20 @@ TEST_F(ScriptHandlersErrorMappingTest, UploadRejectsWrongContentType) {
 
   auto req = make_list_request("components", "ecu");
   // No Content-Type header set - should be rejected
+  http::MultipartBody body;
   httplib::MultipartFormData file_part;
   file_part.name = "file";
   file_part.filename = "diag.py";
   file_part.content = "#!/usr/bin/env python3\nprint('hello')";
   file_part.content_type = "application/octet-stream";
-  req.files.emplace("file", file_part);
+  body.parts.push_back(std::move(file_part));
 
-  httplib::Response res;
-  handlers_->handle_upload_script(req, res);
+  http::TypedRequest typed(req);
+  auto result = handlers_->upload_script(typed, body);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_REQUEST);
 }
 
 // @verifies REQ_INTEROP_044
@@ -521,16 +561,24 @@ TEST_F(ScriptHandlersErrorMappingTest, StartExecutionReturns202WithLocation) {
   auto req = make_script_request("components", "ecu", "test_script");
   req.body = R"({"execution_type": "now"})";
 
-  httplib::Response res;
-  handlers_->handle_start_execution(req, res);
+  http::TypedRequest typed(req);
+  auto result = handlers_->start_execution(typed);
 
-  EXPECT_EQ(res.status, 202);
-  EXPECT_FALSE(res.get_header_value("Location").empty());
-  EXPECT_NE(res.get_header_value("Location").find("/executions/exec_001"), std::string::npos);
+  ASSERT_TRUE(result.has_value());
+  const auto & [exec_dto, att] = result.value();
+  EXPECT_EQ(att.status_override.value_or(0), 202);
 
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["id"], "exec_001");
-  EXPECT_EQ(body["status"], "running");
+  bool found_location = false;
+  for (const auto & [name, value] : att.headers) {
+    if (name == "Location") {
+      found_location = true;
+      EXPECT_NE(value.find("/executions/exec_001"), std::string::npos);
+    }
+  }
+  EXPECT_TRUE(found_location);
+
+  EXPECT_EQ(exec_dto.id, "exec_001");
+  EXPECT_EQ(exec_dto.status, "running");
 }
 
 // @verifies REQ_INTEROP_043
@@ -538,11 +586,28 @@ TEST_F(ScriptHandlersErrorMappingTest, DeleteReturns204) {
   mock_provider_->succeed = true;
 
   auto req = make_script_request("components", "ecu", "test_script");
+  http::TypedRequest typed(req);
+  auto result = handlers_->delete_script(typed);
 
-  httplib::Response res;
-  handlers_->handle_delete_script(req, res);
+  // Success branch carries http::NoContent{}; the framework's del<NoContent>
+  // wrapper turns this into a 204 on the wire.
+  ASSERT_TRUE(result.has_value());
+}
 
-  EXPECT_EQ(res.status, 204);
+// @verifies REQ_INTEROP_040
+TEST_F(ScriptHandlersErrorMappingTest, ListEmitsTypedHateoasLinks) {
+  mock_provider_->succeed = true;
+
+  auto req = make_list_request("components", "ecu");
+  http::TypedRequest typed(req);
+  auto result = handlers_->list_scripts(typed);
+
+  ASSERT_TRUE(result.has_value());
+  const auto & list = result.value();
+  ASSERT_TRUE(list.links.has_value());
+  EXPECT_NE(list.links->self.find("/components/ecu/scripts"), std::string::npos);
+  ASSERT_TRUE(list.links->parent.has_value());
+  EXPECT_NE(list.links->parent->find("/components/ecu"), std::string::npos);
 }
 
 // =============================================================================
@@ -550,113 +615,97 @@ TEST_F(ScriptHandlersErrorMappingTest, DeleteReturns204) {
 // =============================================================================
 
 TEST_F(ScriptHandlersErrorMappingTest, PathTraversalScriptIdRejected) {
-  // GET /apps/{entity}/scripts/../../../etc/passwd -> 400
-  auto req = make_script_request("components", "ecu", "../../../etc/passwd");
-  httplib::Response res;
-  handlers_->handle_get_script(req, res);
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+  // cpp-httplib's `[^/]+` regex never lets `/`-bearing inputs reach this code
+  // path in production; the defense-in-depth `is_valid_resource_id` check
+  // exists for non-slash-but-still-malicious inputs (relative-traversal
+  // sentinels like `..` or path-separator-equivalents). Use a slash-free
+  // payload so the regex DOES match and the validator is exercised.
+  auto req = make_script_request("components", "ecu", "..");
+  http::TypedRequest typed(req);
+  auto result = handlers_->get_script(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
 
 TEST_F(ScriptHandlersErrorMappingTest, ShellMetacharsRejected) {
   auto req = make_script_request("components", "ecu", "test;rm");
-  httplib::Response res;
-  handlers_->handle_get_script(req, res);
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+  http::TypedRequest typed(req);
+  auto result = handlers_->get_script(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
 
 TEST_F(ScriptHandlersErrorMappingTest, OverlongScriptIdRejected) {
   auto req = make_script_request("components", "ecu", std::string(257, 'a'));
-  httplib::Response res;
-  handlers_->handle_get_script(req, res);
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+  http::TypedRequest typed(req);
+  auto result = handlers_->get_script(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
 
 TEST_F(ScriptHandlersErrorMappingTest, ValidScriptIdWithSpecialCharsAccepted) {
-  // Valid ID with underscore and hyphen passes validation (gets 404 from mock provider)
+  // Valid ID with underscore and hyphen passes validation (gets 404 from mock provider).
   mock_provider_->succeed = false;
   mock_provider_->error_code = ScriptBackendError::NotFound;
   mock_provider_->error_message = "not found";
 
   auto req = make_script_request("components", "ecu", "my-script_01");
-  httplib::Response res;
-  handlers_->handle_get_script(req, res);
-  // Should NOT be 400 - it passes validation and reaches the provider (which returns 404)
-  EXPECT_EQ(res.status, 404);
+  http::TypedRequest typed(req);
+  auto result = handlers_->get_script(typed);
+  ASSERT_FALSE(result.has_value());
+  // Should NOT be 400 - it passes validation and reaches the provider (which returns 404).
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // =============================================================================
 // Control execution validation
+//
+// PR-403 commit 24: the typed router parses ScriptControlRequest via
+// `parse_body<TBody>` BEFORE invoking the handler, so missing/empty/invalid
+// `action` is reported as a 400 by the framework's reader, not by the handler.
+// These tests therefore inject the validated body directly to exercise the
+// handler's own error surface (provider-side InvalidInput, etc.).
 // =============================================================================
 
-TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionMissingActionField) {
-  mock_provider_->succeed = true;
-
-  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
-  req.body = R"({})";
-
-  httplib::Response res;
-  handlers_->handle_control_execution(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
-  EXPECT_NE(body["message"].get<std::string>().find("action"), std::string::npos);
-}
-
-TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionBogusAction) {
-  // The handler validates JSON structure but delegates action validation to the provider.
-  // The mock provider succeeds, so this tests that a real provider would reject unknown actions.
-  // Use the error mock to simulate InvalidInput from the provider.
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionRejectsBogusActionFromProvider) {
+  // The framework parses the typed body upstream; this test simulates a
+  // provider that rejects an otherwise structurally-valid action.
   mock_provider_->succeed = false;
   mock_provider_->error_code = ScriptBackendError::InvalidInput;
   mock_provider_->error_message = "Unknown action: bogus";
 
   auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
-  req.body = R"({"action": "bogus"})";
+  http::TypedRequest typed(req);
+  dto::ScriptControlRequest body;
+  body.action = "stop";  // would pass parse_body's enum check upstream
+  auto result = handlers_->control_execution(typed, body);
 
-  httplib::Response res;
-  handlers_->handle_control_execution(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_REQUEST);
 }
 
-TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionInvalidJson) {
+TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionStopForwardsToProvider) {
+  mock_provider_->succeed = true;
+
   auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
-  req.body = "not json";
+  http::TypedRequest typed(req);
+  dto::ScriptControlRequest body;
+  body.action = "stop";
+  auto result = handlers_->control_execution(typed, body);
 
-  httplib::Response res;
-  handlers_->handle_control_execution(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
-}
-
-TEST_F(ScriptHandlersErrorMappingTest, ControlExecutionEmptyAction) {
-  auto req = make_execution_request("components", "ecu", "test_script", "exec_001");
-  req.body = R"({"action": ""})";
-
-  httplib::Response res;
-  handlers_->handle_control_execution(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result.value().id, "exec_001");
+  EXPECT_EQ(result.value().status, "terminated");
 }
 
 TEST_F(ScriptHandlersErrorMappingTest, NotRunningMapsTo409) {
-  httplib::Response res;
-  call_get_script_with_error(ScriptBackendError::NotRunning, res);
-  EXPECT_EQ(res.status, 409);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], ros2_medkit_gateway::ERR_SCRIPT_NOT_RUNNING);
+  httplib::Request req;
+  auto result = call_get_script_with_error(ScriptBackendError::NotRunning, req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SCRIPT_NOT_RUNNING);
 }

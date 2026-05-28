@@ -20,21 +20,24 @@
 
 #include "ros2_medkit_gateway/core/auth/auth.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/auth_handlers.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::AuthConfigBuilder;
 using ros2_medkit_gateway::AuthManager;
 using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND;
 using ros2_medkit_gateway::JwtAlgorithm;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::UserRole;
 using ros2_medkit_gateway::handlers::AuthHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
+using ros2_medkit_gateway::http::TypedRequest;
 
 namespace {
 
-// Helper: build a request with a JSON body and Content-Type header
+// Helper: build a JSON-bodied request and wrap it in a TypedRequest.
 httplib::Request make_json_request(const std::string & body) {
   httplib::Request req;
   req.body = body;
@@ -46,7 +49,10 @@ httplib::Request make_json_request(const std::string & body) {
 
 // ============================================================================
 // Auth Disabled tests
-// All three endpoints return 404 when authentication is not enabled.
+// All three endpoints surface an OAuth2-shaped 404 when authentication is not
+// enabled. Per RFC 6749 §5.2, the auth endpoints render errors as
+// `{error, error_description}` - the OAuth2 renderer wraps the SOVD error code
+// (`resource-not-found`) under the `error` key.
 // ============================================================================
 
 class AuthHandlersDisabledTest : public ::testing::Test {
@@ -61,40 +67,40 @@ class AuthHandlersDisabledTest : public ::testing::Test {
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersDisabledTest, AuthorizeReturns404WhenAuthDisabled) {
   httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_auth_authorize(req, res);
-  EXPECT_EQ(res.status, 404);
-}
-
-// @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersDisabledTest, AuthorizeErrorBodyContainsErrorCode) {
-  httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_auth_authorize(req, res);
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body.contains("error_code"));
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
+  TypedRequest typed_req(req);
+  auto result = handlers_.post_authorize(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ERR_RESOURCE_NOT_FOUND);
 }
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersDisabledTest, TokenReturns404WhenAuthDisabled) {
   httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_auth_token(req, res);
-  EXPECT_EQ(res.status, 404);
+  TypedRequest typed_req(req);
+  auto result = handlers_.post_token(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ERR_RESOURCE_NOT_FOUND);
 }
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersDisabledTest, RevokeReturns404WhenAuthDisabled) {
   httplib::Request req;
-  httplib::Response res;
-  handlers_.handle_auth_revoke(req, res);
-  EXPECT_EQ(res.status, 404);
+  TypedRequest typed_req(req);
+  auto result = handlers_.post_revoke(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ERR_RESOURCE_NOT_FOUND);
 }
 
 // ============================================================================
-// handle_auth_authorize — input validation (auth enabled, null auth_manager)
+// post_authorize - input validation (auth enabled, null auth_manager)
 // All assertions below exercise paths that return before auth_manager is used.
+// The route registers `.error_renderer(kOAuth2Error)`, so failures surface as
+// `ErrorInfo` whose `code` carries the OAuth2 error identifier (snake_case)
+// verbatim - the framework wraps it into `{error, error_description}` at the
+// wire boundary.
 // ============================================================================
 
 class AuthHandlersAuthorizeTest : public ::testing::Test {
@@ -113,13 +119,13 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "password", "client_id": "c", "client_secret": "s"})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "password", "client_id": "c", "client_secret": "s"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "unsupported_grant_type");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "unsupported_grant_type");
 }
 
 // @verifies REQ_INTEROP_086
@@ -127,13 +133,13 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "client_credentials", "client_secret": "s"})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_secret": "s"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
@@ -141,13 +147,13 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "client_credentials", "client_id": "", "client_secret": "s"})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "", "client_secret": "s"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
@@ -155,13 +161,13 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c"})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
@@ -169,32 +175,35 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientSecret) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c", "client_secret": ""})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c", "client_secret": ""})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, AuthorizeErrorBodyFollowsOAuth2Format) {
-  // Verify that error responses follow RFC 6749 OAuth2 error format
+TEST_F(AuthHandlersAuthorizeTest, ErrorCodeIsOAuth2Identifier) {
+  // OAuth2 wire shape is enforced by the per-route renderer; the handler
+  // carries the OAuth2 identifier in `ErrorInfo::code` so the renderer can
+  // emit `{"error": "<identifier>"}` per RFC 6749 §5.2 without rewriting.
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "wrong"})");
-  httplib::Response res;
-  handlers.handle_auth_authorize(req, res);
+  auto raw = make_json_request(R"({"grant_type": "wrong"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_authorize(typed_req);
 
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body.contains("error"));
-  EXPECT_TRUE(body.contains("error_description"));
+  ASSERT_FALSE(result.has_value());
+  // OAuth2-shaped identifier (snake_case underscore), not SOVD's
+  // `invalid-request` (hyphen).
+  EXPECT_EQ(result.error().code, "unsupported_grant_type");
 }
 
 // ============================================================================
-// handle_auth_token — input validation (auth enabled, null auth_manager)
+// post_token - input validation (auth enabled, null auth_manager)
 // ============================================================================
 
 class AuthHandlersTokenTest : public ::testing::Test {
@@ -213,13 +222,13 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "client_credentials"})");
-  httplib::Response res;
-  handlers.handle_auth_token(req, res);
+  auto raw = make_json_request(R"({"grant_type": "client_credentials"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_token(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "unsupported_grant_type");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "unsupported_grant_type");
 }
 
 // @verifies REQ_INTEROP_087
@@ -227,13 +236,13 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "refresh_token"})");
-  httplib::Response res;
-  handlers.handle_auth_token(req, res);
+  auto raw = make_json_request(R"({"grant_type": "refresh_token"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_token(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_087
@@ -241,17 +250,17 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": ""})");
-  httplib::Response res;
-  handlers.handle_auth_token(req, res);
+  auto raw = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": ""})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_token(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // ============================================================================
-// handle_auth_revoke — input validation (auth enabled, null auth_manager)
+// post_revoke - input validation (auth enabled, null auth_manager)
 // ============================================================================
 
 class AuthHandlersRevokeTest : public ::testing::Test {
@@ -270,14 +279,14 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  httplib::Request req;
-  req.body = "not valid json {";
-  httplib::Response res;
-  handlers.handle_auth_revoke(req, res);
+  httplib::Request raw;
+  raw.body = "not valid json {";
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_revoke(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
@@ -285,13 +294,13 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"other_field": "value"})");
-  httplib::Response res;
-  handlers.handle_auth_revoke(req, res);
+  auto raw = make_json_request(R"({"other_field": "value"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_revoke(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // @verifies REQ_INTEROP_086
@@ -299,17 +308,18 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForNonStringToken) {
   HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  auto req = make_json_request(R"({"token": 12345})");
-  httplib::Response res;
-  handlers.handle_auth_revoke(req, res);
+  auto raw = make_json_request(R"({"token": 12345})");
+  TypedRequest typed_req(raw);
+  auto result = handlers.post_revoke(typed_req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_request");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, "invalid_request");
 }
 
 // ============================================================================
-// AuthManager integration tests (auth enabled with live manager)
+// AuthManager integration tests (auth enabled with live manager). Verifies the
+// typed handlers return a DTO on success and an OAuth2 `ErrorInfo` on failure.
 // ============================================================================
 
 class AuthHandlersWithManagerTest : public ::testing::Test {
@@ -336,84 +346,84 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
     handlers_ = std::make_unique<AuthHandlers>(*ctx_);
   }
 
-  json authorize_and_get_body() {
-    auto req = make_json_request(
+  ros2_medkit_gateway::http::Result<ros2_medkit_gateway::dto::AuthTokenResponse> authorize_admin() {
+    auto raw = make_json_request(
         R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"})");
-    httplib::Response res;
-    handlers_->handle_auth_authorize(req, res);
-    return json::parse(res.body);
+    TypedRequest typed_req(raw);
+    return handlers_->post_authorize(typed_req);
   }
 };
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsTokensForValidCredentials) {
-  auto body = authorize_and_get_body();
-  EXPECT_TRUE(body.contains("access_token"));
-  EXPECT_TRUE(body["access_token"].is_string());
-  EXPECT_FALSE(body["access_token"].get<std::string>().empty());
-  EXPECT_TRUE(body.contains("refresh_token"));
-  EXPECT_TRUE(body["refresh_token"].is_string());
-  EXPECT_FALSE(body["refresh_token"].get<std::string>().empty());
-  EXPECT_EQ(body["token_type"], "Bearer");
+  auto result = authorize_admin();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->access_token.empty());
+  ASSERT_TRUE(result->refresh_token.has_value());
+  EXPECT_FALSE(result->refresh_token->empty());
+  EXPECT_EQ(result->token_type, "Bearer");
 }
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsUnauthorizedForInvalidCredentials) {
-  auto req = make_json_request(
+  auto raw = make_json_request(
       R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "wrong_secret"})");
-  httplib::Response res;
-  handlers_->handle_auth_authorize(req, res);
+  TypedRequest typed_req(raw);
+  auto result = handlers_->post_authorize(typed_req);
 
-  EXPECT_EQ(res.status, 401);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_client");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_client");
 }
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshToken) {
-  auto auth_body = authorize_and_get_body();
-  std::string refresh_token = auth_body["refresh_token"].get<std::string>();
+  auto authorized = authorize_admin();
+  ASSERT_TRUE(authorized.has_value());
+  ASSERT_TRUE(authorized->refresh_token.has_value());
+  const std::string refresh_token = *authorized->refresh_token;
 
-  auto req = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
-  httplib::Response res;
-  handlers_->handle_auth_token(req, res);
+  auto raw = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  TypedRequest typed_req(raw);
+  auto result = handlers_->post_token(typed_req);
 
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body.contains("access_token"));
-  EXPECT_TRUE(body["access_token"].is_string());
-  EXPECT_FALSE(body["access_token"].get<std::string>().empty());
-  EXPECT_EQ(body["token_type"], "Bearer");
-  EXPECT_EQ(body["refresh_token"], refresh_token);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->access_token.empty());
+  EXPECT_EQ(result->token_type, "Bearer");
+  ASSERT_TRUE(result->refresh_token.has_value());
+  EXPECT_EQ(*result->refresh_token, refresh_token);
 }
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersWithManagerTest, TokenReturnsUnauthorizedForInvalidRefreshToken) {
-  auto req = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token"})");
-  httplib::Response res;
-  handlers_->handle_auth_token(req, res);
+  auto raw = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token"})");
+  TypedRequest typed_req(raw);
+  auto result = handlers_->post_token(typed_req);
 
-  EXPECT_EQ(res.status, 401);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error"], "invalid_grant");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_grant");
 }
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersWithManagerTest, RevokeRevokesRefreshTokenForSubsequentTokenRequest) {
-  auto auth_body = authorize_and_get_body();
-  std::string refresh_token = auth_body["refresh_token"].get<std::string>();
+  auto authorized = authorize_admin();
+  ASSERT_TRUE(authorized.has_value());
+  ASSERT_TRUE(authorized->refresh_token.has_value());
+  const std::string refresh_token = *authorized->refresh_token;
 
-  auto revoke_req = make_json_request(json({{"token", refresh_token}}).dump());
-  httplib::Response revoke_res;
-  handlers_->handle_auth_revoke(revoke_req, revoke_res);
+  auto revoke_raw = make_json_request(json({{"token", refresh_token}}).dump());
+  TypedRequest revoke_req(revoke_raw);
+  auto revoke_result = handlers_->post_revoke(revoke_req);
 
-  auto revoke_body = json::parse(revoke_res.body);
-  EXPECT_EQ(revoke_body["status"], "revoked");
+  ASSERT_TRUE(revoke_result.has_value());
+  EXPECT_EQ(revoke_result->status, "revoked");
 
-  auto token_req = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
-  httplib::Response token_res;
-  handlers_->handle_auth_token(token_req, token_res);
+  auto token_raw = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  TypedRequest token_req(token_raw);
+  auto token_result = handlers_->post_token(token_req);
 
-  EXPECT_EQ(token_res.status, 401);
-  auto token_body = json::parse(token_res.body);
-  EXPECT_EQ(token_body["error"], "invalid_grant");
+  ASSERT_FALSE(token_result.has_value());
+  EXPECT_EQ(token_result.error().http_status, 401);
+  EXPECT_EQ(token_result.error().code, "invalid_grant");
 }

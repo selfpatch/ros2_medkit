@@ -15,61 +15,149 @@
 #include "ros2_medkit_gateway/core/http/handlers/log_handlers.hpp"
 
 #include <iterator>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
+#include "ros2_medkit_gateway/core/managers/log_manager.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
 
 namespace {
+
 using json = nlohmann::json;
+
+/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
+/// matches the legacy `send_error` default and integration tests stay byte-
+/// identical.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Read the positional entity-id capture group from the typed request. cpp-
+/// httplib only invokes the route when the regex matches, so the `nullopt`
+/// branch is effectively unreachable; we surface it as 400 invalid-request to
+/// match the legacy handlers' explicit `req.matches.size() < 2` guard.
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler signals "do not render" via the framework-internal
+/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
+/// Parse a JSON array of LogEntry-shaped objects (the wire shape produced by
+/// `LogManager::entry_to_json`) into a typed `std::vector<dto::LogEntry>`.
+/// Items that fail validation are dropped silently - they would also be
+/// dropped by the legacy raw-JSON path when the consumer rehydrates them, and
+/// the local writer is the only producer of this shape.
+std::vector<dto::LogEntry> parse_local_items(const json & arr) {
+  std::vector<dto::LogEntry> out;
+  if (!arr.is_array()) {
+    return out;
+  }
+  out.reserve(arr.size());
+  for (const auto & item : arr) {
+    auto parsed = dto::JsonReader<dto::LogEntry>::read(item);
+    if (parsed.has_value()) {
+      out.push_back(std::move(parsed.value()));
+    }
+  }
+  return out;
+}
+
+/// Fold the partial/failed_peers/peer_dropped_items observability fields from
+/// a `FanOutResult<LogEntry>` into the typed `LogListXMedkit`. Mirrors the
+/// legacy behaviour where `merge_peer_items` injected `partial` and
+/// `failed_peers` keys into the x-medkit JSON; here the typed equivalent is a
+/// direct field assignment plus dropped-item enrichment from the typed
+/// reader.
+void apply_fan_out_observability(dto::LogListXMedkit & xm, const FanOutResult<dto::LogEntry> & fan_out) {
+  if (fan_out.partial) {
+    xm.partial = true;
+    xm.failed_peers = fan_out.failed_peers;
+  }
+  if (!fan_out.dropped_items.empty()) {
+    xm.peer_dropped_items = fan_out.dropped_items;
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// handle_get_logs
+// GET /{entity-path}/logs
 // ---------------------------------------------------------------------------
 
-void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Response & res) {
-  if (req.matches.size() < 2) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-    return;
+http::Result<dto::Collection<dto::LogEntry, dto::LogListXMedkit>>
+LogHandlers::get_logs(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
 
-  const auto entity_id = req.matches[1].str();
-  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity_opt) {
-    return;
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
-  const auto & entity = *entity_opt;
+  const auto & entity = *entity_result;
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }
 
   // Validate optional query parameters (shared across all entity types)
-  const std::string min_severity = req.get_param_value("severity");
-  const std::string context_filter = req.get_param_value("context");
+  const std::string min_severity = req.query_param("severity").value_or(std::string{});
+  const std::string context_filter = req.query_param("context").value_or(std::string{});
 
   if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Invalid severity value: must be one of debug, info, warning, error, fatal");
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                     "Invalid severity value: must be one of debug, info, warning, error, fatal"));
   }
 
   static constexpr size_t kMaxContextFilterLen = 256;
   if (context_filter.size() > kMaxContextFilterLen) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256");
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "context filter exceeds maximum length of 256"));
   }
+
+  dto::Collection<dto::LogEntry, dto::LogListXMedkit> response;
+  dto::LogListXMedkit xm;
+  bool xm_used = false;
 
   // -----------------------------------------------------------------------
   // FUNCTION - aggregate local hosted app logs + fan-out to peers
@@ -78,42 +166,27 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func = cache.get_function(entity_id);
 
-    json result;
-    result["items"] = json::array();
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "function");
-    ext.add("aggregated", true);
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "function";
+    xm.aggregated = true;
+    xm_used = true;
 
     if (func && !func->hosts.empty()) {
       auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, func->hosts);
-
       if (!host_fqns.empty()) {
         auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
         if (!logs) {
-          HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-          return;
+          return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
         }
-        result["items"] = std::move(*logs);
-        ext.add("host_count", host_fqns.size());
-        nlohmann::json log_source_fqns = nlohmann::json::array();
-        for (const auto & fqn : host_fqns) {
-          log_source_fqns.push_back(fqn);
-        }
-        ext.add("aggregation_sources", log_source_fqns);
+        response.items = parse_local_items(*logs);
+        xm.host_count = static_cast<int64_t>(host_fqns.size());
+        xm.aggregation_sources = std::vector<std::string>(host_fqns.begin(), host_fqns.end());
       }
     }
-
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
-    HandlerContext::send_json(res, result);
-    return;
-  }
-
-  // -----------------------------------------------------------------------
-  // AREA - aggregate local app logs from all components + fan-out to peers
-  // -----------------------------------------------------------------------
-  if (entity.type == EntityType::AREA) {
+  } else if (entity.type == EntityType::AREA) {
+    // ---------------------------------------------------------------------
+    // AREA - aggregate local app logs from all components + fan-out
+    // ---------------------------------------------------------------------
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_ids = cache.get_components_for_area(entity_id);
 
@@ -124,229 +197,187 @@ void LogHandlers::handle_get_logs(const httplib::Request & req, httplib::Respons
                        std::make_move_iterator(comp_fqns.end()));
     }
 
-    json result;
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "area");
-    ext.add("aggregated", true);
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "area";
+    xm.aggregated = true;
+    xm_used = true;
 
     if (!host_fqns.empty()) {
       auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
       if (!logs) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-        return;
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
       }
-      result["items"] = std::move(*logs);
-      ext.add("component_count", comp_ids.size());
-      ext.add("app_count", host_fqns.size());
-      nlohmann::json area_log_source_fqns = nlohmann::json::array();
-      for (const auto & fqn : host_fqns) {
-        area_log_source_fqns.push_back(fqn);
-      }
-      ext.add("aggregation_sources", area_log_source_fqns);
+      response.items = parse_local_items(*logs);
+      xm.component_count = static_cast<int64_t>(comp_ids.size());
+      xm.app_count = static_cast<int64_t>(host_fqns.size());
+      xm.aggregation_sources = std::vector<std::string>(host_fqns.begin(), host_fqns.end());
     } else {
       auto logs = log_mgr->get_logs({entity.fqn}, true, min_severity, context_filter, entity_id);
       if (!logs) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-        return;
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
       }
-      result["items"] = std::move(*logs);
+      response.items = parse_local_items(*logs);
     }
-
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
-    HandlerContext::send_json(res, result);
-    return;
-  }
-
-  // -----------------------------------------------------------------------
-  // COMPONENT - aggregate from hosted apps' fqns (mirrors AREA / FUNCTION
-  // semantics) and fall through to the entity.fqn prefix path only when
-  // the component has no hosted apps. Synthetic / runtime-discovered
-  // components have an empty fqn, so the bare prefix-match query that
-  // worked for manifest components silently returned zero items even
-  // when the component grouped 20+ active nodes.
-  // -----------------------------------------------------------------------
-  if (entity.type == EntityType::COMPONENT) {
+  } else if (entity.type == EntityType::COMPONENT) {
+    // ---------------------------------------------------------------------
+    // COMPONENT - aggregate from hosted apps' fqns (mirrors AREA / FUNCTION
+    // semantics) and fall through to the entity.fqn prefix path only when
+    // the component has no hosted apps. Synthetic / runtime-discovered
+    // components have an empty fqn, so the bare prefix-match query that
+    // worked for manifest components silently returned zero items even
+    // when the component grouped 20+ active nodes.
+    // ---------------------------------------------------------------------
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto host_fqns = HandlerContext::resolve_app_host_fqns(cache, cache.get_apps_for_component(entity_id));
 
-    json result;
-    result["items"] = json::array();
-    XMedkit ext;
-    ext.entity_id(entity_id);
-    ext.add("aggregation_level", "component");
-    ext.add("aggregated", true);
+    xm.entity_id = entity_id;
+    xm.aggregation_level = "component";
+    xm.aggregated = true;
+    xm_used = true;
 
     if (!host_fqns.empty()) {
       auto logs = log_mgr->get_logs(host_fqns, false, min_severity, context_filter, entity_id);
       if (!logs) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-        return;
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
       }
-      result["items"] = std::move(*logs);
-      ext.add("app_count", host_fqns.size());
-      nlohmann::json comp_log_source_fqns = nlohmann::json::array();
-      for (const auto & fqn : host_fqns) {
-        comp_log_source_fqns.push_back(fqn);
-      }
-      ext.add("aggregation_sources", comp_log_source_fqns);
+      response.items = parse_local_items(*logs);
+      xm.app_count = static_cast<int64_t>(host_fqns.size());
+      xm.aggregation_sources = std::vector<std::string>(host_fqns.begin(), host_fqns.end());
     } else if (!entity.fqn.empty()) {
-      // Manifest component without hosted apps - keep the original
-      // namespace prefix path so manifest-only deployments still work.
+      // Manifest component without hosted apps - keep the original namespace
+      // prefix path so manifest-only deployments still work.
       auto logs = log_mgr->get_logs({entity.fqn}, true, min_severity, context_filter, entity_id);
       if (!logs) {
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-        return;
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
       }
-      result["items"] = std::move(*logs);
+      response.items = parse_local_items(*logs);
     }
-
-    merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-    result["x-medkit"] = ext.build();
-    HandlerContext::send_json(res, result);
-    return;
+  } else {
+    // ---------------------------------------------------------------------
+    // APP - local query + fan-out to peers. APP responses only carry an
+    // x-medkit block when fan-out actually produced observability output;
+    // tracked via xm_used (still false here) and the final apply step below.
+    // ---------------------------------------------------------------------
+    auto logs = log_mgr->get_logs({entity.fqn}, false, min_severity, context_filter, entity_id);
+    if (!logs) {
+      return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, logs.error()));
+    }
+    response.items = parse_local_items(*logs);
   }
 
-  // -----------------------------------------------------------------------
-  // APP - local query + fan-out to peers
-  // -----------------------------------------------------------------------
-  auto logs = log_mgr->get_logs({entity.fqn}, false, min_severity, context_filter, entity_id);
-  if (!logs) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, logs.error());
-    return;
+  // Typed fan-out for collection endpoints. Replaces the legacy raw-JSON
+  // `merge_peer_items` mutator: peer items come back as parsed `dto::LogEntry`
+  // values via `JsonReader<LogEntry>`, malformed peer items are surfaced as
+  // `dropped_items` (folded into xm.peer_dropped_items below), and
+  // partial/failed_peers go into the typed xm fields. fan_out_collection still
+  // operates on the raw cpp-httplib request (path + headers) - the typed-
+  // request raw escape hatch is used deliberately here; a later commit will
+  // accept the typed request directly.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  auto fan_out = fan_out_collection<dto::LogEntry>(ctx_.aggregation_manager(), raw_req);
+  for (auto & item : fan_out.items) {
+    response.items.push_back(std::move(item));
+  }
+  apply_fan_out_observability(xm, fan_out);
+  if (fan_out.partial || !fan_out.dropped_items.empty()) {
+    xm_used = true;
   }
 
-  json result;
-  result["items"] = std::move(*logs);
-
-  XMedkit ext;
-  merge_peer_items(ctx_.aggregation_manager(), req, result, ext);
-  if (!ext.empty()) {
-    result["x-medkit"] = ext.build();
+  if (xm_used) {
+    response.x_medkit = std::move(xm);
   }
-  HandlerContext::send_json(res, result);
+  return response;
 }
 
 // ---------------------------------------------------------------------------
-// handle_get_logs_configuration
+// GET /{entity-path}/logs/configuration
 // ---------------------------------------------------------------------------
 
-void LogHandlers::handle_get_logs_configuration(const httplib::Request & req, httplib::Response & res) {
-  if (req.matches.size() < 2) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-    return;
+http::Result<dto::LogConfiguration> LogHandlers::get_logs_configuration(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
 
-  const auto entity_id = req.matches[1].str();
-  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity_opt) {
-    return;
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }
 
   auto cfg = log_mgr->get_config(entity_id);
   if (!cfg) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, cfg.error());
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, cfg.error()));
   }
 
-  json result;
-  result["severity_filter"] = cfg->severity_filter;
-  result["max_entries"] = cfg->max_entries;
-  HandlerContext::send_json(res, result);
+  dto::LogConfiguration response;
+  response.severity_filter = cfg->severity_filter;
+  response.max_entries = static_cast<int64_t>(cfg->max_entries);
+  return response;
 }
 
 // ---------------------------------------------------------------------------
-// handle_put_logs_configuration
+// PUT /{entity-path}/logs/configuration
 // ---------------------------------------------------------------------------
 
-void LogHandlers::handle_put_logs_configuration(const httplib::Request & req, httplib::Response & res) {
-  if (req.matches.size() < 2) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-    return;
+http::Result<http::NoContent> LogHandlers::put_logs_configuration(const http::TypedRequest & req,
+                                                                  dto::LogConfiguration body) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
 
-  const auto entity_id = req.matches[1].str();
-  auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity_opt) {
-    return;
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
+  const auto & entity = *entity_result;
 
-  // Check lock access for logs
-  if (ctx_.validate_lock_access(req, res, *entity_opt, "logs")) {
-    return;
+  // Check lock access for logs (typed validator returns ErrorInfo directly).
+  if (auto lock_err = ctx_.validate_lock_access(req, entity, "logs"); !lock_err) {
+    return tl::unexpected(lock_err.error());
   }
 
   auto * log_mgr = ctx_.node()->get_log_manager();
   if (!log_mgr) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "LogManager not available");
-    return;
-  }
-
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::parse_error &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body");
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }
 
   std::optional<std::string> severity_filter;
   std::optional<size_t> max_entries;
 
-  if (body.contains("severity_filter")) {
-    if (!body["severity_filter"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "severity_filter must be a string");
-      return;
-    }
-    severity_filter = body["severity_filter"].get<std::string>();
+  if (body.severity_filter.has_value()) {
+    severity_filter = body.severity_filter;
   }
 
-  static constexpr long long kMaxEntriesCap = 10000;
-  if (body.contains("max_entries")) {
-    const auto & me = body["max_entries"];
-    if (!me.is_number_integer() && !me.is_number_unsigned()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be a positive integer");
-      return;
-    }
-    long long val = 0;
-    try {
-      val = me.get<long long>();
-    } catch (const nlohmann::json::exception &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries value out of range");
-      return;
-    }
+  static constexpr int64_t kMaxEntriesCap = 10000;
+  if (body.max_entries.has_value()) {
+    const int64_t val = *body.max_entries;
     if (val <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0");
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "max_entries must be greater than 0"));
     }
     if (val > kMaxEntriesCap) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "max_entries exceeds maximum allowed value of 10000");
-      return;
+      return tl::unexpected(
+          make_error(400, ERR_INVALID_PARAMETER, "max_entries exceeds maximum allowed value of 10000"));
     }
     max_entries = static_cast<size_t>(val);
   }
 
-  // Warn about unrecognized fields (helps debug camelCase typos like "severityFilter")
-  for (const auto & [key, _] : body.items()) {
-    if (key != "severity_filter" && key != "max_entries") {
-      RCLCPP_DEBUG(HandlerContext::logger(), "PUT /logs/configuration: ignoring unrecognized field '%s'", key.c_str());
-    }
-  }
-
   const auto err = log_mgr->update_config(entity_id, severity_filter, max_entries);
   if (!err.empty()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, err);
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, err));
   }
 
-  res.status = 204;
+  return http::NoContent{};
 }
 
 }  // namespace handlers

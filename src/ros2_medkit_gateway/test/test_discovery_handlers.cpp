@@ -1,4 +1,4 @@
-// Copyright 2026 sewon jeon
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,19 +31,31 @@
 #include <unistd.h>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/discovery_handlers.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
+#include "typed_test_fixture.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::DiscoveryConfig;
 using ros2_medkit_gateway::DiscoveryMode;
+using ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND;
+using ros2_medkit_gateway::ERR_INVALID_PARAMETER;
+using ros2_medkit_gateway::ERR_INVALID_REQUEST;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
+using ros2_medkit_gateway::dto::JsonWriter;
 using ros2_medkit_gateway::handlers::DiscoveryHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
+using ros2_medkit_gateway::http::TypedRequest;
+
+namespace dto = ros2_medkit_gateway::dto;
 
 namespace {
 
@@ -94,10 +106,6 @@ functions:
     hosts: ["mapper"]
 )";
 
-json parse_json(const httplib::Response & res) {
-  return json::parse(res.body);
-}
-
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -128,15 +136,13 @@ int reserve_local_port() {
   return port;
 }
 
-httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
-  httplib::Request req;
-  req.path = path;
-
-  std::regex re(pattern);
-  std::regex_match(req.path, req.matches, re);
-
-  return req;
-}
+// PR-403 commit 17: typed handlers take TypedRequest, which wraps an
+// httplib::Request. The request's `matches` array is populated by
+// std::regex_match before the wrapper is built so the typed handler's
+// `path_param("1")` can return the first capture group exactly the way the
+// production routing layer does. The shared helper lives in
+// typed_test_fixture.hpp so other handler tests don't have to redefine it.
+using ros2_medkit_gateway::test::make_typed_request;
 
 std::string write_temp_manifest(const std::string & contents) {
   char path_template[] = "/tmp/ros2_medkit_discovery_handlers_XXXXXX.yaml";
@@ -164,6 +170,15 @@ std::string write_temp_manifest(const std::string & contents) {
   return path_template;
 }
 
+// Convert a successful typed handler result to the JSON body the wire would
+// see. Tests assert on the same json shape they did pre-migration via this
+// helper instead of inspecting httplib::Response::body directly.
+template <class T>
+json body_json(const ros2_medkit_gateway::http::Result<T> & result) {
+  EXPECT_TRUE(result.has_value());
+  return JsonWriter<T>::write(result.value());
+}
+
 }  // namespace
 
 class DiscoveryHandlersValidationTest : public ::testing::Test {
@@ -177,12 +192,16 @@ class DiscoveryHandlersValidationTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAreaMissingMatchesReturns400) {
+  // No path supplied -> regex_match runs over an empty path with no captures.
+  // path_param("1") yields ERR_INVALID_REQUEST/400 (the legacy `req.matches.size() < 2`
+  // branch). The new typed handler signals that via tl::unexpected with
+  // status 400.
   httplib::Request req;
-  httplib::Response res;
+  TypedRequest typed_req(req);
 
-  handlers_.handle_get_area(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_area(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 class DiscoveryHandlersFixtureTest : public ::testing::Test {
@@ -264,46 +283,42 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListAreasReturnsSeededItems) {
   httplib::Request req;
-  httplib::Response res;
+  TypedRequest typed_req(req);
 
-  handlers_->handle_list_areas(req, res);
-
-  EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
-  auto body = parse_json(res);
-  ASSERT_TRUE(body.contains("items"));
+  auto result = handlers_->get_areas(typed_req);
+  ASSERT_TRUE(result.has_value());
   // "sensors" has parent_area "vehicle", so it's filtered from top-level list
-  ASSERT_EQ(body["items"].size(), 1);
-  EXPECT_EQ(body["items"][0]["id"], "vehicle");
+  ASSERT_EQ(result->items.size(), 1u);
+  EXPECT_EQ(result->items[0].id, "vehicle");
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAreaInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/areas/bad@id", R"(/api/v1/areas/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/bad@id", R"(/api/v1/areas/([^/]+))");
 
-  handlers_.handle_get_area(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_area(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAreaUnknownIdReturns404) {
-  auto req = make_request_with_match("/api/v1/areas/unknown", R"(/api/v1/areas/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/unknown", R"(/api/v1/areas/([^/]+))");
 
-  handlers_->handle_get_area(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_area(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAreaReturnsCapabilitiesAndLinks) {
-  auto req = make_request_with_match("/api/v1/areas/vehicle", R"(/api/v1/areas/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/vehicle", R"(/api/v1/areas/([^/]+))");
 
-  handlers_->handle_get_area(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_area(typed_req);
+  auto body = body_json(result);
   EXPECT_EQ(body["components"], "/api/v1/areas/vehicle/components");
   EXPECT_EQ(body["contains"], "/api/v1/areas/vehicle/contains");
   EXPECT_EQ(body["_links"]["self"], "/api/v1/areas/vehicle");
@@ -312,78 +327,75 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAreaReturnsCapabilitiesAndLinks) {
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsReturnsMatchingComponentsOnly) {
-  auto req = make_request_with_match("/api/v1/areas/sensors/components", R"(/api/v1/areas/([^/]+)/components)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/sensors/components", R"(/api/v1/areas/([^/]+)/components)");
 
-  handlers_->handle_area_components(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_area_components(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersValidationTest, AreaComponentsInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/areas/bad@id/components", R"(/api/v1/areas/(.+)/components)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/bad@id/components", R"(/api/v1/areas/(.+)/components)");
 
-  handlers_.handle_area_components(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_area_components(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, AreaComponentsUnknownAreaReturns404) {
-  auto req = make_request_with_match("/api/v1/areas/unknown/components", R"(/api/v1/areas/([^/]+)/components)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/unknown/components", R"(/api/v1/areas/([^/]+)/components)");
 
-  handlers_->handle_area_components(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_area_components(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersFixtureTest, GetSubareasReturnsChildAreas) {
-  auto req = make_request_with_match("/api/v1/areas/vehicle/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/vehicle/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
 
-  handlers_->handle_get_subareas(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_subareas(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "sensors");
   EXPECT_EQ(body["_links"]["parent"], "/api/v1/areas/vehicle");
 }
 
 // @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersValidationTest, GetSubareasInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/areas/bad@id/subareas", R"(/api/v1/areas/(.+)/subareas)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/bad@id/subareas", R"(/api/v1/areas/(.+)/subareas)");
 
-  handlers_.handle_get_subareas(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_subareas(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_004
 TEST_F(DiscoveryHandlersFixtureTest, GetSubareasUnknownAreaReturns404) {
-  auto req = make_request_with_match("/api/v1/areas/unknown/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/unknown/subareas", R"(/api/v1/areas/([^/]+)/subareas)");
 
-  handlers_->handle_get_subareas(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_subareas(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
-  auto req = make_request_with_match("/api/v1/areas/vehicle/contains", R"(/api/v1/areas/([^/]+)/contains)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/vehicle/contains", R"(/api/v1/areas/([^/]+)/contains)");
 
-  handlers_->handle_get_contains(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  auto result = handlers_->get_area_contains(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 2u);
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][1]["id"], "lidar_unit");
   EXPECT_EQ(body["_links"]["area"], "/api/v1/areas/vehicle");
@@ -391,34 +403,33 @@ TEST_F(DiscoveryHandlersFixtureTest, GetContainsReturnsAreaComponents) {
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersValidationTest, GetContainsInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/areas/bad@id/contains", R"(/api/v1/areas/(.+)/contains)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/bad@id/contains", R"(/api/v1/areas/(.+)/contains)");
 
-  handlers_.handle_get_contains(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_area_contains(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_006
 TEST_F(DiscoveryHandlersFixtureTest, GetContainsUnknownAreaReturns404) {
-  auto req = make_request_with_match("/api/v1/areas/unknown/contains", R"(/api/v1/areas/([^/]+)/contains)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/areas/unknown/contains", R"(/api/v1/areas/([^/]+)/contains)");
 
-  handlers_->handle_get_contains(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_area_contains(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   httplib::Request req;
-  httplib::Response res;
+  TypedRequest typed_req(req);
 
-  handlers_->handle_list_components(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_components(typed_req);
+  auto body = body_json(result);
   // lidar_unit has parent_component_id, so it's filtered from top-level list
-  ASSERT_EQ(body["items"].size(), 1);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
@@ -426,22 +437,21 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetComponentInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/components/bad/id", R"(/api/v1/components/(.+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/bad/id", R"(/api/v1/components/(.+))");
 
-  handlers_.handle_get_component(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_component(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetComponentReturnsRelationshipsAndCapabilities) {
-  auto req = make_request_with_match("/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
 
-  handlers_->handle_get_component(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_component(typed_req);
+  auto body = body_json(result);
   EXPECT_EQ(body["belongs-to"], "/api/v1/areas/vehicle");
   EXPECT_EQ(body["subcomponents"], "/api/v1/components/main_ecu/subcomponents");
   EXPECT_EQ(body["hosts"], "/api/v1/components/main_ecu/hosts");
@@ -451,48 +461,46 @@ TEST_F(DiscoveryHandlersFixtureTest, GetComponentReturnsRelationshipsAndCapabili
 
 // @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
-  auto req = make_request_with_match("/api/v1/components/main_ecu/subcomponents",
-                                     R"(/api/v1/components/([^/]+)/subcomponents)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu/subcomponents",
+                                      R"(/api/v1/components/([^/]+)/subcomponents)");
 
-  handlers_->handle_get_subcomponents(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_subcomponents(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
 }
 
 // @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersValidationTest, GetSubcomponentsInvalidIdReturns400) {
-  auto req =
-      make_request_with_match("/api/v1/components/bad/id/subcomponents", R"(/api/v1/components/(.+)/subcomponents)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/components/bad/id/subcomponents", R"(/api/v1/components/(.+)/subcomponents)");
 
-  handlers_.handle_get_subcomponents(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_subcomponents(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_005
 TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsUnknownComponentReturns404) {
-  auto req = make_request_with_match("/api/v1/components/unknown/subcomponents",
-                                     R"(/api/v1/components/([^/]+)/subcomponents)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/unknown/subcomponents",
+                                      R"(/api/v1/components/([^/]+)/subcomponents)");
 
-  handlers_->handle_get_subcomponents(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_subcomponents(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
-  auto req = make_request_with_match("/api/v1/components/main_ecu/hosts", R"(/api/v1/components/([^/]+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu/hosts", R"(/api/v1/components/([^/]+)/hosts)");
 
-  handlers_->handle_get_hosts(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_component_hosts(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
   // Reads from cache where planner app has is_online=true (set in SetUp)
@@ -501,34 +509,33 @@ TEST_F(DiscoveryHandlersFixtureTest, GetHostsReturnsHostedApps) {
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersValidationTest, GetHostsInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/components/bad/id/hosts", R"(/api/v1/components/(.+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/bad/id/hosts", R"(/api/v1/components/(.+)/hosts)");
 
-  handlers_.handle_get_hosts(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_component_hosts(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, GetHostsUnknownComponentReturns404) {
-  auto req = make_request_with_match("/api/v1/components/unknown/hosts", R"(/api/v1/components/([^/]+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/unknown/hosts", R"(/api/v1/components/([^/]+)/hosts)");
 
-  handlers_->handle_get_hosts(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_component_hosts(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissingDependencies) {
-  auto req =
-      make_request_with_match("/api/v1/components/main_ecu/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/components/main_ecu/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
 
-  handlers_->handle_component_depends_on(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  auto result = handlers_->get_component_depends_on(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 2u);
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
   EXPECT_EQ(body["items"][1]["id"], "ghost_component");
   EXPECT_EQ(body["items"][1]["x-medkit"]["missing"], true);
@@ -536,44 +543,44 @@ TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnReturnsResolvedAndMissing
 
 // @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersValidationTest, ComponentDependsOnInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/components/bad/id/depends-on", R"(/api/v1/components/(.+)/depends-on)");
 
-  handlers_.handle_component_depends_on(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_component_depends_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_008
 TEST_F(DiscoveryHandlersFixtureTest, ComponentDependsOnUnknownComponentReturns404) {
-  auto req =
-      make_request_with_match("/api/v1/components/unknown/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/components/unknown/depends-on", R"(/api/v1/components/([^/]+)/depends-on)");
 
-  handlers_->handle_component_depends_on(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_component_depends_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetAppInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/apps/bad/id", R"(/api/v1/apps/(.+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/bad/id", R"(/api/v1/apps/(.+))");
 
-  handlers_.handle_get_app(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_app(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
   httplib::Request req;
-  httplib::Response res;
+  TypedRequest typed_req(req);
 
-  handlers_->handle_list_apps(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 3);
+  auto result = handlers_->get_apps(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 3u);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["component_id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
@@ -582,22 +589,21 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAppUnknownIdReturns404) {
-  auto req = make_request_with_match("/api/v1/apps/unknown", R"(/api/v1/apps/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/unknown", R"(/api/v1/apps/([^/]+))");
 
-  handlers_->handle_get_app(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_app(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
-  auto req = make_request_with_match("/api/v1/apps/mapper", R"(/api/v1/apps/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper", R"(/api/v1/apps/([^/]+))");
 
-  handlers_->handle_get_app(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_app(typed_req);
+  auto body = body_json(result);
   EXPECT_EQ(body["is-located-on"], "/api/v1/components/lidar_unit");
   EXPECT_EQ(body["belongs-to"], "/api/v1/apps/mapper/belongs-to");
   EXPECT_EQ(body["depends-on"], "/api/v1/apps/mapper/depends-on");
@@ -612,31 +618,31 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppReturnsLinksAndCapabilities) {
 
 // @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsParentComponent) {
-  auto req = make_request_with_match("/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
 
-  handlers_->handle_app_is_located_on(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_app_is_located_on(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
   EXPECT_EQ(body["items"][0]["name"], "Lidar Unit");
   EXPECT_EQ(body["items"][0]["href"], "/api/v1/components/lidar_unit");
-  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1u);
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper/is-located-on");
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
 }
 
 // @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsEmptyWhenAppHasNoComponent) {
-  auto req = make_request_with_match("/api/v1/apps/standalone/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/apps/standalone/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
 
-  handlers_->handle_app_is_located_on(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_app_is_located_on(typed_req);
+  auto body = body_json(result);
   ASSERT_TRUE(body["items"].empty());
-  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0u);
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/standalone/is-located-on");
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/standalone");
 }
@@ -658,13 +664,13 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsMissingItemWhenHostCom
   ASSERT_TRUE(updated);
   cache.update_apps(apps);
 
-  auto req = make_request_with_match("/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/apps/mapper/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
 
-  handlers_->handle_app_is_located_on(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_app_is_located_on(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "ghost_component");
   EXPECT_EQ(body["items"][0]["name"], "ghost_component");
   EXPECT_EQ(body["items"][0]["href"], "/api/v1/components/ghost_component");
@@ -673,51 +679,50 @@ TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnReturnsMissingItemWhenHostCom
 
 // @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersValidationTest, AppIsLocatedOnInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/apps/bad/id/is-located-on", R"(/api/v1/apps/(.+)/is-located-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/bad/id/is-located-on", R"(/api/v1/apps/(.+)/is-located-on)");
 
-  handlers_.handle_app_is_located_on(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_app_is_located_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_105
 TEST_F(DiscoveryHandlersFixtureTest, AppIsLocatedOnUnknownAppReturns404) {
-  auto req = make_request_with_match("/api/v1/apps/unknown/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req =
+      make_typed_request(req, "/api/v1/apps/unknown/is-located-on", R"(/api/v1/apps/([^/]+)/is-located-on)");
 
-  handlers_->handle_app_is_located_on(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_app_is_located_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_106
 TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsParentArea) {
-  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "sensors");
   EXPECT_EQ(body["items"][0]["name"], "Sensors");
   EXPECT_EQ(body["items"][0]["href"], "/api/v1/areas/sensors");
-  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1u);
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/mapper/belongs-to");
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/mapper");
 }
 
 // @verifies REQ_INTEROP_106
 TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenAppHasNoComponent) {
-  auto req = make_request_with_match("/api/v1/apps/standalone/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/standalone/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  auto body = body_json(result);
   ASSERT_TRUE(body["items"].empty());
-  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0u);
   EXPECT_EQ(body["_links"]["self"], "/api/v1/apps/standalone/belongs-to");
   EXPECT_EQ(body["_links"]["app"], "/api/v1/apps/standalone");
 }
@@ -742,17 +747,16 @@ TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsMissingItemWhenParentCom
   ASSERT_TRUE(updated);
   cache.update_apps(apps);
 
-  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["x-medkit"]["missing"], true);
   EXPECT_EQ(body["items"][0]["x-medkit"]["unresolved_component"], "ghost_component");
   EXPECT_EQ(body["items"][0]["href"], "");
-  EXPECT_EQ(body["x-medkit"]["total_count"], 1);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 1u);
 }
 
 // @verifies REQ_INTEROP_106
@@ -771,14 +775,13 @@ TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsEmptyWhenComponentHasNoA
   ASSERT_TRUE(updated);
   cache.update_components(components);
 
-  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  auto body = body_json(result);
   ASSERT_TRUE(body["items"].empty());
-  EXPECT_EQ(body["x-medkit"]["total_count"], 0);
+  EXPECT_EQ(body["x-medkit"]["total_count"], 0u);
 }
 
 // @verifies REQ_INTEROP_106
@@ -797,13 +800,12 @@ TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsMissingItemWhenAreaUnres
   ASSERT_TRUE(updated);
   cache.update_components(components);
 
-  auto req = make_request_with_match("/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "ghost_area");
   EXPECT_EQ(body["items"][0]["name"], "ghost_area");
   EXPECT_EQ(body["items"][0]["href"], "/api/v1/areas/ghost_area");
@@ -812,33 +814,32 @@ TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToReturnsMissingItemWhenAreaUnres
 
 // @verifies REQ_INTEROP_106
 TEST_F(DiscoveryHandlersValidationTest, AppBelongsToInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/apps/bad/id/belongs-to", R"(/api/v1/apps/(.+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/bad/id/belongs-to", R"(/api/v1/apps/(.+)/belongs-to)");
 
-  handlers_.handle_app_belongs_to(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_app_belongs_to(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_106
 TEST_F(DiscoveryHandlersFixtureTest, AppBelongsToUnknownAppReturns404) {
-  auto req = make_request_with_match("/api/v1/apps/unknown/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/unknown/belongs-to", R"(/api/v1/apps/([^/]+)/belongs-to)");
 
-  handlers_->handle_app_belongs_to(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_app_belongs_to(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDependencies) {
-  auto req = make_request_with_match("/api/v1/apps/mapper/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/mapper/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
 
-  handlers_->handle_app_depends_on(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  auto result = handlers_->get_app_depends_on(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 2u);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
   // Reads from cache where planner app has is_online=true (set in SetUp)
@@ -850,65 +851,63 @@ TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnReturnsResolvedAndMissingDepend
 
 // @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersValidationTest, AppDependsOnInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/apps/bad/id/depends-on", R"(/api/v1/apps/(.+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/bad/id/depends-on", R"(/api/v1/apps/(.+)/depends-on)");
 
-  handlers_.handle_app_depends_on(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_app_depends_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_009
 TEST_F(DiscoveryHandlersFixtureTest, AppDependsOnUnknownAppReturns404) {
-  auto req = make_request_with_match("/api/v1/apps/unknown/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/unknown/depends-on", R"(/api/v1/apps/([^/]+)/depends-on)");
 
-  handlers_->handle_app_depends_on(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_app_depends_on(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersValidationTest, GetFunctionInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/functions/bad/id", R"(/api/v1/functions/(.+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/bad/id", R"(/api/v1/functions/(.+))");
 
-  handlers_.handle_get_function(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_function(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, ListFunctionsReturnsSeededFunctions) {
   httplib::Request req;
-  httplib::Response res;
+  TypedRequest typed_req(req);
 
-  handlers_->handle_list_functions(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 2);
+  auto result = handlers_->get_functions(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 2u);
   EXPECT_EQ(body["items"][0]["id"], "navigation");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetFunctionUnknownIdReturns404) {
-  auto req = make_request_with_match("/api/v1/functions/unknown", R"(/api/v1/functions/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/unknown", R"(/api/v1/functions/([^/]+))");
 
-  handlers_->handle_get_function(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_function(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_003
 TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink) {
-  auto req = make_request_with_match("/api/v1/functions/navigation", R"(/api/v1/functions/([^/]+))");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/navigation", R"(/api/v1/functions/([^/]+))");
 
-  handlers_->handle_get_function(req, res);
-
-  auto body = parse_json(res);
+  auto result = handlers_->get_function(typed_req);
+  auto body = body_json(result);
   EXPECT_EQ(body["hosts"], "/api/v1/functions/navigation/hosts");
   EXPECT_EQ(body["x-medkit-graph"], "/api/v1/functions/navigation/x-medkit-graph");
   EXPECT_EQ(body["_links"]["self"], "/api/v1/functions/navigation");
@@ -917,33 +916,32 @@ TEST_F(DiscoveryHandlersFixtureTest, GetFunctionReturnsCapabilitiesAndGraphLink)
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersValidationTest, FunctionHostsInvalidIdReturns400) {
-  auto req = make_request_with_match("/api/v1/functions/bad/id/hosts", R"(/api/v1/functions/(.+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/bad/id/hosts", R"(/api/v1/functions/(.+)/hosts)");
 
-  handlers_.handle_function_hosts(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_.get_function_hosts(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsUnknownFunctionReturns404) {
-  auto req = make_request_with_match("/api/v1/functions/unknown/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/unknown/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
 
-  handlers_->handle_function_hosts(req, res);
-
-  EXPECT_EQ(res.status, 404);
+  auto result = handlers_->get_function_hosts(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }
 
 // @verifies REQ_INTEROP_007
 TEST_F(DiscoveryHandlersFixtureTest, FunctionHostsReturnsHostingApps) {
-  auto req = make_request_with_match("/api/v1/functions/navigation/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
-  httplib::Response res;
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/functions/navigation/hosts", R"(/api/v1/functions/([^/]+)/hosts)");
 
-  handlers_->handle_function_hosts(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_function_hosts(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
   // Reads from cache where planner app has is_online=true (set in SetUp)

@@ -313,75 +313,79 @@ void RESTServer::setup_routes() {
   };
 
   // === Server endpoints ===
-  reg.get("/health",
-          [this](auto & req, auto & res) {
-            health_handlers_->handle_health(req, res);
-          })
+  // PR-403 commit 16: migrated to typed reg.get<T>. The framework auto-fills
+  // .response<T>(200, "") from the template parameter, so no manual response
+  // schema declaration is needed below.
+  reg.get<dto::Health>("/health",
+                       [this](http::TypedRequest req) -> http::Result<dto::Health> {
+                         return health_handlers_->get_health(req);
+                       })
       .tag("Server")
       .summary("Health check")
       .description("Returns gateway health status.")
-      .response(200, "Gateway is healthy", SB::ref("HealthStatus"))
       .operation_id("getHealth");
 
-  reg.get("/",
-          [this](auto & req, auto & res) {
-            health_handlers_->handle_root(req, res);
-          })
+  reg.get<dto::RootOverview>("/",
+                             [this](http::TypedRequest req) -> http::Result<dto::RootOverview> {
+                               return health_handlers_->get_root(req);
+                             })
       .tag("Server")
       .summary("API overview")
       .description("Returns gateway metadata, available endpoints, and capabilities.")
-      .response(200, "API metadata", SB::ref("RootOverview"))
       .operation_id("getRoot");
 
-  reg.get("/version-info",
-          [this](auto & req, auto & res) {
-            health_handlers_->handle_version_info(req, res);
-          })
+  reg.get<dto::VersionInfo>("/version-info",
+                            [this](http::TypedRequest req) -> http::Result<dto::VersionInfo> {
+                              return health_handlers_->get_version_info(req);
+                            })
       .tag("Server")
       .summary("SOVD version information")
       .description("Returns SOVD specification version and vendor info.")
-      .response(200, "Version info", SB::ref("VersionInfo"))
       .operation_id("getVersionInfo");
 
   // === Discovery - entity collections ===
-  reg.get("/areas",
-          [this](auto & req, auto & res) {
-            discovery_handlers_->handle_list_areas(req, res);
-          })
+  // PR-403 commit 17: migrated discovery_handlers to the typed reg.get<T> API.
+  // The framework auto-fills the response<T>(200,"") OpenAPI metadata from
+  // each handler's TResponse, so the per-route response() lines drop here and
+  // in every discovery route below.
+  reg.get<dto::Collection<dto::AreaListItem>>(
+         "/areas",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AreaListItem>> {
+           return discovery_handlers_->get_areas(req);
+         })
       .tag("Discovery")
       .summary("List areas")
       .description("Lists all discovered areas in the system.")
-      .response(200, "Area list", SB::ref("EntityList"))
       .operation_id("listAreas");
 
-  reg.get("/apps",
-          [this](auto & req, auto & res) {
-            discovery_handlers_->handle_list_apps(req, res);
-          })
+  reg.get<dto::Collection<dto::AppListItem>>(
+         "/apps",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AppListItem>> {
+           return discovery_handlers_->get_apps(req);
+         })
       .tag("Discovery")
       .summary("List apps")
       .description("Lists all discovered apps (ROS 2 nodes) in the system.")
-      .response(200, "App list", SB::ref("EntityList"))
       .operation_id("listApps");
 
-  reg.get("/components",
-          [this](auto & req, auto & res) {
-            discovery_handlers_->handle_list_components(req, res);
-          })
+  reg.get<dto::Collection<dto::ComponentListItem>>(
+         "/components",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+           return discovery_handlers_->get_components(req);
+         })
       .tag("Discovery")
       .summary("List components")
       .description("Lists all discovered components in the system.")
-      .response(200, "Component list", SB::ref("EntityList"))
       .operation_id("listComponents");
 
-  reg.get("/functions",
-          [this](auto & req, auto & res) {
-            discovery_handlers_->handle_list_functions(req, res);
-          })
+  reg.get<dto::Collection<dto::FunctionListItem>>(
+         "/functions",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::FunctionListItem>> {
+           return discovery_handlers_->get_functions(req);
+         })
       .tag("Discovery")
       .summary("List functions")
       .description("Lists all discovered functions in the system.")
-      .response(200, "Function list", SB::ref("EntityList"))
       .operation_id("listFunctions");
 
   // === Per-entity-type resource routes ===
@@ -389,356 +393,420 @@ void RESTServer::setup_routes() {
   // For each entity type, register data, operations, configurations, faults, logs, bulk-data,
   // and discovery relationship endpoints.
 
-  // Helper lambdas for entity-type-specific discovery detail handlers
-  using HandlerFn = openapi::HandlerFn;
+  // PR-403 commit 17: the per-entity detail handlers now return distinct
+  // typed DTOs (AreaDetail / ComponentDetail / AppDetail / FunctionDetail),
+  // so the detail registration moved into the loop body below as a small
+  // if/else over et.type. The shared resource-collection routes (data,
+  // operations, configurations, faults, ...) still iterate uniformly.
   struct EntityHandlers {
     const char * type;
     const char * singular;
-    HandlerFn detail_handler;
   };
-
-  // clang-format off
   std::vector<EntityHandlers> entity_types = {
-      {"areas", "area", [this](auto & req, auto & res) { discovery_handlers_->handle_get_area(req, res); }},
-      {"components", "component", [this](auto & req, auto & res) { discovery_handlers_->handle_get_component(req, res); }},
-      {"apps", "app", [this](auto & req, auto & res) { discovery_handlers_->handle_get_app(req, res); }},
-      {"functions", "function", [this](auto & req, auto & res) { discovery_handlers_->handle_get_function(req, res); }},
+      {"areas", "area"},
+      {"components", "component"},
+      {"apps", "app"},
+      {"functions", "function"},
   };
-  // clang-format on
 
   for (const auto & et : entity_types) {
     std::string base = std::string("/") + et.type;
     std::string entity_path = base + "/{" + et.singular + "_id}";
 
     // --- Data ---
+    //
+    // PR-403 commit 28: 5 data routes migrate to the typed RouteRegistry API.
+    // The list endpoint uses the typed `fan_out_collection<DataItem>` from
+    // commit 7 (per-item wire shape now enforced by `JsonReader<DataItem>`,
+    // closing the issue #338 gap on this endpoint). Read returns
+    // `DataValue` whose payload is an opaque object (live ROS message JSON).
+    // Write uses body-less typed PUT and parses the body manually: ROS path
+    // enforces the strict `DataWriteRequest` shape, plugin path accepts
+    // free-form JSON (UDS sends a bare hex-encoded string, OPC-UA writes
+    // vendor-specific objects) so a single framework-level body schema would
+    // break plugin compatibility. The OpenAPI request-body schema is attached
+    // manually below. The 501 stubs (data-categories / data-groups) ride on
+    // the same typed-error renderer; their success type is a dummy DTO.
+    //
     // Data item (specific topic) - MUST be before data collection to avoid (.+) capture
-    reg.get(entity_path + "/data/{data_id}",
-            [this](auto & req, auto & res) {
-              data_handlers_->handle_get_data_item(req, res);
-            })
+    reg.get<dto::DataValue>(entity_path + "/data/{data_id}",
+                            [this](http::TypedRequest req) -> http::Result<dto::DataValue> {
+                              return data_handlers_->get_data_item(req);
+                            })
         .tag("Data")
         .summary(std::string("Get data item for ") + et.singular)
         .description(std::string("Returns the latest value from a ROS 2 topic for this ") + et.singular + ".")
-        .response(200, "Data value", SB::generic_object_schema())
         .operation_id(std::string("get") + capitalize(et.singular) + "DataItem");
 
-    reg.put(entity_path + "/data/{data_id}",
-            [this](auto & req, auto & res) {
-              data_handlers_->handle_put_data_item(req, res);
-            })
+    reg.put<dto::DataValue>(entity_path + "/data/{data_id}",
+                            [this](http::TypedRequest req) -> http::Result<dto::DataValue> {
+                              return data_handlers_->put_data_item(req);
+                            })
         .tag("Data")
         .summary(std::string("Write data item for ") + et.singular)
         .description(std::string("Publishes a value to a ROS 2 topic on this ") + et.singular + ".")
         .request_body("Data value to write", SB::ref("DataWriteRequest"))
-        .response(200, "Written value", SB::generic_object_schema())
         .operation_id(std::string("put") + capitalize(et.singular) + "DataItem");
 
     // Data-categories (returns 501 - not yet implemented)
-    reg.get(entity_path + "/data-categories",
-            [this](auto & req, auto & res) {
-              data_handlers_->handle_data_categories(req, res);
-            })
+    reg.get<dto::DataValue>(entity_path + "/data-categories",
+                            [this](http::TypedRequest req) -> http::Result<dto::DataValue> {
+                              return data_handlers_->data_categories(req);
+                            })
         .tag("Data")
         .summary(std::string("List data categories for ") + et.singular)
         .description(std::string("Lists available data categories for this ") + et.singular + ".")
-        .response(200, "Category list", SB::ref("BulkDataCategoryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "DataCategories");
 
     // Data-groups (returns 501 - not yet implemented)
-    reg.get(entity_path + "/data-groups",
-            [this](auto & req, auto & res) {
-              data_handlers_->handle_data_groups(req, res);
-            })
+    reg.get<dto::DataValue>(entity_path + "/data-groups",
+                            [this](http::TypedRequest req) -> http::Result<dto::DataValue> {
+                              return data_handlers_->data_groups(req);
+                            })
         .tag("Data")
         .summary(std::string("List data groups for ") + et.singular)
         .description(std::string("Lists available data groups for this ") + et.singular + ".")
-        .response(200, "Group list", SB::items_wrapper(SB::generic_object_schema()))
         .operation_id(std::string("list") + capitalize(et.singular) + "DataGroups");
 
     // Data collection (all topics)
-    reg.get(entity_path + "/data",
-            [this](auto & req, auto & res) {
-              data_handlers_->handle_list_data(req, res);
-            })
+    reg.get<dto::Collection<dto::DataItem, dto::DataListXMedkit>>(
+           entity_path + "/data",
+           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::DataItem, dto::DataListXMedkit>> {
+             return data_handlers_->list_data(req);
+           })
         .tag("Data")
         .summary(std::string("List data items for ") + et.singular)
         .description(std::string("Lists all data items (ROS 2 topics) available on this ") + et.singular + ".")
-        .response(200, "Data item list", SB::ref("DataItemList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Data");
 
     // --- Operations ---
-    reg.get(entity_path + "/operations",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_list_operations(req, res);
-            })
+    //
+    // PR-403 commit 27: 7 operation routes migrate to the typed RouteRegistry
+    // API. The POST executions route uses
+    // `post_alternates<ExecutionCreateRequest, OperationExecutionResult,
+    // ExecutionCreateAsync>` so the framework picks 200 for the synchronous
+    // service branch (OperationExecutionResult) or 202 for the asynchronous
+    // action branch (ExecutionCreateAsync); the ResponseAttachments channel
+    // appends the Location header on the 202 path. The list_executions
+    // endpoint returns the typed `Collection<ExecutionId>` (renamed
+    // OperationExecutionList on the wire so the schema name stays stable).
+    reg.get<dto::Collection<dto::OperationItem>>(
+           entity_path + "/operations",
+           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::OperationItem>> {
+             return operation_handlers_->list_operations(req);
+           })
         .tag("Operations")
         .summary(std::string("List operations for ") + et.singular)
         .description(std::string("Lists all ROS 2 services and actions available on this ") + et.singular + ".")
-        .response(200, "Operation list", SB::ref("OperationItemList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Operations");
 
-    reg.get(entity_path + "/operations/{operation_id}",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_get_operation(req, res);
-            })
+    reg.get<dto::OperationDetail>(entity_path + "/operations/{operation_id}",
+                                  [this](http::TypedRequest req) -> http::Result<dto::OperationDetail> {
+                                    return operation_handlers_->get_operation(req);
+                                  })
         .tag("Operations")
         .summary(std::string("Get operation details for ") + et.singular)
         .description(std::string("Returns operation details including request/response schema for this ") +
                      et.singular + ".")
-        .response(200, "Operation details", SB::ref("OperationDetail"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Operation");
 
     // Execution endpoints
-    reg.post(entity_path + "/operations/{operation_id}/executions",
-             [this](auto & req, auto & res) {
-               operation_handlers_->handle_create_execution(req, res);
-             })
+    reg.post_alternates<dto::ExecutionCreateRequest, dto::OperationExecutionResult, dto::ExecutionCreateAsync>(
+           entity_path + "/operations/{operation_id}/executions",
+           std::function<http::Result<std::pair<std::variant<dto::OperationExecutionResult, dto::ExecutionCreateAsync>,
+                                                http::ResponseAttachments>>(http::TypedRequest,
+                                                                            dto::ExecutionCreateRequest)>{
+               [this](http::TypedRequest req, dto::ExecutionCreateRequest body)
+                   -> http::Result<std::pair<std::variant<dto::OperationExecutionResult, dto::ExecutionCreateAsync>,
+                                             http::ResponseAttachments>> {
+                 return operation_handlers_->create_execution(req, std::move(body));
+               }})
         .tag("Operations")
         .summary(std::string("Start operation execution for ") + et.singular)
         .description("Starts a new execution. Returns 200 for synchronous, 202 for asynchronous operations.")
-        .request_body("Operation parameters", SB::generic_object_schema())
-        .response(200, "Synchronous result", SB::generic_object_schema())
-        .response(202, "Asynchronous execution started", SB::ref("OperationExecution"))
         .operation_id(std::string("execute") + capitalize(et.singular) + "Operation");
 
-    reg.get(entity_path + "/operations/{operation_id}/executions",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_list_executions(req, res);
-            })
+    reg.get<dto::Collection<dto::ExecutionId>>(
+           entity_path + "/operations/{operation_id}/executions",
+           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ExecutionId>> {
+             return operation_handlers_->list_executions(req);
+           })
         .tag("Operations")
         .summary(std::string("List operation executions for ") + et.singular)
         .description(std::string("Lists all executions of an operation on this ") + et.singular + ".")
-        .response(200, "Execution list", SB::ref("OperationExecutionList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Executions");
 
-    reg.get(entity_path + "/operations/{operation_id}/executions/{execution_id}",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_get_execution(req, res);
-            })
+    reg.get<dto::OperationExecution>(entity_path + "/operations/{operation_id}/executions/{execution_id}",
+                                     [this](http::TypedRequest req) -> http::Result<dto::OperationExecution> {
+                                       return operation_handlers_->get_execution(req);
+                                     })
         .tag("Operations")
         .summary(std::string("Get execution status for ") + et.singular)
         .description("Returns the current status and result of a specific execution.")
-        .response(200, "Execution status", SB::ref("OperationExecution"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Execution");
 
-    reg.put(entity_path + "/operations/{operation_id}/executions/{execution_id}",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_update_execution(req, res);
-            })
+    reg.put<dto::ExecutionUpdateRequest, dto::OperationExecution>(
+           entity_path + "/operations/{operation_id}/executions/{execution_id}",
+           std::function<http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>>(
+               http::TypedRequest, dto::ExecutionUpdateRequest)>{
+               [this](http::TypedRequest req, const dto::ExecutionUpdateRequest & body)
+                   -> http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>> {
+                 return operation_handlers_->update_execution(req, body);
+               }})
         .tag("Operations")
         .summary(std::string("Update execution for ") + et.singular)
         .description("Sends a control command to a running execution.")
-        .request_body("Execution control", SB::ref("ExecutionUpdateRequest"))
-        .response(200, "Updated execution", SB::ref("OperationExecution"))
+        .response(202, "Accepted (asynchronous control)", SB::ref("OperationExecution"))
         .operation_id(std::string("update") + capitalize(et.singular) + "Execution");
 
-    reg.del(entity_path + "/operations/{operation_id}/executions/{execution_id}",
-            [this](auto & req, auto & res) {
-              operation_handlers_->handle_cancel_execution(req, res);
-            })
+    reg.del<http::NoContent>(entity_path + "/operations/{operation_id}/executions/{execution_id}",
+                             [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                               return operation_handlers_->cancel_execution(req);
+                             })
         .tag("Operations")
         .summary(std::string("Cancel execution for ") + et.singular)
         .description("Cancels a running execution.")
-        .response(204, "Execution cancelled")
         .operation_id(std::string("cancel") + capitalize(et.singular) + "Execution");
 
     // --- Configurations ---
-    reg.get(entity_path + "/configurations",
-            [this](auto & req, auto & res) {
-              config_handlers_->handle_list_configurations(req, res);
-            })
+    //
+    // PR-403 commit 26: 5 config routes migrate to the typed RouteRegistry
+    // API. The list endpoint uses the typed
+    // `fan_out_collection<ConfigurationMetaData>` from commit 7 for peer
+    // aggregation (per-item wire shape now enforced by
+    // `JsonReader<ConfigurationMetaData>`, closing the issue #338 gap on this
+    // endpoint). The delete-all endpoint uses
+    // `del_alternates<NoContent, ConfigurationDeleteMultiStatus>` so the
+    // framework picks 204 on full success or 207 on partial success based on
+    // the active variant alternative. Wire format unchanged byte-for-byte.
+    reg.get<dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit>>(
+           entity_path + "/configurations",
+           [this](http::TypedRequest req)
+               -> http::Result<dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit>> {
+             return config_handlers_->list_configurations(req);
+           })
         .tag("Configuration")
         .summary(std::string("List configurations for ") + et.singular)
         .description(std::string("Lists all ROS 2 node parameters for this ") + et.singular + ".")
-        .response(200, "Configuration list", SB::ref("ConfigurationMetaDataList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Configurations");
 
-    reg.get(entity_path + "/configurations/{config_id}",
-            [this](auto & req, auto & res) {
-              config_handlers_->handle_get_configuration(req, res);
-            })
+    reg.get<dto::ConfigurationReadValue>(entity_path + "/configurations/{config_id}",
+                                         [this](http::TypedRequest req) -> http::Result<dto::ConfigurationReadValue> {
+                                           return config_handlers_->get_configuration(req);
+                                         })
         .tag("Configuration")
         .summary(std::string("Get specific configuration for ") + et.singular)
         .description(std::string("Returns a specific ROS 2 node parameter for this ") + et.singular + ".")
-        .response(200, "Configuration parameter", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Configuration");
 
-    reg.put(entity_path + "/configurations/{config_id}",
-            [this](auto & req, auto & res) {
-              config_handlers_->handle_set_configuration(req, res);
-            })
+    reg.put<dto::ConfigurationWriteRequest, dto::ConfigurationReadValue>(
+           entity_path + "/configurations/{config_id}",
+           [this](http::TypedRequest req,
+                  dto::ConfigurationWriteRequest body) -> http::Result<dto::ConfigurationReadValue> {
+             return config_handlers_->set_configuration(req, std::move(body));
+           })
         .tag("Configuration")
         .summary(std::string("Set configuration for ") + et.singular)
         .description(std::string("Sets a ROS 2 node parameter value for this ") + et.singular + ".")
-        .request_body("Configuration value", SB::ref("ConfigurationWriteValue"))
-        .response(200, "Updated configuration", SB::ref("ConfigurationReadValue"))
         .operation_id(std::string("set") + capitalize(et.singular) + "Configuration");
 
-    reg.del(entity_path + "/configurations/{config_id}",
-            [this](auto & req, auto & res) {
-              config_handlers_->handle_delete_configuration(req, res);
-            })
+    reg.del<http::NoContent>(entity_path + "/configurations/{config_id}",
+                             [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                               return config_handlers_->delete_configuration(req);
+                             })
         .tag("Configuration")
         .summary(std::string("Delete configuration for ") + et.singular)
         .description(std::string("Resets a configuration parameter to its default for this ") + et.singular + ".")
-        .response(204, "Configuration deleted")
         .operation_id(std::string("delete") + capitalize(et.singular) + "Configuration");
 
-    reg.del(entity_path + "/configurations",
-            [this](auto & req, auto & res) {
-              config_handlers_->handle_delete_all_configurations(req, res);
-            })
+    reg.del_alternates<http::NoContent, dto::ConfigurationDeleteMultiStatus>(
+           entity_path + "/configurations",
+           std::function<http::Result<std::variant<http::NoContent, dto::ConfigurationDeleteMultiStatus>>(
+               http::TypedRequest)>{
+               [this](http::TypedRequest req)
+                   -> http::Result<std::variant<http::NoContent, dto::ConfigurationDeleteMultiStatus>> {
+                 return config_handlers_->delete_all_configurations(req);
+               }})
         .tag("Configuration")
         .summary(std::string("Delete all configurations for ") + et.singular)
         .description(std::string("Resets all configuration parameters for this ") + et.singular + ".")
-        .response(204, "All configurations deleted")
-        .response(207, "Partial success - some nodes failed", SB::ref("ConfigurationDeleteMultiStatus"))
         .operation_id(std::string("deleteAll") + capitalize(et.singular) + "Configurations");
 
     // --- Faults ---
-    reg.get(entity_path + "/faults",
-            [this](auto & req, auto & res) {
-              fault_handlers_->handle_list_faults(req, res);
-            })
+    //
+    // PR-403 commit 29: 4 per-entity fault routes migrate to the typed
+    // RouteRegistry API. The list + detail endpoints emit `FaultListResult`
+    // and `FaultDetailResult` opaque envelopes so the per-entity-type
+    // x-medkit shape (FaultListXMedkit for App / global, FaultListAggXMedkit
+    // for Function / Component / Area) stays byte-identical with the legacy
+    // path while the typed router still owns wire framing. The single-fault
+    // DELETE uses `del_alternates<NoContent, FaultClearResult>` so the ROS
+    // path returns 204 while the plugin path keeps its 200 + ack-body shape.
+    // The bulk-clear DELETE returns NoContent unconditionally - the legacy
+    // plugin branch also emitted 204 after iterating the per-fault clears.
+    reg.get<dto::FaultListResult>(entity_path + "/faults",
+                                  [this](http::TypedRequest req) -> http::Result<dto::FaultListResult> {
+                                    return fault_handlers_->list_faults(req);
+                                  })
         .tag("Faults")
         .summary(std::string("List faults for ") + et.singular)
         .description(std::string("Returns all active faults reported by this ") + et.singular + ".")
-        .response(200, "Fault list", SB::ref("FaultList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Faults");
 
-    reg.get(entity_path + "/faults/{fault_code}",
-            [this](auto & req, auto & res) {
-              fault_handlers_->handle_get_fault(req, res);
-            })
+    reg.get<dto::FaultDetailResult>(entity_path + "/faults/{fault_code}",
+                                    [this](http::TypedRequest req) -> http::Result<dto::FaultDetailResult> {
+                                      return fault_handlers_->get_fault(req);
+                                    })
         .tag("Faults")
         .summary(std::string("Get specific fault for ") + et.singular)
         .description("Returns fault details including SOVD status, environment data, and rosbag snapshots.")
-        .response(200, "Fault detail", SB::ref("FaultDetail"))
         .operation_id(std::string("get") + capitalize(et.singular) + "Fault");
 
-    reg.del(entity_path + "/faults/{fault_code}",
-            [this](auto & req, auto & res) {
-              fault_handlers_->handle_clear_fault(req, res);
-            })
+    reg.del_alternates<http::NoContent, dto::FaultClearResult>(
+           entity_path + "/faults/{fault_code}",
+           std::function<http::Result<std::variant<http::NoContent, dto::FaultClearResult>>(http::TypedRequest)>{
+               [this](http::TypedRequest req) -> http::Result<std::variant<http::NoContent, dto::FaultClearResult>> {
+                 return fault_handlers_->clear_fault(req);
+               }})
         .tag("Faults")
         .summary(std::string("Clear fault for ") + et.singular)
         .description(std::string("Clears a specific fault for this ") + et.singular + ".")
-        .response(204, "Fault cleared")
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
-    reg.del(entity_path + "/faults",
-            [this](auto & req, auto & res) {
-              fault_handlers_->handle_clear_all_faults(req, res);
-            })
+    reg.del<http::NoContent>(entity_path + "/faults",
+                             [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                               return fault_handlers_->clear_all_faults(req);
+                             })
         .tag("Faults")
         .summary(std::string("Clear all faults for ") + et.singular)
         .description(std::string("Clears all faults for this ") + et.singular + ".")
-        .response(204, "All faults cleared")
         .operation_id(std::string("clearAll") + capitalize(et.singular) + "Faults");
 
     // --- Logs ---
-    reg.get(entity_path + "/logs",
-            [this](auto & req, auto & res) {
-              log_handlers_->handle_get_logs(req, res);
-            })
+    // PR-403 commit 23: 3 log routes migrated to typed RouteRegistry API.
+    // The list endpoint uses the typed `fan_out_collection<LogEntry>` peer
+    // merge from commit 7. The framework auto-fills response<TResponse> and
+    // request_body<TBody> from the template parameters so the per-route
+    // builder calls drop here.
+    reg.get<dto::Collection<dto::LogEntry, dto::LogListXMedkit>>(
+           entity_path + "/logs",
+           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::LogEntry, dto::LogListXMedkit>> {
+             return log_handlers_->get_logs(req);
+           })
         .tag("Logs")
         .summary(std::string("Query log entries for ") + et.singular)
         .description(std::string("Queries application log entries for this ") + et.singular + ".")
-        .response(200, "Log entries", SB::ref("LogEntryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "Logs");
 
-    reg.get(entity_path + "/logs/configuration",
-            [this](auto & req, auto & res) {
-              log_handlers_->handle_get_logs_configuration(req, res);
-            })
+    reg.get<dto::LogConfiguration>(entity_path + "/logs/configuration",
+                                   [this](http::TypedRequest req) -> http::Result<dto::LogConfiguration> {
+                                     return log_handlers_->get_logs_configuration(req);
+                                   })
         .tag("Logs")
         .summary(std::string("Get log configuration for ") + et.singular)
         .description(std::string("Returns the log filter configuration for this ") + et.singular + ".")
-        .response(200, "Log configuration", SB::ref("LogConfiguration"))
         .operation_id(std::string("get") + capitalize(et.singular) + "LogConfiguration");
 
-    reg.put(entity_path + "/logs/configuration",
-            [this](auto & req, auto & res) {
-              log_handlers_->handle_put_logs_configuration(req, res);
-            })
+    reg.put<dto::LogConfiguration, http::NoContent>(
+           entity_path + "/logs/configuration",
+           [this](http::TypedRequest req, dto::LogConfiguration body) -> http::Result<http::NoContent> {
+             return log_handlers_->put_logs_configuration(req, std::move(body));
+           })
         .tag("Logs")
         .summary(std::string("Update log configuration for ") + et.singular)
         .description(std::string("Updates the log severity filter and max entries for this ") + et.singular + ".")
-        .request_body("Log configuration", SB::ref("LogConfiguration"))
-        .response(204, "Configuration updated")
         .operation_id(std::string("set") + capitalize(et.singular) + "LogConfiguration");
 
     // --- Bulk Data ---
-    reg.get(entity_path + "/bulk-data",
-            [this](auto & req, auto & res) {
-              bulkdata_handlers_->handle_list_categories(req, res);
-            })
+    //
+    // PR-403 commit 25: 11 bulk-data routes (5 per-entity + 3 nested subarea +
+    // 3 nested subcomponent) migrated to the typed RouteRegistry API. The
+    // download route uses the `reg.binary_download` escape hatch so the
+    // chunked content provider, Content-Disposition filename, range support,
+    // and content-type-by-format mapping all flow through the framework
+    // instead of touching httplib::Response. The upload route uses
+    // `reg.multipart_upload<BulkDataDescriptor>` which parses the multipart
+    // body, validates the inferred response schema, and emits 201 + Location
+    // via the typed attachments variant. Wire format unchanged byte-for-byte.
+    reg.get<dto::BulkDataCategoryList>(entity_path + "/bulk-data",
+                                       [this](http::TypedRequest req) -> http::Result<dto::BulkDataCategoryList> {
+                                         return bulkdata_handlers_->list_categories(req);
+                                       })
         .tag("Bulk Data")
         .summary(std::string("List bulk-data categories for ") + et.singular)
         .description(std::string("Lists bulk-data categories (e.g., rosbag snapshots) for this ") + et.singular + ".")
-        .response(200, "Category list", SB::ref("BulkDataCategoryList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataCategories");
 
-    reg.get(entity_path + "/bulk-data/{category_id}",
-            [this](auto & req, auto & res) {
-              bulkdata_handlers_->handle_list_descriptors(req, res);
-            })
+    reg.get<dto::Collection<dto::BulkDataDescriptor>>(
+           entity_path + "/bulk-data/{category_id}",
+           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::BulkDataDescriptor>> {
+             return bulkdata_handlers_->list_descriptors(req);
+           })
         .tag("Bulk Data")
         .summary(std::string("List bulk-data descriptors for ") + et.singular)
         .description(std::string("Lists downloadable files in a bulk-data category for this ") + et.singular + ".")
-        .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataDescriptors");
 
-    reg.get(entity_path + "/bulk-data/{category_id}/{file_id}",
-            [this](auto & req, auto & res) {
-              bulkdata_handlers_->handle_download(req, res);
-            })
+    reg.binary_download(entity_path + "/bulk-data/{category_id}/{file_id}",
+                        [this](http::TypedRequest req) -> http::Result<http::BinaryResponse> {
+                          return bulkdata_handlers_->download(req);
+                        })
         .tag("Bulk Data")
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
-        .response(200, "File content", SB::binary_schema())
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
     // Upload: only for apps and components (405 for areas and functions)
     std::string et_type_str = et.type;
     if (et_type_str == "apps" || et_type_str == "components") {
-      reg.post(entity_path + "/bulk-data/{category_id}",
-               [this](auto & req, auto & res) {
-                 bulkdata_handlers_->handle_upload(req, res);
-               })
+      reg.multipart_upload<dto::BulkDataDescriptor>(
+             entity_path + "/bulk-data/{category_id}",
+             [this](http::TypedRequest req, const http::MultipartBody & body)
+                 -> http::Result<std::pair<dto::BulkDataDescriptor, http::ResponseAttachments>> {
+               return bulkdata_handlers_->upload(req, body);
+             })
           .tag("Bulk Data")
           .summary(std::string("Upload bulk-data for ") + et.singular)
           .description(std::string("Uploads a file to a bulk-data category for this ") + et.singular + ".")
-          .request_body("File to upload", SB::binary_schema(), "multipart/form-data")
           .response(201, "File uploaded", SB::ref("BulkDataDescriptor"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "BulkData");
 
-      reg.del(entity_path + "/bulk-data/{category_id}/{file_id}",
-              [this](auto & req, auto & res) {
-                bulkdata_handlers_->handle_delete(req, res);
-              })
+      reg.del<http::NoContent>(entity_path + "/bulk-data/{category_id}/{file_id}",
+                               [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                                 return bulkdata_handlers_->remove(req);
+                               })
           .tag("Bulk Data")
           .summary(std::string("Delete bulk-data file for ") + et.singular)
           .description(std::string("Deletes a bulk-data file for this ") + et.singular + ".")
-          .response(204, "File deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "BulkData");
     } else {
-      reg.post(entity_path + "/bulk-data/{category_id}",
-               [this](auto & /*req*/, auto & res) {
-                 handlers::HandlerContext::send_error(res, 405, ERR_INVALID_REQUEST,
-                                                      "Bulk data upload is only supported for components and apps");
-               })
+      // 405 stub routes for entity types that cannot host uploaded bulk-data
+      // (areas, functions). Emit the legacy ERR_INVALID_REQUEST body via a
+      // typed handler that returns an ErrorInfo with http_status=405; the
+      // framework's error writer honours the status. Hidden from OpenAPI so
+      // generated clients do not expose the no-op endpoints.
+      reg.post<http::NoContent>(entity_path + "/bulk-data/{category_id}",
+                                [](http::TypedRequest /*req*/) -> http::Result<http::NoContent> {
+                                  ErrorInfo err;
+                                  err.code = ERR_INVALID_REQUEST;
+                                  err.message = "Bulk data upload is only supported for components and apps";
+                                  err.http_status = 405;
+                                  return tl::unexpected(std::move(err));
+                                })
           .tag("Bulk Data")
           .summary(std::string("Upload bulk-data for ") + et.singular + " (not supported)")
           .description("Bulk data upload is not supported for this entity type.")
           .response(405, "Method not allowed")
           .hidden();  // Always returns 405 - exclude from OpenAPI spec and generated clients
 
-      reg.del(entity_path + "/bulk-data/{category_id}/{file_id}",
-              [this](auto & /*req*/, auto & res) {
-                handlers::HandlerContext::send_error(res, 405, ERR_INVALID_REQUEST,
-                                                     "Bulk data deletion is only supported for components and apps");
-              })
+      reg.del<http::NoContent>(entity_path + "/bulk-data/{category_id}/{file_id}",
+                               [](http::TypedRequest /*req*/) -> http::Result<http::NoContent> {
+                                 ErrorInfo err;
+                                 err.code = ERR_INVALID_REQUEST;
+                                 err.message = "Bulk data deletion is only supported for components and apps";
+                                 err.http_status = 405;
+                                 return tl::unexpected(std::move(err));
+                               })
           .tag("Bulk Data")
           .summary(std::string("Delete bulk-data file for ") + et.singular + " (not supported)")
           .description("Bulk data deletion is not supported for this entity type.")
@@ -747,275 +815,305 @@ void RESTServer::setup_routes() {
     }
 
     // --- Triggers (ALL entity types - x-medkit extension beyond SOVD) ---
+    //
+    // PR-403 commit 19: 6 trigger routes migrated to typed RouteRegistry API
+    // (5 CRUD + 1 SSE). The framework auto-fills request_body<TBody> and
+    // response<TResponse> from the template parameters, so the per-route
+    // .request_body() / .response() builder calls drop here. POST uses the
+    // attachments variant to emit 201 without re-introducing httplib::Response.
+    // The SSE event-stream uses the `reg.sse<>` escape hatch.
+    //
+    // Triggers can be optional: if the manager is absent, the typed handler
+    // wrappers below return a 501 ErrorInfo so the wire shape matches the
+    // legacy "Triggers not available" SOVD GenericError exactly.
     {
-      auto trigger_501 = [](auto & /*req*/, auto & res) {
-        handlers::HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Triggers not available");
+      auto make_not_available_error = []() {
+        ErrorInfo err;
+        err.code = ERR_NOT_IMPLEMENTED;
+        err.message = "Triggers not available";
+        err.http_status = 501;
+        return err;
       };
 
-      // SSE events stream - registered before CRUD routes
-      reg.get(entity_path + "/triggers/{trigger_id}/events",
-              [this, trigger_501](auto & req, auto & res) {
+      // SSE events stream - registered before CRUD routes so the more specific
+      // path takes precedence in cpp-httplib's first-match routing.
+      reg.sse(entity_path + "/triggers/{trigger_id}/events",
+              [this, make_not_available_error](http::TypedRequest req) -> http::Result<http::SseStream> {
                 if (!trigger_handlers_) {
-                  trigger_501(req, res);
-                  return;
+                  return tl::unexpected(make_not_available_error());
                 }
-                trigger_handlers_->handle_events(req, res);
+                return trigger_handlers_->sse_trigger_events(req);
               })
           .tag("Triggers")
           .summary(std::string("SSE events stream for trigger on ") + et.singular)
           .description(std::string("Server-Sent Events stream for trigger notifications on this ") + et.singular + ".")
           .operation_id(std::string("stream") + capitalize(et.singular) + "TriggerEvents");
 
-      reg.post(entity_path + "/triggers",
-               [this, trigger_501](auto & req, auto & res) {
-                 if (!trigger_handlers_) {
-                   trigger_501(req, res);
-                   return;
-                 }
-                 trigger_handlers_->handle_create(req, res);
-               })
+      reg.post<dto::TriggerCreateRequest, dto::Trigger>(
+             entity_path + "/triggers",
+             [this, make_not_available_error](http::TypedRequest req, dto::TriggerCreateRequest body)
+                 -> http::Result<std::pair<dto::Trigger, http::ResponseAttachments>> {
+               if (!trigger_handlers_) {
+                 return tl::unexpected(make_not_available_error());
+               }
+               return trigger_handlers_->post_trigger(req, std::move(body));
+             })
           .tag("Triggers")
           .summary(std::string("Create trigger for ") + et.singular)
           .description(std::string("Creates a new event trigger for this ") + et.singular + ".")
-          .request_body("Trigger configuration", SB::ref("TriggerCreateRequest"))
           .response(201, "Trigger created", SB::ref("Trigger"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Trigger");
 
-      reg.get(entity_path + "/triggers",
-              [this, trigger_501](auto & req, auto & res) {
-                if (!trigger_handlers_) {
-                  trigger_501(req, res);
-                  return;
-                }
-                trigger_handlers_->handle_list(req, res);
-              })
+      reg.get<dto::Collection<dto::Trigger>>(
+             entity_path + "/triggers",
+             [this, make_not_available_error](http::TypedRequest req) -> http::Result<dto::Collection<dto::Trigger>> {
+               if (!trigger_handlers_) {
+                 return tl::unexpected(make_not_available_error());
+               }
+               return trigger_handlers_->get_triggers(req);
+             })
           .tag("Triggers")
           .summary(std::string("List triggers for ") + et.singular)
           .description(std::string("Lists all triggers configured for this ") + et.singular + ".")
-          .response(200, "Trigger list", SB::ref("TriggerList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Triggers");
 
-      reg.get(entity_path + "/triggers/{trigger_id}",
-              [this, trigger_501](auto & req, auto & res) {
-                if (!trigger_handlers_) {
-                  trigger_501(req, res);
-                  return;
-                }
-                trigger_handlers_->handle_get(req, res);
-              })
+      reg.get<dto::Trigger>(entity_path + "/triggers/{trigger_id}",
+                            [this, make_not_available_error](http::TypedRequest req) -> http::Result<dto::Trigger> {
+                              if (!trigger_handlers_) {
+                                return tl::unexpected(make_not_available_error());
+                              }
+                              return trigger_handlers_->get_trigger(req);
+                            })
           .tag("Triggers")
           .summary(std::string("Get trigger for ") + et.singular)
           .description(std::string("Returns details of a specific trigger on this ") + et.singular + ".")
-          .response(200, "Trigger details", SB::ref("Trigger"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Trigger");
 
-      reg.put(entity_path + "/triggers/{trigger_id}",
-              [this, trigger_501](auto & req, auto & res) {
-                if (!trigger_handlers_) {
-                  trigger_501(req, res);
-                  return;
-                }
-                trigger_handlers_->handle_update(req, res);
-              })
+      reg.put<dto::TriggerUpdateRequest, dto::Trigger>(
+             entity_path + "/triggers/{trigger_id}",
+             [this, make_not_available_error](http::TypedRequest req,
+                                              dto::TriggerUpdateRequest body) -> http::Result<dto::Trigger> {
+               if (!trigger_handlers_) {
+                 return tl::unexpected(make_not_available_error());
+               }
+               return trigger_handlers_->put_trigger(req, body);
+             })
           .tag("Triggers")
           .summary(std::string("Update trigger for ") + et.singular)
           .description(std::string("Updates a trigger configuration on this ") + et.singular + ".")
-          .request_body("Trigger update", SB::ref("TriggerUpdateRequest"))
-          .response(200, "Updated trigger", SB::ref("Trigger"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Trigger");
 
-      reg.del(entity_path + "/triggers/{trigger_id}",
-              [this, trigger_501](auto & req, auto & res) {
-                if (!trigger_handlers_) {
-                  trigger_501(req, res);
-                  return;
-                }
-                trigger_handlers_->handle_delete(req, res);
-              })
+      reg.del<http::NoContent>(
+             entity_path + "/triggers/{trigger_id}",
+             [this, make_not_available_error](http::TypedRequest req) -> http::Result<http::NoContent> {
+               if (!trigger_handlers_) {
+                 return tl::unexpected(make_not_available_error());
+               }
+               return trigger_handlers_->del_trigger(req);
+             })
           .tag("Triggers")
           .summary(std::string("Delete trigger for ") + et.singular)
           .description(std::string("Deletes a trigger from this ") + et.singular + ".")
-          .response(204, "Trigger deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Trigger");
     }
 
     // --- Cyclic Subscriptions (apps, components, and functions) ---
+    //
+    // PR-403 commit 20: 6 cyclic-subscription routes migrated to typed
+    // RouteRegistry API (5 CRUD + 1 SSE). The framework auto-fills
+    // request_body<TBody> and response<TResponse> from the template parameters,
+    // so the per-route .request_body() / .response() builder calls drop here.
+    // POST uses the attachments variant to emit 201 without re-introducing
+    // httplib::Response. The SSE event-stream uses the `reg.sse<>` escape
+    // hatch and delegates the per-tick loop to the transport via
+    // SubscriptionTransportProvider::make_sse_stream.
     if (et_type_str == "apps" || et_type_str == "components" || et_type_str == "functions") {
-      // SSE events stream - registered before CRUD routes
-      reg.get(entity_path + "/cyclic-subscriptions/{subscription_id}/events",
-              [this](auto & req, auto & res) {
-                cyclic_sub_handlers_->handle_events(req, res);
+      // SSE events stream - registered before CRUD routes so the more specific
+      // path takes precedence in cpp-httplib's first-match routing.
+      reg.sse(entity_path + "/cyclic-subscriptions/{subscription_id}/events",
+              [this](http::TypedRequest req) -> http::Result<http::SseStream> {
+                return cyclic_sub_handlers_->sse_subscription_events(req);
               })
           .tag("Subscriptions")
           .summary(std::string("SSE events stream for cyclic subscription on ") + et.singular)
           .description(std::string("Server-Sent Events stream for subscription data on this ") + et.singular + ".")
           .operation_id(std::string("stream") + capitalize(et.singular) + "SubscriptionEvents");
 
-      reg.post(entity_path + "/cyclic-subscriptions",
-               [this](auto & req, auto & res) {
-                 cyclic_sub_handlers_->handle_create(req, res);
-               })
+      reg.post<dto::CyclicSubscriptionCreateRequest, dto::CyclicSubscription>(
+             entity_path + "/cyclic-subscriptions",
+             [this](http::TypedRequest req, dto::CyclicSubscriptionCreateRequest body)
+                 -> http::Result<std::pair<dto::CyclicSubscription, http::ResponseAttachments>> {
+               return cyclic_sub_handlers_->post_subscription(req, std::move(body));
+             })
           .tag("Subscriptions")
           .summary(std::string("Create cyclic subscription for ") + et.singular)
           .description(std::string("Creates a new cyclic data subscription for this ") + et.singular + ".")
-          .request_body("Subscription configuration", SB::ref("CyclicSubscriptionCreateRequest"))
           .response(201, "Subscription created", SB::ref("CyclicSubscription"))
           .operation_id(std::string("create") + capitalize(et.singular) + "Subscription");
 
-      reg.get(entity_path + "/cyclic-subscriptions",
-              [this](auto & req, auto & res) {
-                cyclic_sub_handlers_->handle_list(req, res);
-              })
+      reg.get<dto::Collection<dto::CyclicSubscription>>(
+             entity_path + "/cyclic-subscriptions",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::CyclicSubscription>> {
+               return cyclic_sub_handlers_->get_subscriptions(req);
+             })
           .tag("Subscriptions")
           .summary(std::string("List cyclic subscriptions for ") + et.singular)
           .description(std::string("Lists all cyclic subscriptions for this ") + et.singular + ".")
-          .response(200, "Subscription list", SB::ref("CyclicSubscriptionList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Subscriptions");
 
-      reg.get(entity_path + "/cyclic-subscriptions/{subscription_id}",
-              [this](auto & req, auto & res) {
-                cyclic_sub_handlers_->handle_get(req, res);
-              })
+      reg.get<dto::CyclicSubscription>(entity_path + "/cyclic-subscriptions/{subscription_id}",
+                                       [this](http::TypedRequest req) -> http::Result<dto::CyclicSubscription> {
+                                         return cyclic_sub_handlers_->get_subscription(req);
+                                       })
           .tag("Subscriptions")
           .summary(std::string("Get cyclic subscription for ") + et.singular)
           .description(std::string("Returns details of a specific subscription on this ") + et.singular + ".")
-          .response(200, "Subscription details", SB::ref("CyclicSubscription"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Subscription");
 
-      reg.put(entity_path + "/cyclic-subscriptions/{subscription_id}",
-              [this](auto & req, auto & res) {
-                cyclic_sub_handlers_->handle_update(req, res);
-              })
+      reg.put<dto::CyclicSubscriptionUpdateRequest, dto::CyclicSubscription>(
+             entity_path + "/cyclic-subscriptions/{subscription_id}",
+             [this](http::TypedRequest req,
+                    dto::CyclicSubscriptionUpdateRequest body) -> http::Result<dto::CyclicSubscription> {
+               return cyclic_sub_handlers_->put_subscription(req, std::move(body));
+             })
           .tag("Subscriptions")
           .summary(std::string("Update cyclic subscription for ") + et.singular)
           .description(std::string("Updates a subscription configuration on this ") + et.singular + ".")
-          .request_body("Subscription update", SB::ref("CyclicSubscription"))
-          .response(200, "Updated subscription", SB::ref("CyclicSubscription"))
           .operation_id(std::string("update") + capitalize(et.singular) + "Subscription");
 
-      reg.del(entity_path + "/cyclic-subscriptions/{subscription_id}",
-              [this](auto & req, auto & res) {
-                cyclic_sub_handlers_->handle_delete(req, res);
-              })
+      reg.del<http::NoContent>(entity_path + "/cyclic-subscriptions/{subscription_id}",
+                               [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                                 return cyclic_sub_handlers_->del_subscription(req);
+                               })
           .tag("Subscriptions")
           .summary(std::string("Delete cyclic subscription for ") + et.singular)
           .description(std::string("Deletes a cyclic subscription from this ") + et.singular + ".")
-          .response(204, "Subscription deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Subscription");
     }
 
     // --- Locking (components and apps only, per SOVD spec) ---
     if (et_type_str == "components" || et_type_str == "apps") {
-      // X-Client-Id schema with length constraints matching handler validation
+      // PR-403 commit 18: 5 lock routes migrated to typed RouteRegistry API.
+      // The framework auto-fills request_body<TBody> and response<TResponse>
+      // (200 / 201 / 204 per the handler return shape) from the template
+      // parameters, so the per-route .request_body() / .response() builder
+      // calls drop here. POST acquire-lock uses the attachments variant to
+      // emit 201 + Location without re-introducing httplib::Response.
       static const nlohmann::json client_id_schema = {{"type", "string"}, {"minLength", 1}, {"maxLength", 256}};
 
-      reg.post(entity_path + "/locks",
-               [this](auto & req, auto & res) {
-                 lock_handlers_->handle_acquire_lock(req, res);
-               })
+      reg.post<dto::AcquireLockRequest, dto::Lock>(
+             entity_path + "/locks",
+             [this](http::TypedRequest req,
+                    dto::AcquireLockRequest body) -> http::Result<std::pair<dto::Lock, http::ResponseAttachments>> {
+               return lock_handlers_->post_lock(req, std::move(body));
+             })
           .tag("Locking")
           .summary(std::string("Acquire lock on ") + et.singular)
           .description(std::string("Acquires an exclusive lock on this ") + et.singular + ".")
-          .request_body("Lock parameters", SB::ref("AcquireLockRequest"))
           .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
           .response(201, "Lock acquired", SB::ref("Lock"))
           .operation_id(std::string("acquire") + capitalize(et.singular) + "Lock");
 
-      reg.get(entity_path + "/locks",
-              [this](auto & req, auto & res) {
-                lock_handlers_->handle_list_locks(req, res);
-              })
+      reg.get<dto::Collection<dto::Lock>>(entity_path + "/locks",
+                                          [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::Lock>> {
+                                            return lock_handlers_->get_locks(req);
+                                          })
           .tag("Locking")
           .summary(std::string("List locks on ") + et.singular)
           .description(std::string("Lists all active locks on this ") + et.singular + ".")
           .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
                         false, client_id_schema)
-          .response(200, "Lock list", SB::ref("LockList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Locks");
 
-      reg.get(entity_path + "/locks/{lock_id}",
-              [this](auto & req, auto & res) {
-                lock_handlers_->handle_get_lock(req, res);
-              })
+      reg.get<dto::Lock>(entity_path + "/locks/{lock_id}",
+                         [this](http::TypedRequest req) -> http::Result<dto::Lock> {
+                           return lock_handlers_->get_lock(req);
+                         })
           .tag("Locking")
           .summary(std::string("Get lock details for ") + et.singular)
           .description(std::string("Returns details of a specific lock on this ") + et.singular + ".")
           .header_param("X-Client-Id", "When provided, the 'owned' field indicates whether this client owns the lock",
                         false, client_id_schema)
-          .response(200, "Lock details", SB::ref("Lock"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Lock");
 
-      reg.put(entity_path + "/locks/{lock_id}",
-              [this](auto & req, auto & res) {
-                lock_handlers_->handle_extend_lock(req, res);
-              })
+      reg.put<dto::ExtendLockRequest, http::NoContent>(
+             entity_path + "/locks/{lock_id}",
+             [this](http::TypedRequest req, dto::ExtendLockRequest body) -> http::Result<http::NoContent> {
+               return lock_handlers_->put_lock(req, body);
+             })
           .tag("Locking")
           .summary(std::string("Extend lock on ") + et.singular)
           .description(std::string("Extends the expiration of a lock on this ") + et.singular + ".")
-          .request_body("Lock extension", SB::ref("ExtendLockRequest"))
           .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
-          .response(204, "Lock extended")
           .operation_id(std::string("extend") + capitalize(et.singular) + "Lock");
 
-      reg.del(entity_path + "/locks/{lock_id}",
-              [this](auto & req, auto & res) {
-                lock_handlers_->handle_release_lock(req, res);
-              })
+      reg.del<http::NoContent>(entity_path + "/locks/{lock_id}",
+                               [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                                 return lock_handlers_->del_lock(req);
+                               })
           .tag("Locking")
           .summary(std::string("Release lock on ") + et.singular)
           .description(std::string("Releases a lock on this ") + et.singular + ".")
           .header_param("X-Client-Id", "Unique client identifier for lock ownership", true, client_id_schema)
-          .response(204, "Lock released")
           .operation_id(std::string("release") + capitalize(et.singular) + "Lock");
     }
 
     // --- Scripts (apps and components only) ---
+    //
+    // PR-403 commit 24: 8 script routes migrated to typed RouteRegistry API.
+    // The list endpoint emits a domain-specific `ScriptList` wrapper so the
+    // `_links` envelope is a typed `HateoasLinks` sub-struct instead of raw
+    // JSON. POST upload and POST start-execution use the attachments variant
+    // to emit 201/202 + Location without touching httplib::Response. The
+    // framework auto-fills response<TResponse> / request_body<TBody> from the
+    // template parameters; per-route .request_body() / .response() builder
+    // calls stay only where the schema differs (multipart upload + free-form
+    // start-execution body).
     if (script_handlers_ && (et_type_str == "apps" || et_type_str == "components")) {
-      reg.post(entity_path + "/scripts",
-               [this](auto & req, auto & res) {
-                 script_handlers_->handle_upload_script(req, res);
-               })
+      reg.multipart_upload<dto::ScriptUploadResponse>(
+             entity_path + "/scripts",
+             [this](http::TypedRequest req, const http::MultipartBody & body)
+                 -> http::Result<std::pair<dto::ScriptUploadResponse, http::ResponseAttachments>> {
+               return script_handlers_->upload_script(req, body);
+             })
           .tag("Scripts")
           .summary(std::string("Upload diagnostic script for ") + et.singular)
           .description(std::string("Uploads a diagnostic script for this ") + et.singular + ".")
-          .request_body("Script file", SB::binary_schema(), "multipart/form-data")
           .response(201, "Script uploaded", SB::ref("ScriptUploadResponse"))
           .operation_id(std::string("upload") + capitalize(et.singular) + "Script");
 
-      reg.get(entity_path + "/scripts",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_list_scripts(req, res);
-              })
+      reg.get<dto::ScriptList>(entity_path + "/scripts",
+                               [this](http::TypedRequest req) -> http::Result<dto::ScriptList> {
+                                 return script_handlers_->list_scripts(req);
+                               })
           .tag("Scripts")
           .summary(std::string("List scripts for ") + et.singular)
           .description(std::string("Lists all diagnostic scripts for this ") + et.singular + ".")
-          .response(200, "Script list", SB::ref("ScriptMetadataList"))
           .operation_id(std::string("list") + capitalize(et.singular) + "Scripts");
 
-      reg.get(entity_path + "/scripts/{script_id}",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_get_script(req, res);
-              })
+      reg.get<dto::ScriptMetadata>(entity_path + "/scripts/{script_id}",
+                                   [this](http::TypedRequest req) -> http::Result<dto::ScriptMetadata> {
+                                     return script_handlers_->get_script(req);
+                                   })
           .tag("Scripts")
           .summary(std::string("Get script metadata for ") + et.singular)
           .description(std::string("Returns metadata of a specific script for this ") + et.singular + ".")
-          .response(200, "Script metadata", SB::ref("ScriptMetadata"))
           .operation_id(std::string("get") + capitalize(et.singular) + "Script");
 
-      reg.del(entity_path + "/scripts/{script_id}",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_delete_script(req, res);
-              })
+      reg.del<http::NoContent>(entity_path + "/scripts/{script_id}",
+                               [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                                 return script_handlers_->delete_script(req);
+                               })
           .tag("Scripts")
           .summary(std::string("Delete script for ") + et.singular)
           .description(std::string("Deletes a diagnostic script from this ") + et.singular + ".")
-          .response(204, "Script deleted")
           .operation_id(std::string("delete") + capitalize(et.singular) + "Script");
 
-      reg.post(entity_path + "/scripts/{script_id}/executions",
-               [this](auto & req, auto & res) {
-                 script_handlers_->handle_start_execution(req, res);
-               })
+      reg.post<dto::ScriptExecution>(entity_path + "/scripts/{script_id}/executions",
+                                     [this](http::TypedRequest req)
+                                         -> http::Result<std::pair<dto::ScriptExecution, http::ResponseAttachments>> {
+                                       return script_handlers_->start_execution(req);
+                                     })
           .tag("Scripts")
           .summary(std::string("Start script execution for ") + et.singular)
           .description(std::string("Starts execution of a diagnostic script on this ") + et.singular + ".")
@@ -1023,374 +1121,467 @@ void RESTServer::setup_routes() {
           .response(202, "Execution started", SB::ref("ScriptExecution"))
           .operation_id(std::string("start") + capitalize(et.singular) + "ScriptExecution");
 
-      reg.get(entity_path + "/scripts/{script_id}/executions/{execution_id}",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_get_execution(req, res);
-              })
+      reg.get<dto::ScriptExecution>(entity_path + "/scripts/{script_id}/executions/{execution_id}",
+                                    [this](http::TypedRequest req) -> http::Result<dto::ScriptExecution> {
+                                      return script_handlers_->get_execution(req);
+                                    })
           .tag("Scripts")
           .summary(std::string("Get execution status for ") + et.singular)
           .description("Returns the current status of a script execution.")
-          .response(200, "Execution status", SB::ref("ScriptExecution"))
           .operation_id(std::string("get") + capitalize(et.singular) + "ScriptExecution");
 
-      reg.put(entity_path + "/scripts/{script_id}/executions/{execution_id}",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_control_execution(req, res);
-              })
+      reg.put<dto::ScriptControlRequest, dto::ScriptExecution>(
+             entity_path + "/scripts/{script_id}/executions/{execution_id}",
+             [this](http::TypedRequest req,
+                    const dto::ScriptControlRequest & body) -> http::Result<dto::ScriptExecution> {
+               return script_handlers_->control_execution(req, body);
+             })
           .tag("Scripts")
           .summary(std::string("Terminate script execution for ") + et.singular)
           .description("Sends a control command (e.g., terminate) to a running script execution.")
-          .request_body("Execution control", SB::ref("ScriptControlRequest"))
-          .response(200, "Execution updated", SB::ref("ScriptExecution"))
           .operation_id(std::string("control") + capitalize(et.singular) + "ScriptExecution");
 
-      reg.del(entity_path + "/scripts/{script_id}/executions/{execution_id}",
-              [this](auto & req, auto & res) {
-                script_handlers_->handle_delete_execution(req, res);
-              })
+      reg.del<http::NoContent>(entity_path + "/scripts/{script_id}/executions/{execution_id}",
+                               [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                                 return script_handlers_->delete_execution(req);
+                               })
           .tag("Scripts")
           .summary(std::string("Remove completed execution for ") + et.singular)
           .description("Removes a completed script execution record.")
-          .response(204, "Execution removed")
           .operation_id(std::string("remove") + capitalize(et.singular) + "ScriptExecution");
     }
 
     // --- Discovery relationship endpoints (entity-type-specific) ---
     if (et_type_str == "areas") {
-      reg.get(entity_path + "/components",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_area_components(req, res);
-              })
+      reg.get<dto::Collection<dto::ComponentListItem>>(
+             entity_path + "/components",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+               return discovery_handlers_->get_area_components(req);
+             })
           .tag("Discovery")
           .summary("List components in area")
           .description("Lists components belonging to this area.")
-          .response(200, "Component list", SB::ref("EntityList"))
           .operation_id("listAreaComponents");
 
-      reg.get(entity_path + "/subareas",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_get_subareas(req, res);
-              })
+      reg.get<dto::Collection<dto::AreaListItem>>(
+             entity_path + "/subareas",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AreaListItem>> {
+               return discovery_handlers_->get_subareas(req);
+             })
           .tag("Discovery")
           .summary("List subareas")
           .description("Lists subareas within this area.")
-          .response(200, "Subarea list", SB::ref("EntityList"))
           .operation_id("listSubareas");
 
-      reg.get(entity_path + "/contains",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_get_contains(req, res);
-              })
+      reg.get<dto::Collection<dto::ComponentListItem>>(
+             entity_path + "/contains",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+               return discovery_handlers_->get_area_contains(req);
+             })
           .tag("Discovery")
           .summary("List entities contained in area")
           .description("Lists all entities contained in this area.")
-          .response(200, "Contained entities", SB::ref("EntityList"))
           .operation_id("listAreaContains");
     }
 
     if (et_type_str == "components") {
-      reg.get(entity_path + "/subcomponents",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_get_subcomponents(req, res);
-              })
+      reg.get<dto::Collection<dto::ComponentListItem>>(
+             entity_path + "/subcomponents",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+               return discovery_handlers_->get_subcomponents(req);
+             })
           .tag("Discovery")
           .summary("List subcomponents")
           .description("Lists subcomponents of this component.")
-          .response(200, "Subcomponent list", SB::ref("EntityList"))
           .operation_id("listSubcomponents");
 
-      reg.get(entity_path + "/hosts",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_get_hosts(req, res);
-              })
+      reg.get<dto::Collection<dto::AppListItem>>(
+             entity_path + "/hosts",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AppListItem>> {
+               return discovery_handlers_->get_component_hosts(req);
+             })
           .tag("Discovery")
           .summary("List component hosts")
           .description("Lists apps hosted by this component.")
-          .response(200, "Host list", SB::ref("EntityList"))
           .operation_id("listComponentHosts");
 
-      reg.get(entity_path + "/depends-on",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_component_depends_on(req, res);
-              })
+      reg.get<dto::Collection<dto::ComponentListItem>>(
+             entity_path + "/depends-on",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+               return discovery_handlers_->get_component_depends_on(req);
+             })
           .tag("Discovery")
           .summary("List component dependencies")
           .description("Lists components this component depends on.")
-          .response(200, "Dependency list", SB::ref("EntityList"))
           .operation_id("listComponentDependencies");
     }
 
     if (et_type_str == "apps") {
-      reg.get(entity_path + "/is-located-on",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_app_is_located_on(req, res);
-              })
+      reg.get<dto::Collection<dto::ComponentListItem>>(
+             entity_path + "/is-located-on",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::ComponentListItem>> {
+               return discovery_handlers_->get_app_is_located_on(req);
+             })
           .tag("Discovery")
           .summary("Get app host component")
           .description("Returns the component hosting this app as a single-element collection.")
-          .response(200, "Host component(s)", SB::ref("EntityList"))
           .operation_id("getAppHost");
 
-      reg.get(entity_path + "/belongs-to",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_app_belongs_to(req, res);
-              })
+      reg.get<dto::Collection<dto::AreaListItem>>(
+             entity_path + "/belongs-to",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AreaListItem>> {
+               return discovery_handlers_->get_app_belongs_to(req);
+             })
           .tag("Discovery")
           .summary("Get app parent area")
           .description(
               "Returns the area this app belongs to via its parent component, as a 0-or-1 element "
               "collection.")
-          .response(200, "Parent area", SB::ref("EntityList"))
           .operation_id("getAppArea");
 
-      reg.get(entity_path + "/depends-on",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_app_depends_on(req, res);
-              })
+      reg.get<dto::Collection<dto::AppListItem>>(
+             entity_path + "/depends-on",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AppListItem>> {
+               return discovery_handlers_->get_app_depends_on(req);
+             })
           .tag("Discovery")
           .summary("List app dependencies")
           .description("Lists apps this app depends on.")
-          .response(200, "Dependency list", SB::ref("EntityList"))
           .operation_id("listAppDependencies");
     }
 
     if (et_type_str == "functions") {
-      reg.get(entity_path + "/hosts",
-              [this](auto & req, auto & res) {
-                discovery_handlers_->handle_function_hosts(req, res);
-              })
+      reg.get<dto::Collection<dto::AppListItem>>(
+             entity_path + "/hosts",
+             [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::AppListItem>> {
+               return discovery_handlers_->get_function_hosts(req);
+             })
           .tag("Discovery")
           .summary("List function hosts")
           .description("Lists components hosting this function.")
-          .response(200, "Host list", SB::ref("EntityList"))
           .operation_id("listFunctionHosts");
     }
 
-    // Single entity detail (capabilities) - must be LAST for this entity type
-    reg.get(entity_path, et.detail_handler)
-        .tag("Discovery")
-        .summary(std::string("Get ") + et.singular + " details")
-        .description(std::string("Returns ") + et.singular + " details with capabilities and resource collection URIs.")
-        .response(200, "Entity details with capabilities", SB::ref("EntityDetail"))
-        .operation_id(std::string("get") + capitalize(et.singular));
+    // Single entity detail (capabilities) - must be LAST for this entity type.
+    // Detail handlers return entity-type-specific DTOs so they cannot share a
+    // single `HandlerFn` slot the way the loop's collection endpoints do; each
+    // typed reg.get<T> is dispatched explicitly below.
+    if (et_type_str == "areas") {
+      reg.get<dto::AreaDetail>(entity_path,
+                               [this](http::TypedRequest req) -> http::Result<dto::AreaDetail> {
+                                 return discovery_handlers_->get_area(req);
+                               })
+          .tag("Discovery")
+          .summary(std::string("Get ") + et.singular + " details")
+          .description(std::string("Returns ") + et.singular +
+                       " details with capabilities and resource collection URIs.")
+          .operation_id(std::string("get") + capitalize(et.singular));
+    } else if (et_type_str == "components") {
+      reg.get<dto::ComponentDetail>(entity_path,
+                                    [this](http::TypedRequest req) -> http::Result<dto::ComponentDetail> {
+                                      return discovery_handlers_->get_component(req);
+                                    })
+          .tag("Discovery")
+          .summary(std::string("Get ") + et.singular + " details")
+          .description(std::string("Returns ") + et.singular +
+                       " details with capabilities and resource collection URIs.")
+          .operation_id(std::string("get") + capitalize(et.singular));
+    } else if (et_type_str == "apps") {
+      reg.get<dto::AppDetail>(entity_path,
+                              [this](http::TypedRequest req) -> http::Result<dto::AppDetail> {
+                                return discovery_handlers_->get_app(req);
+                              })
+          .tag("Discovery")
+          .summary(std::string("Get ") + et.singular + " details")
+          .description(std::string("Returns ") + et.singular +
+                       " details with capabilities and resource collection URIs.")
+          .operation_id(std::string("get") + capitalize(et.singular));
+    } else if (et_type_str == "functions") {
+      reg.get<dto::FunctionDetail>(entity_path,
+                                   [this](http::TypedRequest req) -> http::Result<dto::FunctionDetail> {
+                                     return discovery_handlers_->get_function(req);
+                                   })
+          .tag("Discovery")
+          .summary(std::string("Get ") + et.singular + " details")
+          .description(std::string("Returns ") + et.singular +
+                       " details with capabilities and resource collection URIs.")
+          .operation_id(std::string("get") + capitalize(et.singular));
+    }
   }
 
   // === Nested entities - subareas bulk-data ===
-  reg.get("/areas/{area_id}/subareas/{subarea_id}/bulk-data",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_list_categories(req, res);
-          })
+  //
+  // Typed wrappers for the nested entity bulk-data routes. The handler
+  // dispatches on `parse_entity_path` so the same handler implementations
+  // serve both top-level and nested entity URLs - the regex capture-group
+  // shift between the two route templates is handled inside
+  // `parse_entity_path` rather than in the handler signature.
+  reg.get<dto::BulkDataCategoryList>("/areas/{area_id}/subareas/{subarea_id}/bulk-data",
+                                     [this](http::TypedRequest req) -> http::Result<dto::BulkDataCategoryList> {
+                                       return bulkdata_handlers_->list_categories(req);
+                                     })
       .tag("Bulk Data")
       .summary("List bulk-data categories for subarea")
       .description("Lists bulk-data categories for a subarea.")
-      .response(200, "Category list", SB::ref("BulkDataCategoryList"))
       .operation_id("listSubareaBulkDataCategories");
 
-  reg.get("/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_list_descriptors(req, res);
-          })
+  reg.get<dto::Collection<dto::BulkDataDescriptor>>(
+         "/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::BulkDataDescriptor>> {
+           return bulkdata_handlers_->list_descriptors(req);
+         })
       .tag("Bulk Data")
       .summary("List bulk-data descriptors for subarea")
       .description("Lists bulk-data descriptors for a subarea.")
-      .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
       .operation_id("listSubareaBulkDataDescriptors");
 
-  reg.get("/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}/{file_id}",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_download(req, res);
-          })
+  reg.binary_download("/areas/{area_id}/subareas/{subarea_id}/bulk-data/{category_id}/{file_id}",
+                      [this](http::TypedRequest req) -> http::Result<http::BinaryResponse> {
+                        return bulkdata_handlers_->download(req);
+                      })
       .tag("Bulk Data")
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
-      .response(200, "File content", SB::binary_schema())
       .operation_id("downloadSubareaBulkData");
 
   // === Nested entities - subcomponents bulk-data ===
-  reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_list_categories(req, res);
-          })
+  reg.get<dto::BulkDataCategoryList>("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data",
+                                     [this](http::TypedRequest req) -> http::Result<dto::BulkDataCategoryList> {
+                                       return bulkdata_handlers_->list_categories(req);
+                                     })
       .tag("Bulk Data")
       .summary("List bulk-data categories for subcomponent")
       .description("Lists bulk-data categories for a subcomponent.")
-      .response(200, "Category list", SB::ref("BulkDataCategoryList"))
       .operation_id("listSubcomponentBulkDataCategories");
 
-  reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_list_descriptors(req, res);
-          })
+  reg.get<dto::Collection<dto::BulkDataDescriptor>>(
+         "/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}",
+         [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::BulkDataDescriptor>> {
+           return bulkdata_handlers_->list_descriptors(req);
+         })
       .tag("Bulk Data")
       .summary("List bulk-data descriptors for subcomponent")
       .description("Lists bulk-data descriptors for a subcomponent.")
-      .response(200, "Descriptor list", SB::ref("BulkDataDescriptorList"))
       .operation_id("listSubcomponentBulkDataDescriptors");
 
-  reg.get("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}/{file_id}",
-          [this](auto & req, auto & res) {
-            bulkdata_handlers_->handle_download(req, res);
-          })
+  reg.binary_download("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data/{category_id}/{file_id}",
+                      [this](http::TypedRequest req) -> http::Result<http::BinaryResponse> {
+                        return bulkdata_handlers_->download(req);
+                      })
       .tag("Bulk Data")
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
-      .response(200, "File content", SB::binary_schema())
       .operation_id("downloadSubcomponentBulkData");
 
   // === Global faults ===
-  // SSE stream - must be before /faults to avoid regex conflict
-  reg.get("/faults/stream",
-          [this](auto & req, auto & res) {
-            sse_fault_handler_->handle_stream(req, res);
+  //
+  // PR-403 commit 29: 3 global fault routes migrate to the typed RouteRegistry
+  // API. The SSE stream uses the `reg.sse` escape hatch and returns
+  // `Result<SseStream>`; the framework drives the chunked content provider
+  // and renders limit-exceeded errors as SOVD GenericError. The list route
+  // emits a `FaultListResult` opaque envelope (same as the per-entity list).
+  // The global DELETE uses the attachments variant
+  // `Result<pair<NoContent, ResponseAttachments>>` so the
+  // `X-Medkit-Local-Only: true` header rides on top of the framework-default
+  // 204 No Content.
+  //
+  // SSE stream must be registered before /faults to avoid regex conflict.
+  reg.sse("/faults/stream",
+          [this](http::TypedRequest req) -> http::Result<http::SseStream> {
+            return sse_fault_handler_->sse_stream(req);
           })
       .tag("Faults")
       .summary("Stream fault events (SSE)")
       .description("Server-Sent Events stream for real-time fault notifications.")
       .operation_id("streamFaults");
 
-  reg.get("/faults",
-          [this](auto & req, auto & res) {
-            fault_handlers_->handle_list_all_faults(req, res);
-          })
+  reg.get<dto::FaultListResult>("/faults",
+                                [this](http::TypedRequest req) -> http::Result<dto::FaultListResult> {
+                                  return fault_handlers_->list_all_faults(req);
+                                })
       .tag("Faults")
       .summary("List all faults globally")
       .description("Retrieve all faults across the system.")
-      .response(200, "All faults", SB::ref("FaultList"))
       .operation_id("listAllFaults");
 
-  reg.del("/faults",
-          [this](auto & req, auto & res) {
-            fault_handlers_->handle_clear_all_faults_global(req, res);
-          })
+  reg.del<http::NoContent>(
+         "/faults",
+         [this](http::TypedRequest req) -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
+           return fault_handlers_->clear_all_faults_global(req);
+         })
       .tag("Faults")
       .summary("Clear all faults globally")
       .description("Clears all faults across the entire system.")
-      .response(204, "All faults cleared")
       .operation_id("clearAllFaults");
 
   // === Software Updates ===
-  // Always register for OpenAPI documentation. Lambdas guard against null update_handlers_.
-  auto update_501 = [](auto & /*req*/, auto & res) {
-    handlers::HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Software updates not available");
-  };
+  //
+  // PR-403 commit 22: 8 update routes migrated to typed RouteRegistry API.
+  // The handler instance may be null when no backend plugin is loaded; each
+  // typed lambda short-circuits with a 501 ErrorInfo in that case so the
+  // routes remain in the OpenAPI spec.
+  //
+  // - GET    /updates                          -> Result<UpdateList>
+  // - POST   /updates                          -> attachments (201 + Location)
+  // - GET    /updates/{update_id}              -> Result<UpdateDetail>
+  // - DELETE /updates/{update_id}              -> Result<NoContent> (204)
+  // - PUT    /updates/{update_id}/prepare      -> attachments (202 + Location)
+  // - PUT    /updates/{update_id}/execute      -> attachments (202 + Location)
+  // - PUT    /updates/{update_id}/automated    -> attachments (202 + Location)
+  // - GET    /updates/{update_id}/status       -> Result<UpdateStatus>
+  static const ErrorInfo kUpdate501 = [] {
+    ErrorInfo err;
+    err.code = ERR_NOT_IMPLEMENTED;
+    err.message = "Software updates not available";
+    err.http_status = 501;
+    return err;
+  }();
 
-  reg.get("/updates", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_list_updates(req, res);
-          })
-                                       : HandlerFn(update_501))
+  reg.get<dto::UpdateList>("/updates",
+                           [this](http::TypedRequest req) -> http::Result<dto::UpdateList> {
+                             if (!update_handlers_) {
+                               return tl::unexpected(kUpdate501);
+                             }
+                             return update_handlers_->get_updates(req);
+                           })
       .tag("Updates")
       .summary("List software updates")
       .description("Lists all registered software updates.")
-      .response(200, "Update list", SB::ref("UpdateList"))
       .operation_id("listUpdates");
 
-  reg.post("/updates", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-             update_handlers_->handle_register_update(req, res);
-           })
-                                        : HandlerFn(update_501))
+  reg.post<dto::UpdateRegisterRequest, dto::UpdateRegisterResponse>(
+         "/updates",
+         [this](http::TypedRequest req, dto::UpdateRegisterRequest body)
+             -> http::Result<std::pair<dto::UpdateRegisterResponse, http::ResponseAttachments>> {
+           if (!update_handlers_) {
+             return tl::unexpected(kUpdate501);
+           }
+           return update_handlers_->post_update(req, std::move(body));
+         })
       .tag("Updates")
       .summary("Register a software update")
       .description("Registers a new software update descriptor.")
-      .request_body("Update descriptor", SB::generic_object_schema())
-      .response(201, "Update registered", SB::generic_object_schema())
+      .response(201, "Update registered", SB::ref("UpdateRegisterResponse"))
       .operation_id("registerUpdate");
 
-  reg.get("/updates/{update_id}/status", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_get_status(req, res);
-          })
-                                                          : HandlerFn(update_501))
+  reg.get<dto::UpdateStatus>("/updates/{update_id}/status",
+                             [this](http::TypedRequest req) -> http::Result<dto::UpdateStatus> {
+                               if (!update_handlers_) {
+                                 return tl::unexpected(kUpdate501);
+                               }
+                               return update_handlers_->get_status(req);
+                             })
       .tag("Updates")
       .summary("Get update status")
       .description("Returns the current status and progress of an update.")
-      .response(200, "Update status", SB::ref("UpdateStatus"))
       .operation_id("getUpdateStatus");
 
-  reg.put("/updates/{update_id}/prepare", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_prepare(req, res);
-          })
-                                                           : HandlerFn(update_501))
+  reg.put<http::NoContent>(
+         "/updates/{update_id}/prepare",
+         [this](http::TypedRequest req) -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
+           if (!update_handlers_) {
+             return tl::unexpected(kUpdate501);
+           }
+           return update_handlers_->put_prepare(req);
+         })
       .tag("Updates")
       .summary("Prepare update for execution")
       .description("Prepares an update for execution (downloads, validates).")
-      .request_body("Prepare parameters", SB::generic_object_schema())
       .response(202, "Update preparation started")
       .operation_id("prepareUpdate");
 
-  reg.put("/updates/{update_id}/execute", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_execute(req, res);
-          })
-                                                           : HandlerFn(update_501))
+  reg.put<http::NoContent>(
+         "/updates/{update_id}/execute",
+         [this](http::TypedRequest req) -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
+           if (!update_handlers_) {
+             return tl::unexpected(kUpdate501);
+           }
+           return update_handlers_->put_execute(req);
+         })
       .tag("Updates")
       .summary("Execute update")
       .description("Starts executing a prepared update.")
-      .request_body("Execute parameters", SB::generic_object_schema())
       .response(202, "Update execution started")
       .operation_id("executeUpdate");
 
-  reg.put("/updates/{update_id}/automated", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_automated(req, res);
-          })
-                                                             : HandlerFn(update_501))
+  reg.put<http::NoContent>(
+         "/updates/{update_id}/automated",
+         [this](http::TypedRequest req) -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
+           if (!update_handlers_) {
+             return tl::unexpected(kUpdate501);
+           }
+           return update_handlers_->put_automated(req);
+         })
       .tag("Updates")
       .summary("Run automated update")
       .description("Runs a fully automated update (prepare + execute).")
-      .request_body("Automated parameters", SB::generic_object_schema())
       .response(202, "Automated update started")
       .operation_id("automateUpdate");
 
-  reg.get("/updates/{update_id}", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_get_update(req, res);
-          })
-                                                   : HandlerFn(update_501))
+  reg.get<dto::UpdateDetail>("/updates/{update_id}",
+                             [this](http::TypedRequest req) -> http::Result<dto::UpdateDetail> {
+                               if (!update_handlers_) {
+                                 return tl::unexpected(kUpdate501);
+                               }
+                               return update_handlers_->get_update(req);
+                             })
       .tag("Updates")
       .summary("Get update details")
       .description("Returns details of a specific update.")
-      .response(200, "Update details", SB::generic_object_schema())
       .operation_id("getUpdate");
 
-  reg.del("/updates/{update_id}", update_handlers_ ? HandlerFn([this](auto & req, auto & res) {
-            update_handlers_->handle_delete_update(req, res);
-          })
-                                                   : HandlerFn(update_501))
+  reg.del<http::NoContent>("/updates/{update_id}",
+                           [this](http::TypedRequest req) -> http::Result<http::NoContent> {
+                             if (!update_handlers_) {
+                               return tl::unexpected(kUpdate501);
+                             }
+                             return update_handlers_->del_update(req);
+                           })
       .tag("Updates")
       .summary("Delete update")
       .description("Removes an update registration.")
-      .response(204, "Update deleted")
       .operation_id("deleteUpdate");
 
   // === Authentication ===
-  reg.post("/auth/authorize",
-           [this](auto & req, auto & res) {
-             auth_handlers_->handle_auth_authorize(req, res);
-           })
+  // OAuth2 endpoints render errors per RFC 6749 §5.2 instead of SOVD
+  // GenericError - the framework swaps the renderer via
+  // `.error_renderer(kOAuth2Error)` so any `tl::unexpected(ErrorInfo)`
+  // returned by the typed handler becomes `{"error","error_description"}`.
+  // The bodies are parsed manually by the handlers because the auth endpoints
+  // accept both `application/json` and `application/x-www-form-urlencoded`
+  // (RFC 6749 §4.1.3); the body-less typed POST overload is used here.
+  reg.post<dto::AuthTokenResponse>("/auth/authorize",
+                                   [this](http::TypedRequest req) -> http::Result<dto::AuthTokenResponse> {
+                                     return auth_handlers_->post_authorize(req);
+                                   })
       .tag("Authentication")
       .summary("Authorize client")
       .description("Authenticate and obtain authorization tokens.")
       .request_body("Client credentials", SB::ref("AuthCredentials"))
-      .response(200, "Authorization tokens", SB::ref("AuthTokenResponse"))
-      .operation_id("authorize");
+      .operation_id("authorize")
+      .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
-  reg.post("/auth/token",
-           [this](auto & req, auto & res) {
-             auth_handlers_->handle_auth_token(req, res);
-           })
+  reg.post<dto::AuthTokenResponse>("/auth/token",
+                                   [this](http::TypedRequest req) -> http::Result<dto::AuthTokenResponse> {
+                                     return auth_handlers_->post_token(req);
+                                   })
       .tag("Authentication")
       .summary("Obtain access token")
       .description("Exchange credentials or refresh token for a JWT access token.")
       .request_body("Token request credentials", SB::ref("AuthCredentials"))
-      .response(200, "Access token", SB::ref("AuthTokenResponse"))
-      .operation_id("getToken");
+      .operation_id("getToken")
+      .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
-  reg.post("/auth/revoke",
-           [this](auto & req, auto & res) {
-             auth_handlers_->handle_auth_revoke(req, res);
-           })
+  reg.post<dto::AuthRevokeResponse>("/auth/revoke",
+                                    [this](http::TypedRequest req) -> http::Result<dto::AuthRevokeResponse> {
+                                      return auth_handlers_->post_revoke(req);
+                                    })
       .tag("Authentication")
       .summary("Revoke token")
       .description("Revoke an access or refresh token.")
-      .request_body("Token to revoke", SB::generic_object_schema())
-      .response(200, "Token revoked", SB::generic_object_schema())
-      .operation_id("revokeToken");
+      .request_body("Token to revoke", SB::ref("AuthRevokeRequest"))
+      .operation_id("revokeToken")
+      .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
   // Register all routes with cpp-httplib
   route_registry_->register_all(*srv, API_BASE_PATH);

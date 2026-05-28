@@ -14,17 +14,18 @@
 
 #pragma once
 
-#include <httplib.h>
-
 #include <memory>
-#include <nlohmann/json.hpp>
 #include <string>
+#include <utility>
 
 #include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
+#include "ros2_medkit_gateway/dto/triggers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -47,31 +48,47 @@ struct TriggerParsedResourceUri {
  * - PUT /{entity}/triggers/{id} - update trigger
  * - DELETE /{entity}/triggers/{id} - delete trigger
  * - GET /{entity}/triggers/{id}/events - SSE stream
+ *
+ * All 6 routes follow the PR-403 typed RouteRegistry convention:
+ *
+ *   http::Result<dto::TResponse> X(const http::TypedRequest & req [, dto::TBody body]);
+ *
+ * The SSE event-stream route uses the `reg.sse<>` escape hatch and returns a
+ * `Result<SseStream>` factory; the framework drives the chunked content
+ * provider. The forwarding-scope primitive (commit 17) is installed by the
+ * framework so peer-forwarding still works for entities owned by a remote
+ * gateway. CRUD POST uses the attachments variant so it can override the
+ * status to 201 without re-introducing a `httplib::Response &` parameter.
  */
 class TriggerHandlers {
  public:
   TriggerHandlers(HandlerContext & ctx, TriggerManager & trigger_mgr, std::shared_ptr<SSEClientTracker> client_tracker);
 
-  /// POST /{entity}/triggers - create trigger
-  void handle_create(const httplib::Request & req, httplib::Response & res);
+  /// POST /{entity}/triggers - create trigger.
+  ///
+  /// On success returns the new `Trigger` body with a 201 status override.
+  http::Result<std::pair<dto::Trigger, http::ResponseAttachments>> post_trigger(const http::TypedRequest & req,
+                                                                                dto::TriggerCreateRequest body);
 
-  /// GET /{entity}/triggers - list all triggers for entity
-  void handle_list(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/triggers - list all triggers for entity.
+  http::Result<dto::Collection<dto::Trigger>> get_triggers(const http::TypedRequest & req);
 
-  /// GET /{entity}/triggers/{id} - get single trigger
-  void handle_get(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/triggers/{id} - get single trigger.
+  http::Result<dto::Trigger> get_trigger(const http::TypedRequest & req);
 
-  /// PUT /{entity}/triggers/{id} - update trigger
-  void handle_update(const httplib::Request & req, httplib::Response & res);
+  /// PUT /{entity}/triggers/{id} - update trigger.
+  http::Result<dto::Trigger> put_trigger(const http::TypedRequest & req, dto::TriggerUpdateRequest body);
 
-  /// DELETE /{entity}/triggers/{id} - delete trigger
-  void handle_delete(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity}/triggers/{id} - delete trigger.
+  http::Result<http::NoContent> del_trigger(const http::TypedRequest & req);
 
-  /// GET /{entity}/triggers/{id}/events - SSE event stream
-  void handle_events(const httplib::Request & req, httplib::Response & res);
-
-  /// Convert trigger info to JSON response
-  static nlohmann::json trigger_to_json(const TriggerInfo & info, const std::string & event_source);
+  /// GET /{entity}/triggers/{id}/events - SSE event stream.
+  ///
+  /// Returns a `SseStream` whose `next_event` callback the framework drives
+  /// via cpp-httplib's chunked content provider. On validation failure the
+  /// factory returns `tl::unexpected(ErrorInfo)` and the framework renders a
+  /// SOVD GenericError.
+  http::Result<http::SseStream> sse_trigger_events(const http::TypedRequest & req);
 
   /// Parse resource URI for triggers (includes areas in addition to apps/components/functions).
   static tl::expected<TriggerParsedResourceUri, std::string> parse_resource_uri(const std::string & resource);
@@ -81,7 +98,7 @@ class TriggerHandlers {
   static std::string build_event_source(const TriggerInfo & info);
 
   /// Extract entity type string from request path
-  static std::string extract_entity_type(const httplib::Request & req);
+  static std::string extract_entity_type(const std::string & path);
 
   HandlerContext & ctx_;
   TriggerManager & trigger_mgr_;

@@ -14,8 +14,14 @@
 
 #pragma once
 
+#include <chrono>
+#include <string>
+#include <utility>
+
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -31,6 +37,16 @@ namespace handlers {
  * - DELETE /{entity_type}/{entity_id}/locks/{lock_id}      - Release lock
  *
  * Locking is supported for components and apps only (per SOVD spec).
+ *
+ * All 5 routes follow the PR-403 typed RouteRegistry convention:
+ *
+ *   http::Result<dto::TResponse> X(const http::TypedRequest & req [, dto::TBody body]);
+ *
+ * The framework owns the cpp-httplib response object - handlers never touch
+ * it. Errors are returned as `tl::unexpected(ErrorInfo)` and the framework
+ * renders them via the SOVD GenericError schema. The acquire handler uses
+ * the attachments variant so it can return 201 + `Location: <request-path>/<lock-id>`
+ * without re-introducing a `httplib::Response &` parameter.
  */
 class LockHandlers {
  public:
@@ -42,67 +58,63 @@ class LockHandlers {
   LockHandlers(HandlerContext & ctx, LockManager * lock_manager);
 
   /**
-   * @brief Handle POST /{entity_type}/{entity_id}/locks - acquire a lock.
+   * @brief POST /{entity_type}/{entity_id}/locks - acquire a lock.
    *
-   * Request body: {"scopes": [...], "lock_expiration": 300, "break_lock": false}
+   * Request body: `AcquireLockRequest` (validated at framework level).
    * Requires X-Client-Id header.
-   * Returns 201 with lock info on success.
+   * On success returns the new `Lock` body with a 201 status override and a
+   * `Location: <request-path>/<lock-id>` header.
    */
-  void handle_acquire_lock(const httplib::Request & req, httplib::Response & res);
+  http::Result<std::pair<dto::Lock, http::ResponseAttachments>> post_lock(const http::TypedRequest & req,
+                                                                          dto::AcquireLockRequest body);
 
   /**
-   * @brief Handle GET /{entity_type}/{entity_id}/locks - list locks on entity.
+   * @brief GET /{entity_type}/{entity_id}/locks - list locks on entity.
    *
-   * X-Client-Id header is optional (used to determine "owned" field).
-   * Returns 200 with {"items": [...]}.
+   * X-Client-Id header is optional (used to determine the `owned` field).
+   * Returns 200 with `Collection<Lock>` (single-item or empty).
    */
-  void handle_list_locks(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::Lock>> get_locks(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /{entity_type}/{entity_id}/locks/{lock_id} - get lock details.
+   * @brief GET /{entity_type}/{entity_id}/locks/{lock_id} - get lock details.
    *
-   * X-Client-Id header is optional (used to determine "owned" field).
-   * Returns 200 with lock info, or 404 if not found.
+   * X-Client-Id header is optional (used to determine the `owned` field).
+   * Returns 200 with `Lock`, or 404 if not found.
    */
-  void handle_get_lock(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Lock> get_lock(const http::TypedRequest & req);
 
   /**
-   * @brief Handle PUT /{entity_type}/{entity_id}/locks/{lock_id} - extend lock.
+   * @brief PUT /{entity_type}/{entity_id}/locks/{lock_id} - extend lock.
    *
-   * Request body: {"lock_expiration": 300}
+   * Request body: `ExtendLockRequest`.
    * Requires X-Client-Id header.
-   * Returns 204 on success, 403 if not owner, 404 if not found.
+   * Returns 204 (NoContent) on success, 403 if not owner, 404 if not found.
    */
-  void handle_extend_lock(const httplib::Request & req, httplib::Response & res);
+  http::Result<http::NoContent> put_lock(const http::TypedRequest & req, dto::ExtendLockRequest body);
 
   /**
-   * @brief Handle DELETE /{entity_type}/{entity_id}/locks/{lock_id} - release lock.
+   * @brief DELETE /{entity_type}/{entity_id}/locks/{lock_id} - release lock.
    *
    * Requires X-Client-Id header.
-   * Returns 204 on success, 403 if not owner, 404 if not found.
+   * Returns 204 (NoContent) on success, 403 if not owner, 404 if not found.
    */
-  void handle_release_lock(const httplib::Request & req, httplib::Response & res);
+  http::Result<http::NoContent> del_lock(const http::TypedRequest & req);
 
-  /**
-   * @brief Format a LockInfo as SOVD-compliant JSON
-   * @param lock Lock information
-   * @param client_id Optional client ID for "owned" field
-   * @return JSON object with lock details
-   */
-  static nlohmann::json lock_to_json(const LockInfo & lock, const std::string & client_id = "");
+  /// Format a time_point as ISO 8601 UTC string
+  static std::string format_expiration(std::chrono::steady_clock::time_point expires_at);
 
  private:
   HandlerContext & ctx_;
   LockManager * lock_manager_;
 
-  /// Check that locking is enabled, send 501 if not. Returns true if OK.
-  bool check_locking_enabled(httplib::Response & res);
+  /// Check that locking is enabled; on failure returns the corresponding
+  /// 501 ErrorInfo. Success carries no payload (monostate).
+  tl::expected<void, ErrorInfo> check_locking_enabled() const;
 
-  /// Extract and validate X-Client-Id header. Returns client_id or empty on error (error sent).
-  std::optional<std::string> require_client_id(const httplib::Request & req, httplib::Response & res);
-
-  /// Format a time_point as ISO 8601 UTC string
-  static std::string format_expiration(std::chrono::steady_clock::time_point expires_at);
+  /// Extract and validate the X-Client-Id header. On failure returns the
+  /// corresponding 400 ErrorInfo (missing / too long / control characters).
+  tl::expected<std::string, ErrorInfo> require_client_id(const http::TypedRequest & req) const;
 };
 
 }  // namespace handlers

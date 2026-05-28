@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,9 @@
 
 #include "ros2_medkit_gateway/core/http/handlers/auth_handlers.hpp"
 
+#include <string>
+#include <utility>
+
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 
@@ -22,157 +25,197 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-void AuthHandlers::handle_auth_authorize(const httplib::Request & req, httplib::Response & res) {
+namespace {
+
+/// Build an OAuth2-shaped ErrorInfo. The framework's `kOAuth2Error` renderer
+/// emits `{"error": err.code, "error_description": err.message}`, so the
+/// `code` field MUST carry the OAuth2 error identifier (e.g. `invalid_request`,
+/// `invalid_grant`) verbatim.
+ErrorInfo make_oauth2_error(int status, const std::string & error_code, std::string description) {
+  ErrorInfo info;
+  info.code = error_code;
+  info.message = std::move(description);
+  info.http_status = status;
+  return info;
+}
+
+/// Translate the `AuthErrorResponse` returned by parse helpers / AuthManager
+/// into an `ErrorInfo` carrying the OAuth2 error identifier verbatim.
+ErrorInfo from_auth_error(int status, const AuthErrorResponse & err) {
+  return make_oauth2_error(status, err.error, err.error_description);
+}
+
+/// Build an AuthTokenResponse DTO from a TokenResponse (auth_models.hpp).
+dto::AuthTokenResponse to_auth_token_response(const TokenResponse & tr) {
+  dto::AuthTokenResponse resp;
+  resp.access_token = tr.access_token;
+  resp.token_type = tr.token_type;
+  resp.expires_in = tr.expires_in;
+  resp.scope = tr.scope;
+  resp.refresh_token = tr.refresh_token;
+  return resp;
+}
+
+/// Build a 404 `resource-not-found`-equivalent OAuth2 error for the
+/// auth-disabled path. The renderer emits `{error: "resource-not-found",
+/// error_description: "..."}` so clients still see a structured OAuth2 body
+/// rather than a SOVD GenericError.
+ErrorInfo auth_disabled_error() {
+  return make_oauth2_error(404, ERR_RESOURCE_NOT_FOUND, "Authentication is not enabled");
+}
+
+/// Parse the AuthorizeRequest body (JSON or form-urlencoded) and surface the
+/// OAuth2 error verbatim on failure.
+tl::expected<AuthorizeRequest, ErrorInfo> parse_authorize_body(const http::TypedRequest & req) {
+  std::string content_type = req.header("Content-Type").value_or("");
+  // Framework escape hatch: the auth endpoints accept non-JSON bodies, so the
+  // typed-body parser cannot be used here. The deprecation warning is
+  // intentional: this is the documented escape hatch for handlers that must
+  // see the raw request body.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  auto parse_result = AuthorizeRequest::parse_request(content_type, raw.body);
+  if (!parse_result) {
+    return tl::make_unexpected(from_auth_error(400, parse_result.error()));
+  }
+  return parse_result.value();
+}
+
+}  // namespace
+
+http::Result<dto::AuthTokenResponse> AuthHandlers::post_authorize(const http::TypedRequest & req) {
   try {
     const auto & auth_config = ctx_.auth_config();
-
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Authentication is not enabled");
-      return;
+      return tl::make_unexpected(auth_disabled_error());
     }
 
-    // Parse request using DRY helper
-    auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
-    if (!parse_result) {
-      res.status = 400;
-      res.set_content(parse_result.error().to_json().dump(2), "application/json");
-      return;
+    auto parsed = parse_authorize_body(req);
+    if (!parsed) {
+      return tl::make_unexpected(parsed.error());
     }
-    auto auth_req = parse_result.value();
+    const auto & auth_req = parsed.value();
 
-    // Validate grant_type
     if (auth_req.grant_type != "client_credentials") {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::unsupported_grant_type("Only 'client_credentials' grant type is supported")
-                          .to_json()
-                          .dump(2),
-                      "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(
+          400, AuthErrorResponse::unsupported_grant_type("Only 'client_credentials' grant type is supported")));
     }
 
-    // Validate required fields
     if (!auth_req.client_id.has_value() || auth_req.client_id->empty()) {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::invalid_request("client_id is required").to_json().dump(2),
-                      "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(400, AuthErrorResponse::invalid_request("client_id is required")));
     }
 
     if (!auth_req.client_secret.has_value() || auth_req.client_secret->empty()) {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::invalid_request("client_secret is required").to_json().dump(2),
-                      "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(400, AuthErrorResponse::invalid_request("client_secret is required")));
     }
 
-    // Authenticate
-    auto auth_manager = ctx_.auth_manager();
+    auto * auth_manager = ctx_.auth_manager();
+    if (auth_manager == nullptr) {
+      // Defensive: the route is registered while auth is enabled, but the
+      // manager was never wired up. Surface as an OAuth2 server error rather
+      // than crashing on a null deref.
+      return tl::make_unexpected(make_oauth2_error(500, "server_error", "Authentication manager unavailable"));
+    }
+
     auto result = auth_manager->authenticate(auth_req.client_id.value(), auth_req.client_secret.value());
-
-    if (result) {
-      HandlerContext::send_json(res, result->to_json());
-    } else {
-      res.status = 401;
-      res.set_content(result.error().to_json().dump(2), "application/json");
+    if (!result) {
+      return tl::make_unexpected(from_auth_error(401, result.error()));
     }
+    return to_auth_token_response(*result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_authorize: %s", e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_authorize: %s", e.what());
+    return tl::make_unexpected(
+        make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }
 }
 
-void AuthHandlers::handle_auth_token(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::AuthTokenResponse> AuthHandlers::post_token(const http::TypedRequest & req) {
   try {
     const auto & auth_config = ctx_.auth_config();
-
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Authentication is not enabled");
-      return;
+      return tl::make_unexpected(auth_disabled_error());
     }
 
-    // Parse request using DRY helper
-    auto parse_result = AuthorizeRequest::parse_request(req.get_header_value("Content-Type"), req.body);
-    if (!parse_result) {
-      res.status = 400;
-      res.set_content(parse_result.error().to_json().dump(2), "application/json");
-      return;
+    auto parsed = parse_authorize_body(req);
+    if (!parsed) {
+      return tl::make_unexpected(parsed.error());
     }
-    auto auth_req = parse_result.value();
+    const auto & auth_req = parsed.value();
 
-    // Validate grant_type
     if (auth_req.grant_type != "refresh_token") {
-      res.status = 400;
-      res.set_content(
-          AuthErrorResponse::unsupported_grant_type("Only 'refresh_token' grant type is supported on this endpoint")
-              .to_json()
-              .dump(2),
-          "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(
+          400,
+          AuthErrorResponse::unsupported_grant_type("Only 'refresh_token' grant type is supported on this endpoint")));
     }
 
-    // Validate required fields
     if (!auth_req.refresh_token.has_value() || auth_req.refresh_token->empty()) {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::invalid_request("refresh_token is required").to_json().dump(2),
-                      "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(400, AuthErrorResponse::invalid_request("refresh_token is required")));
     }
 
-    // Refresh token
-    auto auth_manager = ctx_.auth_manager();
+    auto * auth_manager = ctx_.auth_manager();
+    if (auth_manager == nullptr) {
+      return tl::make_unexpected(make_oauth2_error(500, "server_error", "Authentication manager unavailable"));
+    }
+
     auto result = auth_manager->refresh_access_token(auth_req.refresh_token.value());
-
-    if (result) {
-      HandlerContext::send_json(res, result->to_json());
-    } else {
-      res.status = 401;
-      res.set_content(result.error().to_json().dump(2), "application/json");
+    if (!result) {
+      return tl::make_unexpected(from_auth_error(401, result.error()));
     }
+    return to_auth_token_response(*result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_token: %s", e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_token: %s", e.what());
+    return tl::make_unexpected(
+        make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }
 }
 
-void AuthHandlers::handle_auth_revoke(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::AuthRevokeResponse> AuthHandlers::post_revoke(const http::TypedRequest & req) {
   try {
     const auto & auth_config = ctx_.auth_config();
-
     if (!auth_config.enabled) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Authentication is not enabled");
-      return;
+      return tl::make_unexpected(auth_disabled_error());
     }
 
-    // Parse request
+    // Framework escape hatch: /auth/revoke historically accepts a JSON body
+    // only (not form-urlencoded). Parse manually to preserve the OAuth2
+    // `invalid_request` error code on malformed input.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    const auto & raw = req.raw_for_framework();
+#pragma GCC diagnostic pop
+
     json body;
     try {
-      body = json::parse(req.body);
+      body = json::parse(raw.body);
     } catch (const json::parse_error & e) {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::invalid_request("Invalid JSON: " + std::string(e.what())).to_json().dump(2),
-                      "application/json");
-      return;
+      return tl::make_unexpected(
+          from_auth_error(400, AuthErrorResponse::invalid_request(std::string("Invalid JSON: ") + e.what())));
     }
 
-    // Extract token to revoke
     if (!body.contains("token") || !body["token"].is_string()) {
-      res.status = 400;
-      res.set_content(AuthErrorResponse::invalid_request("token is required").to_json().dump(2), "application/json");
-      return;
+      return tl::make_unexpected(from_auth_error(400, AuthErrorResponse::invalid_request("token is required")));
     }
 
-    std::string token = body["token"].get<std::string>();
+    const std::string token = body["token"].get<std::string>();
 
-    // Revoke token (do not reveal whether it existed to avoid token enumeration)
-    auto auth_manager = ctx_.auth_manager();
+    auto * auth_manager = ctx_.auth_manager();
+    if (auth_manager == nullptr) {
+      return tl::make_unexpected(make_oauth2_error(500, "server_error", "Authentication manager unavailable"));
+    }
+
+    // Per RFC 7009 §2.2, the revoke endpoint must not indicate whether the
+    // submitted token was valid - always respond with the same 200 body.
     auth_manager->revoke_refresh_token(token);
 
-    // Per OAuth2 RFC 7009, always return 200 and do not indicate token validity
-    json response = {{"status", "revoked"}};
-    HandlerContext::send_json(res, response);
+    dto::AuthRevokeResponse resp;
+    resp.status = "revoked";
+    return resp;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_auth_revoke: %s", e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_revoke: %s", e.what());
+    return tl::make_unexpected(
+        make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }
 }
 

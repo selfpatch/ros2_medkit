@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
+#include <functional>
 #include <httplib.h>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
@@ -23,10 +24,14 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "../src/openapi/route_registry.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
+#include "ros2_medkit_gateway/dto/health.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using namespace std::chrono_literals;
 
@@ -34,32 +39,56 @@ using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::TlsConfig;
+using ros2_medkit_gateway::dto::JsonWriter;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::HealthHandlers;
+using ros2_medkit_gateway::http::TypedRequest;
 using ros2_medkit_gateway::openapi::RouteRegistry;
 
+namespace dto = ros2_medkit_gateway::dto;
+
 // HealthHandlers has no dependency on GatewayNode or AuthManager:
-// - handle_health only calls HandlerContext::send_json() (static)
-// - handle_version_info only calls HandlerContext::send_json() (static)
-// - handle_root reads ctx_.auth_config() and ctx_.tls_config() (both disabled by default)
+// - get_health builds dto::Health (free-standing)
+// - get_version_info builds dto::VersionInfo (free-standing)
+// - get_root reads ctx_.auth_config() and ctx_.tls_config() (both disabled by default)
 // All tests use a null GatewayNode and null AuthManager which is safe for these handlers.
 
 namespace {
 
-// No-op handler for route registration in tests
-void noop_handler(const httplib::Request & /*req*/, httplib::Response & /*res*/) {
+// Typed seed handlers used to populate a test route registry with the routes
+// `handle_root` enumerates. The handler bodies are never invoked - the tests
+// only inspect the registry's endpoint list.
+ros2_medkit_gateway::http::Result<dto::Health> noop_get_health(ros2_medkit_gateway::http::TypedRequest /*req*/) {
+  return dto::Health{};
+}
+
+ros2_medkit_gateway::http::Result<dto::Health> noop_post_health(ros2_medkit_gateway::http::TypedRequest /*req*/,
+                                                                const dto::Health & /*body*/) {
+  return dto::Health{};
+}
+
+void seed_get(RouteRegistry & reg, const std::string & path, const std::string & tag, const std::string & summary) {
+  std::function<ros2_medkit_gateway::http::Result<dto::Health>(ros2_medkit_gateway::http::TypedRequest)> h =
+      &noop_get_health;
+  reg.get<dto::Health>(path, std::move(h)).tag(tag).summary(summary);
+}
+
+void seed_post(RouteRegistry & reg, const std::string & path, const std::string & tag) {
+  std::function<ros2_medkit_gateway::http::Result<dto::Health>(ros2_medkit_gateway::http::TypedRequest, dto::Health)>
+      h = &noop_post_health;
+  reg.post<dto::Health, dto::Health>(path, std::move(h)).tag(tag);
 }
 
 // Populate a test route registry with representative routes
 void populate_test_routes(RouteRegistry & reg) {
-  reg.get("/health", noop_handler).tag("Server").summary("Health check");
-  reg.get("/", noop_handler).tag("Server").summary("API overview");
-  reg.get("/version-info", noop_handler).tag("Server").summary("SOVD version information");
-  reg.get("/areas", noop_handler).tag("Discovery").summary("List areas");
-  reg.get("/apps", noop_handler).tag("Discovery").summary("List apps");
-  reg.get("/components", noop_handler).tag("Discovery").summary("List components");
-  reg.get("/functions", noop_handler).tag("Discovery").summary("List functions");
-  reg.get("/faults", noop_handler).tag("Faults").summary("List all faults");
+  seed_get(reg, "/health", "Server", "Health check");
+  seed_get(reg, "/", "Server", "API overview");
+  seed_get(reg, "/version-info", "Server", "SOVD version information");
+  seed_get(reg, "/areas", "Discovery", "List areas");
+  seed_get(reg, "/apps", "Discovery", "List apps");
+  seed_get(reg, "/components", "Discovery", "List components");
+  seed_get(reg, "/functions", "Discovery", "List functions");
+  seed_get(reg, "/faults", "Faults", "List all faults");
 }
 
 }  // namespace
@@ -74,7 +103,7 @@ class HealthHandlersTest : public ::testing::Test {
   HealthHandlers handlers_{ctx_, &route_registry_};
 
   httplib::Request req_;
-  httplib::Response res_;
+  TypedRequest typed_req_{req_};
 
   void SetUp() override {
     populate_test_routes(route_registry_);
@@ -85,130 +114,121 @@ class HealthHandlersTest : public ::testing::Test {
   }
 };
 
-// --- handle_health ---
+// --- get_health ---
 
 TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy) {
-  handlers_.handle_health(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_EQ(body["status"], "healthy");
+  auto result = handlers_.get_health(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "healthy");
 }
 
 TEST_F(HealthHandlersTest, HandleHealthNullNodeOmitsDiscovery) {
   // ctx_ uses nullptr for GatewayNode, so discovery info should not be present
-  handlers_.handle_health(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_EQ(body["status"], "healthy");
-  EXPECT_FALSE(body.contains("discovery"));
+  auto result = handlers_.get_health(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "healthy");
+  EXPECT_FALSE(result->discovery.has_value());
 }
 
 TEST_F(HealthHandlersTest, HandleHealthResponseContainsTimestamp) {
-  handlers_.handle_health(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_TRUE(body.contains("timestamp"));
-  EXPECT_TRUE(body["timestamp"].is_number());
+  auto result = handlers_.get_health(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_GT(result->timestamp, 0);
 }
 
 TEST_F(HealthHandlersTest, HandleHealthResponseIsValidJson) {
-  handlers_.handle_health(req_, res_);
-  EXPECT_NO_THROW(json::parse(res_.body));
+  auto result = handlers_.get_health(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  // The DTO writer must produce a valid JSON object for the success body.
+  auto body = JsonWriter<dto::Health>::write(result.value());
+  EXPECT_TRUE(body.is_object());
+  EXPECT_EQ(body["status"], "healthy");
 }
 
-// --- handle_version_info ---
+// --- get_version_info ---
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoContainsItemsArray) {
-  handlers_.handle_version_info(req_, res_);
-  auto body = json::parse(res_.body);
-  ASSERT_TRUE(body.contains("items"));
-  ASSERT_TRUE(body["items"].is_array());
-  EXPECT_FALSE(body["items"].empty());
+  auto result = handlers_.get_version_info(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->items.empty());
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasVersionField) {
-  handlers_.handle_version_info(req_, res_);
-  auto body = json::parse(res_.body);
-  auto & entry = body["items"][0];
-  EXPECT_TRUE(entry.contains("version"));
-  EXPECT_TRUE(entry["version"].is_string());
-  EXPECT_FALSE(entry["version"].get<std::string>().empty());
+  auto result = handlers_.get_version_info(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result->items.empty());
+  EXPECT_FALSE(result->items[0].version.empty());
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasBaseUri) {
-  handlers_.handle_version_info(req_, res_);
-  auto body = json::parse(res_.body);
-  auto & entry = body["items"][0];
-  EXPECT_TRUE(entry.contains("base_uri"));
+  auto result = handlers_.get_version_info(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result->items.empty());
+  EXPECT_FALSE(result->items[0].base_uri.empty());
 }
 
 // @verifies REQ_INTEROP_001
 TEST_F(HealthHandlersTest, HandleVersionInfoItemsEntryHasVendorInfo) {
-  handlers_.handle_version_info(req_, res_);
-  auto body = json::parse(res_.body);
-  auto & entry = body["items"][0];
-  EXPECT_TRUE(entry.contains("vendor_info"));
-  EXPECT_TRUE(entry["vendor_info"].contains("name"));
-  EXPECT_EQ(entry["vendor_info"]["name"], "ros2_medkit");
+  auto result = handlers_.get_version_info(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result->items.empty());
+  ASSERT_TRUE(result->items[0].vendor_info.has_value());
+  EXPECT_EQ(result->items[0].vendor_info->name, "ros2_medkit");
 }
 
-// --- handle_root ---
+// --- get_root ---
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootResponseContainsRequiredTopLevelFields) {
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_TRUE(body.contains("name"));
-  EXPECT_FALSE(body["name"].get<std::string>().empty());
-  EXPECT_TRUE(body.contains("version"));
-  EXPECT_FALSE(body["version"].get<std::string>().empty());
-  EXPECT_TRUE(body.contains("api_base"));
-  EXPECT_FALSE(body["api_base"].get<std::string>().empty());
-  EXPECT_TRUE(body.contains("endpoints"));
-  EXPECT_TRUE(body.contains("capabilities"));
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->name.empty());
+  EXPECT_FALSE(result->version.empty());
+  EXPECT_FALSE(result->api_base.empty());
+  // endpoints + capabilities are required by the DTO schema; non-emptiness of
+  // endpoints is checked by the dedicated test below.
 }
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootEndpointsIsNonEmptyArray) {
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  ASSERT_TRUE(body["endpoints"].is_array());
-  EXPECT_FALSE(body["endpoints"].empty());
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->endpoints.empty());
 }
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesContainsDiscovery) {
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  auto & caps = body["capabilities"];
-  EXPECT_TRUE(caps.contains("discovery"));
-  EXPECT_TRUE(caps["discovery"].get<bool>());
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->capabilities.discovery);
 }
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootAuthDisabledNoAuthEndpoints) {
   // With auth disabled (default), auth endpoints must not appear in the list
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  for (const auto & ep : body["endpoints"]) {
-    EXPECT_EQ(ep.get<std::string>().find("/auth/"), std::string::npos)
-        << "Unexpected auth endpoint when auth is disabled: " << ep;
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  for (const auto & ep : result->endpoints) {
+    EXPECT_EQ(ep.find("/auth/"), std::string::npos) << "Unexpected auth endpoint when auth is disabled: " << ep;
   }
 }
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesAuthDisabled) {
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_FALSE(body["capabilities"]["authentication"].get<bool>());
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->capabilities.authentication);
 }
 
 // @verifies REQ_INTEROP_010
 TEST_F(HealthHandlersTest, HandleRootCapabilitiesTlsDisabled) {
-  handlers_.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
-  EXPECT_FALSE(body["capabilities"]["tls"].get<bool>());
-  EXPECT_FALSE(body.contains("tls"));
+  auto result = handlers_.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE(result->capabilities.tls);
+  EXPECT_FALSE(result->tls.has_value());
 }
 
 // @verifies REQ_INTEROP_010
@@ -220,24 +240,24 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledAddsAuthEndpoints) {
   // Create registry with auth routes
   RouteRegistry auth_reg;
   populate_test_routes(auth_reg);
-  auth_reg.post("/auth/authorize", noop_handler).tag("Authentication");
-  auth_reg.post("/auth/token", noop_handler).tag("Authentication");
-  auth_reg.post("/auth/revoke", noop_handler).tag("Authentication");
+  seed_post(auth_reg, "/auth/authorize", "Authentication");
+  seed_post(auth_reg, "/auth/token", "Authentication");
+  seed_post(auth_reg, "/auth/revoke", "Authentication");
 
   HealthHandlers handlers_auth(ctx_auth, &auth_reg);
 
-  handlers_auth.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
+  auto result = handlers_auth.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
 
   bool has_auth_endpoint = false;
-  for (const auto & ep : body["endpoints"]) {
-    if (ep.get<std::string>().find("/auth/") != std::string::npos) {
+  for (const auto & ep : result->endpoints) {
+    if (ep.find("/auth/") != std::string::npos) {
       has_auth_endpoint = true;
       break;
     }
   }
   EXPECT_TRUE(has_auth_endpoint);
-  EXPECT_TRUE(body["capabilities"]["authentication"].get<bool>());
+  EXPECT_TRUE(result->capabilities.authentication);
 }
 
 // @verifies REQ_INTEROP_010
@@ -249,13 +269,13 @@ TEST_F(HealthHandlersTest, HandleRootAuthEnabledIncludesAuthMetadataBlock) {
   auto ctx_auth = make_context(auth_enabled, tls_config_);
   HealthHandlers handlers_auth(ctx_auth, &route_registry_);
 
-  handlers_auth.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
+  auto result = handlers_auth.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
 
-  ASSERT_TRUE(body.contains("auth"));
-  EXPECT_TRUE(body["auth"]["enabled"].get<bool>());
-  EXPECT_EQ(body["auth"]["algorithm"], "HS256");
-  EXPECT_EQ(body["auth"]["require_auth_for"], "all");
+  ASSERT_TRUE(result->auth.has_value());
+  EXPECT_TRUE(result->auth->enabled);
+  EXPECT_EQ(result->auth->algorithm, "HS256");
+  EXPECT_EQ(result->auth->require_auth_for, "all");
 }
 
 // @verifies REQ_INTEROP_010
@@ -266,16 +286,16 @@ TEST_F(HealthHandlersTest, HandleRootTlsEnabledIncludesTlsMetadataBlock) {
   auto ctx_tls = make_context(auth_config_, tls_enabled);
   HealthHandlers handlers_tls(ctx_tls, &route_registry_);
 
-  handlers_tls.handle_root(req_, res_);
-  auto body = json::parse(res_.body);
+  auto result = handlers_tls.get_root(typed_req_);
+  ASSERT_TRUE(result.has_value());
 
-  ASSERT_TRUE(body.contains("tls"));
-  EXPECT_TRUE(body["tls"]["enabled"].get<bool>());
-  EXPECT_EQ(body["tls"]["min_version"], "1.3");
-  EXPECT_TRUE(body["capabilities"]["tls"].get<bool>());
+  ASSERT_TRUE(result->tls.has_value());
+  EXPECT_TRUE(result->tls->enabled);
+  EXPECT_EQ(result->tls->min_version, "1.3");
+  EXPECT_TRUE(result->capabilities.tls);
 }
 
-// --- handle_health discovery block (requires live GatewayNode) ---
+// --- live discovery block (requires live GatewayNode + real HTTP server) ---
 
 static constexpr const char * API_BASE_PATH = "/api/v1";
 

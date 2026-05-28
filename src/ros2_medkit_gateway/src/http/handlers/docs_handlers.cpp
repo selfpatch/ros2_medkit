@@ -18,7 +18,9 @@
 
 #include "../../openapi/capability_generator.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/detail/primitives.hpp"
 
 #ifdef ENABLE_SWAGGER_UI
 #include "swagger_ui_assets.hpp"
@@ -26,6 +28,19 @@
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+void DocsHandlers::write_json(httplib::Response & res, const nlohmann::json & body) {
+  http::detail::write_json_body(http::detail::FrameworkOrPluginAccess{}, res, body);
+}
+
+void DocsHandlers::write_error(httplib::Response & res, int status, const std::string & code,
+                               const std::string & message) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = message;
+  err.http_status = status;
+  http::detail::write_generic_error(http::detail::FrameworkOrPluginAccess{}, res, err);
+}
 
 DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
                            const openapi::RouteRegistry * route_registry)
@@ -46,32 +61,32 @@ DocsHandlers::~DocsHandlers() = default;
 
 void DocsHandlers::handle_docs_root(const httplib::Request & /*req*/, httplib::Response & res) {
   if (!docs_enabled_) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    DocsHandlers::write_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
     return;
   }
 
   auto spec = generator_->generate("/");
   if (!spec) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to generate capability description");
+    DocsHandlers::write_error(res, 500, ERR_INTERNAL_ERROR, "Failed to generate capability description");
     return;
   }
-  HandlerContext::send_json(res, *spec);
+  DocsHandlers::write_json(res, *spec);
 }
 
 void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::Response & res) {
   if (!docs_enabled_) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    DocsHandlers::write_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
     return;
   }
 
   auto base_path = req.matches[1].str();
   auto spec = generator_->generate(base_path);
   if (!spec) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                               "No capability description available for the requested path");
+    DocsHandlers::write_error(res, 404, ERR_RESOURCE_NOT_FOUND,
+                              "No capability description available for the requested path");
     return;
   }
-  HandlerContext::send_json(res, *spec);
+  DocsHandlers::write_json(res, *spec);
 }
 
 #ifdef ENABLE_SWAGGER_UI
@@ -115,7 +130,7 @@ const std::string & get_embedded_html() {
 
 void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::Response & res) {
   if (!docs_enabled_) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    DocsHandlers::write_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
     return;
   }
 
@@ -126,7 +141,7 @@ void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::
 
 void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::Response & res) {
   if (!docs_enabled_) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
+    DocsHandlers::write_error(res, 501, ERR_NOT_IMPLEMENTED, "Capability description is disabled");
     return;
   }
 
@@ -149,7 +164,7 @@ void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::R
     size = swagger_ui::swagger_ui_standalone_preset_js_size;
     content_type = "application/javascript";
   } else {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Asset not found");
+    DocsHandlers::write_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Asset not found");
     return;
   }
 

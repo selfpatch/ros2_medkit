@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,373 +14,147 @@
 
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
 
-#include <unordered_set>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+#include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
-
-using json = nlohmann::json;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-void OperationHandlers::handle_list_operations(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
+namespace {
 
-    entity_id = req.matches[1];
+using json = nlohmann::json;
 
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-    auto entity_info = *entity_opt;
+// =============================================================================
+// Helper free functions
+// =============================================================================
 
-    // Delegate to plugin OperationProvider if entity is plugin-owned
-    if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
-      if (op_prov) {
-        try {
-          auto result = op_prov->list_operations(entity_id);
-          if (result) {
-            HandlerContext::send_json(res, *result);
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
-                       entity_id.c_str(), e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
+/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
+/// matches the legacy `send_error` default and integration tests stay byte-
+/// identical.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
+/// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
+ErrorInfo make_plugin_error(int http_status, const std::string & message, json extra_params = {}) {
+  static constexpr size_t kMaxMessageLength = 512;
+  int status = http_status < 400 ? 400 : (http_status > 599 ? 599 : http_status);
+  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
+  return make_error(status, ERR_PLUGIN_ERROR, std::move(msg), std::move(extra_params));
+}
+
+/// Read the first positional capture group (entity_id) with the same "missing
+/// capture is treated as 400 invalid-request" semantics as the other migrated
+/// handlers (matches the legacy `req.matches.size() < N` guard).
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the second positional capture group (operation_id).
+tl::expected<std::string, ErrorInfo> read_operation_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("2");
+  if (raw) {
+    return *raw;
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the third positional capture group (execution_id).
+tl::expected<std::string, ErrorInfo> read_execution_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("3");
+  if (raw) {
+    return *raw;
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler signals "do not render" via the framework-internal
+/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
         }
-        return;
-      }
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "No operation provider for plugin entity '" + entity_id + "'");
-      return;
-    }
+      },
+      err);
+}
 
-    // Use ThreadSafeEntityCache for O(1) entity lookup and aggregated operations
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+/// Look up the entity_id -> EntityType -> AggregatedOperations triple. The
+/// SOVD entity hierarchy (areas, components, apps, functions) all expose
+/// operations but the cache lookup is per-type. Returns a typed error if the
+/// entity type does not support operations (e.g. SERVER / UNKNOWN).
+struct EntityOpsLookup {
+  AggregatedOperations ops;
+  std::string entity_type;  ///< "component" | "app" | "area" | "function"
+};
 
-    // Determine entity type and get aggregated operations
-    AggregatedOperations ops;
-    std::string entity_type;
-
-    switch (entity_info.sovd_type()) {
-      case SovdEntityType::COMPONENT:
-        ops = cache.get_component_operations(entity_id);
-        entity_type = "component";
-        break;
-      case SovdEntityType::APP:
-        ops = cache.get_app_operations(entity_id);
-        entity_type = "app";
-        break;
-      case SovdEntityType::AREA:
-        ops = cache.get_area_operations(entity_id);
-        entity_type = "area";
-        break;
-      case SovdEntityType::FUNCTION:
-        ops = cache.get_function_operations(entity_id);
-        entity_type = "function";
-        break;
-      case SovdEntityType::SERVER:
-      case SovdEntityType::UNKNOWN:
-      default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
-        return;
-    }
-
-    RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
-                 entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
-
-    // Build response with services and actions
-    json operations = json::array();
-
-    // Get type introspection for schema info
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto type_introspection = data_access_mgr->get_type_introspection();
-
-    for (const auto & svc : ops.services) {
-      // Response format
-      json svc_json = {
-          {"id", svc.name}, {"name", svc.name}, {"proximity_proof_required", false}, {"asynchronous_execution", false}};
-
-      // Build x-medkit extension with ROS2-specific data
-      auto x_medkit = XMedkit()
-                          .ros2_service(svc.full_path)
-                          .ros2_type(svc.type)
-                          .ros2_kind("service")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
-
-      // Build type_info with request/response schemas for services
-      try {
-        json type_info_json;
-        // Service types: pkg/srv/Type -> Request: pkg/srv/Type_Request, Response: pkg/srv/Type_Response
-        auto request_info = type_introspection->get_type_info(svc.type + "_Request");
-        auto response_info = type_introspection->get_type_info(svc.type + "_Response");
-        type_info_json["request"] = request_info.schema;
-        type_info_json["response"] = response_info.schema;
-        x_medkit.add("type_info", type_info_json);
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
-                     e.what());
-      }
-
-      svc_json["x-medkit"] = x_medkit.build();
-      operations.push_back(svc_json);
-    }
-
-    for (const auto & act : ops.actions) {
-      // Response format
-      json act_json = {
-          {"id", act.name}, {"name", act.name}, {"proximity_proof_required", false}, {"asynchronous_execution", true}};
-
-      // Build x-medkit extension with ROS2-specific data
-      auto x_medkit = XMedkit()
-                          .ros2_action(act.full_path)
-                          .ros2_type(act.type)
-                          .ros2_kind("action")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
-
-      // Build type_info with goal/result/feedback schemas for actions
-      try {
-        json type_info_json;
-        // Action types: pkg/action/Type -> Goal: pkg/action/Type_Goal, etc.
-        auto goal_info = type_introspection->get_type_info(act.type + "_Goal");
-        auto result_info = type_introspection->get_type_info(act.type + "_Result");
-        auto feedback_info = type_introspection->get_type_info(act.type + "_Feedback");
-        type_info_json["goal"] = goal_info.schema;
-        type_info_json["result"] = result_info.schema;
-        type_info_json["feedback"] = feedback_info.schema;
-        x_medkit.add("type_info", type_info_json);
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
-                     e.what());
-      }
-
-      act_json["x-medkit"] = x_medkit.build();
-      operations.push_back(act_json);
-    }
-
-    // Return response with items array
-    json response;
-    response["items"] = operations;
-    XMedkit ext;
-    merge_peer_items(ctx_.aggregation_manager(), req, response, ext);
-    if (!ext.empty()) {
-      response["x-medkit"] = ext.build();
-    }
-    HandlerContext::send_json(res, response);
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list operations",
-                               {{"details", e.what()}, {"entity_id", entity_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_operations for entity '%s': %s", entity_id.c_str(),
-                 e.what());
+tl::expected<EntityOpsLookup, ErrorInfo> resolve_entity_operations(const ThreadSafeEntityCache & cache,
+                                                                   SovdEntityType type, const std::string & entity_id) {
+  EntityOpsLookup out;
+  switch (type) {
+    case SovdEntityType::COMPONENT:
+      out.ops = cache.get_component_operations(entity_id);
+      out.entity_type = "component";
+      return out;
+    case SovdEntityType::APP:
+      out.ops = cache.get_app_operations(entity_id);
+      out.entity_type = "app";
+      return out;
+    case SovdEntityType::AREA:
+      out.ops = cache.get_area_operations(entity_id);
+      out.entity_type = "area";
+      return out;
+    case SovdEntityType::FUNCTION:
+      out.ops = cache.get_function_operations(entity_id);
+      out.entity_type = "function";
+      return out;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      return tl::make_unexpected(make_error(404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
+                                            json{{"entity_id", entity_id}}));
   }
 }
 
-void OperationHandlers::handle_get_operation(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
-  try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
-
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-    auto entity_info = *entity_opt;
-
-    // Delegate to plugin OperationProvider if entity is plugin-owned
-    if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
-      if (op_prov) {
-        try {
-          auto result = op_prov->get_operation(entity_id, operation_id);
-          if (result) {
-            HandlerContext::send_json(res, json{{"item", *result}});
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}, {"operation_id", operation_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
-                       entity_id.c_str(), e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
-        }
-        return;
-      }
-      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND,
-                                 "No operation provider for plugin entity '" + entity_id + "'");
-      return;
-    }
-
-    // Use ThreadSafeEntityCache for O(1) entity lookup
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-
-    // Get aggregated operations based on entity type
-    AggregatedOperations ops;
-    std::string entity_type;
-    switch (entity_info.sovd_type()) {
-      case SovdEntityType::COMPONENT:
-        ops = cache.get_component_operations(entity_id);
-        entity_type = "component";
-        break;
-      case SovdEntityType::APP:
-        ops = cache.get_app_operations(entity_id);
-        entity_type = "app";
-        break;
-      case SovdEntityType::AREA:
-        ops = cache.get_area_operations(entity_id);
-        entity_type = "area";
-        break;
-      case SovdEntityType::FUNCTION:
-        ops = cache.get_function_operations(entity_id);
-        entity_type = "function";
-        break;
-      case SovdEntityType::SERVER:
-      case SovdEntityType::UNKNOWN:
-      default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
-                                   {{"entity_id", entity_id}});
-        return;
-    }
-
-    // Find operation by name - O(m) where m = operations in entity
-    std::optional<ServiceInfo> service_info;
-    std::optional<ActionInfo> action_info;
-
-    for (const auto & svc : ops.services) {
-      if (svc.name == operation_id) {
-        service_info = svc;
-        break;
-      }
-    }
-
-    if (!service_info.has_value()) {
-      for (const auto & act : ops.actions) {
-        if (act.name == operation_id) {
-          action_info = act;
-          break;
-        }
-      }
-    }
-
-    if (!service_info.has_value() && !action_info.has_value()) {
-      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
-                                 {{"entity_id", entity_id}, {"operation_id", operation_id}});
-      return;
-    }
-
-    // Get type introspection for schema info
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto type_introspection = data_access_mgr->get_type_introspection();
-
-    // Build response
-    json item;
-
-    if (service_info.has_value()) {
-      item["id"] = service_info->name;
-      item["name"] = service_info->name;
-      item["proximity_proof_required"] = false;
-      item["asynchronous_execution"] = false;
-
-      auto x_medkit = XMedkit()
-                          .ros2_service(service_info->full_path)
-                          .ros2_type(service_info->type)
-                          .ros2_kind("service")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
-
-      try {
-        json type_info_json;
-        auto request_info = type_introspection->get_type_info(service_info->type + "_Request");
-        auto response_info = type_introspection->get_type_info(service_info->type + "_Response");
-        type_info_json["request"] = request_info.schema;
-        type_info_json["response"] = response_info.schema;
-        x_medkit.add("type_info", type_info_json);
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s",
-                     service_info->type.c_str(), e.what());
-      }
-
-      item["x-medkit"] = x_medkit.build();
-    } else {
-      item["id"] = action_info->name;
-      item["name"] = action_info->name;
-      item["proximity_proof_required"] = false;
-      item["asynchronous_execution"] = true;
-
-      auto x_medkit = XMedkit()
-                          .ros2_action(action_info->full_path)
-                          .ros2_type(action_info->type)
-                          .ros2_kind("action")
-                          .entity_id(entity_id)
-                          .source("ros2_medkit_gateway");
-
-      try {
-        json type_info_json;
-        auto goal_info = type_introspection->get_type_info(action_info->type + "_Goal");
-        auto result_info = type_introspection->get_type_info(action_info->type + "_Result");
-        auto feedback_info = type_introspection->get_type_info(action_info->type + "_Feedback");
-        type_info_json["goal"] = goal_info.schema;
-        type_info_json["result"] = result_info.schema;
-        type_info_json["feedback"] = feedback_info.schema;
-        x_medkit.add("type_info", type_info_json);
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", action_info->type.c_str(),
-                     e.what());
-      }
-
-      item["x-medkit"] = x_medkit.build();
-    }
-
-    json response;
-    response["item"] = item;
-    HandlerContext::send_json(res, response);
-
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get operation details",
-                               {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_operation for entity '%s', operation '%s': %s",
-                 entity_id.c_str(), operation_id.c_str(), e.what());
-  }
-}
-
-// Helper function to convert ROS2 action status to SOVD ExecutionStatus
-static std::string sovd_status_from_ros2(ActionGoalStatus status) {
+/// Convert a ROS 2 action goal status into the SOVD `ExecutionStatus` enum
+/// the gateway emits on the wire. Identical mapping to the legacy helper.
+std::string sovd_status_from_ros2(ActionGoalStatus status) {
   switch (status) {
     case ActionGoalStatus::ACCEPTED:
     case ActionGoalStatus::EXECUTING:
@@ -397,556 +171,759 @@ static std::string sovd_status_from_ros2(ActionGoalStatus status) {
   }
 }
 
-void OperationHandlers::handle_create_execution(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
+/// Build the `XMedkitOperationItem` block that decorates every OperationItem
+/// returned by the runtime discovery branch. Shared by list_operations and
+/// get_operation so the wire shape is identical for both.
+dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const std::string & entity_id,
+                                                ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+  dto::XMedkitRos2 ros2;
+  ros2.service = svc.full_path;
+  ros2.type = svc.type;
+  ros2.kind = "service";
+
+  dto::XMedkitOperationItem x_medkit;
+  x_medkit.ros2 = ros2;
+  x_medkit.entity_id = entity_id;
+  x_medkit.source = "ros2_medkit_gateway";
+
   try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    json type_info_json;
+    auto request_info = type_introspection->get_type_info(svc.type + "_Request");
+    auto response_info = type_introspection->get_type_info(svc.type + "_Response");
+    type_info_json["request"] = request_info.schema;
+    type_info_json["response"] = response_info.schema;
+    x_medkit.type_info = type_info_json;
+  } catch (const std::exception & e) {
+    RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(), e.what());
+  }
+  return x_medkit;
+}
+
+dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std::string & entity_id,
+                                               ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+  dto::XMedkitRos2 ros2;
+  ros2.action = act.full_path;
+  ros2.type = act.type;
+  ros2.kind = "action";
+
+  dto::XMedkitOperationItem x_medkit;
+  x_medkit.ros2 = ros2;
+  x_medkit.entity_id = entity_id;
+  x_medkit.source = "ros2_medkit_gateway";
+
+  try {
+    json type_info_json;
+    auto goal_info_entry = type_introspection->get_type_info(act.type + "_Goal");
+    auto result_info = type_introspection->get_type_info(act.type + "_Result");
+    auto feedback_info = type_introspection->get_type_info(act.type + "_Feedback");
+    type_info_json["goal"] = goal_info_entry.schema;
+    type_info_json["result"] = result_info.schema;
+    type_info_json["feedback"] = feedback_info.schema;
+    x_medkit.type_info = type_info_json;
+  } catch (const std::exception & e) {
+    RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(), e.what());
+  }
+  return x_medkit;
+}
+
+/// Map an `OperationProviderErrorInfo` (from the typed plugin ABI) into the
+/// SOVD `x-medkit-plugin-error` wire shape via `make_plugin_error`.
+ErrorInfo make_provider_error(const OperationProviderErrorInfo & info, const std::string & entity_id,
+                              const std::optional<std::string> & operation_id = std::nullopt) {
+  json params{{"entity_id", entity_id}};
+  if (operation_id.has_value()) {
+    params["operation_id"] = *operation_id;
+  }
+  return make_plugin_error(info.http_status, info.message, std::move(params));
+}
+
+}  // namespace
+
+// =============================================================================
+// GET /{entity}/operations - list operations
+// =============================================================================
+
+http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operations(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  // Delegate to plugin OperationProvider for plugin-owned entities.
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    if (op_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_RESOURCE_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
     }
-
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-    auto entity_info = *entity_opt;
-
-    // Check lock access for operations (before plugin delegation - locks apply to all entities)
-    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
-      return;
-    }
-
-    // Delegate to plugin OperationProvider if entity is plugin-owned
-    if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
-      if (op_prov) {
-        json params = json::object();
-        if (!req.body.empty()) {
-          params = json::parse(req.body, nullptr, false);
-          if (params.is_discarded()) {
-            HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
-            return;
-          }
-        }
-        try {
-          auto result = op_prov->execute_operation(entity_id, operation_id, params);
-          if (result) {
-            HandlerContext::send_json(res, *result);
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
-                       entity_id.c_str(), e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
-        }
-        return;
+    try {
+      auto result = op_prov->list_operations(entity_id);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
       }
-      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND,
-                                 "No operation provider for plugin entity '" + entity_id + "'");
-      return;
+      return *result;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
+  }
 
-    // Parse request body
-    json body = json::object();
-    if (!req.body.empty()) {
-      try {
-        body = json::parse(req.body);
-      } catch (const json::parse_error & e) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                   {{"details", e.what()}});
-        return;
+  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
+  if (!lookup) {
+    return tl::make_unexpected(lookup.error());
+  }
+  const auto & ops = lookup->ops;
+  RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
+               lookup->entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
+
+  // Build OperationItem list (services + actions). The wire shape is shared
+  // with handle_get_operation so build_service_xmedkit / build_action_xmedkit
+  // are factored out into the anon-ns helpers above.
+  dto::Collection<dto::OperationItem> collection;
+  auto data_access_mgr = ctx_.node()->get_data_access_manager();
+  auto type_introspection = data_access_mgr->get_type_introspection();
+
+  for (const auto & svc : ops.services) {
+    dto::OperationItem item;
+    item.id = svc.name;
+    item.name = svc.name;
+    item.proximity_proof_required = false;
+    item.asynchronous_execution = false;
+    item.x_medkit = build_service_xmedkit(svc, entity_id, type_introspection);
+    collection.items.push_back(std::move(item));
+  }
+  for (const auto & act : ops.actions) {
+    dto::OperationItem item;
+    item.id = act.name;
+    item.name = act.name;
+    item.proximity_proof_required = false;
+    item.asynchronous_execution = true;
+    item.x_medkit = build_action_xmedkit(act, entity_id, type_introspection);
+    collection.items.push_back(std::move(item));
+  }
+
+  // Typed fan-out for the operations list. Replacement for the legacy raw-JSON
+  // `merge_peer_items` mutator: peer items are parsed as `dto::OperationItem`
+  // via JsonReader, malformed items are surfaced through `peer_dropped_items`
+  // on the standard XMedkitCollection. The fan_out_collection helper still
+  // operates on the raw cpp-httplib request - we use the typed-request escape
+  // hatch deliberately here; a later commit will accept the typed request
+  // directly.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  auto fan_out = fan_out_collection<dto::OperationItem>(ctx_.aggregation_manager(), raw_req);
+  for (auto & item : fan_out.items) {
+    collection.items.push_back(std::move(item));
+  }
+  if (fan_out.partial || !fan_out.dropped_items.empty()) {
+    dto::XMedkitCollection xm;
+    if (fan_out.partial) {
+      xm.partial = true;
+      xm.failed_peers = fan_out.failed_peers;
+    }
+    if (!fan_out.dropped_items.empty()) {
+      xm.peer_dropped_items = fan_out.dropped_items;
+    }
+    collection.x_medkit = std::move(xm);
+  }
+  return collection;
+}
+
+// =============================================================================
+// GET /{entity}/operations/{op_id} - get operation details
+// =============================================================================
+
+http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    if (op_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_OPERATION_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
+    }
+    try {
+      auto result = op_prov->get_operation(entity_id, operation_id);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id, operation_id));
+      }
+      dto::OperationDetail detail;
+      detail.item = std::move(*result);
+      return detail;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
+    }
+  }
+
+  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
+  if (!lookup) {
+    return tl::make_unexpected(lookup.error());
+  }
+  const auto & ops = lookup->ops;
+
+  std::optional<ServiceInfo> service_info;
+  std::optional<ActionInfo> action_info;
+  for (const auto & svc : ops.services) {
+    if (svc.name == operation_id) {
+      service_info = svc;
+      break;
+    }
+  }
+  if (!service_info.has_value()) {
+    for (const auto & act : ops.actions) {
+      if (act.name == operation_id) {
+        action_info = act;
+        break;
       }
     }
+  }
+  if (!service_info.has_value() && !action_info.has_value()) {
+    return tl::make_unexpected(make_error(404, ERR_OPERATION_NOT_FOUND, "Operation not found",
+                                          json{{"entity_id", entity_id}, {"operation_id", operation_id}}));
+  }
 
-    // Use ThreadSafeEntityCache for O(1) entity lookup
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+  auto data_access_mgr = ctx_.node()->get_data_access_manager();
+  auto type_introspection = data_access_mgr->get_type_introspection();
 
-    // Get aggregated operations based on entity type
-    AggregatedOperations ops;
-    std::string entity_type;
-    switch (entity_info.sovd_type()) {
-      case SovdEntityType::COMPONENT:
-        ops = cache.get_component_operations(entity_id);
-        entity_type = "component";
-        break;
-      case SovdEntityType::APP:
-        ops = cache.get_app_operations(entity_id);
-        entity_type = "app";
-        break;
-      case SovdEntityType::AREA:
-        ops = cache.get_area_operations(entity_id);
-        entity_type = "area";
-        break;
-      case SovdEntityType::FUNCTION:
-        ops = cache.get_function_operations(entity_id);
-        entity_type = "function";
-        break;
-      case SovdEntityType::SERVER:
-      case SovdEntityType::UNKNOWN:
-      default:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity type does not support operations",
-                                   {{"entity_id", entity_id}});
-        return;
+  dto::OperationDetail detail;
+  if (service_info.has_value()) {
+    detail.item.id = service_info->name;
+    detail.item.name = service_info->name;
+    detail.item.proximity_proof_required = false;
+    detail.item.asynchronous_execution = false;
+    detail.item.x_medkit = build_service_xmedkit(*service_info, entity_id, type_introspection);
+  } else {
+    detail.item.id = action_info->name;
+    detail.item.name = action_info->name;
+    detail.item.proximity_proof_required = false;
+    detail.item.asynchronous_execution = true;
+    detail.item.x_medkit = build_action_xmedkit(*action_info, entity_id, type_introspection);
+  }
+  return detail;
+}
+
+// =============================================================================
+// POST /{entity}/operations/{op_id}/executions - start execution
+// =============================================================================
+
+http::Result<
+    std::pair<std::variant<dto::OperationExecutionResult, dto::ExecutionCreateAsync>, http::ResponseAttachments>>
+OperationHandlers::create_execution(const http::TypedRequest & req, dto::ExecutionCreateRequest body) {
+  using ResultVariant = std::variant<dto::OperationExecutionResult, dto::ExecutionCreateAsync>;
+  using SuccessPair = std::pair<ResultVariant, http::ResponseAttachments>;
+
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  // Locks gate all mutating operations, including plugin-owned entities.
+  if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
+    return tl::make_unexpected(lock_err.error());
+  }
+
+  // Plugin delegation: the plugin's `execute_operation` returns the typed
+  // `OperationExecutionResult` envelope. Pre-typed plugins kept the raw JSON
+  // body shape, so the wire format is unchanged.
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    if (op_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_OPERATION_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
     }
+    // Plugin ABI takes the raw parameter payload. Pre-typed handlers passed
+    // the full request body JSON through (plugins read their own operation-
+    // specific keys, e.g. OPC-UA reads `fault_code` / `comment`, UDS reads
+    // `session_type` / `reset_type`). Preserve that contract by re-parsing
+    // the raw body so callers do not have to wrap operation parameters in
+    // a `parameters` / `goal` / `request` envelope when targeting plugin
+    // entities. The typed `ExecutionCreateRequest` DTO still drives the ROS
+    // runtime path below where the envelope is the SOVD-conforming shape.
+    json params = json::object();
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+    if (!raw_req.body.empty()) {
+      auto parsed = json::parse(raw_req.body, nullptr, false);
+      if (!parsed.is_discarded() && parsed.is_object()) {
+        params = std::move(parsed);
+      }
+    }
+    try {
+      auto result = op_prov->execute_operation(entity_id, operation_id, params);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id, operation_id));
+      }
+      return SuccessPair{ResultVariant{std::move(*result)}, http::ResponseAttachments{}};
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
+    }
+  }
 
-    // Find operation by name - O(m) where m = operations in entity
-    std::optional<ServiceInfo> service_info;
-    std::optional<ActionInfo> action_info;
+  // Runtime discovery branch.
+  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
+  if (!lookup) {
+    return tl::make_unexpected(lookup.error());
+  }
+  const auto & ops = lookup->ops;
+  const std::string id_field = (lookup->entity_type == "app") ? "app_id" : "component_id";
 
-    for (const auto & svc : ops.services) {
-      if (svc.name == operation_id) {
-        service_info = svc;
+  std::optional<ServiceInfo> service_info;
+  std::optional<ActionInfo> action_info;
+  for (const auto & svc : ops.services) {
+    if (svc.name == operation_id) {
+      service_info = svc;
+      break;
+    }
+  }
+  if (!service_info.has_value()) {
+    for (const auto & act : ops.actions) {
+      if (act.name == operation_id) {
+        action_info = act;
         break;
       }
     }
+  }
+  if (!service_info.has_value() && !action_info.has_value()) {
+    return tl::make_unexpected(make_error(404, ERR_OPERATION_NOT_FOUND, "Operation not found",
+                                          json{{"entity_id", entity_id}, {"operation_id", operation_id}}));
+  }
 
-    if (!service_info.has_value()) {
-      for (const auto & act : ops.actions) {
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+
+  // ---- Action (asynchronous: 202 + Location) ----
+  if (action_info.has_value()) {
+    json goal_data = json::object();
+    if (body.parameters.has_value()) {
+      goal_data = *body.parameters;
+    } else if (body.goal.has_value()) {
+      goal_data = *body.goal;
+    }
+    std::string action_type = action_info->type;
+    if (body.type.has_value()) {
+      action_type = *body.type;
+    }
+
+    auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id);
+
+    if (action_result.success && action_result.goal_accepted) {
+      dto::ExecutionCreateAsync async_dto;
+      async_dto.id = action_result.goal_id;
+      async_dto.status = "running";
+
+      const std::string base_path = (lookup->entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
+      const std::string location =
+          base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
+
+      http::ResponseAttachments att;
+      att.with_header("Location", location);
+      // dto_alternate_status<ExecutionCreateAsync> == 202, so the framework
+      // emits the 202 status without an explicit override here.
+      return SuccessPair{ResultVariant{std::move(async_dto)}, std::move(att)};
+    }
+    if (action_result.success && !action_result.goal_accepted) {
+      return tl::make_unexpected(make_error(
+          400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, "Goal rejected",
+          json{{id_field, entity_id},
+               {"operation_id", operation_id},
+               {"details", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}}));
+    }
+    return tl::make_unexpected(make_error(
+        500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE, "Action execution failed",
+        json{{id_field, entity_id}, {"operation_id", operation_id}, {"details", action_result.error_message}}));
+  }
+
+  // ---- Service (synchronous: 200) ----
+  // service_info.has_value() is guaranteed here because the !service && !action
+  // 404 branch returned earlier.
+  json request_data = json::object();
+  if (body.parameters.has_value()) {
+    request_data = *body.parameters;
+  } else if (body.request.has_value()) {
+    request_data = *body.request;
+  }
+  std::string service_type = service_info->type;
+  if (body.type.has_value()) {
+    service_type = *body.type;
+  }
+
+  auto svc_result = operation_mgr->call_service(service_info->full_path, service_type, request_data);
+  if (svc_result.success) {
+    // Wire shape: `{"parameters": <ros_response>}`. The DTO envelope
+    // `OperationExecutionResult` is opaque so the bare object is emitted
+    // verbatim by `JsonWriter<OperationExecutionResult>`.
+    dto::OperationExecutionResult sync_result;
+    sync_result.content = json{{"parameters", svc_result.response}};
+    return SuccessPair{ResultVariant{std::move(sync_result)}, http::ResponseAttachments{}};
+  }
+  // Inline service-error path is replaced with the framework error channel:
+  // `make_error` produces a SOVD GenericError that the typed wrapper renders.
+  return tl::make_unexpected(
+      make_error(500, ERR_X_MEDKIT_ROS2_SERVICE_UNAVAILABLE, "Service call failed",
+                 json{{id_field, entity_id}, {"operation_id", operation_id}, {"details", svc_result.error_message}}));
+}
+
+// =============================================================================
+// GET /{entity}/operations/{op_id}/executions - list executions
+// =============================================================================
+
+http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executions(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
+
+  if (auto vr = ctx_.validate_entity_id(entity_id); !vr) {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                          json{{"details", vr.error()}, {"entity_id", entity_id}}));
+  }
+
+  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  std::string namespace_path;
+  bool entity_found = false;
+
+  if (auto component = cache.get_component(entity_id)) {
+    namespace_path = component->namespace_path;
+    entity_found = true;
+  }
+  if (!entity_found) {
+    if (auto app = cache.get_app(entity_id)) {
+      for (const auto & act : app->actions) {
         if (act.name == operation_id) {
-          action_info = act;
+          namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
+          entity_found = true;
           break;
         }
       }
     }
-
-    if (!service_info.has_value() && !action_info.has_value()) {
-      HandlerContext::send_error(res, 404, ERR_OPERATION_NOT_FOUND, "Operation not found",
-                                 {{"entity_id", entity_id}, {"operation_id", operation_id}});
-      return;
-    }
-
-    auto operation_mgr = ctx_.node()->get_operation_manager();
-    std::string id_field = (entity_type == "app") ? "app_id" : "component_id";
-
-    // Handle actions (asynchronous execution)
-    if (action_info.has_value()) {
-      // Extract goal data from 'parameters' field (SOVD standard) or 'goal' field (legacy)
-      json goal_data = json::object();
-      if (body.contains("parameters")) {
-        goal_data = body["parameters"];
-      } else if (body.contains("goal")) {
-        goal_data = body["goal"];
-      }
-
-      std::string action_type = action_info->type;
-      if (body.contains("type") && body["type"].is_string()) {
-        action_type = body["type"].get<std::string>();
-      }
-
-      auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id);
-
-      if (action_result.success && action_result.goal_accepted) {
-        // Return 202 Accepted with Location header for async operations
-        json response = {{"id", action_result.goal_id}, {"status", "running"}};
-
-        // Add Location header pointing to execution status endpoint
-        std::string base_path = (entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
-        std::string location =
-            base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
-        res.set_header("Location", location);
-
-        res.status = 202;
-        res.set_content(response.dump(), "application/json");
-      } else if (action_result.success && !action_result.goal_accepted) {
-        HandlerContext::send_error(
-            res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, "Goal rejected",
-            {{id_field, entity_id},
-             {"operation_id", operation_id},
-             {"details", action_result.error_message.empty() ? "Goal rejected" : action_result.error_message}});
-      } else {
-        HandlerContext::send_error(
-            res, 500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE, "Action execution failed",
-            {{id_field, entity_id}, {"operation_id", operation_id}, {"details", action_result.error_message}});
-      }
-      return;
-    }
-
-    // Handle services (synchronous execution)
-    if (service_info.has_value()) {
-      json request_data = json::object();
-      if (body.contains("parameters")) {
-        request_data = body["parameters"];
-      } else if (body.contains("request")) {
-        request_data = body["request"];
-      }
-
-      std::string service_type = service_info->type;
-      if (body.contains("type") && body["type"].is_string()) {
-        service_type = body["type"].get<std::string>();
-      }
-
-      auto result = operation_mgr->call_service(service_info->full_path, service_type, request_data);
-
-      if (result.success) {
-        // Synchronous response
-        json response = {{"parameters", result.response}};
-        HandlerContext::send_json(res, response);
-      } else {
-        json error_response = {{"error",
-                                {{"code", ERR_X_MEDKIT_ROS2_SERVICE_UNAVAILABLE},
-                                 {"message", "Service call failed"},
-                                 {"details", result.error_message}}}};
-        res.status = 500;
-        res.set_content(error_response.dump(), "application/json");
-      }
-    }
-
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to execute operation",
-                               {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_create_execution for entity '%s', operation '%s': %s",
-                 entity_id.c_str(), operation_id.c_str(), e.what());
   }
+  if (!entity_found) {
+    return tl::make_unexpected(
+        make_error(404, ERR_ENTITY_NOT_FOUND, "Entity not found", json{{"entity_id", entity_id}}));
+  }
+
+  const std::string action_path = namespace_path + "/" + operation_id;
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto goals = operation_mgr->get_goals_for_action(action_path);
+
+  // Typed Collection<ExecutionId> - replaces the legacy ad-hoc
+  // `{"items": [{"id": "..."}]}` JSON literal. The wire shape is identical
+  // (per JsonWriter<Collection<ExecutionId>>::write) but the per-item schema
+  // is now enforced by JsonReader<ExecutionId> on round-trip.
+  dto::Collection<dto::ExecutionId> collection;
+  for (const auto & goal : goals) {
+    dto::ExecutionId item;
+    item.id = goal.goal_id;
+    collection.items.push_back(std::move(item));
+  }
+  return collection;
 }
 
-void OperationHandlers::handle_list_executions(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
-  try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
+// =============================================================================
+// GET /{entity}/operations/{op_id}/executions/{exec_id} - execution status
+// =============================================================================
 
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // Find entity to get namespace (O(1) lookups)
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    std::string namespace_path;
-    bool entity_found = false;
-
-    if (auto component = cache.get_component(entity_id)) {
-      namespace_path = component->namespace_path;
-      entity_found = true;
-    }
-
-    if (!entity_found) {
-      if (auto app = cache.get_app(entity_id)) {
-        for (const auto & act : app->actions) {
-          if (act.name == operation_id) {
-            namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
-            entity_found = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!entity_found) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
-      return;
-    }
-
-    // Build action path and get all goals for this action
-    std::string action_path = namespace_path + "/" + operation_id;
-    auto operation_mgr = ctx_.node()->get_operation_manager();
-    auto goals = operation_mgr->get_goals_for_action(action_path);
-
-    // Return list of execution objects with id field (Table 172)
-    json items = json::array();
-    for (const auto & goal : goals) {
-      items.push_back({{"id", goal.goal_id}});
-    }
-
-    json response = {{"items", items}};
-    HandlerContext::send_json(res, response);
-
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list executions",
-                               {{"details", e.what()}, {"entity_id", entity_id}, {"operation_id", operation_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_executions: %s", e.what());
+http::Result<dto::OperationExecution> OperationHandlers::get_execution(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
+
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
+
+  auto exec_id_result = read_execution_id(req);
+  if (!exec_id_result) {
+    return tl::make_unexpected(exec_id_result.error());
+  }
+  const std::string execution_id = *exec_id_result;
+
+  if (auto vr = ctx_.validate_entity_id(entity_id); !vr) {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                          json{{"details", vr.error()}, {"entity_id", entity_id}}));
+  }
+
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
+  if (!goal_info.has_value()) {
+    return tl::make_unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  }
+
+  dto::OperationExecution exec_dto;
+  exec_dto.status = sovd_status_from_ros2(goal_info->status);
+  exec_dto.capability = "execute";
+
+  if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
+    exec_dto.parameters = goal_info->last_feedback;
+  }
+
+  dto::XMedkitRos2 exec_ros2;
+  exec_ros2.action = goal_info->action_path;
+  exec_ros2.type = goal_info->action_type;
+
+  dto::XMedkitOperationExecution exec_x_medkit;
+  exec_x_medkit.goal_id = execution_id;
+  exec_x_medkit.ros2_status = action_status_to_string(goal_info->status);
+  exec_x_medkit.ros2 = exec_ros2;
+  exec_dto.x_medkit = exec_x_medkit;
+  return exec_dto;
 }
 
-void OperationHandlers::handle_get_execution(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
-  std::string execution_id;
-  try {
-    if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
+// =============================================================================
+// DELETE /{entity}/operations/{op_id}/executions/{exec_id} - cancel
+// =============================================================================
 
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-    execution_id = req.matches[3];
-
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    auto operation_mgr = ctx_.node()->get_operation_manager();
-    auto goal_info = operation_mgr->get_tracked_goal(execution_id);
-
-    if (!goal_info.has_value()) {
-      HandlerContext::send_error(
-          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-          {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
-      return;
-    }
-
-    // Response
-    json response = {{"status", sovd_status_from_ros2(goal_info->status)}, {"capability", "execute"}};
-
-    // Add feedback as parameters if available
-    if (!goal_info->last_feedback.is_null() && !goal_info->last_feedback.empty()) {
-      response["parameters"] = goal_info->last_feedback;
-    }
-
-    // Add x-medkit extension for ROS2-specific details
-    auto x_medkit = XMedkit()
-                        .add("goal_id", execution_id)
-                        .add("ros2_status", action_status_to_string(goal_info->status))
-                        .ros2_action(goal_info->action_path)
-                        .ros2_type(goal_info->action_type);
-    response["x-medkit"] = x_medkit.build();
-
-    HandlerContext::send_json(res, response);
-
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get execution status",
-                               {{"details", e.what()},
-                                {"entity_id", entity_id},
-                                {"operation_id", operation_id},
-                                {"execution_id", execution_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_execution: %s", e.what());
+http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
+
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
+
+  auto exec_id_result = read_execution_id(req);
+  if (!exec_id_result) {
+    return tl::make_unexpected(exec_id_result.error());
+  }
+  const std::string execution_id = *exec_id_result;
+
+  if (auto vr = ctx_.validate_entity_id(entity_id); !vr) {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                          json{{"details", vr.error()}, {"entity_id", entity_id}}));
+  }
+
+  // Lock-check against the resolved entity (best-effort - if the entity
+  // cannot be resolved here we still let the operation manager produce the
+  // canonical 404 below).
+  const auto entity_info = ctx_.get_entity_info(entity_id);
+  if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
+    return tl::make_unexpected(lock_err.error());
+  }
+
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
+  if (!goal_info.has_value()) {
+    return tl::make_unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  }
+
+  auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
+  if (result.success && result.return_code == 0) {
+    return http::NoContent{};
+  }
+  std::string error_msg;
+  switch (result.return_code) {
+    case 1:
+      error_msg = "Cancel request rejected";
+      break;
+    case 2:
+      error_msg = "Unknown execution ID";
+      break;
+    case 3:
+      error_msg = "Execution already terminated";
+      break;
+    default:
+      error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
+  }
+  return tl::make_unexpected(make_error(400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
+                                        json{{"entity_id", entity_id},
+                                             {"operation_id", operation_id},
+                                             {"execution_id", execution_id},
+                                             {"return_code", result.return_code}}));
 }
 
-void OperationHandlers::handle_cancel_execution(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
-  std::string execution_id;
-  try {
-    if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
+// =============================================================================
+// PUT /{entity}/operations/{op_id}/executions/{exec_id} - update execution
+// =============================================================================
 
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-    execution_id = req.matches[3];
+http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>>
+OperationHandlers::update_execution(const http::TypedRequest & req, const dto::ExecutionUpdateRequest & body) {
+  using SuccessPair = std::pair<dto::OperationExecution, http::ResponseAttachments>;
 
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
 
-    // Check lock access for operations
-    auto entity_info = ctx_.get_entity_info(entity_id);
-    if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
-      return;
-    }
+  auto op_id_result = read_operation_id(req);
+  if (!op_id_result) {
+    return tl::make_unexpected(op_id_result.error());
+  }
+  const std::string operation_id = *op_id_result;
 
-    auto operation_mgr = ctx_.node()->get_operation_manager();
-    auto goal_info = operation_mgr->get_tracked_goal(execution_id);
+  auto exec_id_result = read_execution_id(req);
+  if (!exec_id_result) {
+    return tl::make_unexpected(exec_id_result.error());
+  }
+  const std::string execution_id = *exec_id_result;
 
-    if (!goal_info.has_value()) {
-      HandlerContext::send_error(
-          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-          {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
-      return;
-    }
+  if (auto vr = ctx_.validate_entity_id(entity_id); !vr) {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID",
+                                          json{{"details", vr.error()}, {"entity_id", entity_id}}));
+  }
 
-    // Cancel the action
+  const auto entity_info = ctx_.get_entity_info(entity_id);
+  if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
+    return tl::make_unexpected(lock_err.error());
+  }
+
+  const std::string capability = body.capability;
+
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
+  if (!goal_info.has_value()) {
+    return tl::make_unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  }
+
+  // SOVD capabilities: execute, freeze, reset, stop. ROS 2 actions only
+  // implement stop (maps to cancel); the rest are 400 with an explicit
+  // supported_capabilities hint.
+  if (capability == "stop") {
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
-
     if (result.success && result.return_code == 0) {
-      // Return 204 No Content on successful cancellation request
-      res.status = 204;
-    } else {
-      std::string error_msg;
-      switch (result.return_code) {
-        case 1:
-          error_msg = "Cancel request rejected";
-          break;
-        case 2:
-          error_msg = "Unknown execution ID";
-          break;
-        case 3:
-          error_msg = "Execution already terminated";
-          break;
-        default:
-          error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
-      }
-      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
-                                 {{"entity_id", entity_id},
-                                  {"operation_id", operation_id},
-                                  {"execution_id", execution_id},
-                                  {"return_code", result.return_code}});
-    }
+      const std::string base_path =
+          req.path().find("/apps/") != std::string::npos ? "/api/v1/apps/" : "/api/v1/components/";
+      const std::string location =
+          base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
 
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to cancel execution",
-                               {{"details", e.what()},
-                                {"entity_id", entity_id},
-                                {"operation_id", operation_id},
-                                {"execution_id", execution_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_cancel_execution: %s", e.what());
+      dto::OperationExecution exec_dto;
+      exec_dto.id = execution_id;
+      exec_dto.status = "running";  // canceling is still "running" in SOVD terms
+
+      http::ResponseAttachments att;
+      att.with_status(202).with_header("Location", location);
+      return SuccessPair{std::move(exec_dto), std::move(att)};
+    }
+    std::string error_msg;
+    switch (result.return_code) {
+      case 1:
+        error_msg = "Stop request rejected";
+        break;
+      case 2:
+        error_msg = "Unknown execution ID";
+        break;
+      case 3:
+        error_msg = "Execution already terminated";
+        break;
+      default:
+        error_msg = result.error_message.empty() ? "Stop failed" : result.error_message;
+    }
+    return tl::make_unexpected(make_error(400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
+                                          json{{"entity_id", entity_id},
+                                               {"operation_id", operation_id},
+                                               {"execution_id", execution_id},
+                                               {"capability", capability}}));
   }
-}
-
-void OperationHandlers::handle_update_execution(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string operation_id;
-  std::string execution_id;
-  try {
-    if (req.matches.size() < 4) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
-
-    entity_id = req.matches[1];
-    operation_id = req.matches[2];
-    execution_id = req.matches[3];
-
-    auto entity_validation = ctx_.validate_entity_id(entity_id);
-    if (!entity_validation) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                 {{"details", entity_validation.error()}, {"entity_id", entity_id}});
-      return;
-    }
-
-    // Check lock access for operations
-    {
-      auto entity_info = ctx_.get_entity_info(entity_id);
-      if (ctx_.validate_lock_access(req, res, entity_info, "operations")) {
-        return;
-      }
-    }
-
-    // Parse request body
-    json body = json::object();
-    if (!req.body.empty()) {
-      try {
-        body = json::parse(req.body);
-      } catch (const json::parse_error & e) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                   {{"details", e.what()}});
-        return;
-      }
-    }
-
-    // Validate required 'capability' field
-    if (!body.contains("capability") || !body["capability"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing required 'capability' field");
-      return;
-    }
-
-    std::string capability = body["capability"].get<std::string>();
-
-    auto operation_mgr = ctx_.node()->get_operation_manager();
-    auto goal_info = operation_mgr->get_tracked_goal(execution_id);
-
-    if (!goal_info.has_value()) {
-      HandlerContext::send_error(
-          res, 404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-          {{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
-      return;
-    }
-
-    // Handle supported capabilities
-    // SOVD capabilities: execute, freeze, reset, stop (and custom x-<ext>-* capabilities)
-    // ROS 2 actions support: execute (re-send goal), stop (cancel)
-
-    if (capability == "stop") {
-      // Stop capability maps to ROS 2 action cancel
-      auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
-
-      if (result.success && result.return_code == 0) {
-        // Return 202 Accepted with execution status
-        std::string base_path = req.path.find("/apps/") != std::string::npos ? "/api/v1/apps/" : "/api/v1/components/";
-        std::string location = base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
-        res.set_header("Location", location);
-
-        json response = {{"id", execution_id}, {"status", "running"}};  // Canceling is still "running" in SOVD terms
-        res.status = 202;
-        res.set_content(response.dump(), "application/json");
-      } else {
-        std::string error_msg;
-        switch (result.return_code) {
-          case 1:
-            error_msg = "Stop request rejected";
-            break;
-          case 2:
-            error_msg = "Unknown execution ID";
-            break;
-          case 3:
-            error_msg = "Execution already terminated";
-            break;
-          default:
-            error_msg = result.error_message.empty() ? "Stop failed" : result.error_message;
-        }
-        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
-                                   {{"entity_id", entity_id},
-                                    {"operation_id", operation_id},
-                                    {"execution_id", execution_id},
-                                    {"capability", capability}});
-      }
-    } else if (capability == "execute") {
-      // Re-execute with updated parameters is not directly supported by ROS 2 actions
-      // The goal would need to be cancelled and a new one sent
-      // For now, return 409 Conflict indicating the operation is still running
-      HandlerContext::send_error(
-          res, 409, ERR_INVALID_REQUEST,
-          "Cannot re-execute while operation is running. Cancel first, then start new execution.",
-          {{"entity_id", entity_id},
-           {"operation_id", operation_id},
-           {"execution_id", execution_id},
-           {"capability", capability}});
-    } else if (capability == "freeze" || capability == "reset") {
-      // These I/O control capabilities are not applicable to ROS 2 actions
-      // They are ECU-specific concepts for UDS-style I/O controls
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Capability not supported for ROS 2 actions",
-                                 {{"entity_id", entity_id},
-                                  {"operation_id", operation_id},
-                                  {"execution_id", execution_id},
-                                  {"capability", capability},
-                                  {"supported_capabilities", json::array({"stop"})}});
-    } else {
-      // Unknown or custom capability
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown capability",
-                                 {{"entity_id", entity_id},
-                                  {"operation_id", operation_id},
-                                  {"execution_id", execution_id},
-                                  {"capability", capability},
-                                  {"supported_capabilities", json::array({"stop"})}});
-    }
-
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to update execution",
-                               {{"details", e.what()},
-                                {"entity_id", entity_id},
-                                {"operation_id", operation_id},
-                                {"execution_id", execution_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_update_execution: %s", e.what());
+  if (capability == "execute") {
+    return tl::make_unexpected(
+        make_error(409, ERR_INVALID_REQUEST,
+                   "Cannot re-execute while operation is running. Cancel first, then start new execution.",
+                   json{{"entity_id", entity_id},
+                        {"operation_id", operation_id},
+                        {"execution_id", execution_id},
+                        {"capability", capability}}));
   }
+  if (capability == "freeze" || capability == "reset") {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Capability not supported for ROS 2 actions",
+                                          json{{"entity_id", entity_id},
+                                               {"operation_id", operation_id},
+                                               {"execution_id", execution_id},
+                                               {"capability", capability},
+                                               {"supported_capabilities", json::array({"stop"})}}));
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Unknown capability",
+                                        json{{"entity_id", entity_id},
+                                             {"operation_id", operation_id},
+                                             {"execution_id", execution_id},
+                                             {"capability", capability},
+                                             {"supported_capabilities", json::array({"stop"})}}));
 }
 
 }  // namespace handlers

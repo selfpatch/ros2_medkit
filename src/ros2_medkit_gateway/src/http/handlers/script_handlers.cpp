@@ -16,6 +16,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
+
+#include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -25,20 +31,90 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+namespace {
+
+/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
+/// matches the legacy `send_error` default and integration tests stay byte-
+/// identical.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Read a positional capture group from the typed request. The legacy handlers
+/// used `req.matches[N]` without bounds checking; the typed surface refuses
+/// out-of-range captures with ERR_INVALID_REQUEST/400. cpp-httplib only routes
+/// when the regex matches, so this branch is effectively unreachable in
+/// production, but the helper keeps the typed flow explicit.
+tl::expected<std::string, ErrorInfo> read_capture(const http::TypedRequest & req, std::string_view index) {
+  auto raw = req.path_param(index);
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler signals "do not render" via the framework-internal
+/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
+/// Map a ScriptBackendError code to the matching SOVD ErrorInfo. Centralised
+/// so every typed handler routes backend errors through the same translation
+/// table the legacy `send_script_error` produced; the wire body stays byte-
+/// identical (status + error_code/vendor_code/message).
+ErrorInfo script_backend_error(const ScriptBackendErrorInfo & err) {
+  switch (err.code) {
+    case ScriptBackendError::NotFound:
+      return make_error(404, ERR_RESOURCE_NOT_FOUND, err.message);
+    case ScriptBackendError::AlreadyExists:
+      return make_error(409, ERR_SCRIPT_ALREADY_EXISTS, err.message);
+    case ScriptBackendError::ManagedScript:
+      return make_error(409, ERR_SCRIPT_MANAGED, err.message);
+    case ScriptBackendError::AlreadyRunning:
+      return make_error(409, ERR_SCRIPT_RUNNING, err.message);
+    case ScriptBackendError::NotRunning:
+      return make_error(409, ERR_SCRIPT_NOT_RUNNING, err.message);
+    case ScriptBackendError::InvalidInput:
+      return make_error(400, ERR_INVALID_REQUEST, err.message);
+    case ScriptBackendError::UnsupportedType:
+      return make_error(400, ERR_INVALID_PARAMETER, err.message);
+    case ScriptBackendError::FileTooLarge:
+      return make_error(413, ERR_SCRIPT_FILE_TOO_LARGE, err.message);
+    case ScriptBackendError::ConcurrencyLimit:
+      return make_error(429, ERR_SCRIPT_CONCURRENCY_LIMIT, err.message);
+    case ScriptBackendError::Internal:
+    default:
+      return make_error(500, ERR_INTERNAL_ERROR, err.message);
+  }
+}
+
+}  // namespace
+
 ScriptHandlers::ScriptHandlers(HandlerContext & ctx, ScriptManager * script_manager)
   : ctx_(ctx), script_mgr_(script_manager) {
 }
 
-bool ScriptHandlers::check_backend(httplib::Response & res) {
-  if (!script_mgr_ || !script_mgr_->has_backend()) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured");
-    return false;
-  }
-  return true;
-}
-
-std::string ScriptHandlers::entity_type_from_path(const httplib::Request & req) {
-  return (req.path.find("/components/") != std::string::npos) ? "components" : "apps";
+std::string ScriptHandlers::entity_type_from_path(const std::string & path) {
+  return (path.find("/components/") != std::string::npos) ? "components" : "apps";
 }
 
 bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
@@ -50,456 +126,499 @@ bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
   });
 }
 
-void ScriptHandlers::send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err) {
-  switch (err.code) {
-    case ScriptBackendError::NotFound:
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, err.message);
-      break;
-    case ScriptBackendError::AlreadyExists:
-      HandlerContext::send_error(res, 409, ERR_SCRIPT_ALREADY_EXISTS, err.message);
-      break;
-    case ScriptBackendError::ManagedScript:
-      HandlerContext::send_error(res, 409, ERR_SCRIPT_MANAGED, err.message);
-      break;
-    case ScriptBackendError::AlreadyRunning:
-      HandlerContext::send_error(res, 409, ERR_SCRIPT_RUNNING, err.message);
-      break;
-    case ScriptBackendError::NotRunning:
-      HandlerContext::send_error(res, 409, ERR_SCRIPT_NOT_RUNNING, err.message);
-      break;
-    case ScriptBackendError::InvalidInput:
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, err.message);
-      break;
-    case ScriptBackendError::UnsupportedType:
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, err.message);
-      break;
-    case ScriptBackendError::FileTooLarge:
-      HandlerContext::send_error(res, 413, ERR_SCRIPT_FILE_TOO_LARGE, err.message);
-      break;
-    case ScriptBackendError::ConcurrencyLimit:
-      HandlerContext::send_error(res, 429, ERR_SCRIPT_CONCURRENCY_LIMIT, err.message);
-      break;
-    case ScriptBackendError::Internal:
-    default:
-      HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, err.message);
-      break;
-  }
+dto::ScriptMetadata ScriptHandlers::script_info_to_dto(const ScriptInfo & info, const std::string & base_path) {
+  dto::ScriptMetadata meta;
+  meta.id = info.id;
+  meta.name = info.name;
+  meta.description = info.description;
+  meta.href = api_path(base_path + "/scripts/" + info.id);
+  meta.managed = info.managed;
+  meta.proximity_proof_required = info.proximity_proof_required;
+  meta.parameters_schema = info.parameters_schema;
+  return meta;
 }
 
-json ScriptHandlers::script_info_to_json(const ScriptInfo & info, const std::string & base_path) {
-  json obj;
-  obj["id"] = info.id;
-  obj["name"] = info.name;
-  obj["description"] = info.description;
-  obj["href"] = api_path(base_path + "/scripts/" + info.id);
-  obj["managed"] = info.managed;
-  obj["proximity_proof_required"] = info.proximity_proof_required;
-  if (info.parameters_schema.has_value()) {
-    obj["parameters_schema"] = info.parameters_schema.value();
-  } else {
-    obj["parameters_schema"] = nullptr;
-  }
-  return obj;
+dto::ScriptExecution ScriptHandlers::execution_info_to_dto(const ExecutionInfo & info) {
+  dto::ScriptExecution exec;
+  exec.id = info.id;
+  exec.status = info.status;
+  exec.progress = info.progress;
+  exec.started_at = info.started_at;
+  exec.completed_at = info.completed_at;
+  exec.parameters = info.output_parameters;
+  exec.error = info.error;
+  return exec;
 }
 
-json ScriptHandlers::execution_info_to_json(const ExecutionInfo & info) {
-  json obj;
-  obj["id"] = info.id;
-  obj["status"] = info.status;
-  if (info.progress.has_value()) {
-    obj["progress"] = info.progress.value();
-  } else {
-    obj["progress"] = nullptr;
-  }
-  if (info.started_at.has_value()) {
-    obj["started_at"] = info.started_at.value();
-  } else {
-    obj["started_at"] = nullptr;
-  }
-  if (info.completed_at.has_value()) {
-    obj["completed_at"] = info.completed_at.value();
-  } else {
-    obj["completed_at"] = nullptr;
-  }
-  if (info.output_parameters.has_value()) {
-    obj["parameters"] = info.output_parameters.value();
-  } else {
-    obj["parameters"] = nullptr;
-  }
-  if (info.error.has_value()) {
-    obj["error"] = info.error.value();
-  } else {
-    obj["error"] = nullptr;
-  }
-  return obj;
-}
+// ---------------------------------------------------------------------------
+// GET /{entity}/scripts - list scripts with typed HATEOAS envelope
+// ---------------------------------------------------------------------------
 
-void ScriptHandlers::handle_list_scripts(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+http::Result<dto::ScriptList> ScriptHandlers::list_scripts(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
-    auto entity_type_segment = entity_type_from_path(req);
+    auto entity_type_segment = entity_type_from_path(req.path());
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
     auto result = script_mgr_->list_scripts(entity_id);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
 
-    json items = json::array();
+    dto::ScriptList list;
+    list.items.reserve(result->size());
     for (const auto & info : *result) {
-      items.push_back(script_info_to_json(info, base_path));
+      list.items.push_back(script_info_to_dto(info, base_path));
     }
 
-    json response;
-    response["items"] = items;
-
-    auto self_href = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts");
-    response["_links"] = {{"self", self_href}, {"parent", api_path("/" + entity_type_segment + "/" + entity_id)}};
-
-    HandlerContext::send_json(res, response);
+    dto::HateoasLinks links;
+    links.self = api_path(base_path + "/scripts");
+    links.parent = api_path(base_path);
+    list.links = std::move(links);
+    return list;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_upload_script(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// POST /{entity}/scripts - multipart upload, 201 + Location
+// ---------------------------------------------------------------------------
+
+http::Result<std::pair<dto::ScriptUploadResponse, http::ResponseAttachments>>
+ScriptHandlers::upload_script(const http::TypedRequest & req, const http::MultipartBody & body) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
+  }
+
+  // The framework's multipart_upload route accepts any Content-Type but the
+  // legacy handler enforced `multipart/form-data` explicitly to match SOVD's
+  // upload contract. Re-check via the typed header accessor so the validation
+  // surface stays identical for clients sending JSON-with-attachments by
+  // mistake.
+  auto content_type = req.header("Content-Type").value_or(std::string{});
+  if (content_type.find("multipart/form-data") == std::string::npos) {
+    return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Expected Content-Type: multipart/form-data"));
+  }
+
+  // Locate the `file` part. cpp-httplib parses every named part into
+  // MultipartBody.parts; we walk the vector instead of relying on `req.files`
+  // map ordering so the typed surface does not leak through to the cpp-httplib
+  // shape.
+  const httplib::MultipartFormData * file_part = nullptr;
+  const httplib::MultipartFormData * metadata_part = nullptr;
+  for (const auto & part : body.parts) {
+    if (part.name == "file" && !file_part) {
+      file_part = &part;
+    } else if (part.name == "metadata" && !metadata_part) {
+      metadata_part = &part;
+    }
+  }
+
+  if (!file_part) {
+    return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Missing required multipart field: file"));
+  }
+
+  std::optional<json> metadata;
+  if (metadata_part) {
+    try {
+      metadata = json::parse(metadata_part->content);
+    } catch (const json::parse_error &) {
+      return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid JSON in metadata field"));
+    }
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
-    if (!req.has_header("Content-Type") ||
-        req.get_header_value("Content-Type").find("multipart/form-data") == std::string::npos) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Expected Content-Type: multipart/form-data");
-      return;
-    }
-
-    auto file_it = req.files.find("file");
-    if (file_it == req.files.end()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required multipart field: file");
-      return;
-    }
-
-    const auto & file_part = file_it->second;
-
-    std::optional<json> metadata;
-    auto meta_it = req.files.find("metadata");
-    if (meta_it != req.files.end()) {
-      try {
-        metadata = json::parse(meta_it->second.content);
-      } catch (const json::parse_error &) {
-        HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in metadata field");
-        return;
-      }
-    }
-
-    auto result = script_mgr_->upload_script(entity_id, file_part.filename, file_part.content, metadata);
+    auto result = script_mgr_->upload_script(entity_id, file_part->filename, file_part->content, metadata);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
 
-    auto entity_type_segment = entity_type_from_path(req);
+    auto entity_type_segment = entity_type_from_path(req.path());
     auto script_path = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id);
 
-    res.status = 201;
-    res.set_header("Location", script_path);
-    HandlerContext::send_json(res, json{{"id", result->id}, {"name", result->name}});
+    dto::ScriptUploadResponse upload_resp;
+    upload_resp.id = result->id;
+    upload_resp.name = result->name;
+
+    http::ResponseAttachments att;
+    att.with_status(201).with_header("Location", script_path);
+    return std::make_pair(std::move(upload_resp), std::move(att));
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_get_script(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// GET /{entity}/scripts/{script_id}
+// ---------------------------------------------------------------------------
+
+http::Result<dto::ScriptMetadata> ScriptHandlers::get_script(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
-    auto entity_type_segment = entity_type_from_path(req);
+    auto entity_type_segment = entity_type_from_path(req.path());
     auto base_path = "/" + entity_type_segment + "/" + entity_id;
 
     auto result = script_mgr_->get_script(entity_id, script_id);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
-
-    HandlerContext::send_json(res, script_info_to_json(*result, base_path));
+    return script_info_to_dto(*result, base_path);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_delete_script(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// DELETE /{entity}/scripts/{script_id} - 204
+// ---------------------------------------------------------------------------
+
+http::Result<http::NoContent> ScriptHandlers::delete_script(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
     auto result = script_mgr_->delete_script(entity_id, script_id);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
-
-    res.status = 204;
+    return http::NoContent{};
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_start_execution(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// POST /{entity}/scripts/{script_id}/executions - 202 + Location
+// ---------------------------------------------------------------------------
+
+http::Result<std::pair<dto::ScriptExecution, http::ResponseAttachments>>
+ScriptHandlers::start_execution(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
+  }
+
+  // Body shape is free-form (parameters is provider-defined), so the typed
+  // router's `request_body<TBody>` parsing is not the right fit here: we still
+  // accept the raw bytes via the framework escape hatch and parse manually to
+  // surface the same validation errors as the legacy handler.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+
+  json body;
+  try {
+    body = json::parse(raw_req.body);
+  } catch (const json::parse_error &) {
+    return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid JSON body"));
+  }
+
+  if (!body.contains("execution_type") || !body["execution_type"].is_string() ||
+      body["execution_type"].get<std::string>().empty()) {
+    return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Missing required field: execution_type"));
+  }
+
+  ExecutionRequest exec_req;
+  exec_req.execution_type = body["execution_type"].get<std::string>();
+
+  if (body.contains("parameters") && !body["parameters"].is_null()) {
+    exec_req.parameters = body["parameters"];
+  }
+
+  if (body.contains("proximity_response") && body["proximity_response"].is_string()) {
+    exec_req.proximity_response = body["proximity_response"].get<std::string>();
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
-      return;
-    }
-
-    if (!body.contains("execution_type") || !body["execution_type"].is_string() ||
-        body["execution_type"].get<std::string>().empty()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: execution_type");
-      return;
-    }
-
-    ExecutionRequest exec_req;
-    exec_req.execution_type = body["execution_type"].get<std::string>();
-
-    if (body.contains("parameters") && !body["parameters"].is_null()) {
-      exec_req.parameters = body["parameters"];
-    }
-
-    if (body.contains("proximity_response") && body["proximity_response"].is_string()) {
-      exec_req.proximity_response = body["proximity_response"].get<std::string>();
-    }
-
     auto result = script_mgr_->start_execution(entity_id, script_id, exec_req);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
 
-    auto entity_type_segment = entity_type_from_path(req);
+    auto entity_type_segment = entity_type_from_path(req.path());
     auto exec_path =
         api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id);
 
-    res.status = 202;
-    res.set_header("Location", exec_path);
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    http::ResponseAttachments att;
+    att.with_status(202).with_header("Location", exec_path);
+    return std::make_pair(execution_info_to_dto(*result), std::move(att));
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_get_execution(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// GET /{entity}/scripts/{script_id}/executions/{execution_id}
+// ---------------------------------------------------------------------------
+
+http::Result<dto::ScriptExecution> ScriptHandlers::get_execution(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  auto execution_id_result = read_capture(req, "3");
+  if (!execution_id_result) {
+    return tl::unexpected(execution_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+  const std::string execution_id = *execution_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+  if (!is_valid_resource_id(execution_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid execution ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    auto execution_id = req.matches[3].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    if (!is_valid_resource_id(execution_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
     auto result = script_mgr_->get_execution(entity_id, script_id, execution_id);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
-
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    return execution_info_to_dto(*result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_control_execution(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// PUT /{entity}/scripts/{script_id}/executions/{execution_id}
+// ---------------------------------------------------------------------------
+
+http::Result<dto::ScriptExecution> ScriptHandlers::control_execution(const http::TypedRequest & req,
+                                                                     const dto::ScriptControlRequest & body) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  auto execution_id_result = read_capture(req, "3");
+  if (!execution_id_result) {
+    return tl::unexpected(execution_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+  const std::string execution_id = *execution_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+  if (!is_valid_resource_id(execution_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid execution ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    auto execution_id = req.matches[3].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    if (!is_valid_resource_id(execution_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
-      return;
-    }
-
-    if (!body.contains("action") || !body["action"].is_string() || body["action"].get<std::string>().empty()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Missing required field: action");
-      return;
-    }
-
-    auto action = body["action"].get<std::string>();
-    auto result = script_mgr_->control_execution(entity_id, script_id, execution_id, action);
+    auto result = script_mgr_->control_execution(entity_id, script_id, execution_id, body.action);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
-
-    HandlerContext::send_json(res, execution_info_to_json(*result));
+    return execution_info_to_dto(*result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 
-void ScriptHandlers::handle_delete_execution(const httplib::Request & req, httplib::Response & res) {
-  if (!check_backend(res)) {
-    return;
+// ---------------------------------------------------------------------------
+// DELETE /{entity}/scripts/{script_id}/executions/{execution_id} - 204
+// ---------------------------------------------------------------------------
+
+http::Result<http::NoContent> ScriptHandlers::delete_execution(const http::TypedRequest & req) {
+  if (!script_mgr_ || !script_mgr_->has_backend()) {
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
+  }
+
+  auto id_result = read_capture(req, "1");
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  auto script_id_result = read_capture(req, "2");
+  if (!script_id_result) {
+    return tl::unexpected(script_id_result.error());
+  }
+  auto execution_id_result = read_capture(req, "3");
+  if (!execution_id_result) {
+    return tl::unexpected(execution_id_result.error());
+  }
+  const std::string entity_id = *id_result;
+  const std::string script_id = *script_id_result;
+  const std::string execution_id = *execution_id_result;
+
+  if (!is_valid_resource_id(script_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid script ID format"));
+  }
+  if (!is_valid_resource_id(execution_id)) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid execution ID format"));
+  }
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto & entity = *entity_result;
+
+  if (auto access = HandlerContext::validate_collection_access_typed(entity, ResourceCollection::SCRIPTS); !access) {
+    return tl::unexpected(access.error());
   }
 
   try {
-    auto entity_id = req.matches[1].str();
-    auto script_id = req.matches[2].str();
-    auto execution_id = req.matches[3].str();
-    if (!is_valid_resource_id(script_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid script ID format");
-      return;
-    }
-    if (!is_valid_resource_id(execution_id)) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid execution ID format");
-      return;
-    }
-    auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity) {
-      return;
-    }
-
-    if (auto err = HandlerContext::validate_collection_access(*entity, ResourceCollection::SCRIPTS)) {
-      HandlerContext::send_error(res, 400, ERR_COLLECTION_NOT_SUPPORTED, *err);
-      return;
-    }
-
     auto result = script_mgr_->delete_execution(entity_id, script_id, execution_id);
     if (!result) {
-      send_script_error(res, result.error());
-      return;
+      return tl::unexpected(script_backend_error(result.error()));
     }
-
-    res.status = 204;
+    return http::NoContent{};
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, e.what());
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
 }
 

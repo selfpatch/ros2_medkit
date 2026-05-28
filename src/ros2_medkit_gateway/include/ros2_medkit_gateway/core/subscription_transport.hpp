@@ -24,7 +24,9 @@
 #include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -59,14 +61,26 @@ class SubscriptionTransportProvider {
   /// before returning from this method.
   virtual void stop(const std::string & sub_id) = 0;
 
-  /// Handle HTTP client connection (SSE: chunked provider, WebSocket: upgrade).
-  /// MQTT/Zenoh: return false (not HTTP-based).
-  virtual bool handle_client_connect(const std::string & sub_id, const httplib::Request & req,
-                                     httplib::Response & res) {
+  /// Open a new client stream for the given subscription. HTTP-based transports
+  /// (SSE) build an `http::SseStream` whose `next_event` callback the typed
+  /// router drives via cpp-httplib's chunked content provider. Non-HTTP
+  /// transports (MQTT, WebSocket, Zenoh) return an `ErrorInfo` so the typed
+  /// handler renders a SOVD GenericError.
+  ///
+  /// On failure (unknown sub_id, client-limit exhausted, ...) the
+  /// implementation returns a fully-formed `ErrorInfo` whose `http_status`
+  /// drives the wire status code. On success the returned `SseStream`'s
+  /// lifetime owns the transport-side client-tracker handle (e.g. via a
+  /// shared_ptr deleter on a captured tracker token) so the slot is released
+  /// when the framework destroys the stream - either on client disconnect or
+  /// end-of-stream.
+  virtual tl::expected<http::SseStream, ErrorInfo> make_sse_stream(const std::string & sub_id) {
     (void)sub_id;
-    (void)req;
-    (void)res;
-    return false;
+    ErrorInfo err;
+    err.code = "transport-not-streamable";
+    err.message = "Transport does not produce HTTP streams";
+    err.http_status = 501;
+    return tl::make_unexpected(std::move(err));
   }
 };
 

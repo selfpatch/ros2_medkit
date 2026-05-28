@@ -14,36 +14,64 @@
 
 #pragma once
 
+#include <utility>
+
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/dto/scripts.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+/// HTTP handlers for the per-entity Scripts collection.
+///
+/// PR-403 commit 24: 8 script routes migrated to the typed RouteRegistry API.
+/// Every handler returns `http::Result<T>` (or a `pair<T, ResponseAttachments>`
+/// for routes that need to emit 201 + Location). The HATEOAS `_links` envelope
+/// on the list endpoint is now a typed `dto::HateoasLinks` sub-struct so the
+/// JSON, schema, and reader paths all flow through the single descriptor.
+/// Wire format is unchanged byte-for-byte.
 class ScriptHandlers {
  public:
   ScriptHandlers(HandlerContext & ctx, ScriptManager * script_manager);
 
-  void handle_upload_script(const httplib::Request & req, httplib::Response & res);
-  void handle_list_scripts(const httplib::Request & req, httplib::Response & res);
-  void handle_get_script(const httplib::Request & req, httplib::Response & res);
-  void handle_delete_script(const httplib::Request & req, httplib::Response & res);
+  /// POST /{entity}/scripts - multipart upload, returns 201 + Location.
+  http::Result<std::pair<dto::ScriptUploadResponse, http::ResponseAttachments>>
+  upload_script(const http::TypedRequest & req, const http::MultipartBody & body);
 
-  void handle_start_execution(const httplib::Request & req, httplib::Response & res);
-  void handle_get_execution(const httplib::Request & req, httplib::Response & res);
-  void handle_control_execution(const httplib::Request & req, httplib::Response & res);
-  void handle_delete_execution(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/scripts - list scripts, typed HATEOAS envelope.
+  http::Result<dto::ScriptList> list_scripts(const http::TypedRequest & req);
+
+  /// GET /{entity}/scripts/{script_id} - get a single script.
+  http::Result<dto::ScriptMetadata> get_script(const http::TypedRequest & req);
+
+  /// DELETE /{entity}/scripts/{script_id} - delete a script, 204.
+  http::Result<http::NoContent> delete_script(const http::TypedRequest & req);
+
+  /// POST /{entity}/scripts/{script_id}/executions - start, returns 202 + Location.
+  http::Result<std::pair<dto::ScriptExecution, http::ResponseAttachments>>
+  start_execution(const http::TypedRequest & req);
+
+  /// GET /{entity}/scripts/{script_id}/executions/{execution_id} - get status.
+  http::Result<dto::ScriptExecution> get_execution(const http::TypedRequest & req);
+
+  /// PUT /{entity}/scripts/{script_id}/executions/{execution_id} - control execution.
+  http::Result<dto::ScriptExecution> control_execution(const http::TypedRequest & req,
+                                                       const dto::ScriptControlRequest & body);
+
+  /// DELETE /{entity}/scripts/{script_id}/executions/{execution_id} - remove record, 204.
+  http::Result<http::NoContent> delete_execution(const http::TypedRequest & req);
 
  private:
   HandlerContext & ctx_;
   ScriptManager * script_mgr_;
 
-  bool check_backend(httplib::Response & res);
-  void send_script_error(httplib::Response & res, const ScriptBackendErrorInfo & err);
   static bool is_valid_resource_id(const std::string & id);
-  static std::string entity_type_from_path(const httplib::Request & req);
-  static nlohmann::json script_info_to_json(const ScriptInfo & info, const std::string & base_path);
-  static nlohmann::json execution_info_to_json(const ExecutionInfo & info);
+  static std::string entity_type_from_path(const std::string & path);
+  static dto::ScriptMetadata script_info_to_dto(const ScriptInfo & info, const std::string & base_path);
+  static dto::ScriptExecution execution_info_to_dto(const ExecutionInfo & info);
 };
 
 }  // namespace handlers

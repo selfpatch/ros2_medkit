@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <httplib.h>
-
+#include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -29,6 +29,18 @@ namespace handlers {
  * - Components: Hardware or logical groupings
  * - Apps: Software applications (ROS nodes)
  * - Functions: Capability abstractions
+ *
+ * All 18 routes follow the PR-403 typed RouteRegistry convention:
+ *
+ *   http::Result<dto::TResponse> get_X(const http::TypedRequest & req);
+ *
+ * The framework owns the cpp-httplib response object - handlers never touch
+ * it. Errors are returned as `tl::unexpected(ErrorInfo)` and the framework
+ * renders them via the SOVD GenericError schema. When the typed entity
+ * validator returns Forwarded (the request was proxied to a remote peer in
+ * an aggregation setup), the handler propagates that outcome by returning
+ * `tl::unexpected(HandlerContext::forwarded_sentinel_error())` so the typed
+ * wrapper performs no further wire writes.
  *
  * @verifies REQ_DISCOVERY_001 Areas discovery
  * @verifies REQ_DISCOVERY_002 Apps discovery
@@ -48,112 +60,86 @@ class DiscoveryHandlers {
   // Area endpoints
   // =========================================================================
 
-  /**
-   * @brief Handle GET /areas - list all areas.
-   */
-  void handle_list_areas(const httplib::Request & req, httplib::Response & res);
+  /// GET /areas - list all top-level areas.
+  http::Result<dto::Collection<dto::AreaListItem>> get_areas(const http::TypedRequest & req);
+
+  /// GET /areas/{area-id} - area detail with capabilities.
+  http::Result<dto::AreaDetail> get_area(const http::TypedRequest & req);
+
+  /// GET /areas/{area-id}/components - list components in area.
+  http::Result<dto::Collection<dto::ComponentListItem>> get_area_components(const http::TypedRequest & req);
+
+  /// GET /areas/{area-id}/subareas - list subareas.
+  http::Result<dto::Collection<dto::AreaListItem>> get_subareas(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /areas/{area-id} - get area capabilities.
-   */
-  void handle_get_area(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /areas/{area-id}/components - list components in area.
-   */
-  void handle_area_components(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /areas/{area-id}/subareas - list subareas.
-   */
-  void handle_get_subareas(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /areas/{area-id}/contains - SOVD 7.6.2.4 relationship.
+   * @brief GET /areas/{area-id}/contains - SOVD 7.6.2.4 relationship.
    * @verifies REQ_INTEROP_006
    */
-  void handle_get_contains(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::ComponentListItem>> get_area_contains(const http::TypedRequest & req);
 
   // =========================================================================
   // Component endpoints
   // =========================================================================
 
-  /**
-   * @brief Handle GET /components - list all components.
-   */
-  void handle_list_components(const httplib::Request & req, httplib::Response & res);
+  /// GET /components - list all top-level components.
+  http::Result<dto::Collection<dto::ComponentListItem>> get_components(const http::TypedRequest & req);
+
+  /// GET /components/{component-id} - component detail with capabilities.
+  http::Result<dto::ComponentDetail> get_component(const http::TypedRequest & req);
+
+  /// GET /components/{id}/subcomponents - list subcomponents.
+  http::Result<dto::Collection<dto::ComponentListItem>> get_subcomponents(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /components/{component-id} - get component capabilities.
-   */
-  void handle_get_component(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /components/{id}/subcomponents - list subcomponents.
-   */
-  void handle_get_subcomponents(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /components/{id}/hosts - list hosted apps.
+   * @brief GET /components/{id}/hosts - list hosted apps.
    * @verifies REQ_INTEROP_007
    */
-  void handle_get_hosts(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::AppListItem>> get_component_hosts(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /components/{id}/depends-on - list dependencies.
+   * @brief GET /components/{id}/depends-on - list dependencies.
    * @verifies REQ_INTEROP_008
    */
-  void handle_component_depends_on(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::ComponentListItem>> get_component_depends_on(const http::TypedRequest & req);
 
   // =========================================================================
   // App endpoints
   // =========================================================================
 
-  /**
-   * @brief Handle GET /apps - list all apps.
-   */
-  void handle_list_apps(const httplib::Request & req, httplib::Response & res);
+  /// GET /apps - list all apps.
+  http::Result<dto::Collection<dto::AppListItem>> get_apps(const http::TypedRequest & req);
+
+  /// GET /apps/{app-id} - app detail with capabilities.
+  http::Result<dto::AppDetail> get_app(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /apps/{app-id} - get app capabilities.
-   */
-  void handle_get_app(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /apps/{app-id}/depends-on - list app dependencies.
+   * @brief GET /apps/{app-id}/depends-on - list app dependencies.
    * @verifies REQ_INTEROP_009
    */
-  void handle_app_depends_on(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::AppListItem>> get_app_depends_on(const http::TypedRequest & req);
+
+  /// GET /apps/{app-id}/is-located-on - parent component (single-item collection).
+  http::Result<dto::Collection<dto::ComponentListItem>> get_app_is_located_on(const http::TypedRequest & req);
 
   /**
-   * @brief Handle GET /apps/{app-id}/is-located-on - get parent component.
-   */
-  void handle_app_is_located_on(const httplib::Request & req, httplib::Response & res);
-
-  /**
-   * @brief Handle GET /apps/{app-id}/belongs-to - get parent area via component.
+   * @brief GET /apps/{app-id}/belongs-to - parent area (single-item collection).
    * @verifies REQ_INTEROP_106
    */
-  void handle_app_belongs_to(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Collection<dto::AreaListItem>> get_app_belongs_to(const http::TypedRequest & req);
 
   // =========================================================================
   // Function endpoints
   // =========================================================================
 
-  /**
-   * @brief Handle GET /functions - list all functions.
-   */
-  void handle_list_functions(const httplib::Request & req, httplib::Response & res);
+  /// GET /functions - list all functions.
+  http::Result<dto::Collection<dto::FunctionListItem>> get_functions(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /functions/{function-id} - get function capabilities.
-   */
-  void handle_get_function(const httplib::Request & req, httplib::Response & res);
+  /// GET /functions/{function-id} - function detail with capabilities.
+  http::Result<dto::FunctionDetail> get_function(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /functions/{function-id}/hosts - list host apps.
-   */
-  void handle_function_hosts(const httplib::Request & req, httplib::Response & res);
+  /// GET /functions/{function-id}/hosts - list host apps.
+  http::Result<dto::Collection<dto::AppListItem>> get_function_hosts(const http::TypedRequest & req);
 
  private:
   HandlerContext & ctx_;

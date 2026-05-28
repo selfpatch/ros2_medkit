@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2025-2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <httplib.h>
-
+#include "ros2_medkit_gateway/dto/health.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {
@@ -29,9 +29,19 @@ namespace handlers {
  * @brief Health and system info endpoint handlers
  *
  * Handles:
- * - GET /health - Health check
- * - GET / - Root endpoint with capabilities
- * - GET /version-info - Version information
+ * - GET /health        -> dto::Health
+ * - GET /              -> dto::RootOverview
+ * - GET /version-info  -> dto::VersionInfo
+ *
+ * Migrated to the typed RouteRegistry API as part of PR-403 commit 16.
+ * Handler signatures follow the project-wide convention established by
+ * this commit:
+ *
+ *   http::Result<dto::TResponse> get_X(const http::TypedRequest & req);
+ *
+ * The framework owns the cpp-httplib response object - handlers never
+ * touch it directly. Errors are returned as `tl::unexpected(ErrorInfo)`
+ * and the framework renders them via the SOVD GenericError schema.
  */
 class HealthHandlers {
  public:
@@ -40,13 +50,13 @@ class HealthHandlers {
   }
 
   /// GET /health - Health check endpoint
-  void handle_health(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::Health> get_health(const http::TypedRequest & req);
 
   /// GET / - Root endpoint with server capabilities
-  void handle_root(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::RootOverview> get_root(const http::TypedRequest & req);
 
   /// GET /version-info - Version information
-  void handle_version_info(const httplib::Request & req, httplib::Response & res);
+  http::Result<dto::VersionInfo> get_version_info(const http::TypedRequest & req);
 
  private:
   HandlerContext & ctx_;

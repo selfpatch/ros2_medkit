@@ -18,6 +18,9 @@
 
 #include <memory>
 
+#include <nlohmann/json.hpp>
+#include <string>
+
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
@@ -60,6 +63,16 @@ class DocsHandlers {
 #endif
 
  private:
+  /// Write a 200 JSON body using the framework primitive. DocsHandlers is
+  /// a friend of `FrameworkOrPluginAccess`; these helpers exist because the
+  /// `/docs` + `<path>/docs` routes are registered as raw httplib handlers
+  /// (their `(.+)/docs$` regex shape does not map onto the typed router's
+  /// OpenAPI path-template grammar).
+  static void write_json(httplib::Response & res, const nlohmann::json & body);
+
+  /// Write a SOVD GenericError response using the framework primitive.
+  static void write_error(httplib::Response & res, int status, const std::string & code, const std::string & message);
+
   HandlerContext & ctx_;
   std::unique_ptr<openapi::CapabilityGenerator> generator_;
   bool docs_enabled_{true};

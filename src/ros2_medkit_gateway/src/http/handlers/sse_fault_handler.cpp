@@ -18,11 +18,17 @@
 #include <chrono>
 #include <cinttypes>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <sstream>
+#include <string_view>
+#include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/detail/primitives.hpp"
 #include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
@@ -125,104 +131,169 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
                msg->fault.fault_code.c_str(), event_id);
 }
 
+namespace {
+
+/// Parse the Last-Event-ID header; absent / malformed values map to 0 so the
+/// client receives every buffered event on connect.
+uint64_t parse_last_event_id(std::string_view value) {
+  if (value.empty()) {
+    return 0;
+  }
+  try {
+    return std::stoull(std::string(value));
+  } catch (...) {
+    return 0;
+  }
+}
+
+}  // namespace
+
+std::function<bool(httplib::DataSink &)> SSEFaultHandler::make_stream_loop(uint64_t initial_last_event_id) {
+  return [this, last_event_id = initial_last_event_id](httplib::DataSink & sink) mutable -> bool {
+    // First, send any buffered events the client missed (for reconnection)
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      for (const auto & queued : event_queue_) {
+        if (queued.id > last_event_id) {
+          std::string sse_msg = format_sse_event(queued);
+          if (!sink.write(sse_msg.data(), sse_msg.size())) {
+            return false;  // Client disconnected
+          }
+          last_event_id = queued.id;
+        }
+      }
+    }
+
+    // Wait for new events or keepalive timeout
+    auto timeout = keepalive_interval_;
+    std::unique_lock<std::mutex> lock(queue_mutex_);
+
+    while (true) {
+      // Check for shutdown
+      if (shutdown_flag_.load()) {
+        return false;  // Handler is shutting down
+      }
+
+      // Wait for new event or timeout
+      auto status = queue_cv_.wait_for(lock, timeout);
+
+      // Check for shutdown after wakeup
+      if (shutdown_flag_.load()) {
+        return false;  // Handler is shutting down
+      }
+
+      if (status == std::cv_status::timeout) {
+        // Send keepalive comment
+        const char * keepalive = ":keepalive\n\n";
+        lock.unlock();
+        if (!sink.write(keepalive, strlen(keepalive))) {
+          return false;  // Client disconnected
+        }
+        lock.lock();
+        continue;
+      }
+
+      // Check for new events
+      bool found_new = false;
+      for (const auto & queued : event_queue_) {
+        if (queued.id > last_event_id) {
+          std::string sse_msg = format_sse_event(queued);
+          lock.unlock();
+          if (!sink.write(sse_msg.data(), sse_msg.size())) {
+            return false;  // Client disconnected
+          }
+          lock.lock();
+          last_event_id = queued.id;
+          found_new = true;
+        }
+      }
+
+      if (!found_new) {
+        // Spurious wakeup, continue waiting
+        continue;
+      }
+    }
+
+    return true;
+  };
+}
+
+http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedRequest & req) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  if (!client_tracker_->try_connect()) {
+    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                client_tracker_->max_clients(), raw_req.remote_addr.c_str());
+    ErrorInfo err;
+    err.code = ERR_SERVICE_UNAVAILABLE;
+    err.message = "Maximum number of SSE clients reached. Please try again later.";
+    err.http_status = 503;
+    return tl::make_unexpected(std::move(err));
+  }
+
+  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", raw_req.remote_addr.c_str(),
+              client_tracker_->connected_clients(), client_tracker_->max_clients());
+
+  const uint64_t last_event_id = parse_last_event_id(req.header("Last-Event-ID").value_or(std::string{}));
+
+  // The framework's `reg.sse` wrapper drives the chunked content provider and
+  // calls `next_event` until it returns false. We pair the loop with a
+  // tracker-release shared_ptr so the per-client counter decrements when the
+  // stream terminates - the framework does not expose a disconnect callback
+  // analogous to the legacy `handle_stream`'s 3-arg overload.
+  auto release_guard = std::shared_ptr<void>(nullptr, [this, addr = raw_req.remote_addr](void *) {
+    client_tracker_->disconnect();
+    RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s", addr.c_str());
+  });
+
+  auto loop = make_stream_loop(last_event_id);
+  http::SseStream stream;
+  stream.next_event = [loop = std::move(loop), release_guard](httplib::DataSink & sink) mutable {
+    return loop(sink);
+  };
+  return stream;
+}
+
 void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Response & res) {
   // Check if we're at the combined SSE client limit before accepting connection
   if (!client_tracker_->try_connect()) {
     RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
                 client_tracker_->max_clients(), req.remote_addr.c_str());
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE,
-                               "Maximum number of SSE clients reached. Please try again later.");
+    // The legacy raw-route entry calls the framework primitive directly via
+    // the friend gate; the HandlerContext public send_* surface has been
+    // pruned and the typed `sse_stream` path is the production route.
+    ErrorInfo err;
+    err.code = ERR_SERVICE_UNAVAILABLE;
+    err.message = "Maximum number of SSE clients reached. Please try again later.";
+    err.http_status = 503;
+    http::detail::write_generic_error(http::detail::FrameworkOrPluginAccess{}, res, err);
     return;
   }
 
   RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
               client_tracker_->connected_clients(), client_tracker_->max_clients());
 
-  // Parse Last-Event-ID header for reconnection support
-  uint64_t last_event_id = 0;
-  if (req.has_header("Last-Event-ID")) {
-    try {
-      last_event_id = std::stoull(req.get_header_value("Last-Event-ID"));
-    } catch (...) {
-      // Ignore invalid Last-Event-ID
-    }
-  }
+  const uint64_t last_event_id =
+      req.has_header("Last-Event-ID") ? parse_last_event_id(req.get_header_value("Last-Event-ID")) : 0;
 
-  // Set SSE headers
+  // Set SSE headers (the typed `reg.sse` path wires Cache-Control and
+  // X-Accel-Buffering automatically; this legacy entry preserves the historic
+  // header set including Content-Type and Connection: keep-alive that the
+  // in-process test fixture asserts on).
   res.set_header("Content-Type", "text/event-stream");
   res.set_header("Cache-Control", "no-cache");
   res.set_header("Connection", "keep-alive");
   res.set_header("X-Accel-Buffering", "no");  // Disable nginx buffering
 
+  auto loop = make_stream_loop(last_event_id);
+
   // Use chunked content provider for streaming
   res.set_chunked_content_provider(
       "text/event-stream",
-      [this, last_event_id](size_t /*offset*/, httplib::DataSink & sink) mutable {
-        // First, send any buffered events the client missed (for reconnection)
-        {
-          std::lock_guard<std::mutex> lock(queue_mutex_);
-          for (const auto & queued : event_queue_) {
-            if (queued.id > last_event_id) {
-              std::string sse_msg = format_sse_event(queued);
-              if (!sink.write(sse_msg.data(), sse_msg.size())) {
-                return false;  // Client disconnected
-              }
-              last_event_id = queued.id;
-            }
-          }
-        }
-
-        // Wait for new events or keepalive timeout
-        auto timeout = keepalive_interval_;
-        std::unique_lock<std::mutex> lock(queue_mutex_);
-
-        while (true) {
-          // Check for shutdown
-          if (shutdown_flag_.load()) {
-            return false;  // Handler is shutting down
-          }
-
-          // Wait for new event or timeout
-          auto status = queue_cv_.wait_for(lock, timeout);
-
-          // Check for shutdown after wakeup
-          if (shutdown_flag_.load()) {
-            return false;  // Handler is shutting down
-          }
-
-          if (status == std::cv_status::timeout) {
-            // Send keepalive comment
-            const char * keepalive = ":keepalive\n\n";
-            lock.unlock();
-            if (!sink.write(keepalive, strlen(keepalive))) {
-              return false;  // Client disconnected
-            }
-            lock.lock();
-            continue;
-          }
-
-          // Check for new events
-          bool found_new = false;
-          for (const auto & queued : event_queue_) {
-            if (queued.id > last_event_id) {
-              std::string sse_msg = format_sse_event(queued);
-              lock.unlock();
-              if (!sink.write(sse_msg.data(), sse_msg.size())) {
-                return false;  // Client disconnected
-              }
-              lock.lock();
-              last_event_id = queued.id;
-              found_new = true;
-            }
-          }
-
-          if (!found_new) {
-            // Spurious wakeup, continue waiting
-            continue;
-          }
-        }
-
-        return true;
+      [loop = std::move(loop)](size_t /*offset*/, httplib::DataSink & sink) mutable {
+        return loop(sink);
       },
       [this, addr = req.remote_addr](bool success) {
         client_tracker_->disconnect();

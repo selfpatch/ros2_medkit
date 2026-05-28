@@ -15,8 +15,12 @@
 #include "ros2_medkit_gateway/core/http/handlers/trigger_handlers.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <regex>
+#include <string>
 #include <unordered_set>
+#include <utility>
+#include <variant>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -30,6 +34,101 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+namespace {
+
+/// Build a minimal SOVD-shaped ErrorInfo. `params` defaults to an empty object,
+/// matching the legacy `send_error` default; supply non-empty params per call
+/// site to preserve the exact wire shape integration tests assert on.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Read the positional entity-id capture group from the typed request. The
+/// legacy handlers used `req.matches[1]` without bounds checking; the typed
+/// surface refuses out-of-range captures with ERR_INVALID_PARAMETER/400. This
+/// path is unreachable in production because cpp-httplib routes only fire when
+/// the regex matches, but the helper keeps the typed flow explicit.
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the positional trigger-id capture group.
+tl::expected<std::string, ErrorInfo> read_trigger_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("2");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler must signal "do not render" via the
+/// framework-internal sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper
+/// detects in `write_typed_error`.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
+/// Build a typed Trigger DTO from a TriggerInfo.
+dto::Trigger trigger_info_to_dto(const TriggerInfo & info, const std::string & event_source) {
+  dto::Trigger dto;
+  dto.id = info.id;
+  dto.status = (info.status == TriggerStatus::ACTIVE) ? "active" : "terminated";
+  dto.observed_resource = info.resource_uri;
+  dto.event_source = event_source;
+  dto.protocol = info.protocol;
+
+  // Build the flat trigger_condition JSON: condition_type + merged condition_params.
+  json condition;
+  condition["condition_type"] = info.condition_type;
+  if (info.condition_params.is_object()) {
+    for (auto & [key, val] : info.condition_params.items()) {
+      condition[key] = val;
+    }
+  }
+  dto.trigger_condition = condition;
+
+  dto.multishot = info.multishot;
+  dto.persistent = info.persistent;
+
+  if (info.lifetime_sec.has_value()) {
+    dto.lifetime = info.lifetime_sec.value();
+  }
+
+  if (!info.path.empty()) {
+    dto.path = info.path;
+  }
+
+  if (info.log_settings.has_value()) {
+    dto.log_settings = *info.log_settings;
+  }
+
+  return dto;
+}
+
+}  // namespace
+
 TriggerHandlers::TriggerHandlers(HandlerContext & ctx, TriggerManager & trigger_mgr,
                                  std::shared_ptr<SSEClientTracker> client_tracker)
   : ctx_(ctx), trigger_mgr_(trigger_mgr), client_tracker_(std::move(client_tracker)) {
@@ -38,134 +137,101 @@ TriggerHandlers::TriggerHandlers(HandlerContext & ctx, TriggerManager & trigger_
 // ---------------------------------------------------------------------------
 // POST - create trigger
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<std::pair<dto::Trigger, http::ResponseAttachments>>
+TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreateRequest body) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  // Validate trigger_condition is an object.
+  if (!body.trigger_condition.is_object()) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Missing or invalid 'trigger_condition'",
+                                     json{{"parameter", "trigger_condition"}}));
   }
 
-  // Validate required fields
-  if (!body.contains("resource") || !body["resource"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
-                               {{"parameter", "resource"}});
-    return;
+  auto trigger_condition_json = body.trigger_condition;
+  if (!trigger_condition_json.contains("condition_type") || !trigger_condition_json["condition_type"].is_string()) {
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                     "Missing or invalid 'condition_type' in trigger_condition",
+                                     json{{"parameter", "trigger_condition.condition_type"}}));
   }
 
-  if (!body.contains("trigger_condition") || !body["trigger_condition"].is_object()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'trigger_condition'",
-                               {{"parameter", "trigger_condition"}});
-    return;
-  }
+  std::string condition_type = trigger_condition_json["condition_type"].get<std::string>();
 
-  auto trigger_condition = body["trigger_condition"];
-  if (!trigger_condition.contains("condition_type") || !trigger_condition["condition_type"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Missing or invalid 'condition_type' in trigger_condition",
-                               {{"parameter", "trigger_condition.condition_type"}});
-    return;
-  }
-
-  std::string condition_type = trigger_condition["condition_type"].get<std::string>();
-
-  // Extract condition_params (everything in trigger_condition except condition_type)
-  json condition_params = trigger_condition;
+  // Extract condition_params (everything in trigger_condition except condition_type).
+  json condition_params = trigger_condition_json;
   condition_params.erase("condition_type");
 
-  // Parse resource URI
-  std::string resource = body["resource"].get<std::string>();
+  // Parse resource URI.
+  const std::string & resource = body.resource;
   auto parsed = parse_resource_uri(resource);
   if (!parsed) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
-                               {{"parameter", "resource"}, {"value", resource}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
+                                     json{{"parameter", "resource"}, {"value", resource}}));
   }
 
-  // Validate resource URI references the same entity as the route
-  std::string entity_type = extract_entity_type(req);
+  // Validate resource URI references the same entity as the route.
+  std::string entity_type = extract_entity_type(req.path());
   if (parsed->entity_type != entity_type || parsed->entity_id != entity_id) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ENTITY_MISMATCH,
-                               "Resource URI must reference the same entity as the route",
-                               {{"parameter", "resource"}, {"value", resource}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_ENTITY_MISMATCH,
+                                     "Resource URI must reference the same entity as the route",
+                                     json{{"parameter", "resource"}, {"value", resource}}));
   }
 
-  // Validate collection
+  // Validate collection.
   static const std::unordered_set<std::string> known_collections = {"data", "faults", "operations", "updates", "logs"};
   if (known_collections.find(parsed->collection) == known_collections.end() &&
       parsed->collection.substr(0, 2) != "x-") {
-    HandlerContext::send_error(
-        res, 400, ERR_INVALID_PARAMETER,
-        "Unknown collection. Supported: data, faults, operations, updates, logs, or x-* vendor extensions",
-        {{"parameter", "resource"}, {"collection", parsed->collection}});
-    return;
+    return tl::unexpected(
+        make_error(400, ERR_INVALID_PARAMETER,
+                   "Unknown collection. Supported: data, faults, operations, updates, logs, or x-* vendor extensions",
+                   json{{"parameter", "resource"}, {"collection", parsed->collection}}));
   }
 
-  // Parse optional fields
-  std::string path;
-  if (body.contains("path") && body["path"].is_string()) {
-    path = body["path"].get<std::string>();
-  }
-
-  // Validate JSON Pointer path
+  // Validate path (JSON Pointer).
+  std::string path = body.path.value_or(std::string{});
   if (!path.empty()) {
     if (path.size() > 1024) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Path too long (max 1024)", {{"parameter", "path"}});
-      return;
+      return tl::unexpected(
+          make_error(400, ERR_INVALID_PARAMETER, "Path too long (max 1024)", json{{"parameter", "path"}}));
     }
     try {
       (void)nlohmann::json::json_pointer(path);
     } catch (const nlohmann::json::exception &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid JSON Pointer in 'path'",
-                                 {{"parameter", "path"}, {"value", path}});
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid JSON Pointer in 'path'",
+                                       json{{"parameter", "path"}, {"value", path}}));
     }
   }
 
-  std::string protocol = "sse";
-  if (body.contains("protocol") && body["protocol"].is_string()) {
-    protocol = body["protocol"].get<std::string>();
-  }
-
-  // Validate protocol
+  // Validate protocol (default: sse).
+  std::string protocol = body.protocol.value_or(std::string{"sse"});
   if (protocol != "sse") {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unsupported protocol. Supported: 'sse'",
-                               {{"parameter", "protocol"}, {"value", protocol}});
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Unsupported protocol. Supported: 'sse'",
+                                     json{{"parameter", "protocol"}, {"value", protocol}}));
   }
 
-  bool multishot = false;
-  if (body.contains("multishot") && body["multishot"].is_boolean()) {
-    multishot = body["multishot"].get<bool>();
-  }
-
-  bool persistent = false;
-  if (body.contains("persistent") && body["persistent"].is_boolean()) {
-    persistent = body["persistent"].get<bool>();
-  }
+  bool multishot = body.multishot.value_or(false);
+  bool persistent = body.persistent.value_or(false);
 
   std::optional<int> lifetime_sec;
-  if (body.contains("lifetime") && body["lifetime"].is_number_integer()) {
-    lifetime_sec = body["lifetime"].get<int>();
+  if (body.lifetime.has_value()) {
+    lifetime_sec = body.lifetime.value();
     if (*lifetime_sec <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer (seconds)",
-                                 {{"parameter", "lifetime"}, {"value", *lifetime_sec}});
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer (seconds)",
+                                       json{{"parameter", "lifetime"}, {"value", *lifetime_sec}}));
     }
   }
 
   std::optional<json> log_settings;
-  if (body.contains("log_settings") && body["log_settings"].is_object()) {
-    log_settings = body["log_settings"];
+  if (body.log_settings.has_value() && body.log_settings->is_object()) {
+    log_settings = body.log_settings;
   }
 
   // For data triggers, resolve the resource_path URI segment to a full ROS 2 topic name.
@@ -195,7 +261,7 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     }
   }
 
-  // Build create request
+  // Build create request.
   TriggerCreateRequest create_req;
   create_req.entity_id = entity_id;
   create_req.entity_type = entity_type;
@@ -217,286 +283,263 @@ void TriggerHandlers::handle_create(const httplib::Request & req, httplib::Respo
     switch (result.error().code) {
       case TriggerError::CapacityExceeded:
       case TriggerError::PersistenceError:
-        HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error().message);
-        break;
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, result.error().message));
       case TriggerError::SubscribeFailed:
-        HandlerContext::send_error(res, 503, ERR_X_MEDKIT_SUBSCRIBE_FAILED, result.error().message);
-        break;
+        return tl::unexpected(make_error(503, ERR_X_MEDKIT_SUBSCRIBE_FAILED, result.error().message));
       case TriggerError::NotFound:
-        HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, result.error().message);
-        break;
+        return tl::unexpected(make_error(404, ERR_ENTITY_NOT_FOUND, result.error().message));
       case TriggerError::ValidationError:
-        HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
-                                   {{"parameter", "trigger_condition"}});
-        break;
+        return tl::unexpected(
+            make_error(400, ERR_INVALID_PARAMETER, result.error().message, json{{"parameter", "trigger_condition"}}));
       default:
         // Defensive sentinel: a future TriggerError value that lands here was
         // missed when the enum was extended. Return 500 with a stable error
         // code so the omission is observable in tests instead of silently
         // mapping to 400.
-        HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, result.error().message);
-        break;
+        return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, result.error().message));
     }
-    return;
   }
 
   auto event_source = build_event_source(*result);
-  auto response_json = trigger_to_json(*result, event_source);
-
-  res.status = 201;
-  HandlerContext::send_json(res, response_json);
+  auto trigger_dto = trigger_info_to_dto(*result, event_source);
+  http::ResponseAttachments att;
+  att.with_status(201);
+  return std::make_pair(std::move(trigger_dto), std::move(att));
 }
 
 // ---------------------------------------------------------------------------
 // GET - list triggers
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_list(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::Collection<dto::Trigger>> TriggerHandlers::get_triggers(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
   auto triggers = trigger_mgr_.list(entity_id);
-  json items = json::array();
+  dto::Collection<dto::Trigger> response;
   for (const auto & trig : triggers) {
-    items.push_back(trigger_to_json(trig, build_event_source(trig)));
+    response.items.push_back(trigger_info_to_dto(trig, build_event_source(trig)));
   }
 
-  json response;
-  response["items"] = items;
-  HandlerContext::send_json(res, response);
+  return response;
 }
 
 // ---------------------------------------------------------------------------
 // GET - get single trigger
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_get(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::Trigger> TriggerHandlers::get_trigger(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto trigger_id = req.matches[2].str();
+  auto trigger_id_result = read_trigger_id(req);
+  if (!trigger_id_result) {
+    return tl::unexpected(trigger_id_result.error());
+  }
+  const std::string trigger_id = *trigger_id_result;
+
   auto trig = trigger_mgr_.get(trigger_id);
   if (!trig || trig->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
-  HandlerContext::send_json(res, trigger_to_json(*trig, build_event_source(*trig)));
+  return trigger_info_to_dto(*trig, build_event_source(*trig));
 }
 
 // ---------------------------------------------------------------------------
 // PUT - update trigger
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_update(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::Trigger> TriggerHandlers::put_trigger(const http::TypedRequest & req,
+                                                        dto::TriggerUpdateRequest body) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto trigger_id = req.matches[2].str();
-
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  auto trigger_id_result = read_trigger_id(req);
+  if (!trigger_id_result) {
+    return tl::unexpected(trigger_id_result.error());
   }
+  const std::string trigger_id = *trigger_id_result;
 
-  if (!body.contains("lifetime") || !body["lifetime"].is_number_integer()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'lifetime'",
-                               {{"parameter", "lifetime"}});
-    return;
-  }
-
-  int new_lifetime = body["lifetime"].get<int>();
-
+  int new_lifetime = body.lifetime;
   if (new_lifetime <= 0) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer",
-                               {{"parameter", "lifetime"}, {"value", new_lifetime}});
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Lifetime must be a positive integer",
+                                     json{{"parameter", "lifetime"}, {"value", new_lifetime}}));
   }
 
-  // Verify trigger exists and belongs to this entity before updating
+  // Verify trigger exists and belongs to this entity before updating.
   auto existing = trigger_mgr_.get(trigger_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
   auto result = trigger_mgr_.update(trigger_id, new_lifetime);
   if (!result) {
     if (result.error().code == TriggerError::NotFound) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, result.error().message,
-                                 {{"trigger_id", trigger_id}});
-    } else {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, result.error().message,
-                                 {{"parameter", "lifetime"}, {"value", new_lifetime}});
+      return tl::unexpected(
+          make_error(404, ERR_RESOURCE_NOT_FOUND, result.error().message, json{{"trigger_id", trigger_id}}));
     }
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, result.error().message,
+                                     json{{"parameter", "lifetime"}, {"value", new_lifetime}}));
   }
 
-  HandlerContext::send_json(res, trigger_to_json(*result, build_event_source(*result)));
+  return trigger_info_to_dto(*result, build_event_source(*result));
 }
 
 // ---------------------------------------------------------------------------
 // DELETE - remove trigger
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_delete(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<http::NoContent> TriggerHandlers::del_trigger(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto trigger_id = req.matches[2].str();
+  auto trigger_id_result = read_trigger_id(req);
+  if (!trigger_id_result) {
+    return tl::unexpected(trigger_id_result.error());
+  }
+  const std::string trigger_id = *trigger_id_result;
 
-  // Verify trigger exists and belongs to this entity before deleting
+  // Verify trigger exists and belongs to this entity before deleting.
   auto existing = trigger_mgr_.get(trigger_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
   if (!trigger_mgr_.remove(trigger_id)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
-  res.status = 204;
+  return http::NoContent{};
 }
 
 // ---------------------------------------------------------------------------
 // GET /events - SSE stream
 // ---------------------------------------------------------------------------
-void TriggerHandlers::handle_events(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<http::SseStream> TriggerHandlers::sse_trigger_events(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto trigger_id = req.matches[2].str();
+  auto trigger_id_result = read_trigger_id(req);
+  if (!trigger_id_result) {
+    return tl::unexpected(trigger_id_result.error());
+  }
+  const std::string trigger_id = *trigger_id_result;
+
   auto trig = trigger_mgr_.get(trigger_id);
   if (!trig) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
   if (trig->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
   if (!trigger_mgr_.is_active(trigger_id)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Trigger expired or inactive",
-                               {{"trigger_id", trigger_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger expired or inactive", json{{"trigger_id", trigger_id}}));
   }
 
   if (!client_tracker_->try_connect()) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Maximum SSE client limit reached");
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Maximum SSE client limit reached"));
   }
 
-  // SSE headers for proxy compatibility (matches sse_fault_handler pattern)
-  res.set_header("Cache-Control", "no-cache");
-  res.set_header("X-Accel-Buffering", "no");
-
-  auto tracker = client_tracker_;
   // NOTE: trigger_mgr_ is captured by reference. TriggerHandlers must outlive all SSE
   // connections. This is guaranteed because GatewayNode destroys the REST server
   // (closing all connections) before destroying managers. See shutdown lifecycle in design spec.
   auto & mgr = trigger_mgr_;
-  auto tid = trigger_id;
+  auto tracker = client_tracker_;
 
-  res.set_chunked_content_provider(
-      "text/event-stream",
-      [&mgr, tid, tracker](size_t /*offset*/, httplib::DataSink & sink) -> bool {
-        uint64_t sse_event_counter = 0;
-        while (mgr.is_active(tid)) {
-          // Wait for event or timeout (15 seconds for keepalive)
-          bool woken = mgr.wait_for_event(tid, std::chrono::milliseconds(15000));
+  // The SseStream's next_event closure is invoked once per cpp-httplib chunked
+  // content tick. We keep the loop semantics of the legacy implementation:
+  // wait for an event up to the keepalive timeout, then either write a
+  // keepalive frame or drain every pending event (multishot triggers can
+  // accumulate multiple events between wakeups).
+  //
+  // The tracker_guard releases the SSE client slot on closure destruction -
+  // the framework holds the SseStream via a shared_ptr, so the guard's deleter
+  // fires when the chunked content provider stops (either client disconnect
+  // or end-of-stream).
+  std::shared_ptr<void> tracker_guard(nullptr, [tracker](void *) {
+    tracker->disconnect();
+  });
 
-          if (!mgr.is_active(tid)) {
-            break;
-          }
-
-          if (!woken) {
-            // Timeout - send keepalive
-            if (!sink.write(":keepalive\n\n", 12)) {
-              break;
-            }
-            continue;
-          }
-
-          // Drain all pending events per wakeup (C2 fix: bounded queue can
-          // accumulate multiple events between wakeups for multishot triggers)
-          bool write_ok = true;
-          while (auto event = mgr.consume_pending_event(tid)) {
-            ++sse_event_counter;
-            std::string frame = "id: " + std::to_string(sse_event_counter) + "\n" + "data: " + event->dump() + "\n\n";
-            if (!sink.write(frame.c_str(), frame.size())) {
-              write_ok = false;
-              break;
-            }
-          }
-          if (!write_ok) {
-            break;
-          }
-        }
-
-        sink.done();
-        return true;
-      },
-      [tracker](bool /*success*/) {
-        tracker->disconnect();
-      });
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-json TriggerHandlers::trigger_to_json(const TriggerInfo & info, const std::string & event_source) {
-  json j;
-  j["id"] = info.id;
-  j["status"] = (info.status == TriggerStatus::ACTIVE) ? "active" : "terminated";
-  j["observed_resource"] = info.resource_uri;
-  j["event_source"] = event_source;
-  j["protocol"] = info.protocol;
-
-  json condition;
-  condition["condition_type"] = info.condition_type;
-  // Merge condition_params into the condition object
-  if (info.condition_params.is_object()) {
-    for (auto & [key, val] : info.condition_params.items()) {
-      condition[key] = val;
+  http::SseStream stream;
+  stream.next_event = [&mgr, tid = trigger_id, tracker_guard,
+                       sse_event_counter = static_cast<std::uint64_t>(0)](httplib::DataSink & sink) mutable -> bool {
+    if (!mgr.is_active(tid)) {
+      return false;
     }
-  }
-  j["trigger_condition"] = condition;
 
-  j["multishot"] = info.multishot;
-  j["persistent"] = info.persistent;
+    // Wait for event or timeout (15 seconds for keepalive).
+    bool woken = mgr.wait_for_event(tid, std::chrono::milliseconds(15000));
 
-  if (info.lifetime_sec.has_value()) {
-    j["lifetime"] = info.lifetime_sec.value();
-  }
+    if (!mgr.is_active(tid)) {
+      return false;
+    }
 
-  if (!info.path.empty()) {
-    j["path"] = info.path;
-  }
+    if (!woken) {
+      // Timeout - send keepalive. The return value of sink.write doubles as the
+      // "keep streaming" signal: write failure means the client disconnected,
+      // so the closure terminates the stream.
+      return sink.write(":keepalive\n\n", 12);
+    }
 
-  if (info.log_settings.has_value()) {
-    j["log_settings"] = *info.log_settings;
-  }
+    // Drain all pending events per wakeup (C2 fix: bounded queue can
+    // accumulate multiple events between wakeups for multishot triggers).
+    while (auto event = mgr.consume_pending_event(tid)) {
+      ++sse_event_counter;
+      std::string frame = "id: " + std::to_string(sse_event_counter) + "\n" + "data: " + event->dump() + "\n\n";
+      if (!sink.write(frame.c_str(), frame.size())) {
+        return false;
+      }
+    }
+    return true;
+  };
 
-  return j;
+  return stream;
 }
 
 std::string TriggerHandlers::build_event_source(const TriggerInfo & info) {
@@ -504,8 +547,8 @@ std::string TriggerHandlers::build_event_source(const TriggerInfo & info) {
          "/events";
 }
 
-std::string TriggerHandlers::extract_entity_type(const httplib::Request & req) {
-  auto type = extract_entity_type_from_path(req.path);
+std::string TriggerHandlers::extract_entity_type(const std::string & path) {
+  auto type = extract_entity_type_from_path(path);
   switch (type) {
     case SovdEntityType::APP:
       return "apps";
@@ -518,7 +561,7 @@ std::string TriggerHandlers::extract_entity_type(const httplib::Request & req) {
     case SovdEntityType::SERVER:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", req.path.c_str());
+      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", path.c_str());
       return "apps";
   }
 }

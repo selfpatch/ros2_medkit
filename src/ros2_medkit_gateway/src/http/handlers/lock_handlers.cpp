@@ -18,14 +18,126 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <utility>
+#include <variant>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace {
+
+/// Build a minimal SOVD-shaped ErrorInfo. `params` defaults to an empty object,
+/// matching the legacy `send_error` default; supply non-empty params per call
+/// site to preserve the exact wire shape integration tests assert on.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Wrap a thrown std::exception as a 500 internal-error ErrorInfo, logging
+/// the underlying exception via the shared handler logger so operators still
+/// see the original `what()` even though the wire response drops `details`
+/// for unrelated entity ids.
+ErrorInfo make_internal_error(const char * where, const std::string & message, const std::exception & e,
+                              json params = {}) {
+  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  if (params.is_null()) {
+    params = json::object();
+  }
+  if (!params.is_object()) {
+    params = json::object();
+  }
+  params["details"] = e.what();
+  return make_error(500, ERR_INTERNAL_ERROR, message, std::move(params));
+}
+
+/// Map internal LockManager error codes to SOVD standard error codes.
+///
+/// The LockManager uses descriptive internal codes (lock-conflict,
+/// lock-not-owner, etc.) but SOVD spec requires standard error codes
+/// (invalid-request, forbidden, etc.).
+std::string to_sovd_error_code(const std::string & lock_code) {
+  if (lock_code == "lock-conflict" || lock_code == "lock-not-breakable") {
+    return ERR_INVALID_REQUEST;
+  }
+  if (lock_code == "lock-not-owner") {
+    return ERR_FORBIDDEN;
+  }
+  if (lock_code == "lock-not-found") {
+    return ERR_RESOURCE_NOT_FOUND;
+  }
+  if (lock_code == "invalid-scope" || lock_code == "invalid-expiration") {
+    return ERR_INVALID_PARAMETER;
+  }
+  return lock_code;  // Pass through if no mapping
+}
+
+/// Build a typed Lock DTO from a LockInfo.
+dto::Lock lock_info_to_dto(const LockInfo & lock, const std::string & client_id) {
+  dto::Lock dto;
+  dto.id = lock.lock_id;
+  dto.owned = !client_id.empty() && lock.client_id == client_id;
+  if (!lock.scopes.empty()) {
+    dto.scopes = lock.scopes;
+  }
+  dto.lock_expiration = LockHandlers::format_expiration(lock.expires_at);
+  return dto;
+}
+
+/// Read the positional entity-id capture group from the typed request.
+///
+/// The legacy handlers tested `req.matches.size() < 2` and returned
+/// ERR_INVALID_REQUEST/400. TypedRequest::path_param would otherwise emit
+/// ERR_INVALID_PARAMETER on that path, which is a different wire shape - so
+/// the helper preserves the legacy `invalid-request` code/message exactly.
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the positional lock-id capture group from the typed request. The
+/// legacy handlers used `req.matches[2]` and reported ERR_INVALID_REQUEST/400
+/// when fewer than 3 captures were present.
+tl::expected<std::string, ErrorInfo> read_lock_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("2");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler must signal "do not render" via the
+/// framework-internal sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper
+/// detects in `write_typed_error`.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
+}  // namespace
 
 LockHandlers::LockHandlers(HandlerContext & ctx, LockManager * lock_manager) : ctx_(ctx), lock_manager_(lock_manager) {
 }
@@ -34,35 +146,32 @@ LockHandlers::LockHandlers(HandlerContext & ctx, LockManager * lock_manager) : c
 // Private helpers
 // ============================================================================
 
-bool LockHandlers::check_locking_enabled(httplib::Response & res) {
+tl::expected<void, ErrorInfo> LockHandlers::check_locking_enabled() const {
   if (!lock_manager_) {
-    HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Locking is not enabled on this gateway");
-    return false;
+    return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Locking is not enabled on this gateway"));
   }
-  return true;
+  return {};
 }
 
-std::optional<std::string> LockHandlers::require_client_id(const httplib::Request & req, httplib::Response & res) {
+tl::expected<std::string, ErrorInfo> LockHandlers::require_client_id(const http::TypedRequest & req) const {
   static constexpr size_t kMaxClientIdLen = 256;
 
-  auto client_id = req.get_header_value("X-Client-Id");
+  auto header = req.header("X-Client-Id");
+  std::string client_id = header.value_or("");
   if (client_id.empty()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing required X-Client-Id header",
-                               json{{"details", "X-Client-Id header is required for lock operations"}});
-    return std::nullopt;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Missing required X-Client-Id header",
+                                     json{{"details", "X-Client-Id header is required for lock operations"}}));
   }
   if (client_id.size() > kMaxClientIdLen) {
-    HandlerContext::send_error(
-        res, 400, ERR_INVALID_PARAMETER, "X-Client-Id exceeds maximum length",
-        json{{"details", "X-Client-Id must be at most 256 characters"}, {"max_length", kMaxClientIdLen}});
-    return std::nullopt;
+    return tl::unexpected(
+        make_error(400, ERR_INVALID_PARAMETER, "X-Client-Id exceeds maximum length",
+                   json{{"details", "X-Client-Id must be at most 256 characters"}, {"max_length", kMaxClientIdLen}}));
   }
-  // Reject control characters (defense-in-depth)
+  // Reject control characters (defense-in-depth).
   for (char c : client_id) {
     if (static_cast<unsigned char>(c) < 0x20) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "X-Client-Id contains invalid characters",
-                                 json{{"details", "X-Client-Id must not contain control characters"}});
-      return std::nullopt;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "X-Client-Id contains invalid characters",
+                                       json{{"details", "X-Client-Id must not contain control characters"}}));
     }
   }
   return client_id;
@@ -86,368 +195,272 @@ std::string LockHandlers::format_expiration(std::chrono::steady_clock::time_poin
   return oss.str();
 }
 
-/**
- * @brief Map internal LockManager error codes to SOVD standard error codes
- *
- * The LockManager uses descriptive internal codes (lock-conflict, lock-not-owner, etc.)
- * but SOVD spec requires standard error codes (invalid-request, forbidden, etc.).
- */
-static std::string to_sovd_error_code(const std::string & lock_code) {
-  if (lock_code == "lock-conflict" || lock_code == "lock-not-breakable") {
-    return ERR_INVALID_REQUEST;
-  }
-  if (lock_code == "lock-not-owner") {
-    return ERR_FORBIDDEN;
-  }
-  if (lock_code == "lock-not-found") {
-    return ERR_RESOURCE_NOT_FOUND;
-  }
-  if (lock_code == "invalid-scope" || lock_code == "invalid-expiration") {
-    return ERR_INVALID_PARAMETER;
-  }
-  return lock_code;  // Pass through if no mapping
-}
-
-json LockHandlers::lock_to_json(const LockInfo & lock, const std::string & client_id) {
-  json result;
-  result["id"] = lock.lock_id;
-  result["owned"] = !client_id.empty() && lock.client_id == client_id;
-
-  // scopes field is conditional - only present when lock has specific scopes
-  if (!lock.scopes.empty()) {
-    result["scopes"] = lock.scopes;
-  }
-
-  result["lock_expiration"] = format_expiration(lock.expires_at);
-  return result;
-}
-
 // ============================================================================
 // Handler implementations
 // ============================================================================
 
-void LockHandlers::handle_acquire_lock(const httplib::Request & req, httplib::Response & res) {
-  if (!check_locking_enabled(res)) {
-    return;
+http::Result<std::pair<dto::Lock, http::ResponseAttachments>> LockHandlers::post_lock(const http::TypedRequest & req,
+                                                                                      dto::AcquireLockRequest body) {
+  if (auto guard = check_locking_enabled(); !guard) {
+    return tl::unexpected(guard.error());
   }
 
   std::string entity_id;
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_entity_id(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    entity_id = *id_result;
+
+    // Require X-Client-Id for acquire.
+    auto client_id_result = require_client_id(req);
+    if (!client_id_result) {
+      return tl::unexpected(client_id_result.error());
+    }
+    const std::string client_id = *client_id_result;
+
+    // Validate entity exists and matches route type (peer-forward aware).
+    auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    entity_id = req.matches[1];
-
-    // Require X-Client-Id for acquire
-    auto client_id_opt = require_client_id(req, res);
-    if (!client_id_opt) {
-      return;
-    }
-    const auto & client_id = *client_id_opt;
-
-    // Validate entity exists and matches route type
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;
+    // Validate lock_expiration is positive.
+    if (body.lock_expiration <= 0) {
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
+                                       json{{"details", "lock_expiration must be a positive integer (seconds)"}}));
     }
 
-    // Parse request body
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 json{{"details", e.what()}});
-      return;
-    }
-
-    // Extract lock_expiration (required)
-    if (!body.contains("lock_expiration") || !body["lock_expiration"].is_number_integer()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-    int expiration_seconds = body["lock_expiration"].get<int>();
-    if (expiration_seconds <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-
-    // Extract scopes (optional)
+    // Validate individual scope strings.
     std::vector<std::string> scopes;
-    if (body.contains("scopes") && body["scopes"].is_array()) {
-      for (const auto & scope : body["scopes"]) {
-        if (!scope.is_string()) {
-          HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid scope value",
-                                     json{{"details", "Each scope must be a string"}});
-          return;
-        }
-        auto scope_str = scope.get<std::string>();
+    if (body.scopes.has_value()) {
+      for (const auto & scope_str : *body.scopes) {
         if (valid_lock_scopes().find(scope_str) == valid_lock_scopes().end()) {
-          HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Unknown lock scope: " + scope_str, [&]() {
-            std::string scope_list;
-            for (const auto & s : valid_lock_scopes()) {
-              if (!scope_list.empty()) {
-                scope_list += ", ";
-              }
-              scope_list += s;
+          std::string scope_list;
+          for (const auto & s : valid_lock_scopes()) {
+            if (!scope_list.empty()) {
+              scope_list += ", ";
             }
-            return json{{"details", "Valid scopes: " + scope_list}, {"invalid_scope", scope_str}};
-          }());
-          return;
+            scope_list += s;
+          }
+          return tl::unexpected(
+              make_error(400, ERR_INVALID_PARAMETER, "Unknown lock scope: " + scope_str,
+                         json{{"details", "Valid scopes: " + scope_list}, {"invalid_scope", scope_str}}));
         }
         scopes.push_back(scope_str);
       }
     }
 
-    // Extract break_lock (optional, default false)
-    bool break_lock = false;
-    if (body.contains("break_lock") && body["break_lock"].is_boolean()) {
-      break_lock = body["break_lock"].get<bool>();
-    }
+    bool break_lock = body.break_lock.value_or(false);
 
-    // Acquire the lock
-    auto result = lock_manager_->acquire(entity_id, client_id, scopes, expiration_seconds, break_lock);
+    // Acquire the lock.
+    auto result = lock_manager_->acquire(entity_id, client_id, scopes, body.lock_expiration, break_lock);
 
-    if (result.has_value()) {
-      auto response = lock_to_json(*result, client_id);
-      res.status = 201;
-      res.set_header("Location", req.path + "/" + result->lock_id);
-      res.set_content(response.dump(2), "application/json");
-    } else {
+    if (!result.has_value()) {
       const auto & err = result.error();
-      HandlerContext::send_error(res, err.status_code, to_sovd_error_code(err.code), err.message,
-                                 err.existing_lock_id ? json{{"existing_lock_id", *err.existing_lock_id}} : json{});
+      return tl::unexpected(
+          make_error(err.status_code, to_sovd_error_code(err.code), err.message,
+                     err.existing_lock_id ? json{{"existing_lock_id", *err.existing_lock_id}} : json{}));
     }
+
+    auto lock_dto = lock_info_to_dto(*result, client_id);
+    http::ResponseAttachments att;
+    att.with_status(201).with_header("Location", std::string(req.path()) + "/" + result->lock_id);
+    return std::make_pair(std::move(lock_dto), std::move(att));
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to acquire lock",
-                               json{{"details", e.what()}, {"entity_id", entity_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_acquire_lock for entity '%s': %s", entity_id.c_str(),
-                 e.what());
+    return tl::unexpected(
+        make_internal_error("handle_acquire_lock", "Failed to acquire lock", e, json{{"entity_id", entity_id}}));
   }
 }
 
-void LockHandlers::handle_list_locks(const httplib::Request & req, httplib::Response & res) {
-  if (!check_locking_enabled(res)) {
-    return;
+http::Result<dto::Collection<dto::Lock>> LockHandlers::get_locks(const http::TypedRequest & req) {
+  if (auto guard = check_locking_enabled(); !guard) {
+    return tl::unexpected(guard.error());
   }
 
   std::string entity_id;
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_entity_id(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    entity_id = *id_result;
+
+    // Validate entity exists and matches route type.
+    auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    entity_id = req.matches[1];
+    // X-Client-Id is optional for list (used for `owned` field).
+    auto client_id = req.header("X-Client-Id").value_or("");
 
-    // Validate entity exists and matches route type
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;
-    }
-
-    // X-Client-Id is optional for list (used for "owned" field)
-    auto client_id = req.get_header_value("X-Client-Id");
-
-    // Get lock for this entity
     auto lock = lock_manager_->get_lock(entity_id);
 
-    json response;
-    response["items"] = json::array();
-
+    dto::Collection<dto::Lock> response;
     if (lock) {
-      response["items"].push_back(lock_to_json(*lock, client_id));
+      response.items.push_back(lock_info_to_dto(*lock, client_id));
     }
-
-    res.status = 200;
-    HandlerContext::send_json(res, response);
+    return response;
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to list locks",
-                               json{{"details", e.what()}, {"entity_id", entity_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_locks for entity '%s': %s", entity_id.c_str(),
-                 e.what());
+    return tl::unexpected(
+        make_internal_error("handle_list_locks", "Failed to list locks", e, json{{"entity_id", entity_id}}));
   }
 }
 
-void LockHandlers::handle_get_lock(const httplib::Request & req, httplib::Response & res) {
-  if (!check_locking_enabled(res)) {
-    return;
+http::Result<dto::Lock> LockHandlers::get_lock(const http::TypedRequest & req) {
+  if (auto guard = check_locking_enabled(); !guard) {
+    return tl::unexpected(guard.error());
   }
 
   std::string entity_id;
   std::string lock_id;
   try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_entity_id(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    entity_id = *id_result;
+    auto lock_id_result = read_lock_id(req);
+    if (!lock_id_result) {
+      return tl::unexpected(lock_id_result.error());
+    }
+    lock_id = *lock_id_result;
+
+    // Validate entity exists and matches route type.
+    auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    entity_id = req.matches[1];
-    lock_id = req.matches[2];
+    // X-Client-Id is optional for get (used for `owned` field).
+    auto client_id = req.header("X-Client-Id").value_or("");
 
-    // Validate entity exists and matches route type
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;
-    }
-
-    // X-Client-Id is optional for get (used for "owned" field)
-    auto client_id = req.get_header_value("X-Client-Id");
-
-    // Look up lock by ID
     auto lock = lock_manager_->get_lock_by_id(lock_id);
     if (!lock || lock->entity_id != entity_id) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
-                                 json{{"lock_id", lock_id}, {"entity_id", entity_id}});
-      return;
+      return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
+                                       json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
 
-    res.status = 200;
-    HandlerContext::send_json(res, lock_to_json(*lock, client_id));
+    return lock_info_to_dto(*lock, client_id);
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to get lock",
-                               json{{"details", e.what()}, {"entity_id", entity_id}, {"lock_id", lock_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_lock for entity '%s', lock '%s': %s", entity_id.c_str(),
-                 lock_id.c_str(), e.what());
+    return tl::unexpected(make_internal_error("handle_get_lock", "Failed to get lock", e,
+                                              json{{"entity_id", entity_id}, {"lock_id", lock_id}}));
   }
 }
 
-void LockHandlers::handle_extend_lock(const httplib::Request & req, httplib::Response & res) {
-  if (!check_locking_enabled(res)) {
-    return;
+http::Result<http::NoContent> LockHandlers::put_lock(const http::TypedRequest & req, dto::ExtendLockRequest body) {
+  if (auto guard = check_locking_enabled(); !guard) {
+    return tl::unexpected(guard.error());
   }
 
   std::string entity_id;
   std::string lock_id;
   try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_entity_id(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    entity_id = *id_result;
+    auto lock_id_result = read_lock_id(req);
+    if (!lock_id_result) {
+      return tl::unexpected(lock_id_result.error());
+    }
+    lock_id = *lock_id_result;
+
+    // Require X-Client-Id for extend.
+    auto client_id_result = require_client_id(req);
+    if (!client_id_result) {
+      return tl::unexpected(client_id_result.error());
+    }
+    const std::string client_id = *client_id_result;
+
+    // Validate entity exists and matches route type.
+    auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    entity_id = req.matches[1];
-    lock_id = req.matches[2];
-
-    // Require X-Client-Id for extend
-    auto client_id_opt = require_client_id(req, res);
-    if (!client_id_opt) {
-      return;
-    }
-    const auto & client_id = *client_id_opt;
-
-    // Validate entity exists and matches route type
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;
-    }
-
-    // Verify lock exists and belongs to this entity
+    // Verify lock exists and belongs to this entity.
     auto lock = lock_manager_->get_lock_by_id(lock_id);
     if (!lock || lock->entity_id != entity_id) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
-                                 json{{"lock_id", lock_id}, {"entity_id", entity_id}});
-      return;
+      return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
+                                       json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
 
-    // Parse request body for new expiration
-    json body;
-    try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 json{{"details", e.what()}});
-      return;
+    if (body.lock_expiration <= 0) {
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
+                                       json{{"details", "lock_expiration must be a positive integer (seconds)"}}));
     }
 
-    if (!body.contains("lock_expiration") || !body["lock_expiration"].is_number_integer()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-    int additional_seconds = body["lock_expiration"].get<int>();
-    if (additional_seconds <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid lock_expiration",
-                                 json{{"details", "lock_expiration must be a positive integer (seconds)"}});
-      return;
-    }
-
-    // Extend the lock
-    auto result = lock_manager_->extend(entity_id, client_id, additional_seconds);
-
-    if (result.has_value()) {
-      res.status = 204;
-    } else {
+    // Extend the lock.
+    auto result = lock_manager_->extend(entity_id, client_id, body.lock_expiration);
+    if (!result.has_value()) {
       const auto & err = result.error();
-      HandlerContext::send_error(res, err.status_code, to_sovd_error_code(err.code), err.message);
+      return tl::unexpected(make_error(err.status_code, to_sovd_error_code(err.code), err.message));
     }
+    return http::NoContent{};
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to extend lock",
-                               json{{"details", e.what()}, {"entity_id", entity_id}, {"lock_id", lock_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_extend_lock for entity '%s', lock '%s': %s",
-                 entity_id.c_str(), lock_id.c_str(), e.what());
+    return tl::unexpected(make_internal_error("handle_extend_lock", "Failed to extend lock", e,
+                                              json{{"entity_id", entity_id}, {"lock_id", lock_id}}));
   }
 }
 
-void LockHandlers::handle_release_lock(const httplib::Request & req, httplib::Response & res) {
-  if (!check_locking_enabled(res)) {
-    return;
+http::Result<http::NoContent> LockHandlers::del_lock(const http::TypedRequest & req) {
+  if (auto guard = check_locking_enabled(); !guard) {
+    return tl::unexpected(guard.error());
   }
 
   std::string entity_id;
   std::string lock_id;
   try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_entity_id(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    entity_id = *id_result;
+    auto lock_id_result = read_lock_id(req);
+    if (!lock_id_result) {
+      return tl::unexpected(lock_id_result.error());
+    }
+    lock_id = *lock_id_result;
+
+    // Require X-Client-Id for release.
+    auto client_id_result = require_client_id(req);
+    if (!client_id_result) {
+      return tl::unexpected(client_id_result.error());
+    }
+    const std::string client_id = *client_id_result;
+
+    // Validate entity exists and matches route type.
+    auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    entity_id = req.matches[1];
-    lock_id = req.matches[2];
-
-    // Require X-Client-Id for release
-    auto client_id_opt = require_client_id(req, res);
-    if (!client_id_opt) {
-      return;
-    }
-    const auto & client_id = *client_id_opt;
-
-    // Validate entity exists and matches route type
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;
-    }
-
-    // Verify lock exists and belongs to this entity
+    // Verify lock exists and belongs to this entity.
     auto lock = lock_manager_->get_lock_by_id(lock_id);
     if (!lock || lock->entity_id != entity_id) {
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
-                                 json{{"lock_id", lock_id}, {"entity_id", entity_id}});
-      return;
+      return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
+                                       json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
 
-    // Release the lock
+    // Release the lock.
     auto result = lock_manager_->release(entity_id, client_id);
-
-    if (result.has_value()) {
-      res.status = 204;
-    } else {
+    if (!result.has_value()) {
       const auto & err = result.error();
-      HandlerContext::send_error(res, err.status_code, to_sovd_error_code(err.code), err.message);
+      return tl::unexpected(make_error(err.status_code, to_sovd_error_code(err.code), err.message));
     }
+    return http::NoContent{};
 
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to release lock",
-                               json{{"details", e.what()}, {"entity_id", entity_id}, {"lock_id", lock_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_release_lock for entity '%s', lock '%s': %s",
-                 entity_id.c_str(), lock_id.c_str(), e.what());
+    return tl::unexpected(make_internal_error("handle_release_lock", "Failed to release lock", e,
+                                              json{{"entity_id", entity_id}, {"lock_id", lock_id}}));
   }
 }
 

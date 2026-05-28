@@ -16,12 +16,14 @@
 
 #include <map>
 #include <set>
+#include <variant>
 
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/capability_builder.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
@@ -85,20 +87,101 @@ void append_plugin_capabilities(json & capabilities, const std::string & entity_
   }
 }
 
+/// Build the ErrorInfo for a "$entity not found" 404 with the per-entity id
+/// param the legacy handlers emitted (e.g. {"area_id": "..."}).
+ErrorInfo make_not_found_error(const char * entity_label, const std::string & id_param_name,
+                               const std::string & entity_id) {
+  ErrorInfo err;
+  err.code = ERR_ENTITY_NOT_FOUND;
+  err.message = std::string(entity_label) + " not found";
+  err.http_status = 404;
+  err.params = json{{id_param_name, entity_id}};
+  return err;
+}
+
+/// Build the ErrorInfo for an "Invalid <entity> ID" 400 with the same body
+/// shape as the legacy handlers' `validate_entity_id` failure path.
+ErrorInfo make_invalid_id_error(const char * entity_label, const std::string & id_param_name,
+                                const std::string & entity_id, const std::string & details) {
+  ErrorInfo err;
+  err.code = ERR_INVALID_PARAMETER;
+  err.message = std::string("Invalid ") + entity_label + " ID";
+  err.http_status = 400;
+  err.params = json{{"details", details}, {id_param_name, entity_id}};
+  return err;
+}
+
+ErrorInfo make_internal_error(const char * where, const std::exception & e) {
+  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  ErrorInfo err;
+  err.code = ERR_INTERNAL_ERROR;
+  err.message = "Internal server error";
+  err.http_status = 500;
+  err.params = json{{"details", e.what()}};
+  return err;
+}
+
+ErrorInfo make_internal_error_no_details(const char * where, const std::exception & e) {
+  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  ErrorInfo err;
+  err.code = ERR_INTERNAL_ERROR;
+  err.message = "Internal server error";
+  err.http_status = 500;
+  return err;
+}
+
+ErrorInfo make_invalid_request_error() {
+  ErrorInfo err;
+  err.code = ERR_INVALID_REQUEST;
+  err.message = "Invalid request";
+  err.http_status = 400;
+  return err;
+}
+
+/// Read a positional path parameter ("0" -> first regex capture group). On
+/// failure the validator's typed ErrorInfo is returned as-is.
+tl::expected<std::string, ErrorInfo> read_path_param(const http::TypedRequest & req) {
+  // The legacy handlers test for `req.matches.size() < 2` and return
+  // ERR_INVALID_REQUEST/400. TypedRequest::path_param returns an
+  // ERR_INVALID_PARAMETER/400 in that scenario which is different on the
+  // wire. Preserve the legacy shape so integration tests do not flip.
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_invalid_request_error());
+}
+
+/// Convert a ValidatorResult's error variant into a Result<T>'s tl::unexpected
+/// ErrorInfo. When the validator returned Forwarded the proxy already wrote
+/// the response, so the handler must signal "do not render" by returning the
+/// framework-internal sentinel that the typed wrapper detects.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
 }  // namespace
 
 // =============================================================================
 // Area handlers
 // =============================================================================
 
-void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_areas(const http::TypedRequest & req) {
   (void)req;
-
   try {
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     const auto areas = cache.get_areas();
 
-    json items = json::array();
+    dto::Collection<dto::AreaListItem> response;
     for (const auto & area : areas) {
       // Subareas (with parent_area_id) are only visible via
       // GET /areas/{id}/subareas, not in the top-level list.
@@ -106,55 +189,55 @@ void DiscoveryHandlers::handle_list_areas(const httplib::Request & req, httplib:
         continue;
       }
 
-      json area_item;
-      area_item["id"] = area.id;
-      area_item["name"] = area.name.empty() ? area.id : area.name;
-      area_item["href"] = "/api/v1/areas/" + area.id;
+      dto::AreaListItem item;
+      item.id = area.id;
+      item.name = area.name.empty() ? area.id : area.name;
+      item.href = "/api/v1/areas/" + area.id;
+      item.type = "area";
 
       if (!area.description.empty()) {
-        area_item["description"] = area.description;
+        item.description = area.description;
       }
       if (!area.tags.empty()) {
-        area_item["tags"] = area.tags;
+        item.tags = area.tags;
       }
 
-      XMedkit ext;
-      ext.ros2_namespace(area.namespace_path);
-      area_item["x-medkit"] = ext.build();
+      if (!area.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = area.namespace_path;
+        dto::XMedkitArea ext;
+        ext.ros2 = ros2;
+        item.x_medkit = ext;
+      }
 
-      items.push_back(area_item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_areas: %s", e.what());
+    return tl::unexpected(make_internal_error_no_details("get_areas", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::AreaDetail> DiscoveryHandlers::get_area(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    const std::string area_id = *id_result;
+
+    // Validate entity and forward to peer if remote (aggregation support).
+    auto entity_result = ctx_.validate_entity_for_route(req, area_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    std::string area_id = req.matches[1];
-
-    // Validate entity and forward to peer if remote (aggregation support)
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, area_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-
-    // Local entity - look up full object from cache for detail response
+    // Local entity - look up full object from cache for detail response.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
@@ -163,141 +246,142 @@ void DiscoveryHandlers::handle_get_area(const httplib::Request & req, httplib::R
     }
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Area", "area_id", area_id));
     }
 
     const auto & area = *area_opt;
 
-    json response;
-    response["id"] = area.id;
-    response["name"] = area.name.empty() ? area.id : area.name;
+    dto::AreaDetail detail;
+    detail.id = area.id;
+    detail.name = area.name.empty() ? area.id : area.name;
+    detail.type = "area";
 
     if (!area.description.empty()) {
-      response["description"] = area.description;
+      detail.description = area.description;
     }
     if (!area.tags.empty()) {
-      response["tags"] = area.tags;
+      detail.tags = area.tags;
     }
 
     std::string base_uri = "/api/v1/areas/" + area.id;
-    response["subareas"] = base_uri + "/subareas";
-    response["components"] = base_uri + "/components";
-    response["contains"] = base_uri + "/contains";
-    response["data"] = base_uri + "/data";
-    response["operations"] = base_uri + "/operations";
-    response["configurations"] = base_uri + "/configurations";
-    response["faults"] = base_uri + "/faults";
-    response["logs"] = base_uri + "/logs";
-    response["bulk-data"] = base_uri + "/bulk-data";
-    response["triggers"] = base_uri + "/triggers";
+    detail.subareas = base_uri + "/subareas";
+    detail.components = base_uri + "/components";
+    detail.contains = base_uri + "/contains";
+    detail.data = base_uri + "/data";
+    detail.operations = base_uri + "/operations";
+    detail.configurations = base_uri + "/configurations";
+    detail.faults = base_uri + "/faults";
+    detail.logs = base_uri + "/logs";
+    detail.bulk_data = base_uri + "/bulk-data";
+    detail.triggers = base_uri + "/triggers";
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::SUBAREAS, Cap::CONTAINS, Cap::DATA,      Cap::OPERATIONS, Cap::CONFIGURATIONS,
                              Cap::FAULTS,   Cap::LOGS,     Cap::BULK_DATA, Cap::TRIGGERS};
-    response["capabilities"] = CapabilityBuilder::build_capabilities("areas", area.id, caps);
-    append_plugin_capabilities(response["capabilities"], "areas", area.id, SovdEntityType::AREA, ctx_.node());
+    auto area_caps = CapabilityBuilder::build_capabilities("areas", area.id, caps);
+    append_plugin_capabilities(area_caps, "areas", area.id, SovdEntityType::AREA, ctx_.node());
+    detail.capabilities = area_caps;
 
     LinksBuilder links;
     links.self("/api/v1/areas/" + area.id).collection("/api/v1/areas");
     if (!area.parent_area_id.empty()) {
       links.parent("/api/v1/areas/" + area.parent_area_id);
     }
-    response["_links"] = links.build();
+    detail.links = links.build();
 
-    XMedkit ext;
-    ext.ros2_namespace(area.namespace_path);
-    if (!area.parent_area_id.empty()) {
-      ext.add("parent_area_id", area.parent_area_id);
+    dto::XMedkitArea x_medkit_area;
+    if (!area.namespace_path.empty()) {
+      dto::XMedkitRos2 ros2;
+      ros2.ns = area.namespace_path;
+      x_medkit_area.ros2 = ros2;
     }
-    ext.contributors(area.contributors);
-    response["x-medkit"] = ext.build();
+    if (!area.parent_area_id.empty()) {
+      x_medkit_area.parent_area_id = area.parent_area_id;
+    }
+    if (!area.contributors.empty()) {
+      x_medkit_area.contributors = sorted_contributors(area.contributors);
+    }
+    detail.x_medkit = x_medkit_area;
 
-    HandlerContext::send_json(res, response);
+    return detail;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_area: %s", e.what());
+    return tl::unexpected(make_internal_error("get_area", e));
   }
 }
 
-void DiscoveryHandlers::handle_area_components(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_area_components(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string area_id = req.matches[1];
+    const std::string area_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
-                                 {{"details", validation_result.error()}, {"area_id", area_id}});
-      return;
+      return tl::unexpected(make_invalid_id_error("area", "area_id", area_id, validation_result.error()));
     }
 
     const auto & cache = ctx_.node()->get_thread_safe_cache();
 
     if (!cache.has_area(area_id)) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Area", "area_id", area_id));
     }
 
     const auto components = cache.get_components();
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     for (const auto & component : components) {
       if (component.area == area_id) {
-        json comp_item;
-        comp_item["id"] = component.id;
-        comp_item["name"] = component.name.empty() ? component.id : component.name;
-        comp_item["href"] = "/api/v1/components/" + component.id;
+        dto::ComponentListItem item;
+        item.id = component.id;
+        item.name = component.name.empty() ? component.id : component.name;
+        item.href = "/api/v1/components/" + component.id;
+        item.type = "component";
 
         if (!component.description.empty()) {
-          comp_item["description"] = component.description;
+          item.description = component.description;
         }
 
-        XMedkit ext;
-        ext.source(component.source);
+        dto::XMedkitComponent x_medkit_comp;
+        if (!component.source.empty()) {
+          x_medkit_comp.source = component.source;
+        }
         if (!component.namespace_path.empty()) {
-          ext.ros2_namespace(component.namespace_path);
+          dto::XMedkitRos2 ros2;
+          ros2.ns = component.namespace_path;
+          x_medkit_comp.ros2 = ros2;
         }
-        comp_item["x-medkit"] = ext.build();
+        item.x_medkit = x_medkit_comp;
 
-        items.push_back(comp_item);
+        response.items.push_back(std::move(item));
       }
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_area_components: %s", e.what());
+    return tl::unexpected(make_internal_error_no_details("get_area_components", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_subareas(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string area_id = req.matches[1];
+    const std::string area_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
-                                 {{"details", validation_result.error()}, {"area_id", area_id}});
-      return;
+      return tl::unexpected(make_invalid_id_error("area", "area_id", area_id, validation_result.error()));
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Cache-first lookup: EntityCache has merged entities from peers.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
@@ -306,14 +390,13 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
     }
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Area", "area_id", area_id));
     }
 
-    // Use cache relationship index for subarea IDs, then look up each
+    // Use cache relationship index for subarea IDs, then look up each.
     auto subarea_ids = cache.get_subareas(area_id);
 
-    json items = json::array();
+    dto::Collection<dto::AreaListItem> response;
     for (const auto & sub_id : subarea_ids) {
       auto subarea_opt = cache.get_area(sub_id);
       if (!subarea_opt) {
@@ -321,55 +404,54 @@ void DiscoveryHandlers::handle_get_subareas(const httplib::Request & req, httpli
       }
       const auto & subarea = *subarea_opt;
 
-      json item;
-      item["id"] = subarea.id;
-      item["name"] = subarea.name.empty() ? subarea.id : subarea.name;
-      item["href"] = "/api/v1/areas/" + subarea.id;
+      dto::AreaListItem item;
+      item.id = subarea.id;
+      item.name = subarea.name.empty() ? subarea.id : subarea.name;
+      item.href = "/api/v1/areas/" + subarea.id;
+      item.type = "area";
 
-      XMedkit ext;
-      ext.ros2_namespace(subarea.namespace_path);
-      item["x-medkit"] = ext.build();
+      if (!subarea.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = subarea.namespace_path;
+        dto::XMedkitArea x_medkit_area;
+        x_medkit_area.ros2 = ros2;
+        item.x_medkit = x_medkit_area;
+      }
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/areas/" + area_id + "/subareas";
     links["parent"] = "/api/v1/areas/" + area_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subareas: %s", e.what());
+    return tl::unexpected(make_internal_error("get_subareas", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_area_contains(const http::TypedRequest & req) {
   // @verifies REQ_INTEROP_006
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string area_id = req.matches[1];
+    const std::string area_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(area_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid area ID",
-                                 {{"details", validation_result.error()}, {"area_id", area_id}});
-      return;
+      return tl::unexpected(make_invalid_id_error("area", "area_id", area_id, validation_result.error()));
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Cache-first lookup: EntityCache has merged entities from peers.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
@@ -378,12 +460,11 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
     }
 
     if (!area_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Area not found", {{"area_id", area_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Area", "area_id", area_id));
     }
 
     // Recursively collect components from this area and all descendant subareas
-    // (mirrors ManifestManager::get_components_for_area behavior)
+    // (mirrors ManifestManager::get_components_for_area behavior).
     std::vector<std::string> area_queue = {area_id};
     std::set<std::string> visited_areas;
     std::vector<std::string> all_comp_ids;
@@ -402,7 +483,7 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
       area_queue.insert(area_queue.end(), sub_ids.begin(), sub_ids.end());
     }
 
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     for (const auto & comp_id : all_comp_ids) {
       auto comp_opt = cache.get_component(comp_id);
       if (!comp_opt) {
@@ -410,37 +491,38 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
       }
       const auto & comp = *comp_opt;
 
-      json item;
-      item["id"] = comp.id;
-      item["name"] = comp.name.empty() ? comp.id : comp.name;
-      item["href"] = "/api/v1/components/" + comp.id;
+      dto::ComponentListItem item;
+      item.id = comp.id;
+      item.name = comp.name.empty() ? comp.id : comp.name;
+      item.href = "/api/v1/components/" + comp.id;
+      item.type = "component";
 
-      XMedkit ext;
-      ext.source(comp.source);
-      if (!comp.namespace_path.empty()) {
-        ext.ros2_namespace(comp.namespace_path);
+      dto::XMedkitComponent x_medkit_comp;
+      if (!comp.source.empty()) {
+        x_medkit_comp.source = comp.source;
       }
-      item["x-medkit"] = ext.build();
+      if (!comp.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = comp.namespace_path;
+        x_medkit_comp.ros2 = ros2;
+      }
+      item.x_medkit = x_medkit_comp;
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/areas/" + area_id + "/contains";
     links["area"] = "/api/v1/areas/" + area_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_contains: %s", e.what());
+    return tl::unexpected(make_internal_error("get_area_contains", e));
   }
 }
 
@@ -448,14 +530,14 @@ void DiscoveryHandlers::handle_get_contains(const httplib::Request & req, httpli
 // Component handlers
 // =============================================================================
 
-void DiscoveryHandlers::handle_list_components(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_components(const http::TypedRequest & req) {
   (void)req;
-
   try {
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     const auto components = cache.get_components();
 
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     for (const auto & component : components) {
       // Subcomponents (with parent_component_id) are only visible via
       // GET /components/{id}/subcomponents, not in the top-level list.
@@ -463,61 +545,65 @@ void DiscoveryHandlers::handle_list_components(const httplib::Request & req, htt
         continue;
       }
 
-      json item;
-      item["id"] = component.id;
-      item["name"] = component.name.empty() ? component.id : component.name;
-      item["href"] = "/api/v1/components/" + component.id;
+      dto::ComponentListItem item;
+      item.id = component.id;
+      item.name = component.name.empty() ? component.id : component.name;
+      item.href = "/api/v1/components/" + component.id;
+      item.type = "component";
 
       if (!component.description.empty()) {
-        item["description"] = component.description;
+        item.description = component.description;
       }
       if (!component.tags.empty()) {
-        item["tags"] = component.tags;
+        item.tags = component.tags;
       }
 
-      XMedkit ext;
-      ext.source(component.source);
+      dto::XMedkitComponent x_medkit_comp;
+      if (!component.source.empty()) {
+        x_medkit_comp.source = component.source;
+      }
       if (!component.fqn.empty()) {
-        ext.ros2_node(component.fqn);
+        dto::XMedkitRos2 ros2;
+        ros2.node = component.fqn;
+        if (!component.namespace_path.empty()) {
+          ros2.ns = component.namespace_path;
+        }
+        x_medkit_comp.ros2 = ros2;
+      } else if (!component.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = component.namespace_path;
+        x_medkit_comp.ros2 = ros2;
       }
-      if (!component.namespace_path.empty()) {
-        ext.ros2_namespace(component.namespace_path);
-      }
-      item["x-medkit"] = ext.build();
+      item.x_medkit = x_medkit_comp;
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error");
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_components: %s", e.what());
+    return tl::unexpected(make_internal_error_no_details("get_components", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    const std::string component_id = *id_result;
+
+    // Validate entity and forward to peer if remote (aggregation support).
+    auto entity_result = ctx_.validate_entity_for_route(req, component_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    std::string component_id = req.matches[1];
-
-    // Validate entity and forward to peer if remote (aggregation support)
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, component_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-
-    // Local entity - look up full object from cache for detail response
+    // Local entity - look up full object from cache for detail response.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -526,46 +612,45 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     }
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
-                                 {{"component_id", component_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Component", "component_id", component_id));
     }
 
     const auto & comp = *comp_opt;
 
-    json response;
-    response["id"] = comp.id;
-    response["name"] = comp.name.empty() ? comp.id : comp.name;
+    dto::ComponentDetail detail;
+    detail.id = comp.id;
+    detail.name = comp.name.empty() ? comp.id : comp.name;
+    detail.type = "component";
 
     if (!comp.description.empty()) {
-      response["description"] = comp.description;
+      detail.description = comp.description;
     }
     if (!comp.tags.empty()) {
-      response["tags"] = comp.tags;
+      detail.tags = comp.tags;
     }
 
     std::string base = "/api/v1/components/" + comp.id;
-    response["data"] = base + "/data";
-    response["operations"] = base + "/operations";
-    response["configurations"] = base + "/configurations";
-    response["faults"] = base + "/faults";
-    response["subcomponents"] = base + "/subcomponents";
-    response["hosts"] = base + "/hosts";
-    response["logs"] = base + "/logs";
-    response["bulk-data"] = base + "/bulk-data";
-    response["cyclic-subscriptions"] = base + "/cyclic-subscriptions";
-    response["triggers"] = base + "/triggers";
+    detail.data = base + "/data";
+    detail.operations = base + "/operations";
+    detail.configurations = base + "/configurations";
+    detail.faults = base + "/faults";
+    detail.subcomponents = base + "/subcomponents";
+    detail.hosts = base + "/hosts";
+    detail.logs = base + "/logs";
+    detail.bulk_data = base + "/bulk-data";
+    detail.cyclic_subscriptions = base + "/cyclic-subscriptions";
+    detail.triggers = base + "/triggers";
 
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
-      response["scripts"] = base + "/scripts";
+      detail.scripts = base + "/scripts";
     }
 
     if (!comp.depends_on.empty()) {
-      response["depends-on"] = base + "/depends-on";
+      detail.depends_on = base + "/depends-on";
     }
 
     if (!comp.area.empty()) {
-      response["belongs-to"] = "/api/v1/areas/" + comp.area;
+      detail.belongs_to = "/api/v1/areas/" + comp.area;
     }
 
     LinksBuilder links;
@@ -576,35 +661,45 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     if (!comp.parent_component_id.empty()) {
       links.parent("/api/v1/components/" + comp.parent_component_id);
     }
-    response["_links"] = links.build();
+    detail.links = links.build();
 
-    XMedkit ext;
-    ext.source(comp.source);
-    if (!comp.fqn.empty()) {
-      ext.ros2_node(comp.fqn);
+    dto::XMedkitComponent x_medkit_comp;
+    if (!comp.source.empty()) {
+      x_medkit_comp.source = comp.source;
     }
-    if (!comp.namespace_path.empty()) {
-      ext.ros2_namespace(comp.namespace_path);
+    if (!comp.fqn.empty()) {
+      dto::XMedkitRos2 ros2;
+      ros2.node = comp.fqn;
+      if (!comp.namespace_path.empty()) {
+        ros2.ns = comp.namespace_path;
+      }
+      x_medkit_comp.ros2 = ros2;
+    } else if (!comp.namespace_path.empty()) {
+      dto::XMedkitRos2 ros2;
+      ros2.ns = comp.namespace_path;
+      x_medkit_comp.ros2 = ros2;
     }
     if (!comp.type.empty()) {
-      ext.add("type", comp.type);
+      x_medkit_comp.type = comp.type;
     }
     if (!comp.parent_component_id.empty()) {
-      ext.add("parentComponentId", comp.parent_component_id);
+      x_medkit_comp.parent_component_id = comp.parent_component_id;
     }
     if (!comp.depends_on.empty()) {
-      ext.add("dependsOn", nlohmann::json(comp.depends_on));
+      x_medkit_comp.depends_on = comp.depends_on;
     }
     if (!comp.area.empty()) {
-      ext.add("area", comp.area);
+      x_medkit_comp.area = comp.area;
     }
     if (!comp.variant.empty()) {
-      ext.add("variant", comp.variant);
+      x_medkit_comp.variant = comp.variant;
     }
     if (!comp.description.empty()) {
-      ext.add("description", comp.description);
+      x_medkit_comp.description = comp.description;
     }
-    ext.contributors(comp.contributors);
+    if (!comp.contributors.empty()) {
+      x_medkit_comp.contributors = sorted_contributors(comp.contributors);
+    }
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {
@@ -623,34 +718,32 @@ void DiscoveryHandlers::handle_get_component(const httplib::Request & req, httpl
     append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.node());
     // Capabilities at root level (SOVD standard) and in x-medkit (vendor extension for tools
     // that only read x-medkit). Apps don't duplicate because they have no vendor extensions block.
-    response["capabilities"] = comp_caps;
-    ext.add("capabilities", comp_caps);
-    response["x-medkit"] = ext.build();
+    detail.capabilities = comp_caps;
+    x_medkit_comp.capabilities = comp_caps;
+    detail.x_medkit = x_medkit_comp;
 
-    HandlerContext::send_json(res, response);
+    return detail;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_component: %s", e.what());
+    return tl::unexpected(make_internal_error("get_component", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_subcomponents(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string component_id = req.matches[1];
+    const std::string component_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
-                                 {{"details", validation_result.error()}, {"component_id", component_id}});
-      return;
+      return tl::unexpected(
+          make_invalid_id_error("component", "component_id", component_id, validation_result.error()));
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Cache-first lookup: EntityCache has merged entities from peers.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -659,72 +752,69 @@ void DiscoveryHandlers::handle_get_subcomponents(const httplib::Request & req, h
     }
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
-                                 {{"component_id", component_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Component", "component_id", component_id));
     }
 
-    // Cache has no get_subcomponents(), so filter from all components
+    // Cache has no get_subcomponents(), so filter from all components.
     const auto all_components = cache.get_components();
 
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     for (const auto & sub : all_components) {
       if (sub.parent_component_id != component_id) {
         continue;
       }
 
-      json item;
-      item["id"] = sub.id;
-      item["name"] = sub.name.empty() ? sub.id : sub.name;
-      item["href"] = "/api/v1/components/" + sub.id;
+      dto::ComponentListItem item;
+      item.id = sub.id;
+      item.name = sub.name.empty() ? sub.id : sub.name;
+      item.href = "/api/v1/components/" + sub.id;
+      item.type = "component";
 
-      XMedkit ext;
-      ext.source(sub.source);
-      if (!sub.namespace_path.empty()) {
-        ext.ros2_namespace(sub.namespace_path);
+      dto::XMedkitComponent x_medkit_comp;
+      if (!sub.source.empty()) {
+        x_medkit_comp.source = sub.source;
       }
-      item["x-medkit"] = ext.build();
+      if (!sub.namespace_path.empty()) {
+        dto::XMedkitRos2 ros2;
+        ros2.ns = sub.namespace_path;
+        x_medkit_comp.ros2 = ros2;
+      }
+      item.x_medkit = x_medkit_comp;
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/components/" + component_id + "/subcomponents";
     links["parent"] = "/api/v1/components/" + component_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_subcomponents: %s", e.what());
+    return tl::unexpected(make_internal_error("get_subcomponents", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_component_hosts(const http::TypedRequest & req) {
   // @verifies REQ_INTEROP_007
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string component_id = req.matches[1];
+    const std::string component_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
-                                 {{"details", validation_result.error()}, {"component_id", component_id}});
-      return;
+      return tl::unexpected(
+          make_invalid_id_error("component", "component_id", component_id, validation_result.error()));
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Cache-first lookup: EntityCache has merged entities from peers.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -733,15 +823,13 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
     }
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
-                                 {{"component_id", component_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Component", "component_id", component_id));
     }
 
-    // Use cache relationship index for app IDs, then look up each
+    // Use cache relationship index for app IDs, then look up each.
     auto app_ids = cache.get_apps_for_component(component_id);
 
-    json items = json::array();
+    dto::Collection<dto::AppListItem> response;
     for (const auto & aid : app_ids) {
       auto app_opt = cache.get_app(aid);
       if (!app_opt) {
@@ -749,57 +837,58 @@ void DiscoveryHandlers::handle_get_hosts(const httplib::Request & req, httplib::
       }
       const auto & app = *app_opt;
 
-      json item;
-      item["id"] = app.id;
-      item["name"] = app.name.empty() ? app.id : app.name;
-      item["href"] = "/api/v1/apps/" + app.id;
+      dto::AppListItem item;
+      item.id = app.id;
+      item.name = app.name.empty() ? app.id : app.name;
+      item.href = "/api/v1/apps/" + app.id;
+      item.type = "app";
 
-      XMedkit ext;
-      ext.is_online(app.is_online).source(app.source);
-      if (app.bound_fqn) {
-        ext.ros2_node(*app.bound_fqn);
+      dto::XMedkitApp x_medkit_app;
+      x_medkit_app.is_online = app.is_online;
+      if (!app.source.empty()) {
+        x_medkit_app.source = app.source;
       }
-      item["x-medkit"] = ext.build();
+      if (app.bound_fqn) {
+        dto::XMedkitRos2 ros2;
+        ros2.node = *app.bound_fqn;
+        x_medkit_app.ros2 = ros2;
+      }
+      item.x_medkit = x_medkit_app;
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/components/" + component_id + "/hosts";
     links["component"] = "/api/v1/components/" + component_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_hosts: %s", e.what());
+    return tl::unexpected(make_internal_error("get_component_hosts", e));
   }
 }
 
-void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_component_depends_on(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string component_id = req.matches[1];
+    const std::string component_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(component_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid component ID",
-                                 {{"details", validation_result.error()}, {"component_id", component_id}});
-      return;
+      return tl::unexpected(
+          make_invalid_id_error("component", "component_id", component_id, validation_result.error()));
     }
 
-    // Cache-first lookup: EntityCache has merged entities from peers
+    // Cache-first lookup: EntityCache has merged entities from peers.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
@@ -808,54 +897,51 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
     }
 
     if (!comp_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Component not found",
-                                 {{"component_id", component_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Component", "component_id", component_id));
     }
 
     const auto & comp = *comp_opt;
 
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     for (const auto & dep_id : comp.depends_on) {
-      json item;
-      item["id"] = dep_id;
-      item["href"] = "/api/v1/components/" + dep_id;
+      dto::ComponentListItem item;
+      item.id = dep_id;
+      item.href = "/api/v1/components/" + dep_id;
+      item.type = "component";
 
       auto dep_opt = cache.get_component(dep_id);
       if (dep_opt) {
-        item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
+        item.name = dep_opt->name.empty() ? dep_id : dep_opt->name;
 
-        XMedkit ext;
-        ext.source(dep_opt->source);
-        item["x-medkit"] = ext.build();
+        dto::XMedkitComponent x_medkit_comp;
+        if (!dep_opt->source.empty()) {
+          x_medkit_comp.source = dep_opt->source;
+        }
+        item.x_medkit = x_medkit_comp;
       } else {
-        item["name"] = dep_id;
-        XMedkit ext;
-        ext.add("missing", true);
-        item["x-medkit"] = ext.build();
+        item.name = dep_id;
+        dto::XMedkitComponent x_medkit_comp;
+        x_medkit_comp.missing = true;
+        item.x_medkit = x_medkit_comp;
         RCLCPP_WARN(HandlerContext::logger(), "Component '%s' declares dependency on unknown component '%s'",
                     component_id.c_str(), dep_id.c_str());
       }
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/components/" + component_id + "/depends-on";
     links["component"] = "/api/v1/components/" + component_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_component_depends_on: %s", e.what());
+    return tl::unexpected(make_internal_error("get_component_depends_on", e));
   }
 }
 
@@ -863,71 +949,71 @@ void DiscoveryHandlers::handle_component_depends_on(const httplib::Request & req
 // App handlers
 // =============================================================================
 
-void DiscoveryHandlers::handle_list_apps(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_apps(const http::TypedRequest & req) {
   (void)req;
-
   try {
-    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints)
+    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints).
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto apps = cache.get_apps();
 
-    json items = json::array();
+    dto::Collection<dto::AppListItem> response;
     for (const auto & app : apps) {
-      json app_item;
-      app_item["id"] = app.id;
-      app_item["name"] = app.name.empty() ? app.id : app.name;
-      app_item["href"] = "/api/v1/apps/" + app.id;
+      dto::AppListItem item;
+      item.id = app.id;
+      item.name = app.name.empty() ? app.id : app.name;
+      item.href = "/api/v1/apps/" + app.id;
+      item.type = "app";
 
       if (!app.description.empty()) {
-        app_item["description"] = app.description;
+        item.description = app.description;
       }
       if (!app.tags.empty()) {
-        app_item["tags"] = app.tags;
+        item.tags = app.tags;
       }
 
-      XMedkit ext;
-      ext.source(app.source).is_online(app.is_online);
+      dto::XMedkitApp x_medkit_app;
+      if (!app.source.empty()) {
+        x_medkit_app.source = app.source;
+      }
+      x_medkit_app.is_online = app.is_online;
       if (!app.component_id.empty()) {
-        ext.component_id(app.component_id);
+        x_medkit_app.component_id = app.component_id;
       }
       if (app.bound_fqn) {
-        ext.ros2_node(*app.bound_fqn);
+        dto::XMedkitRos2 ros2;
+        ros2.node = *app.bound_fqn;
+        x_medkit_app.ros2 = ros2;
       }
-      app_item["x-medkit"] = ext.build();
+      item.x_medkit = x_medkit_app;
 
-      items.push_back(app_item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_apps: %s", e.what());
+    return tl::unexpected(make_internal_error("get_apps", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    const std::string app_id = *id_result;
+
+    // Validate entity and forward to peer if remote (aggregation support).
+    auto entity_result = ctx_.validate_entity_for_route(req, app_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    std::string app_id = req.matches[1];
-
-    // Validate entity and forward to peer if remote (aggregation support)
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-
-    // Local entity - look up full object from cache for detail response
+    // Local entity - look up full object from cache for detail response.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto app_opt = cache.get_app(app_id);
     if (!app_opt) {
@@ -936,47 +1022,47 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     }
 
     if (!app_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
-      return;
+      return tl::unexpected(make_not_found_error("App", "app_id", app_id));
     }
 
     const auto & app = *app_opt;
 
-    json response;
-    response["id"] = app.id;
-    response["name"] = app.name;
+    dto::AppDetail detail;
+    detail.id = app.id;
+    detail.name = app.name;
+    detail.type = "app";
 
     if (!app.description.empty()) {
-      response["description"] = app.description;
+      detail.description = app.description;
     }
     if (!app.translation_id.empty()) {
-      response["translation_id"] = app.translation_id;
+      detail.translation_id = app.translation_id;
     }
     if (!app.tags.empty()) {
-      response["tags"] = app.tags;
+      detail.tags = app.tags;
     }
 
     std::string base_uri = "/api/v1/apps/" + app.id;
-    response["data"] = base_uri + "/data";
-    response["operations"] = base_uri + "/operations";
-    response["configurations"] = base_uri + "/configurations";
-    response["faults"] = base_uri + "/faults";
-    response["logs"] = base_uri + "/logs";
-    response["bulk-data"] = base_uri + "/bulk-data";
-    response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
-    response["triggers"] = base_uri + "/triggers";
+    detail.data = base_uri + "/data";
+    detail.operations = base_uri + "/operations";
+    detail.configurations = base_uri + "/configurations";
+    detail.faults = base_uri + "/faults";
+    detail.logs = base_uri + "/logs";
+    detail.bulk_data = base_uri + "/bulk-data";
+    detail.cyclic_subscriptions = base_uri + "/cyclic-subscriptions";
+    detail.triggers = base_uri + "/triggers";
 
     if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
-      response["scripts"] = base_uri + "/scripts";
+      detail.scripts = base_uri + "/scripts";
     }
 
     if (!app.component_id.empty()) {
-      response["is-located-on"] = "/api/v1/components/" + app.component_id;
-      response["belongs-to"] = base_uri + "/belongs-to";
+      detail.is_located_on = "/api/v1/components/" + app.component_id;
+      detail.belongs_to = base_uri + "/belongs-to";
     }
 
     if (!app.depends_on.empty()) {
-      response["depends-on"] = base_uri + "/depends-on";
+      detail.depends_on = base_uri + "/depends-on";
     }
 
     using Cap = CapabilityBuilder::Capability;
@@ -998,8 +1084,9 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
     if (ctx_.node() && ctx_.node()->get_lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
-    response["capabilities"] = CapabilityBuilder::build_capabilities("apps", app.id, caps);
-    append_plugin_capabilities(response["capabilities"], "apps", app.id, SovdEntityType::APP, ctx_.node());
+    auto app_caps = CapabilityBuilder::build_capabilities("apps", app.id, caps);
+    append_plugin_capabilities(app_caps, "apps", app.id, SovdEntityType::APP, ctx_.node());
+    detail.capabilities = app_caps;
 
     LinksBuilder links;
     links.self("/api/v1/apps/" + app.id).collection("/api/v1/apps");
@@ -1007,49 +1094,55 @@ void DiscoveryHandlers::handle_get_app(const httplib::Request & req, httplib::Re
       links.add("is-located-on", "/api/v1/components/" + app.component_id);
       links.add("belongs-to", base_uri + "/belongs-to");
     }
-    response["_links"] = links.build();
+    auto links_json = links.build();
 
     if (!app.depends_on.empty()) {
       json depends_links = json::array();
       for (const auto & dep_id : app.depends_on) {
         depends_links.push_back("/api/v1/apps/" + dep_id);
       }
-      response["_links"]["depends-on"] = depends_links;
+      links_json["depends-on"] = depends_links;
     }
+    detail.links = links_json;
 
-    XMedkit ext;
-    ext.source(app.source).is_online(app.is_online);
+    dto::XMedkitApp x_medkit_app;
+    if (!app.source.empty()) {
+      x_medkit_app.source = app.source;
+    }
+    x_medkit_app.is_online = app.is_online;
     if (app.bound_fqn) {
-      ext.ros2_node(*app.bound_fqn);
+      dto::XMedkitRos2 ros2;
+      ros2.node = *app.bound_fqn;
+      x_medkit_app.ros2 = ros2;
     }
     if (!app.component_id.empty()) {
-      ext.component_id(app.component_id);
+      x_medkit_app.component_id = app.component_id;
     }
-    ext.contributors(app.contributors);
-    response["x-medkit"] = ext.build();
+    if (!app.contributors.empty()) {
+      x_medkit_app.contributors = sorted_contributors(app.contributors);
+    }
+    detail.x_medkit = x_medkit_app;
 
-    HandlerContext::send_json(res, response);
+    return detail;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_app: %s", e.what());
+    return tl::unexpected(make_internal_error("get_app", e));
   }
 }
 
-void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_app_depends_on(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string app_id = req.matches[1];
+    const std::string app_id = *id_result;
 
     // validate_entity_for_route forwards the request to the owning peer when
     // the app is remote (aggregation setup) - validate_entity_id alone would
     // resolve locally only and return 404 for remote apps.
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
-    if (!entity_opt) {
-      return;
+    auto entity_result = ctx_.validate_entity_for_route(req, app_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
     // Atomic snapshot keeps the app + every dependency resolved in the same
@@ -1069,67 +1162,65 @@ void DiscoveryHandlers::handle_app_depends_on(const httplib::Request & req, http
     }
 
     if (!snapshot.app) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
-      return;
+      return tl::unexpected(make_not_found_error("App", "app_id", app_id));
     }
 
-    json items = json::array();
+    dto::Collection<dto::AppListItem> response;
     for (const auto & [dep_id, dep_opt] : snapshot.dependencies) {
-      json item;
-      item["id"] = dep_id;
-      item["href"] = "/api/v1/apps/" + dep_id;
+      dto::AppListItem item;
+      item.id = dep_id;
+      item.href = "/api/v1/apps/" + dep_id;
+      item.type = "app";
 
       if (dep_opt) {
-        item["name"] = dep_opt->name.empty() ? dep_id : dep_opt->name;
+        item.name = dep_opt->name.empty() ? dep_id : dep_opt->name;
 
-        XMedkit ext;
-        ext.source(dep_opt->source).is_online(dep_opt->is_online);
-        item["x-medkit"] = ext.build();
+        dto::XMedkitApp x_medkit_app;
+        if (!dep_opt->source.empty()) {
+          x_medkit_app.source = dep_opt->source;
+        }
+        x_medkit_app.is_online = dep_opt->is_online;
+        item.x_medkit = x_medkit_app;
       } else {
-        item["name"] = dep_id;
-        XMedkit ext;
-        ext.add("missing", true);
-        item["x-medkit"] = ext.build();
+        item.name = dep_id;
+        dto::XMedkitApp x_medkit_app;
+        x_medkit_app.missing = true;
+        item.x_medkit = x_medkit_app;
         RCLCPP_WARN(HandlerContext::logger(), "App '%s' declares dependency on unknown app '%s'", app_id.c_str(),
                     dep_id.c_str());
       }
 
-      items.push_back(item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/apps/" + app_id + "/depends-on";
     links["app"] = "/api/v1/apps/" + app_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_depends_on: %s", e.what());
+    return tl::unexpected(make_internal_error("get_app_depends_on", e));
   }
 }
 
-void DiscoveryHandlers::handle_app_belongs_to(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_app_belongs_to(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
+    const std::string app_id = *id_result;
 
-    std::string app_id = req.matches[1];
-
-    // Forward to peer if app is remote (aggregation setup); locally
-    // resolved entity falls through to the cache/discovery lookup below.
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
-    if (!entity_opt) {
-      return;
+    // Forward to peer if app is remote (aggregation setup); locally resolved
+    // entity falls through to the cache/discovery lookup below.
+    auto entity_result = ctx_.validate_entity_for_route(req, app_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
     // Atomic snapshot avoids a mixed-generation view of App -> Component ->
@@ -1150,84 +1241,81 @@ void DiscoveryHandlers::handle_app_belongs_to(const httplib::Request & req, http
     }
 
     if (!snapshot.app) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
-      return;
+      return tl::unexpected(make_not_found_error("App", "app_id", app_id));
     }
 
-    json items = json::array();
+    dto::Collection<dto::AreaListItem> response;
     const auto & app = *snapshot.app;
 
     if (!app.component_id.empty()) {
       if (!snapshot.component) {
-        // Mirror handle_app_is_located_on: surface broken parent reference
-        // with x-medkit.missing=true so HATEOAS clients can distinguish
-        // 'no parent area' from 'manifest broken, component gone'.
-        json item;
-        item["id"] = "";
-        item["name"] = "<unknown area>";
-        item["href"] = "";
-        XMedkit ext;
-        ext.add("missing", true);
-        ext.add("unresolved_component", app.component_id);
-        item["x-medkit"] = ext.build();
-        items.push_back(item);
+        // Mirror get_app_is_located_on: surface broken parent reference with
+        // x-medkit.missing=true so HATEOAS clients can distinguish 'no parent
+        // area' from 'manifest broken, component gone'.
+        dto::AreaListItem item;
+        item.id = "";
+        item.name = "<unknown area>";
+        item.href = "";
+        item.type = "area";
+        dto::XMedkitArea x_medkit_area;
+        x_medkit_area.missing = true;
+        x_medkit_area.unresolved_component = app.component_id;
+        item.x_medkit = x_medkit_area;
+        response.items.push_back(std::move(item));
         RCLCPP_WARN(HandlerContext::logger(), "App '%s' belongs-to unresolvable: parent component '%s' is unknown",
                     app_id.c_str(), app.component_id.c_str());
       } else if (!snapshot.component->area.empty()) {
-        const auto & area_id = snapshot.component->area;
-        json item;
-        item["id"] = area_id;
-        item["href"] = "/api/v1/areas/" + area_id;
+        const auto & area_id_ref = snapshot.component->area;
+        dto::AreaListItem item;
+        item.id = area_id_ref;
+        item.href = "/api/v1/areas/" + area_id_ref;
+        item.type = "area";
 
         if (snapshot.area) {
-          item["name"] = snapshot.area->name.empty() ? area_id : snapshot.area->name;
+          item.name = snapshot.area->name.empty() ? area_id_ref : snapshot.area->name;
         } else {
-          item["name"] = area_id;
-          XMedkit ext;
-          ext.add("missing", true);
-          item["x-medkit"] = ext.build();
+          item.name = area_id_ref;
+          dto::XMedkitArea x_medkit_area;
+          x_medkit_area.missing = true;
+          item.x_medkit = x_medkit_area;
           RCLCPP_WARN(HandlerContext::logger(), "App '%s' belongs to unknown area '%s' (via component '%s')",
-                      app_id.c_str(), area_id.c_str(), app.component_id.c_str());
+                      app_id.c_str(), area_id_ref.c_str(), app.component_id.c_str());
         }
-        items.push_back(item);
+        response.items.push_back(std::move(item));
       }
-      // If component resolves but has no area_id assigned, items stays
-      // empty - that is a legitimate manifest configuration (component
-      // without parent area), not a broken reference.
+      // If component resolves but has no area_id assigned, items stays empty -
+      // that is a legitimate manifest configuration (component without parent
+      // area), not a broken reference.
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/apps/" + app_id + "/belongs-to";
     links["app"] = "/api/v1/apps/" + app_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_belongs_to: %s", e.what());
+    return tl::unexpected(make_internal_error("get_app_belongs_to", e));
   }
 }
 
-void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::ComponentListItem>>
+DiscoveryHandlers::get_app_is_located_on(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string app_id = req.matches[1];
+    const std::string app_id = *id_result;
 
     // Forward to peer if app is remote (aggregation setup).
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, app_id);
-    if (!entity_opt) {
-      return;
+    auto entity_result = ctx_.validate_entity_for_route(req, app_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
     // Atomic snapshot keeps app -> component consistent across a concurrent
@@ -1244,52 +1332,49 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
     }
 
     if (!snapshot.app) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "App not found", {{"app_id", app_id}});
-      return;
+      return tl::unexpected(make_not_found_error("App", "app_id", app_id));
     }
 
-    json items = json::array();
+    dto::Collection<dto::ComponentListItem> response;
     const auto & app = *snapshot.app;
 
     if (!app.component_id.empty()) {
       if (snapshot.component) {
-        json item;
-        item["id"] = snapshot.component->id;
-        item["name"] = snapshot.component->name.empty() ? snapshot.component->id : snapshot.component->name;
-        item["href"] = "/api/v1/components/" + snapshot.component->id;
-        items.push_back(item);
+        dto::ComponentListItem item;
+        item.id = snapshot.component->id;
+        item.name = snapshot.component->name.empty() ? snapshot.component->id : snapshot.component->name;
+        item.href = "/api/v1/components/" + snapshot.component->id;
+        item.type = "component";
+        response.items.push_back(std::move(item));
       } else {
-        json item;
-        item["id"] = app.component_id;
-        item["name"] = app.component_id;
-        item["href"] = "/api/v1/components/" + app.component_id;
+        dto::ComponentListItem item;
+        item.id = app.component_id;
+        item.name = app.component_id;
+        item.href = "/api/v1/components/" + app.component_id;
+        item.type = "component";
 
-        XMedkit ext;
-        ext.add("missing", true);
-        item["x-medkit"] = ext.build();
-        items.push_back(item);
+        dto::XMedkitComponent x_medkit_comp;
+        x_medkit_comp.missing = true;
+        item.x_medkit = x_medkit_comp;
+        response.items.push_back(std::move(item));
 
         RCLCPP_WARN(HandlerContext::logger(), "App '%s' references unknown component '%s'", app_id.c_str(),
                     app.component_id.c_str());
       }
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/apps/" + app_id + "/is-located-on";
     links["app"] = "/api/v1/apps/" + app_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_app_is_located_on: %s", e.what());
+    return tl::unexpected(make_internal_error("get_app_is_located_on", e));
   }
 }
 
@@ -1297,65 +1382,62 @@ void DiscoveryHandlers::handle_app_is_located_on(const httplib::Request & req, h
 // Function handlers
 // =============================================================================
 
-void DiscoveryHandlers::handle_list_functions(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::FunctionListItem>> DiscoveryHandlers::get_functions(const http::TypedRequest & req) {
   (void)req;
-
   try {
-    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints)
+    // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints).
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto functions = cache.get_functions();
 
-    json items = json::array();
+    dto::Collection<dto::FunctionListItem> response;
     for (const auto & func : functions) {
-      json func_item;
-      func_item["id"] = func.id;
-      func_item["name"] = func.name.empty() ? func.id : func.name;
-      func_item["href"] = "/api/v1/functions/" + func.id;
+      dto::FunctionListItem item;
+      item.id = func.id;
+      item.name = func.name.empty() ? func.id : func.name;
+      item.href = "/api/v1/functions/" + func.id;
+      item.type = "function";
 
       if (!func.description.empty()) {
-        func_item["description"] = func.description;
+        item.description = func.description;
       }
       if (!func.tags.empty()) {
-        func_item["tags"] = func.tags;
+        item.tags = func.tags;
       }
 
-      XMedkit ext;
-      ext.source(func.source);
-      func_item["x-medkit"] = ext.build();
+      dto::XMedkitFunction x_medkit_func;
+      if (!func.source.empty()) {
+        x_medkit_func.source = func.source;
+      }
+      item.x_medkit = x_medkit_func;
 
-      items.push_back(func_item);
+      response.items.push_back(std::move(item));
     }
 
-    json response;
-    response["items"] = items;
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
-    XMedkit resp_ext;
-    resp_ext.add("total_count", functions.size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_functions: %s", e.what());
+    return tl::unexpected(make_internal_error("get_functions", e));
   }
 }
 
-void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
+    }
+    const std::string function_id = *id_result;
+
+    // Validate entity and forward to peer if remote (aggregation support).
+    auto entity_result = ctx_.validate_entity_for_route(req, function_id);
+    if (!entity_result) {
+      return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    std::string function_id = req.matches[1];
-
-    // Validate entity and forward to peer if remote (aggregation support)
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, function_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-
-    // Local entity - look up full object from cache for detail response
+    // Local entity - look up full object from cache for detail response.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {
@@ -1364,91 +1446,93 @@ void DiscoveryHandlers::handle_get_function(const httplib::Request & req, httpli
     }
 
     if (!func_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Function", "function_id", function_id));
     }
 
     const auto & func = *func_opt;
 
-    json response;
-    response["id"] = func.id;
-    response["name"] = func.name.empty() ? func.id : func.name;
+    dto::FunctionDetail detail;
+    detail.id = func.id;
+    detail.name = func.name.empty() ? func.id : func.name;
+    detail.type = "function";
 
     if (!func.description.empty()) {
-      response["description"] = func.description;
+      detail.description = func.description;
     }
     if (!func.translation_id.empty()) {
-      response["translation_id"] = func.translation_id;
+      detail.translation_id = func.translation_id;
     }
     if (!func.tags.empty()) {
-      response["tags"] = func.tags;
+      detail.tags = func.tags;
     }
 
     std::string base_uri = "/api/v1/functions/" + func.id;
-    response["hosts"] = base_uri + "/hosts";
-    response["data"] = base_uri + "/data";
-    response["operations"] = base_uri + "/operations";
-    response["configurations"] = base_uri + "/configurations";
-    response["faults"] = base_uri + "/faults";
-    response["logs"] = base_uri + "/logs";
-    response["bulk-data"] = base_uri + "/bulk-data";
-    response["x-medkit-graph"] = base_uri + "/x-medkit-graph";
-    response["cyclic-subscriptions"] = base_uri + "/cyclic-subscriptions";
-    response["triggers"] = base_uri + "/triggers";
+    detail.hosts = base_uri + "/hosts";
+    detail.data = base_uri + "/data";
+    detail.operations = base_uri + "/operations";
+    detail.configurations = base_uri + "/configurations";
+    detail.faults = base_uri + "/faults";
+    detail.logs = base_uri + "/logs";
+    detail.bulk_data = base_uri + "/bulk-data";
+    detail.x_medkit_graph = base_uri + "/x-medkit-graph";
+    detail.cyclic_subscriptions = base_uri + "/cyclic-subscriptions";
+    detail.triggers = base_uri + "/triggers";
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {Cap::HOSTS, Cap::DATA,      Cap::OPERATIONS,           Cap::CONFIGURATIONS, Cap::FAULTS,
                              Cap::LOGS,  Cap::BULK_DATA, Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
-    response["capabilities"] = CapabilityBuilder::build_capabilities("functions", func.id, caps);
-    append_plugin_capabilities(response["capabilities"], "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
+    auto func_caps = CapabilityBuilder::build_capabilities("functions", func.id, caps);
+    append_plugin_capabilities(func_caps, "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
+    detail.capabilities = func_caps;
 
     LinksBuilder links;
     links.self("/api/v1/functions/" + func.id).collection("/api/v1/functions");
-    response["_links"] = links.build();
+    auto links_json = links.build();
 
     if (!func.depends_on.empty()) {
       json depends_links = json::array();
       for (const auto & dep_id : func.depends_on) {
         depends_links.push_back("/api/v1/functions/" + dep_id);
       }
-      response["_links"]["depends-on"] = depends_links;
+      links_json["depends-on"] = depends_links;
     }
+    detail.links = links_json;
 
-    XMedkit ext;
-    ext.source(func.source);
+    dto::XMedkitFunction x_medkit_func;
+    if (!func.source.empty()) {
+      x_medkit_func.source = func.source;
+    }
     if (!func.hosts.empty()) {
-      ext.add("hosts", nlohmann::json(func.hosts));
+      x_medkit_func.hosts = func.hosts;
     }
     if (!func.description.empty()) {
-      ext.add("description", func.description);
+      x_medkit_func.description = func.description;
     }
-    ext.contributors(func.contributors);
-    response["x-medkit"] = ext.build();
+    if (!func.contributors.empty()) {
+      x_medkit_func.contributors = sorted_contributors(func.contributors);
+    }
+    detail.x_medkit = x_medkit_func;
 
-    HandlerContext::send_json(res, response);
+    return detail;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_function: %s", e.what());
+    return tl::unexpected(make_internal_error("get_function", e));
   }
 }
 
-void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, httplib::Response & res) {
+http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_function_hosts(const http::TypedRequest & req) {
   try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+    auto id_result = read_path_param(req);
+    if (!id_result) {
+      return tl::unexpected(id_result.error());
     }
-
-    std::string function_id = req.matches[1];
+    const std::string function_id = *id_result;
 
     auto validation_result = ctx_.validate_entity_id(function_id);
     if (!validation_result) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid function ID",
-                                 {{"details", validation_result.error()}, {"function_id", function_id}});
-      return;
+      return tl::unexpected(make_invalid_id_error("function", "function_id", function_id, validation_result.error()));
     }
 
-    // Read from cache (has merged entities from aggregation with combined hosts)
+    // Read from cache (has merged entities from aggregation with combined hosts).
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {
@@ -1457,49 +1541,50 @@ void DiscoveryHandlers::handle_function_hosts(const httplib::Request & req, http
     }
 
     if (!func_opt) {
-      HandlerContext::send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Function not found", {{"function_id", function_id}});
-      return;
+      return tl::unexpected(make_not_found_error("Function", "function_id", function_id));
     }
 
-    // Use the Function's hosts list directly (includes merged hosts from all peers)
+    // Use the Function's hosts list directly (includes merged hosts from all peers).
     const auto & host_ids = func_opt->hosts;
 
-    json items = json::array();
+    dto::Collection<dto::AppListItem> response;
     for (const auto & app_id : host_ids) {
       auto app_opt = cache.get_app(app_id);
       if (app_opt) {
-        json item;
-        item["id"] = app_opt->id;
-        item["name"] = app_opt->name.empty() ? app_opt->id : app_opt->name;
-        item["href"] = "/api/v1/apps/" + app_opt->id;
+        dto::AppListItem item;
+        item.id = app_opt->id;
+        item.name = app_opt->name.empty() ? app_opt->id : app_opt->name;
+        item.href = "/api/v1/apps/" + app_opt->id;
+        item.type = "app";
 
-        XMedkit ext;
-        ext.is_online(app_opt->is_online).source(app_opt->source);
-        if (app_opt->bound_fqn) {
-          ext.ros2_node(*app_opt->bound_fqn);
+        dto::XMedkitApp x_medkit_app;
+        x_medkit_app.is_online = app_opt->is_online;
+        if (!app_opt->source.empty()) {
+          x_medkit_app.source = app_opt->source;
         }
-        item["x-medkit"] = ext.build();
+        if (app_opt->bound_fqn) {
+          dto::XMedkitRos2 ros2;
+          ros2.node = *app_opt->bound_fqn;
+          x_medkit_app.ros2 = ros2;
+        }
+        item.x_medkit = x_medkit_app;
 
-        items.push_back(item);
+        response.items.push_back(std::move(item));
       }
     }
 
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.add("total_count", items.size());
-    response["x-medkit"] = resp_ext.build();
+    dto::XMedkitCollection col_ext;
+    col_ext.total_count = response.items.size();
+    response.x_medkit = col_ext;
 
     json links;
     links["self"] = "/api/v1/functions/" + function_id + "/hosts";
     links["function"] = "/api/v1/functions/" + function_id;
-    response["_links"] = links;
+    response.links = links;
 
-    HandlerContext::send_json(res, response);
+    return response;
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Internal server error", {{"details", e.what()}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_function_hosts: %s", e.what());
+    return tl::unexpected(make_internal_error("get_function_hosts", e));
   }
 }
 

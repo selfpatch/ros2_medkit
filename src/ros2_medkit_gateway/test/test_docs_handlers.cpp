@@ -14,17 +14,21 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <regex>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/docs_handlers.hpp"
+#include "ros2_medkit_gateway/dto/health.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 #include "../src/openapi/route_registry.hpp"
 
@@ -33,14 +37,25 @@ using namespace std::chrono_literals;
 
 namespace {
 
+// Typed seed for the docs registry. The handler is never invoked - DocsHandlers
+// only consumes the registry's route metadata (paths, tags, summaries).
+http::Result<dto::Health> noop_docs_handler(http::TypedRequest /*req*/) {
+  return dto::Health{};
+}
+
+void seed_get(openapi::RouteRegistry & reg, const std::string & path, const std::string & tag,
+              const std::string & summary) {
+  std::function<http::Result<dto::Health>(http::TypedRequest)> h = &noop_docs_handler;
+  reg.get<dto::Health>(path, std::move(h)).tag(tag).summary(summary);
+}
+
 void populate_docs_test_routes(openapi::RouteRegistry & reg) {
-  auto noop = [](const httplib::Request &, httplib::Response &) {};
-  reg.get("/health", noop).tag("Server").summary("Health check");
-  reg.get("/", noop).tag("Server").summary("API overview");
-  reg.get("/version-info", noop).tag("Server").summary("SOVD version information");
+  seed_get(reg, "/health", "Server", "Health check");
+  seed_get(reg, "/", "Server", "API overview");
+  seed_get(reg, "/version-info", "Server", "SOVD version information");
   for (const auto * et : {"areas", "components", "apps", "functions"}) {
     std::string base = std::string("/") + et;
-    reg.get(base, noop).tag("Discovery").summary(std::string("List ") + et);
+    seed_get(reg, base, "Discovery", std::string("List ") + et);
   }
 }
 

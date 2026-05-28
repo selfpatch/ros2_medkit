@@ -42,8 +42,7 @@ class SseTransportProvider : public SubscriptionTransportProvider {
   void notify_update(const std::string & sub_id) override;
   void stop(const std::string & sub_id) override;
 
-  bool handle_client_connect(const std::string & sub_id, const httplib::Request & req,
-                             httplib::Response & res) override;
+  tl::expected<http::SseStream, ErrorInfo> make_sse_stream(const std::string & sub_id) override;
 
  private:
   struct StreamState {

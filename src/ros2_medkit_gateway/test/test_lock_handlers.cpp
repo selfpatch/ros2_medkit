@@ -30,13 +30,16 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
-#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::ERR_INVALID_PARAMETER;
+using ros2_medkit_gateway::ERR_INVALID_REQUEST;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::LockConfig;
 using ros2_medkit_gateway::LockManager;
@@ -44,6 +47,9 @@ using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::LockHandlers;
+using ros2_medkit_gateway::http::TypedRequest;
+
+namespace dto = ros2_medkit_gateway::dto;
 
 namespace {
 
@@ -88,12 +94,14 @@ int reserve_local_port() {
   return port;
 }
 
-httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
-  httplib::Request req;
+// PR-403 commit 18: typed handlers take TypedRequest, which wraps an
+// httplib::Request. Populate the request's `path` + `matches` via
+// std::regex_match so the typed handler's `path_param("N")` returns the
+// Nth capture group exactly the way the production routing layer does.
+void prime_request(httplib::Request & req, const std::string & path, const std::string & pattern) {
   req.path = path;
   std::regex re(pattern);
   std::regex_match(req.path, req.matches, re);
-  return req;
 }
 
 std::string write_temp_manifest(const std::string & contents) {
@@ -127,57 +135,14 @@ TEST(LockHandlersStaticTest, LockingDisabledReturns501) {
   LockHandlers handlers(ctx, nullptr);
 
   httplib::Request req;
-  httplib::Response res;
-  handlers.handle_acquire_lock(req, res);
-  EXPECT_EQ(res.status, 501);
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
 
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "not-implemented");
-}
-
-TEST(LockHandlersStaticTest, LockToJsonWithMatchingClientShowsOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_1";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.scopes = {"configurations"};
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "client_a");
-  EXPECT_EQ(j["id"], "lock_1");
-  EXPECT_TRUE(j["owned"].get<bool>());
-  ASSERT_TRUE(j.contains("scopes"));
-  EXPECT_EQ(j["scopes"].size(), 1);
-  EXPECT_EQ(j["scopes"][0], "configurations");
-  EXPECT_TRUE(j.contains("lock_expiration"));
-  auto expiration = j["lock_expiration"].get<std::string>();
-  EXPECT_TRUE(expiration.find("T") != std::string::npos);
-  EXPECT_TRUE(expiration.find("Z") != std::string::npos);
-}
-
-TEST(LockHandlersStaticTest, LockToJsonWithDifferentClientShowsNotOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_2";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.scopes = {};
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "client_b");
-  EXPECT_FALSE(j["owned"].get<bool>());
-  // Empty scopes should not produce "scopes" field
-  EXPECT_FALSE(j.contains("scopes"));
-}
-
-TEST(LockHandlersStaticTest, LockToJsonWithEmptyClientShowsNotOwned) {
-  ros2_medkit_gateway::LockInfo lock;
-  lock.lock_id = "lock_3";
-  lock.entity_id = "comp1";
-  lock.client_id = "client_a";
-  lock.expires_at = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-
-  auto j = LockHandlers::lock_to_json(lock, "");
-  EXPECT_FALSE(j["owned"].get<bool>());
+  auto result = handlers.post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
+  EXPECT_EQ(result.error().code, "not-implemented");
 }
 
 // ============================================================================
@@ -280,27 +245,26 @@ class LockHandlersTest : public ::testing::Test {
     }
   }
 
-  // Helper: build a POST /api/v1/components/{id}/locks request
-  httplib::Request make_component_locks_request(const std::string & component_id) {
-    return make_request_with_match("/api/v1/components/" + component_id + "/locks",
-                                   R"(/api/v1/components/([^/]+)/locks)");
+  // Helper: prime a POST /api/v1/components/{id}/locks request
+  void make_component_locks_request(httplib::Request & req, const std::string & component_id) {
+    prime_request(req, "/api/v1/components/" + component_id + "/locks", R"(/api/v1/components/([^/]+)/locks)");
   }
 
-  // Helper: build a POST /api/v1/apps/{id}/locks request
-  httplib::Request make_app_locks_request(const std::string & app_id) {
-    return make_request_with_match("/api/v1/apps/" + app_id + "/locks", R"(/api/v1/apps/([^/]+)/locks)");
+  // Helper: prime a POST /api/v1/apps/{id}/locks request
+  void make_app_locks_request(httplib::Request & req, const std::string & app_id) {
+    prime_request(req, "/api/v1/apps/" + app_id + "/locks", R"(/api/v1/apps/([^/]+)/locks)");
   }
 
-  // Helper: build a GET/PUT/DELETE /api/v1/components/{id}/locks/{lock_id} request
-  httplib::Request make_component_lock_item_request(const std::string & component_id, const std::string & lock_id) {
-    return make_request_with_match("/api/v1/components/" + component_id + "/locks/" + lock_id,
-                                   R"(/api/v1/components/([^/]+)/locks/([^/]+))");
+  // Helper: prime a GET/PUT/DELETE /api/v1/components/{id}/locks/{lock_id} request
+  void make_component_lock_item_request(httplib::Request & req, const std::string & component_id,
+                                        const std::string & lock_id) {
+    prime_request(req, "/api/v1/components/" + component_id + "/locks/" + lock_id,
+                  R"(/api/v1/components/([^/]+)/locks/([^/]+))");
   }
 
-  // Helper: build a GET/PUT/DELETE /api/v1/apps/{id}/locks/{lock_id} request
-  httplib::Request make_app_lock_item_request(const std::string & app_id, const std::string & lock_id) {
-    return make_request_with_match("/api/v1/apps/" + app_id + "/locks/" + lock_id,
-                                   R"(/api/v1/apps/([^/]+)/locks/([^/]+))");
+  // Helper: prime a GET/PUT/DELETE /api/v1/apps/{id}/locks/{lock_id} request
+  void make_app_lock_item_request(httplib::Request & req, const std::string & app_id, const std::string & lock_id) {
+    prime_request(req, "/api/v1/apps/" + app_id + "/locks/" + lock_id, R"(/api/v1/apps/([^/]+)/locks/([^/]+))");
   }
 
   CorsConfig cors_{};
@@ -317,138 +281,178 @@ class LockHandlersTest : public ::testing::Test {
 // ============================================================================
 
 TEST_F(LockHandlersTest, AcquireLockOnComponentReturns201) {
-  auto req = make_component_locks_request("ecu1");
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 300})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
 
-  handlers_->handle_acquire_lock(req, res);
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->second.status_override.value_or(0), 201);
+  // Location header set to <request-path>/<lock-id>
+  ASSERT_FALSE(result->second.headers.empty());
+  EXPECT_EQ(result->second.headers[0].first, "Location");
 
-  EXPECT_EQ(res.status, 201);
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body.contains("id"));
-  EXPECT_TRUE(body["owned"].get<bool>());
-  EXPECT_TRUE(body.contains("lock_expiration"));
-  auto expiration = body["lock_expiration"].get<std::string>();
-  EXPECT_TRUE(expiration.find("T") != std::string::npos);
-  EXPECT_TRUE(expiration.find("Z") != std::string::npos);
+  const auto & lock = result->first;
+  EXPECT_FALSE(lock.id.empty());
+  EXPECT_TRUE(lock.owned);
+  EXPECT_FALSE(lock.lock_expiration.empty());
+  EXPECT_TRUE(lock.lock_expiration.find('T') != std::string::npos);
+  EXPECT_TRUE(lock.lock_expiration.find('Z') != std::string::npos);
   // No scopes specified - field should be absent
-  EXPECT_FALSE(body.contains("scopes"));
+  EXPECT_FALSE(lock.scopes.has_value());
+
+  // Confirm Location header value is consistent with the lock id.
+  EXPECT_EQ(result->second.headers[0].second, req.path + "/" + lock.id);
 }
 
 TEST_F(LockHandlersTest, AcquireLockOnAppReturns201) {
-  auto req = make_app_locks_request("planner");
+  httplib::Request req;
+  make_app_locks_request(req, "planner");
   req.set_header("X-Client-Id", "client_b");
-  req.body = R"({"lock_expiration": 600, "scopes": ["configurations"]})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 600;
+  body.scopes = std::vector<std::string>{"configurations"};
 
-  handlers_->handle_acquire_lock(req, res);
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->second.status_override.value_or(0), 201);
 
-  EXPECT_EQ(res.status, 201);
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body.contains("id"));
-  EXPECT_TRUE(body["owned"].get<bool>());
-  ASSERT_TRUE(body.contains("scopes"));
-  EXPECT_EQ(body["scopes"].size(), 1);
-  EXPECT_EQ(body["scopes"][0], "configurations");
-  EXPECT_TRUE(body.contains("lock_expiration"));
+  const auto & lock = result->first;
+  EXPECT_FALSE(lock.id.empty());
+  EXPECT_TRUE(lock.owned);
+  ASSERT_TRUE(lock.scopes.has_value());
+  ASSERT_EQ(lock.scopes->size(), 1u);
+  EXPECT_EQ((*lock.scopes)[0], "configurations");
+  EXPECT_FALSE(lock.lock_expiration.empty());
 }
 
 TEST_F(LockHandlersTest, AcquireLockWithoutClientIdReturns400) {
-  auto req = make_component_locks_request("ecu1");
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   // No X-Client-Id header
-  req.body = R"({"lock_expiration": 300})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
 TEST_F(LockHandlersTest, AcquireLockWithInvalidScopeReturns400) {
-  auto req = make_component_locks_request("ecu1");
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 300, "scopes": ["invalid_scope"]})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
+  body.scopes = std::vector<std::string>{"invalid_scope"};
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
-TEST_F(LockHandlersTest, AcquireLockWithMissingExpirationReturns400) {
-  auto req = make_component_locks_request("ecu1");
+TEST_F(LockHandlersTest, AcquireLockWithMissingExpirationParsedAsZeroReturns400) {
+  // The legacy test sent body `{"scopes": ["configurations"]}` and relied on
+  // ctx_.parse_body<AcquireLockRequest> emitting ERR_INVALID_REQUEST when the
+  // required `lock_expiration` field was missing. With typed router commit 18
+  // the body is parsed by the framework BEFORE the handler runs, so missing-
+  // -field errors no longer reach the handler under test. The handler-side
+  // check for `lock_expiration <= 0` is still exercised here by emitting a
+  // body with the field defaulted to zero (matching the framework's behavior
+  // on missing fields for required ints).
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"scopes": ["configurations"]})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;  // lock_expiration defaults to 0
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
 TEST_F(LockHandlersTest, AcquireLockWithZeroExpirationReturns400) {
-  auto req = make_component_locks_request("ecu1");
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 0})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 0;
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
 TEST_F(LockHandlersTest, AcquireLockAlreadyLockedReturns409) {
   // First acquire succeeds
-  auto req1 = make_component_locks_request("ecu1");
+  httplib::Request req1;
+  make_component_locks_request(req1, "ecu1");
   req1.set_header("X-Client-Id", "client_a");
-  req1.body = R"({"lock_expiration": 300})";
-  httplib::Response res1;
-  handlers_->handle_acquire_lock(req1, res1);
-  ASSERT_EQ(res1.status, 201);
+  TypedRequest typed_req1(req1);
+  dto::AcquireLockRequest body1;
+  body1.lock_expiration = 300;
+
+  auto res1 = handlers_->post_lock(typed_req1, body1);
+  ASSERT_TRUE(res1.has_value());
 
   // Second acquire by different client should fail
-  auto req2 = make_component_locks_request("ecu1");
+  httplib::Request req2;
+  make_component_locks_request(req2, "ecu1");
   req2.set_header("X-Client-Id", "client_b");
-  req2.body = R"({"lock_expiration": 300})";
-  httplib::Response res2;
-  handlers_->handle_acquire_lock(req2, res2);
+  TypedRequest typed_req2(req2);
+  dto::AcquireLockRequest body2;
+  body2.lock_expiration = 300;
 
-  EXPECT_EQ(res2.status, 409);
-  auto body = json::parse(res2.body);
-  EXPECT_EQ(body["error_code"], "invalid-request");
+  auto res2 = handlers_->post_lock(typed_req2, body2);
+  ASSERT_FALSE(res2.has_value());
+  EXPECT_EQ(res2.error().http_status, 409);
+  EXPECT_EQ(res2.error().code, ERR_INVALID_REQUEST);
 }
 
 TEST_F(LockHandlersTest, AcquireLockOnNonexistentEntityReturns404) {
-  auto req = make_component_locks_request("nonexistent_component");
+  httplib::Request req;
+  make_component_locks_request(req, "nonexistent_component");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 300})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 404);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "entity-not-found");
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, "entity-not-found");
 }
 
-TEST_F(LockHandlersTest, AcquireLockWithInvalidJsonReturns400) {
-  auto req = make_component_locks_request("ecu1");
+TEST_F(LockHandlersTest, AcquireLockBodyParsingIsFrameworkLevel) {
+  // The legacy test sent `req.body = "not json"` and expected
+  // handle_acquire_lock to emit a 400. With the typed router, malformed JSON
+  // is rejected by the framework's JsonReader BEFORE the handler runs, so
+  // the body-level malformed-JSON case is now covered by typed-router-level
+  // tests (see test_typed_route_registry). Here we just confirm the handler
+  // path still rejects a body with `lock_expiration=0` (after the framework
+  // has successfully parsed the body), since that is the only check the
+  // handler itself owns now.
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  req.body = "not json";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 0;
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 400);
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
 }
 
 // ============================================================================
@@ -457,78 +461,86 @@ TEST_F(LockHandlersTest, AcquireLockWithInvalidJsonReturns400) {
 
 TEST_F(LockHandlersTest, ListLocksReturnsItemsArray) {
   // Acquire a lock first
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300, "scopes": ["configurations"]})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  acquire_body.scopes = std::vector<std::string>{"configurations"};
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
 
   // List locks
-  auto req = make_component_locks_request("ecu1");
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
   req.set_header("X-Client-Id", "client_a");
-  httplib::Response res;
-  handlers_->handle_list_locks(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 200);
-  auto body = json::parse(res.body);
-  ASSERT_TRUE(body.contains("items"));
-  ASSERT_TRUE(body["items"].is_array());
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_locks(typed_req);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->items.size(), 1u);
 
-  auto & lock_item = body["items"][0];
-  EXPECT_TRUE(lock_item.contains("id"));
-  EXPECT_TRUE(lock_item["owned"].get<bool>());
-  ASSERT_TRUE(lock_item.contains("scopes"));
-  EXPECT_EQ(lock_item["scopes"][0], "configurations");
+  const auto & lock_item = result->items[0];
+  EXPECT_FALSE(lock_item.id.empty());
+  EXPECT_TRUE(lock_item.owned);
+  ASSERT_TRUE(lock_item.scopes.has_value());
+  ASSERT_EQ(lock_item.scopes->size(), 1u);
+  EXPECT_EQ((*lock_item.scopes)[0], "configurations");
   // Verify lock_expiration is ISO 8601
-  auto expiration = lock_item["lock_expiration"].get<std::string>();
-  EXPECT_TRUE(expiration.find("T") != std::string::npos);
-  EXPECT_TRUE(expiration.find("Z") != std::string::npos);
+  EXPECT_TRUE(lock_item.lock_expiration.find('T') != std::string::npos);
+  EXPECT_TRUE(lock_item.lock_expiration.find('Z') != std::string::npos);
 }
 
 TEST_F(LockHandlersTest, ListLocksOwnedFieldReflectsClient) {
   // Acquire a lock
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
 
   // List as same client - should be owned
-  auto req1 = make_component_locks_request("ecu1");
+  httplib::Request req1;
+  make_component_locks_request(req1, "ecu1");
   req1.set_header("X-Client-Id", "client_a");
-  httplib::Response res1;
-  handlers_->handle_list_locks(req1, res1);
-  auto body1 = json::parse(res1.body);
-  EXPECT_TRUE(body1["items"][0]["owned"].get<bool>());
+  TypedRequest typed_req1(req1);
+  auto res1 = handlers_->get_locks(typed_req1);
+  ASSERT_TRUE(res1.has_value());
+  ASSERT_EQ(res1->items.size(), 1u);
+  EXPECT_TRUE(res1->items[0].owned);
 
   // List as different client - should not be owned
-  auto req2 = make_component_locks_request("ecu1");
+  httplib::Request req2;
+  make_component_locks_request(req2, "ecu1");
   req2.set_header("X-Client-Id", "client_b");
-  httplib::Response res2;
-  handlers_->handle_list_locks(req2, res2);
-  auto body2 = json::parse(res2.body);
-  EXPECT_FALSE(body2["items"][0]["owned"].get<bool>());
+  TypedRequest typed_req2(req2);
+  auto res2 = handlers_->get_locks(typed_req2);
+  ASSERT_TRUE(res2.has_value());
+  ASSERT_EQ(res2->items.size(), 1u);
+  EXPECT_FALSE(res2->items[0].owned);
 
   // List without client id - should not be owned
-  auto req3 = make_component_locks_request("ecu1");
-  httplib::Response res3;
-  handlers_->handle_list_locks(req3, res3);
-  auto body3 = json::parse(res3.body);
-  EXPECT_FALSE(body3["items"][0]["owned"].get<bool>());
+  httplib::Request req3;
+  make_component_locks_request(req3, "ecu1");
+  TypedRequest typed_req3(req3);
+  auto res3 = handlers_->get_locks(typed_req3);
+  ASSERT_TRUE(res3.has_value());
+  ASSERT_EQ(res3->items.size(), 1u);
+  EXPECT_FALSE(res3->items[0].owned);
 }
 
 TEST_F(LockHandlersTest, ListLocksEmptyWhenNoLocks) {
-  auto req = make_component_locks_request("ecu1");
-  httplib::Response res;
-  handlers_->handle_list_locks(req, res);
+  httplib::Request req;
+  make_component_locks_request(req, "ecu1");
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 200);
-  auto body = json::parse(res.body);
-  ASSERT_TRUE(body["items"].is_array());
-  EXPECT_TRUE(body["items"].empty());
+  auto result = handlers_->get_locks(typed_req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->items.empty());
 }
 
 // ============================================================================
@@ -537,37 +549,38 @@ TEST_F(LockHandlersTest, ListLocksEmptyWhenNoLocks) {
 
 TEST_F(LockHandlersTest, GetLockReturns200) {
   // Acquire a lock
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Get the lock
-  auto req = make_component_lock_item_request("ecu1", lock_id);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
   req.set_header("X-Client-Id", "client_a");
-  httplib::Response res;
-  handlers_->handle_get_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 200);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["id"], lock_id);
-  EXPECT_TRUE(body["owned"].get<bool>());
-  EXPECT_TRUE(body.contains("lock_expiration"));
+  auto result = handlers_->get_lock(typed_req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->id, lock_id);
+  EXPECT_TRUE(result->owned);
+  EXPECT_FALSE(result->lock_expiration.empty());
 }
 
 TEST_F(LockHandlersTest, GetLockNonExistentReturns404) {
-  auto req = make_component_lock_item_request("ecu1", "lock_nonexistent");
-  httplib::Response res;
-  handlers_->handle_get_lock(req, res);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", "lock_nonexistent");
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 404);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "resource-not-found");
+  auto result = handlers_->get_lock(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, "resource-not-found");
 }
 
 // ============================================================================
@@ -576,71 +589,77 @@ TEST_F(LockHandlersTest, GetLockNonExistentReturns404) {
 
 TEST_F(LockHandlersTest, ExtendLockReturns204) {
   // Acquire a lock
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Extend
-  auto req = make_component_lock_item_request("ecu1", lock_id);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 600})";
-  httplib::Response res;
-  handlers_->handle_extend_lock(req, res);
+  TypedRequest typed_req(req);
+  dto::ExtendLockRequest body;
+  body.lock_expiration = 600;
 
-  EXPECT_EQ(res.status, 204);
+  auto result = handlers_->put_lock(typed_req, body);
+  EXPECT_TRUE(result.has_value()) << "extend lock should succeed";
 }
 
 TEST_F(LockHandlersTest, ExtendLockNotOwnerReturns403) {
   // Acquire a lock as client_a
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Try to extend as client_b - should fail with 403
-  auto req = make_component_lock_item_request("ecu1", lock_id);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
   req.set_header("X-Client-Id", "client_b");
-  req.body = R"({"lock_expiration": 600})";
-  httplib::Response res;
-  handlers_->handle_extend_lock(req, res);
+  TypedRequest typed_req(req);
+  dto::ExtendLockRequest body;
+  body.lock_expiration = 600;
 
-  EXPECT_EQ(res.status, 403);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "forbidden");
+  auto result = handlers_->put_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 403);
+  EXPECT_EQ(result.error().code, "forbidden");
 }
 
 TEST_F(LockHandlersTest, ExtendLockWithoutClientIdReturns400) {
   // Acquire a lock
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // No X-Client-Id header
-  auto req = make_component_lock_item_request("ecu1", lock_id);
-  req.body = R"({"lock_expiration": 600})";
-  httplib::Response res;
-  handlers_->handle_extend_lock(req, res);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
+  TypedRequest typed_req(req);
+  dto::ExtendLockRequest body;
+  body.lock_expiration = 600;
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->put_lock(typed_req, body);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
 // ============================================================================
@@ -649,23 +668,24 @@ TEST_F(LockHandlersTest, ExtendLockWithoutClientIdReturns400) {
 
 TEST_F(LockHandlersTest, ReleaseLockReturns204) {
   // Acquire a lock
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Release
-  auto req = make_component_lock_item_request("ecu1", lock_id);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
   req.set_header("X-Client-Id", "client_a");
-  httplib::Response res;
-  handlers_->handle_release_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 204);
+  auto result = handlers_->del_lock(typed_req);
+  EXPECT_TRUE(result.has_value());
 
   // Verify lock is gone
   auto check = lock_manager_->get_lock("ecu1");
@@ -674,47 +694,50 @@ TEST_F(LockHandlersTest, ReleaseLockReturns204) {
 
 TEST_F(LockHandlersTest, ReleaseLockNotOwnerReturns403) {
   // Acquire a lock as client_a
-  auto acquire_req = make_component_locks_request("ecu1");
+  httplib::Request acquire_req;
+  make_component_locks_request(acquire_req, "ecu1");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Try to release as client_b - should fail with 403
-  auto req = make_component_lock_item_request("ecu1", lock_id);
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", lock_id);
   req.set_header("X-Client-Id", "client_b");
-  httplib::Response res;
-  handlers_->handle_release_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 403);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "forbidden");
+  auto result = handlers_->del_lock(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 403);
+  EXPECT_EQ(result.error().code, "forbidden");
 }
 
 TEST_F(LockHandlersTest, ReleaseLockNonexistentReturns404) {
-  auto req = make_component_lock_item_request("ecu1", "lock_nonexistent");
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", "lock_nonexistent");
   req.set_header("X-Client-Id", "client_a");
-  httplib::Response res;
-  handlers_->handle_release_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 404);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "resource-not-found");
+  auto result = handlers_->del_lock(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, "resource-not-found");
 }
 
 TEST_F(LockHandlersTest, ReleaseLockWithoutClientIdReturns400) {
-  auto req = make_component_lock_item_request("ecu1", "some_lock");
+  httplib::Request req;
+  make_component_lock_item_request(req, "ecu1", "some_lock");
   // No X-Client-Id
-  httplib::Response res;
-  handlers_->handle_release_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 400);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["error_code"], "invalid-parameter");
+  auto result = handlers_->del_lock(typed_req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ERR_INVALID_PARAMETER);
 }
 
 // ============================================================================
@@ -722,102 +745,110 @@ TEST_F(LockHandlersTest, ReleaseLockWithoutClientIdReturns400) {
 // ============================================================================
 
 TEST_F(LockHandlersTest, AcquireLockOnAppPathReturns201) {
-  auto req = make_app_locks_request("planner");
+  httplib::Request req;
+  make_app_locks_request(req, "planner");
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 300, "scopes": ["operations", "configurations"]})";
-  httplib::Response res;
+  TypedRequest typed_req(req);
+  dto::AcquireLockRequest body;
+  body.lock_expiration = 300;
+  body.scopes = std::vector<std::string>{"operations", "configurations"};
 
-  handlers_->handle_acquire_lock(req, res);
-
-  EXPECT_EQ(res.status, 201);
-  auto body = json::parse(res.body);
-  EXPECT_TRUE(body["owned"].get<bool>());
-  ASSERT_TRUE(body.contains("scopes"));
-  EXPECT_EQ(body["scopes"].size(), 2);
+  auto result = handlers_->post_lock(typed_req, body);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->second.status_override.value_or(0), 201);
+  const auto & lock = result->first;
+  EXPECT_TRUE(lock.owned);
+  ASSERT_TRUE(lock.scopes.has_value());
+  EXPECT_EQ(lock.scopes->size(), 2u);
 }
 
 TEST_F(LockHandlersTest, ListLocksOnAppPathReturns200) {
   // Acquire first
-  auto acquire_req = make_app_locks_request("planner");
+  httplib::Request acquire_req;
+  make_app_locks_request(acquire_req, "planner");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
 
   // List
-  auto req = make_app_locks_request("planner");
-  httplib::Response res;
-  handlers_->handle_list_locks(req, res);
+  httplib::Request req;
+  make_app_locks_request(req, "planner");
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 200);
-  auto body = json::parse(res.body);
-  ASSERT_EQ(body["items"].size(), 1);
+  auto result = handlers_->get_locks(typed_req);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->items.size(), 1u);
 }
 
 TEST_F(LockHandlersTest, GetLockOnAppPathReturns200) {
   // Acquire
-  auto acquire_req = make_app_locks_request("planner");
+  httplib::Request acquire_req;
+  make_app_locks_request(acquire_req, "planner");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Get
-  auto req = make_app_lock_item_request("planner", lock_id);
-  httplib::Response res;
-  handlers_->handle_get_lock(req, res);
+  httplib::Request req;
+  make_app_lock_item_request(req, "planner", lock_id);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 200);
-  auto body = json::parse(res.body);
-  EXPECT_EQ(body["id"], lock_id);
+  auto result = handlers_->get_lock(typed_req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->id, lock_id);
 }
 
 TEST_F(LockHandlersTest, ExtendLockOnAppPathReturns204) {
   // Acquire
-  auto acquire_req = make_app_locks_request("planner");
+  httplib::Request acquire_req;
+  make_app_locks_request(acquire_req, "planner");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Extend
-  auto req = make_app_lock_item_request("planner", lock_id);
+  httplib::Request req;
+  make_app_lock_item_request(req, "planner", lock_id);
   req.set_header("X-Client-Id", "client_a");
-  req.body = R"({"lock_expiration": 600})";
-  httplib::Response res;
-  handlers_->handle_extend_lock(req, res);
+  TypedRequest typed_req(req);
+  dto::ExtendLockRequest body;
+  body.lock_expiration = 600;
 
-  EXPECT_EQ(res.status, 204);
+  auto result = handlers_->put_lock(typed_req, body);
+  EXPECT_TRUE(result.has_value());
 }
 
 TEST_F(LockHandlersTest, ReleaseLockOnAppPathReturns204) {
   // Acquire
-  auto acquire_req = make_app_locks_request("planner");
+  httplib::Request acquire_req;
+  make_app_locks_request(acquire_req, "planner");
   acquire_req.set_header("X-Client-Id", "client_a");
-  acquire_req.body = R"({"lock_expiration": 300})";
-  httplib::Response acquire_res;
-  handlers_->handle_acquire_lock(acquire_req, acquire_res);
-  ASSERT_EQ(acquire_res.status, 201);
-
-  auto acquire_body = json::parse(acquire_res.body);
-  auto lock_id = acquire_body["id"].get<std::string>();
+  TypedRequest acquire_typed(acquire_req);
+  dto::AcquireLockRequest acquire_body;
+  acquire_body.lock_expiration = 300;
+  auto acquire_res = handlers_->post_lock(acquire_typed, acquire_body);
+  ASSERT_TRUE(acquire_res.has_value());
+  const std::string lock_id = acquire_res->first.id;
 
   // Release
-  auto req = make_app_lock_item_request("planner", lock_id);
+  httplib::Request req;
+  make_app_lock_item_request(req, "planner", lock_id);
   req.set_header("X-Client-Id", "client_a");
-  httplib::Response res;
-  handlers_->handle_release_lock(req, res);
+  TypedRequest typed_req(req);
 
-  EXPECT_EQ(res.status, 204);
+  auto result = handlers_->del_lock(typed_req);
+  EXPECT_TRUE(result.has_value());
 }
 
 // ============================================================================
@@ -826,23 +857,28 @@ TEST_F(LockHandlersTest, ReleaseLockOnAppPathReturns204) {
 
 TEST_F(LockHandlersTest, AcquireLockWithBreakReplacesExisting) {
   // First acquire
-  auto req1 = make_component_locks_request("ecu1");
+  httplib::Request req1;
+  make_component_locks_request(req1, "ecu1");
   req1.set_header("X-Client-Id", "client_a");
-  req1.body = R"({"lock_expiration": 300})";
-  httplib::Response res1;
-  handlers_->handle_acquire_lock(req1, res1);
-  ASSERT_EQ(res1.status, 201);
+  TypedRequest typed_req1(req1);
+  dto::AcquireLockRequest body1;
+  body1.lock_expiration = 300;
+  auto res1 = handlers_->post_lock(typed_req1, body1);
+  ASSERT_TRUE(res1.has_value());
 
   // Break and acquire by different client
-  auto req2 = make_component_locks_request("ecu1");
+  httplib::Request req2;
+  make_component_locks_request(req2, "ecu1");
   req2.set_header("X-Client-Id", "client_b");
-  req2.body = R"({"lock_expiration": 600, "break_lock": true})";
-  httplib::Response res2;
-  handlers_->handle_acquire_lock(req2, res2);
+  TypedRequest typed_req2(req2);
+  dto::AcquireLockRequest body2;
+  body2.lock_expiration = 600;
+  body2.break_lock = true;
+  auto res2 = handlers_->post_lock(typed_req2, body2);
 
-  EXPECT_EQ(res2.status, 201);
-  auto body = json::parse(res2.body);
-  EXPECT_TRUE(body["owned"].get<bool>());
+  ASSERT_TRUE(res2.has_value());
+  EXPECT_EQ(res2->second.status_override.value_or(0), 201);
+  EXPECT_TRUE(res2->first.owned);
 }
 
 int main(int argc, char ** argv) {

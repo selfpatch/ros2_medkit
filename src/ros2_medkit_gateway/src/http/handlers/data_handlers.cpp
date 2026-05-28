@@ -15,184 +15,386 @@
 #include "ros2_medkit_gateway/core/http/handlers/data_handlers.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+#include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/exceptions.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
-#include "ros2_medkit_gateway/core/http/x_medkit.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
-
-using json = nlohmann::json;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
 
-void DataHandlers::handle_list_data(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  try {
-    if (req.matches.size() < 2) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
-    }
+namespace {
 
-    entity_id = req.matches[1];
+using json = nlohmann::json;
 
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-    auto entity_info = *entity_opt;
+// =============================================================================
+// Helper free functions
+// =============================================================================
 
-    // Delegate to plugin DataProvider if entity is plugin-owned
-    if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
-      if (data_prov) {
-        try {
-          auto result = data_prov->list_data(entity_id);
-          if (result) {
-            HandlerContext::send_json(res, *result);
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
+/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
+/// matches the legacy `send_error` default and integration tests stay byte-
+/// identical.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
+/// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
+ErrorInfo make_plugin_error(int http_status, const std::string & message, json extra_params = {}) {
+  static constexpr size_t kMaxMessageLength = 512;
+  int status = http_status < 400 ? 400 : (http_status > 599 ? 599 : http_status);
+  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
+  return make_error(status, ERR_PLUGIN_ERROR, std::move(msg), std::move(extra_params));
+}
+
+/// Map a `DataProviderErrorInfo` (from the typed plugin ABI) into the SOVD
+/// `x-medkit-plugin-error` wire shape via `make_plugin_error`.
+ErrorInfo make_provider_error(const DataProviderErrorInfo & info, const std::string & entity_id) {
+  return make_plugin_error(info.http_status, info.message, json{{"entity_id", entity_id}});
+}
+
+/// Read the first positional capture group (entity_id) with the same "missing
+/// capture is treated as 400 invalid-request" semantics as the other migrated
+/// handlers (matches the legacy `req.matches.size() < N` guard).
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the second positional capture group (topic_id; cpp-httplib already
+/// percent-decodes the value).
+tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("2");
+  if (raw) {
+    return *raw;
+  }
+  return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler signals "do not render" via the framework-internal
+/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
         }
-        return;
-      }
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "No data provider for plugin entity '" + entity_id + "'");
-      return;
+      },
+      err);
+}
+
+/// Build the typed x-medkit per-item payload for the list endpoint.
+dto::XMedkitDataItem build_list_item_xmedkit(const std::string & topic_name, const std::string & direction,
+                                             const std::string & topic_type,
+                                             ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+  dto::XMedkitDataItem item_xm;
+  dto::XMedkitRos2 ros2_meta;
+  ros2_meta.topic = topic_name;
+  ros2_meta.direction = direction;
+  if (!topic_type.empty()) {
+    ros2_meta.type = topic_type;
+    try {
+      auto type_info = type_introspection->get_type_info(topic_type);
+      json type_info_obj;
+      type_info_obj["schema"] = type_info.schema;
+      type_info_obj["default_value"] = type_info.default_value;
+      item_xm.type_info = type_info_obj;
+    } catch (const std::exception & e) {
+      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic_name.c_str(),
+                   e.what());
     }
+  }
+  item_xm.ros2 = ros2_meta;
+  return item_xm;
+}
 
-    // Use unified cache method to get aggregated data
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
-
-    // Get data access manager for type introspection
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto type_introspection = data_access_mgr->get_type_introspection();
-
-    // Build items array with ValueMetadata format
-    json items = json::array();
-
-    for (const auto & topic : aggregated.topics) {
-      json item;
-      // SOVD required fields - use topic.name directly as ID (clients URL-encode for GET/PUT)
-      item["id"] = topic.name;
-      item["name"] = topic.name;
-      item["category"] = "currentData";
-
-      // x-medkit extension for ROS2-specific data
-      XMedkit ext;
-      ext.ros2_topic(topic.name).add_ros2("direction", topic.direction);
-
-      // Add type info if available (use cached topic types for O(1) lookup)
-      std::string topic_type = cache.get_topic_type(topic.name);
-      if (!topic_type.empty()) {
-        ext.ros2_type(topic_type);
-        try {
-          auto type_info = type_introspection->get_type_info(topic_type);
-          json type_info_obj;
-          type_info_obj["schema"] = type_info.schema;
-          type_info_obj["default_value"] = type_info.default_value;
-          ext.type_info(type_info_obj);
-        } catch (const std::exception & e) {
-          RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic.name.c_str(),
-                       e.what());
-        }
-      }
-
-      item["x-medkit"] = ext.build();
-      items.push_back(item);
-    }
-
-    // Build response with x-medkit for total_count
-    json response;
-    response["items"] = items;
-
-    XMedkit resp_ext;
-    resp_ext.entity_id(entity_id);
-    if (aggregated.is_aggregated) {
-      resp_ext.add("aggregated", true);
-      resp_ext.add("aggregation_sources", aggregated.source_ids);
-      resp_ext.add("aggregation_level", aggregated.aggregation_level);
-    }
-    merge_peer_items(ctx_.aggregation_manager(), req, response, resp_ext);
-    resp_ext.add("total_count", response["items"].size());
-    response["x-medkit"] = resp_ext.build();
-
-    HandlerContext::send_json(res, response);
-  } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",
-                               {{"details", e.what()}, {"entity_id", entity_id}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_list_data for entity '%s': %s", entity_id.c_str(),
-                 e.what());
+/// Fold typed fan-out observability (partial / failed_peers / dropped items)
+/// into the list-level x-medkit. Mirrors the legacy `merge_peer_items`
+/// post-processing path.
+void apply_fan_out_observability(dto::DataListXMedkit & xm, const FanOutResult<dto::DataItem> & fan_out) {
+  if (fan_out.partial) {
+    xm.partial = true;
+    xm.failed_peers = fan_out.failed_peers;
+  }
+  if (!fan_out.dropped_items.empty()) {
+    xm.peer_dropped_items = fan_out.dropped_items;
   }
 }
 
-void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string topic_name;
-  try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+/// Build a `DataValue` whose `content` matches the wire shape produced by the
+/// legacy `handle_get_data_item` (top-level `id`, `data`, `x-medkit`).
+dto::DataValue build_read_response(const std::string & full_topic_path, const TopicSampleResult & sample,
+                                   const std::string & entity_id,
+                                   ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+  json response;
+  response["id"] = full_topic_path;
+  if (sample.has_data && sample.data) {
+    response["data"] = *sample.data;
+  } else {
+    response["data"] = json::object();
+  }
+
+  dto::XMedkitDataItem xm;
+  dto::XMedkitRos2 ros2_meta;
+  ros2_meta.topic = full_topic_path;
+  xm.entity_id = entity_id;
+  if (!sample.message_type.empty()) {
+    ros2_meta.type = sample.message_type;
+    try {
+      auto type_info = type_introspection->get_type_info(sample.message_type);
+      json type_info_obj;
+      type_info_obj["schema"] = type_info.schema;
+      type_info_obj["default_value"] = type_info.default_value;
+      xm.type_info = type_info_obj;
+    } catch (const std::exception & e) {
+      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
+                   e.what());
     }
+  }
+  xm.ros2 = ros2_meta;
+  xm.timestamp = sample.timestamp_ns;
+  xm.publisher_count = static_cast<std::int64_t>(sample.publisher_count);
+  xm.subscriber_count = static_cast<std::int64_t>(sample.subscriber_count);
+  xm.status = json(sample.has_data ? "data" : "metadata_only");
+  response["x-medkit"] = dto::JsonWriter<dto::XMedkitDataItem>::write(xm);
 
-    entity_id = req.matches[1];
-    // cpp-httplib automatically decodes percent-encoded characters in URL path
-    topic_name = req.matches[2];
+  dto::DataValue value;
+  value.content = std::move(response);
+  return value;
+}
 
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
+/// Build a `DataValue` whose `content` matches the wire shape produced by the
+/// legacy `handle_put_data_item` write echo (top-level `id`, `data`,
+/// `x-medkit`).
+dto::DataValue build_write_response(const std::string & full_topic_path, const std::string & msg_type,
+                                    const std::string & entity_id, const json & data, const json & publish_result) {
+  json response;
+  response["id"] = full_topic_path;
+  response["data"] = data;  // Echo back the written data
+
+  dto::XMedkitDataItem xm;
+  dto::XMedkitRos2 ros2_meta;
+  ros2_meta.topic = full_topic_path;
+  ros2_meta.type = msg_type;
+  xm.ros2 = ros2_meta;
+  xm.entity_id = entity_id;
+  if (publish_result.contains("status")) {
+    xm.status = publish_result["status"];
+  }
+  if (publish_result.contains("publisher_created") && publish_result["publisher_created"].is_boolean()) {
+    xm.publisher_created = publish_result["publisher_created"].get<bool>();
+  }
+  response["x-medkit"] = dto::JsonWriter<dto::XMedkitDataItem>::write(xm);
+
+  dto::DataValue value;
+  value.content = std::move(response);
+  return value;
+}
+
+}  // namespace
+
+// =============================================================================
+// GET /{entity}/data - list data items
+// =============================================================================
+
+http::Result<dto::Collection<dto::DataItem, dto::DataListXMedkit>>
+DataHandlers::list_data(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  // Delegate to plugin DataProvider for plugin-owned entities.
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    if (data_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
     }
-
-    // Delegate to plugin DataProvider if entity is plugin-owned
-    if (entity_opt->is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
-      if (data_prov) {
-        try {
-          auto result = data_prov->read_data(entity_id, topic_name);
-          if (result) {
-            HandlerContext::send_json(res, *result);
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
-        }
-        return;
+    try {
+      auto result = data_prov->list_data(entity_id);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
       }
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "No data provider for plugin entity '" + entity_id + "'");
-      return;
+      // The plugin returns an opaque `DataListResult` (free-form items array
+      // shape). To honour the typed RouteRegistry contract we re-parse it as
+      // `Collection<DataItem, DataListXMedkit>` when the wire shape matches;
+      // when it does not (plugin emits vendor-specific per-item fields), we
+      // fall back to constructing a collection whose `links` member carries
+      // the raw payload so the wire stays byte-identical.
+      const json & raw = result->content;
+      auto parsed = dto::JsonReader<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::read(raw);
+      if (parsed) {
+        return std::move(*parsed);
+      }
+      // Fallback: emit the plugin payload verbatim via a single-item `links`
+      // attachment. This preserves wire bytes for plugins whose item shape
+      // doesn't fit DataItem (vendor-specific fields like OPC-UA's
+      // value/unit/data_type/writable).
+      dto::Collection<dto::DataItem, dto::DataListXMedkit> collection;
+      collection.links = raw;
+      return collection;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
+    }
+  }
+
+  try {
+    // Use unified cache method to get aggregated data.
+    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    auto aggregated = cache.get_entity_data(entity_id);
+
+    // Get data access manager for type introspection.
+    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto type_introspection = data_access_mgr->get_type_introspection();
+
+    dto::Collection<dto::DataItem, dto::DataListXMedkit> response;
+    for (const auto & topic : aggregated.topics) {
+      dto::DataItem di;
+      di.id = topic.name;
+      di.name = topic.name;
+      di.category = "currentData";
+      const std::string topic_type = cache.get_topic_type(topic.name);
+      di.x_medkit = build_list_item_xmedkit(topic.name, topic.direction, topic_type, type_introspection);
+      response.items.push_back(std::move(di));
     }
 
-    // Determine the full ROS topic path
+    // Typed fan-out for the data list. Replaces the legacy raw-JSON
+    // `merge_peer_items` mutator: peer items come back as parsed
+    // `dto::DataItem` values via `JsonReader<DataItem>`, malformed peer items
+    // are surfaced as `dropped_items` (folded into xm.peer_dropped_items
+    // below), and partial/failed_peers go into the typed xm fields.
+    // `fan_out_collection` still operates on the raw cpp-httplib request
+    // (path + headers) - the typed-request raw escape hatch is used
+    // deliberately here; a later commit will accept the typed request
+    // directly.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+    auto fan_out = fan_out_collection<dto::DataItem>(ctx_.aggregation_manager(), raw_req);
+    for (auto & item : fan_out.items) {
+      response.items.push_back(std::move(item));
+    }
+
+    dto::DataListXMedkit xm;
+    xm.entity_id = entity_id;
+    if (aggregated.is_aggregated) {
+      xm.aggregated = true;
+      xm.aggregation_sources = aggregated.source_ids;
+      xm.aggregation_level = aggregated.aggregation_level;
+    }
+    xm.total_count = response.items.size();
+    apply_fan_out_observability(xm, fan_out);
+    response.x_medkit = std::move(xm);
+    return response;
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
+    return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",
+                                          json{{"details", e.what()}, {"entity_id", entity_id}}));
+  }
+}
+
+// =============================================================================
+// GET /{entity}/data/{topic} - read data item
+// =============================================================================
+
+http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto topic_result = read_topic_id(req);
+  if (!topic_result) {
+    return tl::make_unexpected(topic_result.error());
+  }
+  const std::string topic_name = *topic_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  // Delegate to plugin DataProvider for plugin-owned entities.
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    if (data_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
+    }
+    try {
+      auto result = data_prov->read_data(entity_id, topic_name);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
+      }
+      return std::move(*result);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
+    }
+  }
+
+  try {
+    // Determine the full ROS topic path.
     std::string full_topic_path;
     if (topic_name.empty() || topic_name[0] == '/') {
       full_topic_path = topic_name;
@@ -200,15 +402,13 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       full_topic_path = "/" + topic_name;
     }
 
-    // Sampling goes through the pool-backed TopicDataProvider (issue #375
-    // race fix). The provider is configured in main() before serving traffic.
+    // Sampling goes through the pool-backed TopicDataProvider (issue #375 race
+    // fix). The provider is configured in main() before serving traffic.
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    TopicSampleResult sample;
     const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
     auto * provider = data_access_mgr->get_topic_data_provider();
-    if (!provider) {
-      HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, "Topic sampling is not configured");
-      return;
+    if (provider == nullptr) {
+      return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Topic sampling is not configured"));
     }
     const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
     auto r = provider->sample(full_topic_path, timeout_ms);
@@ -219,222 +419,193 @@ void DataHandlers::handle_get_data_item(const httplib::Request & req, httplib::R
       // (gateway shutdown, cold-wait cap) and 500s (subscribe failed) as
       // successful metadata-only responses, which breaks retry-on-5xx clients.
       const auto & err = r.error();
-      nlohmann::json params = err.params;
+      json params = err.params;
       params["entity_id"] = entity_id;
       params["topic_name"] = topic_name;
       const std::string code = err.code.empty() ? std::string{ERR_INTERNAL_ERROR} : err.code;
       const int status = (err.http_status >= 400 && err.http_status < 600) ? err.http_status : 500;
-      HandlerContext::send_error(res, status, code, err.message, params);
-      return;
-    }
-    sample = *r;
-
-    // Build SOVD ReadValue response (id must match what list returns for round-trip)
-    json response;
-    response["id"] = full_topic_path;
-
-    // SOVD "data" field contains the actual value
-    if (sample.has_data && sample.data) {
-      response["data"] = *sample.data;
-    } else {
-      response["data"] = json::object();
+      return tl::make_unexpected(make_error(status, code, err.message, std::move(params)));
     }
 
-    // Build x-medkit extension with ROS2-specific data
-    XMedkit ext;
-    ext.ros2_topic(full_topic_path).entity_id(entity_id);
-    if (!sample.message_type.empty()) {
-      ext.ros2_type(sample.message_type);
-
-      // Add type_info schema for the message type
-      auto type_introspection = data_access_mgr->get_type_introspection();
-      try {
-        auto type_info = type_introspection->get_type_info(sample.message_type);
-        json type_info_obj;
-        type_info_obj["schema"] = type_info.schema;
-        type_info_obj["default_value"] = type_info.default_value;
-        ext.type_info(type_info_obj);
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
-                     e.what());
-      }
-    }
-    ext.add("timestamp", sample.timestamp_ns);
-    ext.add("publisher_count", sample.publisher_count);
-    ext.add("subscriber_count", sample.subscriber_count);
-    ext.add("status", sample.has_data ? "data" : "metadata_only");
-    response["x-medkit"] = ext.build();
-
-    HandlerContext::send_json(res, response);
+    auto type_introspection = data_access_mgr->get_type_introspection();
+    return build_read_response(full_topic_path, *r, entity_id, type_introspection);
   } catch (const TopicNotAvailableException & e) {
-    HandlerContext::send_error(res, 404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
-                               {{"entity_id", entity_id}, {"topic_name", topic_name}});
     RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
                  topic_name.c_str(), e.what());
+    return tl::make_unexpected(make_error(404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
+                                          json{{"entity_id", entity_id}, {"topic_name", topic_name}}));
   } catch (const ProviderErrorException & e) {
     // Provider returned a non-404 ErrorInfo via DAM (shutdown, subscribe
-    // failed, pool saturation). Preserve the original http_status / code
-    // so 5xx surfaces to retry-on-5xx clients instead of looking like 404.
+    // failed, pool saturation). Preserve the original http_status / code so
+    // 5xx surfaces to retry-on-5xx clients instead of looking like 404.
     const auto & info = e.info();
-    nlohmann::json params = info.params;
+    json params = info.params;
     params["entity_id"] = entity_id;
     params["topic_name"] = topic_name;
     const std::string code = info.code.empty() ? std::string{ERR_INTERNAL_ERROR} : info.code;
     const int status = (info.http_status >= 400 && info.http_status < 600) ? info.http_status : 500;
-    HandlerContext::send_error(res, status, code, info.message, params);
     RCLCPP_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
                 topic_name.c_str(), info.message.c_str(), info.http_status);
+    return tl::make_unexpected(make_error(status, code, info.message, std::move(params)));
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
-                               {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_get_data_item for entity '%s', topic '%s': %s",
-                 entity_id.c_str(), topic_name.c_str(), e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in get_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
+                 topic_name.c_str(), e.what());
+    return tl::make_unexpected(
+        make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
+                   json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));
   }
 }
 
-void DataHandlers::handle_put_data_item(const httplib::Request & req, httplib::Response & res) {
-  std::string entity_id;
-  std::string topic_name;
-  try {
-    if (req.matches.size() < 3) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid request");
-      return;
+// =============================================================================
+// PUT /{entity}/data/{topic} - write data item
+// =============================================================================
+
+http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::make_unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto topic_result = read_topic_id(req);
+  if (!topic_result) {
+    return tl::make_unexpected(topic_result.error());
+  }
+  const std::string topic_name = *topic_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
+  }
+  const auto entity_info = *entity_result;
+
+  // Lock access for data (before plugin delegation - locks apply to all entities).
+  if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "data"); !lock_err) {
+    return tl::make_unexpected(lock_err.error());
+  }
+
+  // Body is parsed manually because plugin-owned entities accept free-form
+  // JSON (e.g. UDS sends a bare hex-encoded string), while the ROS path
+  // requires the strict `DataWriteRequest` shape. Auto-binding
+  // `DataWriteRequest` at the framework level would break plugin
+  // compatibility. The typed-request raw escape hatch is used deliberately
+  // here; a later commit will expose `body_raw()` on the typed request.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const std::string & raw_body = req.raw_for_framework().body;
+#pragma GCC diagnostic pop
+
+  // Delegate to plugin DataProvider for plugin-owned entities.
+  if (entity_info.is_plugin) {
+    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    if (data_prov == nullptr) {
+      return tl::make_unexpected(
+          make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
     }
-
-    entity_id = req.matches[1];
-    topic_name = req.matches[2];
-
-    // Validate entity ID and type for this route
-    auto entity_opt = ctx_.validate_entity_for_route(req, res, entity_id);
-    if (!entity_opt) {
-      return;  // Response already sent (error or forwarded to peer)
-    }
-
-    // Check lock access for data (before plugin delegation - locks apply to all entities)
-    if (ctx_.validate_lock_access(req, res, *entity_opt, "data")) {
-      return;
-    }
-
-    // Delegate to plugin DataProvider if entity is plugin-owned
-    if (entity_opt->is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
-      auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
-      if (data_prov) {
-        json value;
-        if (!req.body.empty()) {
-          value = json::parse(req.body, nullptr, false);
-          if (value.is_discarded()) {
-            HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON body");
-            return;
-          }
-        }
-        try {
-          auto result = data_prov->write_data(entity_id, topic_name, value);
-          if (result) {
-            HandlerContext::send_json(res, *result);
-          } else {
-            HandlerContext::send_plugin_error(res, result.error().http_status, result.error().message,
-                                              {{"entity_id", entity_id}});
-          }
-        } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw exception", {{"entity_id", entity_id}});
-        } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-          HandlerContext::send_plugin_error(res, 500, "Plugin threw unknown exception", {{"entity_id", entity_id}});
-        }
-        return;
+    json value;
+    if (!raw_body.empty()) {
+      value = json::parse(raw_body, nullptr, false);
+      if (value.is_discarded()) {
+        return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid JSON body"));
       }
-      HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND,
-                                 "No data provider for plugin entity '" + entity_id + "'");
-      return;
     }
-
-    // Parse request body
-    json body;
     try {
-      body = json::parse(req.body);
-    } catch (const json::parse_error & e) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON in request body",
-                                 {{"details", e.what()}});
-      return;
+      auto result = data_prov->write_data(entity_id, topic_name, value);
+      if (!result) {
+        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
+      }
+      dto::DataValue data_value;
+      data_value.content = std::move(result->content);
+      return data_value;
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                   e.what());
+      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+    } catch (...) {
+      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                   entity_id.c_str());
+      return tl::make_unexpected(
+          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
+  }
 
-    // Validate required fields: type and data
-    if (!body.contains("type") || !body["type"].is_string()) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'type' field",
-                                 {{"details", "Request body must contain 'type' string field"}});
-      return;
+  // ROS path: enforce the strict `DataWriteRequest` shape via JsonReader.
+  // Matches the legacy `parse_body<DataWriteRequest>` semantics byte-for-byte:
+  // - Malformed JSON renders as 400 ERR_INVALID_REQUEST with message
+  //   "Request body is not valid JSON".
+  // - Field-validation failure renders as 400 ERR_INVALID_REQUEST with the
+  //   joined field-error string as the message (so integration tests that
+  //   grep for "data" / "type" in the message keep passing).
+  json body_json;
+  try {
+    body_json = json::parse(raw_body);
+  } catch (const json::parse_error &) {
+    return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Request body is not valid JSON"));
+  }
+  auto parsed = dto::JsonReader<dto::DataWriteRequest>::read(body_json);
+  if (!parsed) {
+    std::string detail;
+    for (const auto & err : parsed.error()) {
+      if (!detail.empty()) {
+        detail += "; ";
+      }
+      detail += err.field + ": " + err.message;
     }
+    return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, std::move(detail)));
+  }
+  dto::DataWriteRequest body = std::move(*parsed);
 
-    if (!body.contains("data")) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing 'data' field",
-                                 {{"details", "Request body must contain 'data' field"}});
-      return;
-    }
+  try {
+    const std::string & msg_type = body.type;
+    const json & data = body.data;
 
-    std::string msg_type = body["type"].get<std::string>();
-    json data = body["data"];
-
-    // Validate message type format (e.g., std_msgs/msg/Float32)
+    // Validate message type format (e.g., std_msgs/msg/Float32).
     auto slash_count = static_cast<size_t>(std::count(msg_type.begin(), msg_type.end(), '/'));
     size_t msg_pos = msg_type.find("/msg/");
     bool valid_format =
         (slash_count == 2) && (msg_pos != std::string::npos) && (msg_pos > 0) && (msg_pos + 5 < msg_type.length());
-
     if (!valid_format) {
-      HandlerContext::send_error(
-          res, 400, ERR_INVALID_PARAMETER, "Invalid message type format",
-          {{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}});
-      return;
+      return tl::make_unexpected(
+          make_error(400, ERR_INVALID_PARAMETER, "Invalid message type format",
+                     json{{"details", "Message type should be in format: package/msg/Type"}, {"type", msg_type}}));
     }
 
-    // Build full topic path (mirror GET logic: only prefix '/' when needed)
+    // Build full topic path (mirror GET logic: only prefix '/' when needed).
     std::string full_topic_path = topic_name;
     if (!full_topic_path.empty() && full_topic_path.front() != '/') {
       full_topic_path = "/" + full_topic_path;
     }
 
-    // Publish data using DataAccessManager
+    // Publish data using DataAccessManager.
     auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    json result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
-
-    // Build response with x-medkit extension (id must match what list returns for round-trip)
-    json response;
-    response["id"] = full_topic_path;
-    response["data"] = data;  // Echo back the written data
-
-    XMedkit ext;
-    ext.ros2_topic(full_topic_path).ros2_type(msg_type).entity_id(entity_id);
-    if (result.contains("status")) {
-      ext.add("status", result["status"]);
-    }
-    if (result.contains("publisher_created")) {
-      ext.add("publisher_created", result["publisher_created"]);
-    }
-    response["x-medkit"] = ext.build();
-
-    HandlerContext::send_json(res, response);
+    json publish_result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
+    return build_write_response(full_topic_path, msg_type, entity_id, data, publish_result);
   } catch (const std::exception & e) {
-    HandlerContext::send_error(res, 500, ERR_INTERNAL_ERROR, "Failed to publish to topic",
-                               {{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}});
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in handle_put_data_item for entity '%s', topic '%s': %s",
-                 entity_id.c_str(), topic_name.c_str(), e.what());
+    RCLCPP_ERROR(HandlerContext::logger(), "Error in put_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
+                 topic_name.c_str(), e.what());
+    return tl::make_unexpected(
+        make_error(500, ERR_INTERNAL_ERROR, "Failed to publish to topic",
+                   json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));
   }
 }
 
-void DataHandlers::handle_data_categories(const httplib::Request & req, httplib::Response & res) {
-  (void)req;
-  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Data categories are not implemented for ROS 2",
-                             {{"feature", "data-categories"}});
+// =============================================================================
+// GET /{entity}/data-categories - 501 Not Implemented
+// =============================================================================
+
+http::Result<dto::DataValue> DataHandlers::data_categories(const http::TypedRequest & /*req*/) {
+  return tl::make_unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Data categories are not implemented for ROS 2",
+                                        json{{"feature", "data-categories"}}));
 }
 
-void DataHandlers::handle_data_groups(const httplib::Request & req, httplib::Response & res) {
-  (void)req;
-  HandlerContext::send_error(res, 501, ERR_NOT_IMPLEMENTED, "Data groups are not implemented for ROS 2",
-                             {{"feature", "data-groups"}});
+// =============================================================================
+// GET /{entity}/data-groups - 501 Not Implemented
+// =============================================================================
+
+http::Result<dto::DataValue> DataHandlers::data_groups(const http::TypedRequest & /*req*/) {
+  return tl::make_unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Data groups are not implemented for ROS 2",
+                                        json{{"feature", "data-groups"}}));
 }
 
 }  // namespace handlers

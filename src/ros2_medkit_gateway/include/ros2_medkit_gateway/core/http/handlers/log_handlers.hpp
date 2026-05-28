@@ -14,7 +14,10 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -36,39 +39,34 @@ namespace handlers {
  * Components and areas use prefix matching: all nodes whose FQN starts
  * with the entity namespace are included. Apps use exact FQN matching.
  * Functions aggregate logs from all hosted apps.
+ *
+ * PR-403 commit 23: 3 log routes migrated to typed `Result<TResponse>` shape.
+ * The list endpoint uses the typed `fan_out_collection<LogEntry>` from commit 7
+ * for peer aggregation instead of the legacy `merge_peer_items` raw-JSON mutator.
  */
 class LogHandlers {
  public:
-  /**
-   * @brief Construct log handlers with shared context.
-   * @param ctx The shared handler context
-   */
+  /// Construct log handlers with shared context.
   explicit LogHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
-  /**
-   * @brief Handle GET /{entity-path}/logs - query log entries for an entity.
-   *
-   * Query parameters:
-   *   severity  - Optional minimum severity filter (debug/info/warning/error/fatal).
-   *               Stricter of this and entity config severity_filter is applied.
-   *   context   - Optional substring filter applied to the log entry's node name.
-   */
-  void handle_get_logs(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity-path}/logs - query log entries for an entity.
+  ///
+  /// Query parameters:
+  ///   severity  - Optional minimum severity filter (debug/info/warning/error/fatal).
+  ///               Stricter of this and entity config severity_filter is applied.
+  ///   context   - Optional substring filter applied to the log entry's node name.
+  http::Result<dto::Collection<dto::LogEntry, dto::LogListXMedkit>> get_logs(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /{entity-path}/logs/configuration - get log configuration.
-   */
-  void handle_get_logs_configuration(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity-path}/logs/configuration - get log configuration.
+  http::Result<dto::LogConfiguration> get_logs_configuration(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle PUT /{entity-path}/logs/configuration - update log configuration.
-   *
-   * Body (JSON, all fields optional):
-   *   severity_filter  - Minimum severity to return in query results (debug/info/warning/error/fatal)
-   *   max_entries      - Maximum number of log entries to return per query (> 0)
-   */
-  void handle_put_logs_configuration(const httplib::Request & req, httplib::Response & res);
+  /// PUT /{entity-path}/logs/configuration - update log configuration.
+  ///
+  /// Body (JSON, all fields optional):
+  ///   severity_filter  - Minimum severity to return in query results (debug/info/warning/error/fatal)
+  ///   max_entries      - Maximum number of log entries to return per query (> 0)
+  http::Result<http::NoContent> put_logs_configuration(const http::TypedRequest & req, dto::LogConfiguration body);
 
  private:
   HandlerContext & ctx_;

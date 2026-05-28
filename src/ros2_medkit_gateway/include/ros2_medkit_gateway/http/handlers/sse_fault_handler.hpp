@@ -17,7 +17,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -28,6 +30,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {
@@ -79,9 +83,14 @@ class SSEFaultHandler {
   SSEFaultHandler & operator=(SSEFaultHandler &&) = delete;
 
   /**
-   * @brief Handle GET /faults/stream - SSE stream endpoint.
+   * @brief Handle GET /faults/stream - SSE stream endpoint (typed RouteRegistry).
    *
-   * Establishes a long-lived connection and streams fault events in SSE format:
+   * Returns a `SseStream` whose `next_event` callback the framework drives via
+   * cpp-httplib's chunked content provider. On limit-exceeded the factory
+   * returns `tl::unexpected(ErrorInfo)` with HTTP 503; the framework renders
+   * a SOVD GenericError.
+   *
+   * Events streamed:
    * @code
    * event: fault_confirmed
    * data: {"event_type":"fault_confirmed","fault":{...},"timestamp":1234567890.123}
@@ -89,6 +98,19 @@ class SSEFaultHandler {
    * event: fault_cleared
    * data: {"event_type":"fault_cleared","fault":{...},"timestamp":1234567890.456}
    * @endcode
+   */
+  http::Result<http::SseStream> sse_stream(const http::TypedRequest & req);
+
+  /**
+   * @brief Legacy SSE entry point - drives the chunked content provider on
+   * `res` directly.
+   *
+   * Retained for the in-process unit test fixture (`test_sse_fault_handler`),
+   * which exercises the streaming loop without spinning up the typed router.
+   * The framework-registered route uses `sse_stream` via `reg.sse`; this
+   * overload wraps the same logic and additionally sets the legacy headers
+   * (Cache-Control / Connection / X-Accel-Buffering) that the framework wires
+   * automatically for the typed path.
    */
   void handle_stream(const httplib::Request & req, httplib::Response & res);
 
@@ -111,6 +133,12 @@ class SSEFaultHandler {
   void request_shutdown();
 
  private:
+  /// Build the per-client streaming loop closure used by both `sse_stream`
+  /// (typed RouteRegistry path) and `handle_stream` (legacy in-process test
+  /// entry). The returned callable is invoked with a `DataSink` and returns
+  /// `false` when the client disconnects or `shutdown_flag_` is set.
+  std::function<bool(httplib::DataSink &)> make_stream_loop(uint64_t initial_last_event_id);
+
   /// Callback for fault events from ROS 2 topic
   void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
 

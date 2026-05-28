@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,13 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <utility>
+#include <variant>
 
+#include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -34,6 +39,27 @@ namespace handlers {
  * - DELETE /{entity-path}/faults/{code} - Clear fault
  * - DELETE /{entity-path}/faults - Clear all faults for entity
  *
+ * PR-403 commit 29: all 6 fault routes migrate to the typed RouteRegistry API.
+ *
+ * The list endpoints return the opaque `FaultListResult` envelope rather than
+ * `Collection<FaultListItem, X>` because the per-entity-type x-medkit shape
+ * varies between branches (FaultListXMedkit for Apps and global; the
+ * aggregation variant FaultListAggXMedkit for Component / Area / Function).
+ * `FaultListResult.content` lets the handler emit the wire payload it built
+ * (including the typed x-medkit DTO serialised in place) verbatim. Plugin
+ * pass-through (FaultProvider::list_faults) already returns FaultListResult so
+ * both branches converge on a single typed return type.
+ *
+ * `get_fault` returns `FaultDetailResult` for the same reason: the ROS-path
+ * wraps the SOVD-compliant FaultDetail DTO and the plugin path forwards a
+ * vendor-defined payload; the opaque envelope keeps the typed signature
+ * uniform while preserving wire bytes.
+ *
+ * `DELETE /faults` (global) uses the attachments variant
+ * `Result<std::pair<NoContent, ResponseAttachments>>` so it can attach the
+ * `X-Medkit-Local-Only: true` response header on top of the framework-default
+ * 204 No Content.
+ *
  * Note: Snapshot data is inline in fault responses (environment_data).
  * Rosbag downloads use the bulk-data endpoint pattern.
  */
@@ -46,37 +72,53 @@ class FaultHandlers {
   explicit FaultHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
-  /**
-   * @brief Handle GET /faults - list all faults.
-   */
-  void handle_list_all_faults(const httplib::Request & req, httplib::Response & res);
+  /// GET /faults - list all faults globally (extension, not SOVD).
+  ///
+  /// Returns `FaultListResult` whose `content` is the `{items, x-medkit}`
+  /// object - opaque so the typed fan-out merge from the legacy path stays
+  /// byte-identical to the pre-migration wire format.
+  http::Result<dto::FaultListResult> list_all_faults(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /components/{component_id}/faults - list faults for component.
-   */
-  void handle_list_faults(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity-path}/faults - list faults for entity.
+  ///
+  /// Returns `FaultListResult` for the same reason as `list_all_faults` plus
+  /// the per-entity-type aggregation variants (Function / Component / Area
+  /// emit FaultListAggXMedkit; App emits FaultListXMedkit). Plugin-owned
+  /// entities delegate to `FaultProvider::list_faults` which already returns
+  /// `FaultListResult`.
+  http::Result<dto::FaultListResult> list_faults(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /components/{component_id}/faults/{fault_code} - get specific fault.
-   */
-  void handle_get_fault(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity-path}/faults/{fault_code} - get specific fault.
+  ///
+  /// Returns `FaultDetailResult` whose `content` is the SOVD-compliant detail
+  /// payload (item / environment_data / x-medkit). Plugin pass-through forwards
+  /// the vendor-defined detail JSON verbatim.
+  http::Result<dto::FaultDetailResult> get_fault(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle DELETE /components/{component_id}/faults/{fault_code} - clear fault.
-   */
-  void handle_clear_fault(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity-path}/faults/{fault_code} - clear specific fault.
+  ///
+  /// Returns one of two alternates: `NoContent` (ROS path -> 204) or
+  /// `FaultClearResult` (plugin path -> 200 + plugin acknowledgement body).
+  /// Two-status return is required to keep wire bytes byte-identical with the
+  /// legacy code: plugin acknowledgement payloads (UDS clear response codes,
+  /// vendor warnings) are forwarded verbatim with HTTP 200.
+  http::Result<std::variant<http::NoContent, dto::FaultClearResult>> clear_fault(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle DELETE /components/{component_id}/faults - clear all faults for entity.
-   */
-  void handle_clear_all_faults(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity-path}/faults - clear all faults for entity.
+  ///
+  /// Always returns 204 on success - the bulk-clear path never carried a
+  /// plugin acknowledgement payload on success in the legacy implementation
+  /// (the plugin branch set `res.status = 204` directly after iterating the
+  /// per-fault clear calls).
+  http::Result<http::NoContent> clear_all_faults(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle DELETE /faults - clear all faults globally (extension, not SOVD).
-   *
-   * Accepts optional ?status= query parameter to filter which faults to clear.
-   */
-  void handle_clear_all_faults_global(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /faults - clear all faults globally (extension, not SOVD).
+  ///
+  /// Accepts an optional `?status=` query parameter to filter which faults to
+  /// clear. Returns 204 + `X-Medkit-Local-Only: true` header via the typed
+  /// attachments variant; the framework-default 204 status is kept.
+  http::Result<std::pair<http::NoContent, http::ResponseAttachments>>
+  clear_all_faults_global(const http::TypedRequest & req);
 
   /**
    * @brief Build SOVD-compliant fault response from already-converted JSON.
@@ -100,11 +142,11 @@ class FaultHandlers {
    * @param fault_json Per-fault JSON (as produced by the transport adapter).
    * @param env_data_json Environment-data JSON (as produced by the transport).
    * @param entity_path Entity path used to construct rosbag bulk_data_uri.
-   * @return SOVD-compliant JSON response
+   * @return SOVD-compliant FaultDetail DTO
    */
-  static nlohmann::json build_sovd_fault_response(const nlohmann::json & fault_json,
-                                                  const nlohmann::json & env_data_json,
-                                                  const std::string & entity_path);
+  static dto::FaultDetail build_sovd_fault_response(const nlohmann::json & fault_json,
+                                                    const nlohmann::json & env_data_json,
+                                                    const std::string & entity_path);
 
   /**
    * @brief Scope check used by per-entity fault routes.
@@ -128,9 +170,8 @@ class FaultHandlers {
    * `reporting_sources` field, or any non-string source entry all return
    * false - there is no vacuous "all match" case.
    *
-   * Public for direct unit testing; called by `handle_get_fault`,
-   * `handle_clear_fault`, and indirectly via `filter_faults_by_sources` by
-   * the collection routes.
+   * Public for direct unit testing; called by `get_fault`, `clear_fault`,
+   * and indirectly via the per-entity collection routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 

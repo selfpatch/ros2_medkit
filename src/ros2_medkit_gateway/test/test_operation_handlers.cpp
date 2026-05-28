@@ -34,11 +34,15 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using json = nlohmann::json;
 using ros2_medkit_gateway::ActionGoalInfo;
@@ -53,14 +57,12 @@ using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::OperationHandlers;
+namespace dto = ros2_medkit_gateway::dto;
+namespace http = ros2_medkit_gateway::http;
 
 namespace {
 
 using namespace std::chrono_literals;
-
-json parse_json(const httplib::Response & res) {
-  return json::parse(res.body);
-}
 
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -95,10 +97,8 @@ int reserve_local_port() {
 httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
   httplib::Request req;
   req.path = path;
-
   std::regex re(pattern);
   std::regex_match(req.path, req.matches, re);
-
   return req;
 }
 
@@ -195,6 +195,13 @@ class TestLongCalibrationActionServer : public rclcpp::Node {
 
 }  // namespace
 
+// =============================================================================
+// Validation-only tests (no GatewayNode). These cover the path_param("1")
+// short-circuit at the top of each typed handler. Default-constructed
+// TypedRequest carries no captures, so the handler returns ERR_INVALID_REQUEST
+// (400) before touching the cache.
+// =============================================================================
+
 class OperationHandlersValidationTest : public ::testing::Test {
  protected:
   CorsConfig cors_{};
@@ -205,28 +212,30 @@ class OperationHandlersValidationTest : public ::testing::Test {
 };
 
 TEST_F(OperationHandlersValidationTest, ListOperationsMissingMatchesReturns400) {
-  httplib::Request req;
-  req.path = "/api/v1/components/engine/operations";
-  httplib::Response res;
+  httplib::Request raw_req;
+  raw_req.path = "/api/v1/components/engine/operations";
+  http::TypedRequest req(raw_req);
 
-  handlers_.handle_list_operations(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  auto result = handlers_.list_operations(req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_REQUEST);
 }
 
 TEST_F(OperationHandlersValidationTest, ListOperationsInvalidEntityReturns400) {
-  auto req =
+  auto raw_req =
       make_request_with_match("/api/v1/components/engine!/operations", R"(/api/v1/components/([^/]+)/operations)");
-  httplib::Response res;
+  http::TypedRequest req(raw_req);
 
-  handlers_.handle_list_operations(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+  auto result = handlers_.list_operations(req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 400);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INVALID_PARAMETER);
 }
+
+// =============================================================================
+// Fixture-based tests against a live GatewayNode + ROS 2 graph.
+// =============================================================================
 
 class OperationHandlersFixtureTest : public ::testing::Test {
  protected:
@@ -302,9 +311,6 @@ class OperationHandlersFixtureTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    // Cancel executor FIRST to stop callback delivery, then shutdown action server.
-    // Without this ordering, prepare_shutdown() resets action_server_ while
-    // executor may still be delivering callbacks to it.
     if (executor_ != nullptr) {
       executor_->cancel();
     }
@@ -321,10 +327,6 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     ctx_.reset();
     trigger_service_.reset();
 
-    // Destroy executor before nodes. The executor's cancel() above stopped
-    // spinning, and join() waited for the spin thread. Destroying the executor
-    // releases its internal references to node callback groups. Only then is
-    // it safe to destroy the nodes themselves.
     executor_.reset();
 
     action_server_node_.reset();
@@ -349,24 +351,31 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     cache.update_all({}, {component}, {}, {});
   }
 
+  /// Drive `create_execution` and assert the typed response carries the async
+  /// (202) branch. Returns the goal UUID.
   std::string create_action_execution(int order = 6) {
-    auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions",
-                                       R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
-    req.body = json{{"parameters", {{"order", order}}}}.dump();
+    auto raw_req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions",
+                                           R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
+    http::TypedRequest typed(raw_req);
+    dto::ExecutionCreateRequest body;
+    body.parameters = json{{"order", order}};
 
-    httplib::Response res;
-    handlers_->handle_create_execution(req, res);
+    auto result = handlers_->create_execution(typed, body);
+    EXPECT_TRUE(result.has_value());
+    if (!result.has_value()) {
+      return {};
+    }
+    // 202 async branch.
+    const auto * async_ptr = std::get_if<dto::ExecutionCreateAsync>(&result.value().first);
+    EXPECT_NE(async_ptr, nullptr);
+    if (async_ptr == nullptr) {
+      return {};
+    }
+    EXPECT_FALSE(async_ptr->id.empty());
 
-    EXPECT_EQ(res.status, 202);
-    auto body = parse_json(res);
-    EXPECT_TRUE(body.contains("id"));
-
-    // Sending the action goal subscribes to feedback/result topics, which the
-    // gateway's graph-event-driven discovery picks up and uses to wipe the
-    // seeded cache with its own (empty) view. Re-seed so any subsequent
-    // handler call still sees the engine component.
+    // Re-seed cache after the goal subscription perturbs discovery.
     seed_component_cache();
-    return body["id"].get<std::string>();
+    return async_ptr->id;
   }
 
   ActionGoalInfo get_tracked_goal_or_fail(const std::string & execution_id) {
@@ -389,162 +398,173 @@ class OperationHandlersFixtureTest : public ::testing::Test {
 };
 
 TEST_F(OperationHandlersFixtureTest, ListOperationsReturnsServiceAndActionItems) {
-  auto req =
+  auto raw_req =
       make_request_with_match("/api/v1/components/engine/operations", R"(/api/v1/components/([^/]+)/operations)");
-  httplib::Response res;
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_list_operations(req, res);
-
-  EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
-  auto body = parse_json(res);
-  ASSERT_TRUE(body.contains("items"));
-  ASSERT_EQ(body["items"].size(), 2);
+  auto result = handlers_->list_operations(typed);
+  ASSERT_TRUE(result.has_value());
+  const auto & collection = *result;
+  ASSERT_EQ(collection.items.size(), 2u);
 
   std::set<std::string> ids;
-  for (const auto & item : body["items"]) {
-    ids.insert(item["id"].get<std::string>());
+  for (const auto & item : collection.items) {
+    ids.insert(item.id);
   }
-
   EXPECT_EQ(ids, std::set<std::string>({"calibrate", "long_calibration"}));
 }
 
 TEST_F(OperationHandlersFixtureTest, ListOperationsUnknownEntityReturns404) {
-  auto req =
+  auto raw_req =
       make_request_with_match("/api/v1/components/unknown/operations", R"(/api/v1/components/([^/]+)/operations)");
-  httplib::Response res;
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_list_operations(req, res);
-
-  EXPECT_EQ(res.status, 404);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
+  auto result = handlers_->list_operations(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, GetOperationReturnsActionMetadata) {
-  auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration",
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+))");
-  httplib::Response res;
+  auto raw_req = make_request_with_match("/api/v1/components/engine/operations/long_calibration",
+                                         R"(/api/v1/components/([^/]+)/operations/([^/]+))");
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_get_operation(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_TRUE(body.contains("item"));
-  EXPECT_EQ(body["item"]["id"], "long_calibration");
-  EXPECT_TRUE(body["item"]["asynchronous_execution"].get<bool>());
-  EXPECT_EQ(body["item"]["x-medkit"]["ros2"]["kind"], "action");
-  EXPECT_EQ(body["item"]["x-medkit"]["ros2"]["action"], "/powertrain/engine/long_calibration");
+  auto result = handlers_->get_operation(typed);
+  ASSERT_TRUE(result.has_value());
+  const auto & detail = *result;
+  EXPECT_EQ(detail.item.id, "long_calibration");
+  EXPECT_TRUE(detail.item.asynchronous_execution);
+  ASSERT_TRUE(detail.item.x_medkit.has_value());
+  ASSERT_TRUE(detail.item.x_medkit->ros2.has_value());
+  EXPECT_EQ(detail.item.x_medkit->ros2->kind, "action");
+  EXPECT_EQ(detail.item.x_medkit->ros2->action, "/powertrain/engine/long_calibration");
 }
 
 TEST_F(OperationHandlersFixtureTest, GetOperationUnknownOperationReturns404) {
-  auto req = make_request_with_match("/api/v1/components/engine/operations/does_not_exist",
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+))");
-  httplib::Response res;
+  auto raw_req = make_request_with_match("/api/v1/components/engine/operations/does_not_exist",
+                                         R"(/api/v1/components/([^/]+)/operations/([^/]+))");
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_get_operation(req, res);
-
-  EXPECT_EQ(res.status, 404);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_OPERATION_NOT_FOUND);
+  auto result = handlers_->get_operation(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_OPERATION_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, CreateExecutionOnServiceReturnsSynchronousResponse) {
-  auto req = make_request_with_match("/api/v1/components/engine/operations/calibrate/executions",
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
-  req.body = R"({"parameters":{}})";
-  httplib::Response res;
+  auto raw_req = make_request_with_match("/api/v1/components/engine/operations/calibrate/executions",
+                                         R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
+  http::TypedRequest typed(raw_req);
+  dto::ExecutionCreateRequest body;
+  body.parameters = json::object();
 
-  handlers_->handle_create_execution(req, res);
-
-  EXPECT_EQ(res.get_header_value("Content-Type"), "application/json");
-  auto body = parse_json(res);
-  EXPECT_TRUE(body.contains("parameters"));
-  EXPECT_TRUE(body["parameters"]["success"].get<bool>());
-  EXPECT_EQ(body["parameters"]["message"], "calibration complete");
+  auto result = handlers_->create_execution(typed, body);
+  ASSERT_TRUE(result.has_value());
+  // Synchronous service -> OperationExecutionResult branch (200).
+  const auto * sync_ptr = std::get_if<dto::OperationExecutionResult>(&result.value().first);
+  ASSERT_NE(sync_ptr, nullptr);
+  ASSERT_TRUE(sync_ptr->content.contains("parameters"));
+  EXPECT_TRUE(sync_ptr->content["parameters"]["success"].get<bool>());
+  EXPECT_EQ(sync_ptr->content["parameters"]["message"], "calibration complete");
 }
 
 TEST_F(OperationHandlersFixtureTest, ListExecutionsReturnsTrackedActionGoal) {
   const auto execution_id = create_action_execution();
+  ASSERT_FALSE(execution_id.empty());
 
-  auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions",
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
-  httplib::Response res;
+  auto raw_req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions",
+                                         R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions)");
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_list_executions(req, res);
-
-  auto body = parse_json(res);
-  ASSERT_TRUE(body.contains("items"));
-  ASSERT_EQ(body["items"].size(), 1);
-  EXPECT_EQ(body["items"][0]["id"], execution_id);
+  auto result = handlers_->list_executions(typed);
+  ASSERT_TRUE(result.has_value());
+  const auto & collection = *result;
+  ASSERT_EQ(collection.items.size(), 1u);
+  EXPECT_EQ(collection.items[0].id, execution_id);
 }
 
 TEST_F(OperationHandlersFixtureTest, GetExecutionContainsStatusFields) {
   const auto execution_id = create_action_execution();
+  ASSERT_FALSE(execution_id.empty());
   gateway_node_->get_operation_manager()->update_goal_feedback(execution_id, json{{"progress", 50}});
 
-  auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
-  httplib::Response res;
+  auto raw_req =
+      make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
+                              R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_get_execution(req, res);
-
-  auto body = parse_json(res);
-  EXPECT_EQ(body["status"], "running");
-  EXPECT_EQ(body["capability"], "execute");
-  EXPECT_EQ(body["parameters"]["progress"], 50);
-  EXPECT_EQ(body["x-medkit"]["goal_id"], execution_id);
-  EXPECT_EQ(body["x-medkit"]["ros2"]["action"], "/powertrain/engine/long_calibration");
+  auto result = handlers_->get_execution(typed);
+  ASSERT_TRUE(result.has_value());
+  const auto & exec = *result;
+  EXPECT_EQ(exec.status, "running");
+  ASSERT_TRUE(exec.capability.has_value());
+  EXPECT_EQ(*exec.capability, "execute");
+  ASSERT_TRUE(exec.parameters.has_value());
+  EXPECT_EQ((*exec.parameters)["progress"], 50);
+  ASSERT_TRUE(exec.x_medkit.has_value());
+  EXPECT_EQ(exec.x_medkit->goal_id, execution_id);
+  ASSERT_TRUE(exec.x_medkit->ros2.has_value());
+  EXPECT_EQ(exec.x_medkit->ros2->action, "/powertrain/engine/long_calibration");
 }
 
 TEST_F(OperationHandlersFixtureTest, CancelExecutionUnknownIdReturns404) {
-  auto req = make_request_with_match(
+  auto raw_req = make_request_with_match(
       "/api/v1/components/engine/operations/long_calibration/executions/0123456789abcdef0123456789abcdef",
       R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
-  httplib::Response res;
+  http::TypedRequest typed(raw_req);
 
-  handlers_->handle_cancel_execution(req, res);
-
-  EXPECT_EQ(res.status, 404);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
+  auto result = handlers_->cancel_execution(typed);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocation) {
   const auto execution_id = create_action_execution(20);
+  ASSERT_FALSE(execution_id.empty());
 
-  auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
-  req.body = R"({"capability":"stop"})";
-  httplib::Response res;
+  auto raw_req =
+      make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
+                              R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
+  http::TypedRequest typed(raw_req);
+  dto::ExecutionUpdateRequest body;
+  body.capability = "stop";
 
-  handlers_->handle_update_execution(req, res);
-
+  auto result = handlers_->update_execution(typed, body);
   auto goal_info = get_tracked_goal_or_fail(execution_id);
-  if (res.status == 202) {
-    EXPECT_EQ(res.get_header_value("Location"),
-              "/api/v1/components/engine/operations/long_calibration/executions/" + execution_id);
-    auto body = parse_json(res);
-    EXPECT_EQ(body["id"], execution_id);
-    EXPECT_EQ(body["status"], "running");
+
+  if (result.has_value()) {
+    const auto & exec = result.value().first;
+    const auto & att = result.value().second;
+    ASSERT_TRUE(att.status_override.has_value());
+    EXPECT_EQ(*att.status_override, 202);
+    bool has_location = false;
+    for (const auto & [k, v] : att.headers) {
+      if (k == "Location") {
+        EXPECT_EQ(v, "/api/v1/components/engine/operations/long_calibration/executions/" + execution_id);
+        has_location = true;
+      }
+    }
+    EXPECT_TRUE(has_location);
+    ASSERT_TRUE(exec.id.has_value());
+    EXPECT_EQ(*exec.id, execution_id);
+    EXPECT_EQ(exec.status, "running");
     EXPECT_EQ(goal_info.status, ActionGoalStatus::CANCELING);
   } else {
-    EXPECT_EQ(res.status, 400);
-    auto body = parse_json(res);
-    EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_VENDOR_ERROR);
+    EXPECT_EQ(result.error().http_status, 400);
+    EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_VENDOR_ERROR);
     EXPECT_TRUE(goal_info.status == ActionGoalStatus::CANCELING || goal_info.status == ActionGoalStatus::CANCELED);
   }
 }
 
-TEST_F(OperationHandlersFixtureTest, UpdateExecutionMissingCapabilityReturns400) {
-  const auto execution_id = create_action_execution();
-
-  auto req = make_request_with_match("/api/v1/components/engine/operations/long_calibration/executions/" + execution_id,
-                                     R"(/api/v1/components/([^/]+)/operations/([^/]+)/executions/([^/]+))");
-  req.body = R"({"parameters":{"order":8}})";
-  httplib::Response res;
-
-  handlers_->handle_update_execution(req, res);
-
-  EXPECT_EQ(res.status, 400);
-  auto body = parse_json(res);
-  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_PARAMETER);
+TEST_F(OperationHandlersFixtureTest, UpdateExecutionMissingCapabilityReturns400AtFrameworkLevel) {
+  // The framework's typed `put<TBody>` overload parses the body via
+  // JsonReader<ExecutionUpdateRequest> before the handler is invoked; a body
+  // missing the required `capability` field never reaches the handler. We
+  // exercise that contract by trying to read the body directly and asserting
+  // the read fails (same wire effect: 400 ERR_INVALID_REQUEST).
+  json bad_body = json{{"parameters", {{"order", 8}}}};
+  auto parsed = dto::JsonReader<dto::ExecutionUpdateRequest>::read(bad_body);
+  EXPECT_FALSE(parsed.has_value());
 }

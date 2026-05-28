@@ -15,18 +15,91 @@
 #include "ros2_medkit_gateway/http/handlers/cyclic_subscription_handlers.hpp"
 
 #include <regex>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
 
+#include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 
 using json = nlohmann::json;
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace {
+
+/// Build a minimal SOVD-shaped ErrorInfo. `params` defaults to an empty object,
+/// matching the legacy `send_error` default; supply non-empty params per call
+/// site to preserve the exact wire shape integration tests assert on.
+ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
+  ErrorInfo err;
+  err.code = code;
+  err.message = std::move(message);
+  err.http_status = status;
+  if (!params.is_null() && !params.empty()) {
+    err.params = std::move(params);
+  }
+  return err;
+}
+
+/// Read the positional entity-id capture group from the typed request. The
+/// legacy handlers used `req.matches[1]` without bounds checking; the typed
+/// surface refuses out-of-range captures with ERR_INVALID_PARAMETER/400. This
+/// path is unreachable in production because cpp-httplib routes only fire when
+/// the regex matches, but the helper keeps the typed flow explicit.
+tl::expected<std::string, ErrorInfo> read_entity_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("1");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Read the positional subscription-id capture group.
+tl::expected<std::string, ErrorInfo> read_subscription_id(const http::TypedRequest & req) {
+  auto raw = req.path_param("2");
+  if (raw) {
+    return *raw;
+  }
+  return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
+}
+
+/// Convert a ValidatorResult's error variant into a typed Result<T> error.
+/// When the validator returned Forwarded, the proxy already wrote the wire
+/// response, so the handler must signal "do not render" via the
+/// framework-internal sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper
+/// detects in `write_typed_error`.
+ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
+  return std::visit(
+      [](auto && alt) -> ErrorInfo {
+        using T = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<T, ErrorInfo>) {
+          return alt;
+        } else {
+          return HandlerContext::forwarded_sentinel_error();
+        }
+      },
+      err);
+}
+
+/// Build a typed CyclicSubscription DTO from CyclicSubscriptionInfo.
+dto::CyclicSubscription subscription_to_dto(const CyclicSubscriptionInfo & info, const std::string & event_source) {
+  dto::CyclicSubscription sub;
+  sub.id = info.id;
+  sub.observed_resource = info.resource_uri;
+  sub.event_source = event_source;
+  sub.protocol = info.protocol;
+  sub.interval = interval_to_string(info.interval);
+  return sub;
+}
+
+}  // namespace
 
 CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
                                                        ResourceSamplerRegistry & sampler_registry,
@@ -39,92 +112,65 @@ CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, Sub
 }
 
 // ---------------------------------------------------------------------------
-// POST — create subscription
+// POST - create subscription
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<std::pair<dto::CyclicSubscription, http::ResponseAttachments>>
+CyclicSubscriptionHandlers::post_subscription(const http::TypedRequest & req,
+                                              dto::CyclicSubscriptionCreateRequest body) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
   }
+  const std::string entity_id = *id_result;
 
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
-
-  // Validate required fields
-  if (!body.contains("resource") || !body["resource"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'resource'",
-                               {{"parameter", "resource"}});
-    return;
-  }
-
-  if (!body.contains("interval") || !body["interval"].is_string()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'interval'",
-                               {{"parameter", "interval"}});
-    return;
-  }
-
-  if (!body.contains("duration") || !body["duration"].is_number_integer()) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Missing or invalid 'duration'",
-                               {{"parameter", "duration"}});
-    return;
-  }
+  const auto & entity = *entity_result;
 
   // Validate protocol (optional, defaults to "sse")
-  std::string protocol = "sse";
-  if (body.contains("protocol")) {
-    protocol = body["protocol"].get<std::string>();
-  }
+  std::string protocol = body.protocol.value_or(std::string{"sse"});
 
   // Check transport is registered
   auto * transport = transport_registry_.get_transport(protocol);
   if (!transport) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL, "Protocol '" + protocol + "' not available",
-                               {{"parameter", "protocol"}, {"value", protocol}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL,
+                                     "Protocol '" + protocol + "' not available",
+                                     json{{"parameter", "protocol"}, {"value", protocol}}));
   }
 
   // Parse interval
   CyclicInterval interval;
   try {
-    interval = parse_interval(body["interval"].get<std::string>());
+    interval = parse_interval(body.interval);
   } catch (const std::invalid_argument &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
-                               {{"parameter", "interval"}, {"value", body["interval"]}});
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                     "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
+                                     json{{"parameter", "interval"}, {"value", body.interval}}));
   }
 
   // Validate duration
-  int duration = body["duration"].get<int>();
+  int duration = body.duration;
   if (duration <= 0) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
-                               {{"parameter", "duration"}, {"value", duration}});
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
+                                     json{{"parameter", "duration"}, {"value", duration}}));
   }
   if (duration > max_duration_sec_) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                               "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
-                               {{"parameter", "duration"}, {"max_value", max_duration_sec_}});
-    return;
+    return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                     "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
+                                     json{{"parameter", "duration"}, {"max_value", max_duration_sec_}}));
   }
 
   // Parse resource URI to extract collection and resource path
-  std::string resource = body["resource"].get<std::string>();
+  const std::string & resource = body.resource;
   auto parsed = parse_resource_uri(resource);
   if (!parsed) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
-                               {{"parameter", "resource"}, {"value", resource}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, "Invalid resource URI: " + parsed.error(),
+                                     json{{"parameter", "resource"}, {"value", resource}}));
   }
 
-  std::string entity_type = extract_entity_type(req);
+  std::string entity_type = extract_entity_type(req.path());
 
   // Server-level resources (e.g. updates) skip entity-mismatch and collection checks
   bool is_server_level = parsed->entity_type.empty();
@@ -132,54 +178,48 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   if (!is_server_level) {
     // Validate resource URI references the same entity as the route
     if (parsed->entity_type != entity_type || parsed->entity_id != entity_id) {
-      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_ENTITY_MISMATCH,
-                                 "Resource URI must reference the same entity as the route",
-                                 {{"parameter", "resource"}, {"value", resource}});
-      return;
+      return tl::unexpected(make_error(400, ERR_X_MEDKIT_ENTITY_MISMATCH,
+                                       "Resource URI must reference the same entity as the route",
+                                       json{{"parameter", "resource"}, {"value", resource}}));
     }
 
     // Validate collection support
     auto known_collection = parse_resource_collection(parsed->collection);
     if (known_collection.has_value()) {
       // Known SOVD collection - check entity supports it
-      if (!entity->supports_collection(*known_collection)) {
-        HandlerContext::send_error(res, 400, ERR_X_MEDKIT_COLLECTION_NOT_SUPPORTED,
-                                   "Collection '" + parsed->collection + "' not supported for " + entity_type,
-                                   {{"collection", parsed->collection}, {"entity_type", entity_type}});
-        return;
+      if (!entity.supports_collection(*known_collection)) {
+        return tl::unexpected(make_error(400, ERR_X_MEDKIT_COLLECTION_NOT_SUPPORTED,
+                                         "Collection '" + parsed->collection + "' not supported for " + entity_type,
+                                         json{{"collection", parsed->collection}, {"entity_type", entity_type}}));
       }
     } else if (parsed->collection.size() < 2 || parsed->collection.substr(0, 2) != "x-") {
       // Not a known collection and not a vendor extension
-      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
-                                 "Unknown collection '" + parsed->collection +
-                                     "'. Use a known SOVD collection or 'x-' vendor extension.",
-                                 {{"collection", parsed->collection}});
-      return;
+      return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
+                                       "Unknown collection '" + parsed->collection +
+                                           "'. Use a known SOVD collection or 'x-' vendor extension.",
+                                       json{{"collection", parsed->collection}}));
     }
 
     // Data collection requires a resource path (topic name)
     if (parsed->collection == "data" && parsed->resource_path.empty()) {
-      HandlerContext::send_error(res, 400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
-                                 "Data collection requires a resource path (e.g. /api/v1/apps/{id}/data/{topic})",
-                                 {{"parameter", "resource"}, {"value", resource}});
-      return;
+      return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI,
+                                       "Data collection requires a resource path (e.g. /api/v1/apps/{id}/data/{topic})",
+                                       json{{"parameter", "resource"}, {"value", resource}}));
     }
   }
 
   // Check sampler is registered
   if (!sampler_registry_.has_sampler(parsed->collection)) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_COLLECTION_NOT_AVAILABLE,
-                               "No data provider for collection '" + parsed->collection + "'",
-                               {{"collection", parsed->collection}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_COLLECTION_NOT_AVAILABLE,
+                                     "No data provider for collection '" + parsed->collection + "'",
+                                     json{{"collection", parsed->collection}}));
   }
 
   // Create subscription
   auto result = sub_mgr_.create(entity_id, entity_type, resource, parsed->collection, parsed->resource_path, protocol,
                                 interval, duration);
   if (!result) {
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, result.error());
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, result.error()));
   }
 
   // Start transport delivery
@@ -187,221 +227,234 @@ void CyclicSubscriptionHandlers::handle_create(const httplib::Request & req, htt
   auto event_source_result = transport->start(*result, *sampler, ctx_.node());
   if (!event_source_result) {
     sub_mgr_.remove(result->id);
-    HandlerContext::send_error(res, 503, ERR_SERVICE_UNAVAILABLE, event_source_result.error());
-    return;
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, event_source_result.error()));
   }
 
-  auto response_json = subscription_to_json(*result, *event_source_result);
-
-  res.status = 201;
-  HandlerContext::send_json(res, response_json);
+  auto sub_dto = subscription_to_dto(*result, *event_source_result);
+  http::ResponseAttachments att;
+  att.with_status(201);
+  return std::make_pair(std::move(sub_dto), std::move(att));
 }
 
 // ---------------------------------------------------------------------------
-// GET — list subscriptions
+// GET - list subscriptions
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_list(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::Collection<dto::CyclicSubscription>>
+CyclicSubscriptionHandlers::get_subscriptions(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
   auto subs = sub_mgr_.list(entity_id);
-  json items = json::array();
+  dto::Collection<dto::CyclicSubscription> response;
   for (const auto & sub : subs) {
-    items.push_back(subscription_to_json(sub, build_event_source(sub)));
+    response.items.push_back(subscription_to_dto(sub, build_event_source(sub)));
   }
 
-  json response;
-  response["items"] = items;
-  HandlerContext::send_json(res, response);
+  return response;
 }
 
 // ---------------------------------------------------------------------------
-// GET — get single subscription
+// GET - get single subscription
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_get(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::CyclicSubscription> CyclicSubscriptionHandlers::get_subscription(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto sub_id = req.matches[2].str();
+  auto sub_id_result = read_subscription_id(req);
+  if (!sub_id_result) {
+    return tl::unexpected(sub_id_result.error());
+  }
+  const std::string sub_id = *sub_id_result;
+
   auto sub = sub_mgr_.get(sub_id);
   if (!sub || sub->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
-  HandlerContext::send_json(res, subscription_to_json(*sub, build_event_source(*sub)));
+  return subscription_to_dto(*sub, build_event_source(*sub));
 }
 
 // ---------------------------------------------------------------------------
-// PUT — update subscription
+// PUT - update subscription
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_update(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<dto::CyclicSubscription>
+CyclicSubscriptionHandlers::put_subscription(const http::TypedRequest & req,
+                                             dto::CyclicSubscriptionUpdateRequest body) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto sub_id = req.matches[2].str();
-
-  // Parse JSON body
-  json body;
-  try {
-    body = json::parse(req.body);
-  } catch (const json::exception &) {
-    HandlerContext::send_error(res, 400, ERR_INVALID_REQUEST, "Invalid JSON request body");
-    return;
+  auto sub_id_result = read_subscription_id(req);
+  if (!sub_id_result) {
+    return tl::unexpected(sub_id_result.error());
   }
+  const std::string sub_id = *sub_id_result;
 
   // Parse optional interval
   std::optional<CyclicInterval> new_interval;
-  if (body.contains("interval") && body["interval"].is_string()) {
+  if (body.interval.has_value()) {
     try {
-      new_interval = parse_interval(body["interval"].get<std::string>());
+      new_interval = parse_interval(*body.interval);
     } catch (const std::invalid_argument &) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
-                                 {{"parameter", "interval"}, {"value", body["interval"]}});
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                       "Invalid interval. Must be 'fast', 'normal', or 'slow'.",
+                                       json{{"parameter", "interval"}, {"value", *body.interval}}));
     }
   }
 
-  // Parse optional duration
+  // Validate optional duration
   std::optional<int> new_duration;
-  if (body.contains("duration") && body["duration"].is_number_integer()) {
-    new_duration = body["duration"].get<int>();
+  if (body.duration.has_value()) {
+    new_duration = *body.duration;
     if (*new_duration <= 0) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
-                                 {{"parameter", "duration"}, {"value", *new_duration}});
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER, "Duration must be a positive integer (seconds).",
+                                       json{{"parameter", "duration"}, {"value", *new_duration}}));
     }
     if (*new_duration > max_duration_sec_) {
-      HandlerContext::send_error(res, 400, ERR_INVALID_PARAMETER,
-                                 "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
-                                 {{"parameter", "duration"}, {"max_value", max_duration_sec_}});
-      return;
+      return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,
+                                       "Duration must not exceed " + std::to_string(max_duration_sec_) + " seconds.",
+                                       json{{"parameter", "duration"}, {"max_value", max_duration_sec_}}));
     }
   }
 
   // Verify subscription exists and belongs to this entity before updating
   auto existing = sub_mgr_.get(sub_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
   auto result = sub_mgr_.update(sub_id, new_interval, new_duration);
   if (!result) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
-  HandlerContext::send_json(res, subscription_to_json(*result, build_event_source(*result)));
+  return subscription_to_dto(*result, build_event_source(*result));
 }
 
 // ---------------------------------------------------------------------------
-// DELETE — remove subscription
+// DELETE - remove subscription
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_delete(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<http::NoContent> CyclicSubscriptionHandlers::del_subscription(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto sub_id = req.matches[2].str();
+  auto sub_id_result = read_subscription_id(req);
+  if (!sub_id_result) {
+    return tl::unexpected(sub_id_result.error());
+  }
+  const std::string sub_id = *sub_id_result;
 
   // Verify subscription exists and belongs to this entity before deleting
   auto existing = sub_mgr_.get(sub_id);
   if (!existing || existing->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
   if (!sub_mgr_.remove(sub_id)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
-  res.status = 204;
+  return http::NoContent{};
 }
 
 // ---------------------------------------------------------------------------
-// GET /events — SSE stream (delegates to transport provider)
+// GET /events - SSE stream (delegates to transport provider)
 // ---------------------------------------------------------------------------
-void CyclicSubscriptionHandlers::handle_events(const httplib::Request & req, httplib::Response & res) {
-  auto entity_id = req.matches[1].str();
-  auto entity = ctx_.validate_entity_for_route(req, res, entity_id);
-  if (!entity) {
-    return;
+http::Result<http::SseStream> CyclicSubscriptionHandlers::sse_subscription_events(const http::TypedRequest & req) {
+  auto id_result = read_entity_id(req);
+  if (!id_result) {
+    return tl::unexpected(id_result.error());
+  }
+  const std::string entity_id = *id_result;
+
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto sub_id = req.matches[2].str();
+  auto sub_id_result = read_subscription_id(req);
+  if (!sub_id_result) {
+    return tl::unexpected(sub_id_result.error());
+  }
+  const std::string sub_id = *sub_id_result;
+
   auto sub = sub_mgr_.get(sub_id);
   if (!sub) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
   if (sub->entity_id != entity_id) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription not found",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
   if (!sub_mgr_.is_active(sub_id)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription expired or inactive",
-                               {{"subscription_id", sub_id}});
-    return;
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription expired or inactive", json{{"subscription_id", sub_id}}));
   }
 
   auto * transport = transport_registry_.get_transport(sub->protocol);
   if (!transport) {
-    HandlerContext::send_error(res, 400, ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL,
-                               "Transport for protocol '" + sub->protocol + "' not available",
-                               {{"protocol", sub->protocol}});
-    return;
+    return tl::unexpected(make_error(400, ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL,
+                                     "Transport for protocol '" + sub->protocol + "' not available",
+                                     json{{"protocol", sub->protocol}}));
   }
 
-  if (!transport->handle_client_connect(sub_id, req, res)) {
-    HandlerContext::send_error(res, 404, ERR_RESOURCE_NOT_FOUND, "Subscription stream not found",
-                               {{"subscription_id", sub_id}});
-  }
+  // The transport returns an SseStream whose next_event closure carries the
+  // sampler + tracker guard; the framework owns the chunked content provider
+  // and the proxy-friendliness headers (Cache-Control: no-cache,
+  // X-Accel-Buffering: no). Non-HTTP transports (MQTT, Zenoh, ...) return a
+  // 501 ErrorInfo via the default implementation.
+  return transport->make_sse_stream(sub_id);
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-json CyclicSubscriptionHandlers::subscription_to_json(const CyclicSubscriptionInfo & info,
-                                                      const std::string & event_source) {
-  json j;
-  j["id"] = info.id;
-  j["observed_resource"] = info.resource_uri;
-  j["event_source"] = event_source;
-  j["protocol"] = info.protocol;
-  j["interval"] = interval_to_string(info.interval);
-  return j;
-}
-
 std::string CyclicSubscriptionHandlers::build_event_source(const CyclicSubscriptionInfo & info) {
   return std::string(API_BASE_PATH) + "/" + info.entity_type + "/" + info.entity_id + "/cyclic-subscriptions/" +
          info.id + "/events";
 }
 
-std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Request & req) {
-  auto type = extract_entity_type_from_path(req.path);
+std::string CyclicSubscriptionHandlers::extract_entity_type(const std::string & path) {
+  auto type = extract_entity_type_from_path(path);
   switch (type) {
     case SovdEntityType::APP:
       return "apps";
@@ -413,7 +466,7 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const httplib::Reque
     case SovdEntityType::AREA:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", req.path.c_str());
+      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", path.c_str());
       return "apps";
   }
 }

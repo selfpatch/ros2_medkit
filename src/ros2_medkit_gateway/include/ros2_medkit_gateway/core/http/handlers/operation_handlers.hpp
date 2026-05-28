@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,13 @@
 
 #pragma once
 
+#include <utility>
+#include <variant>
+
+#include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -30,54 +36,59 @@ namespace handlers {
  * - GET /{entity}/operations/{op-id}/executions/{exec-id} - Get execution status (7.14.7)
  * - PUT /{entity}/operations/{op-id}/executions/{exec-id} - Update execution (7.14.9)
  * - DELETE /{entity}/operations/{op-id}/executions/{exec-id} - Terminate execution (7.14.8)
+ *
+ * PR-403 commit 27: all 7 routes migrate to the typed RouteRegistry API. The
+ * synchronous-vs-asynchronous execution dispatch on `POST executions` uses
+ * `post_alternates<ExecutionCreateRequest, OperationExecutionResult,
+ * ExecutionCreateAsync>` plus a `ResponseAttachments` channel so the framework
+ * picks 200 for services / 202 for actions and applies a `Location` header on
+ * the 202 branch. The `list_executions` endpoint now returns the typed
+ * `Collection<ExecutionId>` (missed migration from earlier PR). The inline
+ * service-error path in the legacy handler is replaced with the framework
+ * error path (typed `ErrorInfo` return).
  */
 class OperationHandlers {
  public:
-  /**
-   * @brief Construct operation handlers with shared context.
-   * @param ctx The shared handler context
-   */
+  /// Construct operation handlers with shared context.
   explicit OperationHandlers(HandlerContext & ctx) : ctx_(ctx) {
   }
 
-  /**
-   * @brief Handle GET /components/{component_id}/operations - list all operations.
-   */
-  void handle_list_operations(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/operations - list operations for an entity. Mixes runtime
+  /// discovery (services + actions) with the per-entity plugin OperationProvider.
+  http::Result<dto::Collection<dto::OperationItem>> list_operations(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /{entity}/operations/{op-id} - get operation details.
-   */
-  void handle_get_operation(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/operations/{op_id} - get operation details.
+  http::Result<dto::OperationDetail> get_operation(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle POST /{entity}/operations/{op-id}/executions - execution start.
-   */
-  void handle_create_execution(const httplib::Request & req, httplib::Response & res);
+  /// POST /{entity}/operations/{op_id}/executions - start an execution.
+  ///
+  /// Returns a `std::variant<OperationExecutionResult, ExecutionCreateAsync>`:
+  /// - `OperationExecutionResult` -> 200 OK (synchronous service / plugin op)
+  /// - `ExecutionCreateAsync`     -> 202 Accepted + Location header
+  ///                                 (asynchronous ROS 2 action)
+  /// The `ResponseAttachments` companion lets the async branch append the
+  /// `Location` header without re-introducing a `httplib::Response &`.
+  http::Result<
+      std::pair<std::variant<dto::OperationExecutionResult, dto::ExecutionCreateAsync>, http::ResponseAttachments>>
+  create_execution(const http::TypedRequest & req, dto::ExecutionCreateRequest body);
 
-  /**
-   * @brief Handle GET /{entity}/operations/{op-id}/executions - list executions.
-   */
-  void handle_list_executions(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/operations/{op_id}/executions - list current executions.
+  http::Result<dto::Collection<dto::ExecutionId>> list_executions(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle GET /{entity}/operations/{op-id}/executions/{exec-id} - execution status.
-   */
-  void handle_get_execution(const httplib::Request & req, httplib::Response & res);
+  /// GET /{entity}/operations/{op_id}/executions/{exec_id} - execution status.
+  http::Result<dto::OperationExecution> get_execution(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle DELETE /{entity}/operations/{op-id}/executions/{exec-id} - cancel execution.
-   */
-  void handle_cancel_execution(const httplib::Request & req, httplib::Response & res);
+  /// DELETE /{entity}/operations/{op_id}/executions/{exec_id} - cancel.
+  http::Result<http::NoContent> cancel_execution(const http::TypedRequest & req);
 
-  /**
-   * @brief Handle PUT /{entity}/operations/{op-id}/executions/{exec-id} - update execution.
-   *
-   * Executes the given capability on the provided operation execution.
-   * Supported capabilities for ROS 2 actions: stop (maps to cancel).
-   * Unsupported: execute (re-execute), freeze, reset (I/O control specific).
-   */
-  void handle_update_execution(const httplib::Request & req, httplib::Response & res);
+  /// PUT /{entity}/operations/{op_id}/executions/{exec_id} - update execution.
+  ///
+  /// Returns `OperationExecution` + attachments so the supported `stop`
+  /// capability can emit 202 + `Location` (the SOVD async-update convention)
+  /// while the success body stays 200 for any future synchronous capability
+  /// that might land.
+  http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>>
+  update_execution(const http::TypedRequest & req, const dto::ExecutionUpdateRequest & body);
 
  private:
   HandlerContext & ctx_;
