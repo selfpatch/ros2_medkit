@@ -18,6 +18,8 @@
 #include <string>
 #include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/dto/data.hpp"
+
 namespace ros2_medkit_gateway {
 
 enum class DataProviderError {
@@ -60,24 +62,45 @@ class DataProvider {
  public:
   virtual ~DataProvider() = default;
 
-  /// List available data resources for an entity
+  /// List available data resources for an entity.
+  ///
+  /// Returns a typed `DataListResult` envelope around the plugin-defined
+  /// response body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is plugin-determined (typically `{"items": [...]}` with per-item fields
+  /// varying across backends - ROS topic metadata, OPC-UA node attributes,
+  /// UDS DID descriptors, ...). The OpenAPI schema is opaque
+  /// (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID (e.g., "openbsw_demo_ecu")
-  /// @return JSON with {"items": [...]} array of data resource descriptors
-  virtual tl::expected<nlohmann::json, DataProviderErrorInfo> list_data(const std::string & entity_id) = 0;
+  virtual tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & entity_id) = 0;
 
-  /// Read a specific data resource
+  /// Read a specific data resource.
+  ///
+  /// Returns a typed `DataValue` envelope around the plugin-defined response
+  /// body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is runtime-dependent (live ROS message, OPC-UA value with metadata, UDS
+  /// DID payload, ...) and the OpenAPI schema is opaque
+  /// (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID
   /// @param resource_name Data resource name (e.g., "hardcoded_data")
-  /// @return JSON response body for the data resource
-  virtual tl::expected<nlohmann::json, DataProviderErrorInfo> read_data(const std::string & entity_id,
+  virtual tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & entity_id,
                                                                         const std::string & resource_name) = 0;
 
-  /// Write a data resource value
+  /// Write a data resource value.
+  ///
+  /// Returns a typed `DataWriteResult` envelope around the plugin-defined
+  /// response body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is plugin-determined (typically `{"status": "ok"}` or similar) and the
+  /// OpenAPI schema is opaque (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID
   /// @param resource_name Data resource name
   /// @param value JSON value to write
-  /// @return JSON response body confirming the write
-  virtual tl::expected<nlohmann::json, DataProviderErrorInfo>
+  virtual tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
   write_data(const std::string & entity_id, const std::string & resource_name, const nlohmann::json & value) = 0;
 };
 

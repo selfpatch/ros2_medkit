@@ -75,14 +75,14 @@ class TestUpdateBackend : public GatewayPlugin, public UpdateProvider {
     return ids;
   }
 
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & id) override {
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
       return tl::make_unexpected(
           UpdateBackendErrorInfo{UpdateBackendError::NotFound, "Update package '" + id + "' not found"});
     }
-    return it->second;
+    return dto::UpdateDetail{it->second};
   }
 
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {

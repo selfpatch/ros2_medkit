@@ -81,7 +81,7 @@ class UpdateManager {
 
   // ---- CRUD (direct delegation to backend) ----
   tl::expected<std::vector<std::string>, UpdateError> list_updates(const UpdateFilter & filter);
-  tl::expected<nlohmann::json, UpdateError> get_update(const std::string & id);
+  tl::expected<dto::UpdateDetail, UpdateError> get_update(const std::string & id);
   tl::expected<void, UpdateError> register_update(const nlohmann::json & metadata);
   tl::expected<void, UpdateError> delete_update(const std::string & id);
 

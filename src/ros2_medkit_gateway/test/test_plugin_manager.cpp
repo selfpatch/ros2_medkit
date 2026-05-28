@@ -47,7 +47,7 @@ class MockPlugin : public GatewayPlugin, public UpdateProvider, public Introspec
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
     return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "mock"});
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
@@ -118,8 +118,8 @@ class MockThrowOnSetContext : public GatewayPlugin, public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json::object();
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json::object()};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};
