@@ -81,7 +81,7 @@ class FakePluginContext : public RosPluginContext {
     return std::nullopt;
   }
 
-  std::vector<PluginEntityInfo> get_child_apps(const std::string &) const override {
+  std::vector<PluginEntityInfo> get_child_apps(const std::string & /*entity_id*/) const override {
     return {};
   }
 
@@ -98,29 +98,32 @@ class FakePluginContext : public RosPluginContext {
     return result;
   }
 
-  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest &, PluginResponse &,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & /*req*/, PluginResponse & /*res*/,
                                                             const std::string & entity_id) const override {
     return get_entity(entity_id);
   }
 
-  void register_capability(SovdEntityType, const std::string &) override {
+  void register_capability(SovdEntityType /*type*/, const std::string & /*capability*/) override {
   }
-  void register_entity_capability(const std::string &, const std::string &) override {
+  void register_entity_capability(const std::string & /*entity_id*/, const std::string & /*capability*/) override {
   }
-  std::vector<std::string> get_type_capabilities(SovdEntityType) const override {
+  std::vector<std::string> get_type_capabilities(SovdEntityType /*type*/) const override {
     return {};
   }
-  std::vector<std::string> get_entity_capabilities(const std::string &) const override {
+  std::vector<std::string> get_entity_capabilities(const std::string & /*entity_id*/) const override {
     return {};
   }
-  LockAccessResult check_lock(const std::string &, const std::string &, const std::string &) const override {
+  LockAccessResult check_lock(const std::string & /*entity_id*/, const std::string & /*collection*/,
+                              const std::string & /*client_id*/) const override {
     return {true, "", ""};
   }
-  tl::expected<LockInfo, LockError> acquire_lock(const std::string &, const std::string &,
-                                                 const std::vector<std::string> &, int) override {
+  tl::expected<LockInfo, LockError> acquire_lock(const std::string & /*entity_id*/, const std::string & /*collection*/,
+                                                 const std::vector<std::string> & /*scopes*/,
+                                                 int /*expiration_s*/) override {
     return tl::make_unexpected(LockError{"not supported", ""});
   }
-  tl::expected<void, LockError> release_lock(const std::string &, const std::string &) override {
+  tl::expected<void, LockError> release_lock(const std::string & /*entity_id*/,
+                                             const std::string & /*lock_id*/) override {
     return tl::make_unexpected(LockError{"not supported", ""});
   }
   IntrospectionInput get_entity_snapshot() const override {
@@ -130,9 +133,9 @@ class FakePluginContext : public RosPluginContext {
     return all_faults;
   }
   void register_sampler(
-      const std::string &,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &)
-      override {
+      const std::string & /*topic*/,
+      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
+      /*sampler*/) override {
   }
   ResourceChangeNotifier * get_resource_change_notifier() override {
     return nullptr;
@@ -195,10 +198,10 @@ nodes:
 TEST_F(OpcuaPluginTest, ListDataReturnsItems) {
   auto result = plugin_.list_data("tank");
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(result->contains("items"));
-  EXPECT_EQ((*result)["items"].size(), 2u);
-  EXPECT_EQ((*result)["items"][0]["id"], "level");
-  EXPECT_EQ((*result)["items"][1]["id"], "pressure");
+  ASSERT_TRUE(result->content.contains("items"));
+  EXPECT_EQ(result->content["items"].size(), 2u);
+  EXPECT_EQ(result->content["items"][0]["id"], "level");
+  EXPECT_EQ(result->content["items"][1]["id"], "pressure");
 }
 
 TEST_F(OpcuaPluginTest, ListDataEntityNotFound) {
@@ -211,10 +214,10 @@ TEST_F(OpcuaPluginTest, ListDataEntityNotFound) {
 TEST_F(OpcuaPluginTest, ReadDataReturnsValue) {
   auto result = plugin_.read_data("tank", "level");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["id"], "level");
-  EXPECT_EQ((*result)["unit"], "mm");
-  EXPECT_EQ((*result)["data_type"], "float");
-  EXPECT_EQ((*result)["writable"], true);
+  EXPECT_EQ(result->content["id"], "level");
+  EXPECT_EQ(result->content["unit"], "mm");
+  EXPECT_EQ(result->content["data_type"], "float");
+  EXPECT_EQ(result->content["writable"], true);
 }
 
 TEST_F(OpcuaPluginTest, ReadDataNotFound) {
@@ -243,10 +246,9 @@ TEST_F(OpcuaPluginTest, WriteDataMissingValue) {
 TEST_F(OpcuaPluginTest, ListOperationsOnlyWritable) {
   auto result = plugin_.list_operations("tank");
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(result->contains("items"));
   // Only 'level' is writable, 'pressure' is read-only
-  EXPECT_EQ((*result)["items"].size(), 1u);
-  EXPECT_EQ((*result)["items"][0]["id"], "set_level");
+  EXPECT_EQ(result->items.size(), 1u);
+  EXPECT_EQ(result->items[0].id, "set_level");
 }
 
 TEST_F(OpcuaPluginTest, ListOperationsEntityNotFound) {
@@ -274,16 +276,16 @@ TEST_F(OpcuaPluginTest, ExecuteOperationReadOnly) {
 TEST_F(OpcuaPluginTest, ListFaultsEmpty) {
   auto result = plugin_.list_faults("tank");
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(result->contains("items"));
-  EXPECT_TRUE((*result)["items"].empty());
+  ASSERT_TRUE(result->content.contains("items"));
+  EXPECT_TRUE(result->content["items"].empty());
 }
 
 TEST_F(OpcuaPluginTest, ListFaultsWithData) {
   ctx_.all_faults = {{"faults", {{{"fault_code", "PLC_LOW_LEVEL"}, {"source_id", "tank"}, {"severity", 2}}}}};
   auto result = plugin_.list_faults("tank");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["items"].size(), 1u);
-  EXPECT_EQ((*result)["items"][0]["code"], "PLC_LOW_LEVEL");
+  EXPECT_EQ(result->content["items"].size(), 1u);
+  EXPECT_EQ(result->content["items"][0]["code"], "PLC_LOW_LEVEL");
 }
 
 TEST_F(OpcuaPluginTest, GetFaultNotFound) {

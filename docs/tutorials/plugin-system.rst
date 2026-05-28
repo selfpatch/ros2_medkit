@@ -98,7 +98,7 @@ Writing a Plugin
      tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
        list_updates(const UpdateFilter& filter) override { /* ... */ }
 
-     tl::expected<nlohmann::json, UpdateBackendErrorInfo>
+     tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo>
        get_update(const std::string& id) override { /* ... */ }
 
      tl::expected<void, UpdateBackendErrorInfo>
@@ -201,7 +201,7 @@ A self-contained plugin implementing UpdateProvider (copy-paste starting point):
        return std::vector<std::string>{};
      }
 
-     tl::expected<nlohmann::json, UpdateBackendErrorInfo>
+     tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo>
      get_update(const std::string& id) override {
        return tl::make_unexpected(
          UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found: " + id});

@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/providers/update_types.hpp"
+#include "ros2_medkit_gateway/dto/updates.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -56,8 +57,13 @@ class UpdateProvider {
   /// List all registered update package IDs, optionally filtered
   virtual tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter & filter) = 0;
 
-  /// Get full metadata for a specific update package as JSON
-  virtual tl::expected<nlohmann::json, UpdateBackendErrorInfo> get_update(const std::string & id) = 0;
+  /// Get full metadata for a specific update package.
+  ///
+  /// Returns a typed envelope around the raw SOVD update metadata object.
+  /// Wire shape is unchanged - `dto::UpdateDetail::content` is serialized
+  /// verbatim by `dto::JsonWriter<UpdateDetail>` so plugins are free to put
+  /// any SOVD-spec or vendor-extension keys in it.
+  virtual tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & id) = 0;
 
   /// Register a new update package from JSON metadata
   virtual tl::expected<void, UpdateBackendErrorInfo> register_update(const nlohmann::json & metadata) = 0;

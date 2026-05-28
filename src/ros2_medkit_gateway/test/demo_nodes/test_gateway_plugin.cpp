@@ -77,36 +77,39 @@ class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public In
   PluginContext * ctx_{nullptr};
 
   // --- UpdateProvider ---
-  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
 
-  tl::expected<nlohmann::json, UpdateBackendErrorInfo> get_update(const std::string & id) override {
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & id) override {
     return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found: " + id});
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> register_update(const nlohmann::json &) override {
+  tl::expected<void, UpdateBackendErrorInfo> register_update(const nlohmann::json & /*metadata*/) override {
     return {};
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string &) override {
+  tl::expected<void, UpdateBackendErrorInfo> delete_update(const std::string & /*id*/) override {
     return {};
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string &, UpdateProgressReporter &) override {
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
     return {};
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string &, UpdateProgressReporter &) override {
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & /*reporter*/) override {
     return {};
   }
 
-  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string &) override {
+  tl::expected<bool, UpdateBackendErrorInfo> supports_automated(const std::string & /*id*/) override {
     return false;
   }
 
   // --- IntrospectionProvider ---
-  IntrospectionResult introspect(const IntrospectionInput &) override {
+  IntrospectionResult introspect(const IntrospectionInput & /*input*/) override {
     return {};
   }
 };

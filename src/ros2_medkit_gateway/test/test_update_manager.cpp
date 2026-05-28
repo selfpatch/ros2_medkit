@@ -25,22 +25,24 @@ using json = nlohmann::json;
 /// Mock backend for unit testing
 class MockUpdateBackend : public UpdateProvider {
  public:
-  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo> list_updates(const UpdateFilter &) override {
+  tl::expected<std::vector<std::string>, UpdateBackendErrorInfo>
+  list_updates(const UpdateFilter & /*filter*/) override {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> ids;
+    ids.reserve(packages_.size());
     for (const auto & [id, _] : packages_) {
       ids.push_back(id);
     }
     return ids;
   }
 
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & id) override {
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & id) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = packages_.find(id);
     if (it == packages_.end()) {
       return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::NotFound, "not found"});
     }
-    return it->second;
+    return dto::UpdateDetail{it->second};
   }
 
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {
@@ -64,14 +66,16 @@ class MockUpdateBackend : public UpdateProvider {
     return {};
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string &, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> prepare(const std::string & /*id*/,
+                                                     UpdateProgressReporter & reporter) override {
     reporter.set_progress(50);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     reporter.set_progress(100);
     return {};
   }
 
-  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string &, UpdateProgressReporter & reporter) override {
+  tl::expected<void, UpdateBackendErrorInfo> execute(const std::string & /*id*/,
+                                                     UpdateProgressReporter & reporter) override {
     reporter.set_progress(100);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return {};
@@ -142,7 +146,11 @@ TEST_F(UpdateManagerTest, GetUpdate) {
 
   auto result = manager_->get_update("test-pkg");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["id"], "test-pkg");
+  EXPECT_EQ(result->content["id"], "test-pkg");
+  // Wire-byte round-trip: JsonWriter<UpdateDetail> must reproduce the bare
+  // metadata object the plugin stored, so vendor extension keys survive the
+  // typed envelope.
+  EXPECT_EQ(dto::JsonWriter<dto::UpdateDetail>::write(*result), pkg);
 }
 
 // @verifies REQ_INTEROP_085
@@ -345,8 +353,8 @@ class MockFailingBackend : public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return tl::make_unexpected(UpdateBackendErrorInfo{UpdateBackendError::Internal, "backend error"});
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json{{"id", "pkg"}};
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json{{"id", "pkg"}}};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & metadata) override {
     auto id = metadata.value("id", std::string{});
@@ -378,8 +386,8 @@ class MockThrowingBackend : public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json{{"id", "pkg"}};
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json{{"id", "pkg"}}};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};
@@ -436,8 +444,8 @@ class MockExecuteFailingBackend : public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json{{"id", "pkg"}};
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json{{"id", "pkg"}}};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};
@@ -466,8 +474,8 @@ class MockExecuteThrowingBackend : public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json{{"id", "pkg"}};
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json{{"id", "pkg"}}};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};
@@ -609,8 +617,8 @@ class MockDeleteFailingBackend : public UpdateProvider {
   list_updates(const UpdateFilter & /*filter*/) override {
     return std::vector<std::string>{};
   }
-  tl::expected<json, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
-    return json{{"id", "pkg"}};
+  tl::expected<dto::UpdateDetail, UpdateBackendErrorInfo> get_update(const std::string & /*id*/) override {
+    return dto::UpdateDetail{json{{"id", "pkg"}}};
   }
   tl::expected<void, UpdateBackendErrorInfo> register_update(const json & /*metadata*/) override {
     return {};

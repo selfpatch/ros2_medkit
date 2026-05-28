@@ -94,6 +94,21 @@ class UpdateProgressReporter {
   std::mutex & mutex_;
 };
 
+/// Serialize UpdateStatus to its SOVD string value.
+inline const char * update_status_to_string(UpdateStatus status) {
+  switch (status) {
+    case UpdateStatus::Pending:
+      return "pending";
+    case UpdateStatus::InProgress:
+      return "inProgress";
+    case UpdateStatus::Completed:
+      return "completed";
+    case UpdateStatus::Failed:
+      return "failed";
+  }
+  return "pending";
+}
+
 /// Serialize UpdatePhase to its `x-medkit.phase` string value.
 inline const char * update_phase_to_string(UpdatePhase phase) {
   switch (phase) {

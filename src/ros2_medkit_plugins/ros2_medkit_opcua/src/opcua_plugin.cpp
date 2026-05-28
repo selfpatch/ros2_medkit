@@ -705,7 +705,7 @@ nlohmann::json OpcuaPlugin::build_data_response(const std::string & entity_id) c
 
 // -- DataProvider interface --
 
-tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::list_data(const std::string & entity_id) {
+tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(const std::string & entity_id) {
   if (!ctx_ || !poller_) {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
   }
@@ -744,10 +744,10 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::list_data(const
     items.push_back(std::move(item));
   }
 
-  return tl::expected<nlohmann::json, DataProviderErrorInfo>{nlohmann::json{{"items", items}}};
+  return dto::DataListResult{nlohmann::json{{"items", std::move(items)}}};
 }
 
-tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::read_data(const std::string & entity_id,
+tl::expected<dto::DataValue, DataProviderErrorInfo> OpcuaPlugin::read_data(const std::string & entity_id,
                                                                            const std::string & resource_name) {
   if (!ctx_ || !poller_) {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
@@ -786,12 +786,12 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::read_data(const
   auto ts = std::chrono::system_clock::to_time_t(snap.timestamp);
   result["timestamp"] = ts;
 
-  return tl::expected<nlohmann::json, DataProviderErrorInfo>{result};
+  return dto::DataValue{std::move(result)};
 }
 
-tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(const std::string & entity_id,
-                                                                            const std::string & resource_name,
-                                                                            const nlohmann::json & value) {
+tl::expected<dto::DataWriteResult, DataProviderErrorInfo> OpcuaPlugin::write_data(const std::string & entity_id,
+                                                                                  const std::string & resource_name,
+                                                                                  const nlohmann::json & value) {
   if (!ctx_ || !poller_) {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
   }
@@ -838,13 +838,14 @@ tl::expected<nlohmann::json, DataProviderErrorInfo> OpcuaPlugin::write_data(cons
         result["value_written"] = v;
       },
       *parsed);
-  return tl::expected<nlohmann::json, DataProviderErrorInfo>{result};
+  return dto::DataWriteResult{std::move(result)};
 }
 
 // -- OperationProvider interface --
 
-tl::expected<nlohmann::json, OperationProviderErrorInfo> OpcuaPlugin::list_operations(const std::string & entity_id) {
-  nlohmann::json items = nlohmann::json::array();
+tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
+OpcuaPlugin::list_operations(const std::string & entity_id) {
+  dto::Collection<dto::OperationItem> collection;
 
   for (const auto & def : node_map_.entity_defs()) {
     if (def.id != entity_id) {
@@ -852,12 +853,12 @@ tl::expected<nlohmann::json, OperationProviderErrorInfo> OpcuaPlugin::list_opera
     }
     for (const auto & writable_name : def.writable_names) {
       auto * entry = node_map_.find_by_data_name(entity_id, writable_name);
-      nlohmann::json item;
-      item["id"] = "set_" + writable_name;
-      item["name"] = entry ? ("Set " + entry->display_name) : ("Set " + writable_name);
-      item["proximity_proof_required"] = false;
-      item["asynchronous_execution"] = false;
-      items.push_back(std::move(item));
+      dto::OperationItem item;
+      item.id = "set_" + writable_name;
+      item.name = entry ? ("Set " + entry->display_name) : ("Set " + writable_name);
+      item.proximity_proof_required = false;
+      item.asynchronous_execution = false;
+      collection.items.push_back(std::move(item));
     }
 
     // Issue #386: emit acknowledge_fault / confirm_fault when the entity
@@ -869,29 +870,29 @@ tl::expected<nlohmann::json, OperationProviderErrorInfo> OpcuaPlugin::list_opera
                                           return cfg.entity_id == entity_id;
                                         });
     if (has_event_alarms) {
-      nlohmann::json ack;
-      ack["id"] = "acknowledge_fault";
-      ack["name"] = "Acknowledge an alarm";
-      ack["proximity_proof_required"] = false;
-      ack["asynchronous_execution"] = false;
-      items.push_back(std::move(ack));
+      dto::OperationItem ack;
+      ack.id = "acknowledge_fault";
+      ack.name = "Acknowledge an alarm";
+      ack.proximity_proof_required = false;
+      ack.asynchronous_execution = false;
+      collection.items.push_back(std::move(ack));
 
-      nlohmann::json confirm;
-      confirm["id"] = "confirm_fault";
-      confirm["name"] = "Confirm an alarm condition is addressed";
-      confirm["proximity_proof_required"] = false;
-      confirm["asynchronous_execution"] = false;
-      items.push_back(std::move(confirm));
+      dto::OperationItem confirm;
+      confirm.id = "confirm_fault";
+      confirm.name = "Confirm an alarm condition is addressed";
+      confirm.proximity_proof_required = false;
+      confirm.asynchronous_execution = false;
+      collection.items.push_back(std::move(confirm));
     }
 
-    return tl::expected<nlohmann::json, OperationProviderErrorInfo>{nlohmann::json{{"items", items}}};
+    return collection;
   }
 
   return tl::make_unexpected(
       OperationProviderErrorInfo{OperationProviderError::EntityNotFound, "Entity not found: " + entity_id, 404});
 }
 
-tl::expected<nlohmann::json, OperationProviderErrorInfo>
+tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
 OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string & operation_name,
                                const nlohmann::json & parameters) {
   if (!ctx_ || !poller_) {
@@ -987,7 +988,7 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     out["fault_code"] = fault_code;
     out["entity_id"] = entity_id;
     out["condition_id"] = runtime->condition_id.toString();
-    return tl::expected<nlohmann::json, OperationProviderErrorInfo>{out};
+    return dto::OperationExecutionResult{std::move(out)};
   }
 
   std::string data_name;
@@ -1041,19 +1042,19 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
         result["value_written"] = v;
       },
       *parsed);
-  return tl::expected<nlohmann::json, OperationProviderErrorInfo>{result};
+  return dto::OperationExecutionResult{std::move(result)};
 }
 
 // -- FaultProvider interface --
 
-tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::list_faults(const std::string & entity_id) {
+tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_faults(const std::string & entity_id) {
   if (!ctx_) {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
   auto faults = ctx_->list_entity_faults(entity_id);
   if (faults.is_null() || faults.empty()) {
-    return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", nlohmann::json::array()}}};
+    return dto::FaultListResult{nlohmann::json{{"items", nlohmann::json::array()}}};
   }
 
   if (faults.contains("faults") && faults["faults"].is_array()) {
@@ -1067,14 +1068,14 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::list_faults(co
       item["source_id"] = f.value("source_id", "");
       items.push_back(std::move(item));
     }
-    return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", items}}};
+    return dto::FaultListResult{nlohmann::json{{"items", items}}};
   }
 
-  return tl::expected<nlohmann::json, FaultProviderErrorInfo>{nlohmann::json{{"items", nlohmann::json::array()}}};
+  return dto::FaultListResult{nlohmann::json{{"items", nlohmann::json::array()}}};
 }
 
-tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::get_fault(const std::string & entity_id,
-                                                                            const std::string & fault_code) {
+tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fault(const std::string & entity_id,
+                                                                                    const std::string & fault_code) {
   if (!ctx_) {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
@@ -1083,7 +1084,7 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::get_fault(cons
   if (faults.contains("faults") && faults["faults"].is_array()) {
     for (const auto & f : faults["faults"]) {
       if (f.value("fault_code", "") == fault_code) {
-        return tl::expected<nlohmann::json, FaultProviderErrorInfo>{f};
+        return dto::FaultDetailResult{f};
       }
     }
   }
@@ -1092,14 +1093,14 @@ tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::get_fault(cons
       FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "Fault not found: " + fault_code, 404});
 }
 
-tl::expected<nlohmann::json, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,
-                                                                              const std::string & fault_code) {
+tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,
+                                                                                     const std::string & fault_code) {
   if (!ctx_ || !fault_clients_) {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
   send_clear_fault(fault_code);
-  return tl::expected<nlohmann::json, FaultProviderErrorInfo>{
+  return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }
 

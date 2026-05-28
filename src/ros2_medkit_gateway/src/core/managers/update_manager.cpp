@@ -70,7 +70,7 @@ tl::expected<std::vector<std::string>, UpdateError> UpdateManager::list_updates(
   return *result;
 }
 
-tl::expected<nlohmann::json, UpdateError> UpdateManager::get_update(const std::string & id) {
+tl::expected<dto::UpdateDetail, UpdateError> UpdateManager::get_update(const std::string & id) {
   if (!backend_) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NoBackend, "No update backend loaded"});
   }
@@ -78,7 +78,7 @@ tl::expected<nlohmann::json, UpdateError> UpdateManager::get_update(const std::s
   if (!result) {
     return tl::make_unexpected(UpdateError{UpdateErrorCode::NotFound, result.error().message});
   }
-  return *result;
+  return std::move(*result);
 }
 
 tl::expected<void, UpdateError> UpdateManager::register_update(const nlohmann::json & metadata) {

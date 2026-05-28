@@ -18,6 +18,9 @@
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/dto/data.hpp"
+#include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/dto/operations.hpp"
 
 using namespace ros2_medkit_gateway;
 // json alias already available via ros2_medkit_gateway namespace headers
@@ -29,30 +32,40 @@ class MockDataOpPlugin : public GatewayPlugin, public DataProvider, public Opera
   std::string name() const override {
     return name_;
   }
-  void configure(const json &) override {
+  void configure(const json & /*config*/) override {
   }
   void shutdown() override {
   }
 
   // DataProvider
-  tl::expected<json, DataProviderErrorInfo> list_data(const std::string & entity_id) override {
-    return json{{"items", json::array({{{"id", "test_data"}, {"entity", entity_id}}})}};
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & entity_id) override {
+    return dto::DataListResult{json{{"items", json::array({{{"id", "test_data"}, {"entity", entity_id}}})}}};
   }
-  tl::expected<json, DataProviderErrorInfo> read_data(const std::string &, const std::string & resource) override {
-    return json{{"value", resource}};
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & resource) override {
+    return dto::DataValue{json{{"value", resource}}};
   }
-  tl::expected<json, DataProviderErrorInfo> write_data(const std::string &, const std::string &,
-                                                       const json &) override {
-    return json{{"status", "ok"}};
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
+    return dto::DataWriteResult{json{{"status", "ok"}}};
   }
 
   // OperationProvider
-  tl::expected<json, OperationProviderErrorInfo> list_operations(const std::string & entity_id) override {
-    return json{{"items", json::array({{{"id", "test_op"}, {"entity", entity_id}}})}};
+  tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
+  list_operations(const std::string & entity_id) override {
+    dto::Collection<dto::OperationItem> coll;
+    dto::OperationItem item;
+    item.id = "test_op";
+    item.name = "test_op";
+    dto::XMedkitOperationItem xm;
+    xm.entity_id = entity_id;
+    item.x_medkit = xm;
+    coll.items.push_back(std::move(item));
+    return coll;
   }
-  tl::expected<json, OperationProviderErrorInfo> execute_operation(const std::string &, const std::string & op,
-                                                                   const json &) override {
-    return json{{"executed", op}};
+  tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
+  execute_operation(const std::string & /*entity_id*/, const std::string & op, const json & /*params*/) override {
+    return dto::OperationExecutionResult{json{{"executed", op}}};
   }
 
   std::string name_ = "test_plugin";
@@ -65,7 +78,7 @@ class MockBarePlugin : public GatewayPlugin {
   std::string name() const override {
     return "bare_plugin";
   }
-  void configure(const json &) override {
+  void configure(const json & /*config*/) override {
   }
   void shutdown() override {
   }
@@ -128,7 +141,7 @@ TEST(PluginEntityRouting, DataProviderResolvedForOwnedEntity) {
   // Verify it actually works
   auto result = dp->list_data("my_ecu");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["items"][0]["entity"], "my_ecu");
+  EXPECT_EQ(result->content["items"][0]["entity"], "my_ecu");
 }
 
 TEST(PluginEntityRouting, OperationProviderResolvedForOwnedEntity) {
@@ -146,7 +159,7 @@ TEST(PluginEntityRouting, OperationProviderResolvedForOwnedEntity) {
 
   auto result = op->execute_operation("my_ecu", "reset", json::object());
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["executed"], "reset");
+  EXPECT_EQ(result->content["executed"], "reset");
 }
 
 TEST(PluginEntityRouting, BarePluginReturnsNullProviders) {
@@ -186,19 +199,21 @@ class MockFaultPlugin : public GatewayPlugin, public FaultProvider {
   std::string name() const override {
     return "fault_plugin";
   }
-  void configure(const json &) override {
+  void configure(const json & /*config*/) override {
   }
   void shutdown() override {
   }
 
-  tl::expected<json, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override {
-    return json{{"items", json::array({{{"code", "DTC_001"}, {"entity", entity_id}}})}};
+  tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override {
+    return dto::FaultListResult{json{{"items", json::array({{{"code", "DTC_001"}, {"entity", entity_id}}})}}};
   }
-  tl::expected<json, FaultProviderErrorInfo> get_fault(const std::string &, const std::string & code) override {
-    return json{{"code", code}, {"status", "pending"}};
+  tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & /*entity_id*/,
+                                                                         const std::string & code) override {
+    return dto::FaultDetailResult{json{{"code", code}, {"status", "pending"}}};
   }
-  tl::expected<json, FaultProviderErrorInfo> clear_fault(const std::string &, const std::string & code) override {
-    return json{{"code", code}, {"cleared", true}};
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
+                                                                          const std::string & code) override {
+    return dto::FaultClearResult{json{{"code", code}, {"cleared", true}}};
   }
 };
 
@@ -217,7 +232,7 @@ TEST(PluginEntityRouting, FaultProviderResolvedForOwnedEntity) {
 
   auto result = fp->list_faults("my_ecu");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["items"][0]["code"], "DTC_001");
+  EXPECT_EQ(result->content["items"][0]["code"], "DTC_001");
 }
 
 TEST(PluginEntityRouting, BarePluginReturnsNullFaultProvider) {
@@ -248,29 +263,32 @@ class MockErrorPlugin : public GatewayPlugin, public DataProvider, public FaultP
   std::string name() const override {
     return "error_plugin";
   }
-  void configure(const json &) override {
+  void configure(const json & /*config*/) override {
   }
   void shutdown() override {
   }
 
-  tl::expected<json, DataProviderErrorInfo> list_data(const std::string &) override {
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & /*entity_id*/) override {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::TransportError, "backend unavailable", 503});
   }
-  tl::expected<json, DataProviderErrorInfo> read_data(const std::string &, const std::string &) override {
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & /*resource*/) override {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ResourceNotFound, "no such resource", 404});
   }
-  tl::expected<json, DataProviderErrorInfo> write_data(const std::string &, const std::string &,
-                                                       const json &) override {
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, "read-only entity", 403});
   }
 
-  tl::expected<json, FaultProviderErrorInfo> list_faults(const std::string &) override {
+  tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & /*entity_id*/) override {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::TransportError, "not reachable", 503});
   }
-  tl::expected<json, FaultProviderErrorInfo> get_fault(const std::string &, const std::string &) override {
+  tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & /*entity_id*/,
+                                                                         const std::string & /*code*/) override {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "unknown fault", 404});
   }
-  tl::expected<json, FaultProviderErrorInfo> clear_fault(const std::string &, const std::string &) override {
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
+                                                                          const std::string & /*code*/) override {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "cannot clear", 409});
   }
 };
@@ -348,16 +366,17 @@ class MockErrorOpPlugin : public GatewayPlugin, public OperationProvider {
   std::string name() const override {
     return "error_op_plugin";
   }
-  void configure(const json &) override {
+  void configure(const json & /*config*/) override {
   }
   void shutdown() override {
   }
 
-  tl::expected<json, OperationProviderErrorInfo> list_operations(const std::string &) override {
+  tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
+  list_operations(const std::string & /*entity_id*/) override {
     return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::TransportError, "unreachable", 503});
   }
-  tl::expected<json, OperationProviderErrorInfo> execute_operation(const std::string &, const std::string &,
-                                                                   const json &) override {
+  tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
+  execute_operation(const std::string & /*entity_id*/, const std::string & /*op*/, const json & /*params*/) override {
     return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::Rejected, "rejected", 409});
   }
 };
@@ -397,8 +416,10 @@ TEST(PluginEntityRouting, GetOperationDefaultFindsMatch) {
 
   auto result = op->get_operation("my_ecu", "test_op");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ((*result)["id"], "test_op");
-  EXPECT_EQ((*result)["entity"], "my_ecu");
+  EXPECT_EQ(result->id, "test_op");
+  ASSERT_TRUE(result->x_medkit.has_value());
+  ASSERT_TRUE(result->x_medkit->entity_id.has_value());
+  EXPECT_EQ(*result->x_medkit->entity_id, "my_ecu");
 }
 
 TEST(PluginEntityRouting, GetOperationDefaultReturnsNotFound) {

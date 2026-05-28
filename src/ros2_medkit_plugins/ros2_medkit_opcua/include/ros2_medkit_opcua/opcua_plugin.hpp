@@ -24,6 +24,7 @@
 #include <ros2_medkit_gateway/core/providers/fault_provider.hpp>
 #include <ros2_medkit_gateway/core/providers/introspection_provider.hpp>
 #include <ros2_medkit_gateway/core/providers/operation_provider.hpp>
+#include <ros2_medkit_gateway/dto/faults.hpp>
 #include <ros2_medkit_gateway/plugins/ros_plugin_context.hpp>
 
 #include <atomic>
@@ -83,24 +84,25 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   ros2_medkit_gateway::IntrospectionResult introspect(const ros2_medkit_gateway::IntrospectionInput & input) override;
 
   // -- DataProvider interface --
-  tl::expected<nlohmann::json, DataProviderErrorInfo> list_data(const std::string & entity_id) override;
-  tl::expected<nlohmann::json, DataProviderErrorInfo> read_data(const std::string & entity_id,
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & entity_id) override;
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & entity_id,
                                                                 const std::string & resource_name) override;
-  tl::expected<nlohmann::json, DataProviderErrorInfo>
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
   write_data(const std::string & entity_id, const std::string & resource_name, const nlohmann::json & value) override;
 
   // -- OperationProvider interface --
-  tl::expected<nlohmann::json, OperationProviderErrorInfo> list_operations(const std::string & entity_id) override;
-  tl::expected<nlohmann::json, OperationProviderErrorInfo>
+  tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
+  list_operations(const std::string & entity_id) override;
+  tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
   execute_operation(const std::string & entity_id, const std::string & operation_name,
                     const nlohmann::json & parameters) override;
 
   // -- FaultProvider interface --
-  tl::expected<nlohmann::json, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override;
-  tl::expected<nlohmann::json, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
-                                                                 const std::string & fault_code) override;
-  tl::expected<nlohmann::json, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
-                                                                   const std::string & fault_code) override;
+  tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override;
+  tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
+                                                                         const std::string & fault_code) override;
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
+                                                                          const std::string & fault_code) override;
 
  private:
   // Route handlers

@@ -14,9 +14,10 @@
 
 #pragma once
 
-#include <nlohmann/json.hpp>
 #include <string>
 #include <tl/expected.hpp>
+
+#include "ros2_medkit_gateway/dto/faults.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -48,24 +49,46 @@ class FaultProvider {
  public:
   virtual ~FaultProvider() = default;
 
-  /// List faults for an entity
+  /// List faults for an entity.
+  ///
+  /// Returns a typed `FaultListResult` envelope around the plugin-defined
+  /// response body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is plugin-determined (typically `{"items": [...]}` with per-item fields
+  /// varying across backends - UDS DTC records, OPC-UA alarm metadata, vendor
+  /// extensions, ...). The OpenAPI schema is opaque
+  /// (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID
-  /// @return JSON with {"items": [...]} array of fault descriptors
-  virtual tl::expected<nlohmann::json, FaultProviderErrorInfo> list_faults(const std::string & entity_id) = 0;
+  virtual tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) = 0;
 
-  /// Get a specific fault with environment data
+  /// Get a specific fault with environment data.
+  ///
+  /// Returns a typed `FaultDetailResult` envelope around the plugin-defined
+  /// response body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is runtime-dependent (UDS environment records, OPC-UA condition state,
+  /// vendor extended status) and the OpenAPI schema is opaque
+  /// (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID
   /// @param fault_code Fault code (e.g., DTC identifier)
-  /// @return JSON response with fault detail + environment data
-  virtual tl::expected<nlohmann::json, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
-                                                                         const std::string & fault_code) = 0;
+  virtual tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
+                                                                                 const std::string & fault_code) = 0;
 
-  /// Clear a fault
+  /// Clear a fault.
+  ///
+  /// Returns a typed `FaultClearResult` envelope around the plugin-defined
+  /// response body. JsonWriter emits `content` verbatim, so the wire bytes are
+  /// byte-identical to the pre-typed `nlohmann::json` ABI. The payload shape
+  /// is plugin-determined (typically `{"code": ..., "cleared": true}` or
+  /// `{"status": "ok"}`) and the OpenAPI schema is opaque
+  /// (`x-medkit-opaque:true`).
+  ///
   /// @param entity_id SOVD entity ID
   /// @param fault_code Fault code to clear
-  /// @return JSON response confirming the clear
-  virtual tl::expected<nlohmann::json, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
-                                                                           const std::string & fault_code) = 0;
+  virtual tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
+                                                                                  const std::string & fault_code) = 0;
 };
 
 }  // namespace ros2_medkit_gateway
