@@ -119,45 +119,10 @@ TEST(PluginResponseTest, SendErrorClampsNegativeStatus) {
   EXPECT_EQ(res.status, 400);
 }
 
-// =============================================================================
-// send_plugin_error tests (HandlerContext static method)
-// =============================================================================
-
-TEST(SendPluginErrorTest, ClampsLowStatus) {
-  httplib::Response res;
-  handlers::HandlerContext::send_plugin_error(res, 200, "test error");
-  EXPECT_EQ(res.status, 400);
-}
-
-TEST(SendPluginErrorTest, ClampsHighStatus) {
-  httplib::Response res;
-  handlers::HandlerContext::send_plugin_error(res, 999, "test error");
-  EXPECT_EQ(res.status, 599);
-}
-
-TEST(SendPluginErrorTest, PassesThroughValidStatus) {
-  httplib::Response res;
-  handlers::HandlerContext::send_plugin_error(res, 503, "service unavailable");
-  EXPECT_EQ(res.status, 503);
-  auto body = nlohmann::json::parse(res.body);
-  EXPECT_EQ(body["message"], "service unavailable");
-  EXPECT_EQ(body["error_code"], "vendor-error");
-  EXPECT_EQ(body["vendor_code"], "x-medkit-plugin-error");
-}
-
-TEST(SendPluginErrorTest, TruncatesLongMessage) {
-  httplib::Response res;
-  std::string long_msg(600, 'x');
-  handlers::HandlerContext::send_plugin_error(res, 500, long_msg);
-  auto body = nlohmann::json::parse(res.body);
-  std::string msg = body["message"];
-  EXPECT_LE(msg.size(), 516u);  // 512 + "..."
-  EXPECT_TRUE(msg.find("...") != std::string::npos);
-}
-
-TEST(SendPluginErrorTest, IncludesExtraParams) {
-  httplib::Response res;
-  handlers::HandlerContext::send_plugin_error(res, 500, "fail", {{"entity_id", "ecu1"}});
-  auto body = nlohmann::json::parse(res.body);
-  EXPECT_EQ(body["parameters"]["entity_id"], "ecu1");
-}
+// The static HandlerContext::send_plugin_error helper was removed in
+// commit 30 alongside the rest of the legacy send_* wrappers. It had no
+// production callers - plugin code emits errors via PluginResponse, whose
+// SendError* tests above cover status clamping. The "long-message
+// truncation" leg of the original wrapper is no longer part of the public
+// surface; plugins that need a length budget should clamp before calling
+// PluginResponse::send_error.

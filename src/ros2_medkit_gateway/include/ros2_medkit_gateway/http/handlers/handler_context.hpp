@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 #include <iomanip>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <set>
 #include <sstream>
@@ -35,7 +34,9 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -98,23 +99,6 @@ struct EntityInfo {
     return EntityCapabilities::for_type(sovd_type()).supports_collection(col);
   }
 };
-
-/**
- * @brief Outcome when validate_entity_for_route() rejects the request
- *
- * Disambiguates the two reasons a validation can fail:
- * - kErrorSent: an error response (400/404) was written to `res`
- * - kForwarded: the request was proxied to a peer gateway (aggregation)
- *
- * In both cases the handler must `return` immediately - the HTTP response
- * is already committed. The distinction exists so that callers who need to
- * (e.g., logging, metrics) can tell the two apart.
- */
-enum class ValidationOutcome { kErrorSent, kForwarded };
-
-/// Result type for validate_entity_for_route(): EntityInfo on success,
-/// ValidationOutcome on failure (response already sent in both cases).
-using ValidateResult = tl::expected<EntityInfo, ValidationOutcome>;
 
 // Forward declarations
 class GatewayNode;
@@ -212,57 +196,94 @@ class HandlerContext {
                              SovdEntityType expected_type = SovdEntityType::UNKNOWN) const;
 
   /**
-   * @brief Validate that entity supports a resource collection
+   * @brief Validate that entity supports a resource collection (typed variant).
    *
-   * Checks EntityCapabilities based on SOVD spec (Table 8).
-   * Returns error if the entity type doesn't support the collection.
+   * Returns a populated ErrorInfo (HTTP 400, ERR_COLLECTION_NOT_SUPPORTED) when
+   * the entity type does not support the collection. The typed router serializes
+   * the error onto the wire; this method never touches an httplib::Response.
    *
    * @param entity Entity information (from get_entity_info)
    * @param collection Resource collection to validate
-   * @return std::nullopt if valid, error message if invalid
+   * @return Empty success on support, ErrorInfo on rejection.
    */
-  static std::optional<std::string> validate_collection_access(const EntityInfo & entity,
-                                                               ResourceCollection collection);
+  static tl::expected<void, ErrorInfo> validate_collection_access_typed(const EntityInfo & entity,
+                                                                        ResourceCollection collection);
 
   /**
    * @brief Validate lock access for a mutating operation.
    *
    * Two-phase check:
-   * 1. If locking disabled (no LockManager), allows access
-   * 2. Extracts X-Client-Id header, checks LockManager::check_access()
-   * 3. On denial: sends HTTP error response (409 lock-broken or invalid-request)
+   * 1. If locking disabled (no LockManager), allows access.
+   * 2. Extracts X-Client-Id header, checks LockManager::check_access().
    *
-   * @param req HTTP request (for X-Client-Id header)
-   * @param res HTTP response (error sent on denial)
-   * @param entity Entity being accessed
-   * @param collection Resource collection being mutated (e.g. "configurations")
-   * @return std::nullopt if allowed, error message string if denied (error already sent)
+   * On denial, returns a populated ErrorInfo (HTTP 409 with either
+   * ERR_LOCK_BROKEN or ERR_INVALID_REQUEST). The method never touches an
+   * httplib::Response; the typed router serializes the ErrorInfo onto the
+   * wire. Locking is always local, so there is no Forwarded variant.
+   *
+   * @param req Typed HTTP request (for X-Client-Id header).
+   * @param entity Entity being accessed.
+   * @param collection Resource collection being mutated (e.g. "configurations").
+   * @return Empty success on allow, ErrorInfo on denial.
    */
-  std::optional<std::string> validate_lock_access(const httplib::Request & req, httplib::Response & res,
-                                                  const EntityInfo & entity, const std::string & collection);
+  tl::expected<void, ErrorInfo> validate_lock_access(const http::TypedRequest & req, const EntityInfo & entity,
+                                                     const std::string & collection);
 
   /**
-   * @brief Validate entity exists and matches expected route type
+   * @brief Validate entity exists and matches expected route type (typed variant).
    *
    * Unified validation helper that:
-   * 1. Validates entity ID format
-   * 2. Looks up entity in the expected collection (based on route path)
-   * 3. For remote entities (aggregation), forwards the request to the peer gateway
-   * 4. Sends appropriate error responses on failure:
-   *    - 400 with "invalid-parameter" if ID format is invalid
-   *    - 400 with "invalid-parameter" if entity exists but wrong type for route
-   *    - 404 with "entity-not-found" if entity doesn't exist
+   * 1. Validates the entity ID format.
+   * 2. Looks up the entity in the expected collection (based on route path).
+   * 3. For remote entities (aggregation), forwards the request to the peer
+   *    gateway, writes the proxied response to the underlying httplib::Response,
+   *    and returns Forwarded so the caller knows the wire is committed.
+   * 4. On local failure, returns a populated ErrorInfo without touching the
+   *    response. The typed router serializes the error.
    *
-   * @param req HTTP request (used to extract expected type from path)
-   * @param res HTTP response (error responses sent here)
-   * @param entity_id Entity ID to validate
-   * @return EntityInfo on success. On failure, returns ValidationOutcome indicating
-   *         whether an error was sent (kErrorSent) or the request was forwarded
-   *         to a peer (kForwarded). In both failure cases the response is already
-   *         committed and the handler must return immediately.
+   * The success branch carries the resolved EntityInfo. The error branch is a
+   * variant of:
+   *   - ErrorInfo  - local validation failure (400 invalid-parameter, 404
+   *                  entity-not-found). Caller serializes via write_generic_error.
+   *   - Forwarded  - request was proxied to a peer; the response is already
+   *                  written and the caller must return immediately without
+   *                  touching the response further.
+   *
+   * The Forwarded path is the one place the validator still mutates the
+   * underlying httplib::Response. Aggregation could not be modeled cleanly any
+   * other way without either (a) returning the proxied bytes as a buffered
+   * payload (loses streaming and headers) or (b) exposing the response object
+   * to the caller (defeats the typed surface). Keeping the proxy write inside
+   * the validator preserves the historical aggregation behavior bit-for-bit.
+   *
+   * @param req Typed HTTP request (used to extract expected type from path and
+   *            to drive the forward proxy).
+   * @param entity_id Entity ID to validate.
+   * @return EntityInfo on local success, or an error variant indicating local
+   *         failure (ErrorInfo) vs. peer forwarding completed (Forwarded).
    */
-  ValidateResult validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
-                                           const std::string & entity_id) const;
+  http::ValidatorResult<EntityInfo> validate_entity_for_route(const http::TypedRequest & req,
+                                                              const std::string & entity_id) const;
+
+  /**
+   * @brief Build the framework-internal sentinel error that typed handlers
+   *        return after the validator's Forwarded path already committed the
+   *        proxied wire response.
+   *
+   * Typed handlers use this helper so the typed `Result<T>` shape can
+   * propagate the validator's `Forwarded` variant without re-rendering the
+   * body. The wrapper in RouteRegistry detects the sentinel via its error
+   * code (ERR_X_INTERNAL_FORWARDED) and skips error rendering.
+   *
+   * @return ErrorInfo with the sentinel code and `http_status == 0`.
+   */
+  static ErrorInfo forwarded_sentinel_error() {
+    ErrorInfo info;
+    info.code = ERR_X_INTERNAL_FORWARDED;
+    info.message = "internal: response already forwarded to peer";
+    info.http_status = 0;
+    return info;
+  }
 
   /**
    * @brief Set CORS headers on response if origin is allowed
@@ -277,41 +298,6 @@ class HandlerContext {
    * @return true if allowed
    */
   bool is_origin_allowed(const std::string & origin) const;
-
-  /**
-   * @brief Send JSON error response following SOVD GenericError schema
-   *
-   * Creates a response with the following structure:
-   * {
-   *   "error_code": "entity-not-found",
-   *   "message": "Entity not found",
-   *   "parameters": { ... }  // optional
-   * }
-   *
-   * For vendor-specific errors (x-medkit-*), the response includes:
-   * {
-   *   "error_code": "vendor-error",
-   *   "vendor_code": "x-medkit-ros2-service-unavailable",
-   *   "message": "..."
-   * }
-   *
-   * @param res HTTP response object
-   * @param status HTTP status code
-   * @param error_code SOVD error code (use constants from error_codes.hpp)
-   * @param message Human-readable error message
-   * @param parameters Optional additional parameters for context
-   */
-  static void send_error(httplib::Response & res, int status, const std::string & error_code,
-                         const std::string & message, const nlohmann::json & parameters = {});
-
-  /// Sanitize and send a plugin provider error (clamp status 400-599, truncate message 512 chars)
-  static void send_plugin_error(httplib::Response & res, int http_status, const std::string & message,
-                                const nlohmann::json & extra_params = {});
-
-  /**
-   * @brief Send JSON success response
-   */
-  static void send_json(httplib::Response & res, const nlohmann::json & data);
 
   /**
    * @brief Get logger for handlers

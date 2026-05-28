@@ -15,11 +15,33 @@
 #include "route_registry.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
+
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
+#include "ros2_medkit_gateway/http/detail/primitives.hpp"
 
 namespace ros2_medkit_gateway {
+
+// Definition of the framework-internal thread-local forwarding sink declared
+// in `forward_response_scope.hpp`. The typed router's `wrap_body_less`
+// installs a ForwardResponseScope around every typed handler invocation so
+// HandlerContext::validate_entity_for_route (typed overload) can write the
+// proxied response body to the underlying cpp-httplib response without
+// handlers ever touching it. Defined here in the core library so both
+// gateway_core (where the typed wrappers are instantiated) and gateway_ros2
+// (where HandlerContext lives) resolve the same storage. One definition per
+// program is required by ODR even though the storage is thread-local.
+namespace http {
+namespace detail {
+thread_local httplib::Response * tl_forward_response = nullptr;
+}  // namespace detail
+}  // namespace http
+
 namespace openapi {
 
 // -----------------------------------------------------------------------------
@@ -106,6 +128,14 @@ RouteEntry & RouteEntry::hidden() {
   return *this;
 }
 
+RouteEntry & RouteEntry::error_renderer(ErrorRenderer renderer) {
+  // The shared_ptr is captured by the typed handler wrapper closure; mutating
+  // through it is the mechanism by which `.error_renderer(...)` called AFTER
+  // `reg.post<...>(...)` still influences the closure's behaviour.
+  *error_renderer_ = renderer;
+  return *this;
+}
+
 // -----------------------------------------------------------------------------
 // RouteRegistry route registration
 // -----------------------------------------------------------------------------
@@ -120,20 +150,202 @@ RouteEntry & RouteRegistry::add_route(const std::string & method, const std::str
   return routes_.back();
 }
 
-RouteEntry & RouteRegistry::get(const std::string & openapi_path, HandlerFn handler) {
-  return add_route("get", openapi_path, std::move(handler));
+// -----------------------------------------------------------------------------
+// add_raw_route - for escape hatches whose URI is a literal regex (docs_subtree)
+// -----------------------------------------------------------------------------
+
+RouteEntry & RouteRegistry::add_raw_route(const std::string & method, const std::string & openapi_path,
+                                          const std::string & regex_path, HandlerFn handler) {
+  RouteEntry entry;
+  entry.method_ = method;
+  entry.path_ = openapi_path;
+  entry.regex_path_ = regex_path;
+  entry.handler_ = std::move(handler);
+  routes_.push_back(std::move(entry));
+  return routes_.back();
 }
 
-RouteEntry & RouteRegistry::post(const std::string & openapi_path, HandlerFn handler) {
-  return add_route("post", openapi_path, std::move(handler));
+// -----------------------------------------------------------------------------
+// Typed-handler helpers
+// -----------------------------------------------------------------------------
+
+ErrorInfo RouteRegistry::make_body_parse_error(const std::vector<dto::FieldError> & errs) {
+  ErrorInfo info;
+  info.code = ERR_INVALID_REQUEST;
+  info.message = "Request body validation failed";
+  info.http_status = 400;
+  nlohmann::json fields = nlohmann::json::array();
+  for (const auto & e : errs) {
+    fields.push_back({{"field", e.field}, {"message", e.message}});
+  }
+  info.params = nlohmann::json::object();
+  info.params["fields"] = std::move(fields);
+  return info;
 }
 
-RouteEntry & RouteRegistry::put(const std::string & openapi_path, HandlerFn handler) {
-  return add_route("put", openapi_path, std::move(handler));
+void RouteRegistry::apply_attachments(httplib::Response & res, const http::ResponseAttachments & att) {
+  if (att.status_override.has_value()) {
+    res.status = *att.status_override;
+  }
+  for (const auto & [name, value] : att.headers) {
+    res.set_header(name, value);
+  }
 }
 
-RouteEntry & RouteRegistry::del(const std::string & openapi_path, HandlerFn handler) {
-  return add_route("delete", openapi_path, std::move(handler));
+void RouteRegistry::write_typed_error(httplib::Response & res, const ErrorInfo & err,
+                                      const std::shared_ptr<ErrorRenderer> & renderer_ptr) {
+  // Forwarded sentinel: the peer-forwarding path has already streamed the
+  // proxied response (body, status, headers) to `res` via the framework's
+  // forwarding sink. Rendering anything here would corrupt the wire response,
+  // so this path is a strict no-op. The sentinel never escapes the framework
+  // because typed handlers translate validator-returned Forwarded into it via
+  // HandlerContext::forwarded_sentinel_error.
+  if (err.code == ERR_X_INTERNAL_FORWARDED) {
+    return;
+  }
+  ErrorRenderer renderer = renderer_ptr ? *renderer_ptr : ErrorRenderer::kSovdGenericError;
+  if (renderer == ErrorRenderer::kOAuth2Error) {
+    http::detail::write_oauth2_error(http::detail::FrameworkOrPluginAccess{}, res, err);
+  } else {
+    http::detail::write_generic_error(http::detail::FrameworkOrPluginAccess{}, res, err);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Escape-hatch routes (SSE / binary / static asset / docs)
+// -----------------------------------------------------------------------------
+
+RouteEntry & RouteRegistry::sse(const std::string & openapi_path,
+                                std::function<http::Result<http::SseStream>(http::TypedRequest)> stream_factory) {
+  auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
+  HandlerFn fn = [factory = std::move(stream_factory), renderer](const httplib::Request & req,
+                                                                 httplib::Response & res) {
+    // Install the forwarding scope so SSE factories that call
+    // validate_entity_for_route can stream a proxied wire response for entities
+    // owned by a remote peer. Without it the validator's Forwarded branch has
+    // no response to write to. The scope ends before the chunked content
+    // provider starts streaming - peer-forwarding is a synchronous decision
+    // made up-front, never mid-stream.
+    http::detail::ForwardResponseScope forward_scope(&res);
+    http::TypedRequest typed_req(req);
+    auto outcome = factory(typed_req);
+    if (!outcome.has_value()) {
+      write_typed_error(res, outcome.error(), renderer);
+      return;
+    }
+    auto stream = std::make_shared<http::SseStream>(std::move(outcome.value()));
+    // SSE proxy-friendliness headers (no client wants buffered Server-Sent
+    // Events). Set BEFORE the chunked content provider takes over; the
+    // framework owns these so individual handlers stay free of httplib state.
+    // Note: cpp-httplib's chunked content provider already sets the
+    // Content-Type header; never set it on `res` first or it duplicates.
+    res.set_header("Cache-Control", "no-cache");
+    res.set_header("X-Accel-Buffering", "no");
+    res.set_chunked_content_provider("text/event-stream",
+                                     [stream](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
+                                       if (!stream || !stream->next_event) {
+                                         sink.done();
+                                         return false;
+                                       }
+                                       const bool keep_going = stream->next_event(sink);
+                                       if (!keep_going) {
+                                         sink.done();
+                                       }
+                                       return keep_going;
+                                     });
+  };
+  auto & entry = add_route("get", openapi_path, std::move(fn));
+  entry.error_renderer_ = renderer;
+  // SSE has no JSON schema; mark it explicitly so validate_completeness skips
+  // the success-schema check via its SSE-name heuristic.
+  entry.response(200, "Server-Sent Events stream");
+  return entry;
+}
+
+RouteEntry &
+RouteRegistry::binary_download(const std::string & openapi_path,
+                               std::function<http::Result<http::BinaryResponse>(http::TypedRequest)> handler) {
+  auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
+  HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (!outcome.has_value()) {
+      write_typed_error(res, outcome.error(), renderer);
+      return;
+    }
+    auto bin = std::make_shared<http::BinaryResponse>(std::move(outcome.value()));
+    if (bin->filename.has_value()) {
+      res.set_header("Content-Disposition", "attachment; filename=\"" + *bin->filename + "\"");
+    }
+    if (bin->supports_ranges) {
+      res.set_content_provider(static_cast<std::size_t>(bin->total_size), bin->content_type,
+                               [bin](std::size_t offset, std::size_t length, httplib::DataSink & sink) -> bool {
+                                 return bin->provider(static_cast<std::uint64_t>(offset),
+                                                      static_cast<std::uint64_t>(length), sink);
+                               });
+    } else {
+      res.set_chunked_content_provider(bin->content_type,
+                                       [bin](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
+                                         const bool keep = bin->provider(0, bin->total_size, sink);
+                                         sink.done();
+                                         return keep;
+                                       });
+    }
+  };
+  auto & entry = add_route("get", openapi_path, std::move(fn));
+  entry.error_renderer_ = renderer;
+  entry.response(200, "Binary download", nlohmann::json{{"type", "string"}, {"format", "binary"}});
+  return entry;
+}
+
+RouteEntry & RouteRegistry::static_asset(const std::string & openapi_path,
+                                         std::function<http::Result<http::StaticAsset>(http::TypedRequest)> handler) {
+  auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
+  HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (!outcome.has_value()) {
+      write_typed_error(res, outcome.error(), renderer);
+      return;
+    }
+    const auto & asset = outcome.value();
+    for (const auto & [name, value] : asset.headers) {
+      res.set_header(name, value);
+    }
+    res.status = 200;
+    std::string body(asset.bytes.begin(), asset.bytes.end());
+    res.set_content(body, asset.content_type);
+  };
+  auto & entry = add_route("get", openapi_path, std::move(fn));
+  entry.error_renderer_ = renderer;
+  entry.hidden();  // Static assets are not part of the documented JSON API.
+  return entry;
+}
+
+RouteEntry & RouteRegistry::docs_endpoint(const std::string & openapi_path,
+                                          std::function<http::Result<nlohmann::json>(http::TypedRequest)> handler) {
+  auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
+  HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (!outcome.has_value()) {
+      write_typed_error(res, outcome.error(), renderer);
+      return;
+    }
+    http::detail::write_json_body(http::detail::FrameworkOrPluginAccess{}, res, outcome.value(), 200);
+  };
+  auto & entry = add_route("get", openapi_path, std::move(fn));
+  entry.error_renderer_ = renderer;
+  entry.response(200, "OpenAPI specification document",
+                 nlohmann::json{{"type", "object"}, {"additionalProperties", true}});
+  entry.hidden();  // The docs spec endpoint describes itself externally.
+  return entry;
+}
+
+RouteEntry & RouteRegistry::docs_subtree(const std::string & regex_pattern, HandlerFn handler) {
+  auto & entry = add_raw_route("get", regex_pattern, regex_pattern, std::move(handler));
+  entry.hidden();
+  return entry;
 }
 
 // -----------------------------------------------------------------------------
@@ -200,6 +412,8 @@ void RouteRegistry::register_all(httplib::Server & server, const std::string & a
       server.Post(full_path, handler);
     } else if (route.method_ == "put") {
       server.Put(full_path, handler);
+    } else if (route.method_ == "patch") {
+      server.Patch(full_path, handler);
     } else if (route.method_ == "delete") {
       server.Delete(full_path, handler);
     }

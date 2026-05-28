@@ -18,7 +18,8 @@
 
 #include <httplib.h>
 
-#include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
+#include "ros2_medkit_gateway/http/detail/primitives.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -58,14 +59,28 @@ PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
 
 void PluginResponse::send_json(const nlohmann::json & data) {
-  handlers::HandlerContext::send_json(*static_cast<httplib::Response *>(impl_), data);
+  // Call the framework primitive directly so the plugin ABI does not depend on
+  // HandlerContext's public surface (commit 30 prunes send_json from
+  // HandlerContext). Pass kKeepCurrentStatus to preserve the legacy
+  // PluginResponse::send_json contract that left res.status untouched (the
+  // gateway's plugin route adapter pre-set it before delegation in some paths).
+  http::detail::write_json_body(http::detail::FrameworkOrPluginAccess{}, *static_cast<httplib::Response *>(impl_), data,
+                                http::detail::kKeepCurrentStatus);
 }
 
 void PluginResponse::send_error(int status, const std::string & error_code, const std::string & message,
                                 const nlohmann::json & parameters) {
-  int clamped = std::clamp(status, 400, 599);
-  handlers::HandlerContext::send_error(*static_cast<httplib::Response *>(impl_), clamped, error_code, message,
-                                       parameters);
+  // Pre-clamp matches the legacy behavior so the wire status stays in the
+  // SOVD error range. write_generic_error clamps internally as well, but
+  // keeping the explicit clamp here preserves the byte-for-byte status code
+  // contract callers may have asserted against.
+  ErrorInfo info;
+  info.code = error_code;
+  info.message = message;
+  info.http_status = std::clamp(status, 400, 599);
+  info.params = parameters;
+  http::detail::write_generic_error(http::detail::FrameworkOrPluginAccess{}, *static_cast<httplib::Response *>(impl_),
+                                    info);
 }
 
 }  // namespace ros2_medkit_gateway

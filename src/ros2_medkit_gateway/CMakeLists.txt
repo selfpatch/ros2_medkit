@@ -171,6 +171,7 @@ add_library(gateway_ros2 STATIC
   src/discovery/merge_pipeline.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
+  src/http/fan_out_helpers.cpp
   src/http/handlers/auth_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/config_handlers.cpp
@@ -631,9 +632,25 @@ if(BUILD_TESTING)
   target_link_libraries(test_handler_context gateway_ros2)
   medkit_set_test_domain(test_handler_context)
 
-  # Add x-medkit extension tests
-  ament_add_gtest(test_x_medkit test/test_x_medkit.cpp)
-  target_link_libraries(test_x_medkit gateway_ros2)
+  # DTO contract core (pure C++17, no ROS node)
+  ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
+  target_link_libraries(test_dto_contract gateway_core)
+
+  # DTO Collection<T, XMedkit> template + fan-out observability fields
+  ament_add_gtest(test_collection test/test_collection.cpp)
+  target_link_libraries(test_collection gateway_core)
+
+  # DTO opaque_object machinery (pure C++17, no ROS node)
+  ament_add_gtest(test_opaque_object test/test_opaque_object.cpp)
+  target_link_libraries(test_opaque_object gateway_core)
+
+  # Typed router foundational types (pure C++17, no ROS node)
+  ament_add_gtest(test_typed_router test/test_typed_router.cpp)
+  target_link_libraries(test_typed_router gateway_core)
+
+  # Framework response-writing primitives (pure C++17, no ROS node)
+  ament_add_gtest(test_primitives test/test_primitives.cpp)
+  target_link_libraries(test_primitives gateway_core)
 
   # Add rate limiter tests
   ament_add_gtest(test_rate_limiter test/test_rate_limiter.cpp)
@@ -798,6 +815,16 @@ if(BUILD_TESTING)
   ament_add_gtest(test_plugin_http_types test/test_plugin_http_types.cpp)
   target_link_libraries(test_plugin_http_types gateway_ros2)
 
+  # Plugin ABI conformance tests
+  # Pins the public plugin ABI (PluginRoute, PluginRequest, PluginResponse,
+  # PLUGIN_API_VERSION) via static_assert + loads test_gateway_plugin.so via
+  # the production PluginLoader entry point. Locks in the wire-format contract
+  # so refactors that would break commercial out-of-tree plugins (UDS, OPC-UA,
+  # Uptane OTA, Mender OTA) fail loudly here.
+  ament_add_gtest(test_plugin_abi_conformance test/test_plugin_abi_conformance.cpp)
+  target_link_libraries(test_plugin_abi_conformance gateway_ros2)
+  medkit_target_dependencies(test_plugin_abi_conformance ament_index_cpp)
+
   # Log manager tests
   # Dedicated ROS_DOMAIN_ID to prevent cross-talk with concurrent integration tests
   ament_add_gtest(test_log_manager test/test_log_manager.cpp)
@@ -836,6 +863,10 @@ if(BUILD_TESTING)
   # Route registry tests (OpenAPI route registration and path conversion)
   ament_add_gtest(test_route_registry test/test_route_registry.cpp)
   target_link_libraries(test_route_registry gateway_ros2)
+
+  # Typed RouteRegistry overload tests (PR-403 commit 4 typed router wrappers)
+  ament_add_gtest(test_typed_route_registry test/test_typed_route_registry.cpp)
+  target_link_libraries(test_typed_route_registry gateway_core)
 
   # Docs handlers tests (OpenAPI /docs endpoint handlers)
   ament_add_gtest(test_docs_handlers test/test_docs_handlers.cpp)
@@ -929,7 +960,6 @@ if(BUILD_TESTING)
       test_manifest_manager
       test_capability_builder
       test_handler_context
-      test_x_medkit
       test_rate_limiter
       test_auth_config
       test_data_access_manager
@@ -956,6 +986,7 @@ if(BUILD_TESTING)
       test_plugin_loader
       test_plugin_manager
       test_plugin_http_types
+      test_plugin_abi_conformance
       test_log_manager
       test_log_handlers
       test_merge_pipeline
@@ -967,6 +998,7 @@ if(BUILD_TESTING)
       test_path_resolver
       test_capability_generator
       test_route_registry
+      test_typed_route_registry
       test_docs_handlers
       test_lock_manager
       test_lock_handlers

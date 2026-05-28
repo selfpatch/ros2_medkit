@@ -14,15 +14,85 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "../src/openapi/route_registry.hpp"
+#include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
+
+// -----------------------------------------------------------------------------
+// Local seed DTO + dto_fields / dto_name specialisations so the typed registry
+// overloads can be used to populate test routes. The DTO body is irrelevant
+// for the metadata tests below; what matters is that
+// `reg.get<RouteRegistryTestSeedDto>(...)` registers a route with the same
+// path/tag/summary surface the legacy raw overloads used to expose.
+// -----------------------------------------------------------------------------
+
+namespace ros2_medkit_gateway {
+namespace dto {
+
+struct RouteRegistryTestSeedDto {
+  int value{0};
+};
+
+template <>
+inline constexpr auto dto_fields<RouteRegistryTestSeedDto> =
+    std::make_tuple(field("value", &RouteRegistryTestSeedDto::value));
+
+template <>
+inline constexpr std::string_view dto_name<RouteRegistryTestSeedDto> = "RouteRegistryTestSeedDto";
+
+}  // namespace dto
+}  // namespace ros2_medkit_gateway
 
 using namespace ros2_medkit_gateway::openapi;
+using ros2_medkit_gateway::dto::RouteRegistryTestSeedDto;
+using ros2_medkit_gateway::http::Result;
+using ros2_medkit_gateway::http::TypedRequest;
 using json = nlohmann::json;
+
+namespace {
+
+// Typed seed handler: returns a default-constructed RouteRegistryTestSeedDto.
+// All tests in this file exercise OpenAPI metadata and registry bookkeeping;
+// the handler body is never invoked except by the trailing-slash routing test.
+Result<RouteRegistryTestSeedDto> seed_get_handler(TypedRequest /*req*/) {
+  return RouteRegistryTestSeedDto{};
+}
+
+Result<RouteRegistryTestSeedDto> seed_post_handler(TypedRequest /*req*/, RouteRegistryTestSeedDto /*body*/) {
+  return RouteRegistryTestSeedDto{};
+}
+
+Result<ros2_medkit_gateway::http::NoContent> seed_del_handler(TypedRequest /*req*/) {
+  return ros2_medkit_gateway::http::NoContent{};
+}
+
+// Tiny helper to keep call sites short. The std::function indirection matches
+// the deduction shape the typed overloads expect.
+RouteEntry & seed_get(RouteRegistry & reg, const std::string & path) {
+  std::function<Result<RouteRegistryTestSeedDto>(TypedRequest)> h = &seed_get_handler;
+  return reg.get<RouteRegistryTestSeedDto>(path, std::move(h));
+}
+
+RouteEntry & seed_post(RouteRegistry & reg, const std::string & path) {
+  std::function<Result<RouteRegistryTestSeedDto>(TypedRequest, RouteRegistryTestSeedDto)> h = &seed_post_handler;
+  return reg.post<RouteRegistryTestSeedDto, RouteRegistryTestSeedDto>(path, std::move(h));
+}
+
+RouteEntry & seed_del(RouteRegistry & reg, const std::string & path) {
+  std::function<Result<ros2_medkit_gateway::http::NoContent>(TypedRequest)> h = &seed_del_handler;
+  return reg.del<ros2_medkit_gateway::http::NoContent>(path, std::move(h));
+}
+
+}  // namespace
 
 // =============================================================================
 // Test fixture
@@ -31,10 +101,6 @@ using json = nlohmann::json;
 class RouteRegistryTest : public ::testing::Test {
  protected:
   RouteRegistry registry_;
-
-  // No-op handler for registration
-  static void noop(const httplib::Request &, httplib::Response &) {
-  }
 };
 
 // =============================================================================
@@ -43,7 +109,7 @@ class RouteRegistryTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, ToOpenapiPathsContainsRegisteredRoute) {
-  registry_.get("/health", noop).tag("Server").summary("Health check");
+  seed_get(registry_, "/health").tag("Server").summary("Health check");
 
   auto paths = registry_.to_openapi_paths();
 
@@ -55,8 +121,8 @@ TEST_F(RouteRegistryTest, ToOpenapiPathsContainsRegisteredRoute) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, ToOpenapiPathsMultipleMethodsSamePath) {
-  registry_.get("/data", noop).tag("Data").summary("List data");
-  registry_.post("/data", noop).tag("Data").summary("Create data");
+  seed_get(registry_, "/data").tag("Data").summary("List data");
+  seed_post(registry_, "/data").tag("Data").summary("Create data");
 
   auto paths = registry_.to_openapi_paths();
 
@@ -73,13 +139,13 @@ TEST_F(RouteRegistryTest, ToOpenapiPathsMultipleMethodsSamePath) {
 TEST_F(RouteRegistryTest, ToRegexPathRootBecomesRootAnchored) {
   // Register the root path and verify the regex conversion via
   // the handler registration (to_regex_path is private, test indirectly)
-  registry_.get("/", noop);
+  seed_get(registry_, "/").tag("Server");
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths.contains("/"));
 }
 
 TEST_F(RouteRegistryTest, ToRegexPathAppIdUsesNonGreedyCapture) {
-  registry_.get("/apps/{app_id}", noop).tag("Discovery");
+  seed_get(registry_, "/apps/{app_id}").tag("Discovery");
 
   auto paths = registry_.to_openapi_paths();
 
@@ -100,7 +166,7 @@ TEST_F(RouteRegistryTest, ToRegexPathAppIdUsesNonGreedyCapture) {
 
 TEST_F(RouteRegistryTest, ToRegexPathDataIdAtEndIsMultiSegment) {
   // data_id at end of path should use (.+) for multi-segment topic names
-  registry_.get("/apps/{app_id}/data/{data_id}", noop).tag("Data");
+  seed_get(registry_, "/apps/{app_id}/data/{data_id}").tag("Data");
 
   auto paths = registry_.to_openapi_paths();
   ASSERT_TRUE(paths.contains("/apps/{app_id}/data/{data_id}"));
@@ -108,14 +174,14 @@ TEST_F(RouteRegistryTest, ToRegexPathDataIdAtEndIsMultiSegment) {
 
 TEST_F(RouteRegistryTest, ToRegexPathConfigIdAtEndIsMultiSegment) {
   // config_id at end of path should use (.+) for slash-containing param names
-  registry_.get("/apps/{app_id}/configurations/{config_id}", noop).tag("Configuration");
+  seed_get(registry_, "/apps/{app_id}/configurations/{config_id}").tag("Configuration");
 
   auto paths = registry_.to_openapi_paths();
   ASSERT_TRUE(paths.contains("/apps/{app_id}/configurations/{config_id}"));
 }
 
 TEST_F(RouteRegistryTest, ToRegexPathHealthConvertsCleanly) {
-  registry_.get("/health", noop).tag("Server");
+  seed_get(registry_, "/health").tag("Server");
 
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths.contains("/health"));
@@ -126,14 +192,9 @@ TEST_F(RouteRegistryTest, ToRegexPathHealthConvertsCleanly) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, RoutesMatchWithAndWithoutTrailingSlash) {
-  auto ok_handler = [](const httplib::Request &, httplib::Response & res) {
-    res.status = 200;
-    res.set_content("ok", "text/plain");
-  };
-
   RouteRegistry reg;
-  reg.get("/", ok_handler).tag("Server");
-  reg.get("/health", ok_handler).tag("Server");
+  seed_get(reg, "/").tag("Server");
+  seed_get(reg, "/health").tag("Server");
 
   httplib::Server server;
   reg.register_all(server, "/api/v1");
@@ -177,7 +238,7 @@ TEST_F(RouteRegistryTest, RoutesMatchWithAndWithoutTrailingSlash) {
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, AuthEnabledAdds401And403Responses) {
   registry_.set_auth_enabled(true);
-  registry_.get("/health", noop).tag("Server");
+  seed_get(registry_, "/health").tag("Server");
 
   auto paths = registry_.to_openapi_paths();
   auto & responses = paths["/health"]["get"]["responses"];
@@ -188,7 +249,7 @@ TEST_F(RouteRegistryTest, AuthEnabledAdds401And403Responses) {
 
 TEST_F(RouteRegistryTest, AuthDisabledNo401Or403Responses) {
   registry_.set_auth_enabled(false);
-  registry_.get("/health", noop).tag("Server");
+  seed_get(registry_, "/health").tag("Server");
 
   auto paths = registry_.to_openapi_paths();
   auto & responses = paths["/health"]["get"]["responses"];
@@ -202,10 +263,10 @@ TEST_F(RouteRegistryTest, AuthDisabledNo401Or403Responses) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, TagsReturnsUniqueTags) {
-  registry_.get("/health", noop).tag("Server");
-  registry_.get("/areas", noop).tag("Discovery");
-  registry_.get("/apps", noop).tag("Discovery");
-  registry_.get("/data", noop).tag("Data");
+  seed_get(registry_, "/health").tag("Server");
+  seed_get(registry_, "/areas").tag("Discovery");
+  seed_get(registry_, "/apps").tag("Discovery");
+  seed_get(registry_, "/data").tag("Data");
 
   auto tags = registry_.tags();
 
@@ -223,7 +284,7 @@ TEST_F(RouteRegistryTest, TagsReturnsUniqueTags) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, AutoGeneratedPathParamsHaveCorrectNames) {
-  registry_.get("/areas/{area_id}/components/{component_id}", noop).tag("Discovery");
+  seed_get(registry_, "/areas/{area_id}/components/{component_id}").tag("Discovery");
 
   auto paths = registry_.to_openapi_paths();
   auto & params = paths["/areas/{area_id}/components/{component_id}"]["get"]["parameters"];
@@ -244,17 +305,21 @@ TEST_F(RouteRegistryTest, AutoGeneratedPathParamsHaveCorrectNames) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, Default200ResponseWhenNoExplicitResponses) {
-  registry_.get("/health", noop).tag("Server").summary("Health check");
+  // Typed GET<T> automatically attaches a 200 response with the DTO $ref.
+  seed_get(registry_, "/health").tag("Server").summary("Health check");
 
   auto paths = registry_.to_openapi_paths();
   auto & responses = paths["/health"]["get"]["responses"];
 
   EXPECT_TRUE(responses.contains("200"));
-  EXPECT_EQ(responses["200"]["description"], "Successful response");
+  // Schema $ref is auto-populated to the seed DTO's component.
+  auto & schema = responses["200"]["content"]["application/json"]["schema"];
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/RouteRegistryTestSeedDto");
 }
 
 TEST_F(RouteRegistryTest, ExplicitResponseOverridesDefault) {
-  registry_.get("/health", noop).tag("Server").response(200, "Gateway is healthy");
+  seed_get(registry_, "/health").tag("Server").response(200, "Gateway is healthy");
 
   auto paths = registry_.to_openapi_paths();
   auto & responses = paths["/health"]["get"]["responses"];
@@ -269,7 +334,7 @@ TEST_F(RouteRegistryTest, ExplicitResponseOverridesDefault) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, OperationIdIsGenerated) {
-  registry_.get("/apps/{app_id}/data", noop).tag("Data");
+  seed_get(registry_, "/apps/{app_id}/data").tag("Data");
 
   auto paths = registry_.to_openapi_paths();
   auto & get_op = paths["/apps/{app_id}/data"]["get"];
@@ -284,7 +349,7 @@ TEST_F(RouteRegistryTest, OperationIdIsGenerated) {
 }
 
 TEST_F(RouteRegistryTest, OperationIdForRootPath) {
-  registry_.get("/", noop).tag("Server");
+  seed_get(registry_, "/").tag("Server");
 
   auto paths = registry_.to_openapi_paths();
   auto & get_op = paths["/"]["get"];
@@ -295,8 +360,8 @@ TEST_F(RouteRegistryTest, OperationIdForRootPath) {
 }
 
 TEST_F(RouteRegistryTest, OperationIdUniquePerMethodPath) {
-  registry_.get("/data", noop).tag("Data");
-  registry_.post("/data", noop).tag("Data");
+  seed_get(registry_, "/data").tag("Data");
+  seed_post(registry_, "/data").tag("Data");
 
   auto paths = registry_.to_openapi_paths();
 
@@ -312,7 +377,7 @@ TEST_F(RouteRegistryTest, OperationIdUniquePerMethodPath) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, PathParamDescriptionsArePresent) {
-  registry_.get("/apps/{app_id}/data/{data_id}", noop).tag("Data");
+  seed_get(registry_, "/apps/{app_id}/data/{data_id}").tag("Data");
 
   auto paths = registry_.to_openapi_paths();
   auto & params = paths["/apps/{app_id}/data/{data_id}"]["get"]["parameters"];
@@ -324,7 +389,7 @@ TEST_F(RouteRegistryTest, PathParamDescriptionsArePresent) {
 }
 
 TEST_F(RouteRegistryTest, KnownParamHasSpecificDescription) {
-  registry_.get("/apps/{app_id}", noop).tag("Discovery");
+  seed_get(registry_, "/apps/{app_id}").tag("Discovery");
 
   auto paths = registry_.to_openapi_paths();
   auto & params = paths["/apps/{app_id}"]["get"]["parameters"];
@@ -335,7 +400,7 @@ TEST_F(RouteRegistryTest, KnownParamHasSpecificDescription) {
 }
 
 TEST_F(RouteRegistryTest, UnknownParamGetsGenericDescription) {
-  registry_.get("/widgets/{widget_id}", noop).tag("Custom");
+  seed_get(registry_, "/widgets/{widget_id}").tag("Custom");
 
   auto paths = registry_.to_openapi_paths();
   auto & params = paths["/widgets/{widget_id}"]["get"]["parameters"];
@@ -349,10 +414,9 @@ TEST_F(RouteRegistryTest, UnknownParamGetsGenericDescription) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, HeaderParamAppearsInOpenApiOutput) {
-  registry_.post("/apps/{app_id}/locks", noop)
+  seed_post(registry_, "/apps/{app_id}/locks")
       .tag("Locking")
       .header_param("X-Client-Id", "Client identifier")
-      .request_body("Body", {{"type", "object"}})
       .response(201, "Created", {{"type", "object"}});
 
   auto paths = registry_.to_openapi_paths();
@@ -373,7 +437,7 @@ TEST_F(RouteRegistryTest, HeaderParamAppearsInOpenApiOutput) {
 }
 
 TEST_F(RouteRegistryTest, OptionalHeaderParamHasRequiredFalse) {
-  registry_.get("/apps/{app_id}/locks", noop)
+  seed_get(registry_, "/apps/{app_id}/locks")
       .tag("Locking")
       .header_param("X-Client-Id", "Optional client identifier", false)
       .response(200, "OK", {{"type", "object"}});
@@ -396,9 +460,9 @@ TEST_F(RouteRegistryTest, OptionalHeaderParamHasRequiredFalse) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, ToEndpointListProducesCorrectFormat) {
-  registry_.get("/health", noop).tag("Server");
-  registry_.post("/auth/token", noop).tag("Authentication");
-  registry_.del("/faults", noop).tag("Faults");
+  seed_get(registry_, "/health").tag("Server");
+  seed_post(registry_, "/auth/token").tag("Authentication");
+  seed_del(registry_, "/faults").tag("Faults");
 
   auto endpoints = registry_.to_endpoint_list("/api/v1");
 
@@ -417,9 +481,9 @@ TEST_F(RouteRegistryTest, EmptyRegistryHasZeroSize) {
 }
 
 TEST_F(RouteRegistryTest, SizeReflectsRegisteredRoutes) {
-  registry_.get("/health", noop);
-  registry_.post("/data", noop);
-  registry_.put("/config", noop);
+  seed_get(registry_, "/health");
+  seed_post(registry_, "/data");
+  seed_post(registry_, "/config");
 
   EXPECT_EQ(registry_.size(), 3u);
 }
@@ -434,7 +498,7 @@ TEST_F(RouteRegistryTest, EmptyRegistryProducesEmptyPaths) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, DeprecatedFlagAppearsInOutput) {
-  registry_.get("/old-endpoint", noop).tag("Server").deprecated();
+  seed_get(registry_, "/old-endpoint").tag("Server").deprecated();
 
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths["/old-endpoint"]["get"]["deprecated"].get<bool>());
@@ -445,7 +509,7 @@ TEST_F(RouteRegistryTest, DeprecatedFlagAppearsInOutput) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompleteRoute) {
-  registry_.get("/health", noop)
+  seed_get(registry_, "/health")
       .tag("Server")
       .summary("Health check")
       .response(200, "Healthy", json{{"type", "object"}});
@@ -462,7 +526,7 @@ TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompleteRoute) {
 }
 
 TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnMissingTag) {
-  registry_.get("/health", noop).summary("Health check").response(200, "Healthy", json{{"type", "object"}});
+  seed_get(registry_, "/health").summary("Health check").response(200, "Healthy", json{{"type", "object"}});
 
   auto issues = registry_.validate_completeness();
   bool has_tag_error = false;
@@ -474,63 +538,8 @@ TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnMissingTag) {
   EXPECT_TRUE(has_tag_error);
 }
 
-TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnMissingResponseSchema) {
-  registry_.get("/health", noop).tag("Server").summary("Health check").response(200, "Healthy");
-
-  auto issues = registry_.validate_completeness();
-  bool has_schema_error = false;
-  for (const auto & issue : issues) {
-    if (issue.severity == ValidationIssue::Severity::kError &&
-        issue.message.find("Missing response schema") != std::string::npos) {
-      has_schema_error = true;
-    }
-  }
-  EXPECT_TRUE(has_schema_error);
-}
-
-TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnPostMissingRequestBody) {
-  registry_.post("/items", noop).tag("Items").summary("Create item").response(201, "Created", json{{"type", "object"}});
-
-  auto issues = registry_.validate_completeness();
-  bool has_body_error = false;
-  for (const auto & issue : issues) {
-    if (issue.severity == ValidationIssue::Severity::kError &&
-        issue.message.find("Missing request body") != std::string::npos) {
-      has_body_error = true;
-    }
-  }
-  EXPECT_TRUE(has_body_error);
-}
-
 TEST_F(RouteRegistryTest, ValidateCompletenessPassesForDeleteWith204) {
-  registry_.del("/items/{id}", noop).tag("Items").summary("Delete item").response(204, "Deleted");
-
-  auto issues = registry_.validate_completeness();
-  int error_count = 0;
-  for (const auto & issue : issues) {
-    if (issue.severity == ValidationIssue::Severity::kError) {
-      error_count++;
-    }
-  }
-  EXPECT_EQ(error_count, 0);
-}
-
-TEST_F(RouteRegistryTest, ValidateCompletenessErrorOnDeleteNoExplicitResponse) {
-  registry_.del("/items/{id}", noop).tag("Items").summary("Delete item");
-
-  auto issues = registry_.validate_completeness();
-  bool has_delete_error = false;
-  for (const auto & issue : issues) {
-    if (issue.severity == ValidationIssue::Severity::kError &&
-        issue.message.find("DELETE missing explicit response") != std::string::npos) {
-      has_delete_error = true;
-    }
-  }
-  EXPECT_TRUE(has_delete_error);
-}
-
-TEST_F(RouteRegistryTest, ValidateCompletenessPassesFor405Endpoint) {
-  registry_.post("/readonly", noop).tag("Test").summary("Not supported").response(405, "Method not allowed");
+  seed_del(registry_, "/items/{id}").tag("Items").summary("Delete item");
 
   auto issues = registry_.validate_completeness();
   int error_count = 0;
@@ -543,7 +552,7 @@ TEST_F(RouteRegistryTest, ValidateCompletenessPassesFor405Endpoint) {
 }
 
 TEST_F(RouteRegistryTest, ValidateCompletenessPassesForSSEEndpoint) {
-  registry_.get("/events/stream", noop).tag("Events").summary("SSE events stream");
+  seed_get(registry_, "/events/stream").tag("Events").summary("SSE events stream");
 
   auto issues = registry_.validate_completeness();
   int error_count = 0;
@@ -556,7 +565,7 @@ TEST_F(RouteRegistryTest, ValidateCompletenessPassesForSSEEndpoint) {
 }
 
 TEST_F(RouteRegistryTest, ValidateCompletenessWarnsOnMissingSummary) {
-  registry_.get("/health", noop).tag("Server").response(200, "OK", json{{"type", "object"}});
+  seed_get(registry_, "/health").tag("Server").response(200, "OK", json{{"type", "object"}});
 
   auto issues = registry_.validate_completeness();
   bool has_summary_warning = false;
@@ -569,11 +578,7 @@ TEST_F(RouteRegistryTest, ValidateCompletenessWarnsOnMissingSummary) {
 }
 
 TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompletePostRoute) {
-  registry_.post("/items", noop)
-      .tag("Items")
-      .summary("Create item")
-      .request_body("Item data", json{{"type", "object"}})
-      .response(201, "Created", json{{"type", "object"}});
+  seed_post(registry_, "/items").tag("Items").summary("Create item");
 
   auto issues = registry_.validate_completeness();
   int error_count = 0;
@@ -590,7 +595,7 @@ TEST_F(RouteRegistryTest, ValidateCompletenessPassesForCompletePostRoute) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, ExplicitOperationIdUsedWhenSet) {
-  registry_.get("/health", noop)
+  seed_get(registry_, "/health")
       .tag("Server")
       .summary("Health")
       .operation_id("getHealth")
@@ -600,7 +605,7 @@ TEST_F(RouteRegistryTest, ExplicitOperationIdUsedWhenSet) {
 }
 
 TEST_F(RouteRegistryTest, AutoGeneratedOperationIdStripParams) {
-  registry_.get("/apps/{app_id}/faults", noop)
+  seed_get(registry_, "/apps/{app_id}/faults")
       .tag("Faults")
       .summary("Faults")
       .response(200, "OK", json{{"type", "object"}});
@@ -614,8 +619,8 @@ TEST_F(RouteRegistryTest, AutoGeneratedOperationIdStripParams) {
 // =============================================================================
 
 TEST_F(RouteRegistryTest, HiddenRouteExcludedFromOpenapiPaths) {
-  registry_.get("/visible", noop).tag("Test").summary("Visible").response(200, "OK", json{{"type", "object"}});
-  registry_.post("/hidden-405", noop).tag("Test").summary("Not supported").response(405, "Not allowed").hidden();
+  seed_get(registry_, "/visible").tag("Test").summary("Visible").response(200, "OK", json{{"type", "object"}});
+  seed_post(registry_, "/hidden-405").tag("Test").summary("Not supported").hidden();
 
   auto paths = registry_.to_openapi_paths();
   EXPECT_TRUE(paths.contains("/visible"));
@@ -623,15 +628,15 @@ TEST_F(RouteRegistryTest, HiddenRouteExcludedFromOpenapiPaths) {
 }
 
 TEST_F(RouteRegistryTest, HiddenRouteStillCountedInSize) {
-  registry_.get("/visible", noop).tag("Test").summary("Visible").response(200, "OK", json{{"type", "object"}});
-  registry_.post("/hidden", noop).tag("Test").summary("Hidden").response(405, "Not allowed").hidden();
+  seed_get(registry_, "/visible").tag("Test").summary("Visible").response(200, "OK", json{{"type", "object"}});
+  seed_post(registry_, "/hidden").tag("Test").summary("Hidden").hidden();
 
   EXPECT_EQ(registry_.size(), 2u);
 }
 
 TEST_F(RouteRegistryTest, HiddenRouteSkippedByValidateCompleteness) {
   // Hidden route without required metadata should NOT trigger validation errors
-  registry_.post("/hidden", noop).hidden();
+  seed_post(registry_, "/hidden").hidden();
 
   auto issues = registry_.validate_completeness();
   EXPECT_TRUE(issues.empty());
@@ -643,7 +648,7 @@ TEST_F(RouteRegistryTest, HiddenRouteSkippedByValidateCompleteness) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(RouteRegistryTest, ErrorResponsesUseGenericErrorRef) {
-  registry_.get("/test", noop).tag("Test").summary("Test").response(200, "OK", json{{"type", "object"}});
+  seed_get(registry_, "/test").tag("Test").summary("Test").response(200, "OK", json{{"type", "object"}});
 
   auto paths = registry_.to_openapi_paths();
   auto & resp_400 = paths["/test"]["get"]["responses"]["400"];

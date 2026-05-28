@@ -1,4 +1,4 @@
-// Copyright 2025 bburda
+// Copyright 2026 bburda
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
-#include <algorithm>
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
@@ -23,7 +22,9 @@
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
 
 using json = nlohmann::json;
 
@@ -188,92 +189,133 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   return info;
 }
 
-std::optional<std::string> HandlerContext::validate_collection_access(const EntityInfo & entity,
-                                                                      ResourceCollection collection) {
+tl::expected<void, ErrorInfo> HandlerContext::validate_collection_access_typed(const EntityInfo & entity,
+                                                                               ResourceCollection collection) {
   auto caps = EntityCapabilities::for_type(entity.sovd_type());
-
-  if (!caps.supports_collection(collection)) {
-    return entity.error_name + " entities do not support " + to_string(collection) + " collection";
+  if (caps.supports_collection(collection)) {
+    return {};
   }
-
-  return std::nullopt;
+  ErrorInfo err;
+  err.code = ERR_COLLECTION_NOT_SUPPORTED;
+  err.message = entity.error_name + " entities do not support " + to_string(collection) + " collection";
+  err.http_status = 400;
+  err.params = json{{"entity_id", entity.id}, {"collection", to_string(collection)}};
+  return tl::unexpected(std::move(err));
 }
 
-std::optional<std::string> HandlerContext::validate_lock_access(const httplib::Request & req, httplib::Response & res,
-                                                                const EntityInfo & entity,
-                                                                const std::string & collection) {
-  // Phase 1: If locking disabled, allow all access
+tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::TypedRequest & req,
+                                                                   const EntityInfo & entity,
+                                                                   const std::string & collection) {
+  // Phase 1: If locking disabled, allow all access.
   if (!node_) {
-    return std::nullopt;
+    return {};
   }
   auto * lock_mgr = node_->get_lock_manager();
   if (!lock_mgr) {
-    return std::nullopt;
+    return {};
   }
 
-  // Phase 2: Extract client_id from X-Client-Id header
-  auto client_id = req.get_header_value("X-Client-Id");
+  // Phase 2: Extract client_id from X-Client-Id header. TypedRequest::header
+  // returns nullopt when the header is missing; LockManager::check_access
+  // historically received the empty-string fall-back, so we preserve that.
+  auto client_id_opt = req.header("X-Client-Id");
+  std::string client_id = client_id_opt.value_or(std::string{});
 
-  // Phase 3: Check lock access
+  // Phase 3: Check lock access.
   auto result = lock_mgr->check_access(entity.id, client_id, collection);
-
-  if (!result.allowed) {
-    if (result.denied_code == "lock-required") {
-      // Lock-required enforcement: no lock held but one is required
-      send_error(res, 409, ERR_INVALID_REQUEST, result.denied_reason,
-                 json{{"details", "A lock must be held to modify this resource collection"},
-                      {"entity_id", entity.id},
-                      {"collection", collection}});
-    } else {
-      // Lock conflict: another client holds the lock
-      json params = {{"entity_id", entity.id}, {"collection", collection}};
-      if (!result.denied_by_lock_id.empty()) {
-        params["lock_id"] = result.denied_by_lock_id;
-      }
-      send_error(res, 409, ERR_LOCK_BROKEN, result.denied_reason, params);
-    }
-    return "Lock access denied for " + collection + " on entity " + entity.id;
+  if (result.allowed) {
+    return {};
   }
 
-  return std::nullopt;
+  ErrorInfo err;
+  err.http_status = 409;
+  err.message = result.denied_reason;
+  if (result.denied_code == "lock-required") {
+    err.code = ERR_INVALID_REQUEST;
+    err.params = json{{"details", "A lock must be held to modify this resource collection"},
+                      {"entity_id", entity.id},
+                      {"collection", collection}};
+  } else {
+    err.code = ERR_LOCK_BROKEN;
+    err.params = json{{"entity_id", entity.id}, {"collection", collection}};
+    if (!result.denied_by_lock_id.empty()) {
+      err.params["lock_id"] = result.denied_by_lock_id;
+    }
+  }
+  return tl::unexpected(std::move(err));
 }
 
-ValidateResult HandlerContext::validate_entity_for_route(const httplib::Request & req, httplib::Response & res,
-                                                         const std::string & entity_id) const {
-  // Step 1: Validate entity ID format
+namespace {
+
+using http::detail::tl_forward_response;
+
+}  // namespace
+
+http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
+                                                                            const std::string & entity_id) const {
+  using ErrorVariant = std::variant<ErrorInfo, http::Forwarded>;
+
+  // Step 1: Validate entity ID format.
   auto validation_result = validate_entity_id(entity_id);
   if (!validation_result) {
-    send_error(res, 400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-               {{"details", validation_result.error()}, {"entity_id", entity_id}});
-    return tl::unexpected(ValidationOutcome::kErrorSent);
+    ErrorInfo err;
+    err.code = ERR_INVALID_PARAMETER;
+    err.message = "Invalid entity ID";
+    err.http_status = 400;
+    err.params = json{{"details", validation_result.error()}, {"entity_id", entity_id}};
+    return tl::unexpected(ErrorVariant{std::move(err)});
   }
 
-  // Step 2: Get expected type from route path and look up entity
-  auto expected_type = extract_entity_type_from_path(req.path);
+  // Step 2: Get expected type from route path and look up entity. The raw
+  // request is accessed through the framework-internal escape hatch on
+  // TypedRequest because the path heuristic is part of the framework's
+  // route-dispatch layer, not a handler concern. The deprecated-warning
+  // suppression is intentional - the framework is the only legitimate caller
+  // of raw_for_framework().
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  auto expected_type = extract_entity_type_from_path(raw_req.path);
   auto entity_info = get_entity_info(entity_id, expected_type);
 
   if (entity_info.type == EntityType::UNKNOWN) {
-    // Step 3: Check if entity exists in ANY collection (for better error message)
+    // Step 3: Check if entity exists in ANY collection (for better error message).
     auto any_entity = get_entity_info(entity_id);
+    ErrorInfo err;
     if (any_entity.type != EntityType::UNKNOWN) {
-      // Entity exists but wrong type for this route -> 400
-      send_error(res, 400, ERR_INVALID_PARAMETER,
-                 "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
-                     to_string(any_entity.sovd_type()),
-                 {{"entity_id", entity_id},
-                  {"expected_type", to_string(expected_type)},
-                  {"actual_type", to_string(any_entity.sovd_type())}});
+      // Entity exists but wrong type for this route -> 400.
+      err.code = ERR_INVALID_PARAMETER;
+      err.message = "Invalid entity type for route: expected " + to_string(expected_type) + ", got " +
+                    to_string(any_entity.sovd_type());
+      err.http_status = 400;
+      err.params = json{{"entity_id", entity_id},
+                        {"expected_type", to_string(expected_type)},
+                        {"actual_type", to_string(any_entity.sovd_type())}};
     } else {
-      // Entity doesn't exist at all -> 404
-      send_error(res, 404, ERR_ENTITY_NOT_FOUND, "Entity not found", {{"entity_id", entity_id}});
+      // Entity doesn't exist at all -> 404.
+      err.code = ERR_ENTITY_NOT_FOUND;
+      err.message = "Entity not found";
+      err.http_status = 404;
+      err.params = json{{"entity_id", entity_id}};
     }
-    return tl::unexpected(ValidationOutcome::kErrorSent);
+    return tl::unexpected(ErrorVariant{std::move(err)});
   }
 
-  // Step 4: Forward to peer if entity is remote
+  // Step 4: Forward to peer if entity is remote. This is the one place the
+  // typed validator still mutates the underlying httplib::Response - peer
+  // proxying needs to stream the response back, so the wire commit happens
+  // inside the validator and the caller is signalled via Forwarded that no
+  // further response work is allowed. The proxy response sink is supplied by
+  // the framework via the thread-local set just before this call; when no
+  // sink is set (e.g. a unit test that exercises the typed API without
+  // aggregation) the forwarding path returns Forwarded without mutating any
+  // wire - the framework guarantees a sink whenever aggregation is active.
   if (entity_info.is_remote && aggregation_mgr_) {
-    aggregation_mgr_->forward_request(entity_info.peer_name, req, res);
-    return tl::unexpected(ValidationOutcome::kForwarded);
+    if (tl_forward_response != nullptr) {
+      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response);
+    }
+    return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
 
   return entity_info;
@@ -310,41 +352,6 @@ bool HandlerContext::is_origin_allowed(const std::string & origin) const {
     }
   }
   return false;
-}
-
-void HandlerContext::send_error(httplib::Response & res, int status, const std::string & error_code,
-                                const std::string & message, const json & parameters) {
-  res.status = status;
-  json error_json;
-
-  // Handle vendor-specific error codes (x-medkit-*)
-  if (is_vendor_error_code(error_code)) {
-    error_json["error_code"] = ERR_VENDOR_ERROR;
-    error_json["vendor_code"] = error_code;
-  } else {
-    error_json["error_code"] = error_code;
-  }
-
-  error_json["message"] = message;
-
-  // SOVD GenericError schema (7.4.2) requires additional info in 'parameters' field
-  if (!parameters.empty()) {
-    error_json["parameters"] = parameters;
-  }
-
-  res.set_content(error_json.dump(2), "application/json");
-}
-
-void HandlerContext::send_plugin_error(httplib::Response & res, int http_status, const std::string & message,
-                                       const json & extra_params) {
-  static constexpr size_t kMaxMessageLength = 512;
-  int status = std::clamp(http_status, 400, 599);
-  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
-  send_error(res, status, ERR_PLUGIN_ERROR, msg, extra_params);
-}
-
-void HandlerContext::send_json(httplib::Response & res, const json & data) {
-  res.set_content(data.dump(2), "application/json");
 }
 
 namespace {

@@ -1,0 +1,460 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
+
+#include <httplib.h>
+
+#include <functional>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <variant>
+
+#include "../src/openapi/route_registry.hpp"
+#include "ros2_medkit_gateway/dto/contract.hpp"
+
+// -----------------------------------------------------------------------------
+// Test DTOs - declared at namespace scope so dto_fields / dto_name
+// specializations can live in the dto namespace.
+// -----------------------------------------------------------------------------
+
+namespace ros2_medkit_gateway {
+namespace dto {
+
+struct TypedRouteTestDto {
+  std::string name;
+  int count{0};
+};
+
+template <>
+inline constexpr auto dto_fields<TypedRouteTestDto> =
+    std::make_tuple(field("name", &TypedRouteTestDto::name), field("count", &TypedRouteTestDto::count));
+
+template <>
+inline constexpr std::string_view dto_name<TypedRouteTestDto> = "TypedRouteTestDto";
+
+struct TypedRouteTestReq {
+  std::string greeting;
+};
+
+template <>
+inline constexpr auto dto_fields<TypedRouteTestReq> = std::make_tuple(field("greeting", &TypedRouteTestReq::greeting));
+
+template <>
+inline constexpr std::string_view dto_name<TypedRouteTestReq> = "TypedRouteTestReq";
+
+struct TypedRouteAltA {
+  std::string a;
+};
+
+template <>
+inline constexpr auto dto_fields<TypedRouteAltA> = std::make_tuple(field("a", &TypedRouteAltA::a));
+template <>
+inline constexpr std::string_view dto_name<TypedRouteAltA> = "TypedRouteAltA";
+
+struct TypedRouteAltB {
+  int b{0};
+};
+
+template <>
+inline constexpr auto dto_fields<TypedRouteAltB> = std::make_tuple(field("b", &TypedRouteAltB::b));
+template <>
+inline constexpr std::string_view dto_name<TypedRouteAltB> = "TypedRouteAltB";
+
+}  // namespace dto
+
+// alternate-status specialization for one of the test alts: 202 for AltA.
+namespace http {
+template <>
+struct dto_alternate_status<dto::TypedRouteAltA> {
+  static constexpr int value = 202;
+};
+}  // namespace http
+
+}  // namespace ros2_medkit_gateway
+
+using ros2_medkit_gateway::ErrorInfo;
+using ros2_medkit_gateway::dto::TypedRouteAltA;
+using ros2_medkit_gateway::dto::TypedRouteAltB;
+using ros2_medkit_gateway::dto::TypedRouteTestDto;
+using ros2_medkit_gateway::dto::TypedRouteTestReq;
+using ros2_medkit_gateway::http::ResponseAttachments;
+using ros2_medkit_gateway::http::Result;
+using ros2_medkit_gateway::http::TypedRequest;
+using ros2_medkit_gateway::openapi::ErrorRenderer;
+using ros2_medkit_gateway::openapi::RouteRegistry;
+
+namespace {
+
+/// Spin up a cpp-httplib server with the given registry and return the bound
+/// port plus a stop hook. The server runs on a dedicated thread; the dtor
+/// stops the server and joins the thread.
+struct ScopedServer {
+  std::unique_ptr<httplib::Server> server;
+  std::thread thread;
+  int port{0};
+
+  ScopedServer() = default;
+  ScopedServer(ScopedServer &&) noexcept = default;
+  ScopedServer & operator=(ScopedServer &&) noexcept = default;
+  ScopedServer(const ScopedServer &) = delete;
+  ScopedServer & operator=(const ScopedServer &) = delete;
+
+  ~ScopedServer() {
+    if (server) {
+      server->stop();
+    }
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+};
+
+ScopedServer start_server(const RouteRegistry & reg) {
+  ScopedServer s;
+  s.server = std::make_unique<httplib::Server>();
+  reg.register_all(*s.server, "/api/v1");
+  s.port = s.server->bind_to_any_port("127.0.0.1");
+  s.thread = std::thread([srv = s.server.get()]() {
+    srv->listen_after_bind();
+  });
+  s.server->wait_until_ready();
+  return s;
+}
+
+}  // namespace
+
+// =============================================================================
+// 1. Typed GET round-trip
+// =============================================================================
+
+TEST(TypedRouteRegistry, TypedGetReturnsDtoBodyAnd200) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest)> handler =
+      [](TypedRequest /*req*/) -> Result<TypedRouteTestDto> {
+    TypedRouteTestDto dto;
+    dto.name = "hello";
+    dto.count = 7;
+    return dto;
+  };
+  reg.get<TypedRouteTestDto>("/test/health", std::move(handler)).tag("Test").summary("Test endpoint");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/health");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 200);
+  auto body = nlohmann::json::parse(r->body);
+  EXPECT_EQ(body["name"], "hello");
+  EXPECT_EQ(body["count"], 7);
+}
+
+// =============================================================================
+// 2. Typed POST body parsing
+// =============================================================================
+
+TEST(TypedRouteRegistry, TypedPostParsesBodyAndReturnsDto) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest, TypedRouteTestReq)> handler =
+      [](TypedRequest /*req*/, const TypedRouteTestReq & body) -> Result<TypedRouteTestDto> {
+    TypedRouteTestDto dto;
+    dto.name = body.greeting;
+    dto.count = static_cast<int>(body.greeting.size());
+    return dto;
+  };
+  reg.post<TypedRouteTestReq, TypedRouteTestDto>("/test/echo", std::move(handler)).tag("Test").summary("Echo");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+
+  // Happy path.
+  {
+    nlohmann::json req_body{{"greeting", "hi"}};
+    auto r = cli.Post("/api/v1/test/echo", req_body.dump(), "application/json");
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->status, 200);
+    auto body = nlohmann::json::parse(r->body);
+    EXPECT_EQ(body["name"], "hi");
+    EXPECT_EQ(body["count"], 2);
+  }
+
+  // Malformed JSON -> 400 invalid-request.
+  {
+    auto r = cli.Post("/api/v1/test/echo", "not-json", "application/json");
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->status, 400);
+    auto body = nlohmann::json::parse(r->body);
+    EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+  }
+
+  // Missing required field -> 400 invalid-request with field error.
+  {
+    auto r = cli.Post("/api/v1/test/echo", "{}", "application/json");
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->status, 400);
+    auto body = nlohmann::json::parse(r->body);
+    EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_INVALID_REQUEST);
+    ASSERT_TRUE(body.contains("parameters"));
+    ASSERT_TRUE(body["parameters"].contains("fields"));
+    ASSERT_TRUE(body["parameters"]["fields"].is_array());
+    ASSERT_FALSE(body["parameters"]["fields"].empty());
+    EXPECT_EQ(body["parameters"]["fields"][0]["field"], "greeting");
+  }
+}
+
+// =============================================================================
+// 3. Error renderer per-route
+// =============================================================================
+
+TEST(TypedRouteRegistry, ErrorRendererOAuth2OverridesSovdShape) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest)> handler =
+      [](TypedRequest /*req*/) -> Result<TypedRouteTestDto> {
+    ErrorInfo err;
+    err.code = "invalid_grant";
+    err.message = "credentials rejected";
+    err.http_status = 400;
+    return tl::make_unexpected(err);
+  };
+  reg.get<TypedRouteTestDto>("/test/oauth", std::move(handler))
+      .tag("Test")
+      .summary("OAuth-shaped error")
+      .error_renderer(ErrorRenderer::kOAuth2Error);
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/oauth");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 400);
+  auto body = nlohmann::json::parse(r->body);
+  // OAuth2 shape: { error, error_description }
+  EXPECT_EQ(body["error"], "invalid_grant");
+  EXPECT_EQ(body["error_description"], "credentials rejected");
+  // Must NOT carry the SOVD GenericError keys.
+  EXPECT_FALSE(body.contains("error_code"));
+  EXPECT_FALSE(body.contains("message"));
+}
+
+TEST(TypedRouteRegistry, DefaultErrorRendererIsSovdGenericError) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest)> handler =
+      [](TypedRequest /*req*/) -> Result<TypedRouteTestDto> {
+    ErrorInfo err;
+    err.code = ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND;
+    err.message = "not found";
+    err.http_status = 404;
+    return tl::make_unexpected(err);
+  };
+  reg.get<TypedRouteTestDto>("/test/notfound", std::move(handler)).tag("Test").summary("Default error");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/notfound");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 404);
+  auto body = nlohmann::json::parse(r->body);
+  EXPECT_EQ(body["error_code"], ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
+  EXPECT_EQ(body["message"], "not found");
+  EXPECT_FALSE(body.contains("error_description"));
+}
+
+// =============================================================================
+// 4. ResponseAttachments status / header overrides
+// =============================================================================
+
+TEST(TypedRouteRegistry, AttachmentsApplyStatusAndHeaders) {
+  RouteRegistry reg;
+  using PairT = std::pair<TypedRouteTestDto, ResponseAttachments>;
+  std::function<Result<PairT>(TypedRequest, TypedRouteTestReq)> handler =
+      [](TypedRequest /*req*/, const TypedRouteTestReq & body) -> Result<PairT> {
+    TypedRouteTestDto dto;
+    dto.name = body.greeting;
+    dto.count = 1;
+    ResponseAttachments att;
+    att.with_status(201).with_header("Location", "/api/v1/test/items/x").with_header("X-Medkit-Trace-Id", "trace1");
+    return std::make_pair(std::move(dto), std::move(att));
+  };
+  reg.post<TypedRouteTestReq, TypedRouteTestDto>("/test/items", std::move(handler)).tag("Test").summary("Create");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  nlohmann::json req_body{{"greeting", "n"}};
+  auto r = cli.Post("/api/v1/test/items", req_body.dump(), "application/json");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 201);
+  EXPECT_EQ(r->get_header_value("Location"), "/api/v1/test/items/x");
+  EXPECT_EQ(r->get_header_value("X-Medkit-Trace-Id"), "trace1");
+  auto body = nlohmann::json::parse(r->body);
+  EXPECT_EQ(body["name"], "n");
+}
+
+// =============================================================================
+// 5. Alternates dispatch via dto_alternate_status<T>
+// =============================================================================
+
+TEST(TypedRouteRegistry, PostAlternatesPicksStatusFromActiveVariant) {
+  // AltA -> 202 (specialized above), AltB -> 200 (default).
+  RouteRegistry reg;
+  using VarT = std::variant<TypedRouteAltA, TypedRouteAltB>;
+  std::function<Result<VarT>(TypedRequest, TypedRouteTestReq)> handler =
+      [](TypedRequest /*req*/, const TypedRouteTestReq & body) -> Result<VarT> {
+    if (body.greeting == "a") {
+      TypedRouteAltA a;
+      a.a = "alt-a";
+      return VarT{a};
+    }
+    TypedRouteAltB b;
+    b.b = 99;
+    return VarT{b};
+  };
+  reg.post_alternates<TypedRouteTestReq, TypedRouteAltA, TypedRouteAltB>("/test/alt", std::move(handler))
+      .tag("Test")
+      .summary("Alternates");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+
+  {
+    nlohmann::json req_body{{"greeting", "a"}};
+    auto r = cli.Post("/api/v1/test/alt", req_body.dump(), "application/json");
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->status, 202) << "AltA must use the specialized 202 status";
+    auto body = nlohmann::json::parse(r->body);
+    EXPECT_EQ(body["a"], "alt-a");
+  }
+  {
+    nlohmann::json req_body{{"greeting", "b"}};
+    auto r = cli.Post("/api/v1/test/alt", req_body.dump(), "application/json");
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->status, 200) << "AltB must use the default 200 status";
+    auto body = nlohmann::json::parse(r->body);
+    EXPECT_EQ(body["b"], 99);
+  }
+}
+
+// =============================================================================
+// 6. Schema auto-population
+// =============================================================================
+
+TEST(TypedRouteRegistry, TypedGetAutoPopulatesResponseSchemaRef) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest)> handler =
+      [](TypedRequest /*req*/) -> Result<TypedRouteTestDto> {
+    return TypedRouteTestDto{};
+  };
+  reg.get<TypedRouteTestDto>("/test/schema", std::move(handler)).tag("Test").summary("Schema check");
+
+  auto paths = reg.to_openapi_paths();
+  ASSERT_TRUE(paths.contains("/test/schema"));
+  auto & resp_200 = paths["/test/schema"]["get"]["responses"]["200"];
+  ASSERT_TRUE(resp_200.contains("content"));
+  ASSERT_TRUE(resp_200["content"].contains("application/json"));
+  auto & schema = resp_200["content"]["application/json"]["schema"];
+  ASSERT_TRUE(schema.contains("$ref"));
+  EXPECT_EQ(schema["$ref"], "#/components/schemas/TypedRouteTestDto");
+}
+
+TEST(TypedRouteRegistry, TypedPostAutoPopulatesRequestBodySchemaRef) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest, TypedRouteTestReq)> handler =
+      [](TypedRequest /*req*/, const TypedRouteTestReq & /*body*/) -> Result<TypedRouteTestDto> {
+    return TypedRouteTestDto{};
+  };
+  reg.post<TypedRouteTestReq, TypedRouteTestDto>("/test/body", std::move(handler)).tag("Test").summary("Body");
+
+  auto paths = reg.to_openapi_paths();
+  ASSERT_TRUE(paths.contains("/test/body"));
+  auto & op = paths["/test/body"]["post"];
+  ASSERT_TRUE(op.contains("requestBody"));
+  auto & req_schema = op["requestBody"]["content"]["application/json"]["schema"];
+  ASSERT_TRUE(req_schema.contains("$ref"));
+  EXPECT_EQ(req_schema["$ref"], "#/components/schemas/TypedRouteTestReq");
+}
+
+// =============================================================================
+// 7. Compile-time DTO check
+//
+// Documented contract: `reg.get<int>(path, ...)` must fail to compile because
+// `int` is not a DTO. We cannot portably unit-test a compile failure, so this
+// is a documentation comment only; CI compilers will reject the call site.
+// =============================================================================
+
+// =============================================================================
+// Typed DELETE + NoContent
+// =============================================================================
+
+TEST(TypedRouteRegistry, TypedDeleteWithNoContentReturns204) {
+  RouteRegistry reg;
+  std::function<Result<ros2_medkit_gateway::http::NoContent>(TypedRequest)> handler =
+      [](TypedRequest /*req*/) -> Result<ros2_medkit_gateway::http::NoContent> {
+    return ros2_medkit_gateway::http::NoContent{};
+  };
+  reg.del<ros2_medkit_gateway::http::NoContent>("/test/item", std::move(handler)).tag("Test").summary("Delete");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Delete("/api/v1/test/item");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 204);
+  EXPECT_TRUE(r->body.empty());
+}
+
+// =============================================================================
+// Typed PUT round-trip
+// =============================================================================
+
+TEST(TypedRouteRegistry, TypedPutRoundTrip) {
+  RouteRegistry reg;
+  std::function<Result<TypedRouteTestDto>(TypedRequest, TypedRouteTestReq)> handler =
+      [](TypedRequest /*req*/, const TypedRouteTestReq & body) -> Result<TypedRouteTestDto> {
+    TypedRouteTestDto dto;
+    dto.name = body.greeting;
+    dto.count = 42;
+    return dto;
+  };
+  reg.put<TypedRouteTestReq, TypedRouteTestDto>("/test/put", std::move(handler)).tag("Test").summary("Put");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  nlohmann::json req_body{{"greeting", "putme"}};
+  auto r = cli.Put("/api/v1/test/put", req_body.dump(), "application/json");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 200);
+  auto body = nlohmann::json::parse(r->body);
+  EXPECT_EQ(body["name"], "putme");
+  EXPECT_EQ(body["count"], 42);
+}
+
+// =============================================================================
+// docs_subtree - catch-all regex
+// =============================================================================
+
+TEST(TypedRouteRegistry, DocsSubtreeRegexRoutes) {
+  RouteRegistry reg;
+  reg.docs_subtree("/docs/(.*)", [](const httplib::Request & req, httplib::Response & res) {
+    res.status = 200;
+    res.set_content("docs:" + req.matches[1].str(), "text/plain");
+  });
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/docs/foo/bar.html");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 200);
+  EXPECT_EQ(r->body, "docs:foo/bar.html");
+}

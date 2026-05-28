@@ -14,18 +14,22 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "../src/openapi/capability_generator.hpp"
 #include "../src/openapi/route_registry.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
+#include "ros2_medkit_gateway/dto/health.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::openapi;
@@ -34,15 +38,28 @@ using namespace std::chrono_literals;
 
 namespace {
 
+// Typed seed handler - never invoked by CapabilityGenerator tests; the
+// generator only consumes the route's path / tag / summary metadata.
+http::Result<dto::Health> noop_cap_handler(http::TypedRequest /*req*/) {
+  return dto::Health{};
+}
+
+void seed_get(RouteRegistry & reg, const std::string & path, const std::string & tag, const std::string & summary) {
+  std::function<http::Result<dto::Health>(http::TypedRequest)> h = &noop_cap_handler;
+  reg.get<dto::Health>(path, std::move(h)).tag(tag).summary(summary);
+}
+
+void seed_get_no_summary(RouteRegistry & reg, const std::string & path, const std::string & tag) {
+  std::function<http::Result<dto::Health>(http::TypedRequest)> h = &noop_cap_handler;
+  reg.get<dto::Health>(path, std::move(h)).tag(tag);
+}
+
 // Populate a RouteRegistry with representative routes matching what the real
 // gateway registers, so that generate_root() produces the paths the tests expect.
 void populate_test_routes(RouteRegistry & reg) {
-  // Dummy handler - these are never actually called in generator tests
-  auto noop = [](const httplib::Request &, httplib::Response &) {};
-
-  reg.get("/health", noop).tag("Server").summary("Health check");
-  reg.get("/", noop).tag("Server").summary("API overview");
-  reg.get("/version-info", noop).tag("Server").summary("SOVD version information");
+  seed_get(reg, "/health", "Server", "Health check");
+  seed_get(reg, "/", "Server", "API overview");
+  seed_get(reg, "/version-info", "Server", "SOVD version information");
 
   for (const auto * et : {"areas", "components", "apps", "functions"}) {
     std::string base = std::string("/") + et;
@@ -50,22 +67,23 @@ void populate_test_routes(RouteRegistry & reg) {
     if (!singular.empty() && singular.back() == 's') {
       singular.pop_back();
     }
-    std::string entity_path = base + "/{" + singular + "_id}";
+    std::string entity_path = base;
+    entity_path.append("/{").append(singular).append("_id}");
 
-    reg.get(base, noop).tag("Discovery").summary(std::string("List ") + et);
-    reg.get(entity_path, noop).tag("Discovery").summary(std::string("Get ") + singular);
-    reg.get(entity_path + "/data", noop).tag("Data");
-    reg.get(entity_path + "/data/{data_id}", noop).tag("Data");
-    reg.get(entity_path + "/operations", noop).tag("Operations");
-    reg.get(entity_path + "/configurations", noop).tag("Configuration");
-    reg.get(entity_path + "/faults", noop).tag("Faults");
-    reg.get(entity_path + "/logs", noop).tag("Logs");
-    reg.get(entity_path + "/bulk-data", noop).tag("Bulk Data");
-    reg.get(entity_path + "/cyclic-subscriptions", noop).tag("Subscriptions");
+    seed_get(reg, base, "Discovery", std::string("List ") + et);
+    seed_get(reg, entity_path, "Discovery", std::string("Get ") + singular);
+    seed_get_no_summary(reg, entity_path + "/data", "Data");
+    seed_get_no_summary(reg, entity_path + "/data/{data_id}", "Data");
+    seed_get_no_summary(reg, entity_path + "/operations", "Operations");
+    seed_get_no_summary(reg, entity_path + "/configurations", "Configuration");
+    seed_get_no_summary(reg, entity_path + "/faults", "Faults");
+    seed_get_no_summary(reg, entity_path + "/logs", "Logs");
+    seed_get_no_summary(reg, entity_path + "/bulk-data", "Bulk Data");
+    seed_get_no_summary(reg, entity_path + "/cyclic-subscriptions", "Subscriptions");
   }
 
-  reg.get("/faults", noop).tag("Faults").summary("List all faults globally");
-  reg.get("/faults/stream", noop).tag("Faults").summary("Stream fault events (SSE)");
+  seed_get(reg, "/faults", "Faults", "List all faults globally");
+  seed_get(reg, "/faults/stream", "Faults", "Stream fault events (SSE)");
 }
 
 }  // namespace

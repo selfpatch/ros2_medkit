@@ -152,6 +152,13 @@ constexpr const char * ERR_SCRIPT_FILE_TOO_LARGE = "x-medkit-script-too-large";
 /// Plugin provider returned an error (used for DataProvider/OperationProvider/FaultProvider errors)
 constexpr const char * ERR_PLUGIN_ERROR = "x-medkit-plugin-error";
 
+/// Framework-internal sentinel signalling that a typed handler propagated a
+/// validator's Forwarded outcome - the response has already been committed by
+/// the peer-forwarding path and the typed wrapper must NOT render any body or
+/// status. Never appears on the wire. Always paired with `http_status == 0`
+/// so accidental rendering still produces a recognizable shape.
+constexpr const char * ERR_X_INTERNAL_FORWARDED = "x-medkit-internal-forwarded";
+
 /**
  * @brief Check if an error code is a vendor-specific code
  * @param error_code Error code to check

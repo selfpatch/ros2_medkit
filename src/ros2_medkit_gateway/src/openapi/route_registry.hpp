@@ -18,15 +18,39 @@
 #include <functional>
 #include <httplib.h>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <variant>
 #include <vector>
+
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/http/alternate_status.hpp"
+#include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
+#include "ros2_medkit_gateway/http/detail/primitives.hpp"
+#include "ros2_medkit_gateway/http/response_types.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {
 
 using HandlerFn = std::function<void(const httplib::Request &, httplib::Response &)>;
+
+/// Which error wire shape a route renders when its typed handler returns the
+/// error branch of `Result<T>`. Per-route knob on `RouteEntry`; default is
+/// `kSovdGenericError` (the SOVD GenericError schema everywhere except the
+/// `/auth/*` endpoints).
+enum class ErrorRenderer {
+  kSovdGenericError,  ///< `{"error_code","message","parameters"}` (default)
+  kOAuth2Error,       ///< RFC 6749 §5.2 `{"error","error_description"}`
+};
 
 /// Fluent builder for a single route entry.
 class RouteEntry {
@@ -38,6 +62,20 @@ class RouteEntry {
   RouteEntry & response(int status_code, const std::string & desc, const nlohmann::json & schema);
   RouteEntry & request_body(const std::string & desc, const nlohmann::json & schema,
                             const std::string & content_type = "application/json");
+
+  /// Typed response: the schema is a $ref to the DTO's component schema.
+  template <class T>
+  RouteEntry & response(int status_code, const std::string & desc) {
+    return response(status_code, desc,
+                    nlohmann::json{{"$ref", "#/components/schemas/" + std::string(dto::dto_name<T>)}});
+  }
+
+  /// Typed request body: the schema is a $ref to the DTO's component schema.
+  template <class T>
+  RouteEntry & request_body(const std::string & desc) {
+    return request_body(desc, nlohmann::json{{"$ref", "#/components/schemas/" + std::string(dto::dto_name<T>)}});
+  }
+
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
   RouteEntry & header_param(const std::string & name, const std::string & desc, bool required = true,
@@ -51,6 +89,15 @@ class RouteEntry {
   /// Use for endpoints that always return errors (e.g., 405 Not Supported).
   RouteEntry & hidden();
 
+  /// Override the error wire shape this route renders when a typed handler
+  /// returns the error branch. Default is `kSovdGenericError`. The auth
+  /// endpoints set this to `kOAuth2Error` so they emit the RFC 6749 shape.
+  ///
+  /// Backed by a shared_ptr so the change is visible to the typed handler
+  /// wrapper closure even when called after the route is registered (the
+  /// closure captures the shared_ptr by value).
+  RouteEntry & error_renderer(ErrorRenderer renderer);
+
  private:
   friend class RouteRegistry;
   std::string method_;
@@ -63,6 +110,10 @@ class RouteEntry {
   bool deprecated_{false};
   bool hidden_{false};
   std::string operation_id_;
+
+  /// Heap-allocated so the typed wrapper closure can hold a stable handle to
+  /// the renderer choice and observe later `.error_renderer(...)` updates.
+  std::shared_ptr<ErrorRenderer> error_renderer_{std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError)};
 
   struct ResponseInfo {
     std::string desc;
@@ -92,14 +143,186 @@ struct ValidationIssue {
 /// Routes registered here are both served via cpp-httplib AND documented in OpenAPI.
 class RouteRegistry {
  public:
-  /// Register a GET route.
-  RouteEntry & get(const std::string & openapi_path, HandlerFn handler);
-  /// Register a POST route.
-  RouteEntry & post(const std::string & openapi_path, HandlerFn handler);
-  /// Register a PUT route.
-  RouteEntry & put(const std::string & openapi_path, HandlerFn handler);
-  /// Register a DELETE route (using "del" to avoid keyword conflict).
-  RouteEntry & del(const std::string & openapi_path, HandlerFn handler);
+  // ---------------------------------------------------------------------------
+  // Typed overloads.
+  //
+  // Each typed overload takes a handler with signature
+  // `http::Result<TResponse>(http::TypedRequest)` (POST/PUT/PATCH variants also
+  // take a parsed `TBody`). The framework:
+  //   * generates the cpp-httplib HandlerFn (request parsing + response writing
+  //     via the http::detail primitives),
+  //   * auto-populates OpenAPI metadata (`response<T>(200,"")` and
+  //     `request_body<TB>("")`) from the template parameters so handler call
+  //     sites only need to set tag / summary / extra responses.
+  //
+  // Two flavours per method:
+  //   * `T`-only:  handler returns `Result<T>` -> 200 + JSON body.
+  //   * Pair:      handler returns `Result<std::pair<T, ResponseAttachments>>`
+  //                so the handler can override status / append headers
+  //                (201+Location, 204+X-Medkit-Local-Only, ...).
+  // ---------------------------------------------------------------------------
+
+  /// Typed GET that returns `Result<T>` -> 200 + JSON body.
+  template <class TResponse>
+  RouteEntry & get(const std::string & openapi_path,
+                   std::function<http::Result<TResponse>(http::TypedRequest)> handler);
+
+  /// Typed GET that returns `Result<std::pair<T, ResponseAttachments>>` so the
+  /// handler can override status code / append headers per call.
+  template <class TResponse>
+  RouteEntry &
+  get(const std::string & openapi_path,
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler);
+
+  /// Typed POST: parses TBody, returns `Result<TResponse>`.
+  template <class TBody, class TResponse>
+  RouteEntry & post(const std::string & openapi_path,
+                    std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler);
+
+  /// Typed POST with attachments.
+  template <class TBody, class TResponse>
+  RouteEntry &
+  post(const std::string & openapi_path,
+       std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler);
+
+  /// Body-less typed POST: returns `Result<TResponse>`. The framework neither
+  /// parses nor declares a request body; the handler reads `req.body` directly
+  /// via the framework escape hatch when it needs to handle non-JSON wire
+  /// formats (e.g. RFC 6749 `application/x-www-form-urlencoded` on `/auth/*`).
+  /// Call sites should attach an explicit `.request_body(...)` schema on the
+  /// returned RouteEntry so the OpenAPI spec still documents the payload.
+  template <class TResponse>
+  RouteEntry & post(const std::string & openapi_path,
+                    std::function<http::Result<TResponse>(http::TypedRequest)> handler);
+
+  /// Body-less typed POST with attachments.
+  template <class TResponse>
+  RouteEntry &
+  post(const std::string & openapi_path,
+       std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler);
+
+  /// Typed PUT.
+  template <class TBody, class TResponse>
+  RouteEntry & put(const std::string & openapi_path,
+                   std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler);
+
+  /// Typed PUT with attachments.
+  template <class TBody, class TResponse>
+  RouteEntry &
+  put(const std::string & openapi_path,
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler);
+
+  /// Body-less typed PUT: returns `Result<TResponse>`. The framework neither
+  /// parses nor declares a request body; reserved for routes that legitimately
+  /// take no payload (e.g. PUT /updates/{id}/prepare which is a fire-and-forget
+  /// state-machine kick). Call sites should attach an explicit
+  /// `.response(...)` for any non-default status the attachments variant emits.
+  template <class TResponse>
+  RouteEntry & put(const std::string & openapi_path,
+                   std::function<http::Result<TResponse>(http::TypedRequest)> handler);
+
+  /// Body-less typed PUT with attachments. Lets the handler emit 202 + Location
+  /// (the async-job convention) without re-introducing a httplib::Response &.
+  template <class TResponse>
+  RouteEntry &
+  put(const std::string & openapi_path,
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler);
+
+  /// Typed PATCH.
+  template <class TBody, class TResponse>
+  RouteEntry & patch(const std::string & openapi_path,
+                     std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler);
+
+  /// Typed PATCH with attachments.
+  template <class TBody, class TResponse>
+  RouteEntry & patch(
+      const std::string & openapi_path,
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler);
+
+  /// Typed DELETE returning `Result<T>`.
+  template <class TResponse>
+  RouteEntry & del(const std::string & openapi_path,
+                   std::function<http::Result<TResponse>(http::TypedRequest)> handler);
+
+  /// Typed DELETE with attachments.
+  template <class TResponse>
+  RouteEntry &
+  del(const std::string & openapi_path,
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler);
+
+  /// Typed POST returning one of several alternates via `std::variant<TAlt...>`.
+  /// The status per alternative is looked up via `http::dto_alternate_status<T>`
+  /// (default 200; specialize per type, e.g. NoContent -> 204, Accepted -> 202).
+  /// Schema: every alternate is registered under its `dto_name<T>` $ref at the
+  /// corresponding status; the body is serialized via `JsonWriter<T>`.
+  template <class TBody, class... TAlt>
+  RouteEntry & post_alternates(const std::string & openapi_path,
+                               std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest, TBody)> handler);
+
+  /// Typed POST alternates with ResponseAttachments. Combines the per-alternative
+  /// status dispatch of `post_alternates` with the headers/status-override
+  /// channel of the pair-returning POST overloads. The framework picks the
+  /// status from `dto_alternate_status<active_alternative>` first, then applies
+  /// the attachments (which may further override the status and always append
+  /// headers, e.g. a `Location` header for the 202 async branch).
+  template <class TBody, class... TAlt>
+  RouteEntry & post_alternates(const std::string & openapi_path,
+                               std::function<http::Result<std::pair<std::variant<TAlt...>, http::ResponseAttachments>>(
+                                   http::TypedRequest, TBody)>
+                                   handler);
+
+  /// Typed DELETE returning one of several alternates.
+  template <class... TAlt>
+  RouteEntry & del_alternates(const std::string & openapi_path,
+                              std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest)> handler);
+
+  // ---------------------------------------------------------------------------
+  // Named escape hatches for non-DTO endpoints.
+  //
+  // These do not participate in DTO schema generation; they appear in the
+  // OpenAPI spec via whatever metadata the caller attaches (the registry sets
+  // no schema, only the route entry). Reserved for routes whose payload is
+  // genuinely non-DTO (SSE, binary blobs, multipart, static assets, docs).
+  // ---------------------------------------------------------------------------
+
+  /// Register a Server-Sent Events stream route. The factory is invoked per
+  /// request and returns an `SseStream` whose `next_event` callback the
+  /// framework drives via cpp-httplib's chunked content provider.
+  RouteEntry & sse(const std::string & openapi_path,
+                   std::function<http::Result<http::SseStream>(http::TypedRequest)> stream_factory);
+
+  /// Register a binary download (range-aware where the provider supports it).
+  RouteEntry & binary_download(const std::string & openapi_path,
+                               std::function<http::Result<http::BinaryResponse>(http::TypedRequest)> handler);
+
+  /// Register a `multipart/form-data` upload endpoint. The handler receives
+  /// the typed request plus the parsed multipart body, and returns a typed
+  /// response with attachments (typically 201 Created + Location).
+  template <class TResponse>
+  RouteEntry &
+  multipart_upload(const std::string & openapi_path,
+                   std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest,
+                                                                                               http::MultipartBody)>
+                       handler);
+
+  /// Register a static-asset endpoint (HTML / JS / CSS bundled into the binary).
+  RouteEntry & static_asset(const std::string & openapi_path,
+                            std::function<http::Result<http::StaticAsset>(http::TypedRequest)> handler);
+
+  /// Register the OpenAPI JSON endpoint at the given path. The spec body is
+  /// supplied by the caller (typically a closure over the gateway's
+  /// `OpenApiSpecBuilder`).
+  RouteEntry & docs_endpoint(const std::string & openapi_path,
+                             std::function<http::Result<nlohmann::json>(http::TypedRequest)> handler);
+
+  /// Register a catch-all docs route via cpp-httplib regex (used for Swagger
+  /// UI subtree where the path arguments are not fixed). The route is hidden
+  /// from the OpenAPI spec.
+  RouteEntry & docs_subtree(const std::string & regex_pattern, HandlerFn handler);
+
+  // ---------------------------------------------------------------------------
+  // Registry-level operations.
+  // ---------------------------------------------------------------------------
 
   /// Register all routes with cpp-httplib server.
   void register_all(httplib::Server & server, const std::string & api_prefix) const;
@@ -135,9 +358,662 @@ class RouteRegistry {
 
   RouteEntry & add_route(const std::string & method, const std::string & openapi_path, HandlerFn handler);
 
+  /// Variant of add_route() for routes whose `regex_path_` is supplied
+  /// directly (escape hatches whose URI cannot be derived from an
+  /// OpenAPI-style path - e.g. `docs_subtree` catch-alls).
+  RouteEntry & add_raw_route(const std::string & method, const std::string & openapi_path,
+                             const std::string & regex_path, HandlerFn handler);
+
   std::deque<RouteEntry> routes_;
   bool auth_enabled_{false};
+
+  // ---------------------------------------------------------------------------
+  // Typed-handler wrapper helpers.
+  //
+  // These translate a typed `Result<T>(TypedRequest [, TBody])` lambda into a
+  // raw cpp-httplib `HandlerFn` that:
+  //   1. parses TBody (POST/PUT/PATCH) via `JsonReader<TBody>` -> 400 on failure,
+  //   2. wraps the request in `http::TypedRequest` and invokes the user lambda,
+  //   3. on success, serializes via `JsonWriter<TResponse>` and writes the body
+  //      via `http::detail::write_json_body` (applying any attachments),
+  //   4. on error, writes via `write_generic_error` or `write_oauth2_error`
+  //      according to the route's current `error_renderer_` choice (read
+  //      through the shared_ptr captured by the closure).
+  //
+  // Defined inline (templates) right below the class.
+  // ---------------------------------------------------------------------------
+
+  /// Append a parsed-body failure response (400 invalid-request).
+  static ErrorInfo make_body_parse_error(const std::vector<dto::FieldError> & errs);
+
+  /// Apply ResponseAttachments to a cpp-httplib response (status override,
+  /// header append). Called by the pair-returning wrappers after the body has
+  /// been written.
+  static void apply_attachments(httplib::Response & res, const http::ResponseAttachments & att);
+
+  /// Write the success body for a typed handler. NoContent specialization
+  /// produces an empty body + 204 status.
+  template <class TResponse>
+  static void write_success_body(httplib::Response & res, const TResponse & value, int status);
+
+  /// Write a typed error using the renderer pointed to by `renderer_ptr`.
+  static void write_typed_error(httplib::Response & res, const ErrorInfo & err,
+                                const std::shared_ptr<ErrorRenderer> & renderer_ptr);
+
+  /// Build the body-less typed HandlerFn (GET/DELETE/SSE-factory-style).
+  template <class TResponse>
+  static HandlerFn wrap_body_less(std::function<http::Result<TResponse>(http::TypedRequest)> handler,
+                                  std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the body-less typed HandlerFn whose return type is
+  /// `Result<pair<T, ResponseAttachments>>`.
+  template <class TResponse>
+  static HandlerFn wrap_body_less_with_attachments(
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler,
+      std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the body-bearing typed HandlerFn.
+  template <class TBody, class TResponse>
+  static HandlerFn wrap_with_body(std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler,
+                                  std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the body-bearing typed HandlerFn whose return type carries
+  /// ResponseAttachments.
+  template <class TBody, class TResponse>
+  static HandlerFn wrap_with_body_attachments(
+      std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler,
+      std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the alternates-returning HandlerFn (POST flavour).
+  template <class TBody, class... TAlt>
+  static HandlerFn
+  wrap_post_alternates(std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest, TBody)> handler,
+                       std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the alternates+attachments HandlerFn (POST flavour). The active
+  /// alternative drives the default status via `dto_alternate_status`; the
+  /// `ResponseAttachments` companion appends headers and may further override
+  /// the status (handlers attach `Location` here on the 202 async branch).
+  template <class TBody, class... TAlt>
+  static HandlerFn wrap_post_alternates_with_attachments(
+      std::function<http::Result<std::pair<std::variant<TAlt...>, http::ResponseAttachments>>(http::TypedRequest,
+                                                                                              TBody)>
+          handler,
+      std::shared_ptr<ErrorRenderer> renderer);
+
+  /// Build the alternates-returning HandlerFn (DELETE flavour).
+  template <class... TAlt>
+  static HandlerFn wrap_del_alternates(std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest)> handler,
+                                       std::shared_ptr<ErrorRenderer> renderer);
 };
+
+// =============================================================================
+// Template implementations
+// =============================================================================
+
+namespace detail {
+
+/// Decode TBody from the request body JSON, returning either the parsed value
+/// or a 400 ErrorInfo derived from the FieldError list.
+template <class TBody>
+inline tl::expected<TBody, ErrorInfo> parse_request_body(const httplib::Request & req) {
+  static_assert(dto::is_dto_v<TBody>, "RouteRegistry typed body must be a DTO (dto_fields<T> specialization required)");
+  nlohmann::json parsed;
+  try {
+    if (req.body.empty()) {
+      parsed = nlohmann::json::object();
+    } else {
+      parsed = nlohmann::json::parse(req.body);
+    }
+  } catch (const nlohmann::json::parse_error & e) {
+    ErrorInfo info;
+    info.code = ERR_INVALID_REQUEST;
+    info.message = std::string("Malformed JSON: ") + e.what();
+    info.http_status = 400;
+    return tl::make_unexpected(std::move(info));
+  }
+  auto out = dto::JsonReader<TBody>::read(parsed);
+  if (out.has_value()) {
+    return out.value();
+  }
+  // Collapse FieldErrors into a single GenericError with `parameters`
+  // containing a `fields` array, matching the SOVD invalid-request convention.
+  ErrorInfo info;
+  info.code = ERR_INVALID_REQUEST;
+  info.message = "Request body validation failed";
+  info.http_status = 400;
+  nlohmann::json fields = nlohmann::json::array();
+  for (const auto & e : out.error()) {
+    fields.push_back({{"field", e.field}, {"message", e.message}});
+  }
+  info.params = nlohmann::json::object();
+  info.params["fields"] = std::move(fields);
+  return tl::make_unexpected(std::move(info));
+}
+
+}  // namespace detail
+
+template <class TResponse>
+void RouteRegistry::write_success_body(httplib::Response & res, const TResponse & value, int status) {
+  if constexpr (std::is_same_v<TResponse, http::NoContent>) {
+    res.status = (status == 0) ? 204 : status;
+    // 204 No Content must have no body.
+    res.body.clear();
+  } else if constexpr (std::is_same_v<TResponse, nlohmann::json>) {
+    // Raw JSON escape hatch (docs_endpoint).
+    http::detail::write_json_body(http::detail::FrameworkOrPluginAccess{}, res, value, status == 0 ? 200 : status);
+  } else {
+    static_assert(dto::has_dto_shape_v<TResponse>,
+                  "RouteRegistry typed response must be a DTO (regular or opaque), NoContent, "
+                  "or nlohmann::json (escape hatch)");
+    auto body = dto::JsonWriter<TResponse>::write(value);
+    http::detail::write_json_body(http::detail::FrameworkOrPluginAccess{}, res, body, status == 0 ? 200 : status);
+  }
+}
+
+template <class TResponse>
+HandlerFn RouteRegistry::wrap_body_less(std::function<http::Result<TResponse>(http::TypedRequest)> handler,
+                                        std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    // The forwarding scope makes the typed `validate_entity_for_route`
+    // overload able to stream the proxied response body to `res` when an
+    // entity is owned by a remote peer. Handlers never see the response, so
+    // the framework installs the channel around the handler invocation.
+    http::detail::ForwardResponseScope forward_scope(&res);
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (outcome.has_value()) {
+      write_success_body<TResponse>(res, outcome.value(), 0);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class TResponse>
+HandlerFn RouteRegistry::wrap_body_less_with_attachments(
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler,
+    std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    http::detail::ForwardResponseScope forward_scope(&res);
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (outcome.has_value()) {
+      const auto & att = outcome.value().second;
+      int status = att.status_override.value_or(std::is_same_v<TResponse, http::NoContent> ? 204 : 200);
+      write_success_body<TResponse>(res, outcome.value().first, status);
+      apply_attachments(res, att);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class TBody, class TResponse>
+HandlerFn RouteRegistry::wrap_with_body(std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler,
+                                        std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    auto body = detail::parse_request_body<TBody>(req);
+    if (!body.has_value()) {
+      write_typed_error(res, body.error(), renderer);
+      return;
+    }
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req, std::move(body.value()));
+    if (outcome.has_value()) {
+      write_success_body<TResponse>(res, outcome.value(), 0);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class TBody, class TResponse>
+HandlerFn RouteRegistry::wrap_with_body_attachments(
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler,
+    std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    auto body = detail::parse_request_body<TBody>(req);
+    if (!body.has_value()) {
+      write_typed_error(res, body.error(), renderer);
+      return;
+    }
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req, std::move(body.value()));
+    if (outcome.has_value()) {
+      const auto & att = outcome.value().second;
+      int status = att.status_override.value_or(std::is_same_v<TResponse, http::NoContent> ? 204 : 200);
+      write_success_body<TResponse>(res, outcome.value().first, status);
+      apply_attachments(res, att);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class TBody, class... TAlt>
+HandlerFn RouteRegistry::wrap_post_alternates(
+    std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest, TBody)> handler,
+    std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    auto body = detail::parse_request_body<TBody>(req);
+    if (!body.has_value()) {
+      write_typed_error(res, body.error(), renderer);
+      return;
+    }
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req, std::move(body.value()));
+    if (outcome.has_value()) {
+      std::visit(
+          [&res](const auto & alt) {
+            using AltT = std::decay_t<decltype(alt)>;
+            constexpr int status = http::dto_alternate_status<AltT>::value;
+            write_success_body<AltT>(res, alt, status);
+          },
+          outcome.value());
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class TBody, class... TAlt>
+HandlerFn RouteRegistry::wrap_post_alternates_with_attachments(
+    std::function<http::Result<std::pair<std::variant<TAlt...>, http::ResponseAttachments>>(http::TypedRequest, TBody)>
+        handler,
+    std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    auto body = detail::parse_request_body<TBody>(req);
+    if (!body.has_value()) {
+      write_typed_error(res, body.error(), renderer);
+      return;
+    }
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req, std::move(body.value()));
+    if (outcome.has_value()) {
+      const auto & att = outcome.value().second;
+      std::visit(
+          [&res, &att](const auto & alt) {
+            using AltT = std::decay_t<decltype(alt)>;
+            constexpr int default_status = http::dto_alternate_status<AltT>::value;
+            int status = att.status_override.value_or(default_status);
+            write_success_body<AltT>(res, alt, status);
+          },
+          outcome.value().first);
+      apply_attachments(res, att);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+template <class... TAlt>
+HandlerFn
+RouteRegistry::wrap_del_alternates(std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest)> handler,
+                                   std::shared_ptr<ErrorRenderer> renderer) {
+  return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
+                                                                        httplib::Response & res) {
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req);
+    if (outcome.has_value()) {
+      std::visit(
+          [&res](const auto & alt) {
+            using AltT = std::decay_t<decltype(alt)>;
+            constexpr int status = http::dto_alternate_status<AltT>::value;
+            write_success_body<AltT>(res, alt, status);
+          },
+          outcome.value());
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Typed registration entry points.
+// -----------------------------------------------------------------------------
+
+template <class TResponse>
+RouteEntry & RouteRegistry::get(const std::string & openapi_path,
+                                std::function<http::Result<TResponse>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed get<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("get", openapi_path, /*placeholder*/ HandlerFn{});
+  entry.handler_ = wrap_body_less<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::get(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed get<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("get", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less_with_attachments<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::post(const std::string & openapi_path,
+                                 std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed post<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed post<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::post(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed post<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed post<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body_attachments<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::post(const std::string & openapi_path,
+                                 std::function<http::Result<TResponse>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed post<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less<TResponse>(std::move(handler), entry.error_renderer_);
+  // No automatic request_body schema: body-less typed POST is reserved for
+  // routes that parse the body manually (e.g. form-urlencoded auth endpoints).
+  // Callers attach an explicit `.request_body(...)` to populate the OpenAPI
+  // spec.
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::post(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed post<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less_with_attachments<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::put(const std::string & openapi_path,
+                                std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed put<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed put<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("put", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::put(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed put<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed put<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("put", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body_attachments<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::put(const std::string & openapi_path,
+                                std::function<http::Result<TResponse>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed put<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("put", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less<TResponse>(std::move(handler), entry.error_renderer_);
+  // No automatic request_body schema: body-less typed PUT is reserved for
+  // routes that take no payload at all (e.g. /updates/{id}/prepare).
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::put(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed put<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("put", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less_with_attachments<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::patch(const std::string & openapi_path,
+                                  std::function<http::Result<TResponse>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed patch<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed patch<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("patch", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TBody, class TResponse>
+RouteEntry & RouteRegistry::patch(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "typed patch<TB,T>: TB must be a DTO");
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed patch<TB,T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("patch", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_with_body_attachments<TBody, TResponse>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::del(const std::string & openapi_path,
+                                std::function<http::Result<TResponse>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed del<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("delete", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+template <class TResponse>
+RouteEntry & RouteRegistry::del(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest)> handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "typed del<T>: T must be a DTO (or NoContent)");
+  auto & entry = add_route("delete", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_body_less_with_attachments<TResponse>(std::move(handler), entry.error_renderer_);
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
+
+namespace detail {
+
+/// Add one alternate's response slot to the entry by `(status, $ref)`.
+template <class TAlt>
+inline void add_alternate_response(RouteEntry & entry) {
+  constexpr int status = http::dto_alternate_status<TAlt>::value;
+  if constexpr (std::is_same_v<TAlt, http::NoContent>) {
+    entry.response(status, "No content");
+  } else {
+    static_assert(dto::has_dto_shape_v<TAlt>,
+                  "alternate variant member must be a DTO (regular or opaque) or NoContent");
+    entry.template response<TAlt>(status, "");
+  }
+}
+
+}  // namespace detail
+
+template <class TBody, class... TAlt>
+RouteEntry &
+RouteRegistry::post_alternates(const std::string & openapi_path,
+                               std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest, TBody)> handler) {
+  static_assert(dto::is_dto_v<TBody>, "post_alternates: TBody must be a DTO");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_post_alternates<TBody, TAlt...>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  (detail::add_alternate_response<TAlt>(entry), ...);
+  return entry;
+}
+
+template <class TBody, class... TAlt>
+RouteEntry & RouteRegistry::post_alternates(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<std::variant<TAlt...>, http::ResponseAttachments>>(http::TypedRequest, TBody)>
+        handler) {
+  static_assert(dto::is_dto_v<TBody>, "post_alternates: TBody must be a DTO");
+  auto & entry = add_route("post", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_post_alternates_with_attachments<TBody, TAlt...>(std::move(handler), entry.error_renderer_);
+  entry.template request_body<TBody>("");
+  (detail::add_alternate_response<TAlt>(entry), ...);
+  return entry;
+}
+
+template <class... TAlt>
+RouteEntry &
+RouteRegistry::del_alternates(const std::string & openapi_path,
+                              std::function<http::Result<std::variant<TAlt...>>(http::TypedRequest)> handler) {
+  auto & entry = add_route("delete", openapi_path, HandlerFn{});
+  entry.handler_ = wrap_del_alternates<TAlt...>(std::move(handler), entry.error_renderer_);
+  (detail::add_alternate_response<TAlt>(entry), ...);
+  return entry;
+}
+
+// -----------------------------------------------------------------------------
+// Multipart upload: defined inline because TResponse is templated.
+// -----------------------------------------------------------------------------
+
+template <class TResponse>
+RouteEntry & RouteRegistry::multipart_upload(
+    const std::string & openapi_path,
+    std::function<http::Result<std::pair<TResponse, http::ResponseAttachments>>(http::TypedRequest,
+                                                                                http::MultipartBody)>
+        handler) {
+  static_assert(dto::has_dto_shape_v<TResponse> || std::is_same_v<TResponse, http::NoContent>,
+                "multipart_upload<T>: T must be a DTO (or NoContent)");
+  auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
+  HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    http::MultipartBody body;
+    body.parts = req.files.empty() ? httplib::MultipartFormDataItems{} : httplib::MultipartFormDataItems{};
+    // cpp-httplib exposes parsed multipart entries via `req.files`; surface
+    // them through MultipartBody.parts as MultipartFormData entries.
+    for (const auto & [name, file] : req.files) {
+      httplib::MultipartFormData mp;
+      mp.name = name;
+      mp.filename = file.filename;
+      mp.content = file.content;
+      mp.content_type = file.content_type;
+      body.parts.push_back(std::move(mp));
+    }
+    http::TypedRequest typed_req(req);
+    auto outcome = handler(typed_req, std::move(body));
+    if (outcome.has_value()) {
+      const auto & att = outcome.value().second;
+      int status = att.status_override.value_or(std::is_same_v<TResponse, http::NoContent> ? 204 : 200);
+      write_success_body<TResponse>(res, outcome.value().first, status);
+      apply_attachments(res, att);
+      return;
+    }
+    write_typed_error(res, outcome.error(), renderer);
+  };
+  auto & entry = add_route("post", openapi_path, std::move(fn));
+  entry.error_renderer_ = renderer;
+  entry.request_body("Multipart upload", nlohmann::json{{"type", "object"}, {"additionalProperties", true}},
+                     "multipart/form-data");
+  if constexpr (!std::is_same_v<TResponse, http::NoContent>) {
+    entry.template response<TResponse>(200, "");
+  } else {
+    entry.response(204, "No content");
+  }
+  return entry;
+}
 
 }  // namespace openapi
 }  // namespace ros2_medkit_gateway
