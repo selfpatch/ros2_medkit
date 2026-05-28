@@ -56,3 +56,35 @@ race:rclcpp::node_interfaces::NodeGraph::notify_graph_change
 # during test TearDownTestSuite when rclcpp::shutdown() races with
 # executor threads still calling context methods.
 deadlock:rclcpp::Context*
+
+# rclcpp GenericClient: std::future shared state racing between the
+# executor thread that fulfils the response promise (_M_do_set ->
+# unique_ptr::swap) and the caller thread reading via future::get().
+# The happens-before is established by rclcpp's pthread_once around
+# _State_baseV2::wait, but TSan does not see pthread_once as
+# synchronisation when the wait completes after the promise was
+# already satisfied. Suppress the standard-library frames that surface
+# the rclcpp/glibc internal synchronisation - the race lives in the
+# stdc++ future implementation, not in our handlers.
+race:std::__future_base::_State_baseV2*
+race:std::__uniq_ptr_impl*_Result_base*
+race:std::unique_ptr*_Result_base*
+
+# rclcpp GenericClient response staging: the executor thread fills the
+# generic response via rclcpp::GenericClient::create_response() before
+# satisfying the promise, while the caller thread reads it after
+# future::get(). dynmsg (the vendored ROS introspection serialiser used
+# inside our JsonSerializer::to_json) and yaml-cpp 0.8 both reach into
+# the staged response buffer; TSan reports races on yaml-cpp's
+# Node::Assign / inner_encode and on dynmsg's basic_value_to_yaml and
+# get_vector_size because libstdc++ future synchronisation is invisible
+# to TSan (see suppression above). Suppress the library/vendored frames
+# rather than the call sites in our code, so any race we introduce in
+# our own JSON path still gets reported.
+race:YAML::Node::Assign*
+race:YAML::conversion::inner_encode*
+race:YAML::detail::node_data::set_scalar*
+called_from_lib:libyaml-cpp.so.0.8
+race:dynmsg::cpp::impl::basic_value_to_yaml*
+race:dynmsg::cpp::impl::member_to_yaml*
+race:dynmsg::get_vector_size*

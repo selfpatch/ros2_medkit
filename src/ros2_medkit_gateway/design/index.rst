@@ -672,5 +672,6 @@ Additional Design Documents
    :maxdepth: 1
 
    aggregation
+   dto_contract
    plugin_entity_notifications
    ros2_subscription_architecture
