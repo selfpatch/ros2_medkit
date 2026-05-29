@@ -267,6 +267,9 @@ RouteRegistry::binary_download(const std::string & openapi_path,
                                std::function<http::Result<http::BinaryResponse>(http::TypedRequest)> handler) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    // Forwarding scope: entity-scoped binary downloads (bulk-data, scripts) on a
+    // remote peer must proxy through validate_entity_for_route (see sse / wrap_body_less).
+    http::detail::ForwardResponseScope forward_scope(&res);
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
     if (!outcome.has_value()) {
@@ -302,6 +305,9 @@ RouteEntry & RouteRegistry::static_asset(const std::string & openapi_path,
                                          std::function<http::Result<http::StaticAsset>(http::TypedRequest)> handler) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    // Forwarding scope kept uniform across wrappers (static assets are not
+    // entity-scoped, so this never forwards; see the comment at the top of this file).
+    http::detail::ForwardResponseScope forward_scope(&res);
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
     if (!outcome.has_value()) {
@@ -326,6 +332,8 @@ RouteEntry & RouteRegistry::docs_endpoint(const std::string & openapi_path,
                                           std::function<http::Result<nlohmann::json>(http::TypedRequest)> handler) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    // Forwarding scope kept uniform across wrappers (see the comment at the top of this file).
+    http::detail::ForwardResponseScope forward_scope(&res);
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
     if (!outcome.has_value()) {

@@ -44,9 +44,15 @@ nlohmann::json encode_value(const U & v) {
           return encode_value(alt);
         },
         v);
-  } else {
+  } else if constexpr (std::is_same_v<U, std::string> || std::is_same_v<U, bool> || std::is_integral_v<U> ||
+                       std::is_floating_point_v<U> || std::is_same_v<U, nlohmann::json>) {
     // string / bool / integral / floating / nlohmann::json passthrough
     return nlohmann::json(v);
+  } else {
+    // Mirror decode_value / schema_of: fail loud if a field type leaks here that
+    // is neither a DTO, container, variant, nor a supported scalar (e.g. a DTO
+    // sentinel used in a TU that never saw its dto_fields specialization).
+    static_assert(sizeof(U) == 0, "encode_value: unsupported field type");
   }
 }
 

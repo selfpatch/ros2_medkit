@@ -17,14 +17,18 @@
 
 #include <arpa/inet.h>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <netinet/in.h>
 #include <rclcpp/rclcpp.hpp>
 #include <set>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
+#include <utility>
+#include <variant>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -38,6 +42,8 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
+
+#include "../src/openapi/route_registry.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
@@ -591,6 +597,192 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_ForwardedWhenRe
   auto typed_result = ctx.validate_entity_for_route(typed_req, "remote_sensor");
   ASSERT_FALSE(typed_result.has_value());
   EXPECT_TRUE(std::holds_alternative<http::Forwarded>(typed_result.error()));
+}
+
+// =============================================================================
+// Aggregation forwarding through the typed wrappers (regression).
+//
+// validate_entity_for_route only streams a remote-peer response when the typed
+// wrapper has installed a ForwardResponseScope. The body / alternates / delete-
+// alternates / multipart wrappers must each install it; otherwise a write to a
+// remote entity returns Forwarded with no sink and the client gets an empty
+// no-op response instead of the proxied peer response. Each test below drives a
+// real request through a registered wrapper for a remote entity and asserts the
+// proxied gateway error (502 x-medkit-peer-unavailable; the peer port is
+// unreachable) reaches the client - which only happens when forwarding ran.
+// =============================================================================
+
+namespace ros2_medkit_gateway {
+namespace dto {
+
+struct FwdReqBody {
+  std::optional<nlohmann::json> data;
+};
+template <>
+inline constexpr auto dto_fields<FwdReqBody> = std::make_tuple(field("data", &FwdReqBody::data));
+template <>
+inline constexpr std::string_view dto_name<FwdReqBody> = "FwdReqBody";
+
+struct FwdAck {
+  std::string ok;
+};
+template <>
+inline constexpr auto dto_fields<FwdAck> = std::make_tuple(field("ok", &FwdAck::ok));
+template <>
+inline constexpr std::string_view dto_name<FwdAck> = "FwdAck";
+
+}  // namespace dto
+}  // namespace ros2_medkit_gateway
+
+namespace {
+
+// Mirror handlers' flatten_validator_error: a Forwarded validator outcome maps
+// to the framework's forwarded sentinel so the typed wrapper's error renderer
+// treats it as a no-op and preserves the already-written proxy body.
+ErrorInfo forwarded_or_error(const std::variant<ErrorInfo, http::Forwarded> & e) {
+  if (std::holds_alternative<http::Forwarded>(e)) {
+    return HandlerContext::forwarded_sentinel_error();
+  }
+  return std::get<ErrorInfo>(e);
+}
+
+// Spin up a cpp-httplib server for a registry on an ephemeral loopback port.
+struct ScopedFwdServer {
+  std::unique_ptr<httplib::Server> server;
+  std::thread thread;
+  int port{0};
+  ScopedFwdServer() = default;
+  ScopedFwdServer(ScopedFwdServer &&) noexcept = default;
+  ScopedFwdServer & operator=(ScopedFwdServer &&) noexcept = default;
+  ScopedFwdServer(const ScopedFwdServer &) = delete;
+  ScopedFwdServer & operator=(const ScopedFwdServer &) = delete;
+  ~ScopedFwdServer() {
+    if (server) {
+      server->stop();
+    }
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+};
+
+ScopedFwdServer start_fwd_server(const openapi::RouteRegistry & reg) {
+  ScopedFwdServer s;
+  s.server = std::make_unique<httplib::Server>();
+  reg.register_all(*s.server, "/api/v1");
+  s.port = s.server->bind_to_any_port("127.0.0.1");
+  s.thread = std::thread([srv = s.server.get()]() {
+    srv->listen_after_bind();
+  });
+  s.server->wait_until_ready();
+  return s;
+}
+
+void expect_proxied_peer_unavailable(const httplib::Result & r) {
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 502) << "remote-entity request was not forwarded (empty no-op response)";
+  auto body = nlohmann::json::parse(r->body, nullptr, false);
+  ASSERT_FALSE(body.is_discarded());
+  EXPECT_EQ(body.value("vendor_code", ""), "x-medkit-peer-unavailable");
+}
+
+}  // namespace
+
+TEST_F(HandlerContextForwardingTest, TypedBodyWrapperForwardsRemoteEntityWrite) {
+  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  ctx.set_aggregation_manager(agg_mgr_.get());
+
+  openapi::RouteRegistry reg;
+  std::function<http::Result<http::NoContent>(http::TypedRequest, dto::FwdReqBody)> handler =
+      [&ctx](const http::TypedRequest & req, const dto::FwdReqBody &) -> http::Result<http::NoContent> {
+    auto entity = ctx.validate_entity_for_route(req, "remote_sensor");
+    if (!entity) {
+      return tl::unexpected(forwarded_or_error(entity.error()));
+    }
+    return http::NoContent{};
+  };
+  reg.put<dto::FwdReqBody, http::NoContent>("/components/{id}/configurations/{cid}", std::move(handler))
+      .tag("Test")
+      .summary("forwarding put");
+
+  auto s = start_fwd_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Put("/api/v1/components/remote_sensor/configurations/foo", nlohmann::json{{"data", 1}}.dump(),
+                   "application/json");
+  expect_proxied_peer_unavailable(r);
+}
+
+TEST_F(HandlerContextForwardingTest, TypedPostAlternatesWrapperForwardsRemoteEntity) {
+  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  ctx.set_aggregation_manager(agg_mgr_.get());
+
+  openapi::RouteRegistry reg;
+  std::function<http::Result<std::variant<dto::FwdAck>>(http::TypedRequest, dto::FwdReqBody)> handler =
+      [&ctx](const http::TypedRequest & req, const dto::FwdReqBody &) -> http::Result<std::variant<dto::FwdAck>> {
+    auto entity = ctx.validate_entity_for_route(req, "remote_sensor");
+    if (!entity) {
+      return tl::unexpected(forwarded_or_error(entity.error()));
+    }
+    return std::variant<dto::FwdAck>{dto::FwdAck{"ok"}};
+  };
+  reg.post_alternates<dto::FwdReqBody, dto::FwdAck>("/components/{id}/operations/{oid}/executions", std::move(handler))
+      .tag("Test")
+      .summary("forwarding post");
+
+  auto s = start_fwd_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Post("/api/v1/components/remote_sensor/operations/op/executions", nlohmann::json{{"data", 1}}.dump(),
+                    "application/json");
+  expect_proxied_peer_unavailable(r);
+}
+
+TEST_F(HandlerContextForwardingTest, TypedDeleteAlternatesWrapperForwardsRemoteEntity) {
+  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  ctx.set_aggregation_manager(agg_mgr_.get());
+
+  openapi::RouteRegistry reg;
+  std::function<http::Result<std::variant<dto::FwdAck>>(http::TypedRequest)> handler =
+      [&ctx](const http::TypedRequest & req) -> http::Result<std::variant<dto::FwdAck>> {
+    auto entity = ctx.validate_entity_for_route(req, "remote_sensor");
+    if (!entity) {
+      return tl::unexpected(forwarded_or_error(entity.error()));
+    }
+    return std::variant<dto::FwdAck>{dto::FwdAck{"ok"}};
+  };
+  reg.del_alternates<dto::FwdAck>("/components/{id}/faults/{fid}", std::move(handler))
+      .tag("Test")
+      .summary("forwarding delete");
+
+  auto s = start_fwd_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Delete("/api/v1/components/remote_sensor/faults/bar");
+  expect_proxied_peer_unavailable(r);
+}
+
+TEST_F(HandlerContextForwardingTest, TypedMultipartWrapperForwardsRemoteEntityUpload) {
+  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  ctx.set_aggregation_manager(agg_mgr_.get());
+
+  openapi::RouteRegistry reg;
+  std::function<http::Result<std::pair<dto::FwdAck, http::ResponseAttachments>>(http::TypedRequest,
+                                                                                http::MultipartBody)>
+      handler = [&ctx](const http::TypedRequest & req,
+                       const http::MultipartBody &) -> http::Result<std::pair<dto::FwdAck, http::ResponseAttachments>> {
+    auto entity = ctx.validate_entity_for_route(req, "remote_sensor");
+    if (!entity) {
+      return tl::unexpected(forwarded_or_error(entity.error()));
+    }
+    return std::make_pair(dto::FwdAck{"ok"}, http::ResponseAttachments{});
+  };
+  reg.multipart_upload<dto::FwdAck>("/components/{id}/bulk-data/{cat}", std::move(handler))
+      .tag("Test")
+      .summary("forwarding upload");
+
+  auto s = start_fwd_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  httplib::MultipartFormDataItems items{{"file", "payload-bytes", "f.bin", "application/octet-stream"}};
+  auto r = cli.Post("/api/v1/components/remote_sensor/bulk-data/cat1", items);
+  expect_proxied_peer_unavailable(r);
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateCollectionAccess_SupportedReturnsSuccess) {

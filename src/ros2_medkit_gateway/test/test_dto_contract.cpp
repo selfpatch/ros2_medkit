@@ -18,7 +18,9 @@
 #include <optional>
 #include <string>
 
+#include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/dto/enums.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
@@ -27,6 +29,7 @@
 #include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/sample.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
+#include "ros2_medkit_gateway/dto/scripts.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
 
 namespace dto = ros2_medkit_gateway::dto;
@@ -185,6 +188,49 @@ TEST(DtoSample, SynthesizesScalarMembers) {
   EXPECT_EQ(back->id, s.id);
   EXPECT_EQ(back->active, s.active);
   EXPECT_EQ(back->count, s.count);
+}
+
+// A present-but-null JSON value is a legitimate value for a free-form json
+// member (setting a parameter/value to null), distinct from an absent field.
+TEST(JsonReaderNull, ConfigWriteAcceptsExplicitNullData) {
+  const auto j = nlohmann::json{{"data", nullptr}};
+  const auto result = dto::JsonReader<dto::ConfigurationWriteRequest>::read(j);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->data.has_value());
+  EXPECT_TRUE(result->data->is_null());
+  EXPECT_FALSE(result->value.has_value());  // a genuinely absent optional stays absent
+}
+
+TEST(JsonReaderNull, DataWriteAcceptsExplicitNullData) {
+  const auto j = nlohmann::json{{"type", "std_msgs/msg/Float32"}, {"data", nullptr}};
+  const auto result = dto::JsonReader<dto::DataWriteRequest>::read(j);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->data.is_null());
+}
+
+TEST(JsonReaderNull, NullOnNonJsonRequiredFieldIsTreatedAsMissing) {
+  // For a non-json member null cannot be coerced, so it is treated like an
+  // absent field - a required one therefore reports "missing required field".
+  const auto j = nlohmann::json{{"id", nullptr}};
+  const auto result = dto::JsonReader<Sample>::read(j);
+  ASSERT_FALSE(result.has_value());
+  ASSERT_EQ(result.error().size(), 1U);
+  EXPECT_EQ(result.error()[0].field, "id");
+}
+
+// ScriptControlRequest.action uses plain field() so plugin backends may accept
+// actions beyond the built-in stop/forced_termination; the value is validated
+// by the provider, not rejected at parse time.
+TEST(JsonReaderScripts, ControlActionAcceptsArbitraryValue) {
+  const auto j = nlohmann::json{{"action", "pause"}};
+  const auto result = dto::JsonReader<dto::ScriptControlRequest>::read(j);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->action, "pause");
+}
+
+TEST(JsonReaderScripts, ControlActionStillRequiresPresence) {
+  const auto result = dto::JsonReader<dto::ScriptControlRequest>::read(nlohmann::json::object());
+  EXPECT_FALSE(result.has_value());
 }
 
 TEST(DtoRegistry, CollectsNamedSchemas) {

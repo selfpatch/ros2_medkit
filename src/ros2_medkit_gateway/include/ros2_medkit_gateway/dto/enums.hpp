@@ -22,8 +22,10 @@ namespace dto {
 /// Entity types (used in entity detail responses).
 inline constexpr std::string_view kEntityTypeValues[] = {"area", "component", "app", "function"};
 
-/// Fault severity label (fault_list_item_schema / fault_detail_schema).
-inline constexpr std::string_view kFaultSeverityLabelValues[] = {"INFO", "WARN", "ERROR", "CRITICAL"};
+/// Fault severity label (FaultListItem.severity_label). Must include "UNKNOWN":
+/// fault_to_json emits it for any severity outside the four known levels
+/// (fault_msg_conversions.cpp default branch).
+inline constexpr std::string_view kFaultSeverityLabelValues[] = {"INFO", "WARN", "ERROR", "CRITICAL", "UNKNOWN"};
 
 /// Fault aggregated status (fault_detail_schema - status.aggregatedStatus).
 inline constexpr std::string_view kFaultAggregatedStatusValues[] = {"active", "passive", "cleared"};
@@ -52,9 +54,6 @@ inline constexpr std::string_view kLogSeverityFilterValues[] = {"debug", "info",
 
 /// Execution control capability (execution_update_request_schema).
 inline constexpr std::string_view kExecutionCapabilityValues[] = {"stop", "execute", "freeze", "reset"};
-
-/// Script control action (script_control_request_schema).
-inline constexpr std::string_view kScriptControlActionValues[] = {"stop", "forced_termination"};
 
 }  // namespace dto
 }  // namespace ros2_medkit_gateway

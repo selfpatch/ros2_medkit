@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
@@ -425,10 +426,10 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMixedSnapshots) {
 
 namespace {
 
-json make_fault(std::vector<std::string> reporting_sources, const std::string & code = "F1") {
+json make_fault(const std::vector<std::string> & reporting_sources, const std::string & code = "F1") {
   json f;
   f["fault_code"] = code;
-  f["reporting_sources"] = std::move(reporting_sources);
+  f["reporting_sources"] = reporting_sources;
   return f;
 }
 
@@ -500,4 +501,48 @@ TEST(FaultInSourceScopeTest, RootFqnEdgeCase) {
   // unless the scope set actually contains "/" - which our resolver never
   // emits. This pin catches a future regression that special-cased "/".
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"/something"}), {"/other"}));
+}
+
+// =============================================================================
+// FaultListItem schema <-> fault_to_json producer contract.
+//
+// The fault list endpoints emit items verbatim from fault_to_json inside the
+// opaque FaultListResult envelope (never through JsonWriter<FaultListItem>), so
+// the published FaultListItem schema is otherwise an unverified claim about that
+// wire. These tests pin the schema to its real in-tree producer: any field key,
+// type, or enum drift in fault_to_json now fails here instead of silently
+// diverging the spec from the wire (the drift the DTO contract exists to kill).
+// =============================================================================
+TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "BRAKE_PRESSURE_LOW";
+  fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  fault.description = "Brake pressure below threshold";
+  fault.occurrence_count = 3;
+  fault.status = "active";
+  fault.reporting_sources = {"brake_ecu", "abs_node"};
+
+  const json wire = conversions::fault_to_json(fault);
+
+  // The published FaultListItem schema must accept the verbatim wire ...
+  const auto parsed = dto::JsonReader<dto::FaultListItem>::read(wire);
+  ASSERT_TRUE(parsed.has_value()) << "fault_to_json output does not conform to FaultListItem";
+  // ... and round-trip back to identical wire (no field added or dropped).
+  EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire);
+}
+
+TEST(FaultListItemSchema, UnknownSeverityLabelIsAcceptedByEnum) {
+  // fault_to_json maps any severity outside the four known levels to "UNKNOWN",
+  // so the FaultListItem.severity_label enum vocabulary must include it.
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "MYSTERY";
+  fault.severity = 99;  // outside SEVERITY_INFO..SEVERITY_CRITICAL
+  fault.status = "active";
+
+  const json wire = conversions::fault_to_json(fault);
+  ASSERT_EQ(wire["severity_label"], "UNKNOWN");
+
+  const auto parsed = dto::JsonReader<dto::FaultListItem>::read(wire);
+  ASSERT_TRUE(parsed.has_value()) << "UNKNOWN severity_label rejected by FaultListItem enum";
+  EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire);
 }

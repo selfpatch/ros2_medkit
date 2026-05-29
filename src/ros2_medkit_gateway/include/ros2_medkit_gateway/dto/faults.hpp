@@ -62,7 +62,7 @@ inline constexpr auto dto_fields<FaultListItem> = std::make_tuple(
     field("description", &FaultListItem::description), field("first_occurred", &FaultListItem::first_occurred),
     field("last_occurred", &FaultListItem::last_occurred), field("occurrence_count", &FaultListItem::occurrence_count),
     field("status", &FaultListItem::status), field("reporting_sources", &FaultListItem::reporting_sources),
-    field("severity_label", &FaultListItem::severity_label));
+    field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues));
 
 template <>
 inline constexpr std::string_view dto_name<FaultListItem> = "FaultListItem";

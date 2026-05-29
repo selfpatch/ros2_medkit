@@ -679,10 +679,10 @@ TEST(SchemaBuilderStaticTest, ScriptControlRequestSchema) {
   ASSERT_TRUE(schema.contains("properties"));
   EXPECT_TRUE(schema["properties"].contains("action"));
   EXPECT_EQ(schema["properties"]["action"]["type"], "string");
-  ASSERT_TRUE(schema["properties"]["action"].contains("enum"));
-  auto enum_vals = schema["properties"]["action"]["enum"].get<std::vector<std::string>>();
-  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "stop"), enum_vals.end());
-  EXPECT_NE(std::find(enum_vals.begin(), enum_vals.end(), "forced_termination"), enum_vals.end());
+  // No enum: control_execution forwards `action` to the ScriptProvider, which
+  // may be a plugin backend supporting actions beyond stop/forced_termination,
+  // so the schema must not constrain the value (the DTO uses plain field()).
+  EXPECT_FALSE(schema["properties"]["action"].contains("enum"));
 
   ASSERT_TRUE(schema.contains("required"));
   auto required = schema["required"].get<std::vector<std::string>>();

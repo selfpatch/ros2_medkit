@@ -23,7 +23,6 @@
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
-#include "ros2_medkit_gateway/dto/enums.hpp"
 
 namespace ros2_medkit_gateway {
 namespace dto {
@@ -193,20 +192,23 @@ inline constexpr std::string_view dto_name<ScriptUploadResponse> = "ScriptUpload
 //
 // Wire shape (from script_control_request_schema() + handle_control_execution()):
 //   action - control action to apply (required)
-//            enum: "stop" | "forced_termination"
+//            built-in backend: "stop" | "forced_termination"
 //
-// Uses field_enum: the control handler validates only that "action" is present
-// and non-empty (ERR_INVALID_REQUEST for missing). It does NOT perform bespoke
-// value-range validation with ERR_INVALID_PARAMETER; parse_body provides the
-// enum check instead.
+// Uses plain field() (NOT field_enum): control_execution forwards `action`
+// verbatim to the ScriptProvider, which may be a plugin backend supporting
+// actions beyond the built-in stop/forced_termination (e.g. pause/resume).
+// Constraining the value at parse time would block those plugins at the
+// gateway. The handler validates presence (ERR_INVALID_REQUEST when missing);
+// the provider validates the value. (Same reasoning as
+// ExecutionUpdateRequest.capability.)
 // =============================================================================
 struct ScriptControlRequest {
-  std::string action;  // enum: stop | forced_termination
+  std::string action;  // built-in backend: stop | forced_termination; plugins may extend
 };
 
 template <>
 inline constexpr auto dto_fields<ScriptControlRequest> =
-    std::make_tuple(field_enum("action", &ScriptControlRequest::action, kScriptControlActionValues));
+    std::make_tuple(field("action", &ScriptControlRequest::action));
 
 template <>
 inline constexpr std::string_view dto_name<ScriptControlRequest> = "ScriptControlRequest";

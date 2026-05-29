@@ -133,7 +133,20 @@ struct JsonReader {
         auto & member = obj.*(f.ptr);
         using MemberT = std::decay_t<decltype(member)>;
         const auto it = j.find(key);
-        if (it == j.end() || it->is_null()) {
+        // A present-but-null JSON value is a legitimate value for free-form json
+        // members (e.g. PUT .../data/{id} or .../configurations/{id} with
+        // {"data": null} to set a parameter to null). For every other member type
+        // null cannot be coerced, so it is treated like an absent field.
+        const bool present = (it != j.end());
+        bool treat_as_absent = !present;
+        if (present && it->is_null()) {
+          if constexpr (is_optional_v<MemberT>) {
+            treat_as_absent = !std::is_same_v<typename MemberT::value_type, nlohmann::json>;
+          } else {
+            treat_as_absent = !std::is_same_v<MemberT, nlohmann::json>;
+          }
+        }
+        if (treat_as_absent) {
           if (f.presence == Presence::kRequired) {
             errs.push_back({key, "missing required field"});
           }

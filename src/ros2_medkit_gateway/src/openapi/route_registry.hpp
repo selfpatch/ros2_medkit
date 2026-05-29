@@ -556,6 +556,11 @@ HandlerFn RouteRegistry::wrap_with_body(std::function<http::Result<TResponse>(ht
                                         std::shared_ptr<ErrorRenderer> renderer) {
   return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
                                                                         httplib::Response & res) {
+    // Forwarding scope: lets the typed validate_entity_for_route stream a
+    // proxied response when the entity is owned by a remote peer (see
+    // wrap_body_less). Without it, remote-entity writes return Forwarded with
+    // no sink and the client gets an empty body instead of the peer response.
+    http::detail::ForwardResponseScope forward_scope(&res);
     auto body = detail::parse_request_body<TBody>(req);
     if (!body.has_value()) {
       write_typed_error(res, body.error(), renderer);
@@ -577,6 +582,8 @@ HandlerFn RouteRegistry::wrap_with_body_attachments(
     std::shared_ptr<ErrorRenderer> renderer) {
   return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
                                                                         httplib::Response & res) {
+    // Forwarding scope for remote-peer entities (see wrap_body_less / wrap_with_body).
+    http::detail::ForwardResponseScope forward_scope(&res);
     auto body = detail::parse_request_body<TBody>(req);
     if (!body.has_value()) {
       write_typed_error(res, body.error(), renderer);
@@ -601,6 +608,8 @@ HandlerFn RouteRegistry::wrap_post_alternates(
     std::shared_ptr<ErrorRenderer> renderer) {
   return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
                                                                         httplib::Response & res) {
+    // Forwarding scope for remote-peer entities (see wrap_body_less / wrap_with_body).
+    http::detail::ForwardResponseScope forward_scope(&res);
     auto body = detail::parse_request_body<TBody>(req);
     if (!body.has_value()) {
       write_typed_error(res, body.error(), renderer);
@@ -629,6 +638,8 @@ HandlerFn RouteRegistry::wrap_post_alternates_with_attachments(
     std::shared_ptr<ErrorRenderer> renderer) {
   return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
                                                                         httplib::Response & res) {
+    // Forwarding scope for remote-peer entities (see wrap_body_less / wrap_with_body).
+    http::detail::ForwardResponseScope forward_scope(&res);
     auto body = detail::parse_request_body<TBody>(req);
     if (!body.has_value()) {
       write_typed_error(res, body.error(), renderer);
@@ -659,6 +670,8 @@ RouteRegistry::wrap_del_alternates(std::function<http::Result<std::variant<TAlt.
                                    std::shared_ptr<ErrorRenderer> renderer) {
   return [handler = std::move(handler), renderer = std::move(renderer)](const httplib::Request & req,
                                                                         httplib::Response & res) {
+    // Forwarding scope for remote-peer entities (see wrap_body_less / wrap_with_body).
+    http::detail::ForwardResponseScope forward_scope(&res);
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
     if (outcome.has_value()) {
@@ -980,8 +993,10 @@ RouteEntry & RouteRegistry::multipart_upload(
                 "multipart_upload<T>: T must be a DTO (or NoContent)");
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   HandlerFn fn = [handler = std::move(handler), renderer](const httplib::Request & req, httplib::Response & res) {
+    // Forwarding scope for remote-peer entities (see wrap_body_less / wrap_with_body).
+    http::detail::ForwardResponseScope forward_scope(&res);
     http::MultipartBody body;
-    body.parts = req.files.empty() ? httplib::MultipartFormDataItems{} : httplib::MultipartFormDataItems{};
+    // body.parts default-constructs empty; the loop below populates it from req.files.
     // cpp-httplib exposes parsed multipart entries via `req.files`; surface
     // them through MultipartBody.parts as MultipartFormData entries.
     for (const auto & [name, file] : req.files) {
