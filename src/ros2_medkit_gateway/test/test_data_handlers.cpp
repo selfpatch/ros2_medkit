@@ -150,6 +150,68 @@ TEST_F(DataHandlersTest, ListDataBadRequestBodyContainsErrorCode) {
 }
 
 // ============================================================================
+// list_data plugin path - vendor per-item fields must survive on the wire
+// ============================================================================
+//
+// Regression guard: `DataProvider::list_data` returns an opaque `DataListResult`
+// whose per-item shape is decided by the plugin (the in-tree OPC-UA plugin adds
+// per-item value/unit/data_type/writable). `DataHandlers::list_data` returns that
+// envelope verbatim and the typed router serializes it through
+// `JsonWriter<DataListResult>` (opaque passthrough). These tests pin two things:
+//   1. the opaque envelope the handler returns preserves every vendor field; and
+//   2. re-parsing the same payload through the typed `Collection<DataItem>`
+//      (the previous handler behaviour) silently drops them - which is exactly
+//      why the handler must NOT re-parse a plugin payload.
+namespace {
+json opcua_like_list_payload() {
+  return json{{"items", json::array({json{{"id", "tank.level"},
+                                          {"name", "Tank Level"},
+                                          {"category", "currentData"},
+                                          {"value", 42.5},
+                                          {"unit", "m"},
+                                          {"data_type", "float"},
+                                          {"writable", true}}})}};
+}
+}  // namespace
+
+TEST(DataListResultContract, OpaqueEnvelopePreservesPluginVendorFields) {
+  namespace dto = ros2_medkit_gateway::dto;
+  dto::DataListResult envelope{opcua_like_list_payload()};
+
+  const json wire = dto::JsonWriter<dto::DataListResult>::write(envelope);
+
+  ASSERT_TRUE(wire.contains("items"));
+  ASSERT_EQ(wire["items"].size(), 1u);
+  const json & item = wire["items"][0];
+  EXPECT_EQ(item.value("value", json{}), 42.5);
+  EXPECT_EQ(item.value("unit", std::string{}), "m");
+  EXPECT_EQ(item.value("data_type", std::string{}), "float");
+  EXPECT_EQ(item.value("writable", false), true);
+}
+
+TEST(DataListResultContract, TypedReParseWouldDropVendorFields) {
+  namespace dto = ros2_medkit_gateway::dto;
+  const json payload = opcua_like_list_payload();
+
+  // JsonReader is lenient: id/name/category are present, so the parse SUCCEEDS
+  // and silently ignores value/unit/data_type/writable. This is the trap the
+  // handler used to fall into.
+  auto parsed = dto::JsonReader<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::read(payload);
+  ASSERT_TRUE(parsed.has_value());
+
+  const json reserialized = dto::JsonWriter<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::write(*parsed);
+  ASSERT_TRUE(reserialized.contains("items"));
+  ASSERT_EQ(reserialized["items"].size(), 1u);
+  const json & item = reserialized["items"][0];
+  EXPECT_EQ(item.value("id", std::string{}), "tank.level");
+  // The vendor fields are gone after the typed round-trip - the documented loss.
+  EXPECT_FALSE(item.contains("value"));
+  EXPECT_FALSE(item.contains("unit"));
+  EXPECT_FALSE(item.contains("data_type"));
+  EXPECT_FALSE(item.contains("writable"));
+}
+
+// ============================================================================
 // get_data_item - returns 400 when route captures are missing
 // ============================================================================
 

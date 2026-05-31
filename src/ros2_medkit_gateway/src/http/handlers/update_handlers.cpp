@@ -19,6 +19,7 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
 
@@ -26,20 +27,6 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 namespace {
-
-/// Build a SOVD-shaped ErrorInfo. Matches the legacy `send_error` default
-/// (empty params object is dropped on the wire so integration tests still
-/// see the byte-identical body).
-ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
-  ErrorInfo err;
-  err.code = code;
-  err.message = std::move(message);
-  err.http_status = status;
-  if (!params.is_null() && !params.empty()) {
-    err.params = std::move(params);
-  }
-  return err;
-}
 
 /// Wrap a thrown std::exception as a 500 internal-error ErrorInfo, logging
 /// the original `what()` via the shared handler logger.

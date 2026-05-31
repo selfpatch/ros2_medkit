@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
 
@@ -150,23 +151,6 @@ tl::expected<std::string, ErrorInfo> read_path_param(const http::TypedRequest & 
     return *raw;
   }
   return tl::unexpected(make_invalid_request_error());
-}
-
-/// Convert a ValidatorResult's error variant into a Result<T>'s tl::unexpected
-/// ErrorInfo. When the validator returned Forwarded the proxy already wrote
-/// the response, so the handler must signal "do not render" by returning the
-/// framework-internal sentinel that the typed wrapper detects.
-ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
-  return std::visit(
-      [](auto && alt) -> ErrorInfo {
-        using T = std::decay_t<decltype(alt)>;
-        if constexpr (std::is_same_v<T, ErrorInfo>) {
-          return alt;
-        } else {
-          return HandlerContext::forwarded_sentinel_error();
-        }
-      },
-      err);
 }
 
 }  // namespace

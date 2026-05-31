@@ -690,10 +690,21 @@ endpoints (areas, components, apps, functions) use the default
 ``XMedkitCollection`` x-medkit; the domain collection endpoints specialise
 ``XMedkitT`` to their richer per-domain shape (``FaultListXMedkit``,
 ``FaultListAggXMedkit``, ``ConfigListXMedkit``, ``DataListXMedkit``,
-``LogListXMedkit``), so the published schema for each list response now
-references the actual collection x-medkit struct. Generated clients see the
-exact aggregation, peer-provenance, and ``peer_dropped_items`` fields that
-appear on the wire.
+``LogListXMedkit``). For the config and log list routes the published schema
+references the actual collection x-medkit struct directly, so generated clients
+see the exact aggregation, peer-provenance, and ``peer_dropped_items`` fields
+that appear on the wire.
+
+The fault and data list routes are the exception: they publish the opaque
+``FaultListResult`` / ``DataListResult`` envelopes rather than the typed
+``Collection<...>`` schema, because plugin-owned entities can return
+vendor-specific per-item shapes that the typed item schema cannot describe.
+The data list handler still *builds* a typed
+``Collection<DataItem, DataListXMedkit>`` for runtime (ROS 2) entities and
+serializes it into the envelope (so the wire shape - including
+``peer_dropped_items`` - is unchanged), but the plugin branch passes the
+provider's free-form payload through verbatim. See "Opaque Object Policy" and
+the "Provider ABI" section above.
 
 Key Files
 ---------

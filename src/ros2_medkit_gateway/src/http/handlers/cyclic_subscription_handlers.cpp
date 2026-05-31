@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
 
@@ -33,20 +34,6 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 namespace {
-
-/// Build a minimal SOVD-shaped ErrorInfo. `params` defaults to an empty object,
-/// matching the legacy `send_error` default; supply non-empty params per call
-/// site to preserve the exact wire shape integration tests assert on.
-ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
-  ErrorInfo err;
-  err.code = code;
-  err.message = std::move(message);
-  err.http_status = status;
-  if (!params.is_null() && !params.empty()) {
-    err.params = std::move(params);
-  }
-  return err;
-}
 
 /// Read the positional entity-id capture group from the typed request. The
 /// legacy handlers used `req.matches[1]` without bounds checking; the typed
@@ -68,24 +55,6 @@ tl::expected<std::string, ErrorInfo> read_subscription_id(const http::TypedReque
     return *raw;
   }
   return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
-}
-
-/// Convert a ValidatorResult's error variant into a typed Result<T> error.
-/// When the validator returned Forwarded, the proxy already wrote the wire
-/// response, so the handler must signal "do not render" via the
-/// framework-internal sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper
-/// detects in `write_typed_error`.
-ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
-  return std::visit(
-      [](auto && alt) -> ErrorInfo {
-        using T = std::decay_t<decltype(alt)>;
-        if constexpr (std::is_same_v<T, ErrorInfo>) {
-          return alt;
-        } else {
-          return HandlerContext::forwarded_sentinel_error();
-        }
-      },
-      err);
 }
 
 /// Build a typed CyclicSubscription DTO from CyclicSubscriptionInfo.

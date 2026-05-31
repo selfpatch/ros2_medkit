@@ -37,6 +37,7 @@
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
@@ -49,20 +50,6 @@ using json = nlohmann::json;
 // =============================================================================
 // Helper free functions
 // =============================================================================
-
-/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
-/// matches the legacy `send_error` default and integration tests stay byte-
-/// identical.
-ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
-  ErrorInfo err;
-  err.code = code;
-  err.message = std::move(message);
-  err.http_status = status;
-  if (!params.is_null() && !params.empty()) {
-    err.params = std::move(params);
-  }
-  return err;
-}
 
 /// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
 /// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
@@ -98,23 +85,6 @@ tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & re
     return *raw;
   }
   return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
-}
-
-/// Convert a ValidatorResult's error variant into a typed Result<T> error.
-/// When the validator returned Forwarded, the proxy already wrote the wire
-/// response, so the handler signals "do not render" via the framework-internal
-/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
-ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
-  return std::visit(
-      [](auto && alt) -> ErrorInfo {
-        using T = std::decay_t<decltype(alt)>;
-        if constexpr (std::is_same_v<T, ErrorInfo>) {
-          return alt;
-        } else {
-          return HandlerContext::forwarded_sentinel_error();
-        }
-      },
-      err);
 }
 
 /// Build the typed x-medkit per-item payload for the list endpoint.
@@ -231,8 +201,7 @@ dto::DataValue build_write_response(const std::string & full_topic_path, const s
 // GET /{entity}/data - list data items
 // =============================================================================
 
-http::Result<dto::Collection<dto::DataItem, dto::DataListXMedkit>>
-DataHandlers::list_data(const http::TypedRequest & req) {
+http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedRequest & req) {
   auto id_result = read_entity_id(req);
   if (!id_result) {
     return tl::make_unexpected(id_result.error());
@@ -258,24 +227,13 @@ DataHandlers::list_data(const http::TypedRequest & req) {
       if (!result) {
         return tl::make_unexpected(make_provider_error(result.error(), entity_id));
       }
-      // The plugin returns an opaque `DataListResult` (free-form items array
-      // shape). To honour the typed RouteRegistry contract we re-parse it as
-      // `Collection<DataItem, DataListXMedkit>` when the wire shape matches;
-      // when it does not (plugin emits vendor-specific per-item fields), we
-      // fall back to constructing a collection whose `links` member carries
-      // the raw payload so the wire stays byte-identical.
-      const json & raw = result->content;
-      auto parsed = dto::JsonReader<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::read(raw);
-      if (parsed) {
-        return std::move(*parsed);
-      }
-      // Fallback: emit the plugin payload verbatim via a single-item `links`
-      // attachment. This preserves wire bytes for plugins whose item shape
-      // doesn't fit DataItem (vendor-specific fields like OPC-UA's
-      // value/unit/data_type/writable).
-      dto::Collection<dto::DataItem, dto::DataListXMedkit> collection;
-      collection.links = raw;
-      return collection;
+      // The plugin returns an opaque `DataListResult`. Pass it through verbatim:
+      // the per-item shape is decided by the plugin (the in-tree OPC-UA plugin
+      // adds value/unit/data_type/writable), so re-parsing it into the typed
+      // `Collection<DataItem>` would silently drop every field outside
+      // {id,name,category} (JsonReader is lenient). The opaque envelope is the
+      // contract for exactly this case.
+      return std::move(*result);
     } catch (const std::exception & e) {
       RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
                    e.what());
@@ -336,7 +294,11 @@ DataHandlers::list_data(const http::TypedRequest & req) {
     xm.total_count = response.items.size();
     apply_fan_out_observability(xm, fan_out);
     response.x_medkit = std::move(xm);
-    return response;
+    // Serialize the typed runtime collection into the opaque envelope. The wire
+    // shape ({items:[...], x-medkit:{...}}) is byte-identical to the previous
+    // typed return; only the published OpenAPI schema for this route is now the
+    // opaque DataListResult (consistent with the fault list route).
+    return dto::DataListResult{dto::JsonWriter<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::write(response)};
   } catch (const std::exception & e) {
     RCLCPP_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
     return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",

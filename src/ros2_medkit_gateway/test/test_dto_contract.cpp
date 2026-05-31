@@ -46,6 +46,13 @@ struct ScalarSample {
   bool active;
   int count;
 };
+
+// DTO with a required and an optional enum-constrained field, to exercise the
+// JsonReader enum-rejection path and the optional-enum schema shape.
+struct EnumSample {
+  std::string color;                 // required enum
+  std::optional<std::string> shade;  // optional enum
+};
 }  // namespace
 
 template <>
@@ -62,6 +69,14 @@ template <>
 
 template <>
 [[maybe_unused]] inline constexpr std::string_view dto::dto_name<ScalarSample> = "ScalarSample";
+
+template <>
+[[maybe_unused]] inline constexpr auto dto::dto_fields<EnumSample> =
+    std::make_tuple(dto::field_enum("color", &EnumSample::color, kSampleColors),
+                    dto::field_enum("shade", &EnumSample::shade, kSampleColors));
+
+template <>
+[[maybe_unused]] inline constexpr std::string_view dto::dto_name<EnumSample> = "EnumSample";
 
 TEST(DtoContract, FieldFactoryDerivesPresenceFromOptional) {
   constexpr auto fields = dto::dto_fields<Sample>;
@@ -89,6 +104,40 @@ TEST(DtoContract, FieldEnumPopulatesVocabularyAndDtoName) {
   EXPECT_EQ(f.enum_count, 2u);
   EXPECT_EQ(f.enum_values[0], "red");
   EXPECT_EQ(dto::dto_name<Sample>, "Sample");
+}
+
+TEST(JsonReader, RejectsValueOutsideEnum) {
+  const nlohmann::json j = {{"color", "blue"}};  // "blue" is not in kSampleColors
+  const auto result = dto::JsonReader<EnumSample>::read(j);
+  ASSERT_FALSE(result.has_value());
+  ASSERT_FALSE(result.error().empty());
+  EXPECT_EQ(result.error()[0].field, "color");
+  EXPECT_EQ(result.error()[0].message, "value not in allowed set");
+}
+
+TEST(JsonReader, AcceptsValueInsideEnum) {
+  const nlohmann::json j = {{"color", "green"}};
+  const auto result = dto::JsonReader<EnumSample>::read(j);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->color, "green");
+}
+
+TEST(SchemaWriter, OptionalEnumAttachesEnumToNonNullBranch) {
+  const auto schema = dto::SchemaWriter<EnumSample>::schema();
+  const auto & props = schema.at("properties");
+
+  // Required enum field: enum sits at the top level of a {type:string} schema.
+  const auto & color = props.at("color");
+  ASSERT_TRUE(color.contains("enum"));
+  EXPECT_EQ(color.at("enum"), nlohmann::json::array({"red", "green"}));
+
+  // Optional enum field: schema is anyOf:[{string}, {null}]; the enum must live
+  // on the non-null branch ([0]), NOT at the top level, so a null value (which
+  // anyOf permits) is not rejected by a top-level enum that omits null.
+  const auto & shade = props.at("shade");
+  ASSERT_TRUE(shade.contains("anyOf"));
+  EXPECT_FALSE(shade.contains("enum"));
+  EXPECT_EQ(shade.at("anyOf")[0].at("enum"), nlohmann::json::array({"red", "green"}));
 }
 
 TEST(SchemaWriter, BuildsObjectSchemaWithProperties) {

@@ -35,6 +35,7 @@
 #include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
 
@@ -42,37 +43,6 @@ namespace ros2_medkit_gateway {
 namespace handlers {
 
 namespace {
-
-/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
-/// matches the legacy `send_error` default and integration tests stay byte-
-/// identical.
-ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
-  ErrorInfo err;
-  err.code = code;
-  err.message = std::move(message);
-  err.http_status = status;
-  if (!params.is_null() && !params.empty()) {
-    err.params = std::move(params);
-  }
-  return err;
-}
-
-/// Convert a ValidatorResult's error variant into a typed Result<T> error.
-/// When the validator returned Forwarded, the proxy already wrote the wire
-/// response, so the handler signals "do not render" via the framework-internal
-/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
-ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
-  return std::visit(
-      [](auto && alt) -> ErrorInfo {
-        using T = std::decay_t<decltype(alt)>;
-        if constexpr (std::is_same_v<T, ErrorInfo>) {
-          return alt;
-        } else {
-          return HandlerContext::forwarded_sentinel_error();
-        }
-      },
-      err);
-}
 
 /// Resolve the entity_id from the typed request. Bulk-data routes embed the
 /// entity reference in the URL path; the registered route patterns capture

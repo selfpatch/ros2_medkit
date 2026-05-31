@@ -468,12 +468,16 @@ void RESTServer::setup_routes() {
         .description(std::string("Lists available data groups for this ") + et.singular + ".")
         .operation_id(std::string("list") + capitalize(et.singular) + "DataGroups");
 
-    // Data collection (all topics)
-    reg.get<dto::Collection<dto::DataItem, dto::DataListXMedkit>>(
-           entity_path + "/data",
-           [this](http::TypedRequest req) -> http::Result<dto::Collection<dto::DataItem, dto::DataListXMedkit>> {
-             return data_handlers_->list_data(req);
-           })
+    // Data collection (all topics). Returns the opaque `DataListResult` envelope
+    // (mirroring the fault list route): the runtime branch builds a typed
+    // `Collection<DataItem, DataListXMedkit>` and serializes it into the envelope
+    // (wire shape unchanged), while the plugin branch passes the provider's
+    // free-form item shape through verbatim - so vendor per-item fields (OPC-UA
+    // value/unit/data_type/writable) are no longer dropped by a typed re-parse.
+    reg.get<dto::DataListResult>(entity_path + "/data",
+                                 [this](http::TypedRequest req) -> http::Result<dto::DataListResult> {
+                                   return data_handlers_->list_data(req);
+                                 })
         .tag("Data")
         .summary(std::string("List data items for ") + et.singular)
         .description(std::string("Lists all data items (ROS 2 topics) available on this ") + et.singular + ".")

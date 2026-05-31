@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
@@ -45,20 +46,6 @@ using json = nlohmann::json;
 // =============================================================================
 // Helper free functions
 // =============================================================================
-
-/// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
-/// matches the legacy `send_error` default and integration tests stay byte-
-/// identical.
-ErrorInfo make_error(int status, const std::string & code, std::string message, json params = {}) {
-  ErrorInfo err;
-  err.code = code;
-  err.message = std::move(message);
-  err.http_status = status;
-  if (!params.is_null() && !params.empty()) {
-    err.params = std::move(params);
-  }
-  return err;
-}
 
 /// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
 /// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
@@ -96,23 +83,6 @@ tl::expected<std::string, ErrorInfo> read_execution_id(const http::TypedRequest 
     return *raw;
   }
   return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
-}
-
-/// Convert a ValidatorResult's error variant into a typed Result<T> error.
-/// When the validator returned Forwarded, the proxy already wrote the wire
-/// response, so the handler signals "do not render" via the framework-internal
-/// sentinel (ERR_X_INTERNAL_FORWARDED) the typed wrapper detects.
-ErrorInfo flatten_validator_error(const std::variant<ErrorInfo, http::Forwarded> & err) {
-  return std::visit(
-      [](auto && alt) -> ErrorInfo {
-        using T = std::decay_t<decltype(alt)>;
-        if constexpr (std::is_same_v<T, ErrorInfo>) {
-          return alt;
-        } else {
-          return HandlerContext::forwarded_sentinel_error();
-        }
-      },
-      err);
 }
 
 /// Look up the entity_id -> EntityType -> AggregatedOperations triple. The

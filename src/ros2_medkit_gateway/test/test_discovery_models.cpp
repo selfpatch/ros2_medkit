@@ -516,6 +516,32 @@ TEST(CommonTypesTest, QosProfile_ToJson) {
 }
 
 // =============================================================================
+// sorted_contributors() ordering - local first, then peers alphabetical
+// =============================================================================
+//
+// Regression guard for the local-first + alphabetical sort. Feeds reverse- and
+// unsorted input so a flipped comparator (the failure this guards against) is
+// caught; asserting only on already-sorted input would not detect it. This
+// coverage previously lived in the deleted test_x_medkit.cpp.
+
+// @verifies REQ_INTEROP_003
+TEST(CommonTypesTest, SortedContributors_LocalFirstThenAlphabetical) {
+  EXPECT_EQ(ros2_medkit_gateway::sorted_contributors({"peer:zulu", "peer:alpha", "local"}),
+            (std::vector<std::string>{"local", "peer:alpha", "peer:zulu"}));
+}
+
+// @verifies REQ_INTEROP_003
+TEST(CommonTypesTest, SortedContributors_NoLocalIsAlphabetical) {
+  EXPECT_EQ(ros2_medkit_gateway::sorted_contributors({"peer:charlie", "peer:alpha", "peer:bravo"}),
+            (std::vector<std::string>{"peer:alpha", "peer:bravo", "peer:charlie"}));
+}
+
+// @verifies REQ_INTEROP_003
+TEST(CommonTypesTest, SortedContributors_EmptyStaysEmpty) {
+  EXPECT_TRUE(ros2_medkit_gateway::sorted_contributors({}).empty());
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 

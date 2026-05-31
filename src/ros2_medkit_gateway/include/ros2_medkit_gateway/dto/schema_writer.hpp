@@ -40,6 +40,9 @@ nlohmann::json variant_schema(std::index_sequence<I...> /*seq*/) {
 template <class U>
 nlohmann::json schema_of() {
   if constexpr (is_dto_v<U>) {
+    static_assert(!dto_name<U>.empty(),
+                  "schema_of: DTO type is missing a dto_name<T> specialization "
+                  "(would emit an empty \"$ref\" and a \"\" schema key)");
     return nlohmann::json{{"$ref", "#/components/schemas/" + std::string(dto_name<U>)}};
   } else if constexpr (is_optional_v<U>) {
     auto inner = schema_of<typename U::value_type>();
@@ -88,7 +91,16 @@ struct SchemaWriter {
           for (std::size_t i = 0; i < f.enum_count; ++i) {
             values.push_back(std::string(f.enum_values[i]));
           }
-          prop["enum"] = values;
+          // For optional members schema_of() yields {anyOf:[<inner>, {null}]};
+          // attach the enum to the non-null branch ([0]) so the nullable claim
+          // and the enum constraint agree (a top-level enum lacking "null" would
+          // reject the null that anyOf advertises). Required members get the
+          // enum at the top level.
+          if (prop.contains("anyOf") && prop["anyOf"].is_array() && !prop["anyOf"].empty()) {
+            prop["anyOf"][0]["enum"] = values;
+          } else {
+            prop["enum"] = values;
+          }
         }
         props[std::string(f.key)] = prop;
         if (f.presence == Presence::kRequired) {

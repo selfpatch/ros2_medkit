@@ -85,12 +85,18 @@ using AllDtos =
                VersionInfoEntry, XMedkitVersionInfo, VersionInfo, RootCapabilities, RootAuth, RootTls, RootOverview>;
 
 namespace detail {
+template <class T>
+void collect_one(nlohmann::json & schemas) {
+  static_assert(!dto_name<T>.empty(),
+                "collect_component_schemas: a DTO in AllDtos is missing a dto_name<T> specialization "
+                "(would write its schema under an empty \"\" key and collide with others)");
+  schemas[std::string(dto_name<T>)] = SchemaWriter<T>::schema();
+}
+
 template <class Tuple, std::size_t... I>
 nlohmann::json collect_impl(std::index_sequence<I...> /*seq*/) {
   nlohmann::json schemas = nlohmann::json::object();
-  ((schemas[std::string(dto_name<std::tuple_element_t<I, Tuple>>)] =
-        SchemaWriter<std::tuple_element_t<I, Tuple>>::schema()),
-   ...);
+  (collect_one<std::tuple_element_t<I, Tuple>>(schemas), ...);
   return schemas;
 }
 }  // namespace detail

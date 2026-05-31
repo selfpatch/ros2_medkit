@@ -52,10 +52,16 @@ class DataHandlers {
    *
    * GET /{entities}/{id}/data
    *
-   * Returns SOVD ValueMetadata items (typed `DataItem`) with x-medkit ROS2-
-   * specific extensions plus typed fan-out via `fan_out_collection<DataItem>`.
+   * Returns the opaque `DataListResult` envelope. For runtime entities the
+   * handler builds a typed `Collection<DataItem, DataListXMedkit>` (SOVD
+   * ValueMetadata items with x-medkit ROS2 extensions plus typed fan-out via
+   * `fan_out_collection<DataItem>`) and serializes it into the envelope, so the
+   * wire shape is unchanged. For plugin entities the provider's free-form item
+   * shape (which may carry vendor per-item fields the gateway cannot describe at
+   * compile time) is passed through verbatim, instead of being re-parsed into
+   * `Collection<DataItem>` (which would silently drop those fields).
    */
-  http::Result<dto::Collection<dto::DataItem, dto::DataListXMedkit>> list_data(const http::TypedRequest & req);
+  http::Result<dto::DataListResult> list_data(const http::TypedRequest & req);
 
   /**
    * @brief Get a single data item (topic value) for an entity.

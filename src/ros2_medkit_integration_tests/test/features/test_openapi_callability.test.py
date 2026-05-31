@@ -633,7 +633,7 @@ class TestOpenApiCallability(GatewayTestCase):
         - ``GET /apps/{id}``     (AppDetail schema, using temp_sensor fixture)
         - ``GET /apps/{id}/faults`` (FaultList schema)
         - ``GET /apps/{id}/operations`` (OperationList schema)
-        - ``GET /apps/{id}/data``       (DataList schema)
+        - ``GET /apps/{id}/data``       (DataListResult opaque schema)
 
         A schema mismatch means the handler's wire output no longer matches
         its DTO schema - a real contract bug introduced by the migration.
