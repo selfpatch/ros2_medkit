@@ -2,8 +2,8 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Unreleased
-----------
+0.5.0 (2026-06-01)
+------------------
 
 **Breaking Changes:**
 
@@ -102,6 +102,7 @@ Unreleased
 * All-or-nothing fragment semantics: a single malformed or forbidden fragment fails the entire load / reload and keeps the previously-loaded manifest active (`#376 <https://github.com/selfpatch/ros2_medkit/issues/376>`_)
 * ``ManifestParser::parse_fragment_file`` convenience entrypoint that injects a synthetic ``manifest_version`` header when the fragment omits one
 * See ``design/plugin_entity_notifications.rst`` for the lifecycle, merge-rule, and plugin-side write-contract walkthrough
+* Contributors: @bburda, @mfaferek93, @eclipse0922
 
 0.4.0 (2026-03-20)
 ------------------

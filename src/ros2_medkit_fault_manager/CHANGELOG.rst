@@ -2,6 +2,15 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.5.0 (2026-06-01)
+------------------
+* ``ClearFault`` honors the new ``skip_correlation_auto_clear`` request flag so per-entity fault clears can opt out of cascade-clearing correlated symptom fault codes (`#395 <https://github.com/selfpatch/ros2_medkit/issues/395>`_)
+* Three-layer protection against unbounded snapshot growth (bounded buffers plus pruning)
+* Concurrency and lifetime hardening: serialize concurrent subscription creation in ``SnapshotCapture``, join capture threads in the ``FaultManagerNode`` destructor, and defense-in-depth shutdown guards to prevent teardown crashes across distros
+* Aggregation security hardening and improved test coverage
+* Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules and ``bugprone`` / ``special-member-functions`` clang-tidy checks
+* Contributors: @bburda
+
 0.4.0 (2026-03-20)
 ------------------
 * Per-entity confirmation and healing thresholds via manifest configuration (`#269 <https://github.com/selfpatch/ros2_medkit/pull/269>`_)

@@ -2,6 +2,13 @@
 Changelog for package ros2_medkit_linux_introspection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.5.0 (2026-06-01)
+------------------
+* Migrated the introspection plugins to the ``get_routes()`` plugin API
+* Declared ``pkg-config`` as a ``buildtool_depend`` and fixed a route-separator bug
+* Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules
+* Contributors: @bburda
+
 0.4.0 (2026-03-20)
 ------------------
 * Initial release - Linux process introspection plugins for ros2_medkit gateway

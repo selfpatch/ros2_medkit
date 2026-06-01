@@ -2,8 +2,8 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.5.0 (2026-06-01)
+------------------
 * Native OPC-UA Part 9 ``AlarmConditionType`` event subscription. The plugin now subscribes to vendor-defined alarms (Siemens S7-1500 ``Program_Alarm`` / ProDiag, Beckhoff TF6100, CodeSys 3.5+, Rockwell via FactoryTalk Linx) and bridges each event into the SOVD fault lifecycle. Configured via a new top-level ``event_alarms:`` block in the node map YAML; mutually exclusive per entry with the existing threshold-based ``alarm`` form. (issue #386)
 * New SOVD operations on entities that host alarm sources: ``acknowledge_fault`` invokes the inherited ``Acknowledge`` method on the live ``ConditionId`` (i=9111, EventId tracked per Part 9 §5.7.3); ``confirm_fault`` invokes ``Confirm`` (i=9113). Both accept an optional ``comment`` rendered as ``LocalizedText`` on the server.
 * ``OpcuaClient`` gains ``add_event_monitored_item`` / ``remove_event_monitored_item`` / ``call_method`` and a generation counter that filters callbacks fired from defunct subscriptions after a reconnect. Heap-owned ``EventCallbackContext`` resolves the open62541pp / raw-C lifetime hazard.
@@ -11,6 +11,7 @@ Forthcoming
 * ``ConditionRefresh`` (Server method i=3875) is invoked on subscribe and on every reconnect, with ``RefreshStartEvent`` / ``RefreshEndEvent`` bracketing tracked for diagnostics.
 * New ``test_alarm_server`` fixture (open62541-based, full namespace 0 + alarms enabled) emits AlarmConditionType events on stdin commands; integration test ``run_alarm_tests.sh`` runs in CI alongside the existing OpenPLC threshold suite. The fixture builds by default via the workspace ``colcon build`` (gated on ``MEDKIT_OPCUA_BUILD_ALARM_SERVER`` which defaults to ON; ``ExternalProject_Add`` rebuilds open62541 with ``UA_NAMESPACE_ZERO=FULL`` and alarms ON, with a serial sub-build to dodge the upstream ``-j`` race on ``namespace0_generated.c``).
 * New CTest wrapper ``test_alarm_server_smoke`` boots the fixture on an ephemeral port and runs the asyncua smoke test against it; skips with CTest exit 77 (treated as pass) when ``asyncua`` is not importable, so iterating on plugin code without the Python dependency does not fail the suite.
+* Contributors: @mfaferek93, @bburda
 
 0.4.0 (2026-04-11)
 ------------------

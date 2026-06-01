@@ -25,7 +25,7 @@ Server Capabilities
 
       {
         "name": "ROS 2 Medkit Gateway",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "api_base": "/api/v1",
         "endpoints": [
           "GET /api/v1/health",
@@ -78,7 +78,7 @@ Server Capabilities
             "version": "1.0.0",
             "base_uri": "/api/v1",
             "vendor_info": {
-              "version": "0.4.0",
+              "version": "0.5.0",
               "name": "ros2_medkit"
             }
           }
