@@ -268,20 +268,19 @@ AllDtos Registry (``registry.hpp``)
 
 The free function ``collect_component_schemas()`` iterates ``AllDtos`` at
 compile time (via ``std::index_sequence``) and calls
-``SchemaWriter<T>::schema()`` for each type, producing the bulk of the
-``components/schemas`` map. ``SchemaBuilder::component_schemas()`` (in
-``src/openapi/schema_builder.cpp``) merges these DTO-generated entries with a
-small number of explicitly hand-written survivors:
+``SchemaWriter<T>::schema()`` for each type. ``SchemaBuilder::component_schemas()``
+(in ``src/openapi/schema_builder.cpp``) returns exactly this map: every entry in
+``components/schemas`` is generated from ``AllDtos``, with no hand-written
+survivors merged in. No runtime loop over a dynamic registry is required.
 
-- **``from_ros_msg`` / ``from_ros_srv_request`` / ``from_ros_srv_response``** -
-  schema factories for dynamic ROS 2 payloads whose field names are not known
-  at compile time (topic samples, service request/response bodies).
-- **``binary_schema``** and **``generic_object_schema``** - trivial inline
-  schema objects used for bulk-data and free-form fields.
-
-With the exception of these survivors, every schema in ``components/schemas``
-is generated from ``AllDtos``. No runtime loop over a dynamic registry is
-required.
+The hand-written schema factories that remain on ``SchemaBuilder`` -
+``from_ros_msg`` / ``from_ros_srv_request`` / ``from_ros_srv_response`` (for
+dynamic ROS 2 payloads whose field names are not known at compile time) and
+``binary_schema`` / ``generic_object_schema`` - are no longer part of the
+``components/schemas`` map. They are called by the path builder
+(``src/openapi/path_builder.cpp``) to emit *inline* operation schemas for the
+per-topic / per-service / per-action routes, whose request and response shape is
+derived from the live ROS 2 type rather than from a named DTO.
 
 The ``Collection<T>`` template is a generic DTO for paginated list responses
 (``{"items": [...]}``). It is specialized for each element type in
@@ -539,23 +538,25 @@ OpenAPI Generation Pipeline
 
 The published ``openapi.json`` is assembled mechanically from two sources:
 
-- ``components/schemas`` is the union of
-  ``collect_component_schemas<AllDtos>()`` (one entry per DTO listed in
-  ``dto/registry.hpp``) and a small set of explicit survivors in
-  ``SchemaBuilder::component_schemas()`` for genuinely dynamic ROS payloads
-  (``from_ros_msg`` / ``from_ros_srv_request`` / ``from_ros_srv_response``,
-  ``binary_schema``, ``generic_object_schema``).
+- ``components/schemas`` is exactly ``collect_component_schemas<AllDtos>()`` -
+  one entry per DTO listed in ``dto/registry.hpp``, with no hand-written
+  survivors merged in.
 - ``paths`` is ``RouteRegistry::to_openapi_paths()``: every typed route
   contributes a path item with ``$ref`` entries auto-derived from its
   ``TResponse`` / ``TBody`` template parameters plus any tags, summary,
   description, ``operation_id``, parameter, or extra-status metadata pinned
-  on the route via the fluent ``RouteEntry`` builder.
+  on the route via the fluent ``RouteEntry`` builder. The per-topic /
+  per-service / per-action routes for genuinely dynamic ROS 2 payloads carry an
+  *inline* schema built by ``SchemaBuilder``'s ``from_ros_msg`` /
+  ``from_ros_srv_request`` / ``from_ros_srv_response`` / ``binary_schema`` /
+  ``generic_object_schema`` factories (these feed path operations, not
+  ``components/schemas``).
 
 ``OpenApiSpecBuilder::build()`` then assembles ``info`` / ``servers`` /
 ``tags`` / ``security`` around those two compiled blocks. There are no
-hand-written ``paths`` items in the published spec, and no hand-written
-schema blocks beyond the survivors above. Adding a route or a DTO field
-updates the spec on the next process start with no schema-side edit.
+hand-written ``paths`` items in the published spec, and no hand-written schema
+blocks in ``components/schemas``. Adding a route or a DTO field updates the
+spec on the next process start with no schema-side edit.
 
 Optional fields are now emitted as ``anyOf: [<inner>, {type: "null"}]``
 (OpenAPI 3.1 idiom) so generated clients see ``T | null`` rather than

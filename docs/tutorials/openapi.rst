@@ -81,20 +81,29 @@ How Schemas Are Generated
 --------------------------
 
 The ``components/schemas`` object in every ``/docs`` response is generated
-automatically from the DTO registry. Each response and request type in the
-gateway is declared as a plain C++ struct with a ``constexpr dto_fields<T>``
-descriptor tuple. The ``SchemaWriter<T>`` visitor folds over this tuple at
-compile time to produce the OpenAPI JSON Schema entry, and the
-``AllDtos`` registry in ``dto/registry.hpp`` lists every named type so that
-``collect_component_schemas()`` can populate the full schema map without
-any hand-written schema factories.
+automatically from the DTO registry. Most response and request types are
+declared as a plain C++ struct with a ``constexpr dto_fields<T>`` descriptor
+tuple; the ``SchemaWriter<T>`` visitor folds over this tuple at compile time to
+produce the OpenAPI JSON Schema entry. The ``AllDtos`` registry in
+``dto/registry.hpp`` lists every named type so that
+``collect_component_schemas()`` populates the entire ``components/schemas`` map
+with no hand-written schema factories.
 
-The same descriptor is used for serialization (``JsonWriter<T>``) and
-request-body validation (``JsonReader<T>``), so the wire shape and the
-published schema are always derived from the same source. Genuinely dynamic
-payloads - such as live ROS 2 message data and free-form fault environment
-records - are typed as ``nlohmann::json`` members and appear in the schema
-as unconstrained objects (``{}``).
+For a field-walking DTO the same descriptor also drives serialization
+(``JsonWriter<T>``) and request-body validation (``JsonReader<T>``), so the wire
+shape and the published schema are always derived from the same source.
+
+A few envelope types whose payload shape is decided at runtime by a plugin or by
+a live ROS 2 type - the ``Data*Result`` / ``Fault*Result`` /
+``OperationExecutionResult`` *opaque* DTOs - have no ``dto_fields``. They carry a
+hand-written ``JsonWriter`` / ``JsonReader`` / ``SchemaWriter`` trio instead, are
+still listed in ``AllDtos``, and publish an opaque object schema
+(``{type: object, additionalProperties: true, x-medkit-opaque: true}``). Inside
+an ordinary DTO, a free-form member typed as a bare ``nlohmann::json`` (for
+example the fault environment records) appears as an unconstrained object
+(``{}``). The per-topic / per-service / per-action routes for live ROS 2 data do
+not use ``components/schemas`` at all: their request and response bodies carry an
+inline schema derived from the ROS 2 type on the route itself.
 
 For the full design of the DTO contract layer, see
 :doc:`/design/ros2_medkit_gateway/dto_contract`.
