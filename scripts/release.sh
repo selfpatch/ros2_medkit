@@ -33,6 +33,8 @@ SRC_DIR="${REPO_ROOT}/src"
 VERSION_HPP="${SRC_DIR}/ros2_medkit_gateway/include/ros2_medkit_gateway/core/version.hpp"
 CONF_PY="${REPO_ROOT}/docs/conf.py"
 DOCS_PYPROJECT="${REPO_ROOT}/docs/pyproject.toml"
+DOXYFILE="${REPO_ROOT}/docs/Doxyfile"
+QUALITY_DECL="${REPO_ROOT}/QUALITY_DECLARATION.md"
 
 usage() {
     echo "Usage: $0 {bump <version>|verify [<version>]}"
@@ -107,6 +109,23 @@ cmd_bump() {
         echo "  docs/pyproject.toml: -> ${target_version}"
     fi
 
+    # Update docs/Doxyfile PROJECT_NUMBER
+    if [ -f "$DOXYFILE" ]; then
+        sed -i "s|\(PROJECT_NUMBER[[:space:]]*=[[:space:]]*\)\"[0-9]\+\.[0-9]\+\.[0-9]\+\"|\1\"${target_version}\"|" "$DOXYFILE"
+        echo "  docs/Doxyfile PROJECT_NUMBER: -> ${target_version}"
+    fi
+
+    # Update QUALITY_DECLARATION.md current-version references (leave the
+    # ">=1.0.0" stability-policy mentions untouched via anchored patterns)
+    if [ -f "$QUALITY_DECL" ]; then
+        sed -i \
+            -e "s|current version is \*\*[0-9]\+\.[0-9]\+\.[0-9]\+\*\*|current version is **${target_version}**|" \
+            -e "s|all packages at [0-9]\+\.[0-9]\+\.[0-9]\+|all packages at ${target_version}|" \
+            -e "s|Version is [0-9]\+\.[0-9]\+\.[0-9]\+|Version is ${target_version}|" \
+            "$QUALITY_DECL"
+        echo "  QUALITY_DECLARATION.md: -> ${target_version}"
+    fi
+
     echo ""
     echo "Bumped ${count} packages + version.hpp + docs to ${target_version}."
     echo ""
@@ -175,6 +194,32 @@ cmd_verify() {
             echo "  OK: docs/pyproject.toml = ${pyproject_version}"
         fi
         versions_seen+=("$pyproject_version")
+    fi
+
+    # Check docs/Doxyfile PROJECT_NUMBER
+    if [ -f "$DOXYFILE" ]; then
+        local doxy_version
+        doxy_version=$(grep -oP 'PROJECT_NUMBER\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' "$DOXYFILE" || echo "unknown")
+        if [ -n "$expected_version" ] && [ "$doxy_version" != "$expected_version" ]; then
+            echo "  MISMATCH: docs/Doxyfile PROJECT_NUMBER is ${doxy_version}, expected ${expected_version}"
+            all_ok=false
+        else
+            echo "  OK: docs/Doxyfile PROJECT_NUMBER = ${doxy_version}"
+        fi
+        versions_seen+=("$doxy_version")
+    fi
+
+    # Check QUALITY_DECLARATION.md current version
+    if [ -f "$QUALITY_DECL" ]; then
+        local qd_version
+        qd_version=$(grep -oP 'current version is \*\*\K[0-9]+\.[0-9]+\.[0-9]+' "$QUALITY_DECL" || echo "unknown")
+        if [ -n "$expected_version" ] && [ "$qd_version" != "$expected_version" ]; then
+            echo "  MISMATCH: QUALITY_DECLARATION.md current version is ${qd_version}, expected ${expected_version}"
+            all_ok=false
+        else
+            echo "  OK: QUALITY_DECLARATION.md current version = ${qd_version}"
+        fi
+        versions_seen+=("$qd_version")
     fi
 
     # Check consistency if no expected version given

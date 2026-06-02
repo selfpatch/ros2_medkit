@@ -51,9 +51,7 @@ Changelog for package ros2_medkit_gateway
   ``parameters`` / ``error`` (``GET .../scripts/{id}/executions/{eid}``) and
   the script ``parameters_schema`` field (``GET .../scripts/{id}``). Clients
   that tested ``field === null`` or relied on the key always being present must
-  treat an absent key the same as ``null``. The ``rtmaps_medkit`` variant is
-  explicitly NOT covered by this PR - its handlers continue to run on the
-  pre-typed HandlerContext surface and will be migrated separately
+  treat an absent key the same as ``null``
   (`#403 <https://github.com/selfpatch/ros2_medkit/issues/403>`_)
 * Synchronous operation-execution service-call failures
   (``POST /api/v1/{entity-path}/operations/{id}/executions`` when the underlying
@@ -102,6 +100,9 @@ Changelog for package ros2_medkit_gateway
 * All-or-nothing fragment semantics: a single malformed or forbidden fragment fails the entire load / reload and keeps the previously-loaded manifest active (`#376 <https://github.com/selfpatch/ros2_medkit/issues/376>`_)
 * ``ManifestParser::parse_fragment_file`` convenience entrypoint that injects a synthetic ``manifest_version`` header when the fragment omits one
 * See ``design/plugin_entity_notifications.rst`` for the lifecycle, merge-rule, and plugin-side write-contract walkthrough
+* New ``GET /api/v1/apps/{app_id}/belongs-to`` discovery endpoint returning the areas and components an app belongs to; the ``belongs-to`` URI is advertised on ``GET /apps/{app_id}`` (`#196 <https://github.com/selfpatch/ros2_medkit/issues/196>`_)
+* Pool-backed ``TopicDataProvider`` for live topic data: a shared subscription pool owned by a single-writer executor node, with LRU and idle eviction and publisher-QoS matching, replacing per-request subscriptions. Pool and executor health are surfaced as the ``x-medkit-subscription-executor`` vendor-extension stats on ``GET /api/v1/health``, read atomically so ``/health`` never blocks under load (`#384 <https://github.com/selfpatch/ros2_medkit/issues/384>`_)
+* ``GET /api/v1/updates/{id}/status`` exposes the update lifecycle ``phase`` under the response ``x-medkit`` object
 * Contributors: @bburda, @mfaferek93, @eclipse0922
 
 0.4.0 (2026-03-20)
