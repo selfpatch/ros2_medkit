@@ -43,6 +43,10 @@ def generate_launch_description():
               f'{graph_provider_path} - plugin will not load')
         graph_provider_path = ''
 
+    declare_overide_config_arg = DeclareLaunchArgument(
+        'config_file', default_value=default_config,
+        description='Path to YAML config file for gateway parameters')
+
     declare_host_arg = DeclareLaunchArgument(
         'server_host', default_value='127.0.0.1',
         description='Host to bind REST server (127.0.0.1 or 0.0.0.0)')
@@ -74,10 +78,11 @@ def generate_launch_description():
         executable='gateway_node',
         name='ros2_medkit_gateway',
         output='screen',
-        parameters=[default_config, param_overrides],
+        parameters=[LaunchConfiguration('config_file'), param_overrides],
         arguments=['--ros-args', '--log-level', 'info'])
 
     return LaunchDescription([
+        declare_overide_config_arg,
         declare_host_arg,
         declare_port_arg,
         declare_refresh_arg,
