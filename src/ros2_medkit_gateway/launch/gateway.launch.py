@@ -43,7 +43,7 @@ def generate_launch_description():
               f'{graph_provider_path} - plugin will not load')
         graph_provider_path = ''
 
-    declare_overide_config_arg = DeclareLaunchArgument(
+    declare_override_config_arg = DeclareLaunchArgument(
         'config_file', default_value=default_config,
         description='Path to YAML config file for gateway parameters')
 
@@ -82,7 +82,7 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info'])
 
     return LaunchDescription([
-        declare_overide_config_arg,
+        declare_override_config_arg,
         declare_host_arg,
         declare_port_arg,
         declare_refresh_arg,
