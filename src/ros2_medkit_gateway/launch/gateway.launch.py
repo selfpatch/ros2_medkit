@@ -45,7 +45,8 @@ def generate_launch_description():
 
     declare_override_config_arg = DeclareLaunchArgument(
         'config_file', default_value=default_config,
-        description='Path to YAML config file for gateway parameters')
+        description='Path to YAML config file to override gateway parameters. Default config '
+                    'is the ros2_medkit_gateway/config/gateway_params.yaml.')
 
     declare_host_arg = DeclareLaunchArgument(
         'server_host', default_value='127.0.0.1',
@@ -78,7 +79,7 @@ def generate_launch_description():
         executable='gateway_node',
         name='ros2_medkit_gateway',
         output='screen',
-        parameters=[LaunchConfiguration('config_file'), param_overrides],
+        parameters=[default_config, LaunchConfiguration('config_file'), param_overrides],
         arguments=['--ros-args', '--log-level', 'info'])
 
     return LaunchDescription([

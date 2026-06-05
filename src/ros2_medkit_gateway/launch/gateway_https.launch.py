@@ -142,6 +142,7 @@ def launch_setup(context):
     server_port = LaunchConfiguration('server_port').perform(context)
     refresh_interval = LaunchConfiguration('refresh_interval_ms').perform(context)
     min_tls_version = LaunchConfiguration('min_tls_version').perform(context)
+    override_config = LaunchConfiguration('config_file').perform(context)
 
     # Use temp directory if not specified
     if not cert_dir:
@@ -181,7 +182,7 @@ def launch_setup(context):
             name='ros2_medkit_gateway',
             output='screen',
             parameters=[
-                default_config,
+                default_config, override_config,
                 {
                     'server.host': server_host,
                     'server.port': int(server_port),
@@ -235,6 +236,14 @@ def generate_launch_description():
             'min_tls_version',
             default_value='1.2',
             description='Minimum TLS version (1.2 or 1.3)'
+        ),
+
+        DeclareLaunchArgument(
+            'config_file', default_value=os.path.join(
+                get_package_share_directory('ros2_medkit_gateway'),
+                'config', 'gateway_params.yaml'),
+            description='Path to YAML config file to override gateway parameters. Default config '
+                        'is the ros2_medkit_gateway/config/gateway_params.yaml.'
         ),
 
         # Use OpaqueFunction to generate certs and set up node

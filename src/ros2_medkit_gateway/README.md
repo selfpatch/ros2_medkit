@@ -1271,6 +1271,22 @@ cors:
 
 > ⚠️ **Security Note:** Using `["*"]` as `allowed_origins` is not recommended for production. When `allow_credentials` is `true`, wildcard origins will cause the application to fail to start with an exception.
 
+**Use config from another package (`gateway.launch.py`):**
+
+```bash
+ros2 launch ros2_medkit_gateway gateway.launch.py \
+  config_file:=<your_package>/config/gateway_params.yaml
+```
+
+> **Parameter priority:** launch args > `config_file` > packaged defaults. `config_file` overrides only the keys it defines; `server_host`, `server_port`, and `refresh_interval_ms` are launch-arg only and always take precedence.
+
+| Launch Argument       | Default                               | Description                                                                                          |
+| --------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `config_file`         | packaged `config/gateway_params.yaml` | Path to a YAML parameter file applied on top of the packaged defaults.                               |
+| `server_host`         | `127.0.0.1`                           | Host to bind the REST server (`127.0.0.1` or `0.0.0.0`). Launch-arg only.                           |
+| `server_port`         | `8080`                                | Port for the REST API. Launch-arg only.                                                              |
+| `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval in ms (graph events drive the primary refresh). Launch-arg only.    |
+
 ### Authentication Configuration Examples
 
 **Enable authentication with write-only protection (recommended for development):**
@@ -1402,13 +1418,23 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py cert_dir:=/home/user/cer
 ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
 ```
 
-| Launch Argument       | Default                    | Description                                      |
-| --------------------- | -------------------------- | ------------------------------------------------ |
-| `cert_dir`            | `/tmp/ros2_medkit_certs`   | Directory for auto-generated certificates        |
-| `server_host`         | `127.0.0.1`                | Host to bind HTTPS server                        |
-| `server_port`         | `8443`                     | Port for HTTPS API                               |
-| `min_tls_version`     | `1.2`                      | Minimum TLS version (`1.2` or `1.3`)             |
-| `refresh_interval_ms` | `30000`                    | Safety-backstop refresh interval (graph events drive primary refresh) |
+**Use config from another package (`gateway_https.launch.py`):**
+
+```bash
+ros2 launch ros2_medkit_gateway gateway_https.launch.py \
+  config_file:=<your_package>/config/gateway_params.yaml
+```
+
+> **Parameter priority:** launch args > `config_file` > packaged defaults. `config_file` overrides only the keys it defines; `cert_dir`, `server_host`, `server_port`, `min_tls_version`, and `refresh_interval_ms` are launch-arg only and always take precedence.
+
+| Launch Argument       | Default                               | Description                                                                              |
+| --------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `config_file`         | packaged `config/gateway_params.yaml` | Path to a YAML parameter file applied on top of the packaged defaults.                   |
+| `cert_dir`            | `/tmp/ros2_medkit_certs`              | Directory for auto-generated certificates. Launch-arg only.                              |
+| `server_host`         | `127.0.0.1`                           | Host to bind HTTPS server. Launch-arg only.                                              |
+| `server_port`         | `8443`                                | Port for HTTPS API. Launch-arg only.                                                     |
+| `min_tls_version`     | `1.2`                                 | Minimum TLS version (`1.2` or `1.3`). Launch-arg only.                                  |
+| `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval (graph events drive primary refresh). Launch-arg only.  |
 
 **Usage with curl (self-signed certs):**
 ```bash
