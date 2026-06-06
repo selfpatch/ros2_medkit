@@ -217,6 +217,12 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
+      # Bind-mount the runner's large temp disk. The ASan+UBSan build tree is
+      # ~27 GB; GitHub-hosted runners ship either a 72 GB / (only ~20 GB free,
+      # too small) or a 145 GB / disk, so the job used to pass or fail purely
+      # on which runner it landed. /mnt always has ~60+ GB free.
+      volumes:
+        - "/mnt:/mnt"
     # Cold-cache ASan builds are ~33 min; with the 12-min test budget this
     # left ~0 headroom and was already cancelling at thermal_protection on
     # PR branches that miss the ccache restore key. 60 min covers a full
@@ -227,14 +233,6 @@ jobs:
         shell: bash
 
     steps:
-      - name: Free disk space
-        run: |
-          # Host paths are no-ops inside the container - safe to keep
-          # for the case where the workflow is run without `container:`.
-          rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
-          apt-get clean
-          df -h /
-
       - name: Install Git
         run: |
           apt-get update
@@ -267,25 +265,35 @@ jobs:
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
+      - name: Redirect heavy build output to /mnt
+        run: |
+          # The ASan+UBSan RelWithDebInfo build tree is ~27 GB and does not fit
+          # the container overlay on small (72 GB) GitHub runners. Point the
+          # colcon build base and the compiler's scratch files at the large
+          # /mnt temp disk (bind-mounted above). install/ stays on the overlay:
+          # with --symlink-install it is only symlinks plus small setup files.
+          mkdir -p /mnt/asan/build /mnt/asan/tmp
+          ln -sfn /mnt/asan/build build
+          df -h / /mnt
+
       - name: Build with ASan + UBSan
         env:
           CCACHE_DIR: /root/.cache/ccache
           CCACHE_MAXSIZE: 500M
           CCACHE_SLOPPINESS: pch_defines,time_macros
+          TMPDIR: /mnt/asan/tmp
         run: |
           source /opt/ros/jazzy/setup.bash
-          # RelWithDebInfo (not Debug): Debug uses -O0 which produces
-          # binaries ~2x the size of -O1, and the ASan/UBSan instrumentation
-          # already inflates them several times over. On github-hosted
-          # runners (~14 GB /) the linker hits 'No space left on device' on
-          # PR branches that miss the ccache warm-up. The sanitizer cmake
-          # module overrides optimisation back to -O1 either way, so this
-          # only changes debug info size.
+          # RelWithDebInfo (not Debug): Debug's -O0 roughly doubles binary size
+          # vs -O1, and ASan/UBSan instrumentation inflates it further. The
+          # sanitizer cmake module forces -O1 regardless, so the build type only
+          # affects debug-info size. The build tree lands on /mnt (redirect step
+          # above) so the ~27 GB of instrumented objects + DWARF fit.
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSANITIZER=asan,ubsan \
             --event-handlers console_direct+
           ccache -s
-          df -h /
+          df -h / /mnt
 
       - name: Extend test timeouts for ASan overhead
         run: |
@@ -323,6 +331,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:noble
+      # See sanitizer-asan: the instrumented RelWithDebInfo build tree does not
+      # fit the container overlay on small GitHub runners, so build on /mnt.
+      volumes:
+        - "/mnt:/mnt"
     timeout-minutes: 45
     defaults:
       run:
@@ -361,17 +373,27 @@ jobs:
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
+      - name: Redirect heavy build output to /mnt
+        run: |
+          # TSan RelWithDebInfo build tree is large too; keep it off the cramped
+          # container overlay on small GitHub runners (see sanitizer-asan).
+          mkdir -p /mnt/tsan/build /mnt/tsan/tmp
+          ln -sfn /mnt/tsan/build build
+          df -h / /mnt
+
       - name: Build with TSan
         env:
           CCACHE_DIR: /root/.cache/ccache
           CCACHE_MAXSIZE: 500M
           CCACHE_SLOPPINESS: pch_defines,time_macros
+          TMPDIR: /mnt/tsan/tmp
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --symlink-install \
             --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSANITIZER=tsan \
             --event-handlers console_direct+
           ccache -s
+          df -h / /mnt
 
       - name: Extend test timeouts for TSan overhead
         run: |
