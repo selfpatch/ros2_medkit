@@ -999,6 +999,9 @@ RouteEntry & RouteRegistry::multipart_upload(
     // body.parts default-constructs empty; the loop below populates it from req.files.
     // cpp-httplib exposes parsed multipart entries via `req.files`; surface
     // them through MultipartBody.parts as MultipartFormData entries.
+    // FIXME(#409): `req.files` / httplib::MultipartFormData are unavailable in
+    // cpp-httplib >= 0.20; migrate to the req.form API so the system package can
+    // be used on Lyrical/Resolute instead of the vendored 0.14.3 header.
     for (const auto & [name, file] : req.files) {
       httplib::MultipartFormData mp;
       mp.name = name;
