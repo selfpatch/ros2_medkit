@@ -210,6 +210,8 @@ ScriptHandlers::upload_script(const http::TypedRequest & req, const http::Multip
   // MultipartBody.parts; we walk the vector instead of relying on `req.files`
   // map ordering so the typed surface does not leak through to the cpp-httplib
   // shape.
+  // FIXME(#409): httplib::MultipartFormData is unavailable in cpp-httplib
+  // >= 0.20; migrate to the req.form API (tracked with the vendored-header pin).
   const httplib::MultipartFormData * file_part = nullptr;
   const httplib::MultipartFormData * metadata_part = nullptr;
   for (const auto & part : body.parts) {

@@ -56,6 +56,9 @@ struct BinaryResponse {
 struct MultipartBody {
   /// Raw parts as parsed by cpp-httplib. Each part carries name, filename,
   /// content type, and the part bytes.
+  // FIXME(#409): httplib::MultipartFormDataItems is unavailable in cpp-httplib
+  // >= 0.20 (req.form API). Replace with a gateway-owned part type to decouple
+  // handlers from the cpp-httplib struct and lift the vendored-header pin.
   httplib::MultipartFormDataItems parts;
 };
 

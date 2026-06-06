@@ -85,7 +85,7 @@ endmacro()
 # On Lyrical/Resolute the system package is 0.26.x which removed the
 # multipart `Request::has_file` / `get_file_value` API used by
 # BulkDataHandlers, so we cap pkg-config at < 0.20 and fall back to the
-# vendored copy until the handler is migrated to the newer API.
+# vendored copy until the handler is migrated to the newer API (see #409).
 #
 # Creates a unified alias target `cpp_httplib_target` for consumers.
 # ---------------------------------------------------------------------------
@@ -107,9 +107,17 @@ macro(medkit_find_cpp_httplib)
     message(STATUS "[MedkitCompat] cpp-httplib: using pkg-config (${cpp_httplib_VERSION})")
   else()
     find_package(httplib QUIET)
-    if(TARGET httplib::httplib)
+    # Cap this tier at [0.14, 0.20) like the pkg-config tier above: a future
+    # distro shipping httplibConfig.cmake for 0.26 would otherwise resolve here
+    # and skip the vendored fallback, even though 0.26 dropped the multipart
+    # Request::has_file API. An unversioned config (deliberate source build) is
+    # trusted and passes through.
+    if(TARGET httplib::httplib AND DEFINED httplib_VERSION AND NOT httplib_VERSION VERSION_LESS "0.20")
+      message(STATUS "[MedkitCompat] cpp-httplib: cmake config ${httplib_VERSION} removes the multipart Request::has_file API; falling back to vendored 0.14")
+    endif()
+    if(TARGET httplib::httplib AND (NOT DEFINED httplib_VERSION OR httplib_VERSION VERSION_LESS "0.20"))
       add_library(cpp_httplib_target ALIAS httplib::httplib)
-      message(STATUS "[MedkitCompat] cpp-httplib: using cmake config (source build)")
+      message(STATUS "[MedkitCompat] cpp-httplib: using cmake config (source build, version '${httplib_VERSION}')")
     elseif(_mfch_VENDORED_DIR AND EXISTS "${_mfch_VENDORED_DIR}/httplib.h")
       add_library(cpp_httplib_vendored INTERFACE)
       target_include_directories(cpp_httplib_vendored SYSTEM INTERFACE "${_mfch_VENDORED_DIR}")
