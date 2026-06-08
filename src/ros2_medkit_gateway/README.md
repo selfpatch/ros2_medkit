@@ -1472,6 +1472,10 @@ The `gateway_node` executable and existing test targets link `gateway_ros2`, so 
 - `gateway_core_purity` (linter label) - greps `core/` for any ROS-package include and fails on any match.
 - `test_gateway_core_smoke` (unit label) - compiles a translation unit that includes a sampling of `core/` headers and links exclusively against `gateway_core` + GTest with no `ament_target_dependencies`. Build failure indicates a transitive ROS coupling that the grep guard might miss.
 
+A third purity gate keeps cpp-httplib out of the plugin ABI. Plugin-facing public headers - the provider interfaces, the `GatewayPlugin` base headers, and the DTOs they include - must not depend on `<httplib.h>`. cpp-httplib is a gateway-internal detail; plugins exchange `nlohmann::json`, typed `dto::` structs, `tl::expected`, and the opaque `PluginRequest`/`PluginResponse` shim across the `.so` boundary, so the gateway and its plugins need not share an httplib version. The httplib-free handler-result vocabulary (`Result`, `NoContent`, `Forwarded`, `ValidatorResult`, `ResponseAttachments`) lives in `http/handler_result.hpp`; only `http/typed_router.hpp` and the handler-internal headers touch httplib. The invariant is enforced by:
+
+- `gateway_plugin_header_purity` (linter label) - runs `scripts/check_headers_httplib_free.sh`, a preprocessor-only scan (`g++ -M -MG`) over the plugin-facing surface that fails on any transitive `httplib.h` dependency. Also wired into the pre-push hook. The build-farm topology (installed gateway, no vendored httplib on the include path) is reproduced locally by `scripts/check_isolated_build.sh`.
+
 ### Components
 
 - **Gateway Node**: Main ROS 2 node that runs the REST server

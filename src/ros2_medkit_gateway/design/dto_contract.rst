@@ -493,6 +493,39 @@ interface directly. Out-of-tree plugins that previously returned raw
 ``nlohmann::json`` must wrap their response in the matching envelope type;
 the conversion is mechanical (``Result.content = std::move(json_payload)``).
 
+Header Purity: No httplib Across the Plugin Boundary
+----------------------------------------------------
+
+Plugin-facing public headers - the provider interfaces
+(``core/providers/*.hpp``), the plugin base headers a ``GatewayPlugin``
+subclass includes (``core/plugins/gateway_plugin.hpp``,
+``plugin_context.hpp``, ``plugin_http_types.hpp``,
+``plugins/ros_plugin_context.hpp``), and every DTO header they pull in -
+MUST NOT depend on ``<httplib.h>``. cpp-httplib is a gateway-internal
+implementation detail. Across the ``.so`` boundary plugins exchange only
+``nlohmann::json``, typed ``dto::`` structs, ``tl::expected``, and the opaque
+``PluginRequest`` / ``PluginResponse`` shim. Because no httplib type ever
+crosses that boundary, the gateway and its plugins do not need to share an
+httplib version: a plugin built against the installed gateway (the ROS
+build-farm / Docker topology, where the gateway's vendored httplib is not on
+the include path) still compiles.
+
+The httplib-free handler-result vocabulary - ``Result``, ``NoContent``,
+``Forwarded``, ``ValidatorResult``, ``ResponseAttachments`` - lives in
+``http/handler_result.hpp``. Only ``http/typed_router.hpp`` (which owns
+``TypedRequest`` and the raw-response escape hatch) and the handler-internal
+headers downstream of it touch ``<httplib.h>``; ``typed_router.hpp``
+re-exports the ``handler_result.hpp`` vocabulary so existing includers keep
+working without pulling httplib transitively.
+
+The invariant is enforced by the ``gateway_plugin_header_purity`` ctest
+(``scripts/check_headers_httplib_free.sh``, ``linter`` label), which runs a
+preprocessor-only scan (``g++ -M -MG``) over the plugin-facing surface and
+fails on any transitive ``httplib.h`` dependency, and by the pre-push hook of
+the same name. The build-farm topology (installed gateway, no vendored
+httplib on the include path) is reproduced locally by
+``scripts/check_isolated_build.sh``.
+
 Fan-Out Observability
 ---------------------
 
