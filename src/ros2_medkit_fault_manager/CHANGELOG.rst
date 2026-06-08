@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * ``ClearFault`` honors the new ``skip_correlation_auto_clear`` request flag so per-entity fault clears can opt out of cascade-clearing correlated symptom fault codes (`#395 <https://github.com/selfpatch/ros2_medkit/issues/395>`_)
 * Three-layer protection against unbounded snapshot growth (bounded buffers plus pruning)

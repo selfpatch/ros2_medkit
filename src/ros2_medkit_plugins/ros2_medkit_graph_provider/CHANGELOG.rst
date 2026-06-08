@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_graph_provider
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Migrated ``GraphProviderPlugin`` to the ``get_routes()`` plugin API and fixed a route-separator bug
 * Added shutdown guards and ``noexcept`` destructors that reset rclcpp resources before member destruction, preventing teardown SIGSEGV

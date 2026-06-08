@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_diagnostic_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules
 * Tests: use centralized ``ROS_DOMAIN_ID`` allocation for DDS isolation

@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_fault_reporter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * ``LocalFilter`` now debounces ``PASSED`` events with the same threshold / window filtering as ``FAILED``, preventing rapid CONFIRMED/CLEARED status cycling from triggering unbounded snapshot recapture (`#308 <https://github.com/selfpatch/ros2_medkit/issues/308>`_)
 * Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules

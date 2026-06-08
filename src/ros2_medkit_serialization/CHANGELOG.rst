@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_serialization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * ``TypeIntrospection`` relocated into this package as part of the gateway core / ROS 2 layer split
 * Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules

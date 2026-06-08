@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_linux_introspection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Migrated the introspection plugins to the ``get_routes()`` plugin API
 * Declared ``pkg-config`` as a ``buildtool_depend`` and fixed a route-separator bug

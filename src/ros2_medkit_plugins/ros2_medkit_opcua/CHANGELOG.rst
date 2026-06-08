@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Native OPC-UA Part 9 ``AlarmConditionType`` event subscription. The plugin now subscribes to vendor-defined alarms (Siemens S7-1500 ``Program_Alarm`` / ProDiag, Beckhoff TF6100, CodeSys 3.5+, Rockwell via FactoryTalk Linx) and bridges each event into the SOVD fault lifecycle. Configured via a new top-level ``event_alarms:`` block in the node map YAML; mutually exclusive per entry with the existing threshold-based ``alarm`` form. (issue #386)
 * New SOVD operations on entities that host alarm sources: ``acknowledge_fault`` invokes the inherited ``Acknowledge`` method on the live ``ConditionId`` (i=9111, EventId tracked per Part 9 §5.7.3); ``confirm_fault`` invokes ``Confirm`` (i=9113). Both accept an optional ``comment`` rendered as ``LocalizedText`` on the server.

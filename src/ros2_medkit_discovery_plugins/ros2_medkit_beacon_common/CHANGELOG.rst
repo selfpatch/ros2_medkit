@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_beacon_common
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Updated include paths for the gateway core / ROS 2 ``PluginContext`` layer split and removal of backwards-compat shim headers
 * Build: adopt the centralized ``ROS2MedkitWarnings`` cmake module
