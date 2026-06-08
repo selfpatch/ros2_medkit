@@ -354,6 +354,13 @@ if(BUILD_TESTING)
   )
   set_tests_properties(gateway_core_purity PROPERTIES LABELS "linter")
 
+  add_test(
+    NAME gateway_plugin_header_purity
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_headers_httplib_free.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  set_tests_properties(gateway_plugin_header_purity PROPERTIES LABELS "linter")
+
   # ─── gateway_core link-time smoke test ────────────────────────────────────
   # Compiles a translation unit including a sampling of core/ headers and
   # links exclusively against gateway_core + GTest. No ament_target_dependencies
