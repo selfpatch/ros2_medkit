@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_integration_tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * New peer-aggregation suites: peer aggregation, cross-ECU fan-out across all resource types, daisy-chain hierarchical aggregation, leaf-collision aggregation, and cross-ECU log aggregation
 * New SOVD-aligned entity-model suites: runtime entity model, flat entity tree without areas, hybrid suppression, and per-entity fault scope isolation

@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 
 **Breaking Changes:**
@@ -103,7 +103,9 @@ Changelog for package ros2_medkit_gateway
 * New ``GET /api/v1/apps/{app_id}/belongs-to`` discovery endpoint returning the areas and components an app belongs to; the ``belongs-to`` URI is advertised on ``GET /apps/{app_id}`` (`#196 <https://github.com/selfpatch/ros2_medkit/issues/196>`_)
 * Pool-backed ``TopicDataProvider`` for live topic data: a shared subscription pool owned by a single-writer executor node, with LRU and idle eviction and publisher-QoS matching, replacing per-request subscriptions. Pool and executor health are surfaced as the ``x-medkit-subscription-executor`` vendor-extension stats on ``GET /api/v1/health``, read atomically so ``/health`` never blocks under load (`#384 <https://github.com/selfpatch/ros2_medkit/issues/384>`_)
 * ``GET /api/v1/updates/{id}/status`` exposes the update lifecycle ``phase`` under the response ``x-medkit`` object
-* Contributors: @bburda, @mfaferek93, @eclipse0922
+* ``gateway.launch.py`` and ``gateway_https.launch.py`` accept a ``config_file`` launch argument pointing at an external parameter YAML. Parameters present in the file override the matching gateway defaults; parameters the file omits keep their launch defaults instead of being reset (`#408 <https://github.com/selfpatch/ros2_medkit/pull/408>`_)
+* Plugin-facing headers are httplib-free across the ``.so`` boundary: the handler-result vocabulary (``Result``, ``NoContent``, ``Forwarded``, ``ValidatorResult``, ``ResponseAttachments``) moved to a new leaf header ``http/handler_result.hpp`` so provider and DTO interfaces no longer transitively include ``<httplib.h>``. Out-of-tree plugins built against the installed gateway (build-farm / Docker topology, where the vendored httplib is not on the include path) compile again; no ABI, wire, or behaviour change. A pre-push gate and CI scan keep the plugin-facing headers httplib-free (`#411 <https://github.com/selfpatch/ros2_medkit/pull/411>`_)
+* Contributors: @bburda, @eclipse0922, @evTessellate, @mfaferek93
 
 0.4.0 (2026-03-20)
 ------------------

@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_topic_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * Migrated ``TopicBeaconPlugin`` to the ``get_routes()`` plugin API
 * Added shutdown guards and ``noexcept`` destructors (with ``override``) that reset rclcpp resources before member destruction, preventing teardown SIGSEGV

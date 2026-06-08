@@ -2,7 +2,7 @@
 Changelog for package ros2_medkit_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.5.0 (2026-06-01)
+0.5.0 (2026-06-08)
 ------------------
 * New service definitions ``ListEntities.srv``, ``GetEntityData.srv``, ``GetCapabilities.srv`` and the ``EntityInfo.msg`` type for exposing the entity tree over ROS 2 services (`#330 <https://github.com/selfpatch/ros2_medkit/issues/330>`_)
 * ``ClearFault.srv`` request gains a ``bool skip_correlation_auto_clear`` field so callers can opt out of cascade-clearing correlated symptom fault codes; out-of-tree callers must rebuild against the new message (`#395 <https://github.com/selfpatch/ros2_medkit/issues/395>`_)
