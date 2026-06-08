@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "ros2_medkit_gateway/http/typed_router.hpp"
+#include "ros2_medkit_gateway/http/handler_result.hpp"
 
 namespace ros2_medkit_gateway {
 namespace http {
