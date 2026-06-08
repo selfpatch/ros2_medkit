@@ -71,6 +71,13 @@ repos:
         language: script
         pass_filenames: false
         always_run: true
+      - id: gateway-plugin-header-purity
+        name: plugin-facing headers must not depend on httplib
+        entry: ./src/ros2_medkit_gateway/scripts/check_headers_httplib_free.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
 
   # ── Incremental clang-tidy (pre-push only) ────────────────────────
   # Requires: pre-commit install --hook-type pre-push
