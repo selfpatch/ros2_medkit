@@ -476,9 +476,10 @@ void FaultManagerNode::handle_list_faults(
     response->muted_count = correlation_engine_->get_muted_count();
     response->cluster_count = correlation_engine_->get_cluster_count();
 
+    auto muted_faults = correlation_engine_->get_muted_faults();
+
     // Include muted faults details if requested
     if (request->include_muted) {
-      auto muted_faults = correlation_engine_->get_muted_faults();
       response->muted_faults.reserve(muted_faults.size());
       for (const auto & muted : muted_faults) {
         ros2_medkit_msgs::msg::MutedFaultInfo info;
@@ -488,6 +489,20 @@ void FaultManagerNode::handle_list_faults(
         info.delay_ms = muted.delay_ms;
         response->muted_faults.push_back(info);
       }
+    } else {
+      // Build a set of muted codes for O(1) lookup.
+      std::unordered_set<std::string> muted_codes;
+      for (const auto & muted : muted_faults) {
+        muted_codes.insert(muted.fault_code);
+      }
+
+      // Remove all faults whose code is muted, in one pass.
+      auto & faults = response->faults;
+      faults.erase(std::remove_if(faults.begin(), faults.end(),
+                                  [&muted_codes](const ros2_medkit_msgs::msg::Fault & fault) {
+                                    return muted_codes.count(fault.fault_code) > 0;
+                                  }),
+                   faults.end());
     }
 
     // Include cluster details if requested
