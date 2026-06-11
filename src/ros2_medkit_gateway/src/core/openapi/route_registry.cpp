@@ -101,6 +101,13 @@ RouteEntry & RouteEntry::query_param(const std::string & name, const std::string
   return *this;
 }
 
+RouteEntry & RouteEntry::add_query_parameters(const nlohmann::json & params) {
+  for (const auto & param : params) {
+    parameters_.push_back(param);
+  }
+  return *this;
+}
+
 RouteEntry & RouteEntry::header_param(const std::string & name, const std::string & desc, bool required,
                                       const nlohmann::json & schema) {
   nlohmann::json param;

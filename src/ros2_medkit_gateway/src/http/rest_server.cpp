@@ -655,7 +655,8 @@ void RESTServer::setup_routes() {
         .tag("Faults")
         .summary(std::string("List faults for ") + et.singular)
         .description(std::string("Returns all active faults reported by this ") + et.singular + ".")
-        .operation_id(std::string("list") + capitalize(et.singular) + "Faults");
+        .operation_id(std::string("list") + capitalize(et.singular) + "Faults")
+        .query<dto::FaultListQuery>();
 
     reg.get<dto::FaultDetailResult>(entity_path + "/faults/{fault_code}",
                                     [this](http::TypedRequest req) -> http::Result<dto::FaultDetailResult> {
@@ -700,7 +701,8 @@ void RESTServer::setup_routes() {
         .tag("Logs")
         .summary(std::string("Query log entries for ") + et.singular)
         .description(std::string("Queries application log entries for this ") + et.singular + ".")
-        .operation_id(std::string("list") + capitalize(et.singular) + "Logs");
+        .operation_id(std::string("list") + capitalize(et.singular) + "Logs")
+        .query<dto::LogQuery>();
 
     reg.get<dto::LogConfiguration>(entity_path + "/logs/configuration",
                                    [this](http::TypedRequest req) -> http::Result<dto::LogConfiguration> {
@@ -1406,7 +1408,8 @@ void RESTServer::setup_routes() {
       .tag("Faults")
       .summary("List all faults globally")
       .description("Retrieve all faults across the system.")
-      .operation_id("listAllFaults");
+      .operation_id("listAllFaults")
+      .query<dto::FaultListQuery>();
 
   reg.del<http::NoContent>(
          "/faults",
@@ -1416,7 +1419,8 @@ void RESTServer::setup_routes() {
       .tag("Faults")
       .summary("Clear all faults globally")
       .description("Clears all faults across the entire system.")
-      .operation_id("clearAllFaults");
+      .operation_id("clearAllFaults")
+      .query<dto::FaultClearQuery>();
 
   // === Software Updates ===
   //
@@ -1451,7 +1455,8 @@ void RESTServer::setup_routes() {
       .tag("Updates")
       .summary("List software updates")
       .description("Lists all registered software updates.")
-      .operation_id("listUpdates");
+      .operation_id("listUpdates")
+      .query<dto::UpdateListQuery>();
 
   reg.post<dto::UpdateRegisterRequest, dto::UpdateRegisterResponse>(
          "/updates",

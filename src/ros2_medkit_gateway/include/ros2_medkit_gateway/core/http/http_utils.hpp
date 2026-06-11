@@ -22,6 +22,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -99,15 +100,15 @@ struct FaultStatusFilter {
 };
 
 /**
- * @brief Parse fault status query parameter from request
- * @param req HTTP request
- * @return Filter flags and validity. If status param is invalid, is_valid=false.
+ * @brief Map a fault `status` query value to a FaultStatusFilter.
+ * @param status_opt The `status` query parameter value, or nullopt if absent.
+ * @return Filter flags and validity. If status value is unknown, is_valid=false.
  */
-inline FaultStatusFilter parse_fault_status_param(const httplib::Request & req) {
+inline FaultStatusFilter parse_fault_status_param(const std::optional<std::string> & status_opt) {
   FaultStatusFilter filter;
 
-  if (req.has_param("status")) {
-    std::string status = req.get_param_value("status");
+  if (status_opt) {
+    const std::string & status = *status_opt;
     // Reset defaults when explicit status filter is provided
     filter.include_pending = false;
     filter.include_confirmed = false;

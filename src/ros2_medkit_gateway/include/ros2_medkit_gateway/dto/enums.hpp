@@ -30,6 +30,12 @@ inline constexpr std::string_view kFaultSeverityLabelValues[] = {"INFO", "WARN",
 /// Fault aggregated status (fault_detail_schema - status.aggregatedStatus).
 inline constexpr std::string_view kFaultAggregatedStatusValues[] = {"active", "passive", "cleared"};
 
+/// Fault status query filter (FaultListQuery.status / FaultClearQuery.status).
+/// Mirrors the values parse_fault_status_param() accepts in http_utils.hpp;
+/// any other value yields ERR_INVALID_PARAMETER. The leading entry must be a
+/// handler-accepted value (the OpenAPI callability test sends enum[0]).
+inline constexpr std::string_view kFaultStatusFilterValues[] = {"pending", "confirmed", "cleared", "healed", "all"};
+
 /// Log aggregation level (log_entry_list_schema - x-medkit.aggregation_level).
 inline constexpr std::string_view kLogAggregationLevelValues[] = {"function", "area", "component"};
 

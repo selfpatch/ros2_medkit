@@ -173,5 +173,21 @@ inline constexpr auto dto_fields<LogConfiguration> = std::make_tuple(
 template <>
 inline constexpr std::string_view dto_name<LogConfiguration> = "LogConfiguration";
 
+// =============================================================================
+// LogQuery - query parameters for GET /{entity}/logs. Read by the handler via
+// TypedRequest::query<LogQuery>() and declared in the OpenAPI spec via the same
+// descriptor, so the two cannot drift.
+// =============================================================================
+struct LogQuery {
+  std::optional<std::string> severity;
+  std::optional<std::string> context;
+};
+
+template <>
+inline constexpr auto dto_fields<LogQuery> =
+    std::make_tuple(field_enum("severity", &LogQuery::severity, kLogSeverityFilterValues,
+                               "Filter by minimum severity: debug, info, warning, error, or fatal"),
+                    field("context", &LogQuery::context, "Filter by logger context substring (max 256 chars)"));
+
 }  // namespace dto
 }  // namespace ros2_medkit_gateway

@@ -82,19 +82,15 @@ tl::expected<std::string, ErrorInfo> read_fault_code(const http::TypedRequest & 
 
 /// Build a populated FaultStatusFilter from query params, surfacing an
 /// ErrorInfo when the `status` value is unknown.
-tl::expected<FaultStatusFilter, ErrorInfo> read_fault_status_filter(const http::TypedRequest & req,
+tl::expected<FaultStatusFilter, ErrorInfo> read_fault_status_filter(const std::optional<std::string> & status,
                                                                     const json & extra_params = {}) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-  const auto & raw_req = req.raw_for_framework();
-#pragma GCC diagnostic pop
-  auto filter = parse_fault_status_param(raw_req);
+  auto filter = parse_fault_status_param(status);
   if (filter.is_valid) {
     return filter;
   }
   json params{{"allowed_values", "pending, confirmed, cleared, healed, all"},
               {"parameter", "status"},
-              {"value", raw_req.get_param_value("status")}};
+              {"value", status.value_or("")}};
   if (extra_params.is_object()) {
     for (auto it = extra_params.begin(); it != extra_params.end(); ++it) {
       params[it.key()] = it.value();
@@ -349,20 +345,17 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
 
 http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::TypedRequest & req) {
   try {
-    auto filter_result = read_fault_status_filter(req);
+    const auto q = req.query<dto::FaultListQuery>();
+    auto filter_result = read_fault_status_filter(q.status);
     if (!filter_result) {
       return tl::make_unexpected(filter_result.error());
     }
     const auto filter = *filter_result;
 
-    // Parse correlation query parameters
-    const bool include_muted = req.query_param("include_muted").value_or(std::string{}) == "true";
-    const bool include_clusters = req.query_param("include_clusters").value_or(std::string{}) == "true";
-
     auto fault_mgr = ctx_.node()->get_fault_manager();
     // Empty source_id = no filtering, return all faults
     auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
-                                         filter.include_healed, include_muted, include_clusters);
+                                         filter.include_healed, q.include_muted, q.include_clusters);
     if (!result.success) {
       return tl::make_unexpected(
           make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults", json{{"details", result.error_message}}));
@@ -469,7 +462,8 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       return tl::make_unexpected(err);
     }
 
-    auto filter_result = read_fault_status_filter(req, json{{entity_info.id_field, entity_id}});
+    const auto q = req.query<dto::FaultListQuery>();
+    auto filter_result = read_fault_status_filter(q.status, json{{entity_info.id_field, entity_id}});
     if (!filter_result) {
       return tl::make_unexpected(filter_result.error());
     }
@@ -967,7 +961,8 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
 http::Result<std::pair<http::NoContent, http::ResponseAttachments>>
 FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
   try {
-    auto filter_result = read_fault_status_filter(req);
+    const auto q = req.query<dto::FaultClearQuery>();
+    auto filter_result = read_fault_status_filter(q.status);
     if (!filter_result) {
       return tl::make_unexpected(filter_result.error());
     }

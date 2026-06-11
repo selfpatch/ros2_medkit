@@ -457,5 +457,35 @@ struct dto_sample<FaultClearResult> {
   }
 };
 
+// =============================================================================
+// FaultListQuery - query parameters for GET /faults and GET /{entity}/faults.
+// Read by the handlers via TypedRequest::query<FaultListQuery>() and declared in
+// the OpenAPI spec via the same descriptor, so the two cannot drift.
+// =============================================================================
+struct FaultListQuery {
+  std::optional<std::string> status;
+  bool include_muted = false;
+  bool include_clusters = false;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultListQuery> = std::make_tuple(
+    field_enum("status", &FaultListQuery::status, kFaultStatusFilterValues,
+               "Filter by fault status: pending, confirmed, cleared, healed, or all"),
+    field("include_muted", &FaultListQuery::include_muted, Presence::kOptional, "Include muted faults in the response"),
+    field("include_clusters", &FaultListQuery::include_clusters, Presence::kOptional,
+          "Include fault clusters in the response"));
+
+// FaultClearQuery - query parameters for DELETE /faults (clear all). Only the
+// status filter applies; the correlation flags are list-only.
+struct FaultClearQuery {
+  std::optional<std::string> status;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultClearQuery> =
+    std::make_tuple(field_enum("status", &FaultClearQuery::status, kFaultStatusFilterValues,
+                               "Clear only faults in this status: pending, confirmed, cleared, healed, or all"));
+
 }  // namespace dto
 }  // namespace ros2_medkit_gateway
