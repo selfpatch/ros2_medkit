@@ -112,8 +112,9 @@ LogHandlers::get_logs(const http::TypedRequest & req) {
   }
 
   // Validate optional query parameters (shared across all entity types)
-  const std::string min_severity = req.query_param("severity").value_or(std::string{});
-  const std::string context_filter = req.query_param("context").value_or(std::string{});
+  const auto q = req.query<dto::LogQuery>();
+  const std::string min_severity = q.severity.value_or(std::string{});
+  const std::string context_filter = q.context.value_or(std::string{});
 
   if (!min_severity.empty() && !LogManager::is_valid_severity(min_severity)) {
     return tl::unexpected(make_error(400, ERR_INVALID_PARAMETER,

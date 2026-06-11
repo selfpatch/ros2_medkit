@@ -78,6 +78,12 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
+      - id: gateway-handlers-typed-query
+        name: handlers must read query params via typed query<T>()
+        entry: ./src/ros2_medkit_gateway/scripts/check_handlers_typed_query.sh
+        language: script
+        pass_filenames: false
+        always_run: true
 
   # ── Incremental clang-tidy (pre-push only) ────────────────────────
   # Requires: pre-commit install --hook-type pre-push

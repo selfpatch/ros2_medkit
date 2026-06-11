@@ -32,6 +32,7 @@
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
+#include "ros2_medkit_gateway/dto/query.hpp"
 #include "ros2_medkit_gateway/http/alternate_status.hpp"
 #include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
@@ -78,6 +79,18 @@ class RouteEntry {
 
   RouteEntry & path_param(const std::string & name, const std::string & desc);
   RouteEntry & query_param(const std::string & name, const std::string & desc, const std::string & type = "string");
+
+  /// Appends a pre-built array of OpenAPI query parameter objects to this route.
+  RouteEntry & add_query_parameters(const nlohmann::json & params);
+
+  /// Typed query parameters: declares every member of the query DTO `T` as an
+  /// `in: query` parameter, derived from the same `dto_fields<T>` descriptor a
+  /// handler reads via `TypedRequest::query<T>()`. The declared parameters and
+  /// the parsed object cannot drift - both come from one descriptor.
+  template <class T>
+  RouteEntry & query() {
+    return add_query_parameters(dto::QueryParamWriter<T>::parameters());
+  }
   RouteEntry & header_param(const std::string & name, const std::string & desc, bool required = true,
                             const nlohmann::json & schema = {{"type", "string"}});
   RouteEntry & deprecated();

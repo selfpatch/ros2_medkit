@@ -19,11 +19,13 @@
 #include <variant>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
 
 namespace {
 
 using ros2_medkit_gateway::ErrorInfo;
+using ros2_medkit_gateway::dto::FaultListQuery;
 using ros2_medkit_gateway::http::Forwarded;
 using ros2_medkit_gateway::http::NoContent;
 using ros2_medkit_gateway::http::ResponseAttachments;
@@ -154,6 +156,31 @@ TEST(TypedRouter_TypedRequest, QueryParamReturnsValueWhenPresent) {
   ASSERT_TRUE(wrapper.query_param("context").has_value());
   EXPECT_EQ(*wrapper.query_param("context"), "my.logger");
   EXPECT_FALSE(wrapper.query_param("limit").has_value());
+}
+
+TEST(TypedRouter_TypedRequest, TypedQueryParsesPresentParamsIntoDto) {
+  httplib::Request req;
+  req.path = "/api/v1/faults";
+  req.params.emplace("status", "confirmed");
+  req.params.emplace("include_muted", "true");
+  TypedRequest wrapper(req);
+
+  const auto q = wrapper.query<FaultListQuery>();
+  ASSERT_TRUE(q.status.has_value());
+  EXPECT_EQ(*q.status, "confirmed");
+  EXPECT_TRUE(q.include_muted);
+  EXPECT_FALSE(q.include_clusters);  // absent boolean -> default false
+}
+
+TEST(TypedRouter_TypedRequest, TypedQueryLeavesAbsentParamsAtDefault) {
+  httplib::Request req;
+  req.path = "/api/v1/faults";
+  TypedRequest wrapper(req);
+
+  const auto q = wrapper.query<FaultListQuery>();
+  EXPECT_FALSE(q.status.has_value());
+  EXPECT_FALSE(q.include_muted);
+  EXPECT_FALSE(q.include_clusters);
 }
 
 TEST(TypedRouter_TypedRequest, FanOutDisabledTrueOnlyWhenHeaderPresent) {

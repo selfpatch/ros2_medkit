@@ -21,6 +21,7 @@
 #include <string_view>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/dto/query.hpp"
 // Re-export the httplib-free handler-result vocabulary so existing includers of
 // typed_router.hpp keep seeing Result/NoContent/Forwarded/ValidatorResult/
 // ResponseAttachments. The markers themselves live in this leaf header, which
@@ -92,6 +93,23 @@ class TypedRequest {
     }
     // NOLINTNEXTLINE(readability-redundant-string-cstr)
     return req_.get_param_value(name_str.c_str());
+  }
+
+  /// Parses the request's query string into a typed query DTO `T`, using the
+  /// same `dto_fields<T>` descriptor that declares the parameters in the OpenAPI
+  /// spec (via `dto::QueryParamWriter<T>`). Absent parameters leave their member
+  /// at its default. This is the sanctioned way for handlers to read query
+  /// parameters: a handler cannot read a parameter the route did not declare,
+  /// because it can only access members of `T`.
+  template <class T>
+  T query() const {
+    T out{};
+    dto::for_each_field<T>([&](const auto & f) {
+      if (auto raw = query_param(f.key)) {
+        dto::assign_query_field(out.*(f.ptr), *raw);
+      }
+    });
+    return out;
   }
 
   /// Returns the value of the named header, or std::nullopt if absent.

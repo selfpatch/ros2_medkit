@@ -197,12 +197,13 @@ http::Result<dto::UpdateList> UpdateHandlers::get_updates(const http::TypedReque
     return tl::unexpected(*guard);
   }
   try {
+    const auto q = req.query<dto::UpdateListQuery>();
     UpdateFilter filter;
-    if (auto origin = req.query_param("origin")) {
-      filter.origin = *origin;
+    if (q.origin) {
+      filter.origin = *q.origin;
     }
-    if (auto target = req.query_param("target-version")) {
-      filter.target_version = *target;
+    if (q.target_version) {
+      filter.target_version = *q.target_version;
     }
 
     auto result = update_mgr_->list_updates(filter);
