@@ -289,5 +289,20 @@ inline constexpr auto dto_fields<UpdateRegisterResponse> = std::make_tuple(field
 template <>
 inline constexpr std::string_view dto_name<UpdateRegisterResponse> = "UpdateRegisterResponse";
 
+// =============================================================================
+// UpdateListQuery - query parameters for GET /updates. Read by the handler via
+// TypedRequest::query<UpdateListQuery>() and declared in the OpenAPI spec via
+// the same descriptor, so the two cannot drift.
+// =============================================================================
+struct UpdateListQuery {
+  std::optional<std::string> origin;
+  std::optional<std::string> target_version;
+};
+
+template <>
+inline constexpr auto dto_fields<UpdateListQuery> =
+    std::make_tuple(field("origin", &UpdateListQuery::origin, "Filter by update origin identifier"),
+                    field("target-version", &UpdateListQuery::target_version, "Filter by target version"));
+
 }  // namespace dto
 }  // namespace ros2_medkit_gateway
