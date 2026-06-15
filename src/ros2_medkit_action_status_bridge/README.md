@@ -21,15 +21,33 @@ generically, by observing the goal-status topic.
 ## What it does
 
 - Discovers every action on the graph by scanning for `*/_action/status`
-  topics (re-scanned on a timer to catch actions that appear later).
+  topics (re-scanned on a timer to catch actions that appear later, and to drop
+  actions that vanish, e.g. a Nav2 lifecycle deactivate or a one-shot node).
 - `ABORTED (6)` -> fault (`SEVERITY_ERROR` by default).
 - `CANCELED (5)` -> fault only if `canceled_is_fault` (off by default; cancel is
-  usually intentional).
-- `SUCCEEDED (4)` -> `PASSED` to heal the action's ABORTED code (if enabled).
-- `fault_code` is `<PREFIX>_<ACTION>_ABORTED`, e.g.
-  `ACTION_NAVIGATE_TO_POSE_ABORTED`. `source_id` is the action name.
-- Per-goal dedup keyed on `goal_id` so a latched terminal status is reported
-  once, not on every status publication.
+  usually intentional). When enabled it emits a `_CANCELED` code.
+- `SUCCEEDED (4)` -> `PASSED` to heal the action's fault code (if enabled).
+- `fault_code` is `<PREFIX>_<ACTION>_ABORTED` (or `_CANCELED`), e.g.
+  `ACTION_NAVIGATE_TO_POSE_ABORTED`. `source_id` is the action **server's node
+  FQN** (resolved from the status topic's publisher, e.g. `/bt_navigator`), so
+  the fault associates with that node's SOVD entity; it falls back to the action
+  name only if no publisher is visible.
+
+## Per-action state, not per-goal
+
+The fault is a property of the **action**, not of an individual goal. On every
+status message the whole `GoalStatusArray` is scanned for the net state:
+
+- if **any** goal is `ABORTED` (or `CANCELED` when `canceled_is_fault`), the
+  action is **failed** (order of goals in the array does not matter);
+- otherwise, if the array has terminal goals and none are failing, the action is
+  **healthy**.
+
+A fault is raised only on the `healthy -> failed` transition and healed only on
+`failed -> healthy`. This means one failed goal cannot heal an action while
+another goal is still failed, and a dropped terminal message cannot leave a
+fault stuck. Per-goal dedup (keyed on `goal_id:status`) only suppresses
+duplicate log lines; it never gates the transition.
 
 ## Scope: the terminal verdict, not the reason
 
@@ -57,4 +75,37 @@ ros2 launch ros2_medkit_action_status_bridge action_status_bridge.launch.py
 | `code_prefix` | `ACTION` | prefix for generated codes |
 | `exclude_actions` | `[]` | action-name substrings to skip |
 | `include_only_actions` | `[]` | if set, only watch these |
-| `dedup_capacity` | `4096` | remembered goal/status keys |
+| `dedup_capacity` | `4096` | remembered goal/status log keys |
+
+`exclude_actions` / `include_only_actions` match as **unanchored substrings** of
+the fully-qualified action name (e.g. `nav` matches `/navigate_to_pose`). Use a
+longer fragment (or the full name) for exact targeting.
+
+`aborted_severity`, `code_prefix` and `dedup_capacity` are range-checked and
+normalized at load (out-of-range severity clamps to ERROR, a non-snake-case
+`code_prefix` is upper-snake-cased, a non-positive `dedup_capacity` falls back to
+the default), with a warning.
+
+## Limitations
+
+- **Flapping**: a retry loop that issues a fresh `goal_id` each attempt does not
+  re-raise while the action stays failed (only net-state changes transition),
+  but a true flap (fail -> succeed -> fail) does produce one raise + heal per
+  cycle. There is no per-code rate throttle in this bridge; lower noise via the
+  FaultReporter local filter if needed.
+- **No per-code throttle**: every action-level transition is forwarded.
+- **CANCELED heal semantics**: with `canceled_is_fault`, a canceled action heals
+  on the next non-failing terminal (a later SUCCEEDED), or when the canceled goal
+  ages out of the action server's retained status array and a non-failed terminal
+  remains. It is not healed by an explicit "uncancel" because none exists.
+- **QoS**: the bridge requests the standard action status QoS (reliable +
+  transient_local). A non-standard server (volatile/best-effort) is logged with
+  an incompatible-QoS warning rather than silently yielding zero faults.
+- **Vanish while failed**: if an action that is currently failed disappears from
+  the graph (lifecycle deactivate, one-shot node), the bridge heals its fault
+  before forgetting it (when `heal_on_succeeded` is set), so it is not left stuck
+  active. With healing disabled the fault persists by design.
+- **Healing threshold**: the bridge emits one `PASSED` per recovery (a discrete
+  event, not a stream), so a fault reaches `HEALED` only when the FaultManager's
+  `healing_threshold` is `0`. With a higher threshold the fault stays `CONFIRMED`
+  after the action recovers.

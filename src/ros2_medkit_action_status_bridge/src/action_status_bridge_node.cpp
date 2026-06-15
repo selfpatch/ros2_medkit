@@ -19,6 +19,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <functional>
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -30,6 +31,13 @@ namespace {
 constexpr char kStatusSuffix[] = "/_action/status";
 constexpr char kStatusType[] = "action_msgs/msg/GoalStatusArray";
 
+// Total fault-code length clamp (medkit rule). Reserve room for the status
+// suffix so a long action name cannot let the clamp eat "_ABORTED"/"_CANCELED".
+constexpr size_t kMaxCodeLen = 64;
+constexpr size_t kMaxActionPart = 48;
+// Longest status suffix that may follow the action part, "_CANCELED".
+constexpr size_t kMaxStatusSuffix = 9;
+
 bool contains_substr(const std::vector<std::string> & list, const std::string & value) {
   for (const auto & item : list) {
     if (!item.empty() && value.find(item) != std::string::npos) {
@@ -39,38 +47,87 @@ bool contains_substr(const std::vector<std::string> & list, const std::string & 
   return false;
 }
 
+void strip_trailing_underscore(std::string & s) {
+  while (!s.empty() && s.back() == '_') {
+    s.pop_back();
+  }
+}
+
+// True when the failing state is caused solely by CANCELED goals (no ABORTED),
+// so the emitted code matches the description. ABORTED dominates if both occur.
+bool describe_failure_is_cancel(const action_msgs::msg::GoalStatusArray & msg, bool canceled_is_fault) {
+  using GoalStatus = action_msgs::msg::GoalStatus;
+  bool saw_canceled = false;
+  for (const auto & gs : msg.status_list) {
+    if (gs.status == GoalStatus::STATUS_ABORTED) {
+      return false;
+    }
+    if (gs.status == GoalStatus::STATUS_CANCELED && canceled_is_fault) {
+      saw_canceled = true;
+    }
+  }
+  return saw_canceled;
+}
+
 }  // namespace
 
 ActionStatusBridgeNode::ActionStatusBridgeNode(const rclcpp::NodeOptions & options)
-    : Node("action_status_bridge", options) {
+  : Node("action_status_bridge", options) {
   load_parameters();
 
   rescan_actions();
-  rescan_timer_ = create_wall_timer(
-      std::chrono::duration<double>(rescan_period_sec_), [this]() { rescan_actions(); });
+  rescan_timer_ = create_wall_timer(std::chrono::duration<double>(rescan_period_sec_), [this]() {
+    rescan_actions();
+  });
 
   RCLCPP_INFO(get_logger(), "ActionStatusBridge started (prefix=%s, aborted_severity=%u, rescan=%.1fs)",
               code_prefix_.c_str(), static_cast<unsigned>(aborted_severity_), rescan_period_sec_);
 }
 
 void ActionStatusBridgeNode::load_parameters() {
-  aborted_severity_ = static_cast<uint8_t>(
-      declare_parameter<int>("aborted_severity", ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR));
+  const int aborted_severity = declare_parameter<int>("aborted_severity", ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR);
+  if (aborted_severity < ros2_medkit_msgs::msg::Fault::SEVERITY_INFO ||
+      aborted_severity > ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
+    RCLCPP_WARN(get_logger(), "aborted_severity %d out of range [0,3]; clamping to ERROR", aborted_severity);
+    aborted_severity_ = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  } else {
+    aborted_severity_ = static_cast<uint8_t>(aborted_severity);
+  }
+
   canceled_is_fault_ = declare_parameter<bool>("canceled_is_fault", false);
   heal_on_succeeded_ = declare_parameter<bool>("heal_on_succeeded", true);
   rescan_period_sec_ = declare_parameter<double>("rescan_period_sec", 2.0);
-  code_prefix_ = declare_parameter<std::string>("code_prefix", "ACTION");
+  if (rescan_period_sec_ <= 0.0) {
+    RCLCPP_WARN(get_logger(), "rescan_period_sec %.3f not positive; using 2.0", rescan_period_sec_);
+    rescan_period_sec_ = 2.0;
+  }
+
+  code_prefix_ = to_upper_snake(declare_parameter<std::string>("code_prefix", "ACTION"), kMaxActionPart);
+  if (code_prefix_.empty()) {
+    RCLCPP_WARN(get_logger(), "code_prefix empty after normalization; using ACTION");
+    code_prefix_ = "ACTION";
+  }
+
   exclude_actions_ = declare_parameter<std::vector<std::string>>("exclude_actions", std::vector<std::string>{});
   include_only_actions_ =
       declare_parameter<std::vector<std::string>>("include_only_actions", std::vector<std::string>{});
-  handled_capacity_ = static_cast<size_t>(declare_parameter<int>("dedup_capacity", 4096));
 
-  // Action terminal states are discrete, authoritative events, not flapping
-  // conditions, and per-goal dedup above already prevents repeats. Pre-declare
-  // the FaultReporter LocalFilter as disabled so ABORTED reports immediately
-  // and, crucially, PASSED (healing on a later SUCCEEDED) is not throttled by
-  // the default occurrence threshold. The reporter ctor's has_parameter guard
-  // honours this value. Override via fault_reporter.local_filtering.enabled.
+  const int dedup_capacity = declare_parameter<int>("dedup_capacity", 4096);
+  if (dedup_capacity <= 0) {
+    RCLCPP_WARN(get_logger(), "dedup_capacity %d not positive; using 4096", dedup_capacity);
+    logged_capacity_ = 4096;
+  } else {
+    logged_capacity_ = static_cast<size_t>(dedup_capacity);
+  }
+
+  // Action terminal states are discrete, authoritative events. The action-level
+  // state model only transitions on a net-state change, so it does not flap;
+  // retries that issue a fresh goal_id each attempt do not re-raise while the
+  // action stays failed. Pre-declare the FaultReporter LocalFilter as disabled
+  // so a raise reports immediately and, crucially, PASSED (healing on a later
+  // SUCCEEDED) is not throttled by the default occurrence threshold. The
+  // reporter ctor's has_parameter guard honours this value. Override via
+  // fault_reporter.local_filtering.enabled.
   if (!has_parameter("fault_reporter.local_filtering.enabled")) {
     declare_parameter("fault_reporter.local_filtering.enabled", false);
   }
@@ -81,6 +138,18 @@ void ActionStatusBridgeNode::rescan_actions() {
   // Action status QoS is reliable + transient_local + keep_last; match it so we
   // receive the latched terminal status of a goal.
   const auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local();
+
+  // Warn (don't silently drop faults) when a server publishes a non-standard
+  // (volatile/best-effort) status QoS that is incompatible with our request.
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.event_callbacks.incompatible_qos_callback = [this](rclcpp::QOSRequestedIncompatibleQoSInfo & info) {
+    RCLCPP_WARN(get_logger(),
+                "Incompatible action status QoS (policy %d); faults may be missed for a non-standard server",
+                static_cast<int>(info.last_policy_kind));
+  };
+
+  // Track which eligible status topics exist this scan, to prune the rest.
+  std::map<std::string, std::string> present;
 
   for (const auto & [topic, types] : topics) {
     const std::string action_name = action_name_from_status_topic(topic);
@@ -93,6 +162,7 @@ void ActionStatusBridgeNode::rescan_actions() {
     if (!action_is_eligible(action_name)) {
       continue;
     }
+    present.emplace(topic, action_name);
     if (subs_.find(topic) != subs_.end()) {
       continue;  // already subscribed
     }
@@ -100,47 +170,147 @@ void ActionStatusBridgeNode::rescan_actions() {
         topic, qos,
         [this, action_name](const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg) {
           status_callback(action_name, msg);
-        });
+        },
+        sub_options);
     subs_.emplace(topic, sub);
     RCLCPP_INFO(get_logger(), "Watching action '%s' (topic %s)", action_name.c_str(), topic.c_str());
   }
+
+  prune_vanished(present);
+}
+
+void ActionStatusBridgeNode::prune_vanished(const std::map<std::string, std::string> & present_topics) {
+  for (auto it = subs_.begin(); it != subs_.end();) {
+    const std::string & topic = it->first;
+    if (present_topics.find(topic) != present_topics.end()) {
+      ++it;
+      continue;
+    }
+    const std::string action_name = action_name_from_status_topic(topic);
+
+    bool was_failed = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      auto sit = last_reported_state_.find(action_name);
+      was_failed = sit != last_reported_state_.end() && sit->second == ActionState::kFailed;
+    }
+    {
+      std::lock_guard<std::mutex> lock(reporters_mutex_);
+      // If a still-failed action vanishes (e.g. Nav2 lifecycle deactivate), heal
+      // its fault before forgetting it - otherwise the fault stays stuck active
+      // in the FaultManager and the bridge can no longer clear it.
+      auto rit = reporters_.find(action_name);
+      if (was_failed && heal_on_succeeded_ && rit != reporters_.end()) {
+        rit->second->report_passed(fault_code_for(action_name, false));
+        if (canceled_is_fault_) {
+          rit->second->report_passed(fault_code_for(action_name, true));
+        }
+        RCLCPP_INFO(get_logger(), "Action '%s' vanished while failed; healed before dropping", action_name.c_str());
+      }
+      reporters_.erase(action_name);
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      last_reported_state_.erase(action_name);
+    }
+    RCLCPP_INFO(get_logger(), "Action '%s' vanished; dropped (topic %s)", action_name.c_str(), topic.c_str());
+    it = subs_.erase(it);
+  }
+}
+
+ActionStatusBridgeNode::ActionState ActionStatusBridgeNode::derive_state(const action_msgs::msg::GoalStatusArray & msg,
+                                                                         bool canceled_is_fault) {
+  using GoalStatus = action_msgs::msg::GoalStatus;
+
+  bool any_terminal = false;
+  for (const auto & gs : msg.status_list) {
+    const bool failing =
+        gs.status == GoalStatus::STATUS_ABORTED || (gs.status == GoalStatus::STATUS_CANCELED && canceled_is_fault);
+    if (failing) {
+      return ActionState::kFailed;  // any failing goal fails the action (order-independent)
+    }
+    // SUCCEEDED, or CANCELED when it is not a fault, is a non-failing terminal.
+    if (gs.status == GoalStatus::STATUS_SUCCEEDED || gs.status == GoalStatus::STATUS_CANCELED) {
+      any_terminal = true;
+    }
+  }
+  return any_terminal ? ActionState::kHealthy : ActionState::kUnknown;
+}
+
+ActionStatusBridgeNode::ActionState
+ActionStatusBridgeNode::apply_message(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg,
+                                      ros2_medkit_fault_reporter::FaultReporter * reporter) {
+  const ActionState net = derive_state(msg, canceled_is_fault_);
+  if (net == ActionState::kUnknown) {
+    return ActionState::kUnknown;  // no terminal verdict in this message
+  }
+
+  ActionState prev;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = last_reported_state_.find(action_name);
+    // Absent state is treated as healthy: a first SUCCEEDED must not heal a
+    // fault that was never raised.
+    prev = (it == last_reported_state_.end()) ? ActionState::kHealthy : it->second;
+  }
+
+  // Only the two real transitions act: raise on (not failed)->failed, heal on
+  // failed->(healthy). Everything else is a no-op.
+  if (net == ActionState::kFailed && prev != ActionState::kFailed) {
+    const bool canceled = describe_failure_is_cancel(msg, canceled_is_fault_);
+    if (reporter != nullptr) {
+      const std::string code = fault_code_for(action_name, canceled);
+      reporter->report(code, aborted_severity_,
+                       std::string("Action ") + action_name + (canceled ? " canceled" : " aborted"));
+      RCLCPP_INFO(get_logger(), "Action %s -> fault %s", action_name.c_str(), code.c_str());
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      last_reported_state_[action_name] = ActionState::kFailed;
+    }
+    return ActionState::kFailed;
+  }
+
+  if (net == ActionState::kHealthy && prev == ActionState::kFailed && heal_on_succeeded_) {
+    if (reporter != nullptr) {
+      // Heal both possible codes; only the one previously raised exists.
+      reporter->report_passed(fault_code_for(action_name, false));
+      if (canceled_is_fault_) {
+        reporter->report_passed(fault_code_for(action_name, true));
+      }
+      RCLCPP_INFO(get_logger(), "Action %s healed", action_name.c_str());
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      last_reported_state_[action_name] = ActionState::kHealthy;
+    }
+    return ActionState::kHealthy;
+  }
+
+  return ActionState::kUnknown;
 }
 
 void ActionStatusBridgeNode::status_callback(const std::string & action_name,
                                              const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg) {
   using GoalStatus = action_msgs::msg::GoalStatus;
 
+  // Per-goal dedup is LOG-only here; it must not gate the state transition.
   for (const auto & gs : msg->status_list) {
+    if (gs.status != GoalStatus::STATUS_ABORTED && gs.status != GoalStatus::STATUS_CANCELED &&
+        gs.status != GoalStatus::STATUS_SUCCEEDED) {
+      continue;
+    }
     std::array<uint8_t, 16> uuid{};
     std::copy(gs.goal_info.goal_id.uuid.begin(), gs.goal_info.goal_id.uuid.end(), uuid.begin());
     const std::string uuid_hex = uuid_to_hex(uuid);
     const std::string key = uuid_hex + ":" + std::to_string(static_cast<int>(gs.status));
-
-    if (gs.status == GoalStatus::STATUS_ABORTED ||
-        (gs.status == GoalStatus::STATUS_CANCELED && canceled_is_fault_)) {
-      if (!mark_handled(key)) {
-        continue;  // already reported this terminal state for this goal
-      }
-      auto * reporter = reporter_for(action_name);
-      if (reporter == nullptr) {
-        continue;
-      }
-      const char * what = (gs.status == GoalStatus::STATUS_ABORTED) ? "aborted" : "canceled";
-      const std::string desc = std::string("Goal ") + uuid_hex.substr(0, 8) + " " + what + " on action " +
-                               action_name;
-      reporter->report(aborted_fault_code(action_name), aborted_severity_, desc);
-      RCLCPP_INFO(get_logger(), "Action %s goal %s %s -> fault %s", action_name.c_str(),
-                  uuid_hex.substr(0, 8).c_str(), what, aborted_fault_code(action_name).c_str());
-    } else if (gs.status == GoalStatus::STATUS_SUCCEEDED && heal_on_succeeded_) {
-      if (!mark_handled(key)) {
-        continue;
-      }
-      auto * reporter = reporter_for(action_name);
-      if (reporter != nullptr) {
-        reporter->report_passed(aborted_fault_code(action_name));
-      }
+    if (mark_logged(key)) {
+      RCLCPP_DEBUG(get_logger(), "Action %s goal %s status %d", action_name.c_str(), uuid_hex.substr(0, 8).c_str(),
+                   static_cast<int>(gs.status));
     }
   }
+
+  apply_message(action_name, *msg, reporter_for(action_name));
 }
 
 ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for(const std::string & action_name) {
@@ -149,25 +319,43 @@ ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for
   if (it != reporters_.end()) {
     return it->second.get();
   }
-  // Attribute the fault to the action (best stable identifier from the status
-  // topic alone). Multiple reporters on one node are safe (has_parameter guard).
-  auto reporter =
-      std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), action_name);
+  // Attribute the fault to the action SERVER's node FQN, not the action name:
+  // the gateway resolves a fault to a SOVD entity by node FQN, and an action
+  // interface name (e.g. /navigate_to_pose) matches no entity. Multiple
+  // reporters on one node are safe (has_parameter guard).
+  const std::string source_id = server_fqn_for_action(action_name);
+  auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), source_id);
   auto * raw = reporter.get();
   reporters_.emplace(action_name, std::move(reporter));
   return raw;
 }
 
-bool ActionStatusBridgeNode::mark_handled(const std::string & goal_status_key) {
-  std::lock_guard<std::mutex> lock(handled_mutex_);
-  if (handled_.find(goal_status_key) != handled_.end()) {
+std::string ActionStatusBridgeNode::server_fqn_for_action(const std::string & action_name) {
+  // The action server publishes <action>/_action/status, so its node FQN is the
+  // publisher's. A fault only fires while the server is publishing, so this
+  // resolves in practice; fall back to the action name otherwise.
+  const auto pubs = get_publishers_info_by_topic(action_name + "/_action/status");
+  for (const auto & p : pubs) {
+    const std::string name = p.node_name();
+    if (name.empty()) {
+      continue;
+    }
+    const std::string ns = p.node_namespace();
+    return (ns.empty() || ns == "/") ? "/" + name : ns + "/" + name;
+  }
+  return action_name;
+}
+
+bool ActionStatusBridgeNode::mark_logged(const std::string & goal_status_key) {
+  std::lock_guard<std::mutex> lock(logged_mutex_);
+  if (logged_.find(goal_status_key) != logged_.end()) {
     return false;
   }
-  handled_.insert(goal_status_key);
-  handled_order_.push_back(goal_status_key);
-  while (handled_order_.size() > handled_capacity_) {
-    handled_.erase(handled_order_.front());
-    handled_order_.pop_front();
+  logged_.insert(goal_status_key);
+  logged_order_.push_back(goal_status_key);
+  while (logged_order_.size() > logged_capacity_) {
+    logged_.erase(logged_order_.front());
+    logged_order_.pop_front();
   }
   return true;
 }
@@ -218,30 +406,69 @@ std::string ActionStatusBridgeNode::to_upper_snake(const std::string & in, size_
       last_sep = true;
     }
   }
-  while (!result.empty() && result.back() == '_') {
-    result.pop_back();
-  }
+  strip_trailing_underscore(result);
   if (result.size() > max_len) {
-    result.resize(max_len);
-    while (!result.empty() && result.back() == '_') {
-      result.pop_back();
-    }
+    // Truncate but reserve room for a stable disambiguator so two action names
+    // sharing the same `max_len` prefix do not collide.
+    constexpr size_t kDisambigLen = 5;  // '_' + 4 hex
+    const size_t keep = (max_len > kDisambigLen) ? (max_len - kDisambigLen) : 0;
+    const std::string full = result;
+    result.resize(keep);
+    strip_trailing_underscore(result);
+    const uint16_t h = static_cast<uint16_t>(std::hash<std::string>{}(full));
+    char buf[6];
+    std::snprintf(buf, sizeof(buf), "_%04X", static_cast<unsigned>(h));
+    result += buf;
   }
   return result;
 }
 
-std::string ActionStatusBridgeNode::aborted_fault_code(const std::string & action_name) const {
-  const std::string action_part = to_upper_snake(action_name, 48);
+std::string ActionStatusBridgeNode::fault_code_for(const std::string & action_name, bool canceled) const {
+  const char * suffix = canceled ? "_CANCELED" : "_ABORTED";
+  // Budget the action part so the status suffix always survives the 64-char clamp.
+  const size_t suffix_budget = kMaxStatusSuffix + 1;  // suffix + leading '_' to action part
+  const size_t prefix_len = code_prefix_.size() + 1;  // prefix + '_'
+  size_t action_budget = kMaxActionPart;
+  if (prefix_len + action_budget + suffix_budget > kMaxCodeLen) {
+    action_budget = (kMaxCodeLen > prefix_len + suffix_budget) ? (kMaxCodeLen - prefix_len - suffix_budget) : 0;
+  }
+  const std::string action_part = to_upper_snake(action_name, action_budget);
+
   std::string code = code_prefix_;
   if (!action_part.empty()) {
     code += '_';
     code += action_part;
   }
-  code += "_ABORTED";
-  if (code.size() > 64) {
-    code.resize(64);
+  code += suffix;
+  if (code.size() > kMaxCodeLen) {
+    code.resize(kMaxCodeLen);
+    strip_trailing_underscore(code);
   }
   return code;
+}
+
+void ActionStatusBridgeTestAccess::add_watched(const std::string & action_name) {
+  // nullptr subscription is sufficient: prune keys off the topic name only.
+  node_->subs_.emplace(action_name + kStatusSuffix, nullptr);
+  std::lock_guard<std::mutex> lock(node_->state_mutex_);
+  node_->last_reported_state_[action_name] = ActionStatusBridgeNode::ActionState::kFailed;
+}
+
+void ActionStatusBridgeTestAccess::prune_to(const std::vector<std::string> & present_action_names) {
+  std::map<std::string, std::string> present;
+  for (const auto & a : present_action_names) {
+    present.emplace(a + kStatusSuffix, a);
+  }
+  node_->prune_vanished(present);
+}
+
+bool ActionStatusBridgeTestAccess::is_watched(const std::string & action_name) const {
+  return node_->subs_.find(action_name + kStatusSuffix) != node_->subs_.end();
+}
+
+bool ActionStatusBridgeTestAccess::has_state(const std::string & action_name) const {
+  std::lock_guard<std::mutex> lock(node_->state_mutex_);
+  return node_->last_reported_state_.find(action_name) != node_->last_reported_state_.end();
 }
 
 }  // namespace ros2_medkit_action_status_bridge
