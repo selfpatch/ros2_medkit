@@ -16,9 +16,12 @@
 
 #include <mutex>
 #include <rclcpp/rclcpp.hpp>
+#include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -30,6 +33,29 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+/// Map a SovdEntityType to the plural URL path segment used in the REST API.
+/// Returns empty string for SERVER/UNKNOWN (no faults collection on those).
+std::string entity_type_to_url_segment(SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::APP:
+      return "apps";
+    case SovdEntityType::COMPONENT:
+      return "components";
+    case SovdEntityType::AREA:
+      return "areas";
+    case SovdEntityType::FUNCTION:
+      return "functions";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      return "";
+  }
+  return "";
+}
+
+}  // namespace
 
 // ---- Concrete implementation ----
 
@@ -76,28 +102,53 @@ class GatewayPluginContext : public RosPluginContext {
   }
 
   nlohmann::json list_entity_faults(const std::string & entity_id) const override {
-    if (!fault_manager_ || !fault_manager_->is_available()) {
-      return nlohmann::json::array();
-    }
-
-    // Determine source_id for fault filtering based on entity type
+    // Determine entity type (needed for both local query and peer path construction).
     auto entity = get_entity(entity_id);
     if (!entity) {
       return nlohmann::json::array();
     }
 
-    std::string source_id;
-    if (entity->type == SovdEntityType::COMPONENT) {
-      source_id = entity->namespace_path;
-    } else if (entity->type == SovdEntityType::APP) {
-      source_id = entity->fqn;
+    nlohmann::json local_faults = nlohmann::json::array();
+
+    if (fault_manager_ && fault_manager_->is_available()) {
+      // Mirror the HTTP per-entity fault handler: fetch all faults, then scope
+      // them to the entity's resolved App-FQN set (APP -> itself, COMPONENT ->
+      // hosted apps, AREA -> descendant apps, FUNCTION -> host apps) via the
+      // shared core helper. The fault manager returns a {"faults": [...]}
+      // object; this method's contract is a bare array, so extract and filter
+      // the inner array.
+      auto result = fault_manager_->list_faults("");
+      if (result.success && result.data.contains("faults") && result.data["faults"].is_array()) {
+        const auto & cache = node_->get_thread_safe_cache();
+        const auto source_fqns = faults::resolve_entity_source_fqns(cache, entity->type, entity_id);
+        local_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
+      }
     }
 
-    auto result = fault_manager_->list_faults(source_id);
-    if (result.success && result.data.is_array()) {
-      return result.data;
+    // Fan-out to peer gateways: fetch faults for this entity from each peer.
+    // The peer path mirrors the HTTP REST route: /api/v1/<type_plural>/<id>/faults.
+    // Auth: the ROS 2 service path has no inbound HTTP Authorization header to
+    // forward, so peers are queried with an empty credential - fan-out over this
+    // path only surfaces faults from peers that do not gate their /faults route.
+    auto * agg = node_->get_aggregation_manager();
+    if (agg) {
+      const std::string type_segment = entity_type_to_url_segment(entity->type);
+      if (!type_segment.empty()) {
+        const std::string peer_path = "/api/v1/" + type_segment + "/" + entity_id + "/faults";
+        auto fan_result = agg->fan_out_get(peer_path, "");
+        if (fan_result.merged_items.is_array()) {
+          for (const auto & item : fan_result.merged_items) {
+            local_faults.push_back(item);
+          }
+        }
+        if (fan_result.is_partial) {
+          RCLCPP_WARN(node_->get_logger(), "list_entity_faults('%s'): partial peer fan-out, %zu peer(s) failed",
+                      entity_id.c_str(), fan_result.failed_peers.size());
+        }
+      }
     }
-    return nlohmann::json::array();
+
+    return local_faults;
   }
 
   std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & req, PluginResponse & res,
@@ -207,14 +258,43 @@ class GatewayPluginContext : public RosPluginContext {
   }
 
   nlohmann::json list_all_faults() const override {
-    if (!fault_manager_ || !fault_manager_->is_available()) {
-      return nlohmann::json::object();
+    nlohmann::json response = nlohmann::json::object();
+
+    if (fault_manager_ && fault_manager_->is_available()) {
+      auto result = fault_manager_->list_faults("");
+      if (result.success) {
+        response = result.data;
+      }
     }
-    auto result = fault_manager_->list_faults("");
-    if (result.success) {
-      return result.data;
+
+    // Fan-out to peer gateways: fetch all faults from /api/v1/faults on each peer.
+    // Auth: see list_entity_faults - the ROS 2 service path forwards no inbound
+    // Authorization header, so peers are queried with an empty credential.
+    auto * agg = node_->get_aggregation_manager();
+    if (agg) {
+      auto fan_result = agg->fan_out_get("/api/v1/faults", "");
+      if (fan_result.merged_items.is_array()) {
+        // Ensure local response has a "faults" array to append to.
+        if (!response.contains("faults") || !response["faults"].is_array()) {
+          response["faults"] = nlohmann::json::array();
+        }
+        for (const auto & item : fan_result.merged_items) {
+          response["faults"].push_back(item);
+        }
+      }
+      if (fan_result.is_partial) {
+        RCLCPP_WARN(node_->get_logger(), "list_all_faults: partial peer fan-out, %zu peer(s) failed",
+                    fan_result.failed_peers.size());
+      }
     }
-    return nlohmann::json::object();
+
+    // "count" comes from the local-only query; after merging peer faults it
+    // would undercount, so keep it consistent with the merged array.
+    if (response.contains("count") && response.contains("faults") && response["faults"].is_array()) {
+      response["count"] = response["faults"].size();
+    }
+
+    return response;
   }
 
   void register_sampler(

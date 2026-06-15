@@ -1,0 +1,51 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <nlohmann/json.hpp>
+#include <set>
+#include <string>
+
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
+namespace ros2_medkit_gateway {
+
+class ThreadSafeEntityCache;
+
+namespace faults {
+
+/// Resolve the set of App effective-FQNs that fall within an entity's scope by
+/// walking the entity cache:
+///   - APP: the app's own effective FQN
+///   - COMPONENT: every hosted app's FQN
+///   - AREA: every app under the area and its (recursive) subareas
+///   - FUNCTION: every app hosted directly or via a hosted component
+/// Returns an empty set for SERVER / UNKNOWN.
+///
+/// Shared by the HTTP fault handlers (`GET /{entity}/faults`) and the ROS 2
+/// plugin-context fault path so both agree on entity -> source-set resolution.
+std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & cache, SovdEntityType type,
+                                                 const std::string & entity_id);
+
+/// True when `fault` has at least one reporting source and *every* reporting
+/// source is within `source_fqns` (exact match or a path-boundary prefix).
+/// An empty scope set or an empty/absent source list returns false.
+bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
+
+/// Subset of `faults_array` whose faults satisfy `fault_in_source_scope`.
+nlohmann::json filter_faults_by_sources(const nlohmann::json & faults_array, const std::set<std::string> & source_fqns);
+
+}  // namespace faults
+}  // namespace ros2_medkit_gateway

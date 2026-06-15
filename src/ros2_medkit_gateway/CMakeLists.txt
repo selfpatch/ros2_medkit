@@ -526,6 +526,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_plugin_notify_integration gateway_ros2)
   medkit_set_test_domain(test_plugin_notify_integration)
 
+  ament_add_gtest(test_plugin_context_aggregation test/test_plugin_context_aggregation.cpp)
+  target_link_libraries(test_plugin_context_aggregation gateway_ros2)
+  medkit_set_test_domain(test_plugin_context_aggregation)
+
   ament_add_gtest(test_auth_manager test/test_auth_manager.cpp)
   target_link_libraries(test_auth_manager gateway_ros2)
 
@@ -1022,6 +1026,7 @@ if(BUILD_TESTING)
       test_stream_proxy
       test_mdns_discovery
       test_network_utils
+      test_plugin_context_aggregation
     )
     foreach(_target ${_test_targets})
       target_compile_options(${_target} PRIVATE --coverage -O0 -g)

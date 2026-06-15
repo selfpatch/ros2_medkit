@@ -18,6 +18,7 @@
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
@@ -354,91 +355,28 @@ bool HandlerContext::is_origin_allowed(const std::string & origin) const {
   return false;
 }
 
-namespace {
-
-void collect_app_fqn(const ThreadSafeEntityCache & cache, const std::string & app_id, std::set<std::string> & out) {
-  auto app = cache.get_app(app_id);
-  if (!app) {
-    return;
-  }
-  auto fqn = app->effective_fqn();
-  if (fqn.empty()) {
-    return;
-  }
-  out.insert(std::move(fqn));
-}
-
-void collect_component_app_fqns(const ThreadSafeEntityCache & cache, const std::string & comp_id,
-                                std::set<std::string> & out) {
-  for (const auto & app_id : cache.get_apps_for_component(comp_id)) {
-    collect_app_fqn(cache, app_id, out);
-  }
-}
-
-void collect_area_app_fqns(const ThreadSafeEntityCache & cache, const std::string & area_id,
-                           std::set<std::string> & out) {
-  // BFS over (area, subareas...) so a top-level area whose components live in
-  // nested subareas still resolves to the union of every descendant's apps.
-  // Without the recursion, e.g. `/areas/powertrain/...` returns an empty set
-  // when components are attached to `engine` (subarea of `powertrain`).
-  std::vector<std::string> pending = {area_id};
-  std::set<std::string> visited;
-  while (!pending.empty()) {
-    auto current = std::move(pending.back());
-    pending.pop_back();
-    if (!visited.insert(current).second) {
-      continue;
-    }
-    for (const auto & comp_id : cache.get_components_for_area(current)) {
-      collect_component_app_fqns(cache, comp_id, out);
-    }
-    for (const auto & sub_id : cache.get_subareas(current)) {
-      pending.push_back(sub_id);
-    }
-  }
-}
-
-void collect_function_app_fqns(const ThreadSafeEntityCache & cache, const std::string & function_id,
-                               std::set<std::string> & out) {
-  // Function.hosts can contain either App IDs or Component IDs; the indexed
-  // lookups in the cache only resolve the App-host case (function_to_apps_),
-  // so we walk the raw `hosts` list and dispatch per host kind ourselves.
-  auto func = cache.get_function(function_id);
-  if (!func) {
-    return;
-  }
-  for (const auto & host_id : func->hosts) {
-    if (cache.get_app(host_id)) {
-      collect_app_fqn(cache, host_id, out);
-    } else if (cache.get_component(host_id)) {
-      collect_component_app_fqns(cache, host_id, out);
-    }
-    // Unknown host - silently skip; it would have been flagged by manifest validation.
-  }
-}
-
-}  // namespace
-
 std::set<std::string> HandlerContext::resolve_entity_source_fqns(const ThreadSafeEntityCache & cache,
                                                                  const EntityInfo & entity) {
-  std::set<std::string> fqns;
+  // Delegate to the neutral core helper so the HTTP fault handlers and the
+  // ROS 2 plugin-context fault path share one entity -> source-FQN resolution.
+  SovdEntityType type = SovdEntityType::UNKNOWN;
   switch (entity.type) {
     case EntityType::APP:
-      collect_app_fqn(cache, entity.id, fqns);
+      type = SovdEntityType::APP;
       break;
     case EntityType::COMPONENT:
-      collect_component_app_fqns(cache, entity.id, fqns);
+      type = SovdEntityType::COMPONENT;
       break;
     case EntityType::AREA:
-      collect_area_app_fqns(cache, entity.id, fqns);
+      type = SovdEntityType::AREA;
       break;
     case EntityType::FUNCTION:
-      collect_function_app_fqns(cache, entity.id, fqns);
+      type = SovdEntityType::FUNCTION;
       break;
     case EntityType::UNKNOWN:
       break;
   }
-  return fqns;
+  return faults::resolve_entity_source_fqns(cache, type, entity.id);
 }
 
 std::vector<std::string> HandlerContext::resolve_app_host_fqns(const ThreadSafeEntityCache & cache,

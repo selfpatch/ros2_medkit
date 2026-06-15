@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
@@ -105,39 +106,6 @@ tl::expected<FaultStatusFilter, ErrorInfo> read_fault_status_filter(const http::
 // =============================================================================
 // SOVD-compliant response helpers (legacy free functions kept verbatim)
 // =============================================================================
-
-/// Check if a ROS node FQN falls within the entity's source FQN set.
-///
-/// A node is in scope iff it equals one of the entity's owned FQNs, OR is a
-/// strict path-child of one (i.e., `<owned-fqn>/<...>`). We deliberately do
-/// NOT use raw `rfind(prefix, 0)` because that would let `/ns/node_extra`
-/// pass for an entity owning `/ns/node`. Path boundary is enforced by
-/// requiring the byte after the prefix to be `/`.
-bool source_matches_scope(const std::string & src, const std::set<std::string> & scope_fqns) {
-  for (const auto & fqn : scope_fqns) {
-    if (src == fqn) {
-      return true;
-    }
-    if (src.size() > fqn.size() && src.compare(0, fqn.size(), fqn) == 0 && src[fqn.size()] == '/') {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// Filter a faults JSON array down to faults whose every reporting source is
-/// in the entity's scope. Shares the same all-sources / path-boundary
-/// semantics as `FaultHandlers::fault_in_source_scope` so per-entity
-/// collection routes and per-fault routes agree on what counts as "in scope".
-json filter_faults_by_sources(const json & faults_array, const std::set<std::string> & source_fqns) {
-  json filtered = json::array();
-  for (const auto & fault : faults_array) {
-    if (FaultHandlers::fault_in_source_scope(fault, source_fqns)) {
-      filtered.push_back(fault);
-    }
-  }
-  return filtered;
-}
 
 /// Build SOVD status object from fault status string
 /// Maps ROS 2 medkit status (PREFAILED, PREPASSED, CONFIRMED, HEALED, CLEARED)
@@ -249,25 +217,9 @@ dto::FaultDetailResult wrap_detail_result(json payload) {
 }  // namespace
 
 bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std::string> & source_fqns) {
-  if (source_fqns.empty()) {
-    return false;
-  }
-  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
-    return false;
-  }
-  const auto & sources = fault["reporting_sources"];
-  if (sources.empty()) {
-    return false;
-  }
-  for (const auto & src : sources) {
-    if (!src.is_string()) {
-      return false;
-    }
-    if (!source_matches_scope(src.get<std::string>(), source_fqns)) {
-      return false;
-    }
-  }
-  return true;
+  // Thin wrapper preserving the public static API; the scope logic now lives in
+  // the neutral core helper shared with the ROS 2 plugin-context fault path.
+  return faults::fault_in_source_scope(fault, source_fqns);
 }
 
 // Static method: Build SOVD-compliant fault response from transport-supplied JSON.
@@ -553,7 +505,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       const auto & cache = ctx_.node()->get_thread_safe_cache();
       auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      json filtered_faults = filter_faults_by_sources(result.data["faults"], source_fqns);
+      json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
       json response = {{"items", filtered_faults}};
 
       // x-medkit extension (typed DTO)
@@ -600,7 +552,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       const auto & cache = ctx_.node()->get_thread_safe_cache();
       auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+      json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], app_fqns);
       json response = {{"items", filtered_faults}};
 
       dto::FaultListAggXMedkit xm;
@@ -639,7 +591,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
                      json{{"details", result.error_message}, {entity_info.id_field, entity_id}}));
     }
 
-    json filtered_faults = filter_faults_by_sources(result.data["faults"], app_fqns);
+    json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], app_fqns);
     json response = {{"items", filtered_faults}};
 
     // x-medkit extension for ros2_medkit-specific fields (typed DTO)
@@ -981,7 +933,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     }
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto entity_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-    json faults_to_clear = filter_faults_by_sources(result.data["faults"], entity_fqns);
+    json faults_to_clear = faults::filter_faults_by_sources(result.data["faults"], entity_fqns);
 
     // Clear each matching fault. Use `skip_correlation_auto_clear=true` for
     // the same reason as the single-fault DELETE: keep this entity's clear
