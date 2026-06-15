@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -43,36 +44,70 @@ namespace ros2_medkit_action_status_bridge {
 /// Status mapping (action_msgs/msg/GoalStatus):
 ///   - ABORTED (6)  -> fault (severity configurable, default ERROR)
 ///   - CANCELED (5) -> fault only if canceled_is_fault (usually intentional)
-///   - SUCCEEDED (4)-> PASSED (heals the per-action ABORTED code) if enabled
+///   - SUCCEEDED (4)-> PASSED (heals the per-action fault code) if enabled
+///
+/// Fault state is per-ACTION, not per-goal: every message is scanned for the net
+/// state of the whole GoalStatusArray and a fault is raised/healed only on the
+/// action-level transition. See `derive_state`.
 class ActionStatusBridgeNode : public rclcpp::Node {
  public:
   explicit ActionStatusBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+
+  /// Net fault state of an action, derived from a whole GoalStatusArray.
+  ///   - kUnknown: no terminal goal in the array yet (no transition)
+  ///   - kHealthy: array has terminal goals and none of them are failing
+  ///   - kFailed:  at least one goal is failing (ABORTED, or CANCELED when
+  ///               canceled_is_fault)
+  enum class ActionState { kUnknown, kHealthy, kFailed };
 
   /// Derive the action name from a `/<action>/_action/status` topic name.
   /// Returns empty when the topic is not an action status topic.
   static std::string action_name_from_status_topic(const std::string & topic);
 
-  /// Build the ABORTED fault code for an action name.
-  /// Format: <PREFIX>_<ACTION>_ABORTED, charset/length per medkit rules.
-  std::string aborted_fault_code(const std::string & action_name) const;
+  /// Build the fault code for an action name and terminal status.
+  /// Format: <PREFIX>_<ACTION>_<ABORTED|CANCELED>, charset/length per medkit
+  /// rules. `canceled` selects the CANCELED suffix.
+  std::string fault_code_for(const std::string & action_name, bool canceled) const;
 
   /// Lowercase hex of a 16-byte goal UUID, for dedup keys and short display.
   static std::string uuid_to_hex(const std::array<uint8_t, 16> & uuid);
 
+  /// Scan a whole GoalStatusArray and return the action-level net state.
+  /// `canceled_is_fault` decides whether CANCELED counts as failing. Order of
+  /// the goals in the array does not affect the result (any failing goal wins).
+  static ActionState derive_state(const action_msgs::msg::GoalStatusArray & msg, bool canceled_is_fault);
+
+  /// Update per-action state from a message and act on the transition only.
+  /// Returns the state that was reported on (kFailed on raise, kHealthy on
+  /// heal) or kUnknown when nothing was reported. Side-effect free w.r.t.
+  /// reporting when `reporter` is null (test seam): the transition decision and
+  /// stored per-action state still update, so tests assert on the return value.
+  ActionState apply_message(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg,
+                            ros2_medkit_fault_reporter::FaultReporter * reporter);
+
  private:
   void rescan_actions();
-  void status_callback(const std::string & action_name,
-                       const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg);
+  void status_callback(const std::string & action_name, const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg);
 
   ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & action_name);
 
-  /// Returns true if this (goal, status) pair was not handled before, marking
-  /// it handled. Bounded to avoid unbounded growth.
-  bool mark_handled(const std::string & goal_status_key);
+  /// Resolve the action server's node FQN from its status-topic publisher, for
+  /// use as the fault source_id so faults associate with the gateway's SOVD
+  /// entity. Falls back to the action name if no publisher is visible.
+  std::string server_fqn_for_action(const std::string & action_name);
+
+  /// Returns true if this (goal, status) pair was not logged before, marking it
+  /// logged. Bounded to avoid unbounded growth. Suppresses duplicate LOG lines
+  /// only; never gates the action-level state transition.
+  bool mark_logged(const std::string & goal_status_key);
 
   bool action_is_eligible(const std::string & action_name) const;
 
   void load_parameters();
+
+  /// Drop subscriptions, reporters and per-action state for actions whose status
+  /// topic has vanished from `present_topics`.
+  void prune_vanished(const std::map<std::string, std::string> & present_topics);
 
   static std::string to_upper_snake(const std::string & in, size_t max_len);
 
@@ -82,11 +117,15 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
   std::mutex reporters_mutex_;
 
-  // Bounded dedup of handled (goal_id:status) keys.
-  std::unordered_set<std::string> handled_;
-  std::deque<std::string> handled_order_;
-  std::mutex handled_mutex_;
-  size_t handled_capacity_;
+  // Last reported action-level state, keyed by action name. Drives transitions.
+  std::map<std::string, ActionState> last_reported_state_;
+  std::mutex state_mutex_;
+
+  // Bounded dedup of logged (goal_id:status) keys (LOG suppression only).
+  std::unordered_set<std::string> logged_;
+  std::deque<std::string> logged_order_;
+  std::mutex logged_mutex_;
+  size_t logged_capacity_;
 
   // Configuration
   uint8_t aborted_severity_;
@@ -96,6 +135,29 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   std::string code_prefix_;
   std::vector<std::string> exclude_actions_;
   std::vector<std::string> include_only_actions_;
+
+  friend class ActionStatusBridgeTestAccess;
+};
+
+/// Test-only accessor for the bridge's private maps and prune path. Lets unit
+/// tests exercise rescan add+prune without a live action graph.
+class ActionStatusBridgeTestAccess {
+ public:
+  explicit ActionStatusBridgeTestAccess(ActionStatusBridgeNode * node) : node_(node) {
+  }
+
+  /// Seed a watched action (subscription placeholder + per-action state) as if
+  /// rescan had discovered its `/<action>/_action/status` topic.
+  void add_watched(const std::string & action_name);
+
+  /// Run the prune pass against a set of still-present action names.
+  void prune_to(const std::vector<std::string> & present_action_names);
+
+  bool is_watched(const std::string & action_name) const;
+  bool has_state(const std::string & action_name) const;
+
+ private:
+  ActionStatusBridgeNode * node_;
 };
 
 }  // namespace ros2_medkit_action_status_bridge

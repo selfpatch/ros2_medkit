@@ -91,6 +91,14 @@ Bridge node that promotes ROS 2 /rosout log entries to FaultManager faults.
 .. doxygenclass:: ros2_medkit_log_bridge::LogBridgeNode
    :members:
 
+ros2_medkit_action_status_bridge
+--------------------------------
+
+Bridge node that turns terminal ROS 2 action goal states into FaultManager faults.
+
+.. doxygenclass:: ros2_medkit_action_status_bridge::ActionStatusBridgeNode
+   :members:
+
 ros2_medkit_serialization
 -------------------------
 
