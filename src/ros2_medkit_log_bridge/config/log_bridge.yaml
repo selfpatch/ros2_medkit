@@ -8,7 +8,14 @@ log_bridge:
     severity_floor: 30
     # Prefix for auto-generated fault codes (<PREFIX>_<NODE>_<HASH>).
     code_prefix: "LOG"
-    # Originating-node name substrings to skip (e.g. noisy debug nodes).
+    # Originating-node FQN substrings to skip (e.g. noisy debug nodes).
     exclude_nodes: []
     # If non-empty, ONLY promote logs from nodes matching these substrings.
     include_only_nodes: []
+    # Cap on per-node FaultReporters; least-recently-used nodes are evicted
+    # past this to bound memory under transient-node churn.
+    max_tracked_nodes: 512
+    # Per-fault_code forward debounce (seconds). First occurrence of a code is
+    # forwarded immediately; the same code within the window is suppressed.
+    # 0.0 disables. Tames ERROR/FATAL floods, which bypass the per-node filter.
+    report_cooldown_sec: 5.0

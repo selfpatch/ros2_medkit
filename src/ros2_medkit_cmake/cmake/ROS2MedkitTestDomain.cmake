@@ -27,7 +27,9 @@
 #   ros2_medkit_topic_beacon:       110 - 119 (10 slots)
 #   ros2_medkit_graph_provider:     120 - 129 (10 slots)
 #   ros2_medkit_linux_introspection: 130 - 139 (10 slots)
-#   ros2_medkit_integration_tests:  140 - 219 (80 slots)
+#   ros2_medkit_integration_tests:  140 - 209 (70 slots)
+#   ros2_medkit_log_bridge:         210 - 214 (5 slots, carved from integration_tests)
+#   ros2_medkit_action_status_bridge: 215 - 219 (5 slots, carved from integration_tests)
 #   ros2_medkit_opcua:              220 - 229 (10 slots, carved from integration_tests)
 #   multi-domain tests (secondary): 230 - 232 (3 slots, reserved for peer_aggregation etc.)
 #

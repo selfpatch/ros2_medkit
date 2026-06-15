@@ -59,6 +59,9 @@ ros2_medkit consists of several ROS 2 packages:
 **ros2_medkit_diagnostic_bridge**
    Bridge node that converts standard ROS 2 ``/diagnostics`` messages to fault manager faults.
 
+**ros2_medkit_log_bridge**
+   Bridge node that promotes ROS 2 ``/rosout`` log entries to fault manager faults.
+
 **ros2_medkit_msgs**
    Message and service definitions for fault management.
 

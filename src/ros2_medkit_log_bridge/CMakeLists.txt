@@ -88,6 +88,7 @@ ament_export_dependencies(rclcpp rcl_interfaces ros2_medkit_msgs ros2_medkit_fau
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
 
   set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint ament_cmake_clang_tidy)
@@ -96,7 +97,7 @@ if(BUILD_TESTING)
   ros2_medkit_clang_tidy()
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 90 END 99)
+  medkit_init_test_domains(START 210 END 214)
 
   ament_add_gtest(test_log_bridge test/test_log_bridge.cpp)
   target_link_libraries(test_log_bridge log_bridge_lib)
@@ -107,6 +108,16 @@ if(BUILD_TESTING)
     target_compile_options(test_log_bridge PRIVATE --coverage -O0 -g)
     target_link_options(test_log_bridge PRIVATE --coverage)
   endif()
+
+  # Integration test (launch_testing): fault_manager + bridge + synthetic /rosout
+  install(DIRECTORY test
+    DESTINATION share/${PROJECT_NAME}
+  )
+  add_launch_test(
+    test/test_integration.test.py
+    TARGET test_integration
+    TIMEOUT 90
+  )
 
   ros2_medkit_relax_vendor_warnings()
 endif()

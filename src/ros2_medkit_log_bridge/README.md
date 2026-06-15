@@ -21,22 +21,51 @@ above a severity floor to the FaultManager:
 | ERROR (40) | `SEVERITY_ERROR` |
 | FATAL (50) | `SEVERITY_CRITICAL` |
 
-- `source_id` of each fault is the originating node (the `Log.name` field), via
-  a per-node `FaultReporter`, so faults attribute correctly and each node gets
-  its own local debounce.
-- `fault_code` is auto-generated as `<PREFIX>_<NODE>_<HASH>`, where the hash is
-  taken over a normalized message template (numbers / hex / paths stripped) so
-  the same logical message maps to the same code across occurrences.
+- `source_id` of each fault is the originating node's fully-qualified name. It
+  is derived from `Log.name` by taking the first dotted segment (a `Log.name`
+  may carry a sub-logger suffix, e.g. `controller_manager.resource_manager`, and
+  node names cannot contain `.`) and prefixing `/`, giving e.g.
+  `/controller_manager`. The gateway discovers entities by node FQN, so this is
+  the form that lets a fault (and its snapshots / rosbag) associate with the
+  entity in the SOVD tree. Each node gets its own per-node `FaultReporter` and
+  therefore its own client-side debounce.
+- `fault_code` is auto-generated as `<PREFIX>_<NODE>_<HASH>`. `<HASH>` is a fixed
+  FNV-1a 32-bit digest (8 lowercase hex) of a normalized message template
+  (numbers / hex / paths stripped, isolated single-letter tokens dropped) so the
+  same logical message maps to the same code across occurrences. `<NODE>` is the
+  upper-snake of `source_id`. The 8-hex hash is never truncated; if the 64-char
+  cap is hit the node part is trimmed instead.
 
-## WARN as PREFAILED
+> Namespaced-node limitation: `Log.name` encodes a node's namespace with the same
+> `.` separator as a sub-logger suffix, so the two are indistinguishable from the
+> string alone. `source_id` takes the first dotted segment, which is right for a
+> non-namespaced node with a sub-logger but collapses a namespaced node
+> (`robot1.planner_server` -> `/robot1`) to its namespace, so same-named nodes in
+> different namespaces share one code. Multi-robot fleets typically isolate robots
+> by `ROS_DOMAIN_ID` (one gateway per robot, federated by peer aggregation), which
+> sidesteps this.
 
-The bridge forwards WARN immediately. Whether a WARN shows as `PREFAILED`
-(suspected, kept out of the confirmed-fault list) or `CONFIRMED` is decided by
-the FaultManager's `confirmation_threshold`, not the bridge. For the
-visible-but-quiet behaviour, launch the FaultManager with
-`confirmation_threshold:=-2` or lower (or an entity threshold for `LOG_*`
-codes). With the shipped default (`-1`), every WARN confirms on first
-occurrence.
+## Forwarding, the LocalFilter, and confirmation
+
+Two independent debounces sit between a log line and a confirmed fault:
+
+1. Per-node `FaultReporter` `LocalFilter` (client-side). WARN is held until
+   `default_threshold` (3) occurrences within `default_window_sec` (10s).
+   ERROR/FATAL have severity `>= bypass_severity` (2) and bypass the filter,
+   forwarding immediately.
+2. Bridge `report_cooldown_sec` cooldown, applied only to `ERROR`/`FATAL` (the
+   levels that bypass the LocalFilter). It forwards the first occurrence of a
+   `(fault_code, severity)` immediately and suppresses that same pair for
+   `report_cooldown_sec` (default 5s, `0.0` disables), bounding a flood. `WARN`
+   is never cooled here (that would starve its LocalFilter threshold counting),
+   and keying on severity means a `WARN` never suppresses a same-message `ERROR`
+   escalation.
+
+Whether a forwarded fault then shows as `PREFAILED` (suspected) or `CONFIRMED`
+is a separate, gateway-side decision driven by the FaultManager's
+`confirmation_threshold` - not by this bridge and not by the client-side
+LocalFilter. For visible-but-quiet WARNs, launch the FaultManager with a low
+`confirmation_threshold` (or an entity threshold for `LOG_*` codes).
 
 ## Hard limitations (by construction)
 
@@ -59,7 +88,14 @@ ros2 launch ros2_medkit_log_bridge log_bridge.launch.py
 | Param | Default | Meaning |
 |-------|---------|---------|
 | `rosout_topic` | `/rosout` | log topic to subscribe |
-| `severity_floor` | `30` (WARN) | minimum level promoted; raise to `40` on chatty / constrained targets |
-| `code_prefix` | `LOG` | prefix for generated fault codes |
-| `exclude_nodes` | `[]` | node-name substrings to skip |
-| `include_only_nodes` | `[]` | if set, only promote these nodes |
+| `severity_floor` | `30` (WARN) | minimum level promoted; raise to `40` on chatty / constrained targets. Clamped to `[0, 50]` at load (a value out of range is corrected with a warning) |
+| `code_prefix` | `LOG` | prefix for generated fault codes; normalized to `[A-Z0-9_]` at load |
+| `exclude_nodes` | `[]` | node-FQN substrings to skip |
+| `include_only_nodes` | `[]` | if set, only promote nodes whose FQN matches |
+| `max_tracked_nodes` | `512` | cap on per-node reporters; least-recently-used nodes evicted past this |
+| `report_cooldown_sec` | `5.0` | per-fault_code forward debounce; `0.0` disables |
+
+`exclude_nodes` / `include_only_nodes` match as **unanchored substrings**
+against the node FQN: `planner` matches `/planner_server` and
+`/robot1/planner_server`. Use a longer, more specific substring (e.g.
+`/planner_server`) to avoid accidental matches.

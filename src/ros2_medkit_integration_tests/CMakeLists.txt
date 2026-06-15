@@ -110,7 +110,7 @@ if(BUILD_TESTING)
   set(_INTEG_PORT 9100)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 140 END 229)
+  medkit_init_test_domains(START 140 END 209)
 
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)
