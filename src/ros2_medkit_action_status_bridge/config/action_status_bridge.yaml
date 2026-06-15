@@ -1,0 +1,19 @@
+action_status_bridge:
+  ros__parameters:
+    # Severity for an ABORTED goal (0=INFO 1=WARN 2=ERROR 3=CRITICAL).
+    aborted_severity: 2
+    # Treat a CANCELED goal as a fault. Off by default (cancel is usually
+    # an intentional operator/client action, not a failure).
+    canceled_is_fault: false
+    # On a SUCCEEDED goal, send PASSED to heal the action's ABORTED fault code.
+    heal_on_succeeded: true
+    # How often to rescan the graph for new action status topics.
+    rescan_period_sec: 2.0
+    # Prefix for generated fault codes (<PREFIX>_<ACTION>_ABORTED).
+    code_prefix: "ACTION"
+    # Action-name substrings to skip.
+    exclude_actions: []
+    # If non-empty, ONLY watch actions matching these substrings.
+    include_only_actions: []
+    # Max remembered (goal_id:status) keys for dedup.
+    dedup_capacity: 4096
