@@ -1,0 +1,98 @@
+// Copyright 2026 mfaferek93, bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "rclcpp/rclcpp.hpp"
+#include "rcl_interfaces/msg/log.hpp"
+#include "ros2_medkit_fault_reporter/fault_reporter.hpp"
+
+namespace ros2_medkit_log_bridge {
+
+/// Bridge node that promotes ROS 2 /rosout log entries to FaultManager faults.
+///
+/// Subscribes to /rosout (rcl_interfaces/msg/Log) and forwards entries at or
+/// above a configurable severity floor to the FaultManager, attributing each
+/// fault to the originating node (the Log.name field) via a per-source
+/// FaultReporter. Drop-in compat adapter, same category as
+/// ros2_medkit_diagnostic_bridge: native FaultReporter instrumentation stays
+/// the canonical path; this bridge is the fallback for nodes that only log.
+/// Level mapping and the WARN-as-PREFAILED caveat are documented in README.md.
+///
+/// Hard limitation by construction: only sees rclcpp logs that reach /rosout
+/// from a still-alive node. Console-only loggers and crash-before-flush are out
+/// of reach.
+class LogBridgeNode : public rclcpp::Node {
+ public:
+  explicit LogBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+
+  /// Map an rcl_interfaces/msg/Log level to a Fault severity.
+  /// Returns false when the level is below the floor / not promotable.
+  static bool map_level_to_severity(uint8_t log_level, uint8_t severity_floor, uint8_t * severity_out);
+
+  /// Auto-generate a stable fault code from the originating node name and the
+  /// log message. Numbers/hex/paths in the message are normalized away so the
+  /// same logical message maps to the same code across occurrences.
+  /// Format: <PREFIX>_<NODE>_<HASH>, clamped to medkit's [A-Z0-9_] / 64-char rule.
+  std::string generate_fault_code(const std::string & node_name, const std::string & message) const;
+
+  /// Normalize a log message into a stable template (lowercased, digit/hex/path
+  /// runs stripped, whitespace collapsed). Exposed for unit testing.
+  static std::string normalize_message(const std::string & message);
+
+  /// Whether a given originating node should be promoted, honouring the
+  /// include/exclude lists. Exposed for unit testing.
+  bool node_is_eligible(const std::string & node_name) const;
+
+  /// Map an rcl_interfaces/msg/Log.name (a logger name, e.g. "bt_navigator" or
+  /// "controller_manager.resource_manager") to the originating node's
+  /// fully-qualified name ("/bt_navigator", "/controller_manager"). The gateway
+  /// discovers runtime entities by node FQN, so the fault's source_id must use
+  /// the same form for faults (and their snapshots / rosbag) to associate with
+  /// the entity in the SOVD tree. Exposed for unit testing.
+  static std::string node_source_id(const std::string & log_name);
+
+ private:
+  void log_callback(const rcl_interfaces::msg::Log::ConstSharedPtr & msg);
+
+  /// Fetch (or lazily create) the per-source FaultReporter for an originating
+  /// node, so the fault's source_id is the node that logged, not the bridge.
+  ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & node_name);
+
+  void load_parameters();
+
+  static std::string to_upper_snake(const std::string & in, size_t max_len);
+
+  rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr log_sub_;
+
+  // One FaultReporter per originating node (correct source_id + own LocalFilter).
+  std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
+  std::mutex reporters_mutex_;
+
+  // Configuration
+  std::string rosout_topic_;
+  uint8_t severity_floor_;
+  std::string code_prefix_;
+  std::vector<std::string> exclude_nodes_;
+  std::vector<std::string> include_only_nodes_;
+  std::string own_node_name_;
+};
+
+}  // namespace ros2_medkit_log_bridge

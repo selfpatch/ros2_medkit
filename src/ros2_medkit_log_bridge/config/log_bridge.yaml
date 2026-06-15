@@ -1,0 +1,14 @@
+log_bridge:
+  ros__parameters:
+    # Topic carrying aggregated node logs.
+    rosout_topic: "/rosout"
+    # Minimum rcl_interfaces/msg/Log level promoted to a fault.
+    # 10=DEBUG 20=INFO 30=WARN 40=ERROR 50=FATAL. Default WARN.
+    # Raise to 40 (ERROR) on chatty / resource-constrained targets.
+    severity_floor: 30
+    # Prefix for auto-generated fault codes (<PREFIX>_<NODE>_<HASH>).
+    code_prefix: "LOG"
+    # Originating-node name substrings to skip (e.g. noisy debug nodes).
+    exclude_nodes: []
+    # If non-empty, ONLY promote logs from nodes matching these substrings.
+    include_only_nodes: []
