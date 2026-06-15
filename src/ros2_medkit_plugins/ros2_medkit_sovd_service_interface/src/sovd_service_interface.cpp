@@ -194,7 +194,12 @@ void SovdServiceInterface::handle_list_entity_faults(
         fault.fault_code = fault_json.value("fault_code", std::string{});
         fault.severity = fault_json.value("severity", static_cast<uint8_t>(0));
         fault.description = fault_json.value("description", std::string{});
-        fault.status = fault_json.value("status", std::string{});
+        if (fault_json.contains("status") && fault_json["status"].is_string()) {
+          fault.status = fault_json["status"].get<std::string>();
+        } else if (fault_json.contains("status") && fault_json["status"].is_object()) {
+          // Aggregated faults may carry status as a SOVD DTC object; use aggregatedStatus if present
+          fault.status = fault_json["status"].value("aggregatedStatus", std::string{});
+        }
         fault.occurrence_count = fault_json.value("occurrence_count", static_cast<uint32_t>(0));
         if (fault_json.contains("first_occurred") && fault_json["first_occurred"].is_number()) {
           double ts = fault_json["first_occurred"].get<double>();
