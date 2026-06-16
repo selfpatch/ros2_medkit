@@ -115,8 +115,10 @@ rosbag:
 
   # Bag file format (default: "sqlite3")
   # Options:
-  #   "sqlite3" - Default rosbag2 format, widely compatible
-  #   "mcap"    - More efficient, better compression (requires rosbag2_storage_mcap)
+  #   "sqlite3" - Default; always shipped with rosbag2, zero extra setup
+  #   "mcap"    - Opt-in; efficient and Foxglove-readable, needs rosbag2_storage_mcap
+  # If the selected plugin is not installed, capture automatically falls back to
+  # sqlite3, and disables itself only if no backend is usable (never crashes).
   format: "sqlite3"
 
   # Storage path for bag files (default: "" = system temp directory)

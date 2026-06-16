@@ -143,9 +143,10 @@ class RosbagCapture {
   /// Timer callback for retrying topic discovery
   void discovery_retry_callback();
 
-  /// Validate storage format and check if plugin is available
-  /// @throws std::runtime_error if format is invalid or plugin unavailable
-  void validate_storage_format() const;
+  /// Probe whether a rosbag2 storage plugin is available by opening a throwaway
+  /// bag. Returns false (never throws) when the plugin is not installed, so the
+  /// caller can degrade gracefully instead of terminating the node.
+  bool storage_format_available(const std::string & format) const;
 
   rclcpp::Node * node_;
   FaultStorage * storage_;

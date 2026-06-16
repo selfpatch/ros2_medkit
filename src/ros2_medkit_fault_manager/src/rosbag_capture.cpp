@@ -99,8 +99,31 @@ RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const 
     return;
   }
 
-  // Validate storage format before proceeding
-  validate_storage_format();
+  // Resolve a usable storage backend without ever terminating the FaultManager:
+  // an unavailable plugin (e.g. rosbag2_storage_mcap not installed) must degrade,
+  // not crash. Unknown formats and a missing plugin fall back to sqlite3 (always
+  // shipped with rosbag2); if no backend works, disable capture and keep running
+  // (freeze-frame snapshots are independent of rosbag).
+  if (config_.format != "sqlite3" && config_.format != "mcap") {
+    RCLCPP_WARN(node_->get_logger(), "Unknown rosbag storage format '%s'; using 'sqlite3'", config_.format.c_str());
+    config_.format = "sqlite3";
+  }
+  if (!storage_format_available(config_.format)) {
+    if (config_.format != "sqlite3" && storage_format_available("sqlite3")) {
+      RCLCPP_WARN(node_->get_logger(),
+                  "Rosbag storage format '%s' is unavailable (see debug log for the probe error); falling back "
+                  "to 'sqlite3' for black-box capture",
+                  config_.format.c_str());
+      config_.format = "sqlite3";
+    } else {
+      RCLCPP_WARN(node_->get_logger(),
+                  "No usable rosbag storage backend ('%s' and 'sqlite3' both unavailable); black-box rosbag "
+                  "capture disabled (freeze-frame snapshots still work)",
+                  config_.format.c_str());
+      config_.enabled = false;
+      return;
+    }
+  }
 
   RCLCPP_INFO(node_->get_logger(), "RosbagCapture initialized (duration=%.1fs, after=%.1fs, lazy_start=%s, format=%s)",
               config_.duration_sec, config_.duration_after_sec, config_.lazy_start ? "true" : "false",
@@ -698,42 +721,30 @@ void RosbagCapture::post_fault_timer_callback() {
   current_bag_path_.clear();
 }
 
-void RosbagCapture::validate_storage_format() const {
-  // Validate format is one of the known options
-  if (config_.format != "sqlite3" && config_.format != "mcap") {
-    throw std::runtime_error("Invalid rosbag storage format '" + config_.format +
-                             "'. "
-                             "Valid options: 'sqlite3', 'mcap'");
-  }
-
-  // Verify the selected storage plugin is available by trying to create a test bag
-  std::string test_path =
+bool RosbagCapture::storage_format_available(const std::string & format) const {
+  // Probe the plugin by opening a throwaway bag. Returns false (never throws)
+  // when the plugin is missing, so the caller can fall back instead of crashing.
+  const std::string test_path =
       std::filesystem::temp_directory_path().string() + "/.rosbag_format_test_" + std::to_string(getpid());
 
+  bool ok = false;
   try {
     rosbag2_cpp::Writer writer;
     rosbag2_storage::StorageOptions opts;
     opts.uri = test_path;
-    opts.storage_id = config_.format;
+    opts.storage_id = format;
     writer.open(opts);
-    // Success - plugin is available
+    ok = true;
   } catch (const std::exception & e) {
-    // Clean up any partial test files
-    std::error_code ec;
-    std::filesystem::remove_all(test_path, ec);
-
-    throw std::runtime_error("Rosbag storage format '" + config_.format +
-                             "' is not available. "
-                             "Install the plugin or use a different format. "
-                             "Error: " +
-                             std::string(e.what()));
+    // Keep the reason (plugin missing vs. I/O / permission) for diagnosis; the
+    // probe itself stays non-fatal.
+    RCLCPP_DEBUG(node_->get_logger(), "Rosbag storage format '%s' probe failed: %s", format.c_str(), e.what());
+    ok = false;
   }
 
-  // Clean up test file
   std::error_code ec;
   std::filesystem::remove_all(test_path, ec);
-
-  RCLCPP_INFO(node_->get_logger(), "%s storage format validated successfully", config_.format.c_str());
+  return ok;
 }
 
 }  // namespace ros2_medkit_fault_manager

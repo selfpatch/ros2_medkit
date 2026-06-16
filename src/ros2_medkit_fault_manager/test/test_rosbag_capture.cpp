@@ -109,11 +109,17 @@ TEST_F(RosbagCaptureTest, ConstructorWithDisabledRosbag) {
 }
 
 // @verifies REQ_INTEROP_088
-TEST_F(RosbagCaptureTest, ConstructorThrowsOnInvalidFormat) {
+TEST_F(RosbagCaptureTest, ConstructorFallsBackOnUnknownFormat) {
+  // An unknown/unavailable format must NOT terminate the node; it degrades to
+  // sqlite3 (always shipped with rosbag2) and capture stays enabled.
   auto rosbag_config = create_rosbag_config();
   rosbag_config.format = "invalid_format";
   auto snapshot_config = create_snapshot_config();
-  EXPECT_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config), std::runtime_error);
+  std::shared_ptr<RosbagCapture> rb;
+  EXPECT_NO_THROW(rb = std::make_shared<RosbagCapture>(node_.get(), storage_.get(), rosbag_config, snapshot_config));
+  ASSERT_NE(rb, nullptr);
+  EXPECT_TRUE(rb->is_enabled());
+  EXPECT_EQ(rb->config().format, "sqlite3");
 }
 
 // @verifies REQ_INTEROP_088
