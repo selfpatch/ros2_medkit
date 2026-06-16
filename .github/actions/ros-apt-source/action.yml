@@ -1,0 +1,55 @@
+name: Pre-install ROS 2 apt source
+description: >
+  Installs the ros-apt-source package up front so ros-tooling/setup-ros skips its
+  own unauthenticated api.github.com "releases/latest" lookup. That lookup is
+  subject to the per-IP unauthenticated GitHub API rate limit, which is shared
+  across all GitHub-hosted runners; when it is exhausted the call returns no
+  version, setup-ros builds a .../download//ros2-apt-source_..._all.deb URL, gets
+  a 404, and the whole job fails ("colcon: command not found", exit 127). By
+  configuring the ROS 2 apt repo first, setup-ros's isRosAptSourcePackageInstalled
+  check passes and it never performs the fragile fetch.
+
+runs:
+  using: composite
+  steps:
+    - name: Install ros-apt-source (skip setup-ros's rate-limited fetch)
+      shell: bash
+      env:
+        # Authenticated API requests use the per-repo limit (~1000/h), not the
+        # per-IP unauthenticated limit that setup-ros trips over.
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
+
+        # Minimal container images may lack curl / CA certificates.
+        if ! command -v curl >/dev/null 2>&1; then
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends curl ca-certificates
+        fi
+
+        codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
+
+        # Resolve the latest ros-apt-source release via an AUTHENTICATED call, then
+        # fall back to a known-good pin so the step is deterministic even if the
+        # API is briefly unreachable.
+        version=""
+        if [ -n "${GH_TOKEN:-}" ]; then
+          version="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest" \
+            | grep -F '"tag_name"' | head -n1 | awk -F'"' '{print $4}' || true)"
+        fi
+        if [ -z "${version}" ]; then
+          version="1.2.0"
+        fi
+
+        deb="ros2-apt-source_${version}.${codename}_all.deb"
+        url="https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/${deb}"
+
+        echo "Installing ${deb} (ros-apt-source ${version}, ${codename})"
+        curl --fail --location --retry 5 --retry-delay 3 -o "/tmp/${deb}" "${url}"
+        $SUDO dpkg -i "/tmp/${deb}"
+        rm -f "/tmp/${deb}"
+        $SUDO apt-get update

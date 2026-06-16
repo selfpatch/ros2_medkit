@@ -61,6 +61,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Pre-install ROS 2 apt source
+        uses: ./.github/actions/ros-apt-source
+
       - name: Set up ROS 2 ${{ matrix.ros_distro }}
         uses: ros-tooling/setup-ros@v0.7
         with:
