@@ -462,19 +462,18 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       return tl::make_unexpected(err);
     }
 
-    const auto q = req.query<dto::FaultListQuery>();
+    const auto q = req.query<dto::FaultEntityListQuery>();
     auto filter_result = read_fault_status_filter(q.status, json{{entity_info.id_field, entity_id}});
     if (!filter_result) {
       return tl::make_unexpected(filter_result.error());
     }
     const auto filter = *filter_result;
 
-    // Note: include_muted / include_clusters URL params are intentionally
-    // ignored on per-entity routes - the underlying service returns
-    // correlation metadata computed across the entire fault manager, so
-    // emitting it on a scoped response would leak cross-entity data
-    // (review finding N1). The global `GET /faults` route is the only place
-    // these flags are honored.
+    // Note: the per-entity query DTO (FaultEntityListQuery) deliberately omits
+    // include_muted / include_clusters - the underlying service returns
+    // correlation metadata computed across the entire fault manager, so emitting
+    // it on a scoped response would leak cross-entity data. The global
+    // `GET /faults` route is the only place these flags are declared and honored.
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
 

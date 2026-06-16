@@ -31,13 +31,55 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HANDLERS_DIR="$(cd "${SCRIPT_DIR}/../src/http/handlers" && pwd)"
+
+# Handler layers to scan. Both the HTTP and the core handler layers are covered,
+# on the source side (src/.../handlers, the .cpp bodies) AND the include side
+# (include/.../handlers, where inline handler methods live in .hpp) - a raw read
+# hidden in a header or a second handler layer would otherwise bypass the gate.
+# The plugin HTTP shim (src/plugins/plugin_http_types.cpp) is intentionally NOT
+# scanned: it is the sanctioned raw-httplib boundary the typed wrapper is built on.
+scan_dirs=()
+for rel in \
+  "../src/http/handlers" \
+  "../src/core/http/handlers" \
+  "../include/ros2_medkit_gateway/http/handlers" \
+  "../include/ros2_medkit_gateway/core/http/handlers"; do
+  abs="${SCRIPT_DIR}/${rel}"
+  if [[ -d "${abs}" ]]; then
+    scan_dirs+=("$(cd "${abs}" && pwd)")
+  fi
+done
+
+if [[ ${#scan_dirs[@]} -eq 0 ]]; then
+  echo "ERROR: no handler directories found to scan under ${SCRIPT_DIR}/../src or ../include."
+  exit 1
+fi
 
 # Path reads (req.path), header reads (req.header), and fan-out (raw_for_framework
 # for path/Authorization) are legitimate; only query-string reads are banned.
-pattern='\.query_param\(|->query_param\(|get_param_value\('
+# Match the accessor name directly (not "req." + name) so whitespace tricks like
+# `req . query_param (` cannot slip past, and ban has_param() too - it is the
+# presence half of a raw query read.
+pattern='(query_param|get_param_value|has_param)[[:space:]]*\('
 
-hits="$(grep -rnE "${pattern}" "${HANDLERS_DIR}" --include='*.cpp' || true)"
+# Run the scan with grep's own status preserved: 0 = matches, 1 = none, >=2 = a
+# real error (unreadable file, bad path). A blanket `|| true` would mask exit 2
+# as "no matches", so an unscannable handler file would pass the gate silently;
+# treat >=2 as a hard failure of the gate itself instead.
+set +e
+raw_hits="$(grep -rnE "${pattern}" "${scan_dirs[@]}" --include='*.cpp' --include='*.hpp')"
+grep_rc=$?
+set -e
+if [[ ${grep_rc} -ge 2 ]]; then
+  echo "ERROR: grep failed (exit ${grep_rc}) while scanning handler dirs; cannot certify the gate."
+  exit 1
+fi
+
+# Heuristic: drop matches that sit in a whole-line // comment. Inline trailing
+# comments and block/string occurrences are not stripped (a grep-level lint
+# cannot parse C++), but those are rare and a stray mention in a comment is
+# better flagged than a real read silently missed.
+hits="$(printf '%s' "${raw_hits}" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true)"
 if [[ -n "${hits}" ]]; then
   echo "ERROR: handlers must read query parameters via TypedRequest::query<T>(), not raw query reads."
   echo "Offending lines:"

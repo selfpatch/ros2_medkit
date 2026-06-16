@@ -54,6 +54,7 @@ inline constexpr std::string_view dto_name<RouteRegistryTestSeedDto> = "RouteReg
 }  // namespace ros2_medkit_gateway
 
 using namespace ros2_medkit_gateway::openapi;
+using ros2_medkit_gateway::dto::FaultEntityListQuery;
 using ros2_medkit_gateway::dto::FaultListQuery;
 using ros2_medkit_gateway::dto::RouteRegistryTestSeedDto;
 using ros2_medkit_gateway::http::Result;
@@ -208,6 +209,30 @@ TEST_F(RouteRegistryTest, TypedQueryDeclaresParametersFromDto) {
   ASSERT_NE(include_muted, nullptr);
   EXPECT_EQ((*include_muted)["schema"]["type"], "boolean");  // bool member, kOptional presence
   EXPECT_FALSE((*include_muted)["required"].get<bool>());
+}
+
+// @verifies REQ_INTEROP_002
+TEST_F(RouteRegistryTest, PerEntityFaultsQueryAdvertisesStatusOnly) {
+  // The per-entity /faults route uses the narrower FaultEntityListQuery so the
+  // spec advertises exactly what the handler reads: status only. The
+  // correlation flags (include_muted / include_clusters) are global-only, so
+  // they must NOT appear on the per-entity route.
+  seed_get(registry_, "/apps/{app_id}/faults").tag("Faults").query<FaultEntityListQuery>();
+
+  auto paths = registry_.to_openapi_paths();
+  ASSERT_TRUE(paths.contains("/apps/{app_id}/faults"));
+  auto & get_op = paths["/apps/{app_id}/faults"]["get"];
+  ASSERT_TRUE(get_op.contains("parameters"));
+
+  std::vector<std::string> query_names;
+  for (const auto & p : get_op["parameters"]) {
+    if (p["in"] == "query") {
+      query_names.push_back(p["name"].get<std::string>());
+    }
+  }
+
+  ASSERT_EQ(query_names.size(), 1u);
+  EXPECT_EQ(query_names[0], "status");
 }
 
 // =============================================================================

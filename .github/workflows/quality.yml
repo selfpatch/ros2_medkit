@@ -78,6 +78,9 @@ jobs:
       - name: No naked rclcpp subscription APIs (issue #375 regression gate)
         run: ./scripts/check_no_naked_subscriptions.sh
 
+      - name: Handlers read query params via typed query<T>() (zero-query-params regression gate)
+        run: ./src/ros2_medkit_gateway/scripts/check_handlers_typed_query.sh
+
       - name: Show results
         if: always()
         run: colcon test-result --verbose

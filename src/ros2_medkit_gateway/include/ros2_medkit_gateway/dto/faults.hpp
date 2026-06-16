@@ -458,9 +458,10 @@ struct dto_sample<FaultClearResult> {
 };
 
 // =============================================================================
-// FaultListQuery - query parameters for GET /faults and GET /{entity}/faults.
-// Read by the handlers via TypedRequest::query<FaultListQuery>() and declared in
-// the OpenAPI spec via the same descriptor, so the two cannot drift.
+// FaultListQuery - query parameters for the global GET /faults list only. Read
+// by list_all_faults via TypedRequest::query<FaultListQuery>() and declared in
+// the OpenAPI spec via the same descriptor, so the two cannot drift. The
+// per-entity GET /{entity}/faults uses the narrower FaultEntityListQuery below.
 // =============================================================================
 struct FaultListQuery {
   std::optional<std::string> status;
@@ -475,6 +476,21 @@ inline constexpr auto dto_fields<FaultListQuery> = std::make_tuple(
     field("include_muted", &FaultListQuery::include_muted, Presence::kOptional, "Include muted faults in the response"),
     field("include_clusters", &FaultListQuery::include_clusters, Presence::kOptional,
           "Include fault clusters in the response"));
+
+// FaultEntityListQuery - query parameters for the per-entity GET /{entity}/faults
+// route. Only `status` applies: include_muted / include_clusters are honored
+// solely by the global GET /faults, because their correlation metadata is
+// computed across the whole fault manager and a scoped response would leak
+// cross-entity data. Declaring a narrower DTO here keeps the route advertising
+// exactly what the handler reads (no spec-vs-runtime drift on the declared axis).
+struct FaultEntityListQuery {
+  std::optional<std::string> status;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultEntityListQuery> =
+    std::make_tuple(field_enum("status", &FaultEntityListQuery::status, kFaultStatusFilterValues,
+                               "Filter by fault status: pending, confirmed, cleared, healed, or all"));
 
 // FaultClearQuery - query parameters for DELETE /faults (clear all). Only the
 // status filter applies; the correlation flags are list-only.

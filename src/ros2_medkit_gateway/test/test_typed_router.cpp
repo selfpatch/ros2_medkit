@@ -183,6 +183,27 @@ TEST(TypedRouter_TypedRequest, TypedQueryLeavesAbsentParamsAtDefault) {
   EXPECT_FALSE(q.include_clusters);
 }
 
+TEST(TypedRouter_TypedRequest, TypedQueryParsesBooleanSpellings) {
+  // The schema advertises type: boolean; "true"/"1" (case-insensitive) are
+  // truthy, every other spelling - including "0", "false", and an empty
+  // flag-style value - parses as false.
+  auto parse_include_muted = [](const char * value) {
+    httplib::Request req;
+    req.path = "/api/v1/faults";
+    req.params.emplace("include_muted", value);
+    return TypedRequest(req).query<FaultListQuery>().include_muted;
+  };
+
+  EXPECT_TRUE(parse_include_muted("true"));
+  EXPECT_TRUE(parse_include_muted("TRUE"));
+  EXPECT_TRUE(parse_include_muted("True"));
+  EXPECT_TRUE(parse_include_muted("1"));
+  EXPECT_FALSE(parse_include_muted("false"));
+  EXPECT_FALSE(parse_include_muted("0"));
+  EXPECT_FALSE(parse_include_muted(""));
+  EXPECT_FALSE(parse_include_muted("yes"));
+}
+
 TEST(TypedRouter_TypedRequest, FanOutDisabledTrueOnlyWhenHeaderPresent) {
   {
     httplib::Request req;

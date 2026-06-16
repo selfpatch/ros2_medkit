@@ -656,7 +656,7 @@ void RESTServer::setup_routes() {
         .summary(std::string("List faults for ") + et.singular)
         .description(std::string("Returns all active faults reported by this ") + et.singular + ".")
         .operation_id(std::string("list") + capitalize(et.singular) + "Faults")
-        .query<dto::FaultListQuery>();
+        .query<dto::FaultEntityListQuery>();
 
     reg.get<dto::FaultDetailResult>(entity_path + "/faults/{fault_code}",
                                     [this](http::TypedRequest req) -> http::Result<dto::FaultDetailResult> {
