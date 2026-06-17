@@ -18,10 +18,12 @@
   <depend>nlohmann-json-dev</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
-  <depend>rosbag2_storage_mcap</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <!-- mcap is an opt-in storage backend (sqlite3 is the always-shipped default with
+       a runtime fallback); only the rosbag integration test needs the plugin present -->
+  <test_depend>rosbag2_storage_mcap</test_depend>
   <test_depend>ament_cmake_clang_format</test_depend>
   <test_depend>ament_cmake_clang_tidy</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>

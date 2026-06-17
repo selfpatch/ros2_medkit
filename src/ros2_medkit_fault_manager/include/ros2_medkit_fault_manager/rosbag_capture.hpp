@@ -16,9 +16,11 @@
 
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,13 +55,19 @@ struct BufferedMessage {
 /// - on_fault_cleared() deletes bag file if auto_cleanup enabled
 class RosbagCapture {
  public:
+  /// Probe a rosbag2 storage backend. Returns std::nullopt when the backend is
+  /// usable, or the failure reason (never throws). Injectable so tests can force a
+  /// backend unavailable without depending on which plugins CI happens to install.
+  using StorageProbeFn = std::function<std::optional<std::string>(const std::string & format)>;
+
   /// Create rosbag capture
   /// @param node ROS 2 node for creating subscriptions and timers
   /// @param storage Fault storage for persisting bag file metadata
   /// @param config Rosbag configuration
   /// @param snapshot_config Snapshot configuration (for topic resolution when topics="config")
+  /// @param storage_probe Optional storage-backend probe override (default: real probe)
   RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
-                const SnapshotConfig & snapshot_config);
+                const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {});
 
   ~RosbagCapture();
 
@@ -143,10 +151,13 @@ class RosbagCapture {
   /// Timer callback for retrying topic discovery
   void discovery_retry_callback();
 
-  /// Probe whether a rosbag2 storage plugin is available by opening a throwaway
-  /// bag. Returns false (never throws) when the plugin is not installed, so the
-  /// caller can degrade gracefully instead of terminating the node.
-  bool storage_format_available(const std::string & format) const;
+  /// Default storage probe: opens a throwaway bag for @p format. Returns
+  /// std::nullopt when usable, or the failure reason (never throws), so the caller
+  /// can degrade gracefully instead of terminating the node.
+  std::optional<std::string> default_storage_probe(const std::string & format) const;
+
+  /// Storage-backend probe (the default real probe, or a test override).
+  StorageProbeFn storage_probe_;
 
   rclcpp::Node * node_;
   FaultStorage * storage_;

@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -120,6 +121,64 @@ TEST_F(RosbagCaptureTest, ConstructorFallsBackOnUnknownFormat) {
   ASSERT_NE(rb, nullptr);
   EXPECT_TRUE(rb->is_enabled());
   EXPECT_EQ(rb->config().format, "sqlite3");
+}
+
+// The crash-safety branches below force the storage probe via an injected double,
+// because mcap is installed in CI so the real probe cannot reach them there.
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, ConfiguredFormatUnavailableFallsBackToSqlite3) {
+  // A known format (mcap) whose plugin is unavailable degrades to sqlite3 and
+  // capture stays enabled - the exact scenario the crash-safety change exists for.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.format = "mcap";
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture::StorageProbeFn probe = [](const std::string & f) -> std::optional<std::string> {
+    if (f == "mcap") {
+      return std::string("simulated: mcap plugin not found");
+    }
+    return std::nullopt;  // sqlite3 usable
+  };
+  std::shared_ptr<RosbagCapture> rb;
+  EXPECT_NO_THROW(
+      rb = std::make_shared<RosbagCapture>(node_.get(), storage_.get(), rosbag_config, snapshot_config, probe));
+  ASSERT_NE(rb, nullptr);
+  EXPECT_TRUE(rb->is_enabled());
+  EXPECT_EQ(rb->config().format, "sqlite3");
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, NoUsableBackendDisablesCaptureWithoutCrashing) {
+  // When neither the configured format nor sqlite3 is usable, capture self-disables
+  // and the node keeps running (no throw out of the constructor).
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.format = "mcap";
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture::StorageProbeFn probe = [](const std::string &) -> std::optional<std::string> {
+    return std::string("simulated: backend unavailable");
+  };
+  std::shared_ptr<RosbagCapture> rb;
+  EXPECT_NO_THROW(
+      rb = std::make_shared<RosbagCapture>(node_.get(), storage_.get(), rosbag_config, snapshot_config, probe));
+  ASSERT_NE(rb, nullptr);
+  EXPECT_FALSE(rb->is_enabled());
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, Sqlite3BaselineUnavailableDisablesCapture) {
+  // When the always-shipped sqlite3 baseline itself fails to load, capture
+  // self-disables rather than crashing the node.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.format = "sqlite3";
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture::StorageProbeFn probe = [](const std::string &) -> std::optional<std::string> {
+    return std::string("simulated: rosbag2 base install broken");
+  };
+  std::shared_ptr<RosbagCapture> rb;
+  EXPECT_NO_THROW(
+      rb = std::make_shared<RosbagCapture>(node_.get(), storage_.get(), rosbag_config, snapshot_config, probe));
+  ASSERT_NE(rb, nullptr);
+  EXPECT_FALSE(rb->is_enabled());
 }
 
 // @verifies REQ_INTEROP_088

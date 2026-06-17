@@ -18,17 +18,38 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <set>
 #include <sstream>
+#include <utility>
 
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 
 namespace ros2_medkit_fault_manager {
 
 namespace {
+
+/// Actionable install hint for an unavailable storage backend.
+std::string storage_plugin_hint(const std::string & format) {
+  if (format == "mcap") {
+    const char * distro = std::getenv("ROS_DISTRO");
+    const std::string d = (distro && *distro) ? distro : "$ROS_DISTRO";
+    return "install ros-" + d + "-rosbag2-storage-mcap";
+  }
+  return "check the rosbag2 storage plugin installation";
+}
+
+/// Bound the probe reason so a verbose pluginlib error does not flood the log.
+std::string truncate_reason(const std::string & reason, size_t max_len = 200) {
+  if (reason.size() <= max_len) {
+    return reason;
+  }
+  return reason.substr(0, max_len) + "...";
+}
 
 /// Custom deleter for rcutils_uint8_array_t that calls rcutils_uint8_array_fini
 struct Uint8ArrayDeleter {
@@ -85,7 +106,7 @@ std::shared_ptr<rosbag2_storage::SerializedBagMessage> create_bag_message(const 
 }  // namespace
 
 RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
-                             const SnapshotConfig & snapshot_config)
+                             const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe)
   : node_(node), storage_(storage), config_(config), snapshot_config_(snapshot_config) {
   if (!node_) {
     throw std::invalid_argument("RosbagCapture requires a valid node pointer");
@@ -93,6 +114,10 @@ RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const 
   if (!storage_) {
     throw std::invalid_argument("RosbagCapture requires a valid storage pointer");
   }
+
+  storage_probe_ = storage_probe ? std::move(storage_probe) : [this](const std::string & f) {
+    return default_storage_probe(f);
+  };
 
   if (!config_.enabled) {
     RCLCPP_INFO(node_->get_logger(), "RosbagCapture disabled");
@@ -108,21 +133,34 @@ RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const 
     RCLCPP_WARN(node_->get_logger(), "Unknown rosbag storage format '%s'; using 'sqlite3'", config_.format.c_str());
     config_.format = "sqlite3";
   }
-  if (!storage_format_available(config_.format)) {
-    if (config_.format != "sqlite3" && storage_format_available("sqlite3")) {
+
+  if (auto probe_err = storage_probe_(config_.format)) {
+    const std::string reason = truncate_reason(*probe_err);
+    if (config_.format == "sqlite3") {
+      // The always-shipped baseline failed: an environment-level problem (broken
+      // rosbag2 base install / disk / permissions), not a missing optional plugin.
       RCLCPP_WARN(node_->get_logger(),
-                  "Rosbag storage format '%s' is unavailable (see debug log for the probe error); falling back "
-                  "to 'sqlite3' for black-box capture",
-                  config_.format.c_str());
-      config_.format = "sqlite3";
-    } else {
-      RCLCPP_WARN(node_->get_logger(),
-                  "No usable rosbag storage backend ('%s' and 'sqlite3' both unavailable); black-box rosbag "
-                  "capture disabled (freeze-frame snapshots still work)",
-                  config_.format.c_str());
+                  "sqlite3 rosbag storage is unavailable (%s); the rosbag2 base install may be broken. "
+                  "Black-box rosbag capture disabled (freeze-frame snapshots still work)",
+                  reason.c_str());
       config_.enabled = false;
       return;
     }
+    if (auto sqlite_err = storage_probe_("sqlite3")) {
+      RCLCPP_WARN(node_->get_logger(),
+                  "No usable rosbag storage backend: '%s' (%s) and sqlite3 (%s) both failed to load; black-box "
+                  "rosbag capture disabled (freeze-frame snapshots still work)",
+                  config_.format.c_str(), reason.c_str(), truncate_reason(*sqlite_err).c_str());
+      config_.enabled = false;
+      return;
+    }
+    // Explicitly-configured (non-default) format unavailable: name the fix so an
+    // operator who chose e.g. mcap for Foxglove is not silently downgraded.
+    RCLCPP_WARN(node_->get_logger(),
+                "Rosbag storage format '%s' is unavailable (%s); %s. Falling back to 'sqlite3' for black-box "
+                "capture (sqlite3 bags are not directly Foxglove-readable)",
+                config_.format.c_str(), reason.c_str(), storage_plugin_hint(config_.format).c_str());
+    config_.format = "sqlite3";
   }
 
   RCLCPP_INFO(node_->get_logger(), "RosbagCapture initialized (duration=%.1fs, after=%.1fs, lazy_start=%s, format=%s)",
@@ -721,30 +759,28 @@ void RosbagCapture::post_fault_timer_callback() {
   current_bag_path_.clear();
 }
 
-bool RosbagCapture::storage_format_available(const std::string & format) const {
-  // Probe the plugin by opening a throwaway bag. Returns false (never throws)
-  // when the plugin is missing, so the caller can fall back instead of crashing.
+std::optional<std::string> RosbagCapture::default_storage_probe(const std::string & format) const {
+  // Probe the plugin by opening a throwaway bag. Returns the failure reason (never
+  // throws) when the plugin is missing or unusable, so the caller can fall back or
+  // self-disable instead of crashing.
   const std::string test_path =
       std::filesystem::temp_directory_path().string() + "/.rosbag_format_test_" + std::to_string(getpid());
 
-  bool ok = false;
+  std::optional<std::string> error;
   try {
     rosbag2_cpp::Writer writer;
     rosbag2_storage::StorageOptions opts;
     opts.uri = test_path;
     opts.storage_id = format;
     writer.open(opts);
-    ok = true;
   } catch (const std::exception & e) {
-    // Keep the reason (plugin missing vs. I/O / permission) for diagnosis; the
-    // probe itself stays non-fatal.
-    RCLCPP_DEBUG(node_->get_logger(), "Rosbag storage format '%s' probe failed: %s", format.c_str(), e.what());
-    ok = false;
+    // Keep the reason (plugin missing vs. I/O / permission) for the caller's log.
+    error = e.what();
   }
 
   std::error_code ec;
   std::filesystem::remove_all(test_path, ec);
-  return ok;
+  return error;
 }
 
 }  // namespace ros2_medkit_fault_manager
