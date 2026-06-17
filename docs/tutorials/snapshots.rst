@@ -454,7 +454,16 @@ Saves resources but may miss context if fault confirms before buffer fills.
 .. note::
 
    The ``"mcap"`` format requires ``rosbag2_storage_mcap`` to be installed.
-   If not available, use ``"sqlite3"`` (default).
+   ``"sqlite3"`` (the default) is always shipped with rosbag2 and needs no extra
+   package.
+
+   You do not have to switch formats manually: if a configured backend's plugin
+   is unavailable at startup, the FaultManager logs a warning naming the missing
+   package and automatically falls back to ``"sqlite3"`` for black-box capture.
+   If no storage backend is usable at all, rosbag capture self-disables (the node
+   keeps running and freeze-frame snapshots are unaffected) instead of crashing.
+
+   To use mcap (e.g. for Foxglove), install the plugin:
 
    .. code-block:: bash
 

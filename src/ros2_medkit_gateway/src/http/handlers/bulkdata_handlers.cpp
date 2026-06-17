@@ -227,7 +227,9 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
     dto::Collection<dto::BulkDataDescriptor> response;
     for (const auto & rosbag : all_rosbags) {
       std::string fault_code = rosbag.value("fault_code", "");
-      std::string format = rosbag.value("format", "mcap");
+      // Default to sqlite3 (the FaultManager default) when a bag predates the
+      // persisted format field; the per-bag metadata normally carries the real one.
+      std::string format = rosbag.value("format", "sqlite3");
       uint64_t size_bytes = rosbag.value("size_bytes", uint64_t{0});
       double duration_sec = rosbag.value("duration_sec", 0.0);
 
@@ -347,7 +349,9 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     }
 
     std::string file_path = rosbag_result.data["file_path"].get<std::string>();
-    std::string format = rosbag_result.data.value("format", "mcap");
+    // Default to sqlite3 (the FaultManager default) for bags predating the format
+    // field; metadata normally carries the real one persisted at capture time.
+    std::string format = rosbag_result.data.value("format", "sqlite3");
     mimetype = get_rosbag_mimetype(format);
     filename = fault_code + "." + format;
 
