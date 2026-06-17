@@ -86,13 +86,18 @@ rosbag:
   # Continue recording after fault is confirmed to capture aftermath
   duration_after_sec: 1.0
 
-  # Topic selection mode (default: "config")
+  # Topic selection mode (default: "entity")
   # Options:
+  #   "entity"   - DEFAULT. Subscribe broadly for pre-roll, but on fault confirmation
+  #                write only the faulting source node's topics (+ /tf, /tf_static),
+  #                resolved from the fault's reporting source. Useful black box with
+  #                zero per-topic config. Falls back to the full buffer if the source
+  #                cannot be resolved to a live node.
   #   "config"   - Use same topics as JSON snapshots (from this config file)
-  #   "all"      - Record all available topics (WARNING: high memory usage!)
+  #   "all"      - Record all available topics
   #   "auto"     - Alias for "all" (auto-discover all topics)
   #   "explicit" - Use only topics from include_topics list below
-  topics: "config"
+  topics: "entity"
 
   # Explicit topic list (only used when topics: "explicit")
   # include_topics:
@@ -106,6 +111,11 @@ rosbag:
   #   - /camera/image_raw
   #   - /camera/depth/image_raw
   #   - /pointcloud
+
+  # Auto-exclude high-bandwidth sensor topics (image/points/depth/compressed) in
+  # broad modes ("all"/"auto"/"entity") to bound memory (default: true).
+  # Excluded topics are dropped silently; list them in include_topics to re-add.
+  exclude_sensor_topics: true
 
   # Lazy start mode (default: false)
   # When true, ring buffer only starts when fault enters PREFAILED state
@@ -133,6 +143,16 @@ rosbag:
   # Maximum total storage for all bag files in MB (default: 500)
   # Oldest bags are deleted when this limit is exceeded
   max_total_storage_mb: 500
+
+  # Maximum in-memory ring buffer size in MB (default: 256)
+  # Oldest buffered messages are dropped once the buffer exceeds this, so a broad
+  # subscribe set on a busy robot cannot grow memory without bound.
+  max_buffer_mb: 256
+
+  # Match each topic's publisher-offered QoS for faithful capture (default: true)
+  # Captures reliable / transient-local topics without dropping; set false to force
+  # best-effort SensorDataQoS on every subscription.
+  qos_match: true
 
   # Auto-cleanup bag files when fault is cleared (default: true)
   # When true, bag files are deleted when ClearFault is called

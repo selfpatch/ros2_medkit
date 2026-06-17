@@ -302,6 +302,45 @@ TEST_F(RosbagCaptureTest, ExcludeTopicsRespected) {
   EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
 }
 
+TEST_F(RosbagCaptureTest, EntityTopicsMode) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.topics = "entity";
+  auto snapshot_config = create_snapshot_config();
+  EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
+}
+
+TEST_F(RosbagCaptureTest, QosMatchDisabledFallsBackToSensorData) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.topics = "all";
+  rosbag_config.qos_match = false;
+  auto snapshot_config = create_snapshot_config();
+  EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
+}
+
+TEST_F(RosbagCaptureTest, SensorTopicsExcludedByDefaultInBroadMode) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.topics = "all";
+  rosbag_config.exclude_sensor_topics = true;
+  auto snapshot_config = create_snapshot_config();
+  EXPECT_NO_THROW(RosbagCapture(node_.get(), storage_.get(), rosbag_config, snapshot_config));
+}
+
+TEST(RosbagHighBandwidthTopicTest, MatchesSensorStreamsButNotLookalikes) {
+  // High-bandwidth sensor streams are classified as such.
+  EXPECT_TRUE(RosbagCapture::is_high_bandwidth_topic("/camera/image_raw"));
+  EXPECT_TRUE(RosbagCapture::is_high_bandwidth_topic("/image"));
+  EXPECT_TRUE(RosbagCapture::is_high_bandwidth_topic("/points"));
+  EXPECT_TRUE(RosbagCapture::is_high_bandwidth_topic("/camera/depth/points"));
+  EXPECT_TRUE(RosbagCapture::is_high_bandwidth_topic("/camera/image_raw/compressed"));
+
+  // Low-bandwidth lookalikes that merely contain the word must NOT be excluded.
+  EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/waypoints"));
+  EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/setpoints"));
+  EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/keypoints"));
+  EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/joint_states"));
+  EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/cmd_vel"));
+}
+
 // Fault lifecycle tests
 
 TEST_F(RosbagCaptureTest, OnFaultPrefailedWhileDisabled) {

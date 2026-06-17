@@ -744,11 +744,13 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
       config.rosbag.duration_after_sec = 0.0;
     }
 
-    config.rosbag.topics = declare_parameter<std::string>("snapshots.rosbag.topics", "config");
+    config.rosbag.topics = declare_parameter<std::string>("snapshots.rosbag.topics", "entity");
     config.rosbag.include_topics =
         declare_parameter<std::vector<std::string>>("snapshots.rosbag.include_topics", std::vector<std::string>{});
     config.rosbag.exclude_topics =
         declare_parameter<std::vector<std::string>>("snapshots.rosbag.exclude_topics", std::vector<std::string>{});
+    config.rosbag.exclude_sensor_topics = declare_parameter<bool>("snapshots.rosbag.exclude_sensor_topics", true);
+    config.rosbag.qos_match = declare_parameter<bool>("snapshots.rosbag.qos_match", true);
 
     config.rosbag.lazy_start = declare_parameter<bool>("snapshots.rosbag.lazy_start", false);
     config.rosbag.format = declare_parameter<std::string>("snapshots.rosbag.format", "sqlite3");
@@ -768,14 +770,22 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
     }
     config.rosbag.max_total_storage_mb = static_cast<size_t>(max_total_storage);
 
+    int64_t max_buffer = declare_parameter<int64_t>("snapshots.rosbag.max_buffer_mb", 256);
+    if (max_buffer <= 0) {
+      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_buffer_mb must be positive. Using 256MB");
+      max_buffer = 256;
+    }
+    config.rosbag.max_buffer_mb = static_cast<size_t>(max_buffer);
+
     config.rosbag.auto_cleanup = declare_parameter<bool>("snapshots.rosbag.auto_cleanup", true);
 
     RCLCPP_INFO(get_logger(),
-                "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, lazy=%s, format=%s, "
-                "max_bag=%zuMB, max_total=%zuMB)",
+                "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, qos_match=%s, lazy=%s, format=%s, "
+                "max_buffer=%zuMB, max_bag=%zuMB, max_total=%zuMB)",
                 config.rosbag.duration_sec, config.rosbag.duration_after_sec, config.rosbag.topics.c_str(),
-                config.rosbag.lazy_start ? "true" : "false", config.rosbag.format.c_str(),
-                config.rosbag.max_bag_size_mb, config.rosbag.max_total_storage_mb);
+                config.rosbag.qos_match ? "true" : "false", config.rosbag.lazy_start ? "true" : "false",
+                config.rosbag.format.c_str(), config.rosbag.max_buffer_mb, config.rosbag.max_bag_size_mb,
+                config.rosbag.max_total_storage_mb);
   }
 
   if (config.enabled) {

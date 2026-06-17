@@ -109,6 +109,10 @@ class RosbagCapture {
     return config_.enabled;
   }
 
+  /// Whether a topic is a high-bandwidth sensor stream (image/points/depth/compressed),
+  /// auto-excluded from broad-mode capture. Static + public so it is directly testable.
+  static bool is_high_bandwidth_topic(const std::string & topic);
+
  private:
   /// Initialize subscriptions for configured topics
   void init_subscriptions();
@@ -122,6 +126,17 @@ class RosbagCapture {
 
   /// Resolve which topics to record based on config
   std::vector<std::string> resolve_topics() const;
+
+  /// Resolve the publisher-offered QoS for a topic so capture is faithful
+  /// (falls back to SensorDataQoS when no publisher is known or qos_match is off)
+  rclcpp::QoS resolve_topic_qos(const std::string & topic) const;
+
+  /// In "entity" mode, compute the set of topics to write for a confirmed fault
+  /// (the faulting source node's pub/sub topics + /tf). Empty set = write all.
+  void resolve_entity_topics(const std::string & fault_code);
+
+  /// Whether a topic should be written to the bag given the active entity filter
+  bool should_capture_topic(const std::string & topic) const;
 
   /// Get message type for a topic
   std::string get_topic_type(const std::string & topic) const;
@@ -167,6 +182,13 @@ class RosbagCapture {
   /// Ring buffer for messages
   mutable std::mutex buffer_mutex_;
   std::deque<BufferedMessage> message_buffer_;
+  /// Running byte size of message_buffer_ (guarded by buffer_mutex_), for the RAM cap
+  size_t buffer_bytes_{0};
+
+  /// Topics to write for the in-flight capture in "entity" mode (guarded below).
+  /// Empty = no entity filter, write everything buffered (manual modes / fallback).
+  mutable std::mutex capture_topics_mutex_;
+  std::set<std::string> active_capture_topics_;
 
   /// Subscriptions (kept alive for continuous recording)
   std::vector<rclcpp::GenericSubscription::SharedPtr> subscriptions_;
@@ -197,6 +219,16 @@ class RosbagCapture {
   rclcpp::TimerBase::SharedPtr discovery_retry_timer_;
   std::vector<std::string> pending_topics_;
   int discovery_retry_count_{0};
+
+  /// Topics already subscribed (guards against duplicate subscriptions when the
+  /// broad-mode discovery timer re-resolves the topic set).
+  std::set<std::string> subscribed_topics_;
+
+  /// True in broad modes ("all"/"auto"/"entity"): the discovery timer keeps
+  /// re-resolving for the capture's lifetime so topics whose publishers appear
+  /// after startup are still subscribed (dynamic capture). False in fixed modes
+  /// (config/explicit/list), where only the initial set is retried.
+  bool dynamic_discovery_{false};
 };
 
 }  // namespace ros2_medkit_fault_manager

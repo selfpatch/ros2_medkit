@@ -38,14 +38,25 @@ struct RosbagConfig {
   /// Duration in seconds to continue recording after fault confirmation
   double duration_after_sec{1.0};
 
-  /// Topic selection mode: "config" (reuse JSON config), "all", or comma-separated list
-  std::string topics{"config"};
+  /// Topic selection mode (default "entity"):
+  ///   "entity"     - subscribe broadly for pre-roll, but on confirm write only the
+  ///                  faulting entity's topics (resolved from the fault's reporting
+  ///                  source node) plus always-on context (/tf, /tf_static)
+  ///   "config"     - reuse JSON snapshot config topics
+  ///   "all"/"auto" - every discovered topic
+  ///   "explicit"   - only include_topics
+  ///   "<a,b,c>"    - comma-separated topic list
+  std::string topics{"entity"};
 
   /// Additional topics to include (added to resolved list)
   std::vector<std::string> include_topics;
 
   /// Topics to exclude from recording
   std::vector<std::string> exclude_topics;
+
+  /// In broad modes ("all"/"auto"/"entity"), skip high-bandwidth sensor topics
+  /// (image/points/depth/compressed) to bound memory; include_topics re-adds them.
+  bool exclude_sensor_topics{true};
 
   /// If true, start ring buffer only when fault enters PREFAILED state
   /// If false (default), ring buffer runs continuously from startup
@@ -63,6 +74,13 @@ struct RosbagConfig {
 
   /// Maximum total storage for all bag files in MB
   size_t max_total_storage_mb{500};
+
+  /// Cap on the in-memory ring buffer in MB; oldest messages drop past it
+  size_t max_buffer_mb{256};
+
+  /// Subscribe with each topic's publisher-offered QoS for faithful capture
+  /// (reliable/transient-local where offered) instead of forcing best-effort
+  bool qos_match{true};
 
   /// If true, delete bag file when fault is cleared
   bool auto_cleanup{true};

@@ -217,6 +217,13 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
   set_tests_properties(test_entity_thresholds_integration PROPERTIES LABELS "integration")
+
+  add_launch_test(
+    test/test_rosbag_entity_scope.test.py
+    TARGET test_rosbag_entity_scope
+    TIMEOUT 120
+  )
+  set_tests_properties(test_rosbag_entity_scope PROPERTIES LABELS "integration")
   ros2_medkit_relax_vendor_warnings()
 endif()
 

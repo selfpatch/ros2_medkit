@@ -217,12 +217,15 @@ Capture continuous rosbag recordings around fault events.
            enabled: false                  # Enable rosbag recording
            duration_sec: 5.0               # Pre-fault buffer duration
            duration_after_sec: 1.0         # Post-fault recording duration
-           topics: "config"                # Topic selection: "config", "all", or "none"
+           topics: "entity"                # Topic selection: "entity" (default), "config", "all", "explicit"
            include_topics: []              # Additional topics to include
            exclude_topics: []              # Topics to exclude
+           exclude_sensor_topics: true     # Auto-exclude image/points/depth/compressed in broad modes
            lazy_start: false               # Start recording on first fault
            format: "sqlite3"               # Storage format
+           qos_match: true                 # Match each topic's publisher QoS
            storage_path: ""                # Custom storage path
+           max_buffer_mb: 256              # Ring-buffer RAM cap
            max_bag_size_mb: 50             # Max size per bag file
            max_total_storage_mb: 500       # Max total storage
            auto_cleanup: true              # Auto-delete old bags
@@ -244,8 +247,21 @@ Capture continuous rosbag recordings around fault events.
      - ``1.0``
      - How long to record after fault.
    * - ``rosbag.topics``
-     - ``config``
-     - Topic selection mode: ``config`` (per-fault), ``all``, or ``none``.
+     - ``entity``
+     - Topic selection mode: ``entity`` (default; write only the faulting node's
+       topics + ``/tf``), ``config`` (per-fault), ``all``, or ``explicit``.
+   * - ``rosbag.exclude_sensor_topics``
+     - ``true``
+     - In broad modes (``all``/``entity``), auto-exclude high-bandwidth sensor
+       topics (image/points/depth/compressed) to bound memory. Excluded topics are
+       dropped silently; ``include_topics`` re-adds any you need.
+   * - ``rosbag.qos_match``
+     - ``true``
+     - Subscribe with each topic's publisher-offered QoS for faithful capture
+       instead of forcing best-effort.
+   * - ``rosbag.max_buffer_mb``
+     - ``256``
+     - Ring-buffer RAM cap; oldest buffered messages drop past it.
    * - ``rosbag.lazy_start``
      - ``false``
      - Start recording only when first fault occurs.

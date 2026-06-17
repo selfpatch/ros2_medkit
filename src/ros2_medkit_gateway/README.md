@@ -982,9 +982,12 @@ Rosbag capture is configured via FaultManager parameters. See `config/snapshots.
 | `snapshots.rosbag.enabled` | bool | `false` | Enable/disable rosbag capture |
 | `snapshots.rosbag.duration_sec` | double | `5.0` | Ring buffer duration (seconds before fault) |
 | `snapshots.rosbag.duration_after_sec` | double | `1.0` | Recording duration after fault confirmed |
-| `snapshots.rosbag.topics` | string | `"config"` | Topic selection: `"config"`, `"all"`, or `"explicit"` |
+| `snapshots.rosbag.topics` | string | `"entity"` | Topic selection: `"entity"` (default; faulting node's topics + `/tf`), `"config"`, `"all"`, or `"explicit"` |
+| `snapshots.rosbag.exclude_sensor_topics` | bool | `true` | Auto-exclude image/points/depth/compressed in broad modes (`include_topics` re-adds) |
+| `snapshots.rosbag.qos_match` | bool | `true` | Match each topic's publisher QoS for faithful capture |
 | `snapshots.rosbag.format` | string | `"sqlite3"` | Bag format: `"sqlite3"` or `"mcap"` |
 | `snapshots.rosbag.auto_cleanup` | bool | `true` | Delete bag when fault is cleared |
+| `snapshots.rosbag.max_buffer_mb` | int | `256` | Ring-buffer RAM cap (oldest messages drop past it) |
 | `snapshots.rosbag.max_bag_size_mb` | int | `50` | Max size per bag file |
 | `snapshots.rosbag.max_total_storage_mb` | int | `500` | Total storage limit |
 
