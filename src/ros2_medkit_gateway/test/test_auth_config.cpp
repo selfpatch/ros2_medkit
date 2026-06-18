@@ -94,6 +94,56 @@ TEST(AuthConfigRolePermissionsTest, AdminHasWildcardAccess) {
 }
 
 // =============================================================================
+// Status and lifecycle RBAC tests
+// =============================================================================
+
+TEST(AuthConfigRolePermissionsTest, ViewerCanReadStatus) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & viewer_perms = permissions.at(UserRole::VIEWER);
+  EXPECT_TRUE(viewer_perms.count("GET:/api/v1/apps/*/status") > 0);
+  EXPECT_TRUE(viewer_perms.count("GET:/api/v1/components/*/status") > 0);
+}
+
+TEST(AuthConfigRolePermissionsTest, OperatorCanReadStatusAndControlLifecycle) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & operator_perms = permissions.at(UserRole::OPERATOR);
+  EXPECT_TRUE(operator_perms.count("GET:/api/v1/apps/*/status") > 0);
+  EXPECT_TRUE(operator_perms.count("GET:/api/v1/components/*/status") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/*") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/*") > 0);
+}
+
+TEST(AuthConfigRolePermissionsTest, ConfiguratorCanReadStatusAndControlLifecycle) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & config_perms = permissions.at(UserRole::CONFIGURATOR);
+  EXPECT_TRUE(config_perms.count("GET:/api/v1/apps/*/status") > 0);
+  EXPECT_TRUE(config_perms.count("GET:/api/v1/components/*/status") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/apps/*/status/*") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/status/*") > 0);
+}
+
+TEST(AuthConfigRolePermissionsTest, ViewerCannotControlLifecycle) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & viewer_perms = permissions.at(UserRole::VIEWER);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/apps/*/status/*") == 0);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/components/*/status/*") == 0);
+}
+
+TEST(AuthConfigRolePermissionsTest, AdminStatusCoveredByWildcard) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & admin_perms = permissions.at(UserRole::ADMIN);
+  // Admin is covered by PUT:/api/v1/** - no specific status entries needed
+  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/**") > 0);
+  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/apps/*/status/*") == 0);
+  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/components/*/status/*") == 0);
+}
+
+// =============================================================================
 // AuthConfigBuilder additional tests
 // =============================================================================
 
