@@ -1497,25 +1497,48 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 }
 
+size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
+                                     const std::string & self_fqn) {
+  size_t count = 0;
+  for (const auto & [name, ns] : nodes_and_namespaces) {
+    if (!name.empty() && name.front() == '_') {
+      continue;  // hidden node (name part starts with '_')
+    }
+    const std::string fqn = (ns == "/") ? ("/" + name) : (ns + "/" + name);
+    // Exclude the gateway's own nodes: the main node plus its internal helpers,
+    // which share the main node's FQN as a prefix (e.g. "<fqn>_sub").
+    if (fqn.rfind(self_fqn, 0) == 0) {
+      continue;
+    }
+    ++count;
+  }
+  return count;
+}
+
+std::string GatewayNode::connectable_host(const std::string & bind_host) {
+  // A bind-all address is not a valid connect target, so the sample curl must use
+  // a loopback address the operator can actually reach.
+  if (bind_host.empty() || bind_host == "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  if (bind_host == "::" || bind_host == "[::]") {
+    return "::1";
+  }
+  return bind_host;
+}
+
 void GatewayNode::log_startup_summary() {
   size_t topic_count = 0;
   size_t peer_node_count = 0;
   try {
-    const std::string self_fqn = get_fully_qualified_name();
     for (const auto & entry : get_topic_names_and_types()) {
       const std::string & topic = entry.first;
       if (topic.find("/parameter_events") == std::string::npos && topic.find("/rosout") == std::string::npos) {
         ++topic_count;
       }
     }
-    for (const auto & name : get_node_names()) {
-      // Count peers only: exclude the gateway's own nodes (the main node plus its
-      // internal helpers, which share the main node's FQN as a prefix, e.g.
-      // "<fqn>_sub") and hidden (_-prefixed) nodes.
-      if (name.rfind(self_fqn, 0) != 0 && name.rfind("/_", 0) != 0) {
-        ++peer_node_count;
-      }
-    }
+    peer_node_count =
+        count_peer_nodes(get_node_graph_interface()->get_node_names_and_namespaces(), get_fully_qualified_name());
   } catch (const std::exception & e) {
     RCLCPP_DEBUG(get_logger(), "Startup summary: graph query failed: %s", e.what());
   }
@@ -1524,7 +1547,7 @@ void GatewayNode::log_startup_summary() {
                               thread_safe_cache_.get_apps().size() + thread_safe_cache_.get_functions().size();
 
   const std::string protocol = tls_config_.enabled ? "https" : "http";
-  const std::string url = protocol + "://" + server_host_ + ":" + std::to_string(server_port_);
+  const std::string url = protocol + "://" + connectable_host(server_host_) + ":" + std::to_string(server_port_);
 
   RCLCPP_INFO(get_logger(),
               "Discovery summary: %zu peer node(s), %zu topic(s), %zu medkit entit%s. REST API: %s  Try: curl "
@@ -1536,7 +1559,7 @@ void GatewayNode::log_startup_summary() {
     const char * rmw = std::getenv("RMW_IMPLEMENTATION");
     const char * localhost_only = std::getenv("ROS_LOCALHOST_ONLY");
     RCLCPP_WARN(get_logger(),
-                "No application nodes are visible - the gateway sees only itself, so the entity tree is empty. "
+                "No application nodes are visible on the ROS graph - the gateway sees only its own nodes. "
                 "Active ROS environment: ROS_DOMAIN_ID=%s, RMW_IMPLEMENTATION=%s, ROS_LOCALHOST_ONLY=%s. Check that "
                 "the gateway shares the robot stack's ROS_DOMAIN_ID and RMW_IMPLEMENTATION and can reach it on the "
                 "network (in containers: matching domain/RMW and DDS discovery not blocked).",

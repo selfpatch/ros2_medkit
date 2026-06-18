@@ -18,6 +18,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
@@ -65,6 +66,16 @@ class GatewayNode : public rclcpp::Node {
  public:
   explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
+
+  /// Count application (peer) nodes from (name, namespace) pairs: excludes hidden
+  /// nodes and the gateway's own nodes (whose FQN starts with @p self_fqn). Static
+  /// and public so the startup-summary counting logic is unit-testable.
+  static size_t count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
+                                 const std::string & self_fqn);
+
+  /// Translate a bind address into a connectable address for the sample curl
+  /// (bind-all "0.0.0.0"/"::"/"" -> loopback). Static and public for testing.
+  static std::string connectable_host(const std::string & bind_host);
   GatewayNode(const GatewayNode &) = delete;
   GatewayNode & operator=(const GatewayNode &) = delete;
   GatewayNode(GatewayNode &&) = delete;

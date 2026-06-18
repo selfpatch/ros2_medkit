@@ -27,6 +27,8 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -960,6 +962,39 @@ TEST(ExtractEntityTypePath, unknown_routes) {
   EXPECT_EQ(extract_entity_type_from_path("/api/v1/applications"), SovdEntityType::UNKNOWN);
   EXPECT_EQ(extract_entity_type_from_path("/api/v1/areascan"), SovdEntityType::UNKNOWN);
   EXPECT_EQ(extract_entity_type_from_path("/api/v1/functional"), SovdEntityType::UNKNOWN);
+}
+
+// Startup-summary helper logic (no ROS graph needed - pure functions).
+
+TEST(GatewayStartupSummary, CountPeerNodesExcludesOwnAndHidden) {
+  const std::vector<std::pair<std::string, std::string>> nodes = {
+      {"ros2_medkit_gateway", "/"},                // the gateway's own node (self)
+      {"ros2_medkit_gateway_sub", "/"},            // own internal helper (FQN prefix)
+      {"ros2_medkit_gateway_fault_clients", "/"},  // own internal helper (FQN prefix)
+      {"_hidden_node", "/"},                       // hidden node
+      {"camera", "/sensors"},                      // peer (hidden node name check is on the name part)
+      {"robot_planner", "/"},                      // peer
+  };
+  // Two genuine peers: /sensors/camera and /robot_planner.
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 2u);
+}
+
+TEST(GatewayStartupSummary, CountPeerNodesZeroWhenOnlyOwnNodes) {
+  const std::vector<std::pair<std::string, std::string>> nodes = {
+      {"ros2_medkit_gateway", "/"},
+      {"ros2_medkit_gateway_sub", "/"},
+      {"ros2_medkit_gateway_fault_clients", "/"},
+  };
+  // Zero peers is the condition that triggers the empty-graph warning.
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 0u);
+}
+
+TEST(GatewayStartupSummary, ConnectableHostTranslatesBindAll) {
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("0.0.0.0"), "127.0.0.1");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host(""), "127.0.0.1");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("::"), "::1");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("192.168.1.5"), "192.168.1.5");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("127.0.0.1"), "127.0.0.1");
 }
 
 int main(int argc, char ** argv) {
