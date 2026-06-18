@@ -120,6 +120,7 @@ class RESTServer {
   std::unique_ptr<handlers::HealthHandlers> health_handlers_;
   std::unique_ptr<handlers::DiscoveryHandlers> discovery_handlers_;
   std::unique_ptr<handlers::DataHandlers> data_handlers_;
+  std::unique_ptr<handlers::LifecycleHandlers> lifecycle_handlers_;
   std::unique_ptr<handlers::OperationHandlers> operation_handlers_;
   std::unique_ptr<handlers::ConfigHandlers> config_handlers_;
   std::unique_ptr<handlers::FaultHandlers> fault_handlers_;

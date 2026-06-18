@@ -141,6 +141,12 @@ constexpr const char * ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL = "x-medkit-unsupported
 /// SOVD standard: client's lock was broken by another client (409)
 constexpr const char * ERR_LOCK_BROKEN = "lock-broken";
 
+/// SOVD standard: caller lacks the required access rights for this operation (403)
+constexpr const char * ERR_INSUFFICIENT_ACCESS_RIGHTS = "insufficient-access-rights";
+
+/// SOVD standard: a required precondition was not fulfilled (409)
+constexpr const char * ERR_PRECONDITION_NOT_FULFILLED = "precondition-not-fulfilled";
+
 // Script error codes (vendor-specific only; generic cases use ERR_RESOURCE_NOT_FOUND / ERR_INVALID_PARAMETER)
 constexpr const char * ERR_SCRIPT_ALREADY_EXISTS = "x-medkit-script-already-exists";
 constexpr const char * ERR_SCRIPT_MANAGED = "x-medkit-managed-script";

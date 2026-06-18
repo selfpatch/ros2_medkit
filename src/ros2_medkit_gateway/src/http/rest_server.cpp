@@ -125,6 +125,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get());
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
+  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(*handler_ctx_, node_->get_plugin_manager());
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -1591,6 +1592,32 @@ void RESTServer::setup_routes() {
       .request_body("Token to revoke", SB::ref("AuthRevokeRequest"))
       .operation_id("revokeToken")
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
+
+  // === Lifecycle (status) - apps and components only, outside the 4-type loop ===
+  // PUT /status/{action} MUST be registered before GET /status to avoid the
+  // more-specific fixed segment being shadowed by the shorter path.
+  for (const auto & et_lc :
+       std::vector<std::pair<const char *, const char *>>{{"apps", "app"}, {"components", "component"}}) {
+    const std::string base_lc = std::string("/") + et_lc.first + "/{" + et_lc.second + "_id}";
+
+    for (const auto & action : {"start", "restart", "force-restart", "shutdown", "force-shutdown"}) {
+      std::string action_str = action;
+      reg.put<http::NoContent>(base_lc + "/status/" + action,
+                               [this, action_str](http::TypedRequest req)
+                                   -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
+                                 return lifecycle_handlers_->handle_transition(req, action_str);
+                               })
+          .tag("Lifecycle")
+          .summary(std::string("Request lifecycle transition '") + action + "'");
+    }
+
+    reg.get<dto::LifecycleStatusResponse>(base_lc + "/status",
+                                          [this](http::TypedRequest req) -> http::Result<dto::LifecycleStatusResponse> {
+                                            return lifecycle_handlers_->handle_get_status(req);
+                                          })
+        .tag("Lifecycle")
+        .summary(std::string("Get ") + et_lc.second + " lifecycle status");
+  }
 
   // Register all routes with cpp-httplib
   route_registry_->register_all(*srv, API_BASE_PATH);

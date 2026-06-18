@@ -182,6 +182,7 @@ add_library(gateway_ros2 STATIC
   src/http/handlers/fault_handlers.cpp
   src/http/handlers/handler_context.cpp
   src/http/handlers/health_handlers.cpp
+  src/http/handlers/lifecycle_handlers.cpp
   src/http/handlers/lock_handlers.cpp
   src/http/handlers/log_handlers.cpp
   src/http/handlers/operation_handlers.cpp
@@ -760,6 +761,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_health_handlers test/test_health_handlers.cpp)
   target_link_libraries(test_health_handlers gateway_ros2)
   medkit_set_test_domain(test_health_handlers)
+
+  # Add lifecycle handler tests
+  ament_add_gtest(test_lifecycle_handlers test/test_lifecycle_handlers.cpp)
+  target_link_libraries(test_lifecycle_handlers gateway_ros2)
+  medkit_target_dependencies(test_lifecycle_handlers rclcpp)
+  medkit_set_test_domain(test_lifecycle_handlers)
 
   # Add operation handler tests
   ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)

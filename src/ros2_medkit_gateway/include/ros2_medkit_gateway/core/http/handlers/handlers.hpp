@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/core/http/handlers/config_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/docs_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/lifecycle_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/log_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
