@@ -133,7 +133,7 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
 // =============================================================================
 
 http::Result<std::pair<http::NoContent, http::ResponseAttachments>>
-LifecycleHandlers::handle_transition(const http::TypedRequest & req, std::string transition) {
+LifecycleHandlers::handle_transition(const http::TypedRequest & req, std::string_view transition) {
   auto id_raw = req.path_param("1");
   if (!id_raw) {
     return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
@@ -157,10 +157,9 @@ LifecycleHandlers::handle_transition(const http::TypedRequest & req, std::string
         if (!result) {
           return tl::make_unexpected(to_error_info(result.error()));
         }
-        http::NoContent resp;
         http::ResponseAttachments att;
         att.with_status(202).with_header("Location", base + "/status");
-        return std::pair{std::move(resp), std::move(att)};
+        return std::make_pair(http::NoContent{}, std::move(att));
       } catch (const std::exception & e) {
         return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, e.what()));
       } catch (...) {
