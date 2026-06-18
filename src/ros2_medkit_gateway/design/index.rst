@@ -673,5 +673,6 @@ Additional Design Documents
 
    aggregation
    dto_contract
+   lifecycle
    plugin_entity_notifications
    ros2_subscription_architecture

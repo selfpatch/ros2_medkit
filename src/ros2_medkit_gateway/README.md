@@ -114,6 +114,23 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/{entity_type}/{id}/docs` - Entity-scoped OpenAPI spec
 - `GET /api/v1/swagger-ui` - Interactive Swagger UI (requires build with `-DENABLE_SWAGGER_UI=ON`)
 
+### Status and Lifecycle Endpoints
+
+- `GET /api/v1/apps/{app_id}/status` - Read app lifecycle status (`ready` or `notReady`)
+- `PUT /api/v1/apps/{app_id}/status/start` - Request app start transition
+- `PUT /api/v1/apps/{app_id}/status/restart` - Request controlled app restart
+- `PUT /api/v1/apps/{app_id}/status/force-restart` - Request forced app restart
+- `PUT /api/v1/apps/{app_id}/status/shutdown` - Request controlled app shutdown
+- `PUT /api/v1/apps/{app_id}/status/force-shutdown` - Request forced app shutdown
+- `GET /api/v1/components/{component_id}/status` - Read component lifecycle status
+- `PUT /api/v1/components/{component_id}/status/start` - Request component start transition
+- `PUT /api/v1/components/{component_id}/status/restart` - Request controlled component restart
+- `PUT /api/v1/components/{component_id}/status/force-restart` - Request forced component restart
+- `PUT /api/v1/components/{component_id}/status/shutdown` - Request controlled component shutdown
+- `PUT /api/v1/components/{component_id}/status/force-shutdown` - Request forced component shutdown
+
+`GET /status` always returns a response (derived from the entity cache when no lifecycle plugin is registered). `PUT /status/{action}` returns `501 Not Implemented` until a substrate plugin registers a `LifecycleProvider` for the entity. Accepted transitions return `202` with a `Location` header pointing back to `GET /status`.
+
 ### Vendor Extension Endpoints
 
 - `GET /api/v1/{entity}/{id}/x-medkit-topic-beacon` - Topic beacon metadata
@@ -1639,6 +1656,19 @@ Five legacy call sites are currently on the allowlist
 (`sse_fault_handler.cpp`, `trigger_fault_subscriber.cpp`,
 `trigger_topic_subscriber.cpp`, `operation_manager.cpp`,
 `log_manager.cpp`) pending migration to the slot pattern.
+
+## SOVD Compliance
+
+| Requirement     | Status   | Notes                                                                  |
+|-----------------|----------|------------------------------------------------------------------------|
+| REQ_INTEROP_076 | verified | `GET /status` - returns entity lifecycle status from cache or provider |
+| REQ_INTEROP_077 | open (route registered, returns 501) | `PUT /status/start` route registered; returns 501 until a `LifecycleProvider` plugin registers for the entity |
+| REQ_INTEROP_078 | open (route registered, returns 501) | `PUT /status/restart` - same as above                                  |
+| REQ_INTEROP_079 | open (route registered, returns 501) | `PUT /status/force-restart` - same as above                            |
+| REQ_INTEROP_080 | open (route registered, returns 501) | `PUT /status/shutdown` - same as above                                 |
+| REQ_INTEROP_081 | open (route registered, returns 501) | `PUT /status/force-shutdown` - same as above                           |
+
+Requirements 077-081 will be fully verified when a substrate plugin (ROS 2 lifecycle node manager, process supervisor, or container manager) implements the `LifecycleProvider` interface and registers it via the plugin manager.
 
 ## License
 
