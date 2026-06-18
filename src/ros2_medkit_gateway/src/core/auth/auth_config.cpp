@@ -161,6 +161,9 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/apps/*/scripts/*",
            "GET:/api/v1/components/*/scripts/*/executions/*",
            "GET:/api/v1/apps/*/scripts/*/executions/*",
+           // Status: all entity types (read-only)
+           "GET:/api/v1/apps/*/status",
+           "GET:/api/v1/components/*/status",
            // Docs
            "GET:/api/v1/docs",
        }},
@@ -302,6 +305,9 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/apps/*/scripts/*",
            "GET:/api/v1/components/*/scripts/*/executions/*",
            "GET:/api/v1/apps/*/scripts/*/executions/*",
+           // Status: all entity types (read-only, inherited from VIEWER)
+           "GET:/api/v1/apps/*/status",
+           "GET:/api/v1/components/*/status",
            // Docs
            "GET:/api/v1/docs",
            // --- Operator-specific write permissions ---
@@ -365,6 +371,9 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "PUT:/api/v1/apps/*/scripts/*/executions/*",
            "DELETE:/api/v1/components/*/scripts/*/executions/*",
            "DELETE:/api/v1/apps/*/scripts/*/executions/*",
+           // Lifecycle control: apps and components (PUT)
+           "PUT:/api/v1/apps/*/status/*",
+           "PUT:/api/v1/components/*/status/*",
        }},
       {UserRole::CONFIGURATOR,
        {
@@ -504,6 +513,9 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "GET:/api/v1/apps/*/scripts/*",
            "GET:/api/v1/components/*/scripts/*/executions/*",
            "GET:/api/v1/apps/*/scripts/*/executions/*",
+           // Status: all entity types (read-only, inherited from VIEWER)
+           "GET:/api/v1/apps/*/status",
+           "GET:/api/v1/components/*/status",
            // Docs
            "GET:/api/v1/docs",
            // Inherited from OPERATOR - write permissions
@@ -567,6 +579,9 @@ const std::unordered_map<UserRole, std::unordered_set<std::string>> & AuthConfig
            "PUT:/api/v1/apps/*/scripts/*/executions/*",
            "DELETE:/api/v1/components/*/scripts/*/executions/*",
            "DELETE:/api/v1/apps/*/scripts/*/executions/*",
+           // Lifecycle control: apps and components (PUT, inherited from OPERATOR)
+           "PUT:/api/v1/apps/*/status/*",
+           "PUT:/api/v1/components/*/status/*",
            // --- Configurator-specific write permissions ---
            // Modify configurations: all entity types (PUT)
            "PUT:/api/v1/components/*/configurations/*",
