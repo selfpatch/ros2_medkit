@@ -29,6 +29,9 @@
 #include "ros2_medkit_gateway/core/http/handlers/discovery_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/lifecycle_handlers.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/lifecycle_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/lifecycle.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -40,6 +43,10 @@ using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::GatewayNode;
+using ros2_medkit_gateway::LifecycleProvider;
+using ros2_medkit_gateway::LifecycleProviderError;
+using ros2_medkit_gateway::LifecycleProviderErrorInfo;
+using ros2_medkit_gateway::PluginManager;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::dto::JsonWriter;
@@ -344,4 +351,180 @@ TEST_F(EntityDetailStatusLinkTest, ComponentDetailAdvertisesStatusLink) {
   auto result = discovery_->get_component(typed_req);
   auto body = detail_body_json(result);
   EXPECT_EQ(body["status"], "/api/v1/components/host_controller/status");
+}
+
+// =============================================================================
+// Provider-present handler path tests.
+// Wire a mock LifecycleProvider into the handler via PluginManager and verify
+// the handler correctly delegates, fills transition URIs, returns 202, and maps
+// provider errors to the right HTTP codes.
+// =============================================================================
+
+namespace {
+
+/// Configurable mock plugin implementing LifecycleProvider.
+/// Set `status_to_return` for get_status(), or `error_to_return` for failures.
+/// Set `transition_error` for request_transition() failures.
+class MockLifecyclePlugin : public ros2_medkit_gateway::GatewayPlugin, public LifecycleProvider {
+ public:
+  std::string name() const override {
+    return "mock_lifecycle";
+  }
+  void configure(const json & /*cfg*/) override {
+  }
+  void shutdown() override {
+  }
+
+  // LifecycleProvider
+
+  tl::expected<dto::LifecycleStatusResponse, LifecycleProviderErrorInfo>
+  get_status(const std::string & /*entity_id*/) override {
+    if (get_status_error) {
+      return tl::make_unexpected(*get_status_error);
+    }
+    return status_response;
+  }
+
+  tl::expected<std::monostate, LifecycleProviderErrorInfo>
+  request_transition(const std::string & /*entity_id*/, std::string_view /*transition*/) override {
+    if (transition_error) {
+      return tl::make_unexpected(*transition_error);
+    }
+    return std::monostate{};
+  }
+
+  // Configurable state
+  dto::LifecycleStatusResponse status_response;
+  std::optional<LifecycleProviderErrorInfo> get_status_error;
+  std::optional<LifecycleProviderErrorInfo> transition_error;
+};
+
+}  // namespace
+
+class LifecycleHandlersWithProviderTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      std::vector<std::string> args = {"test_lifecycle_handlers", "--ros-args", "-p", "refresh_interval_ms:=60000"};
+      std::vector<char *> argv;
+      argv.reserve(args.size());
+      for (auto & arg : args) {
+        argv.push_back(arg.data());
+      }
+      rclcpp::init(static_cast<int>(argv.size()), argv.data());
+    }
+  }
+
+  static void TearDownTestSuite() {
+  }
+
+  void SetUp() override {
+    gateway_node_ = std::make_shared<GatewayNode>();
+    ASSERT_NE(gateway_node_, nullptr);
+
+    executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(gateway_node_);
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Seed cache with one online app.
+    App app;
+    app.id = "plugin_app";
+    app.name = "PluginApp";
+    app.is_online = true;
+    auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+    cache.update_all({}, {}, {app}, {});
+
+    // Wire plugin manager: add mock plugin and register entity ownership.
+    plugin_mgr_ = std::make_unique<PluginManager>();
+    auto mock = std::make_unique<MockLifecyclePlugin>();
+    mock_ = mock.get();
+    plugin_mgr_->add_plugin(std::move(mock));
+    plugin_mgr_->register_entity_ownership("mock_lifecycle", {"plugin_app"});
+
+    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    handlers_ = std::make_unique<LifecycleHandlers>(*ctx_, plugin_mgr_.get());
+  }
+
+  void TearDown() override {
+    if (executor_) {
+      executor_->cancel();
+    }
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    handlers_.reset();
+    ctx_.reset();
+    plugin_mgr_.reset();
+    executor_.reset();
+    gateway_node_.reset();
+  }
+
+  CorsConfig cors_{};
+  AuthConfig auth_{};
+  TlsConfig tls_{};
+  std::shared_ptr<GatewayNode> gateway_node_;
+  std::unique_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::unique_ptr<PluginManager> plugin_mgr_;
+  MockLifecyclePlugin * mock_{nullptr};
+  std::unique_ptr<HandlerContext> ctx_;
+  std::unique_ptr<LifecycleHandlers> handlers_;
+};
+
+// GET /apps/{plugin_app}/status with provider returning "ready" + restart transition:
+// - status == "ready"
+// - restart field filled with absolute URI "/api/v1/apps/plugin_app/status/restart"
+TEST_F(LifecycleHandlersWithProviderTest, GetStatusProviderReadyFillsTransitionURI) {
+  mock_->status_response.status = "ready";
+  mock_->status_response.restart = "";  // non-nullopt signals provider supports it
+
+  auto raw = make_request_with_match("/api/v1/apps/plugin_app/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "ready");
+  ASSERT_TRUE(result->restart.has_value());
+  EXPECT_EQ(*result->restart, "/api/v1/apps/plugin_app/status/restart");
+  // start was not set by provider, so it should remain absent.
+  EXPECT_FALSE(result->start.has_value());
+}
+
+// PUT /apps/{plugin_app}/status/restart with provider accepting -> 202 + Location header.
+TEST_F(LifecycleHandlersWithProviderTest, TransitionAcceptedReturns202WithLocation) {
+  auto raw =
+      make_request_with_match("/api/v1/apps/plugin_app/status/restart", R"(/api/v1/apps/([^/]+)/status/restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "restart");
+  ASSERT_TRUE(result.has_value());
+  const auto & att = result->second;
+  ASSERT_TRUE(att.status_override.has_value());
+  EXPECT_EQ(*att.status_override, 202);
+  bool found_location = false;
+  for (const auto & [name, value] : att.headers) {
+    if (name == "Location") {
+      EXPECT_EQ(value, "/api/v1/apps/plugin_app/status");
+      found_location = true;
+    }
+  }
+  EXPECT_TRUE(found_location);
+}
+
+// PUT /apps/{plugin_app}/status/restart with provider returning PreconditionFailed -> 409.
+TEST_F(LifecycleHandlersWithProviderTest, TransitionPreconditionFailedReturns409) {
+  mock_->transition_error =
+      LifecycleProviderErrorInfo{LifecycleProviderError::PreconditionFailed, "not in correct state", 409};
+  auto raw =
+      make_request_with_match("/api/v1/apps/plugin_app/status/restart", R"(/api/v1/apps/([^/]+)/status/restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "restart");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_PRECONDITION_NOT_FULFILLED);
 }
