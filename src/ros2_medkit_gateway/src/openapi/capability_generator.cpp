@@ -121,6 +121,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
           {"Locking", "Entity lock management for exclusive access"},
           {"Scripts", "Diagnostic script upload, execution, and management"},
           {"Updates", "Software update management"},
+          {"Lifecycle", "Entity status and lifecycle control (start, restart, shutdown)"},
           {"Authentication", "JWT-based authentication"},
       });
 
