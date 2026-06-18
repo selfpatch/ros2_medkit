@@ -26,8 +26,10 @@
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/discovery_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/lifecycle_handlers.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/lifecycle.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -40,6 +42,8 @@ using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
+using ros2_medkit_gateway::dto::JsonWriter;
+using ros2_medkit_gateway::handlers::DiscoveryHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::LifecycleHandlers;
 namespace dto = ros2_medkit_gateway::dto;
@@ -228,4 +232,113 @@ TEST_F(LifecycleHandlersTest, TransitionUnknownEntityReturns404) {
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().http_status, 404);
   EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
+}
+
+// =============================================================================
+// Entity detail status link advertisement tests.
+// Verify GET /apps/{id} and GET /components/{id} include "status" URI field.
+// =============================================================================
+
+namespace {
+
+template <class T>
+json detail_body_json(const ros2_medkit_gateway::http::Result<T> & result) {
+  EXPECT_TRUE(result.has_value());
+  return JsonWriter<T>::write(result.value());
+}
+
+}  // namespace
+
+class EntityDetailStatusLinkTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      std::vector<std::string> args = {"test_lifecycle_handlers", "--ros-args", "-p", "refresh_interval_ms:=60000"};
+      std::vector<char *> argv;
+      argv.reserve(args.size());
+      for (auto & arg : args) {
+        argv.push_back(arg.data());
+      }
+      rclcpp::init(static_cast<int>(argv.size()), argv.data());
+    }
+  }
+
+  static void TearDownTestSuite() {
+  }
+
+  void SetUp() override {
+    gateway_node_ = std::make_shared<GatewayNode>();
+    ASSERT_NE(gateway_node_, nullptr);
+
+    executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(gateway_node_);
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    App app;
+    app.id = "online_sensor";
+    app.name = "OnlineSensor";
+    app.is_online = true;
+
+    Component comp;
+    comp.id = "host_controller";
+    comp.name = "HostController";
+
+    auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+    cache.update_all({}, {comp}, {app}, {});
+
+    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    discovery_ = std::make_unique<DiscoveryHandlers>(*ctx_);
+  }
+
+  void TearDown() override {
+    if (executor_) {
+      executor_->cancel();
+    }
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    discovery_.reset();
+    ctx_.reset();
+    executor_.reset();
+    gateway_node_.reset();
+  }
+
+  CorsConfig cors_{};
+  AuthConfig auth_{};
+  TlsConfig tls_{};
+  std::shared_ptr<GatewayNode> gateway_node_;
+  std::unique_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::unique_ptr<HandlerContext> ctx_;
+  std::unique_ptr<DiscoveryHandlers> discovery_;
+};
+
+// GET /apps/{id} must include "status" -> "/api/v1/apps/{id}/status"
+TEST_F(EntityDetailStatusLinkTest, AppDetailAdvertisesStatusLink) {
+  httplib::Request req;
+  req.path = "/api/v1/apps/online_sensor";
+  std::regex re(R"(/api/v1/apps/([^/]+))");
+  std::regex_match(req.path, req.matches, re);
+  http::TypedRequest typed_req(req);
+
+  auto result = discovery_->get_app(typed_req);
+  auto body = detail_body_json(result);
+  EXPECT_EQ(body["status"], "/api/v1/apps/online_sensor/status");
+}
+
+// GET /components/{id} must include "status" -> "/api/v1/components/{id}/status"
+TEST_F(EntityDetailStatusLinkTest, ComponentDetailAdvertisesStatusLink) {
+  httplib::Request req;
+  req.path = "/api/v1/components/host_controller";
+  std::regex re(R"(/api/v1/components/([^/]+))");
+  std::regex_match(req.path, req.matches, re);
+  http::TypedRequest typed_req(req);
+
+  auto result = discovery_->get_component(typed_req);
+  auto body = detail_body_json(result);
+  EXPECT_EQ(body["status"], "/api/v1/components/host_controller/status");
 }

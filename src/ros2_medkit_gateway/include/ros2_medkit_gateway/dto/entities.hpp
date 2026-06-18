@@ -142,7 +142,7 @@ inline constexpr std::string_view dto_name<ComponentListItem> = "ComponentListIt
 //
 // Wire keys:
 //   id, name, description?, tags?,
-//   data, operations, configurations, faults, subcomponents, hosts, logs,
+//   status, data, operations, configurations, faults, subcomponents, hosts, logs,
 //   bulk-data, cyclic-subscriptions, triggers,
 //   scripts? (conditional on script backend), depends-on? (conditional),
 //   belongs-to? (conditional on area), is-located-on? (not present here - app only),
@@ -157,6 +157,7 @@ struct ComponentDetail {
   std::optional<std::string> description;
   std::optional<std::vector<std::string>> tags;
   // Always-present resource collection URIs
+  std::string status;
   std::string data;
   std::string operations;
   std::string configurations;
@@ -181,11 +182,11 @@ template <>
 inline constexpr auto dto_fields<ComponentDetail> = std::make_tuple(
     field("id", &ComponentDetail::id), field("name", &ComponentDetail::name),
     field_enum("type", &ComponentDetail::type, kEntityTypeValues), field("description", &ComponentDetail::description),
-    field("tags", &ComponentDetail::tags), field("data", &ComponentDetail::data),
-    field("operations", &ComponentDetail::operations), field("configurations", &ComponentDetail::configurations),
-    field("faults", &ComponentDetail::faults), field("subcomponents", &ComponentDetail::subcomponents),
-    field("hosts", &ComponentDetail::hosts), field("logs", &ComponentDetail::logs),
-    field("bulk-data", &ComponentDetail::bulk_data),
+    field("tags", &ComponentDetail::tags), field("status", &ComponentDetail::status),
+    field("data", &ComponentDetail::data), field("operations", &ComponentDetail::operations),
+    field("configurations", &ComponentDetail::configurations), field("faults", &ComponentDetail::faults),
+    field("subcomponents", &ComponentDetail::subcomponents), field("hosts", &ComponentDetail::hosts),
+    field("logs", &ComponentDetail::logs), field("bulk-data", &ComponentDetail::bulk_data),
     field("cyclic-subscriptions", &ComponentDetail::cyclic_subscriptions),
     field("triggers", &ComponentDetail::triggers), field("scripts", &ComponentDetail::scripts),
     field("depends-on", &ComponentDetail::depends_on), field("belongs-to", &ComponentDetail::belongs_to),
@@ -229,7 +230,7 @@ inline constexpr std::string_view dto_name<AppListItem> = "AppListItem";
 //
 // Wire keys:
 //   id, name, description?, translation_id?, tags?,
-//   data, operations, configurations, faults, logs, bulk-data,
+//   status, data, operations, configurations, faults, logs, bulk-data,
 //   cyclic-subscriptions, triggers,
 //   scripts? (conditional on script backend),
 //   is-located-on? (conditional on component_id),
@@ -247,6 +248,7 @@ struct AppDetail {
   std::optional<std::string> translation_id;
   std::optional<std::vector<std::string>> tags;
   // Always-present resource collection URIs
+  std::string status;
   std::string data;
   std::string operations;
   std::string configurations;
@@ -271,10 +273,10 @@ inline constexpr auto dto_fields<AppDetail> =
     std::make_tuple(field("id", &AppDetail::id), field("name", &AppDetail::name),
                     field_enum("type", &AppDetail::type, kEntityTypeValues),
                     field("description", &AppDetail::description), field("translation_id", &AppDetail::translation_id),
-                    field("tags", &AppDetail::tags), field("data", &AppDetail::data),
-                    field("operations", &AppDetail::operations), field("configurations", &AppDetail::configurations),
-                    field("faults", &AppDetail::faults), field("logs", &AppDetail::logs),
-                    field("bulk-data", &AppDetail::bulk_data),
+                    field("tags", &AppDetail::tags), field("status", &AppDetail::status),
+                    field("data", &AppDetail::data), field("operations", &AppDetail::operations),
+                    field("configurations", &AppDetail::configurations), field("faults", &AppDetail::faults),
+                    field("logs", &AppDetail::logs), field("bulk-data", &AppDetail::bulk_data),
                     field("cyclic-subscriptions", &AppDetail::cyclic_subscriptions),
                     field("triggers", &AppDetail::triggers), field("scripts", &AppDetail::scripts),
                     field("is-located-on", &AppDetail::is_located_on), field("belongs-to", &AppDetail::belongs_to),
