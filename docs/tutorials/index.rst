@@ -6,6 +6,7 @@ Step-by-step guides for common use cases with ros2_medkit.
 .. toctree::
    :maxdepth: 1
 
+   bringup
    demos/index
    heuristic-apps
    manifest-discovery
@@ -28,6 +29,13 @@ Step-by-step guides for common use cases with ros2_medkit.
    linux-introspection
    triggers-use-cases
    multi-instance
+
+Getting Started
+---------------
+
+:doc:`bringup`
+   Start the full local stack - gateway, fault_manager and fault bridges - with
+   one command, then induce a fault and see it via the API with a black-box bag.
 
 Demos
 -----

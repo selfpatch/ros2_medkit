@@ -1,0 +1,27 @@
+# Shared parameters for the medkit bringup stack (bringup.launch.py).
+#
+# Each node reads its own named section. Override any value with
+# `ros2 launch ros2_medkit_gateway bringup.launch.py params_file:=<your.yaml>`.
+#
+# The per-node defaults are conservative and leave the headline value off; this
+# turns it on for a drop-in local stack.
+fault_manager:
+  ros__parameters:
+    # Confirm a fault on the first FAILED report (DEM-style debounce disabled).
+    confirmation_threshold: -1
+
+    # Heal on recovery so an action SUCCEEDED clears its fault (CONFIRMED -> HEALED).
+    # Note: log faults have no recovery signal, so LOG_* faults do not auto-clear.
+    healing_enabled: true
+    healing_threshold: 3
+
+    # Black-box rosbag capture: a crash-safe, entity-scoped ring buffer flushed on
+    # fault confirmation. Produces a non-empty bag on the happy path.
+    snapshots.rosbag.enabled: true
+
+# The bridges run with their own config/<bridge>.yaml defaults; they are toggled
+# on/off with the enable_* launch args. Tune their runtime cost in those configs
+# or via each bridge's launch args (see the bringup quickstart):
+#   - log_bridge:           severity_floor (WARN=20 default; raise to ERROR=40 on chatty stacks)
+#   - action_status_bridge: rescan_period_sec (2.0s default; raise on large graphs)
+#   - each bridge also has include_only_* / exclude_* filters to scope what it watches.

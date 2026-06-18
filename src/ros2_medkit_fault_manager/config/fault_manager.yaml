@@ -1,0 +1,21 @@
+# Default parameters for a standalone fault_manager_node.
+#
+# These are conservative single-node defaults: healing and black-box rosbag
+# capture are OFF. The integrated stack turns them on via the bringup params
+# (ros2_medkit_gateway/config/bringup_params.yaml). Override with
+# `ros2 launch ros2_medkit_fault_manager fault_manager.launch.py params_file:=<your.yaml>`.
+fault_manager:
+  ros__parameters:
+    # Fault confirmation: -1 confirms on the first FAILED report (DEM-style
+    # debounce disabled). Set to N to require N reports before CONFIRMED.
+    confirmation_threshold: -1
+
+    # Healing OFF by default: a recovery signal (e.g. action SUCCEEDED) does not
+    # auto-clear the fault until this is enabled.
+    healing_enabled: false
+    healing_threshold: 3
+
+    # Black-box rosbag capture OFF by default (opt-in). When enabled it defaults
+    # to entity-scoped capture and is crash-safe (falls back / self-disables if no
+    # storage backend is usable).
+    snapshots.rosbag.enabled: false
