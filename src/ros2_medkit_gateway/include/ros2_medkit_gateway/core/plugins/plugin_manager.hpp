@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/lifecycle_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider_registry.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
@@ -206,6 +207,11 @@ class PluginManager : public LogProviderRegistry {
   ///         or owning plugin doesn't implement OperationProvider
   OperationProvider * get_operation_provider_for_entity(const std::string & entity_id) const;
 
+  /// Get LifecycleProvider for a specific entity (if plugin-owned)
+  /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
+  ///         or owning plugin doesn't implement LifecycleProvider
+  LifecycleProvider * get_lifecycle_provider_for_entity(const std::string & entity_id) const;
+
   /// Get FaultProvider for a specific entity (if plugin-owned)
   FaultProvider * get_fault_provider_for_entity(const std::string & entity_id) const;
 
@@ -229,6 +235,7 @@ class PluginManager : public LogProviderRegistry {
     ScriptProvider * script_provider = nullptr;
     DataProvider * data_provider = nullptr;
     OperationProvider * operation_provider = nullptr;
+    LifecycleProvider * lifecycle_provider = nullptr;
     FaultProvider * fault_provider = nullptr;
   };
 
