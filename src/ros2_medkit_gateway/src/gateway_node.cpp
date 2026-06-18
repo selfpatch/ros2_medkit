@@ -18,8 +18,10 @@
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
+#include <cstdlib>
 #include <mutex>
 #include <set>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -1484,6 +1486,63 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
   RCLCPP_INFO(get_logger(), "ROS 2 Medkit Gateway ready on %s://%s:%d", protocol.c_str(), server_host_.c_str(),
               server_port_);
+
+  // One-shot discovery summary a few seconds after startup. The delay lets DDS
+  // discovery settle so the counts (and any empty-graph warning) reflect a
+  // converged view rather than the cold-start moment.
+  startup_summary_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
+    startup_summary_timer_->cancel();
+    startup_summary_timer_.reset();
+    log_startup_summary();
+  });
+}
+
+void GatewayNode::log_startup_summary() {
+  size_t topic_count = 0;
+  size_t peer_node_count = 0;
+  try {
+    const std::string self_fqn = get_fully_qualified_name();
+    for (const auto & entry : get_topic_names_and_types()) {
+      const std::string & topic = entry.first;
+      if (topic.find("/parameter_events") == std::string::npos && topic.find("/rosout") == std::string::npos) {
+        ++topic_count;
+      }
+    }
+    for (const auto & name : get_node_names()) {
+      // Count peers only: exclude the gateway's own nodes (the main node plus its
+      // internal helpers, which share the main node's FQN as a prefix, e.g.
+      // "<fqn>_sub") and hidden (_-prefixed) nodes.
+      if (name.rfind(self_fqn, 0) != 0 && name.rfind("/_", 0) != 0) {
+        ++peer_node_count;
+      }
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_DEBUG(get_logger(), "Startup summary: graph query failed: %s", e.what());
+  }
+
+  const size_t entity_count = thread_safe_cache_.get_areas().size() + thread_safe_cache_.get_components().size() +
+                              thread_safe_cache_.get_apps().size() + thread_safe_cache_.get_functions().size();
+
+  const std::string protocol = tls_config_.enabled ? "https" : "http";
+  const std::string url = protocol + "://" + server_host_ + ":" + std::to_string(server_port_);
+
+  RCLCPP_INFO(get_logger(),
+              "Discovery summary: %zu peer node(s), %zu topic(s), %zu medkit entit%s. REST API: %s  Try: curl "
+              "%s/api/v1/areas",
+              peer_node_count, topic_count, entity_count, entity_count == 1 ? "y" : "ies", url.c_str(), url.c_str());
+
+  if (peer_node_count == 0) {
+    const char * domain = std::getenv("ROS_DOMAIN_ID");
+    const char * rmw = std::getenv("RMW_IMPLEMENTATION");
+    const char * localhost_only = std::getenv("ROS_LOCALHOST_ONLY");
+    RCLCPP_WARN(get_logger(),
+                "No application nodes are visible - the gateway sees only itself, so the entity tree is empty. "
+                "Active ROS environment: ROS_DOMAIN_ID=%s, RMW_IMPLEMENTATION=%s, ROS_LOCALHOST_ONLY=%s. Check that "
+                "the gateway shares the robot stack's ROS_DOMAIN_ID and RMW_IMPLEMENTATION and can reach it on the "
+                "network (in containers: matching domain/RMW and DDS discovery not blocked).",
+                domain ? domain : "0 (default)", rmw ? rmw : "(default)",
+                localhost_only ? localhost_only : "0 (default)");
+  }
 }
 
 GatewayNode::~GatewayNode() {
@@ -1554,6 +1613,10 @@ GatewayNode::~GatewayNode() {
   if (backstop_timer_) {
     backstop_timer_->cancel();
     backstop_timer_.reset();
+  }
+  if (startup_summary_timer_) {
+    startup_summary_timer_->cancel();
+    startup_summary_timer_.reset();
   }
   graph_event_.reset();
   // 10. Normal member destruction (managers safe - all transports stopped)

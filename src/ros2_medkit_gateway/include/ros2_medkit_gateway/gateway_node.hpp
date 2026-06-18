@@ -245,6 +245,13 @@ class GatewayNode : public rclcpp::Node {
   void start_rest_server();
   void stop_rest_server();
 
+  /// Log a one-time discovery summary shortly after startup: discovered node /
+  /// topic / entity counts, the REST URL and a sample curl. When no application
+  /// nodes are visible, also warn loudly with the active ROS environment
+  /// (ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_LOCALHOST_ONLY) and likely causes,
+  /// so a misconfigured bringup is not a silent empty tree.
+  void log_startup_summary();
+
   // Configuration parameters
   std::string server_host_;
   int server_port_;
@@ -363,6 +370,10 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic cleanup of old action goals
   rclcpp::TimerBase::SharedPtr cleanup_timer_;
+
+  // One-shot timer that fires the post-startup discovery summary (see
+  // log_startup_summary). Reset after it runs.
+  rclcpp::TimerBase::SharedPtr startup_summary_timer_;
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
