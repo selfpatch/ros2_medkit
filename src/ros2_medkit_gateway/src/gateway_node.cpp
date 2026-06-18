@@ -1505,9 +1505,10 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
       continue;  // hidden node (name part starts with '_')
     }
     const std::string fqn = (ns == "/") ? ("/" + name) : (ns + "/" + name);
-    // Exclude the gateway's own nodes: the main node plus its internal helpers,
-    // which share the main node's FQN as a prefix (e.g. "<fqn>_sub").
-    if (fqn.rfind(self_fqn, 0) == 0) {
+    // Exclude the gateway's own nodes by exact FQN: the main node and its known
+    // internal helpers. A plain prefix match would also drop a genuine peer whose
+    // name starts with the gateway name (e.g. "<fqn>_monitor" or "<fqn>2").
+    if (fqn == self_fqn || fqn == self_fqn + "_sub" || fqn == self_fqn + "_fault_clients") {
       continue;
     }
     ++count;
@@ -1522,7 +1523,11 @@ std::string GatewayNode::connectable_host(const std::string & bind_host) {
     return "127.0.0.1";
   }
   if (bind_host == "::" || bind_host == "[::]") {
-    return "::1";
+    return "[::1]";
+  }
+  // Bracket a bare IPv6 literal so "host:port" is a valid URL authority for curl.
+  if (bind_host.front() != '[' && bind_host.find(':') != std::string::npos) {
+    return "[" + bind_host + "]";
   }
   return bind_host;
 }
@@ -1563,8 +1568,7 @@ void GatewayNode::log_startup_summary() {
                 "Active ROS environment: ROS_DOMAIN_ID=%s, RMW_IMPLEMENTATION=%s, ROS_LOCALHOST_ONLY=%s. Check that "
                 "the gateway shares the robot stack's ROS_DOMAIN_ID and RMW_IMPLEMENTATION and can reach it on the "
                 "network (in containers: matching domain/RMW and DDS discovery not blocked).",
-                domain ? domain : "0 (default)", rmw ? rmw : "(default)",
-                localhost_only ? localhost_only : "0 (default)");
+                domain ? domain : "0 (default)", rmw ? rmw : "(default)", localhost_only ? localhost_only : "(unset)");
   }
 }
 

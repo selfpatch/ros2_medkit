@@ -46,6 +46,12 @@ Possible causes:
 2. **Different ROS_DOMAIN_ID** - Ensure all nodes use the same domain
 3. **Discovery not complete** - Wait a few seconds and refresh
 
+The gateway logs a one-time **Discovery summary** a few seconds after startup
+with the peer node / topic / entity counts. When it sees no application nodes it
+also logs a warning that echoes the active ``ROS_DOMAIN_ID``,
+``RMW_IMPLEMENTATION`` and ``ROS_LOCALHOST_ONLY`` - check the gateway's console
+or logs first, as it names the most likely cause.
+
 Check with:
 
 .. code-block:: bash
