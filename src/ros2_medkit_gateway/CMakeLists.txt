@@ -647,6 +647,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
   target_link_libraries(test_dto_contract gateway_core)
 
+  # Lifecycle DTO (pure C++17, no ROS node)
+  ament_add_gtest(test_lifecycle_dto test/test_lifecycle_dto.cpp)
+  target_link_libraries(test_lifecycle_dto gateway_core)
+
   # DTO Collection<T, XMedkit> template + fan-out observability fields
   ament_add_gtest(test_collection test/test_collection.cpp)
   target_link_libraries(test_collection gateway_core)

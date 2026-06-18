@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/dto/errors.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
+#include "ros2_medkit_gateway/dto/lifecycle.hpp"
 #include "ros2_medkit_gateway/dto/locks.hpp"
 #include "ros2_medkit_gateway/dto/logs.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
@@ -82,7 +83,9 @@ using AllDtos =
                AuthCredentials, AuthTokenResponse, AuthRevokeRequest, AuthRevokeResponse,
                // Health / Root domain DTOs
                HealthDiscoveryLinking, HealthDiscovery, HealthAggregationWarning, Health, VersionInfoVendor,
-               VersionInfoEntry, XMedkitVersionInfo, VersionInfo, RootCapabilities, RootAuth, RootTls, RootOverview>;
+               VersionInfoEntry, XMedkitVersionInfo, VersionInfo, RootCapabilities, RootAuth, RootTls, RootOverview,
+               // Lifecycle domain DTOs
+               LifecycleStatusResponse>;
 
 namespace detail {
 template <class T>
