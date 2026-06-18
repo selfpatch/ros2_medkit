@@ -974,9 +974,11 @@ TEST(GatewayStartupSummary, CountPeerNodesExcludesOwnAndHidden) {
       {"_hidden_node", "/"},                       // hidden node
       {"camera", "/sensors"},                      // peer (hidden node name check is on the name part)
       {"robot_planner", "/"},                      // peer
+      {"ros2_medkit_gateway_monitor", "/"},        // peer that merely shares the gateway name prefix
   };
-  // Two genuine peers: /sensors/camera and /robot_planner.
-  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 2u);
+  // Three genuine peers: /sensors/camera, /robot_planner and the prefix-sharing
+  // /ros2_medkit_gateway_monitor (only the exact self FQN and known helpers drop out).
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 3u);
 }
 
 TEST(GatewayStartupSummary, CountPeerNodesZeroWhenOnlyOwnNodes) {
@@ -992,9 +994,13 @@ TEST(GatewayStartupSummary, CountPeerNodesZeroWhenOnlyOwnNodes) {
 TEST(GatewayStartupSummary, ConnectableHostTranslatesBindAll) {
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("0.0.0.0"), "127.0.0.1");
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host(""), "127.0.0.1");
-  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("::"), "::1");
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("192.168.1.5"), "192.168.1.5");
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("127.0.0.1"), "127.0.0.1");
+  // IPv6 bind addresses must be bracketed so host:port is a valid URL authority.
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("::"), "[::1]");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("[::]"), "[::1]");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("2001:db8::1"), "[2001:db8::1]");
+  EXPECT_EQ(ros2_medkit_gateway::GatewayNode::connectable_host("[2001:db8::1]"), "[2001:db8::1]");
 }
 
 int main(int argc, char ** argv) {
