@@ -243,7 +243,10 @@ namespace {
 
 template <class T>
 json detail_body_json(const ros2_medkit_gateway::http::Result<T> & result) {
-  EXPECT_TRUE(result.has_value());
+  if (!result.has_value()) {
+    ADD_FAILURE() << "Expected result to have value but it was empty";
+    return json{};
+  }
   return JsonWriter<T>::write(result.value());
 }
 
