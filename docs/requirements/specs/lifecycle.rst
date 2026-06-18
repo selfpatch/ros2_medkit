@@ -3,7 +3,7 @@ Lifecycle
 
 .. req:: GET /{entity}/status
    :id: REQ_INTEROP_076
-   :status: open
+   :status: verified
    :tags: Lifecycle
 
    The endpoint shall return the current lifecycle status of the addressed entity.
@@ -42,4 +42,3 @@ Lifecycle
    :tags: Lifecycle
 
    The endpoint shall request a forced shutdown of the addressed entity, bypassing normal procedures.
-
