@@ -62,5 +62,8 @@ inline constexpr std::string_view kLogSeverityFilterValues[] = {"debug", "info",
 /// Execution control capability (execution_update_request_schema).
 inline constexpr std::string_view kExecutionCapabilityValues[] = {"stop", "execute", "freeze", "reset"};
 
+/// Lifecycle status (LifecycleStatusResponse.status).
+inline constexpr std::string_view kLifecycleStatusValues[] = {"ready", "notReady"};
+
 }  // namespace dto
 }  // namespace ros2_medkit_gateway

@@ -14,12 +14,10 @@
 
 #pragma once
 
-#include <optional>
 #include <string>
-#include <string_view>
-#include <tuple>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
+#include "ros2_medkit_gateway/dto/enums.hpp"
 
 namespace ros2_medkit_gateway {
 namespace dto {
@@ -35,8 +33,6 @@ struct LifecycleStatusResponse {
   std::optional<std::string> shutdown;
   std::optional<std::string> force_shutdown;  // wire key "force-shutdown"
 };
-
-inline constexpr std::string_view kLifecycleStatusValues[] = {"ready", "notReady"};
 
 template <>
 inline constexpr auto dto_fields<LifecycleStatusResponse> =
