@@ -55,8 +55,9 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(
             'params_file', default_value=default_params,
-            description='Shared params for the stack (fault_manager healing + black-box rosbag). '
-                        'Each node reads its own named section.'),
+            description='Parameter file applied to the fault_manager (turns on healing + '
+                        'black-box rosbag). The gateway and bridges run with their own configs; '
+                        'tune those via their launch args.'),
         DeclareLaunchArgument(
             'server_host', default_value='127.0.0.1',
             description='Host to bind the gateway REST server (127.0.0.1 or 0.0.0.0).'),

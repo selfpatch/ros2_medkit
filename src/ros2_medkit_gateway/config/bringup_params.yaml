@@ -1,6 +1,9 @@
-# Shared parameters for the medkit bringup stack (bringup.launch.py).
+# Parameters applied to the fault_manager in the medkit bringup stack
+# (bringup.launch.py passes this file to fault_manager_node).
 #
-# Each node reads its own named section. Override any value with
+# The gateway and the bridges are NOT configured from this file; they run with
+# their own config defaults (tune them via their launch args). Override these
+# fault_manager values with
 # `ros2 launch ros2_medkit_gateway bringup.launch.py params_file:=<your.yaml>`.
 #
 # The per-node defaults are conservative and leave the headline value off; this

@@ -19,6 +19,11 @@
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
 
+  <!-- Runtime deps for the shipped launch file (fault_manager.launch.py) -->
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <!-- mcap is an opt-in storage backend (sqlite3 is the always-shipped default with

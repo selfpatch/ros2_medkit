@@ -39,8 +39,9 @@ launch arguments:
      - Description
    * - ``params_file``
      - ``config/bringup_params.yaml``
-     - Shared params; each node reads its own named section. Point this at your
-       own file to override any value.
+     - Parameter file applied to the fault_manager (healing + black-box rosbag).
+       Point this at your own file to override. The gateway and bridges run with
+       their own configs; tune those via their launch args.
    * - ``server_host``
      - ``127.0.0.1``
      - Host to bind the gateway REST server (use ``0.0.0.0`` to expose it).
