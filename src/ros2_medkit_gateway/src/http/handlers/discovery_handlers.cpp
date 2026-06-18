@@ -614,6 +614,7 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     }
 
     std::string base = "/api/v1/components/" + comp.id;
+    detail.status = base + "/status";
     detail.data = base + "/data";
     detail.operations = base + "/operations";
     detail.configurations = base + "/configurations";
@@ -1027,6 +1028,7 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     }
 
     std::string base_uri = "/api/v1/apps/" + app.id;
+    detail.status = base_uri + "/status";
     detail.data = base_uri + "/data";
     detail.operations = base_uri + "/operations";
     detail.configurations = base_uri + "/configurations";
