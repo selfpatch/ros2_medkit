@@ -1594,21 +1594,36 @@ void RESTServer::setup_routes() {
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
   // === Lifecycle (status) - apps and components only, outside the 4-type loop ===
-  // PUT /status/{action} MUST be registered before GET /status to avoid the
-  // more-specific fixed segment being shadowed by the shorter path.
+  // GET and PUT use different HTTP methods so neither can shadow the other.
+  // Registration order within the loop is arbitrary from the router's perspective.
   for (const auto & et_lc :
        std::vector<std::pair<const char *, const char *>>{{"apps", "app"}, {"components", "component"}}) {
     const std::string base_lc = std::string("/") + et_lc.first + "/{" + et_lc.second + "_id}";
+    // e.g. "Apps" / "Components" for operation ID construction
+    const std::string entity_cap = capitalize(std::string(et_lc.first));
 
     for (const auto & action : {"start", "restart", "force-restart", "shutdown", "force-shutdown"}) {
       std::string action_str = action;
+      // Capitalise action for operation ID: "force-restart" -> "ForceRestart"
+      std::string action_cap;
+      bool cap_next = true;
+      for (char c : action_str) {
+        if (c == '-') {
+          cap_next = true;
+        } else {
+          action_cap += cap_next ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+          cap_next = false;
+        }
+      }
       reg.put<http::NoContent>(base_lc + "/status/" + action,
                                [this, action_str](http::TypedRequest req)
                                    -> http::Result<std::pair<http::NoContent, http::ResponseAttachments>> {
                                  return lifecycle_handlers_->handle_transition(req, action_str);
                                })
           .tag("Lifecycle")
-          .summary(std::string("Request lifecycle transition '") + action + "'");
+          .summary(std::string("Request lifecycle transition '") + action + "'")
+          .response(202, "Lifecycle transition accepted")
+          .operation_id(std::string("put").append(entity_cap).append("Status").append(action_cap));
     }
 
     reg.get<dto::LifecycleStatusResponse>(base_lc + "/status",
@@ -1616,7 +1631,8 @@ void RESTServer::setup_routes() {
                                             return lifecycle_handlers_->handle_get_status(req);
                                           })
         .tag("Lifecycle")
-        .summary(std::string("Get ") + et_lc.second + " lifecycle status");
+        .summary(std::string("Get ") + et_lc.second + " lifecycle status")
+        .operation_id(std::string("get") + entity_cap + "Status");
   }
 
   // Register all routes with cpp-httplib
