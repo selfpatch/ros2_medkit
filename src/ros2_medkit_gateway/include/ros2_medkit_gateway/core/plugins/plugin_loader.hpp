@@ -30,6 +30,7 @@ class ScriptProvider;
 class DataProvider;
 class FaultProvider;
 class OperationProvider;
+class LifecycleProvider;
 
 /**
  * @brief Result of loading a gateway plugin.
@@ -76,6 +77,9 @@ struct GatewayPluginLoadResult {
   /// Non-owning pointer to FaultProvider interface (null if not provided).
   FaultProvider * fault_provider = nullptr;
 
+  /// Non-owning pointer to LifecycleProvider interface (null if not provided).
+  LifecycleProvider * lifecycle_provider = nullptr;
+
   /// Get the dlopen handle (for dlsym queries by PluginManager)
   void * dl_handle() const {
     return handle_;
@@ -101,6 +105,7 @@ struct GatewayPluginLoadResult {
  *   extern "C" DataProvider* get_data_provider(GatewayPlugin* plugin);
  *   extern "C" OperationProvider* get_operation_provider(GatewayPlugin* plugin);
  *   extern "C" FaultProvider* get_fault_provider(GatewayPlugin* plugin);
+ *   extern "C" LifecycleProvider* get_lifecycle_provider(GatewayPlugin* plugin);
  *
  * Path requirements: must be absolute, have .so extension, and resolve to a real file.
  */

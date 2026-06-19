@@ -105,32 +105,56 @@ TEST(AuthConfigRolePermissionsTest, ViewerCanReadStatus) {
   EXPECT_TRUE(viewer_perms.count("GET:/api/v1/components/*/status") > 0);
 }
 
-TEST(AuthConfigRolePermissionsTest, OperatorCanReadStatusAndControlLifecycle) {
+TEST(AuthConfigRolePermissionsTest, OperatorCanReadStatusAndControlNonDestructiveLifecycle) {
   const auto & permissions = AuthConfig::get_role_permissions();
 
   const auto & operator_perms = permissions.at(UserRole::OPERATOR);
   EXPECT_TRUE(operator_perms.count("GET:/api/v1/apps/*/status") > 0);
   EXPECT_TRUE(operator_perms.count("GET:/api/v1/components/*/status") > 0);
-  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/*") > 0);
-  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/*") > 0);
+  // Non-destructive transitions are allowed for OPERATOR.
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/start") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/restart") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/force-restart") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/start") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/restart") > 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/force-restart") > 0);
 }
 
-TEST(AuthConfigRolePermissionsTest, ConfiguratorCanReadStatusAndControlLifecycle) {
+TEST(AuthConfigRolePermissionsTest, OperatorCannotPerformDestructiveTransitions) {
+  const auto & permissions = AuthConfig::get_role_permissions();
+
+  const auto & operator_perms = permissions.at(UserRole::OPERATOR);
+  // shutdown / force-shutdown tear an entity down and are gated behind CONFIGURATOR.
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/shutdown") == 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/force-shutdown") == 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/shutdown") == 0);
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/components/*/status/force-shutdown") == 0);
+  // The old broad wildcard must not be present.
+  EXPECT_TRUE(operator_perms.count("PUT:/api/v1/apps/*/status/*") == 0);
+}
+
+TEST(AuthConfigRolePermissionsTest, ConfiguratorCanControlDestructiveLifecycle) {
   const auto & permissions = AuthConfig::get_role_permissions();
 
   const auto & config_perms = permissions.at(UserRole::CONFIGURATOR);
   EXPECT_TRUE(config_perms.count("GET:/api/v1/apps/*/status") > 0);
   EXPECT_TRUE(config_perms.count("GET:/api/v1/components/*/status") > 0);
-  EXPECT_TRUE(config_perms.count("PUT:/api/v1/apps/*/status/*") > 0);
-  EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/status/*") > 0);
+  // CONFIGURATOR has the non-destructive transitions plus the teardown ones.
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/apps/*/status/restart") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/apps/*/status/shutdown") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/apps/*/status/force-shutdown") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/status/shutdown") > 0);
+  EXPECT_TRUE(config_perms.count("PUT:/api/v1/components/*/status/force-shutdown") > 0);
 }
 
 TEST(AuthConfigRolePermissionsTest, ViewerCannotControlLifecycle) {
   const auto & permissions = AuthConfig::get_role_permissions();
 
   const auto & viewer_perms = permissions.at(UserRole::VIEWER);
-  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/apps/*/status/*") == 0);
-  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/components/*/status/*") == 0);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/apps/*/status/start") == 0);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/apps/*/status/restart") == 0);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/apps/*/status/shutdown") == 0);
+  EXPECT_TRUE(viewer_perms.count("PUT:/api/v1/components/*/status/restart") == 0);
 }
 
 TEST(AuthConfigRolePermissionsTest, AdminStatusCoveredByWildcard) {
@@ -139,8 +163,8 @@ TEST(AuthConfigRolePermissionsTest, AdminStatusCoveredByWildcard) {
   const auto & admin_perms = permissions.at(UserRole::ADMIN);
   // Admin is covered by PUT:/api/v1/** - no specific status entries needed
   EXPECT_TRUE(admin_perms.count("PUT:/api/v1/**") > 0);
-  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/apps/*/status/*") == 0);
-  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/components/*/status/*") == 0);
+  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/apps/*/status/shutdown") == 0);
+  EXPECT_TRUE(admin_perms.count("PUT:/api/v1/components/*/status/force-shutdown") == 0);
 }
 
 // =============================================================================

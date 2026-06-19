@@ -121,7 +121,10 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       lp.script_provider = result->script_provider;
       lp.data_provider = result->data_provider;
       lp.operation_provider = result->operation_provider;
-      lp.lifecycle_provider = dynamic_cast<LifecycleProvider *>(result->plugin.get());
+      // LifecycleProvider: discovered via extern "C" query function - dynamic_cast
+      // is unreliable across the dlopen boundary (typeinfo can differ between the
+      // plugin and the host, casting a real provider to null).
+      lp.lifecycle_provider = result->lifecycle_provider;
       lp.fault_provider = result->fault_provider;
 
       // Cache first UpdateProvider, warn on duplicates

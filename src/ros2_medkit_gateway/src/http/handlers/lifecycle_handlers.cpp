@@ -47,6 +47,7 @@ ErrorInfo to_error_info(const LifecycleProviderErrorInfo & e) {
     case LifecycleProviderError::Unsupported:
       return make_error(501, ERR_NOT_IMPLEMENTED, std::move(msg));
     case LifecycleProviderError::EntityNotFound:
+      return make_error(404, ERR_ENTITY_NOT_FOUND, std::move(msg));
     case LifecycleProviderError::TransportError:
     case LifecycleProviderError::Internal:
       return make_error(status, ERR_PLUGIN_ERROR, std::move(msg));
@@ -86,6 +87,13 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
           return tl::make_unexpected(to_error_info(result.error()));
         }
         auto resp = *result;
+        // The JSON writer only validates the status enum on read, not on write,
+        // so guard the SOVD ready/notReady contract against a misbehaving plugin.
+        if (resp.status != "ready" && resp.status != "notReady") {
+          RCLCPP_ERROR(HandlerContext::logger(), "LifecycleProvider returned invalid status '%s' for entity '%s'",
+                       resp.status.c_str(), entity_id.c_str());
+          return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, "Plugin returned invalid lifecycle status"));
+        }
         // Fill absolute transition URIs for each present field.
         if (resp.start.has_value()) {
           resp.start = base + "/status/start";
@@ -123,9 +131,26 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
     auto app = cache.get_app(entity_id);
     resp.status = (app && app->is_online) ? "ready" : "notReady";
   } else {
-    // Component: ready only when host_metadata is present.
+    // Component readiness from a real liveness signal: the synthetic host
+    // component is ready while the gateway is reachable (we are serving this
+    // request); any other component is ready when at least one of its hosted
+    // Apps is online. host_metadata alone is not a liveness signal.
     auto component = cache.get_component(entity_id);
-    resp.status = (component && component->host_metadata.has_value()) ? "ready" : "notReady";
+    bool ready = false;
+    if (component) {
+      if (component->host_metadata.has_value()) {
+        ready = true;
+      } else {
+        for (const auto & app_id : cache.get_apps_for_component(entity_id)) {
+          auto app = cache.get_app(app_id);
+          if (app && app->is_online) {
+            ready = true;
+            break;
+          }
+        }
+      }
+    }
+    resp.status = ready ? "ready" : "notReady";
   }
 
   // No transition URIs for the default (no-provider) path.

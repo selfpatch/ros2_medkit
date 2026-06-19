@@ -18,6 +18,7 @@
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/lifecycle_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
@@ -39,6 +40,7 @@ GatewayPluginLoadResult::~GatewayPluginLoadResult() {
   data_provider = nullptr;
   operation_provider = nullptr;
   fault_provider = nullptr;
+  lifecycle_provider = nullptr;
   plugin.reset();
   if (handle_) {
     dlclose(handle_);
@@ -54,6 +56,7 @@ GatewayPluginLoadResult::GatewayPluginLoadResult(GatewayPluginLoadResult && othe
   , data_provider(other.data_provider)
   , operation_provider(other.operation_provider)
   , fault_provider(other.fault_provider)
+  , lifecycle_provider(other.lifecycle_provider)
   , handle_(other.handle_) {
   other.update_provider = nullptr;
   other.introspection_provider = nullptr;
@@ -62,6 +65,7 @@ GatewayPluginLoadResult::GatewayPluginLoadResult(GatewayPluginLoadResult && othe
   other.data_provider = nullptr;
   other.operation_provider = nullptr;
   other.fault_provider = nullptr;
+  other.lifecycle_provider = nullptr;
   other.handle_ = nullptr;
 }
 
@@ -75,6 +79,7 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     data_provider = nullptr;
     operation_provider = nullptr;
     fault_provider = nullptr;
+    lifecycle_provider = nullptr;
     plugin.reset();
     if (handle_) {
       dlclose(handle_);
@@ -89,6 +94,7 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     data_provider = other.data_provider;
     operation_provider = other.operation_provider;
     fault_provider = other.fault_provider;
+    lifecycle_provider = other.lifecycle_provider;
     handle_ = other.handle_;
 
     other.update_provider = nullptr;
@@ -98,6 +104,7 @@ GatewayPluginLoadResult & GatewayPluginLoadResult::operator=(GatewayPluginLoadRe
     other.data_provider = nullptr;
     other.operation_provider = nullptr;
     other.fault_provider = nullptr;
+    other.lifecycle_provider = nullptr;
     other.handle_ = nullptr;
   }
   return *this;
@@ -286,6 +293,20 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
                   e.what());
     } catch (...) {
       RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_fault_provider threw unknown exception in %s",
+                  plugin_path.c_str());
+    }
+  }
+
+  using LifecycleProviderFn = LifecycleProvider * (*)(GatewayPlugin *);
+  auto lifecycle_fn = reinterpret_cast<LifecycleProviderFn>(dlsym(handle, "get_lifecycle_provider"));
+  if (lifecycle_fn) {
+    try {
+      result.lifecycle_provider = lifecycle_fn(raw_plugin);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_lifecycle_provider threw in %s: %s", plugin_path.c_str(),
+                  e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_lifecycle_provider threw unknown exception in %s",
                   plugin_path.c_str());
     }
   }

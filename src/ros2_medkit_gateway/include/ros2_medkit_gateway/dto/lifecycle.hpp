@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "ros2_medkit_gateway/dto/contract.hpp"
