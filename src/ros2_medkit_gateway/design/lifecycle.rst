@@ -91,12 +91,14 @@ the entity cache. The entity cache marks an App online when it has at least
 one node in the ROS 2 graph. ``is_online = true`` maps to ``"ready"``;
 ``false`` maps to ``"notReady"``.
 
-**Component status (no provider registered):** derived from
-``Component::host_metadata``. A Component populated by ``HostInfoProvider``
-carries OS, hostname, and architecture metadata. Presence of
-``host_metadata`` maps to ``"ready"``; absence maps to ``"notReady"``.
-Components created by runtime namespace grouping (``source: "synthetic"``)
-do not carry host metadata and therefore report ``"notReady"`` by default.
+**Component status (no provider registered):** derived from a real liveness
+signal, because ``Component`` has no online flag of its own. The synthetic host
+Component populated by ``HostInfoProvider`` (the one carrying ``host_metadata``)
+is ``"ready"`` while the gateway is reachable - if the client can reach this
+endpoint, the host is up. Any other Component is ``"ready"`` when at least one of
+its hosted Apps is online (``App::is_online`` over the Component's hosted apps),
+and ``"notReady"`` otherwise. ``host_metadata`` is only used to identify the host
+Component; it is not itself a liveness signal.
 
 When a ``LifecycleProvider`` is registered for the entity the provider's
 response takes precedence over the cache-derived default. The handler also

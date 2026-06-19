@@ -140,14 +140,35 @@ class LifecycleHandlersTest : public ::testing::Test {
     host_comp.name = "HostController";
     host_comp.host_metadata = json{{"hostname", "robot-main"}};
 
-    // Component without host_metadata (non-host -> "notReady")
+    // Component without host_metadata and without hosted apps (non-host -> "notReady")
     Component non_host_comp;
     non_host_comp.id = "bridge_component";
     non_host_comp.name = "BridgeComponent";
     // host_metadata left as nullopt
 
+    // Non-host component with one online hosted app -> liveness "ready".
+    Component live_comp;
+    live_comp.id = "live_subsystem";
+    live_comp.name = "LiveSubsystem";
+    App hosted_online_app;
+    hosted_online_app.id = "hosted_online_node";
+    hosted_online_app.name = "HostedOnlineNode";
+    hosted_online_app.is_online = true;
+    hosted_online_app.component_id = "live_subsystem";
+
+    // Non-host component whose only hosted app is offline -> "notReady".
+    Component dead_comp;
+    dead_comp.id = "dead_subsystem";
+    dead_comp.name = "DeadSubsystem";
+    App hosted_offline_app;
+    hosted_offline_app.id = "hosted_offline_node";
+    hosted_offline_app.name = "HostedOfflineNode";
+    hosted_offline_app.is_online = false;
+    hosted_offline_app.component_id = "dead_subsystem";
+
     auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
-    cache.update_all({}, {host_comp, non_host_comp}, {online_app, offline_app}, {});
+    cache.update_all({}, {host_comp, non_host_comp, live_comp, dead_comp},
+                     {online_app, offline_app, hosted_online_app, hosted_offline_app}, {});
   }
 
   CorsConfig cors_{};
@@ -196,6 +217,28 @@ TEST_F(LifecycleHandlersTest, GetStatusHostComponentReturnsReady) {
 TEST_F(LifecycleHandlersTest, GetStatusNonHostComponentReturnsNotReady) {
   auto raw =
       make_request_with_match("/api/v1/components/bridge_component/status", R"(/api/v1/components/([^/]+)/status)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "notReady");
+}
+
+// GET /components/{live_subsystem}/status -> "ready" (a hosted App is online)
+TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlineHostedAppReturnsReady) {
+  auto raw =
+      make_request_with_match("/api/v1/components/live_subsystem/status", R"(/api/v1/components/([^/]+)/status)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "ready");
+}
+
+// GET /components/{dead_subsystem}/status -> "notReady" (its only hosted App is offline)
+TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlyOfflineHostedAppReturnsNotReady) {
+  auto raw =
+      make_request_with_match("/api/v1/components/dead_subsystem/status", R"(/api/v1/components/([^/]+)/status)");
   http::TypedRequest req(raw);
 
   auto result = handlers_->handle_get_status(req);
@@ -583,4 +626,31 @@ TEST_F(LifecycleHandlersWithProviderTest, GetStatusProviderErrorReturnsMappedCod
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().http_status, 403);
   EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INSUFFICIENT_ACCESS_RIGHTS);
+}
+
+// PUT with provider reporting EntityNotFound -> 404 entity-not-found (not a 500 plugin-error).
+TEST_F(LifecycleHandlersWithProviderTest, TransitionEntityNotFoundReturns404) {
+  mock_->transition_error =
+      LifecycleProviderErrorInfo{LifecycleProviderError::EntityNotFound, "no such substrate unit", 500};
+  auto raw =
+      make_request_with_match("/api/v1/apps/plugin_app/status/restart", R"(/api/v1/apps/([^/]+)/status/restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "restart");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_ENTITY_NOT_FOUND);
+}
+
+// GET with a provider returning a status outside {ready, notReady} -> 500 (contract guard).
+TEST_F(LifecycleHandlersWithProviderTest, GetStatusProviderInvalidStatusReturns500) {
+  mock_->status_response.status = "running";  // not a valid SOVD lifecycle status
+
+  auto raw = make_request_with_match("/api/v1/apps/plugin_app/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_get_status(req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 500);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_PLUGIN_ERROR);
 }

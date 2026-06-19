@@ -55,9 +55,11 @@ class TestLifecycleStatus(GatewayTestCase):
 
         data = self.get_json('/components')
         components = data.get('items', [])
-        self.assertGreater(
-            len(components), 0,
-            'Expected at least 1 host component, got none'
+        # Runtime discovery exposes exactly one host Component (the host machine),
+        # matching the other feature tests. Picking [0] is only safe because of this.
+        self.assertEqual(
+            len(components), 1,
+            f'Expected exactly 1 host component, got {len(components)}'
         )
         TestLifecycleStatus._host_component_id = components[0]['id']
         return TestLifecycleStatus._host_component_id

@@ -566,6 +566,67 @@ Execute Operations
    - **204:** Execution cancelled
    - **404:** Execution not found
 
+Lifecycle Endpoints
+-------------------
+
+Read the lifecycle status of an entity and request lifecycle transitions.
+Available for apps and components only.
+
+Lifecycle control is delegated to a ``LifecycleProvider`` registered by a
+substrate-owning plugin (ROS 2 lifecycle nodes, process/container/systemd, host
+reboot). When no provider is registered for the entity, the status read returns
+a value derived from runtime state and the transitions return ``501``.
+
+Read Status
+~~~~~~~~~~~
+
+``GET /api/v1/apps/{app_id}/status``
+
+``GET /api/v1/components/{component_id}/status``
+   Return the current lifecycle status of the entity.
+
+   The response ``status`` is ``ready`` or ``notReady``. Each supported
+   transition is advertised as a URI field (``start``, ``restart``,
+   ``force-restart``, ``shutdown``, ``force-shutdown``), present only when the
+   entity's provider supports it. Without a provider, status is derived from
+   runtime state (an App is ``ready`` while its node is online; the host
+   Component is ``ready`` while reachable, any other Component is ``ready`` while
+   at least one hosted App is online) and no transition URIs are returned.
+
+   - **200:** Lifecycle status
+   - **404:** Entity not found
+
+   .. code-block:: json
+
+      {
+        "status": "ready",
+        "restart": "/api/v1/apps/temp_sensor/status/restart"
+      }
+
+Request Transition
+~~~~~~~~~~~~~~~~~~~
+
+``PUT /api/v1/apps/{app_id}/status/{transition}``
+
+``PUT /api/v1/components/{component_id}/status/{transition}``
+   Request a lifecycle transition. ``{transition}`` is one of ``start``,
+   ``restart``, ``force-restart``, ``shutdown``, ``force-shutdown``. The call is
+   asynchronous: it returns on acceptance and the client polls the status read.
+
+   RBAC: ``start`` / ``restart`` / ``force-restart`` require the ``operator``
+   role; the destructive ``shutdown`` / ``force-shutdown`` require
+   ``configurator``.
+
+   - **202:** Transition accepted (the ``Location`` header points to the status URI)
+   - **403:** Caller lacks the required role (``insufficient-access-rights``)
+   - **404:** Entity not found
+   - **409:** A precondition was not fulfilled (``precondition-not-fulfilled``)
+   - **501:** No lifecycle provider is registered for the entity (``not-implemented``)
+
+   .. code-block:: bash
+
+      curl -X PUT http://localhost:8080/api/v1/apps/temp_sensor/status/restart
+
 Configurations Endpoints
 ------------------------
 
