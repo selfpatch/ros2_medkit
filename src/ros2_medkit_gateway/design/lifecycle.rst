@@ -53,8 +53,8 @@ The lifecycle routes are registered **outside** the four-entity-type loop in
             {"apps", "app"}, {"components", "component"}}) {
      const std::string base_lc = "/" + et_lc.first + "/{" + et_lc.second + "_id}";
 
-     // PUT routes registered BEFORE GET /status to avoid the shorter path
-     // shadowing the more-specific fixed segments.
+     // GET and PUT use different HTTP methods so neither can shadow the
+     // other; registration order within the loop is arbitrary.
      for (const auto & action :
           {"start", "restart", "force-restart", "shutdown", "force-shutdown"}) {
        reg.put<http::NoContent>(base_lc + "/status/" + action, ...);
@@ -62,10 +62,9 @@ The lifecycle routes are registered **outside** the four-entity-type loop in
      reg.get<dto::LifecycleStatusResponse>(base_lc + "/status", ...);
    }
 
-The PUT routes must be registered before the GET route. The typed
-``RouteRegistry`` matches fixed path segments (``/status/start``) before
-parameterized ones (``/status``), but registration order also affects the
-matching priority inside cpp-httplib's internal routing table.
+The GET ``/status`` route and the PUT ``/status/{action}`` routes use
+different HTTP methods, so neither can shadow the other. cpp-httplib keeps a
+separate handler list per method, so registration order does not matter.
 
 Status Read Semantics
 ---------------------
@@ -269,7 +268,7 @@ SOVD Requirement Coverage
 
 REQ_INTEROP_076 is verified by the lifecycle integration tests. Requirements
 077-081 remain open because they require actuation at the substrate level
-(process/container/ROS 2 lifecycle node). They will be closed when a
+(process/container/ROS 2 lifecycle node). They will be marked verified when a
 plugin implementing ``LifecycleProvider::request_transition`` ships.
 
 Key Files

@@ -104,8 +104,12 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
         }
         return resp;
       } catch (const std::exception & e) {
-        return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, e.what()));
+        RCLCPP_ERROR(HandlerContext::logger(), "Plugin LifecycleProvider threw for entity '%s': %s", entity_id.c_str(),
+                     e.what());
+        return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, "Plugin threw exception"));
       } catch (...) {
+        RCLCPP_ERROR(HandlerContext::logger(), "Plugin LifecycleProvider threw unknown exception for entity '%s'",
+                     entity_id.c_str());
         return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, "Plugin threw unknown exception"));
       }
     }
@@ -161,8 +165,12 @@ LifecycleHandlers::handle_transition(const http::TypedRequest & req, std::string
         att.with_status(202).with_header("Location", base + "/status");
         return std::make_pair(http::NoContent{}, std::move(att));
       } catch (const std::exception & e) {
-        return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, e.what()));
+        RCLCPP_ERROR(HandlerContext::logger(), "Plugin LifecycleProvider threw for entity '%s': %s", entity_id.c_str(),
+                     e.what());
+        return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, "Plugin threw exception"));
       } catch (...) {
+        RCLCPP_ERROR(HandlerContext::logger(), "Plugin LifecycleProvider threw unknown exception for entity '%s'",
+                     entity_id.c_str());
         return tl::make_unexpected(make_error(500, ERR_PLUGIN_ERROR, "Plugin threw unknown exception"));
       }
     }

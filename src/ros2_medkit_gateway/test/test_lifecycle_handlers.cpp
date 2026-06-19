@@ -528,3 +528,59 @@ TEST_F(LifecycleHandlersWithProviderTest, TransitionPreconditionFailedReturns409
   EXPECT_EQ(result.error().http_status, 409);
   EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_PRECONDITION_NOT_FULFILLED);
 }
+
+// PUT /apps/{plugin_app}/status/restart with provider returning AccessDenied -> 403.
+TEST_F(LifecycleHandlersWithProviderTest, TransitionAccessDeniedReturns403) {
+  mock_->transition_error =
+      LifecycleProviderErrorInfo{LifecycleProviderError::AccessDenied, "operator role required", 403};
+  auto raw =
+      make_request_with_match("/api/v1/apps/plugin_app/status/restart", R"(/api/v1/apps/([^/]+)/status/restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "restart");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 403);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INSUFFICIENT_ACCESS_RIGHTS);
+}
+
+// PUT /apps/{plugin_app}/status/force-restart with provider returning Unsupported -> 501.
+// Distinct from the no-provider 501: here a provider exists but rejects this transition.
+TEST_F(LifecycleHandlersWithProviderTest, TransitionUnsupportedReturns501) {
+  mock_->transition_error =
+      LifecycleProviderErrorInfo{LifecycleProviderError::Unsupported, "force-restart not supported", 501};
+  auto raw = make_request_with_match("/api/v1/apps/plugin_app/status/force-restart",
+                                     R"(/api/v1/apps/([^/]+)/status/force-restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "force-restart");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 501);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_NOT_IMPLEMENTED);
+}
+
+// PUT with provider returning Internal and an out-of-range status -> clamped to 599, plugin-error.
+TEST_F(LifecycleHandlersWithProviderTest, TransitionInternalErrorClampsStatus) {
+  mock_->transition_error = LifecycleProviderErrorInfo{LifecycleProviderError::Internal, "boom", 650};
+  auto raw =
+      make_request_with_match("/api/v1/apps/plugin_app/status/restart", R"(/api/v1/apps/([^/]+)/status/restart)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_transition(req, "restart");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 599);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_PLUGIN_ERROR);
+}
+
+// GET /apps/{plugin_app}/status with provider returning an error -> handler maps it.
+// Covers the GET provider-error branch (the no-error path is covered above).
+TEST_F(LifecycleHandlersWithProviderTest, GetStatusProviderErrorReturnsMappedCode) {
+  mock_->get_status_error =
+      LifecycleProviderErrorInfo{LifecycleProviderError::AccessDenied, "viewer cannot read status", 403};
+  auto raw = make_request_with_match("/api/v1/apps/plugin_app/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->handle_get_status(req);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 403);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_INSUFFICIENT_ACCESS_RIGHTS);
+}

@@ -57,6 +57,8 @@ std::string CapabilityBuilder::capability_to_name(Capability cap) {
       return "scripts";
     case Capability::TRIGGERS:
       return "triggers";
+    case Capability::STATUS:
+      return "status";
     default:
       return "unknown";
   }

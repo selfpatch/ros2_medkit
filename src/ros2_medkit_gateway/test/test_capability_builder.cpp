@@ -64,6 +64,7 @@ TEST(CapabilityBuilderTest, CapabilityToNameReturnsCorrectStrings) {
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::RELATED_APPS), "related-apps");
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::HOSTS), "hosts");
   EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::LOGS), "logs");
+  EXPECT_EQ(CapabilityBuilder::capability_to_name(Cap::STATUS), "status");
 }
 
 TEST(CapabilityBuilderTest, CapabilityToPathMatchesName) {

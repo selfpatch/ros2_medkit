@@ -99,7 +99,7 @@ class TestLifecycleStatus(GatewayTestCase):
         )
         self.assertEqual(response.status_code, 501)
         data = response.json()
-        self.assertIn('error_code', data)
+        self.assertEqual(data.get('error_code'), 'not-implemented')
 
     def test_app_status_structure(self):
         """GET /apps/{app_id}/status response has required 'status' field.
@@ -121,7 +121,7 @@ class TestLifecycleStatus(GatewayTestCase):
         """
         response = self.get_raw('/apps/nonexistent_app/status', expected_status=404)
         data = response.json()
-        self.assertIn('error_code', data)
+        self.assertEqual(data.get('error_code'), 'entity-not-found')
 
 
 @launch_testing.post_shutdown_test()

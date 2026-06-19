@@ -59,7 +59,8 @@ class CapabilityBuilder {
     CYCLIC_SUBSCRIPTIONS,  ///< Entity has cyclic subscription endpoints
     LOCKS,                 ///< Entity has lock endpoints (components and apps only)
     SCRIPTS,               ///< Entity has diagnostic script endpoints
-    TRIGGERS               ///< Entity has trigger endpoints (x-medkit extension)
+    TRIGGERS,              ///< Entity has trigger endpoints (x-medkit extension)
+    STATUS                 ///< Entity has lifecycle status endpoint (components and apps only)
   };
 
   /**
