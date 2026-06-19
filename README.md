@@ -13,56 +13,47 @@
 
 <p align="center">
   <b>A diagnostic REST API for ROS 2 robots.</b><br>
-  When your robot fails, query <i>what</i> failed and <i>why</i> - remotely, in minutes, without SSH.
+  Drop it next to the stack you already run - no code changes - and your failures become
+  structured faults you can query remotely, with the state captured at the moment they happened.
 </p>
 
 <p align="center">
   Fault lifecycle · Freeze-frame + black-box capture · Live introspection · <a href="https://github.com/selfpatch/ros2_medkit_mcp">AI via MCP</a>
 </p>
 
-When a robot breaks in the field you SSH in, run `ros2 node list`, grep logs and try to
-reconstruct what happened. That works for one robot on your desk - not for 20 robots at a
-customer site, at 2 AM, when you cannot reproduce the issue. ros2_medkit turns your ROS 2
-system into a queryable diagnostic surface: structured faults with the state at the moment
-of failure, served over a [SOVD](https://www.asam.net/standards/detail/sovd/) REST API that
-any tool, dashboard, or agent can reach.
+## Drop it into the stack you already run
 
-## 5-minute quick start
+### Nav2: a navigation goal that quietly aborts
 
-**Install** (ROS 2 Jazzy, Humble, or Lyrical; Pixi and other options in the
-[installation docs](https://selfpatch.github.io/ros2_medkit/installation.html)):
+You run Nav2. A `NavigateToPose` goal aborts - the planner gives up, the robot is wedged in a
+corner - and the only trace is a line buried in a log you would have to SSH in to read.
+
+Start ros2_medkit next to it (no changes to Nav2). The aborted goal becomes a fault:
 
 ```bash
-source /opt/ros/jazzy/setup.bash   # or humble / lyrical
-git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
-cd ros2_medkit
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install && source install/setup.bash
+curl http://localhost:8080/api/v1/apps/bt_navigator/faults
+# → ACTION_NAVIGATE_TO_POSE_ABORTED  severity=ERROR  source=/bt_navigator  status=CONFIRMED
+#   + a black-box rosbag of the seconds around the failure
 ```
 
-**Run it next to your robot** - one command starts the gateway, the fault manager and the
-drop-in fault bridges, with no instrumentation in your nodes:
+It works because an aborted action goal is often the *only* failure signal Nav2 emits, and
+ros2_medkit's action bridge turns that into a structured fault on the `bt_navigator` entity -
+no instrumentation, no callbacks added to Nav2.
+
+### MoveIt: a motion that fails to execute
+
+You run MoveIt. A `MoveGroup` goal aborts - no valid plan, or the controller rejects the
+trajectory. Same story: the same action bridge surfaces the aborted move as a fault on the
+`move_group` entity, with the freeze-frame of what the arm was doing, without touching MoveIt.
 
 ```bash
-ros2 launch ros2_medkit_gateway bringup.launch.py
-# REST API on http://localhost:8080/api/v1/
+curl http://localhost:8080/api/v1/apps/move_group/faults
+# → the aborted MoveGroup goal, as a structured fault with its snapshot
 ```
 
-**See a fault.** A node logging an `ERROR`, or an action goal aborting, already becomes a
-fault via the bridges. To force one now:
-
-```bash
-ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
-  "{fault_code: 'DEMO_FAULT', event_type: 0, severity: 2, description: 'hello medkit', source_id: '/your_node'}"
-
-curl http://localhost:8080/api/v1/faults
-```
-
-**Verify:** the fault appears - a structured entry with its code, severity, source entity,
-status (`CONFIRMED`), and a black-box rosbag captured at the moment of failure. That is the
-whole point: a remote, structured, time-traveled fault instead of a log you have to be
-SSH'd in to read. For a guided walkthrough with demo nodes, see the
-[Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
+**The point:** ros2_medkit reads the signals your stack already emits - aborted actions,
+`/rosout` errors, `/diagnostics` - through drop-in bridges. You add nothing to Nav2, MoveIt,
+or your own nodes; you get a remote, queryable, time-traveled fault instead of a log line.
 
 ## vs. standard ROS 2 diagnostics
 
@@ -82,18 +73,48 @@ not a rip-and-replace.
 | Scope | ROS only | ROS today; PLC / ECU on one API |
 | Agent access | none | MCP adapter |
 
+## Run it in 5 minutes
+
+**Install** (ROS 2 Jazzy, Humble, or Lyrical; Pixi and other options in the
+[installation docs](https://selfpatch.github.io/ros2_medkit/installation.html)):
+
+```bash
+source /opt/ros/jazzy/setup.bash   # or humble / lyrical
+git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
+cd ros2_medkit
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install && source install/setup.bash
+```
+
+**Run it next to your robot** - one command starts the gateway, the fault manager and the
+drop-in bridges:
+
+```bash
+ros2 launch ros2_medkit_gateway bringup.launch.py
+# REST API on http://localhost:8080/api/v1/
+```
+
+**See a fault** (or just let a node log an `ERROR` / an action abort, as above):
+
+```bash
+ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
+  "{fault_code: 'DEMO_FAULT', event_type: 0, severity: 2, description: 'hello medkit', source_id: '/your_node'}"
+
+curl http://localhost:8080/api/v1/faults   # the fault appears, with its black-box
+```
+
+For a guided walkthrough, see the
+[Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
+
 ## Beyond faults
 
-Faults are the front door; the same REST surface exposes the whole ROS 2 graph - discovery
-(nodes, topics, services, actions), live topic data, service/action calls with execution
-tracking, parameters, bulk data (calibration, firmware, rosbags), SSE subscriptions,
-triggers, locking, scripts, software updates and JWT/RBAC auth. The OpenAPI 3.1.0 spec and
-Swagger UI live at `/api/v1/docs`. It models your robot as a SOVD **entity tree** (areas ->
-components -> apps, with cross-cutting functions) so the same concepts work across robots,
-vehicles and embedded systems.
-
-See the [full documentation](https://selfpatch.github.io/ros2_medkit/) for the API reference,
-the entity model, per-package guides, and the [roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html).
+Faults are the front door; the same REST surface exposes the whole ROS 2 graph - discovery,
+live topic data, service/action calls, parameters, bulk data, SSE subscriptions, triggers,
+locking, scripts, software updates and JWT/RBAC auth (OpenAPI 3.1.0 + Swagger UI at
+`/api/v1/docs`). It models your robot as a SOVD **entity tree** (areas -> components -> apps,
+with cross-cutting functions) so the same concepts carry across robots, vehicles and embedded
+systems. See the [full documentation](https://selfpatch.github.io/ros2_medkit/) and the
+[roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html).
 
 ## Documentation & community
 
