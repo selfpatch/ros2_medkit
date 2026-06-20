@@ -71,7 +71,7 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
 class StubLifecycleStateReader : public ros2_medkit_gateway::LifecycleStateReader {
  public:
   std::optional<std::string> next;
-  std::optional<std::string> get_state(const std::string &) override {
+  std::optional<std::string> get_state(const std::string & /*get_state_service_path*/) override {
     return next;
   }
 };

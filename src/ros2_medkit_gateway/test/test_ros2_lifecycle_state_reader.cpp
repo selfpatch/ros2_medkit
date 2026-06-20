@@ -39,8 +39,9 @@ class Ros2LifecycleStateReaderTest : public ::testing::Test {
   void SetUp() override {
     service_node_ = std::make_shared<rclcpp::Node>("fake_lifecycle_node");
     service_ = service_node_->create_service<lifecycle_msgs::srv::GetState>(
-        "/fake_lifecycle_node/get_state", [this](const std::shared_ptr<lifecycle_msgs::srv::GetState::Request>,
-                                                 std::shared_ptr<lifecycle_msgs::srv::GetState::Response> resp) {
+        "/fake_lifecycle_node/get_state",
+        [this](const std::shared_ptr<lifecycle_msgs::srv::GetState::Request> & /*request*/,
+               const std::shared_ptr<lifecycle_msgs::srv::GetState::Response> & resp) {
           resp->current_state.id = state_id_;
           resp->current_state.label = state_label_;
         });
