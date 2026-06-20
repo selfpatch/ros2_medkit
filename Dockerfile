@@ -97,10 +97,14 @@ ENV ROS_DISTRO=${ROS_DISTRO}
 ENV COLCON_WS=/home/medkit/ws
 
 # Runtime dependencies only (nlohmann-json and cpp-httplib are compiled into
-# the binaries at build time, no need to install here)
+# the binaries at build time, no need to install here).
+# CycloneDDS RMW is bundled so the gateway can attach to a stack running
+# CycloneDDS (e.g. Autoware) without rebuilding. FastDDS stays the default;
+# switch with RMW_IMPLEMENTATION=rmw_cyclonedds_cpp at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-yaml-cpp-vendor \
     ros-${ROS_DISTRO}-example-interfaces \
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     libsqlite3-0 \
     libsystemd0 \
     libssl3 \
