@@ -768,6 +768,11 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_lifecycle_handlers rclcpp)
   medkit_set_test_domain(test_lifecycle_handlers)
 
+  # Lifecycle status helpers (pure C++17, no ROS node)
+  ament_add_gtest(test_lifecycle_status_helpers test/test_lifecycle_status_helpers.cpp)
+  target_link_libraries(test_lifecycle_status_helpers gateway_core)
+  medkit_set_test_domain(test_lifecycle_status_helpers)
+
   # Add operation handler tests
   ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
   target_link_libraries(test_operation_handlers gateway_ros2)
