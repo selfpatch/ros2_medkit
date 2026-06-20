@@ -17,6 +17,7 @@
   <depend>sensor_msgs</depend>
   <depend>rcl_interfaces</depend>
   <depend>action_msgs</depend>
+  <depend>lifecycle_msgs</depend>
   <depend>nlohmann-json-dev</depend>
   <depend>libcpp-httplib-dev</depend>
   <!-- jwt-cpp is vendored in src/vendored/jwt_cpp (header-only, no system package) -->

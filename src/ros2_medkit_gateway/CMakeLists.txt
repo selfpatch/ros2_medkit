@@ -41,6 +41,7 @@ find_package(yaml_cpp_vendor REQUIRED)
 medkit_find_yaml_cpp()
 find_package(ament_index_cpp REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
@@ -159,6 +160,7 @@ add_library(gateway_ros2 STATIC
   src/ros2/transports/ros2_service_transport.cpp
   src/ros2/transports/ros2_topic_subscription_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
+  src/ros2/status/ros2_lifecycle_state_reader.cpp
   src/ros2/trigger_topic_subscriber.cpp
   src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp
@@ -224,6 +226,7 @@ medkit_target_dependencies(gateway_ros2
   rcl_interfaces
   ament_index_cpp
   action_msgs
+  lifecycle_msgs
   ros2_medkit_msgs
   ros2_medkit_serialization
   rosidl_typesupport_cpp
@@ -773,6 +776,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_lifecycle_status_helpers gateway_core)
   medkit_set_test_domain(test_lifecycle_status_helpers)
 
+  # GetState-backed lifecycle state reader (ROS 2 in-process service)
+  ament_add_gtest(test_ros2_lifecycle_state_reader test/test_ros2_lifecycle_state_reader.cpp)
+  target_link_libraries(test_ros2_lifecycle_state_reader gateway_ros2)
+  medkit_target_dependencies(test_ros2_lifecycle_state_reader rclcpp lifecycle_msgs)
+  medkit_set_test_domain(test_ros2_lifecycle_state_reader)
+
   # Add operation handler tests
   ament_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
   target_link_libraries(test_operation_handlers gateway_ros2)
@@ -978,6 +987,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_error_info
+      test_ros2_lifecycle_state_reader
       test_ros2_subscription_executor
       test_ros2_subscription_slot
       test_topic_data_provider_interface
