@@ -9,9 +9,11 @@ log_bridge:
     # Prefix for auto-generated fault codes (<PREFIX>_<NODE>_<HASH>).
     code_prefix: "LOG"
     # Originating-node FQN substrings to skip (e.g. noisy debug nodes).
-    exclude_nodes: []
+    # Defaults to empty; uncomment with a non-empty list to enable, e.g.:
+    # exclude_nodes: ["/debug_node"]
     # If non-empty, ONLY promote logs from nodes matching these substrings.
-    include_only_nodes: []
+    # Defaults to empty; uncomment with a non-empty list to enable, e.g.:
+    # include_only_nodes: ["/safety_monitor"]
     # Cap on per-node FaultReporters; least-recently-used nodes are evicted
     # past this to bound memory under transient-node churn.
     max_tracked_nodes: 512
