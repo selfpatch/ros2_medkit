@@ -96,7 +96,7 @@ your stack. Each bridge has ``include_only_*`` / ``exclude_*`` filters to scope
 what it watches, and these knobs for cost:
 
 - **log_bridge** subscribes ``/rosout`` and processes every log line, so its cost
-  scales with log volume. Keep ``severity_floor`` at WARN (20) by default; raise
+  scales with log volume. Keep ``severity_floor`` at WARN (30) by default; raise
   it to ERROR (40) on chatty stacks. ``report_cooldown_sec`` already bounds
   ERROR/FATAL floods.
 - **action_status_bridge** rescans the full ROS graph every ``rescan_period_sec``

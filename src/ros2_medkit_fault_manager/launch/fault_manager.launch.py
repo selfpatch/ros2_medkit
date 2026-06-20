@@ -36,10 +36,18 @@ def generate_launch_description():
                         'snapshots, black-box rosbag). Defaults to the conservative single-node '
                         'config; the bringup passes shared params to turn on healing and capture.',
         ),
+        DeclareLaunchArgument(
+            'namespace',
+            default_value='',
+            description='Optional ROS 2 namespace for the fault_manager node (for example '
+                        'robot1 -> /robot1/fault_manager/...). Give the gateway a matching '
+                        'fault_manager.namespace parameter so it resolves the same paths.',
+        ),
         Node(
             package='ros2_medkit_fault_manager',
             executable='fault_manager_node',
             name='fault_manager',
+            namespace=LaunchConfiguration('namespace'),
             output='screen',
             parameters=[LaunchConfiguration('params_file')],
         ),
