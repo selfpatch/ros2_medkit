@@ -213,15 +213,15 @@ TEST_F(LifecycleHandlersTest, GetStatusHostComponentReturnsReady) {
   EXPECT_EQ(result->status, "ready");
 }
 
-// GET /components/{bridge_component}/status -> 200, status == "notReady" (no host_metadata, no provider)
-TEST_F(LifecycleHandlersTest, GetStatusNonHostComponentReturnsNotReady) {
+// GET /components/{bridge_component}/status -> 200, status == "ready" (reachable local component, zero apps)
+TEST_F(LifecycleHandlersTest, GetStatusComponentZeroAppsReturnsReady) {
   auto raw =
       make_request_with_match("/api/v1/components/bridge_component/status", R"(/api/v1/components/([^/]+)/status)");
   http::TypedRequest req(raw);
 
   auto result = handlers_->handle_get_status(req);
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->status, "notReady");
+  EXPECT_EQ(result->status, "ready");  // reachable local component, zero apps -> ready
 }
 
 // GET /components/{live_subsystem}/status -> "ready" (a hosted App is online)
@@ -235,15 +235,15 @@ TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlineHostedAppReturnsReady)
   EXPECT_EQ(result->status, "ready");
 }
 
-// GET /components/{dead_subsystem}/status -> "notReady" (its only hosted App is offline)
-TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlyOfflineHostedAppReturnsNotReady) {
+// GET /components/{dead_subsystem}/status -> "ready" (down hosted app is the app's notReady, not the component's)
+TEST_F(LifecycleHandlersTest, GetStatusComponentAllAppsOfflineReturnsReady) {
   auto raw =
       make_request_with_match("/api/v1/components/dead_subsystem/status", R"(/api/v1/components/([^/]+)/status)");
   http::TypedRequest req(raw);
 
   auto result = handlers_->handle_get_status(req);
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->status, "notReady");
+  EXPECT_EQ(result->status, "ready");  // a down hosted app is the app's notReady, not the component's
 }
 
 // PUT /apps/{online_sensor}/status/restart -> 501 (no provider registered)
