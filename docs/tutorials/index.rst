@@ -20,6 +20,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    docker
    devcontainer
    integration
+   attach-existing-stack
    custom_areas
    web-ui
    mcp-server
@@ -106,6 +107,10 @@ Advanced Tutorials
 
 :doc:`integration`
    Integrate ros2_medkit with your existing ROS 2 system.
+
+:doc:`attach-existing-stack`
+   Point the gateway at a running stack you did not launch (matching RMW,
+   domain and distro), including container and web UI setup.
 
 :doc:`custom_areas`
    Customize the entity hierarchy for your robot architecture.
