@@ -32,6 +32,7 @@
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/lifecycle_provider.hpp"
+#include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/lifecycle.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -47,6 +48,7 @@ using ros2_medkit_gateway::LifecycleProvider;
 using ros2_medkit_gateway::LifecycleProviderError;
 using ros2_medkit_gateway::LifecycleProviderErrorInfo;
 using ros2_medkit_gateway::PluginManager;
+using ros2_medkit_gateway::ServiceInfo;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::dto::JsonWriter;
@@ -65,6 +67,14 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
   std::regex_match(req.path, req.matches, re);
   return req;
 }
+
+class StubLifecycleStateReader : public ros2_medkit_gateway::LifecycleStateReader {
+ public:
+  std::optional<std::string> next;
+  std::optional<std::string> get_state(const std::string &) override {
+    return next;
+  }
+};
 
 }  // namespace
 
@@ -653,4 +663,78 @@ TEST_F(LifecycleHandlersWithProviderTest, GetStatusProviderInvalidStatusReturns5
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().http_status, 500);
   EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_PLUGIN_ERROR);
+}
+
+// =============================================================================
+// Stub-reader lifecycle app status tests.
+// Verify that handle_get_status reads lifecycle state for managed nodes and falls
+// back to is_online for plain apps.
+// =============================================================================
+
+TEST_F(LifecycleHandlersTest, GetStatusLifecycleAppActiveIsReady) {
+  auto stub = std::make_shared<StubLifecycleStateReader>();
+  stub->next = "active";
+  LifecycleHandlers lc_handlers(*ctx_, nullptr, stub);
+
+  App lc_app;
+  lc_app.id = "lc_sensor";
+  lc_app.name = "LcSensor";
+  lc_app.is_online = true;
+  lc_app.bound_fqn = "/lc_sensor";
+  ServiceInfo gs;
+  gs.full_path = "/lc_sensor/get_state";
+  gs.type = "lifecycle_msgs/srv/GetState";
+  ServiceInfo cs;
+  cs.full_path = "/lc_sensor/change_state";
+  cs.type = "lifecycle_msgs/srv/ChangeState";
+  lc_app.services.push_back(gs);
+  lc_app.services.push_back(cs);
+  auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {lc_app}, {});
+
+  auto raw = make_request_with_match("/api/v1/apps/lc_sensor/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+  auto result = lc_handlers.handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "ready");
+}
+
+TEST_F(LifecycleHandlersTest, GetStatusLifecycleAppInactiveIsNotReady) {
+  auto stub = std::make_shared<StubLifecycleStateReader>();
+  stub->next = "inactive";
+  LifecycleHandlers lc_handlers(*ctx_, nullptr, stub);
+
+  App lc_app;
+  lc_app.id = "lc_idle";
+  lc_app.name = "LcIdle";
+  lc_app.is_online = true;  // in the graph, but inactive
+  lc_app.bound_fqn = "/lc_idle";
+  ServiceInfo gs;
+  gs.full_path = "/lc_idle/get_state";
+  gs.type = "lifecycle_msgs/srv/GetState";
+  ServiceInfo cs;
+  cs.full_path = "/lc_idle/change_state";
+  cs.type = "lifecycle_msgs/srv/ChangeState";
+  lc_app.services.push_back(gs);
+  lc_app.services.push_back(cs);
+  auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {lc_app}, {});
+
+  auto raw = make_request_with_match("/api/v1/apps/lc_idle/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+  auto result = lc_handlers.handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "notReady");
+}
+
+TEST_F(LifecycleHandlersTest, GetStatusPlainAppStillUsesIsOnline) {
+  auto stub = std::make_shared<StubLifecycleStateReader>();
+  stub->next = "inactive";  // must be ignored for a plain app
+  LifecycleHandlers lc_handlers(*ctx_, nullptr, stub);
+  // online_sensor (seeded in SetUp) has no lifecycle services.
+  auto raw = make_request_with_match("/api/v1/apps/online_sensor/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+  auto result = lc_handlers.handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "ready");  // is_online == true, lifecycle read not used
 }

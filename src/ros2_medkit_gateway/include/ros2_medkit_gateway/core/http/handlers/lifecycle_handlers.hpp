@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <utility>
 
+#include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"
 #include "ros2_medkit_gateway/dto/lifecycle.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
@@ -42,9 +44,10 @@ namespace handlers {
  */
 class LifecycleHandlers {
  public:
-  /// Construct lifecycle handlers with shared context and optional plugin manager.
-  LifecycleHandlers(HandlerContext & ctx, PluginManager * plugin_mgr) : ctx_(ctx), plugin_mgr_(plugin_mgr) {
-  }
+  /// Construct lifecycle handlers with shared context, optional plugin manager, and optional lifecycle reader.
+  /// lifecycle_reader is nullptr by default so existing 2-argument call sites compile unchanged.
+  LifecycleHandlers(HandlerContext & ctx, PluginManager * plugin_mgr,
+                    std::shared_ptr<LifecycleStateReader> lifecycle_reader = nullptr);
 
   /// GET /{entity}/status - read lifecycle status.
   http::Result<dto::LifecycleStatusResponse> handle_get_status(const http::TypedRequest & req);
@@ -57,6 +60,7 @@ class LifecycleHandlers {
  private:
   HandlerContext & ctx_;
   PluginManager * plugin_mgr_;
+  std::shared_ptr<LifecycleStateReader> lifecycle_reader_;
 };
 
 }  // namespace handlers

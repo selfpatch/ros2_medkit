@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/http/handlers/lifecycle_handlers.hpp"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -22,6 +23,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/lifecycle_provider.hpp"
+#include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
@@ -56,6 +58,11 @@ ErrorInfo to_error_info(const LifecycleProviderErrorInfo & e) {
 }
 
 }  // namespace
+
+LifecycleHandlers::LifecycleHandlers(HandlerContext & ctx, PluginManager * plugin_mgr,
+                                     std::shared_ptr<LifecycleStateReader> lifecycle_reader)
+  : ctx_(ctx), plugin_mgr_(plugin_mgr), lifecycle_reader_(std::move(lifecycle_reader)) {
+}
 
 // =============================================================================
 // GET /{entity}/status
@@ -129,7 +136,20 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
 
   if (entity.type == EntityType::APP) {
     auto app = cache.get_app(entity_id);
-    resp.status = (app && app->is_online) ? "ready" : "notReady";
+    std::optional<std::string> get_state_path;
+    if (app && lifecycle_reader_) {
+      get_state_path = find_lifecycle_get_state_path(app->services);
+    }
+    if (app && lifecycle_reader_ && get_state_path.has_value()) {
+      // Managed lifecycle node: read the real state. "active" is the only ready state.
+      auto state = lifecycle_reader_->get_state(*get_state_path);
+      resp.status = lifecycle_status_from_state(state);
+    } else {
+      // Plain node, no reader wired, or a node exposing get_state without
+      // change_state (deliberately treated as unmanaged): graph presence is the
+      // best available signal.
+      resp.status = (app && app->is_online) ? "ready" : "notReady";
+    }
   } else {
     // A local component is operational while the gateway is serving this
     // request (the substrate is reachable). SOVD notReady means stopped,
