@@ -122,11 +122,20 @@ if(BUILD_TESTING)
     DESTINATION share/${PROJECT_NAME}
   )
 
+  # add_launch_test() defaults the test's ctest LABELS to "launch_test", which
+  # the unit selector (colcon test -LE 'linter|integration') does not exclude,
+  # so the launch test ran in the unit phase together with all other unit tests
+  # in one colcon invocation. Under that load the node could miss the launch
+  # SIGINT shutdown window and get killed with SIGTERM, failing the
+  # post-shutdown exit-code check. Override the label to "integration" via
+  # set_tests_properties (the repo convention) so it runs only in the
+  # integration phase.
   add_launch_test(
     test/test_integration.test.py
     TARGET test_integration
     TIMEOUT 60
   )
+  set_tests_properties(test_integration PROPERTIES LABELS "integration")
   ros2_medkit_relax_vendor_warnings()
 endif()
 
