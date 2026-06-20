@@ -486,6 +486,13 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
     result.has_data = false;
     return result;
   }
+  {
+    std::lock_guard<std::mutex> lk(unsupported_types_mtx_);
+    if (unsupported_types_.count(type_name) != 0) {
+      result.has_data = false;
+      return result;
+    }
+  }
   try {
     result.data = serializer_->deserialize(type_name, serialized_copy);
     result.has_data = true;
@@ -493,8 +500,16 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
       result.timestamp_ns = msg_ns;
     }
   } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
-    RCLCPP_WARN(exec_->node()->get_logger(), "Unknown type '%s' for topic '%s': %s", type_name.c_str(), topic.c_str(),
-                e.what());
+    bool first_seen;
+    {
+      std::lock_guard<std::mutex> lk(unsupported_types_mtx_);
+      first_seen = unsupported_types_.insert(type_name).second;
+    }
+    if (first_seen) {
+      RCLCPP_WARN(exec_->node()->get_logger(),
+                  "Unknown type '%s' for topic '%s': %s (skipping further samples of this type)", type_name.c_str(),
+                  topic.c_str(), e.what());
+    }
     result.has_data = false;
   } catch (const ros2_medkit_serialization::SerializationError & e) {
     RCLCPP_WARN(exec_->node()->get_logger(), "Deserialize failed on '%s': %s", topic.c_str(), e.what());

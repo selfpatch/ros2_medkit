@@ -25,6 +25,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <rclcpp/serialized_message.hpp>
 
@@ -165,6 +166,11 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
   Config cfg_;
   std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> exec_;
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
+
+  // Message types whose package is not installed: warned once, then skipped on
+  // subsequent samples instead of re-attempting deserialize per message.
+  mutable std::mutex unsupported_types_mtx_;
+  std::unordered_set<std::string> unsupported_types_;
 
   std::atomic<bool> shutdown_{false};
 
