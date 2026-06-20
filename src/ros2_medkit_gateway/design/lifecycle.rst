@@ -86,10 +86,13 @@ The optional transition URI fields are only present when the registered
 ``LifecycleProvider`` signals support for that transition. Each field value
 is the absolute path the client should call to trigger the transition.
 
-**App status (no provider registered):** derived from ``App::is_online`` in
-the entity cache. The entity cache marks an App online when it has at least
-one node in the ROS 2 graph. ``is_online = true`` maps to ``"ready"``;
-``false`` maps to ``"notReady"``.
+**App status:** for a managed lifecycle node (one exposing ``get_state`` and ``change_state``),
+the status is read from the node's lifecycle state via ``lifecycle_msgs/srv/GetState``: the
+``active`` state is ``"ready"``; any other state, or an unreachable/timed-out read, is
+``"notReady"``. This subsumes liveness, since a dead node's ``get_state`` service is gone. For a
+plain node with no lifecycle services, the status falls back to ``App::is_online`` (presence in
+the ROS 2 graph), which is the best signal available for an unmanaged node. The GetState read runs
+on a private node and executor (spun inline), so it never blocks or races the gateway executor.
 
 **Component status:** a local component is ``"ready"`` while the gateway is serving the
 request (the substrate is reachable), independent of how many hosted apps are online,
