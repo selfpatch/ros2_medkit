@@ -33,7 +33,7 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 def generate_test_description():
     return create_test_launch(
-        demo_nodes=['temp_sensor'],
+        demo_nodes=['temp_sensor', 'managed_lifecycle'],
         fault_manager=False,
     )
 
@@ -42,8 +42,8 @@ def generate_test_description():
 class TestLifecycleStatus(GatewayTestCase):
     """Lifecycle status endpoint tests for apps and components."""
 
-    MIN_EXPECTED_APPS = 1
-    REQUIRED_APPS = {'temp_sensor'}
+    MIN_EXPECTED_APPS = 2
+    REQUIRED_APPS = {'temp_sensor', 'managed_lifecycle'}
 
     # Cache for the dynamically-discovered host component ID.
     _host_component_id = None
@@ -115,6 +115,19 @@ class TestLifecycleStatus(GatewayTestCase):
         )
         self.assertIn('status', data)
         self.assertIn(data['status'], ['ready', 'notReady'])
+
+    def test_managed_lifecycle_unconfigured_is_not_ready(self):
+        # @verifies REQ_INTEROP_076
+        # An unconfigured lifecycle node is present in the ROS 2 graph (is_online
+        # alone would report "ready"), but its lifecycle state is "unconfigured",
+        # so the accurate status read returns "notReady". This proves the lifecycle
+        # state is read via GetState instead of bare graph presence.
+        data = self.poll_endpoint_until(
+            '/apps/managed_lifecycle/status',
+            lambda d: d if d.get('status') == 'notReady' else None,
+            timeout=20.0,
+        )
+        self.assertEqual(data.get('status'), 'notReady')
 
     def test_app_status_nonexistent_returns_404(self):
         """GET /apps/{app_id}/status returns 404 for a nonexistent app.

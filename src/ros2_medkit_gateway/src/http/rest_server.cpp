@@ -23,6 +23,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "../openapi/route_registry.hpp"
 #include "../openapi/schema_builder.hpp"
@@ -125,7 +126,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get());
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
-  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(*handler_ctx_, node_->get_plugin_manager());
+  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(
+      *handler_ctx_, node_->get_plugin_manager(), std::make_shared<Ros2LifecycleStateReader>(node_));
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);

@@ -53,6 +53,8 @@ DEMO_NODE_REGISTRY = {
     # Operations (services / actions)
     'calibration': ('demo_calibration_service', 'calibration', '/powertrain/engine'),
     'long_calibration': ('demo_long_calibration_action', 'long_calibration', '/powertrain/engine'),
+    # Lifecycle demo (stays unconfigured by default; auto_activate:=true activates it)
+    'managed_lifecycle': ('managed_lifecycle', 'managed_lifecycle', ''),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.

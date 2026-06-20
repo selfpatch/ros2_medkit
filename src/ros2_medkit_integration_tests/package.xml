@@ -15,6 +15,7 @@
   <!-- Demo node C++ dependencies -->
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
+  <depend>rclcpp_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
