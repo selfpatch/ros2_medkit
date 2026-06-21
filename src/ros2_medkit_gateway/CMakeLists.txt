@@ -564,6 +564,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_tls_config test/test_tls_config.cpp)
   target_link_libraries(test_tls_config gateway_ros2)
 
+  # Add HTTP server thread-pool bound tests (issue #440)
+  ament_add_gtest(test_http_server_thread_pool test/test_http_server_thread_pool.cpp)
+  target_link_libraries(test_http_server_thread_pool gateway_ros2)
+
   # Add FaultManager tests
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager gateway_ros2)

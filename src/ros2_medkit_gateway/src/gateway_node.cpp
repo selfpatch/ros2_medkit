@@ -145,6 +145,19 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Declare parameters with defaults
   declare_parameter("server.host", "127.0.0.1");
   declare_parameter("server.port", 8080);
+
+  // Thread-pool bounds (issue #440). Both pools default to a small fixed size
+  // instead of scaling with the host core count, so the footprint stays the
+  // same on a 4-core SBC and a 64-core server. The main executor only delivers
+  // the node's own callbacks (timers, graph events, subscriptions, and fast RPC
+  // response callbacks); the blocking wait for an RPC happens on the cpp-httplib
+  // pool thread, not an executor thread, so a small executor cannot starve it.
+  // Each active SSE stream holds one HTTP pool thread for its lifetime, so
+  // sse.max_clients is kept at or below http_thread_pool_size - raise both
+  // together for more concurrent SSE. Both are clamped to a bounded range on
+  // read (see clamp_thread_count).
+  declare_parameter("server.executor_threads", 2);
+  declare_parameter("server.http_thread_pool_size", 3);
   // Safety-backstop refresh interval. Primary discovery refresh is driven
   // by rclcpp graph events; this only controls the periodic forced
   // refresh used when a graph event would otherwise be missed.
@@ -158,7 +171,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("cors.max_age_seconds", 86400);
 
   // SSE (Server-Sent Events) parameters
-  declare_parameter("sse.max_clients", 10);         // Limit concurrent SSE connections to prevent resource exhaustion
+  // Concurrent SSE connections. Each one pins an HTTP pool worker for its
+  // lifetime, so this defaults at or below server.http_thread_pool_size (3) to
+  // leave a worker for ordinary requests; raise both together for more SSE.
+  declare_parameter("sse.max_clients", 2);
   declare_parameter("sse.max_subscriptions", 100);  // Maximum active cyclic subscriptions across all entities
   declare_parameter("sse.max_duration_sec", 3600);  // Maximum subscription duration in seconds (1 hour default)
 

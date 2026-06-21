@@ -16,6 +16,7 @@
 
 #include <httplib.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -36,9 +37,13 @@ class HttpServerManager {
   /**
    * @brief Construct HTTP server manager
    * @param tls_config TLS configuration (if enabled, creates SSLServer)
+   * @param thread_pool_size Number of worker threads for the cpp-httplib request
+   *        pool. When > 0, the server's task queue is bounded to a fixed-size
+   *        ThreadPool of this many threads (issue #440). When 0, the cpp-httplib
+   *        default (max(8, hardware_concurrency - 1)) is left untouched.
    * @throws std::runtime_error if TLS is requested but SSL server creation fails
    */
-  explicit HttpServerManager(const TlsConfig & tls_config);
+  explicit HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size = 0);
 
   ~HttpServerManager() = default;
 
@@ -87,7 +92,19 @@ class HttpServerManager {
    */
   void configure_tls();
 
+  /**
+   * @brief Bound the server's request thread pool to thread_pool_size_ workers.
+   *
+   * No-op when thread_pool_size_ is 0 (keeps the cpp-httplib default). Must be
+   * called before listen(), as new_task_queue is consumed when the server
+   * starts accepting connections.
+   */
+  void apply_thread_pool(httplib::Server & srv) const;
+
   TlsConfig tls_config_;
+
+  // Fixed cpp-httplib worker-pool size (0 = leave the library default).
+  std::size_t thread_pool_size_;
 
   // HTTP server (used when TLS is disabled)
   std::unique_ptr<httplib::Server> server_;

@@ -264,6 +264,65 @@ Lower values shorten the worst-case recovery window if a graph event is missed
 but increase idle CPU. The default rarely fires on a stable graph because the
 graph-event poll handles node up/down events directly.
 
+Thread Pools
+------------
+
+The gateway runs two thread pools. By default both are bounded to a small fixed
+size instead of scaling with the host CPU count, so the gateway's thread
+footprint is the same on a 4-core SBC and a 64-core server. Both values are
+clamped to a minimum of 1.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 12 48
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``server.http_thread_pool_size``
+     - int
+     - ``3``
+     - Worker threads in the HTTP request pool (cpp-httplib). Replaces the
+       library default of ``max(8, cores - 1)``. Kept at or above
+       ``sse.max_clients`` so SSE streams cannot starve every worker (see note
+       below). Clamped to ``[1, 1024]``.
+   * - ``server.executor_threads``
+     - int
+     - ``2``
+     - Threads in the main rclcpp ``MultiThreadedExecutor``. Replaces rclcpp's
+       default (host cores, minimum 2). Clamped to ``[1, 256]``.
+
+**HTTP pool and SSE.** Each active SSE stream (fault dashboard, cyclic
+subscriptions, trigger events - see `SSE (Server-Sent Events)`_) holds one HTTP
+pool thread for its entire lifetime, and the data cold-wait path can block up to
+``data_provider.cold_wait_cap`` additional threads. To stop SSE from starving
+ordinary requests, ``sse.max_clients`` defaults (2) at or below
+``http_thread_pool_size`` (3). If you raise ``sse.max_clients`` for more
+concurrent streams, raise ``http_thread_pool_size`` to match - a safe target is
+``sse.max_clients + cold_wait_cap`` plus headroom for regular requests.
+
+**Executor threads.** The main executor only delivers the gateway node's own
+callbacks (timers, graph events, log and fault subscriptions) and the fast
+service-response callbacks for operation/action RPCs. The blocking wait for an
+RPC runs on the cpp-httplib pool thread (a separate server thread), not on an
+executor thread, and the fault transport uses its own private executor - so a
+small main executor cannot starve or deadlock blocking RPC handlers. Increase
+this only if the node's own callback load grows (for example very frequent
+graph churn).
+
+Example (more SSE clients needs a larger pool and matching ``sse.max_clients``):
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       server:
+         http_thread_pool_size: 16   # workers for heavy SSE + request load
+         executor_threads: 4
+       sse:
+         max_clients: 10             # raised together with the HTTP pool
+
 Bulk Data Storage
 -----------------
 
@@ -329,8 +388,8 @@ Configure limits for SSE-based streaming (fault events and cyclic subscriptions)
      - Description
    * - ``sse.max_clients``
      - int
-     - ``10``
-     - Maximum number of concurrent SSE connections (fault stream, cyclic subscription streams, and trigger event streams combined).
+     - ``2``
+     - Maximum number of concurrent SSE connections (fault stream, cyclic subscription streams, and trigger event streams combined). Each connection pins one ``server.http_thread_pool_size`` worker for its lifetime, so this defaults at or below that pool; raise both together for more concurrent streams.
    * - ``sse.max_subscriptions``
      - int
      - ``100``
@@ -347,7 +406,7 @@ Example:
    ros2_medkit_gateway:
      ros__parameters:
        sse:
-         max_clients: 10
+         max_clients: 2
          max_subscriptions: 100
          max_duration_sec: 3600
 
@@ -643,7 +702,7 @@ Complete Example
          categories: ["calibration", "firmware"]
 
        sse:
-         max_clients: 10
+         max_clients: 2
          max_subscriptions: 100
          max_duration_sec: 3600
 

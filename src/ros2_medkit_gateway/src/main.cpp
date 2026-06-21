@@ -14,11 +14,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
@@ -69,13 +71,23 @@ int main(int argc, char ** argv) {
 
     auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
 
-    // MultiThreadedExecutor for the gateway node - HTTP handlers run on several
-    // threads, so the main executor must dispatch callbacks in parallel to avoid
-    // starving slow handlers. The Ros2SubscriptionExecutor built below owns its
-    // own internal single-threaded executor (spun from its worker thread); the
-    // subscription node is intentionally not added here.
-    rclcpp::executors::MultiThreadedExecutor executor;
+    // MultiThreadedExecutor for the gateway node. Issue #440: the thread count
+    // is bounded by the server.executor_threads parameter (default 2) instead of
+    // rclcpp's default (host cores, minimum 2), so the footprint does not grow
+    // with the host core count. The executor only delivers the gateway node's
+    // own callbacks - timers, graph events, log/fault subscriptions, and the
+    // (fast) service-response callbacks for operation/action RPCs. The blocking
+    // wait for those RPCs happens on the cpp-httplib pool thread (a separate
+    // server_thread_), not on an executor thread, and the fault transport runs
+    // on its own private executor - so a small executor here cannot starve or
+    // deadlock blocking RPC handlers. The Ros2SubscriptionExecutor built below
+    // owns its own internal single-threaded executor (spun from its worker
+    // thread); the subscription node is intentionally not added here.
+    const auto executor_threads =
+        ros2_medkit_gateway::clamp_thread_count(node->get_parameter("server.executor_threads").as_int(), 1, 256);
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), executor_threads);
     executor.add_node(node);
+    RCLCPP_INFO(node->get_logger(), "Main executor bounded to %zu threads", executor_threads);
 
     // Stand up the ROS 2 subscription executor + topic data provider.
     // Issue #375: all subscription create/destroy calls are funneled through the

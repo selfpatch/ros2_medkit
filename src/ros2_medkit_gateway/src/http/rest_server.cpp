@@ -22,6 +22,7 @@
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include "../openapi/route_registry.hpp"
@@ -81,8 +82,18 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   , cors_config_(cors_config)
   , auth_config_(auth_config)
   , tls_config_(tls_config) {
-  // Create HTTP/HTTPS server manager
-  http_server_ = std::make_unique<HttpServerManager>(tls_config_);
+  // Create HTTP/HTTPS server manager with a bounded request thread pool
+  // (issue #440). clamp_thread_count keeps it in [1, 1024]: a pool of 0 would
+  // queue every request forever, and a typo'd huge value would spawn that many
+  // OS threads. Each active SSE stream holds one worker for its lifetime, so the
+  // default pool is kept at or above sse.max_clients; if you raise
+  // sse.max_clients, raise server.http_thread_pool_size to match.
+  const auto http_thread_pool_size =
+      clamp_thread_count(node_->get_parameter("server.http_thread_pool_size").as_int(), 1, 1024);
+  http_server_ = std::make_unique<HttpServerManager>(tls_config_, http_thread_pool_size);
+  RCLCPP_INFO(rclcpp::get_logger("rest_server"),
+              "HTTP request thread pool bounded to %zu workers (each active SSE stream holds one)",
+              http_thread_pool_size);
 
   // Set maximum payload size for uploads (cpp-httplib default is 8MB)
   auto * srv = http_server_->get_server();

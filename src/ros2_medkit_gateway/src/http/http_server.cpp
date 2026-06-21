@@ -19,7 +19,8 @@
 
 namespace ros2_medkit_gateway {
 
-HttpServerManager::HttpServerManager(const TlsConfig & tls_config) : tls_config_(tls_config) {
+HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size)
+  : tls_config_(tls_config), thread_pool_size_(thread_pool_size) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled) {
     // Create SSL server with certificate and key
@@ -33,12 +34,14 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config) : tls_config_
 
     // Configure additional TLS settings
     configure_tls();
+    apply_thread_pool(*ssl_server_);
 
     RCLCPP_INFO(rclcpp::get_logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
                 tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
+    apply_thread_pool(*server_);
     RCLCPP_DEBUG(rclcpp::get_logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
   }
 #else
@@ -48,7 +51,22 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config) : tls_config_
         "Ensure CPPHTTPLIB_OPENSSL_SUPPORT is defined.");
   }
   server_ = std::make_unique<httplib::Server>();
+  apply_thread_pool(*server_);
 #endif
+}
+
+void HttpServerManager::apply_thread_pool(httplib::Server & srv) const {
+  if (thread_pool_size_ == 0) {
+    return;  // Keep the cpp-httplib default task queue.
+  }
+  // new_task_queue is invoked once when the server starts accepting connections.
+  // Returning a fixed-size ThreadPool bounds the request worker count regardless
+  // of host CPU count (issue #440). cpp-httplib owns and deletes the returned
+  // TaskQueue.
+  const std::size_t n = thread_pool_size_;
+  srv.new_task_queue = [n] {
+    return new httplib::ThreadPool(n);
+  };
 }
 
 httplib::Server * HttpServerManager::get_server() {

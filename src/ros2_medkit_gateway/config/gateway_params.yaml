@@ -20,6 +20,30 @@ ros2_medkit_gateway:
       # Valid range: 1024-65535
       port: 8080
 
+      # Number of worker threads in the HTTP request pool (cpp-httplib).
+      # Bounded to a small fixed size instead of scaling with the host core
+      # count. Clamped to >= 1.
+      #
+      # IMPORTANT: each active SSE stream (fault dashboard, cyclic
+      # subscriptions, trigger events) holds ONE pool thread for its entire
+      # lifetime, and the data cold-wait path can block up to
+      # data_provider.cold_wait_cap more. The default sse.max_clients (2) is kept
+      # at or below this pool so SSE streams cannot starve every worker. If you
+      # raise sse.max_clients for more concurrent streams, raise this to match
+      # (rule of thumb: sse.max_clients + data_provider.cold_wait_cap plus
+      # headroom for ordinary requests).
+      # Default: 3
+      http_thread_pool_size: 3
+
+      # Number of threads in the main rclcpp MultiThreadedExecutor. This
+      # executor only dispatches the gateway node's own callbacks (timers,
+      # graph events, log/fault subscriptions); HTTP handlers that issue ROS
+      # service calls use their own private executors, so a small pool here is
+      # safe. Bounded to a small fixed size instead of std::thread::
+      # hardware_concurrency(). Clamped to >= 1.
+      # Default: 2
+      executor_threads: 2
+
       # TLS/HTTPS Configuration
       # Enables encrypted communication using OpenSSL
       tls:
@@ -136,9 +160,12 @@ ros2_medkit_gateway:
     # SSE (Server-Sent Events) Configuration
     sse:
       # Maximum number of concurrent SSE connections
-      # Applies to fault streams and cyclic subscription streams combined
-      # Default: 10
-      max_clients: 10
+      # Applies to fault streams and cyclic subscription streams combined.
+      # Each connection pins one server.http_thread_pool_size worker for its
+      # lifetime, so this defaults at or below that pool (3) to leave a worker
+      # for ordinary requests. Raise both together for more concurrent streams.
+      # Default: 2
+      max_clients: 2
 
       # Maximum number of active cyclic subscriptions across all entities
       # Returns HTTP 503 when this limit is reached
