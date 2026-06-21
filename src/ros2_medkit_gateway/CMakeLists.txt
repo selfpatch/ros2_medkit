@@ -679,6 +679,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_opaque_object test/test_opaque_object.cpp)
   target_link_libraries(test_opaque_object gateway_core)
 
+  # Entity value equality (operator==) - pure C++17, no ROS node
+  ament_add_gtest(test_entity_equality test/test_entity_equality.cpp)
+  target_link_libraries(test_entity_equality gateway_core)
+
   # Typed router foundational types (pure C++17, no ROS node)
   ament_add_gtest(test_typed_router test/test_typed_router.cpp)
   target_link_libraries(test_typed_router gateway_core)

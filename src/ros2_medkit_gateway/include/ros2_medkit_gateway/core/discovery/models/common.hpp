@@ -116,6 +116,13 @@ struct ComponentTopics {
   }
 };
 
+inline bool operator==(const ComponentTopics & a, const ComponentTopics & b) {
+  return a.publishes == b.publishes && a.subscribes == b.subscribes;
+}
+inline bool operator!=(const ComponentTopics & a, const ComponentTopics & b) {
+  return !(a == b);
+}
+
 /**
  * @brief Information about a ROS2 service discovered in the system
  */
@@ -134,6 +141,13 @@ struct ServiceInfo {
   }
 };
 
+inline bool operator==(const ServiceInfo & a, const ServiceInfo & b) {
+  return a.name == b.name && a.full_path == b.full_path && a.type == b.type && a.type_info == b.type_info;
+}
+inline bool operator!=(const ServiceInfo & a, const ServiceInfo & b) {
+  return !(a == b);
+}
+
 /**
  * @brief Information about a ROS2 action discovered in the system
  */
@@ -151,5 +165,12 @@ struct ActionInfo {
     return j;
   }
 };
+
+inline bool operator==(const ActionInfo & a, const ActionInfo & b) {
+  return a.name == b.name && a.full_path == b.full_path && a.type == b.type && a.type_info == b.type_info;
+}
+inline bool operator!=(const ActionInfo & a, const ActionInfo & b) {
+  return !(a == b);
+}
 
 }  // namespace ros2_medkit_gateway

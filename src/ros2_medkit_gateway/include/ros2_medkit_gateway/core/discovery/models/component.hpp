@@ -172,4 +172,16 @@ struct Component {
   }
 };
 
+inline bool operator==(const Component & a, const Component & b) {
+  return a.id == b.id && a.name == b.name && a.namespace_path == b.namespace_path && a.fqn == b.fqn &&
+         a.type == b.type && a.area == b.area && a.source == b.source && a.translation_id == b.translation_id &&
+         a.description == b.description && a.variant == b.variant && a.tags == b.tags &&
+         a.parent_component_id == b.parent_component_id && a.depends_on == b.depends_on &&
+         a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
+         a.topics == b.topics && a.host_metadata == b.host_metadata;
+}
+inline bool operator!=(const Component & a, const Component & b) {
+  return !(a == b);
+}
+
 }  // namespace ros2_medkit_gateway

@@ -71,4 +71,13 @@ struct Function {
   json to_capabilities(const std::string & base_url) const;
 };
 
+inline bool operator==(const Function & a, const Function & b) {
+  return a.id == b.id && a.name == b.name && a.translation_id == b.translation_id && a.description == b.description &&
+         a.tags == b.tags && a.hosts == b.hosts && a.depends_on == b.depends_on && a.source == b.source &&
+         a.contributors == b.contributors;
+}
+inline bool operator!=(const Function & a, const Function & b) {
+  return !(a == b);
+}
+
 }  // namespace ros2_medkit_gateway

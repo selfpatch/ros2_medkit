@@ -129,4 +129,13 @@ struct Area {
   }
 };
 
+inline bool operator==(const Area & a, const Area & b) {
+  return a.id == b.id && a.name == b.name && a.namespace_path == b.namespace_path && a.type == b.type &&
+         a.translation_id == b.translation_id && a.description == b.description && a.tags == b.tags &&
+         a.parent_area_id == b.parent_area_id && a.source == b.source && a.contributors == b.contributors;
+}
+inline bool operator!=(const Area & a, const Area & b) {
+  return !(a == b);
+}
+
 }  // namespace ros2_medkit_gateway

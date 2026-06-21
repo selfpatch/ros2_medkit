@@ -80,6 +80,14 @@ struct App {
   };
   std::optional<RosBinding> ros_binding;
 
+  friend bool operator==(const RosBinding & a, const RosBinding & b) {
+    return a.node_name == b.node_name && a.namespace_pattern == b.namespace_pattern &&
+           a.topic_namespace == b.topic_namespace;
+  }
+  friend bool operator!=(const RosBinding & a, const RosBinding & b) {
+    return !(a == b);
+  }
+
   // === Runtime state (populated after linking) ===
   std::optional<std::string> bound_fqn;  ///< Bound ROS node FQN
   bool is_online{false};                 ///< Whether the bound node is running
@@ -141,5 +149,16 @@ struct App {
    */
   json to_capabilities(const std::string & base_url) const;
 };
+
+inline bool operator==(const App & a, const App & b) {
+  return a.id == b.id && a.name == b.name && a.translation_id == b.translation_id && a.description == b.description &&
+         a.tags == b.tags && a.component_id == b.component_id && a.depends_on == b.depends_on &&
+         a.ros_binding == b.ros_binding && a.bound_fqn == b.bound_fqn && a.is_online == b.is_online &&
+         a.external == b.external && a.topics == b.topics && a.services == b.services && a.actions == b.actions &&
+         a.source == b.source && a.original_id == b.original_id && a.contributors == b.contributors;
+}
+inline bool operator!=(const App & a, const App & b) {
+  return !(a == b);
+}
 
 }  // namespace ros2_medkit_gateway
