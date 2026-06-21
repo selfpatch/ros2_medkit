@@ -17,8 +17,67 @@
 #include <algorithm>
 #include <mutex>
 #include <sstream>
+#include <utility>
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+/// Replace the entire contents of a store with `incoming`, assigning slots in
+/// input order (slot i holds incoming[i]). This is a FULL rebuild: a fresh
+/// store is built so no stale free-list entries reorder the slots, preserving
+/// the insertion-order semantics the previous std::vector storage guaranteed
+/// across repeated update_*/update_all calls. The new store keeps at least the
+/// old reserved capacity so steady-state churn still avoids reallocation.
+template <typename T>
+void replace_store(SlotStore<T> & store, std::vector<T> incoming) {
+  size_t reserve_to = std::max(store.capacity(), incoming.size());
+  SlotStore<T> fresh(reserve_to);
+  for (auto & item : incoming) {
+    uint32_t slot = fresh.alloc_slot();
+    fresh.assign(slot, std::move(item));
+  }
+  store = std::move(fresh);
+}
+
+}  // namespace
+
+// ============================================================================
+// Construction / capacity
+// ============================================================================
+
+ThreadSafeEntityCache::ThreadSafeEntityCache(size_t capacity) {
+  reserve(capacity);
+}
+
+void ThreadSafeEntityCache::reserve(size_t capacity) {
+  std::unique_lock lock(mutex_);
+
+  areas_.reserve(capacity);
+  components_.reserve(capacity);
+  apps_.reserve(capacity);
+  functions_.reserve(capacity);
+
+  area_index_.reserve(capacity);
+  component_index_.reserve(capacity);
+  app_index_.reserve(capacity);
+  function_index_.reserve(capacity);
+
+  component_to_apps_.reserve(capacity);
+  area_to_components_.reserve(capacity);
+  area_to_subareas_.reserve(capacity);
+  function_to_apps_.reserve(capacity);
+
+  operation_index_.reserve(capacity);
+  topic_type_cache_.reserve(capacity);
+  node_to_app_.reserve(capacity);
+
+  seen_.assign(capacity, 0u);
+  dead_ids_.reserve(capacity);
+  patch_dead_.reserve(capacity);
+
+  capacity_ = capacity;
+}
 
 // ============================================================================
 // Writer methods (exclusive lock)
@@ -29,11 +88,16 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
                                        std::unordered_map<std::string, std::string> node_to_app) {
   std::unique_lock lock(mutex_);
 
-  areas_ = std::move(areas);
-  components_ = std::move(components);
-  apps_ = std::move(apps);
-  functions_ = std::move(functions);
-  node_to_app_ = std::move(node_to_app);
+  replace_store(areas_, std::move(areas));
+  replace_store(components_, std::move(components));
+  replace_store(apps_, std::move(apps));
+  replace_store(functions_, std::move(functions));
+
+  node_to_app_.reset();
+  for (auto & [fqn, app_id] : node_to_app) {
+    node_to_app_.insert_or_assign(fqn, std::move(app_id));
+  }
+
   last_update_ = std::chrono::system_clock::now();
 
   rebuild_all_indexes();
@@ -42,7 +106,7 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
 
 void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
   std::unique_lock lock(mutex_);
-  areas_ = std::move(areas);
+  replace_store(areas_, std::move(areas));
   last_update_ = std::chrono::system_clock::now();
   rebuild_area_index();
   rebuild_relationship_indexes();
@@ -51,7 +115,7 @@ void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
 
 void ThreadSafeEntityCache::update_components(std::vector<Component> components) {
   std::unique_lock lock(mutex_);
-  components_ = std::move(components);
+  replace_store(components_, std::move(components));
   last_update_ = std::chrono::system_clock::now();
   rebuild_component_index();
   rebuild_relationship_indexes();
@@ -61,7 +125,7 @@ void ThreadSafeEntityCache::update_components(std::vector<Component> components)
 
 void ThreadSafeEntityCache::update_apps(std::vector<App> apps) {
   std::unique_lock lock(mutex_);
-  apps_ = std::move(apps);
+  replace_store(apps_, std::move(apps));
   last_update_ = std::chrono::system_clock::now();
   rebuild_app_index();
   rebuild_relationship_indexes();
@@ -71,7 +135,7 @@ void ThreadSafeEntityCache::update_apps(std::vector<App> apps) {
 
 void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
   std::unique_lock lock(mutex_);
-  functions_ = std::move(functions);
+  replace_store(functions_, std::move(functions));
   last_update_ = std::chrono::system_clock::now();
   rebuild_function_index();
   rebuild_relationship_indexes();
@@ -80,19 +144,27 @@ void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
 
 void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, std::string> topic_types) {
   std::unique_lock lock(mutex_);
-  topic_type_cache_ = std::move(topic_types);
+  topic_type_cache_.reset();
+  for (auto & [name, type] : topic_types) {
+    topic_type_cache_.insert_or_assign(name, std::move(type));
+  }
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 std::unordered_map<std::string, std::string> ThreadSafeEntityCache::get_node_to_app() const {
   std::shared_lock lock(mutex_);
-  return node_to_app_;
+  std::unordered_map<std::string, std::string> result;
+  result.reserve(node_to_app_.size());
+  node_to_app_.for_each([&](const std::string & fqn, const std::string & app_id) {
+    result.emplace(fqn, app_id);
+  });
+  return result;
 }
 
 std::string ThreadSafeEntityCache::resolve_node_to_app(const std::string & node_fqn) const {
   std::shared_lock lock(mutex_);
-  auto it = node_to_app_.find(node_fqn);
-  return (it != node_to_app_.end()) ? it->second : "";
+  const std::string * app_id = node_to_app_.find(node_fqn);
+  return app_id ? *app_id : "";
 }
 
 // ============================================================================
@@ -101,31 +173,28 @@ std::string ThreadSafeEntityCache::resolve_node_to_app(const std::string & node_
 
 std::vector<Area> ThreadSafeEntityCache::get_areas() const {
   std::shared_lock lock(mutex_);
-  return areas_;
+  return areas_.collect_live();
 }
 
 std::vector<Component> ThreadSafeEntityCache::get_components() const {
   std::shared_lock lock(mutex_);
-  return components_;
+  return components_.collect_live();
 }
 
 std::vector<App> ThreadSafeEntityCache::get_apps() const {
   std::shared_lock lock(mutex_);
-  return apps_;
+  return apps_.collect_live();
 }
 
 std::vector<Function> ThreadSafeEntityCache::get_functions() const {
   std::shared_lock lock(mutex_);
-  return functions_;
+  return functions_.collect_live();
 }
 
 std::string ThreadSafeEntityCache::get_topic_type(const std::string & topic_name) const {
   std::shared_lock lock(mutex_);
-  auto it = topic_type_cache_.find(topic_name);
-  if (it != topic_type_cache_.end()) {
-    return it->second;
-  }
-  return "";
+  const std::string * type = topic_type_cache_.find(topic_name);
+  return type ? *type : "";
 }
 
 // ============================================================================
@@ -134,27 +203,27 @@ std::string ThreadSafeEntityCache::get_topic_type(const std::string & topic_name
 
 std::optional<Area> ThreadSafeEntityCache::get_area(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  auto it = area_index_.find(id);
-  if (it != area_index_.end() && it->second < areas_.size()) {
-    return areas_[it->second];
+  const uint32_t * slot = area_index_.find(id);
+  if (slot && areas_.is_live(*slot)) {
+    return areas_[*slot];
   }
   return std::nullopt;
 }
 
 std::optional<Component> ThreadSafeEntityCache::get_component(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  auto it = component_index_.find(id);
-  if (it != component_index_.end() && it->second < components_.size()) {
-    return components_[it->second];
+  const uint32_t * slot = component_index_.find(id);
+  if (slot && components_.is_live(*slot)) {
+    return components_[*slot];
   }
   return std::nullopt;
 }
 
 std::optional<App> ThreadSafeEntityCache::get_app(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  auto it = app_index_.find(id);
-  if (it != app_index_.end() && it->second < apps_.size()) {
-    return apps_[it->second];
+  const uint32_t * slot = app_index_.find(id);
+  if (slot && apps_.is_live(*slot)) {
+    return apps_[*slot];
   }
   return std::nullopt;
 }
@@ -163,33 +232,33 @@ ThreadSafeEntityCache::AppLinksSnapshot ThreadSafeEntityCache::get_app_with_link
   AppLinksSnapshot snapshot;
   std::shared_lock lock(mutex_);
 
-  auto app_it = app_index_.find(id);
-  if (app_it == app_index_.end() || app_it->second >= apps_.size()) {
+  const uint32_t * app_slot = app_index_.find(id);
+  if (!app_slot || !apps_.is_live(*app_slot)) {
     return snapshot;
   }
-  snapshot.app = apps_[app_it->second];
+  snapshot.app = apps_[*app_slot];
 
   const auto & component_id = snapshot.app->component_id;
   if (component_id.empty()) {
     return snapshot;
   }
 
-  auto comp_it = component_index_.find(component_id);
-  if (comp_it == component_index_.end() || comp_it->second >= components_.size()) {
+  const uint32_t * comp_slot = component_index_.find(component_id);
+  if (!comp_slot || !components_.is_live(*comp_slot)) {
     return snapshot;  // component referenced but missing - leave .component empty
   }
-  snapshot.component = components_[comp_it->second];
+  snapshot.component = components_[*comp_slot];
 
   const auto & area_id = snapshot.component->area;
   if (area_id.empty()) {
     return snapshot;
   }
 
-  auto area_it = area_index_.find(area_id);
-  if (area_it == area_index_.end() || area_it->second >= areas_.size()) {
+  const uint32_t * area_slot = area_index_.find(area_id);
+  if (!area_slot || !areas_.is_live(*area_slot)) {
     return snapshot;  // area referenced but missing
   }
-  snapshot.area = areas_[area_it->second];
+  snapshot.area = areas_[*area_slot];
   return snapshot;
 }
 
@@ -198,17 +267,17 @@ ThreadSafeEntityCache::get_app_with_dependencies(const std::string & id) const {
   AppDependenciesSnapshot snapshot;
   std::shared_lock lock(mutex_);
 
-  auto app_it = app_index_.find(id);
-  if (app_it == app_index_.end() || app_it->second >= apps_.size()) {
+  const uint32_t * app_slot = app_index_.find(id);
+  if (!app_slot || !apps_.is_live(*app_slot)) {
     return snapshot;
   }
-  snapshot.app = apps_[app_it->second];
+  snapshot.app = apps_[*app_slot];
 
   snapshot.dependencies.reserve(snapshot.app->depends_on.size());
   for (const auto & dep_id : snapshot.app->depends_on) {
-    auto dep_it = app_index_.find(dep_id);
-    if (dep_it != app_index_.end() && dep_it->second < apps_.size()) {
-      snapshot.dependencies.emplace_back(dep_id, apps_[dep_it->second]);
+    const uint32_t * dep_slot = app_index_.find(dep_id);
+    if (dep_slot && apps_.is_live(*dep_slot)) {
+      snapshot.dependencies.emplace_back(dep_id, apps_[*dep_slot]);
     } else {
       snapshot.dependencies.emplace_back(dep_id, std::nullopt);
     }
@@ -218,9 +287,9 @@ ThreadSafeEntityCache::get_app_with_dependencies(const std::string & id) const {
 
 std::optional<Function> ThreadSafeEntityCache::get_function(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  auto it = function_index_.find(id);
-  if (it != function_index_.end() && it->second < functions_.size()) {
-    return functions_[it->second];
+  const uint32_t * slot = function_index_.find(id);
+  if (slot && functions_.is_live(*slot)) {
+    return functions_[*slot];
   }
   return std::nullopt;
 }
@@ -231,22 +300,26 @@ std::optional<Function> ThreadSafeEntityCache::get_function(const std::string & 
 
 bool ThreadSafeEntityCache::has_area(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  return area_index_.count(id) > 0;
+  const uint32_t * slot = area_index_.find(id);
+  return slot && areas_.is_live(*slot);
 }
 
 bool ThreadSafeEntityCache::has_component(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  return component_index_.count(id) > 0;
+  const uint32_t * slot = component_index_.find(id);
+  return slot && components_.is_live(*slot);
 }
 
 bool ThreadSafeEntityCache::has_app(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  return app_index_.count(id) > 0;
+  const uint32_t * slot = app_index_.find(id);
+  return slot && apps_.is_live(*slot);
 }
 
 bool ThreadSafeEntityCache::has_function(const std::string & id) const {
   std::shared_lock lock(mutex_);
-  return function_index_.count(id) > 0;
+  const uint32_t * slot = function_index_.find(id);
+  return slot && functions_.is_live(*slot);
 }
 
 // ============================================================================
@@ -257,17 +330,17 @@ std::optional<EntityRef> ThreadSafeEntityCache::find_entity(const std::string & 
   std::shared_lock lock(mutex_);
 
   // Search order: Component, App, Area, Function
-  if (auto it = component_index_.find(id); it != component_index_.end()) {
-    return EntityRef{SovdEntityType::COMPONENT, it->second};
+  if (const uint32_t * slot = component_index_.find(id); slot && components_.is_live(*slot)) {
+    return EntityRef{SovdEntityType::COMPONENT, *slot};
   }
-  if (auto it = app_index_.find(id); it != app_index_.end()) {
-    return EntityRef{SovdEntityType::APP, it->second};
+  if (const uint32_t * slot = app_index_.find(id); slot && apps_.is_live(*slot)) {
+    return EntityRef{SovdEntityType::APP, *slot};
   }
-  if (auto it = area_index_.find(id); it != area_index_.end()) {
-    return EntityRef{SovdEntityType::AREA, it->second};
+  if (const uint32_t * slot = area_index_.find(id); slot && areas_.is_live(*slot)) {
+    return EntityRef{SovdEntityType::AREA, *slot};
   }
-  if (auto it = function_index_.find(id); it != function_index_.end()) {
-    return EntityRef{SovdEntityType::FUNCTION, it->second};
+  if (const uint32_t * slot = function_index_.find(id); slot && functions_.is_live(*slot)) {
+    return EntityRef{SovdEntityType::FUNCTION, *slot};
   }
 
   return std::nullopt;
@@ -286,12 +359,12 @@ std::vector<std::string> ThreadSafeEntityCache::get_apps_for_component(const std
   std::shared_lock lock(mutex_);
   std::vector<std::string> result;
 
-  auto it = component_to_apps_.find(component_id);
-  if (it != component_to_apps_.end()) {
-    result.reserve(it->second.size());
-    for (size_t idx : it->second) {
-      if (idx < apps_.size()) {
-        result.push_back(apps_[idx].id);
+  const std::vector<uint32_t> * slots = component_to_apps_.find(component_id);
+  if (slots) {
+    result.reserve(slots->size());
+    for (uint32_t slot : *slots) {
+      if (apps_.is_live(slot)) {
+        result.push_back(apps_[slot].id);
       }
     }
   }
@@ -302,12 +375,12 @@ std::vector<std::string> ThreadSafeEntityCache::get_components_for_area(const st
   std::shared_lock lock(mutex_);
   std::vector<std::string> result;
 
-  auto it = area_to_components_.find(area_id);
-  if (it != area_to_components_.end()) {
-    result.reserve(it->second.size());
-    for (size_t idx : it->second) {
-      if (idx < components_.size()) {
-        result.push_back(components_[idx].id);
+  const std::vector<uint32_t> * slots = area_to_components_.find(area_id);
+  if (slots) {
+    result.reserve(slots->size());
+    for (uint32_t slot : *slots) {
+      if (components_.is_live(slot)) {
+        result.push_back(components_[slot].id);
       }
     }
   }
@@ -318,12 +391,12 @@ std::vector<std::string> ThreadSafeEntityCache::get_apps_for_function(const std:
   std::shared_lock lock(mutex_);
   std::vector<std::string> result;
 
-  auto it = function_to_apps_.find(function_id);
-  if (it != function_to_apps_.end()) {
-    result.reserve(it->second.size());
-    for (size_t idx : it->second) {
-      if (idx < apps_.size()) {
-        result.push_back(apps_[idx].id);
+  const std::vector<uint32_t> * slots = function_to_apps_.find(function_id);
+  if (slots) {
+    result.reserve(slots->size());
+    for (uint32_t slot : *slots) {
+      if (apps_.is_live(slot)) {
+        result.push_back(apps_[slot].id);
       }
     }
   }
@@ -334,12 +407,12 @@ std::vector<std::string> ThreadSafeEntityCache::get_subareas(const std::string &
   std::shared_lock lock(mutex_);
   std::vector<std::string> result;
 
-  auto it = area_to_subareas_.find(area_id);
-  if (it != area_to_subareas_.end()) {
-    result.reserve(it->second.size());
-    for (size_t idx : it->second) {
-      if (idx < areas_.size()) {
-        result.push_back(areas_[idx].id);
+  const std::vector<uint32_t> * slots = area_to_subareas_.find(area_id);
+  if (slots) {
+    result.reserve(slots->size());
+    for (uint32_t slot : *slots) {
+      if (areas_.is_live(slot)) {
+        result.push_back(areas_[slot].id);
       }
     }
   }
@@ -356,12 +429,12 @@ AggregatedOperations ThreadSafeEntityCache::get_app_operations(const std::string
   result.aggregation_level = "app";
   result.is_aggregated = false;
 
-  auto it = app_index_.find(app_id);
-  if (it == app_index_.end() || it->second >= apps_.size()) {
+  const uint32_t * slot = app_index_.find(app_id);
+  if (!slot || !apps_.is_live(*slot)) {
     return result;
   }
 
-  const auto & app = apps_[it->second];
+  const auto & app = apps_[*slot];
   result.services = app.services;
   result.actions = app.actions;
   result.source_ids.push_back(app_id);
@@ -374,22 +447,22 @@ AggregatedOperations ThreadSafeEntityCache::get_component_operations(const std::
   AggregatedOperations result;
   result.aggregation_level = "component";
 
-  auto comp_it = component_index_.find(component_id);
-  if (comp_it == component_index_.end() || comp_it->second >= components_.size()) {
+  const uint32_t * comp_slot = component_index_.find(component_id);
+  if (!comp_slot || !components_.is_live(*comp_slot)) {
     return result;
   }
 
   std::unordered_set<std::string> seen_paths;
 
   // Add component's own operations first
-  collect_operations_from_component(comp_it->second, seen_paths, result);
+  collect_operations_from_component(*comp_slot, seen_paths, result);
 
   // Add operations from hosted apps
-  auto apps_it = component_to_apps_.find(component_id);
-  if (apps_it != component_to_apps_.end()) {
-    collect_operations_from_apps(apps_it->second, seen_paths, result);
+  const std::vector<uint32_t> * app_slots = component_to_apps_.find(component_id);
+  if (app_slots) {
+    collect_operations_from_apps(*app_slots, seen_paths, result);
     // Mark as aggregated if we collected from apps
-    if (!apps_it->second.empty()) {
+    if (!app_slots->empty()) {
       result.is_aggregated = true;
     }
   }
@@ -403,30 +476,30 @@ AggregatedOperations ThreadSafeEntityCache::get_area_operations(const std::strin
   result.aggregation_level = "area";
   result.is_aggregated = true;  // Area operations are always aggregated
 
-  auto area_it = area_index_.find(area_id);
-  if (area_it == area_index_.end()) {
+  const uint32_t * area_slot = area_index_.find(area_id);
+  if (!area_slot || !areas_.is_live(*area_slot)) {
     return result;
   }
 
   std::unordered_set<std::string> seen_paths;
 
   // Get all components in this area
-  auto comps_it = area_to_components_.find(area_id);
-  if (comps_it != area_to_components_.end()) {
-    for (size_t comp_idx : comps_it->second) {
-      if (comp_idx >= components_.size()) {
+  const std::vector<uint32_t> * comp_slots = area_to_components_.find(area_id);
+  if (comp_slots) {
+    for (uint32_t comp_slot : *comp_slots) {
+      if (!components_.is_live(comp_slot)) {
         continue;
       }
 
-      const auto & comp = components_[comp_idx];
+      const auto & comp = components_[comp_slot];
 
       // Add component's own operations
-      collect_operations_from_component(comp_idx, seen_paths, result);
+      collect_operations_from_component(comp_slot, seen_paths, result);
 
       // Add operations from component's apps
-      auto apps_it = component_to_apps_.find(comp.id);
-      if (apps_it != component_to_apps_.end()) {
-        collect_operations_from_apps(apps_it->second, seen_paths, result);
+      const std::vector<uint32_t> * app_slots = component_to_apps_.find(comp.id);
+      if (app_slots) {
+        collect_operations_from_apps(*app_slots, seen_paths, result);
       }
     }
   }
@@ -440,17 +513,17 @@ AggregatedOperations ThreadSafeEntityCache::get_function_operations(const std::s
   result.aggregation_level = "function";
   result.is_aggregated = true;  // Function operations are always aggregated
 
-  auto func_it = function_index_.find(function_id);
-  if (func_it == function_index_.end()) {
+  const uint32_t * func_slot = function_index_.find(function_id);
+  if (!func_slot || !functions_.is_live(*func_slot)) {
     return result;
   }
 
   std::unordered_set<std::string> seen_paths;
 
   // Get all apps implementing this function
-  auto apps_it = function_to_apps_.find(function_id);
-  if (apps_it != function_to_apps_.end()) {
-    collect_operations_from_apps(apps_it->second, seen_paths, result);
+  const std::vector<uint32_t> * app_slots = function_to_apps_.find(function_id);
+  if (app_slots) {
+    collect_operations_from_apps(*app_slots, seen_paths, result);
   }
 
   return result;
@@ -489,12 +562,12 @@ AggregatedConfigurations ThreadSafeEntityCache::get_app_configurations(const std
   result.aggregation_level = "app";
   result.is_aggregated = false;
 
-  auto it = app_index_.find(app_id);
-  if (it == app_index_.end() || it->second >= apps_.size()) {
+  const uint32_t * slot = app_index_.find(app_id);
+  if (!slot || !apps_.is_live(*slot)) {
     return result;
   }
 
-  const auto & app = apps_[it->second];
+  const auto & app = apps_[*slot];
 
   // App must have a resolvable FQN to have parameters
   auto eff_fqn = app.effective_fqn();
@@ -515,21 +588,21 @@ AggregatedConfigurations ThreadSafeEntityCache::get_component_configurations(con
   AggregatedConfigurations result;
   result.aggregation_level = "component";
 
-  auto comp_it = component_index_.find(component_id);
-  if (comp_it == component_index_.end() || comp_it->second >= components_.size()) {
+  const uint32_t * comp_slot = component_index_.find(component_id);
+  if (!comp_slot || !components_.is_live(*comp_slot)) {
     return result;
   }
 
   result.source_ids.push_back(component_id);
 
   // Collect node FQNs from hosted apps
-  auto apps_it = component_to_apps_.find(component_id);
-  if (apps_it != component_to_apps_.end()) {
-    for (size_t app_idx : apps_it->second) {
-      if (app_idx >= apps_.size()) {
+  const std::vector<uint32_t> * app_slots = component_to_apps_.find(component_id);
+  if (app_slots) {
+    for (uint32_t app_slot : *app_slots) {
+      if (!apps_.is_live(app_slot)) {
         continue;
       }
-      const auto & app = apps_[app_idx];
+      const auto & app = apps_[app_slot];
       auto eff_fqn = app.effective_fqn();
       if (!eff_fqn.empty()) {
         NodeConfigInfo info;
@@ -553,32 +626,32 @@ AggregatedConfigurations ThreadSafeEntityCache::get_area_configurations(const st
   AggregatedConfigurations result;
   result.aggregation_level = "area";
 
-  auto area_it = area_index_.find(area_id);
-  if (area_it == area_index_.end()) {
+  const uint32_t * area_slot = area_index_.find(area_id);
+  if (!area_slot || !areas_.is_live(*area_slot)) {
     return result;
   }
 
   result.source_ids.push_back(area_id);
 
   // Get all components in this area
-  auto comps_it = area_to_components_.find(area_id);
-  if (comps_it != area_to_components_.end()) {
-    for (size_t comp_idx : comps_it->second) {
-      if (comp_idx >= components_.size()) {
+  const std::vector<uint32_t> * comp_slots = area_to_components_.find(area_id);
+  if (comp_slots) {
+    for (uint32_t comp_slot : *comp_slots) {
+      if (!components_.is_live(comp_slot)) {
         continue;
       }
 
-      const auto & comp = components_[comp_idx];
+      const auto & comp = components_[comp_slot];
       result.source_ids.push_back(comp.id);
 
       // Add node FQNs from component's apps
-      auto apps_it = component_to_apps_.find(comp.id);
-      if (apps_it != component_to_apps_.end()) {
-        for (size_t app_idx : apps_it->second) {
-          if (app_idx >= apps_.size()) {
+      const std::vector<uint32_t> * app_slots = component_to_apps_.find(comp.id);
+      if (app_slots) {
+        for (uint32_t app_slot : *app_slots) {
+          if (!apps_.is_live(app_slot)) {
             continue;
           }
-          const auto & app = apps_[app_idx];
+          const auto & app = apps_[app_slot];
           auto eff_fqn = app.effective_fqn();
           if (!eff_fqn.empty()) {
             NodeConfigInfo info;
@@ -604,21 +677,21 @@ AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(cons
   AggregatedConfigurations result;
   result.aggregation_level = "function";
 
-  auto func_it = function_index_.find(function_id);
-  if (func_it == function_index_.end()) {
+  const uint32_t * func_slot = function_index_.find(function_id);
+  if (!func_slot || !functions_.is_live(*func_slot)) {
     return result;
   }
 
   result.source_ids.push_back(function_id);
 
   // Get all apps implementing this function
-  auto apps_it = function_to_apps_.find(function_id);
-  if (apps_it != function_to_apps_.end()) {
-    for (size_t app_idx : apps_it->second) {
-      if (app_idx >= apps_.size()) {
+  const std::vector<uint32_t> * app_slots = function_to_apps_.find(function_id);
+  if (app_slots) {
+    for (uint32_t app_slot : *app_slots) {
+      if (!apps_.is_live(app_slot)) {
         continue;
       }
-      const auto & app = apps_[app_idx];
+      const auto & app = apps_[app_slot];
       auto eff_fqn = app.effective_fqn();
       if (!eff_fqn.empty()) {
         NodeConfigInfo info;
@@ -643,9 +716,9 @@ AggregatedConfigurations ThreadSafeEntityCache::get_function_configurations(cons
 
 std::optional<EntityRef> ThreadSafeEntityCache::find_operation_owner(const std::string & operation_path) const {
   std::shared_lock lock(mutex_);
-  auto it = operation_index_.find(operation_path);
-  if (it != operation_index_.end()) {
-    return it->second;
+  const EntityRef * ref = operation_index_.find(operation_path);
+  if (ref) {
+    return *ref;
   }
   return std::nullopt;
 }
@@ -657,11 +730,21 @@ std::optional<EntityRef> ThreadSafeEntityCache::find_operation_owner(const std::
 EntityCacheStats ThreadSafeEntityCache::get_stats() const {
   std::shared_lock lock(mutex_);
   EntityCacheStats stats;
-  stats.area_count = areas_.size();
-  stats.component_count = components_.size();
-  stats.app_count = apps_.size();
-  stats.function_count = functions_.size();
+  stats.area_count = areas_.live_count();
+  stats.component_count = components_.live_count();
+  stats.app_count = apps_.live_count();
+  stats.function_count = functions_.live_count();
   stats.total_operations = operation_index_.size();
+  stats.capacity = capacity_;
+  // No read-and-clear refresh exists yet (introduced in Task 5), so derive
+  // `grew` from the live container flags. `grew_` is reserved for that future
+  // cached path and currently stays false.
+  stats.grew = grew_ || areas_.grew() || components_.grew() || apps_.grew() || functions_.grew() ||
+               area_index_.grew() || component_index_.grew() || app_index_.grew() || function_index_.grew() ||
+               component_to_apps_.grew() || area_to_components_.grew() || area_to_subareas_.grew() ||
+               function_to_apps_.grew() || operation_index_.grew() || topic_type_cache_.grew() || node_to_app_.grew();
+  stats.generation = generation_.load(std::memory_order_acquire);
+  stats.overflow_count = overflow_count_;
   stats.last_update = last_update_;
   return stats;
 }
@@ -670,64 +753,67 @@ std::string ThreadSafeEntityCache::validate() const {
   std::shared_lock lock(mutex_);
   std::ostringstream errors;
 
-  // Check area index
-  for (const auto & [id, idx] : area_index_) {
-    if (idx >= areas_.size()) {
-      errors << "Area index out of bounds: " << id << " -> " << idx << "\n";
-    } else if (areas_[idx].id != id) {
-      errors << "Area index mismatch: " << id << " -> " << areas_[idx].id << "\n";
-    }
-  }
+  auto check_index = [&errors](const char * what, const auto & index, const auto & store) {
+    index.for_each([&](const std::string & id, uint32_t slot) {
+      if (slot >= store.slot_count()) {
+        errors << what << " index out of bounds: " << id << " -> " << slot << "\n";
+      } else if (!store.is_live(slot)) {
+        errors << what << " index points to dead slot: " << id << " -> " << slot << "\n";
+      } else if (store[static_cast<size_t>(slot)].id != id) {
+        errors << what << " index mismatch: " << id << " -> " << store[static_cast<size_t>(slot)].id << "\n";
+      }
+    });
+  };
 
-  // Check component index
-  for (const auto & [id, idx] : component_index_) {
-    if (idx >= components_.size()) {
-      errors << "Component index out of bounds: " << id << " -> " << idx << "\n";
-    } else if (components_[idx].id != id) {
-      errors << "Component index mismatch: " << id << " -> " << components_[idx].id << "\n";
-    }
-  }
+  check_index("Area", area_index_, areas_);
+  check_index("Component", component_index_, components_);
+  check_index("App", app_index_, apps_);
+  check_index("Function", function_index_, functions_);
 
-  // Check app index
-  for (const auto & [id, idx] : app_index_) {
-    if (idx >= apps_.size()) {
-      errors << "App index out of bounds: " << id << " -> " << idx << "\n";
-    } else if (apps_[idx].id != id) {
-      errors << "App index mismatch: " << id << " -> " << apps_[idx].id << "\n";
+  // Live-count consistency: each live slot must be reachable via its index.
+  auto check_live_consistency = [&errors](const char * what, const auto & store, const auto & index) {
+    size_t reachable = 0;
+    store.for_each_live([&](uint32_t slot, const auto & entity) {
+      const uint32_t * mapped = index.find(entity.id);
+      if (mapped && *mapped == slot) {
+        ++reachable;
+      } else {
+        errors << what << " live slot not reachable via index: " << entity.id << " (slot " << slot << ")\n";
+      }
+    });
+    if (reachable != store.live_count()) {
+      errors << what << " live-count inconsistency: reachable=" << reachable << " live_count=" << store.live_count()
+             << "\n";
     }
-  }
+  };
 
-  // Check function index
-  for (const auto & [id, idx] : function_index_) {
-    if (idx >= functions_.size()) {
-      errors << "Function index out of bounds: " << id << " -> " << idx << "\n";
-    } else if (functions_[idx].id != id) {
-      errors << "Function index mismatch: " << id << " -> " << functions_[idx].id << "\n";
-    }
-  }
+  check_live_consistency("Area", areas_, area_index_);
+  check_live_consistency("Component", components_, component_index_);
+  check_live_consistency("App", apps_, app_index_);
+  check_live_consistency("Function", functions_, function_index_);
 
-  // Check for duplicate IDs
+  // Check for duplicate IDs across all live entities
   std::unordered_set<std::string> seen_ids;
-  for (const auto & area : areas_) {
+  areas_.for_each_live([&](uint32_t, const Area & area) {
     if (!seen_ids.insert(area.id).second) {
       errors << "Duplicate area ID: " << area.id << "\n";
     }
-  }
-  for (const auto & comp : components_) {
+  });
+  components_.for_each_live([&](uint32_t, const Component & comp) {
     if (!seen_ids.insert(comp.id).second) {
       errors << "Duplicate component ID (or conflicts with area): " << comp.id << "\n";
     }
-  }
-  for (const auto & app : apps_) {
+  });
+  apps_.for_each_live([&](uint32_t, const App & app) {
     if (!seen_ids.insert(app.id).second) {
       errors << "Duplicate app ID (or conflicts with other entity): " << app.id << "\n";
     }
-  }
-  for (const auto & func : functions_) {
+  });
+  functions_.for_each_live([&](uint32_t, const Function & func) {
     if (!seen_ids.insert(func.id).second) {
       errors << "Duplicate function ID (or conflicts with other entity): " << func.id << "\n";
     }
-  }
+  });
 
   return errors.str();
 }
@@ -755,117 +841,109 @@ void ThreadSafeEntityCache::rebuild_all_indexes() {
 }
 
 void ThreadSafeEntityCache::rebuild_area_index() {
-  area_index_.clear();
-  area_index_.reserve(areas_.size());
-  for (size_t i = 0; i < areas_.size(); ++i) {
-    area_index_[areas_[i].id] = i;
-  }
+  area_index_.reset();
+  areas_.for_each_live([&](uint32_t slot, const Area & area) {
+    area_index_.insert_or_assign(area.id, slot);
+  });
 }
 
 void ThreadSafeEntityCache::rebuild_component_index() {
-  component_index_.clear();
-  component_index_.reserve(components_.size());
-  for (size_t i = 0; i < components_.size(); ++i) {
-    component_index_[components_[i].id] = i;
-  }
+  component_index_.reset();
+  components_.for_each_live([&](uint32_t slot, const Component & comp) {
+    component_index_.insert_or_assign(comp.id, slot);
+  });
 }
 
 void ThreadSafeEntityCache::rebuild_app_index() {
-  app_index_.clear();
-  app_index_.reserve(apps_.size());
-  for (size_t i = 0; i < apps_.size(); ++i) {
-    app_index_[apps_[i].id] = i;
-  }
+  app_index_.reset();
+  apps_.for_each_live([&](uint32_t slot, const App & app) {
+    app_index_.insert_or_assign(app.id, slot);
+  });
 }
 
 void ThreadSafeEntityCache::rebuild_function_index() {
-  function_index_.clear();
-  function_index_.reserve(functions_.size());
-  for (size_t i = 0; i < functions_.size(); ++i) {
-    function_index_[functions_[i].id] = i;
-  }
+  function_index_.reset();
+  functions_.for_each_live([&](uint32_t slot, const Function & func) {
+    function_index_.insert_or_assign(func.id, slot);
+  });
 }
 
 void ThreadSafeEntityCache::rebuild_relationship_indexes() {
-  component_to_apps_.clear();
-  area_to_components_.clear();
-  area_to_subareas_.clear();
-  function_to_apps_.clear();
+  component_to_apps_.reset();
+  area_to_components_.reset();
+  area_to_subareas_.reset();
+  function_to_apps_.reset();
 
   // Build component_to_apps from apps' component_id
-  for (size_t i = 0; i < apps_.size(); ++i) {
-    const auto & app = apps_[i];
+  apps_.for_each_live([&](uint32_t slot, const App & app) {
     if (!app.component_id.empty()) {
-      component_to_apps_[app.component_id].push_back(i);
+      component_to_apps_.get_or_create(app.component_id).push_back(slot);
     }
-  }
+  });
 
   // Build area_to_components from components' area
-  for (size_t i = 0; i < components_.size(); ++i) {
-    const auto & comp = components_[i];
+  components_.for_each_live([&](uint32_t slot, const Component & comp) {
     if (!comp.area.empty()) {
-      area_to_components_[comp.area].push_back(i);
+      area_to_components_.get_or_create(comp.area).push_back(slot);
     }
-  }
+  });
 
   // Build area_to_subareas from areas' parent_area_id
-  for (size_t i = 0; i < areas_.size(); ++i) {
-    const auto & area = areas_[i];
+  areas_.for_each_live([&](uint32_t slot, const Area & area) {
     if (!area.parent_area_id.empty()) {
-      area_to_subareas_[area.parent_area_id].push_back(i);
+      area_to_subareas_.get_or_create(area.parent_area_id).push_back(slot);
     }
-  }
+  });
 
-  // Build function_to_apps (functions have a hosts field which is vector of app IDs)
-  // Note: Function.hosts contains app IDs that implement this function
-  for (const auto & func : functions_) {
+  // Build function_to_apps (functions have a hosts field which is a vector of app IDs).
+  // Function.hosts may also name Components - host ids that do not resolve to an
+  // app are silently dropped (preserving the original behaviour).
+  functions_.for_each_live([&](uint32_t, const Function & func) {
     for (const auto & app_id : func.hosts) {
-      auto app_it = app_index_.find(app_id);
-      if (app_it != app_index_.end()) {
-        function_to_apps_[func.id].push_back(app_it->second);
+      const uint32_t * app_slot = app_index_.find(app_id);
+      if (app_slot && apps_.is_live(*app_slot)) {
+        function_to_apps_.get_or_create(func.id).push_back(*app_slot);
       }
     }
-  }
+  });
 }
 
 void ThreadSafeEntityCache::rebuild_operation_index() {
-  operation_index_.clear();
+  operation_index_.reset();
 
   // Index operations from components
-  for (size_t i = 0; i < components_.size(); ++i) {
-    const auto & comp = components_[i];
+  components_.for_each_live([&](uint32_t slot, const Component & comp) {
     for (const auto & svc : comp.services) {
-      operation_index_[svc.full_path] = {SovdEntityType::COMPONENT, i};
+      operation_index_.insert_or_assign(svc.full_path, EntityRef{SovdEntityType::COMPONENT, slot});
     }
     for (const auto & act : comp.actions) {
-      operation_index_[act.full_path] = {SovdEntityType::COMPONENT, i};
+      operation_index_.insert_or_assign(act.full_path, EntityRef{SovdEntityType::COMPONENT, slot});
     }
-  }
+  });
 
   // Index operations from apps (apps take priority over components for same path)
-  for (size_t i = 0; i < apps_.size(); ++i) {
-    const auto & app = apps_[i];
+  apps_.for_each_live([&](uint32_t slot, const App & app) {
     for (const auto & svc : app.services) {
-      operation_index_[svc.full_path] = {SovdEntityType::APP, i};
+      operation_index_.insert_or_assign(svc.full_path, EntityRef{SovdEntityType::APP, slot});
     }
     for (const auto & act : app.actions) {
-      operation_index_[act.full_path] = {SovdEntityType::APP, i};
+      operation_index_.insert_or_assign(act.full_path, EntityRef{SovdEntityType::APP, slot});
     }
-  }
+  });
 }
 
 // ============================================================================
 // Aggregation helpers
 // ============================================================================
 
-void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<size_t> & app_indexes,
+void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<uint32_t> & app_slots,
                                                          std::unordered_set<std::string> & seen_paths,
                                                          AggregatedOperations & result) const {
-  for (size_t idx : app_indexes) {
-    if (idx >= apps_.size()) {
+  for (uint32_t slot : app_slots) {
+    if (!apps_.is_live(slot)) {
       continue;
     }
-    const auto & app = apps_[idx];
+    const auto & app = apps_[slot];
     result.source_ids.push_back(app.id);
 
     for (const auto & svc : app.services) {
@@ -881,14 +959,14 @@ void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<size_
   }
 }
 
-void ThreadSafeEntityCache::collect_operations_from_component(size_t comp_index,
+void ThreadSafeEntityCache::collect_operations_from_component(uint32_t comp_slot,
                                                               std::unordered_set<std::string> & seen_paths,
                                                               AggregatedOperations & result) const {
-  if (comp_index >= components_.size()) {
+  if (!components_.is_live(comp_slot)) {
     return;
   }
 
-  const auto & comp = components_[comp_index];
+  const auto & comp = components_[comp_slot];
   result.source_ids.push_back(comp.id);
 
   for (const auto & svc : comp.services) {
@@ -934,8 +1012,8 @@ AggregatedData ThreadSafeEntityCache::get_entity_data(const std::string & entity
 AggregatedData ThreadSafeEntityCache::get_app_data(const std::string & app_id) const {
   std::shared_lock lock(mutex_);
 
-  auto it = app_index_.find(app_id);
-  if (it == app_index_.end()) {
+  const uint32_t * slot = app_index_.find(app_id);
+  if (!slot || !apps_.is_live(*slot)) {
     return {};
   }
 
@@ -944,7 +1022,7 @@ AggregatedData ThreadSafeEntityCache::get_app_data(const std::string & app_id) c
   result.is_aggregated = false;
 
   std::unordered_set<std::string> seen_topics;
-  collect_topics_from_app(it->second, seen_topics, result);
+  collect_topics_from_app(*slot, seen_topics, result);
 
   return result;
 }
@@ -952,8 +1030,8 @@ AggregatedData ThreadSafeEntityCache::get_app_data(const std::string & app_id) c
 AggregatedData ThreadSafeEntityCache::get_component_data(const std::string & component_id) const {
   std::shared_lock lock(mutex_);
 
-  auto comp_it = component_index_.find(component_id);
-  if (comp_it == component_index_.end()) {
+  const uint32_t * comp_slot = component_index_.find(component_id);
+  if (!comp_slot || !components_.is_live(*comp_slot)) {
     return {};
   }
 
@@ -963,13 +1041,13 @@ AggregatedData ThreadSafeEntityCache::get_component_data(const std::string & com
   std::unordered_set<std::string> seen_topics;
 
   // Collect from component itself
-  collect_topics_from_component(comp_it->second, seen_topics, result);
+  collect_topics_from_component(*comp_slot, seen_topics, result);
 
   // Collect from hosted apps
-  auto apps_it = component_to_apps_.find(component_id);
-  if (apps_it != component_to_apps_.end()) {
-    collect_topics_from_apps(apps_it->second, seen_topics, result);
-    result.is_aggregated = !apps_it->second.empty();
+  const std::vector<uint32_t> * app_slots = component_to_apps_.find(component_id);
+  if (app_slots) {
+    collect_topics_from_apps(*app_slots, seen_topics, result);
+    result.is_aggregated = !app_slots->empty();
   }
 
   return result;
@@ -978,8 +1056,8 @@ AggregatedData ThreadSafeEntityCache::get_component_data(const std::string & com
 AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id) const {
   std::shared_lock lock(mutex_);
 
-  auto area_it = area_index_.find(area_id);
-  if (area_it == area_index_.end()) {
+  const uint32_t * area_slot = area_index_.find(area_id);
+  if (!area_slot || !areas_.is_live(*area_slot)) {
     return {};
   }
 
@@ -991,7 +1069,7 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
   std::unordered_set<std::string> seen_topics;
 
   // Collect from all components in this area **and its subareas** (recursive)
-  std::vector<size_t> component_indices;
+  std::vector<uint32_t> component_slots;
   std::unordered_set<std::string> visited_areas;
   std::vector<std::string> pending_areas;
   pending_areas.push_back(area_id);
@@ -1006,30 +1084,30 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
     }
 
     // Collect components directly associated with this area
-    auto comps_it = area_to_components_.find(current_area);
-    if (comps_it != area_to_components_.end()) {
-      component_indices.insert(component_indices.end(), comps_it->second.begin(), comps_it->second.end());
+    const std::vector<uint32_t> * comp_slots = area_to_components_.find(current_area);
+    if (comp_slots) {
+      component_slots.insert(component_slots.end(), comp_slots->begin(), comp_slots->end());
     }
 
     // Traverse into subareas
-    auto subareas_it = area_to_subareas_.find(current_area);
-    if (subareas_it != area_to_subareas_.end()) {
-      for (size_t subarea_idx : subareas_it->second) {
-        if (subarea_idx < areas_.size()) {
-          pending_areas.push_back(areas_[subarea_idx].id);
+    const std::vector<uint32_t> * subarea_slots = area_to_subareas_.find(current_area);
+    if (subarea_slots) {
+      for (uint32_t subarea_slot : *subarea_slots) {
+        if (areas_.is_live(subarea_slot)) {
+          pending_areas.push_back(areas_[subarea_slot].id);
         }
       }
     }
   }
 
-  for (size_t comp_idx : component_indices) {
-    collect_topics_from_component(comp_idx, seen_topics, result);
+  for (uint32_t comp_slot : component_slots) {
+    collect_topics_from_component(comp_slot, seen_topics, result);
 
     // Also collect from apps hosted on each component
-    if (comp_idx < components_.size()) {
-      auto apps_it = component_to_apps_.find(components_[comp_idx].id);
-      if (apps_it != component_to_apps_.end()) {
-        collect_topics_from_apps(apps_it->second, seen_topics, result);
+    if (components_.is_live(comp_slot)) {
+      const std::vector<uint32_t> * app_slots = component_to_apps_.find(components_[comp_slot].id);
+      if (app_slots) {
+        collect_topics_from_apps(*app_slots, seen_topics, result);
       }
     }
   }
@@ -1040,8 +1118,8 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
 AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & function_id) const {
   std::shared_lock lock(mutex_);
 
-  auto func_it = function_index_.find(function_id);
-  if (func_it == function_index_.end()) {
+  const uint32_t * func_slot = function_index_.find(function_id);
+  if (!func_slot || !functions_.is_live(*func_slot)) {
     return {};
   }
 
@@ -1053,9 +1131,9 @@ AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & func
   std::unordered_set<std::string> seen_topics;
 
   // Collect from all apps implementing this function
-  auto apps_it = function_to_apps_.find(function_id);
-  if (apps_it != function_to_apps_.end()) {
-    collect_topics_from_apps(apps_it->second, seen_topics, result);
+  const std::vector<uint32_t> * app_slots = function_to_apps_.find(function_id);
+  if (app_slots) {
+    collect_topics_from_apps(*app_slots, seen_topics, result);
   }
 
   return result;
@@ -1065,13 +1143,13 @@ AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & func
 // Data aggregation helpers
 // ============================================================================
 
-void ThreadSafeEntityCache::collect_topics_from_app(size_t app_index, std::unordered_set<std::string> & seen_topics,
+void ThreadSafeEntityCache::collect_topics_from_app(uint32_t app_slot, std::unordered_set<std::string> & seen_topics,
                                                     AggregatedData & result) const {
-  if (app_index >= apps_.size()) {
+  if (!apps_.is_live(app_slot)) {
     return;
   }
 
-  const auto & app = apps_[app_index];
+  const auto & app = apps_[app_slot];
   result.source_ids.push_back(app.id);
 
   // Publishers
@@ -1107,22 +1185,22 @@ void ThreadSafeEntityCache::collect_topics_from_app(size_t app_index, std::unord
   }
 }
 
-void ThreadSafeEntityCache::collect_topics_from_apps(const std::vector<size_t> & app_indexes,
+void ThreadSafeEntityCache::collect_topics_from_apps(const std::vector<uint32_t> & app_slots,
                                                      std::unordered_set<std::string> & seen_topics,
                                                      AggregatedData & result) const {
-  for (size_t idx : app_indexes) {
-    collect_topics_from_app(idx, seen_topics, result);
+  for (uint32_t slot : app_slots) {
+    collect_topics_from_app(slot, seen_topics, result);
   }
 }
 
-void ThreadSafeEntityCache::collect_topics_from_component(size_t comp_index,
+void ThreadSafeEntityCache::collect_topics_from_component(uint32_t comp_slot,
                                                           std::unordered_set<std::string> & seen_topics,
                                                           AggregatedData & result) const {
-  if (comp_index >= components_.size()) {
+  if (!components_.is_live(comp_slot)) {
     return;
   }
 
-  const auto & comp = components_[comp_index];
+  const auto & comp = components_[comp_slot];
   result.source_ids.push_back(comp.id);
 
   // Publishers

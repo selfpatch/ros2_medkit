@@ -19,9 +19,12 @@
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/util/flat_hash_map.hpp"
+#include "ros2_medkit_gateway/core/util/slot_store.hpp"
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -33,6 +36,8 @@ namespace ros2_medkit_gateway {
 
 /**
  * @brief Reference to an entity in the cache
+ *
+ * `index` is a stable SlotStore slot id (not a compacted vector position).
  */
 struct EntityRef {
   SovdEntityType type{SovdEntityType::UNKNOWN};
@@ -118,11 +123,15 @@ struct AggregatedConfigurations {
  * @brief Cache statistics
  */
 struct EntityCacheStats {
-  size_t area_count{0};
-  size_t component_count{0};
-  size_t app_count{0};
-  size_t function_count{0};
+  size_t area_count{0};       ///< Live areas
+  size_t component_count{0};  ///< Live components
+  size_t app_count{0};        ///< Live apps
+  size_t function_count{0};   ///< Live functions
   size_t total_operations{0};
+  size_t capacity{0};        ///< Configured reserve capacity (0 = lazy growth)
+  bool grew{false};          ///< true if any backing store/index reallocated since the last refresh
+  uint64_t generation{0};    ///< Current cache generation counter
+  size_t overflow_count{0};  ///< Reserved for incremental reconcile overflow accounting (Task 5)
   std::chrono::system_clock::time_point last_update;
 };
 
@@ -149,6 +158,17 @@ struct EntityCacheStats {
 class ThreadSafeEntityCache {
  public:
   ThreadSafeEntityCache() = default;
+
+  /// Construct with all stores, indexes and scratch buffers pre-reserved for
+  /// `capacity` entities. Steady-state updates below this size cause no
+  /// structural reallocation. `capacity == 0` is equivalent to the default
+  /// constructor (lazy growth from empty).
+  explicit ThreadSafeEntityCache(size_t capacity);
+
+  /// Reserve every backing store, every index/relationship map, and the
+  /// reconcile scratch buffers for `capacity` entities. Idempotent; safe to
+  /// call on a populated cache (only grows the backing arrays).
+  void reserve(size_t capacity);
 
   // =========================================================================
   // Writer methods (exclusive lock) - called by discovery thread
@@ -467,48 +487,62 @@ class ThreadSafeEntityCache {
   /**
    * @brief Get the current generation counter
    *
-   * The generation counter is incremented on every cache mutation (update_all,
-   * update_areas, update_components, update_apps, update_functions). Consumers
-   * can use this to detect when cached derived data (e.g., OpenAPI specs) is
-   * stale and needs regeneration.
+   * The generation counter advances on every cache mutation (update_all,
+   * update_areas, update_components, update_apps, update_functions,
+   * update_topic_types). Consumers can use this to detect when cached derived
+   * data (e.g., OpenAPI specs) is stale and needs regeneration.
    */
   uint64_t generation() const;
 
  private:
   mutable std::shared_mutex mutex_;
 
-  // Generation counter - incremented on every entity mutation
+  // Generation counter - advances on every entity mutation
   std::atomic<uint64_t> generation_{0};
 
-  // Primary storage
-  std::vector<Area> areas_;
-  std::vector<Component> components_;
-  std::vector<App> apps_;
-  std::vector<Function> functions_;
+  // Primary storage: stable-slot object pools (slots never shift on free).
+  SlotStore<Area> areas_;
+  SlotStore<Component> components_;
+  SlotStore<App> apps_;
+  SlotStore<Function> functions_;
 
   // Timestamp
   std::chrono::system_clock::time_point last_update_;
 
-  // Primary indexes (ID → vector index)
-  std::unordered_map<std::string, size_t> area_index_;
-  std::unordered_map<std::string, size_t> component_index_;
-  std::unordered_map<std::string, size_t> app_index_;
-  std::unordered_map<std::string, size_t> function_index_;
+  // Primary indexes (ID -> stable slot id)
+  FlatHashMap<std::string, uint32_t> area_index_;
+  FlatHashMap<std::string, uint32_t> component_index_;
+  FlatHashMap<std::string, uint32_t> app_index_;
+  FlatHashMap<std::string, uint32_t> function_index_;
 
-  // Relationship indexes (parent ID → child vector indexes)
-  std::unordered_map<std::string, std::vector<size_t>> component_to_apps_;
-  std::unordered_map<std::string, std::vector<size_t>> area_to_components_;
-  std::unordered_map<std::string, std::vector<size_t>> area_to_subareas_;
-  std::unordered_map<std::string, std::vector<size_t>> function_to_apps_;
+  // Relationship indexes (parent ID -> child slot ids)
+  FlatHashMap<std::string, std::vector<uint32_t>> component_to_apps_;
+  FlatHashMap<std::string, std::vector<uint32_t>> area_to_components_;
+  FlatHashMap<std::string, std::vector<uint32_t>> area_to_subareas_;
+  FlatHashMap<std::string, std::vector<uint32_t>> function_to_apps_;
 
-  // Operation index (operation full_path → owning entity)
-  std::unordered_map<std::string, EntityRef> operation_index_;
+  // Operation index (operation full_path -> owning entity)
+  FlatHashMap<std::string, EntityRef> operation_index_;
 
   // Topic type cache (topic name -> message type) - refreshed periodically
-  std::unordered_map<std::string, std::string> topic_type_cache_;
+  FlatHashMap<std::string, std::string> topic_type_cache_;
 
   // Node FQN -> app entity ID mapping from linking result (for trigger entity resolution)
-  std::unordered_map<std::string, std::string> node_to_app_;
+  FlatHashMap<std::string, std::string> node_to_app_;
+
+  // Reconcile scratch buffers (reserved alongside the stores). seen_ is used on
+  // the overflow/grow path only; dead_ids_/patch_dead_ back the incremental
+  // reconcile introduced in a later task. Kept here so reserve() can size them.
+  std::vector<uint8_t> seen_;
+  std::vector<std::string> dead_ids_;
+  std::vector<std::string> patch_dead_;
+
+  // Configured reserve capacity (0 = lazy growth from empty).
+  size_t capacity_{0};
+  // Whether any store/index reallocated since the last stats refresh.
+  bool grew_{false};
+  // Reserved for incremental reconcile overflow accounting (Task 5).
+  size_t overflow_count_{0};
 
   // Internal helpers (called under lock)
   void rebuild_all_indexes();
@@ -519,18 +553,18 @@ class ThreadSafeEntityCache {
   void rebuild_relationship_indexes();
   void rebuild_operation_index();
 
-  // Aggregation helpers (called under shared lock)
-  void collect_operations_from_apps(const std::vector<size_t> & app_indexes,
+  // Aggregation helpers (called under shared lock); slot ids guarded with is_live.
+  void collect_operations_from_apps(const std::vector<uint32_t> & app_slots,
                                     std::unordered_set<std::string> & seen_paths, AggregatedOperations & result) const;
-  void collect_operations_from_component(size_t comp_index, std::unordered_set<std::string> & seen_paths,
+  void collect_operations_from_component(uint32_t comp_slot, std::unordered_set<std::string> & seen_paths,
                                          AggregatedOperations & result) const;
 
-  // Data aggregation helpers (called under shared lock)
-  void collect_topics_from_app(size_t app_index, std::unordered_set<std::string> & seen_topics,
+  // Data aggregation helpers (called under shared lock); slot ids guarded with is_live.
+  void collect_topics_from_app(uint32_t app_slot, std::unordered_set<std::string> & seen_topics,
                                AggregatedData & result) const;
-  void collect_topics_from_apps(const std::vector<size_t> & app_indexes, std::unordered_set<std::string> & seen_topics,
+  void collect_topics_from_apps(const std::vector<uint32_t> & app_slots, std::unordered_set<std::string> & seen_topics,
                                 AggregatedData & result) const;
-  void collect_topics_from_component(size_t comp_index, std::unordered_set<std::string> & seen_topics,
+  void collect_topics_from_component(uint32_t comp_slot, std::unordered_set<std::string> & seen_topics,
                                      AggregatedData & result) const;
 };
 
