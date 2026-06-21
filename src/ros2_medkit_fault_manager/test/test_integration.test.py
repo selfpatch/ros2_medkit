@@ -956,6 +956,72 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertEqual(len(fault.reporting_sources), 2)
         print(f'Cleared fault reactivated: occurrence_count={fault.occurrence_count}')
 
+    def test_27_capture_pool_survives_fault_storm(self):
+        """Burst of distinct CRITICAL faults; the node must stay responsive (no crash/UAF).
+
+        Exercises concurrent capture through the bounded pool and clean teardown (issue #441).
+        We assert liveness + that snapshots land for at least some faults. Iterate ALL faults
+        when reading snapshots (rosbag uses a single ring buffer; only one of N gets rosbag
+        data, so do not assert all N captured rosbag data).
+        """
+        fault_codes = [f'STORM_FAULT_{i}' for i in range(8)]
+
+        # Keep temperature flowing on /test/temperature during the capture window.
+        temp_msg = Temperature()
+        temp_msg.temperature = 70.0
+        temp_msg.variance = 0.1
+        self._publish_and_spin(self.temp_publisher, temp_msg, count=20, interval=0.05)
+
+        stop_publishing = threading.Event()
+
+        def keep_publishing():
+            while not stop_publishing.is_set():
+                self.temp_publisher.publish(temp_msg)
+                time.sleep(0.05)
+
+        pub_thread = threading.Thread(target=keep_publishing)
+        pub_thread.start()
+        try:
+            for code in fault_codes:
+                request = ReportFault.Request()
+                request.fault_code = code
+                request.event_type = ReportFault.Request.EVENT_FAILED
+                request.severity = Fault.SEVERITY_CRITICAL  # immediate confirm
+                request.description = 'storm'
+                request.source_id = '/test_node'
+                response = self._call_service(self.report_fault_client, request)
+                self.assertTrue(response.accepted)
+
+            time.sleep(5.0)  # let the bounded pool drain (snapshot timeout is 3s)
+        finally:
+            stop_publishing.set()
+            pub_thread.join()
+
+        # Node is still responsive after the storm (no crash/UAF).
+        # _call_service asserts the future completes; reaching this line proves liveness.
+        list_request = ListFaults.Request()
+        list_request.filter_by_severity = False
+        list_request.severity = 0
+        list_request.statuses = [Fault.STATUS_CONFIRMED]
+        list_response = self._call_service(self.list_faults_client, list_request)
+        self.assertIsNotNone(list_response)
+
+        # At least some faults have a snapshot record; iterate ALL faults.
+        # The STORM_FAULT_* codes map to default_topics (no active publisher),
+        # so topics dict may be empty, but the snapshot record itself must exist
+        # for any fault that was processed by the bounded pool before it drained.
+        captured = 0
+        for code in fault_codes:
+            snap_request = GetSnapshots.Request()
+            snap_request.fault_code = code
+            snap_request.topic = ''
+            snap_response = self._call_service(self.get_snapshots_client, snap_request)
+            if snap_response.success and len(snap_response.data) > 0:
+                data = json.loads(snap_response.data)
+                if data.get('fault_code'):
+                    captured += 1
+        self.assertGreater(captured, 0)
+
 
 @launch_testing.post_shutdown_test()
 class TestFaultManagerShutdown(unittest.TestCase):
