@@ -121,6 +121,10 @@ class LogBridgeNode : public rclcpp::Node {
   int max_tracked_nodes_;
   double report_cooldown_sec_;
   std::string own_node_name_;
+  // When true (default), never promote logs from the medkit stack's own
+  // infrastructure nodes (fault_manager, gateway, the other bridges) - else
+  // their /rosout lines feed back into faults about medkit itself.
+  bool exclude_medkit_stack_;
 };
 
 }  // namespace ros2_medkit_log_bridge

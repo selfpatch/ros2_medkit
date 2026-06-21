@@ -219,6 +219,23 @@ TEST_F(LogBridgeTest, NodeEligibility_IncludeOnlySubstring) {
   EXPECT_FALSE(node->node_is_eligible("/amcl"));
 }
 
+TEST_F(LogBridgeTest, NodeEligibility_ExcludesMedkitStackByDefault) {
+  auto node = make_node_with({});
+  // medkit's own infrastructure must not feed its own logs back as faults
+  EXPECT_FALSE(node->node_is_eligible("/fault_manager"));
+  EXPECT_FALSE(node->node_is_eligible("/robot1/fault_manager"));
+  EXPECT_FALSE(node->node_is_eligible("/ros2_medkit_gateway"));
+  EXPECT_FALSE(node->node_is_eligible("/diagnostic_bridge"));
+  EXPECT_FALSE(node->node_is_eligible("/action_status_bridge"));
+  // ordinary application nodes are still promoted
+  EXPECT_TRUE(node->node_is_eligible("/bt_navigator"));
+}
+
+TEST_F(LogBridgeTest, NodeEligibility_MedkitStackExclusionDisablable) {
+  auto node = make_node_with({rclcpp::Parameter("exclude_medkit_stack", false)});
+  EXPECT_TRUE(node->node_is_eligible("/fault_manager"));
+}
+
 // --- source_id normalization to node FQN (entity association) ---
 
 TEST_F(LogBridgeTest, NodeSourceId_PrependsLeadingSlash) {

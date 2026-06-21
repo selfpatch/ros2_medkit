@@ -21,3 +21,7 @@ log_bridge:
     # forwarded immediately; the same code within the window is suppressed.
     # 0.0 disables. Tames ERROR/FATAL floods, which bypass the per-node filter.
     report_cooldown_sec: 5.0
+    # Skip the medkit stack's own infrastructure nodes (fault_manager, gateway,
+    # the other bridges). Their /rosout lines would otherwise feed back as
+    # faults about medkit itself. Set false only to debug medkit's own logs.
+    exclude_medkit_stack: true

@@ -88,6 +88,7 @@ void LogBridgeNode::load_parameters() {
   if (report_cooldown_sec_ < 0.0) {
     report_cooldown_sec_ = 0.0;
   }
+  exclude_medkit_stack_ = declare_parameter<bool>("exclude_medkit_stack", true);
 }
 
 void LogBridgeNode::log_callback(const rcl_interfaces::msg::Log::ConstSharedPtr & msg) {
@@ -148,6 +149,16 @@ std::string LogBridgeNode::node_source_id(const std::string & log_name) {
 }
 
 bool LogBridgeNode::node_is_eligible(const std::string & source_id) const {
+  // Skip the medkit stack's own infrastructure nodes by default: promoting
+  // their /rosout lines would report faults about medkit itself (e.g. the
+  // fault_manager logging a confirmed fault feeds back as a new fault).
+  if (exclude_medkit_stack_) {
+    static const std::vector<std::string> kMedkitStack = {"fault_manager", "ros2_medkit_gateway", "diagnostic_bridge",
+                                                          "action_status_bridge"};
+    if (contains_substr(kMedkitStack, source_id)) {
+      return false;
+    }
+  }
   if (!include_only_nodes_.empty() && !contains_substr(include_only_nodes_, source_id)) {
     return false;
   }
