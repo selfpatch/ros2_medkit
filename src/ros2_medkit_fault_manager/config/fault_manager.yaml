@@ -19,3 +19,8 @@ fault_manager:
     # to entity-scoped capture and is crash-safe (falls back / self-disables if no
     # storage backend is usable).
     snapshots.rosbag.enabled: false
+
+    # Capture concurrency bound under fault storms (issue #441):
+    # snapshots.capture_pool_size: 2                  # max concurrent capture threads (>= 1)
+    # snapshots.capture_queue_depth: 16               # max pending captures (>= 1)
+    # snapshots.capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest

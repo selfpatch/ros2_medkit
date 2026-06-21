@@ -70,6 +70,8 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
+Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled).
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `snapshots.enabled` | bool | `true` | Enable/disable snapshot capture |
@@ -78,6 +80,11 @@ Snapshots capture topic data when faults are confirmed for post-mortem debugging
 | `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
 | `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
 | `snapshots.config_file` | string | `""` | Path to YAML config for `fault_specific` and `patterns` |
+| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault code. |
+| `snapshots.max_per_fault` | int | `10` | Max snapshots retained per fault. |
+| `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). |
+| `snapshots.capture_queue_depth` | int | `16` | Max pending captures before the full-queue policy applies (>= 1). |
+| `snapshots.capture_queue_full_policy` | string | `reject_newest` | Policy when the queue is full: `reject_newest` or `drop_oldest`. |
 
 **Topic Resolution Priority:**
 1. `fault_specific` - Exact match for fault code (configured via YAML config file)

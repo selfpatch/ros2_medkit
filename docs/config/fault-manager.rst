@@ -168,6 +168,9 @@ Basic Snapshot Settings
          config_file: ""                   # Path to YAML config file
          recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
          max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
+         capture_pool_size: 2              # Max concurrent capture threads (>= 1)
+         capture_queue_depth: 16           # Max pending captures before policy applies (>= 1)
+         capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
 
 .. list-table::
    :header-rows: 1
@@ -202,6 +205,15 @@ Basic Snapshot Settings
      - ``10``
      - Maximum number of snapshots stored per fault code. When the limit is reached,
        new snapshots for that fault are rejected. Set to 0 for unlimited.
+   * - ``snapshots.capture_pool_size``
+     - ``2``
+     - Max concurrent capture threads under a fault storm (>= 1).
+   * - ``snapshots.capture_queue_depth``
+     - ``16``
+     - Max pending captures before the full-queue policy applies (>= 1).
+   * - ``snapshots.capture_queue_full_policy``
+     - ``reject_newest``
+     - Policy when the queue is full: ``reject_newest`` or ``drop_oldest``.
 
 Rosbag Recording
 ~~~~~~~~~~~~~~~~

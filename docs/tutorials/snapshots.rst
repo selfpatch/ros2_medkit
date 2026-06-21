@@ -90,6 +90,15 @@ Configure snapshot capture via fault manager parameters:
      - ``10``
      - Maximum number of snapshots stored per fault code. When the limit is reached,
        new snapshots for that fault are rejected. Set to 0 for unlimited.
+   * - ``snapshots.capture_pool_size``
+     - ``2``
+     - Max concurrent capture threads under a fault storm (>= 1).
+   * - ``snapshots.capture_queue_depth``
+     - ``16``
+     - Max pending captures before the full-queue policy applies (>= 1).
+   * - ``snapshots.capture_queue_full_policy``
+     - ``reject_newest``
+     - Policy when the queue is full: ``reject_newest`` or ``drop_oldest``.
 
 Advanced Configuration
 ----------------------

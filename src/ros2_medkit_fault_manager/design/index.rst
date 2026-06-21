@@ -60,6 +60,19 @@ The following diagram shows the relationships between the main components of the
            + get_storage(): FaultStorage&
        }
 
+       class CaptureThreadPool {
+           +enqueue(fault_code) : EnqueueOutcome
+           +shutdown()
+           +dropped_captures() : uint64_t
+           -workers_ : vector<thread>
+           -queue_ : deque<string>
+       }
+
+       enum QueueFullPolicy {
+           kRejectNewest
+           kDropOldest
+       }
+
        abstract class FaultStorage <<interface>> {
            + {abstract} report_fault(): bool
            + {abstract} list_faults(): vector<Fault>
@@ -91,6 +104,7 @@ The following diagram shows the relationships between the main components of the
 
    ' Composition
    FaultManagerNode *-down-> InMemoryFaultStorage : owns
+   FaultManagerNode --> CaptureThreadPool : enqueues capture jobs
 
    ' InMemoryFaultStorage contains FaultStates
    InMemoryFaultStorage o-right-> FaultState : contains many
@@ -131,7 +145,13 @@ Main Components
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
    - Uses ``std::set`` for reporting_sources to ensure uniqueness
    - Tracks first and last occurrence timestamps
-   - Manages fault status lifecycle with debounce (PREFAILED → CONFIRMED → CLEARED)
+   - Manages fault status lifecycle with debounce (PREFAILED -> CONFIRMED -> CLEARED)
+
+5. **CaptureThreadPool** - Bounded worker pool for snapshot capture
+   Under a fault storm the node enqueues capture jobs into a bounded ``CaptureThreadPool``
+   (``pool_size`` workers draining a ``queue_depth``-bounded queue) rather than spawning one
+   thread per fault. The full-queue policy (``reject_newest``/``drop_oldest``) bounds memory,
+   and the destructor joins the pool before rosbag teardown.
 
 Services
 --------
