@@ -957,7 +957,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print(f'Cleared fault reactivated: occurrence_count={fault.occurrence_count}')
 
     def test_27_capture_pool_survives_fault_storm(self):
-        """Burst of distinct CRITICAL faults; the node must stay responsive (no crash/UAF).
+        """
+        Burst of distinct CRITICAL faults; the node must stay responsive (no crash/UAF).
 
         Exercises concurrent capture through the bounded pool and clean teardown (issue #441).
         We assert liveness + that snapshots land for at least some faults. Iterate ALL faults
