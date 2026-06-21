@@ -1001,6 +1001,15 @@ if(BUILD_TESTING)
   ament_add_gtest(test_network_utils test/test_network_utils.cpp)
   target_link_libraries(test_network_utils gateway_ros2)
 
+  # ─── Allocation-counter proxy gate (gateway_core only) ────────────────────
+  # Standalone TU with its own global operator new/delete override (gated by
+  # g_armed). Proves update_all performs ~zero net structural allocations in
+  # steady-state churn over a bounded id-set. Must be its OWN executable so
+  # the operator new override does not bleed into other test binaries.
+  # No medkit_set_test_domain - this is ROS-free (gateway_core only).
+  ament_add_gtest(test_entity_cache_alloc test/test_entity_cache_alloc.cpp)
+  target_link_libraries(test_entity_cache_alloc gateway_core)
+
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)
     set(_test_targets
