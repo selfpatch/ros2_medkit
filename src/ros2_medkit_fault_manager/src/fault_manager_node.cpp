@@ -108,6 +108,40 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
                 snapshot_recapture_cooldown_sec_);
     snapshot_recapture_cooldown_sec_ = 0.0;
   }
+
+  // Capture concurrency bound (issue #441): cap concurrent capture threads and
+  // bound the pending queue so a fault storm cannot grow memory without limit.
+  capture_pool_size_ = static_cast<int>(declare_parameter<int>("snapshots.capture_pool_size", 2));
+  if (capture_pool_size_ < 1) {
+    RCLCPP_WARN(get_logger(), "snapshots.capture_pool_size must be >= 1, got %ld. Clamping to 1",
+                static_cast<long>(capture_pool_size_));
+    capture_pool_size_ = 1;
+  }
+
+  capture_queue_depth_ = static_cast<int>(declare_parameter<int>("snapshots.capture_queue_depth", 16));
+  if (capture_queue_depth_ < 1) {
+    RCLCPP_WARN(get_logger(), "snapshots.capture_queue_depth must be >= 1, got %ld. Clamping to 1",
+                static_cast<long>(capture_queue_depth_));
+    capture_queue_depth_ = 1;
+  }
+
+  const std::string policy_str = declare_parameter<std::string>("snapshots.capture_queue_full_policy", "reject_newest");
+  if (policy_str == "reject_newest") {
+    capture_queue_full_policy_ = QueueFullPolicy::kRejectNewest;
+  } else if (policy_str == "drop_oldest") {
+    capture_queue_full_policy_ = QueueFullPolicy::kDropOldest;
+  } else {
+    RCLCPP_WARN(get_logger(),
+                "snapshots.capture_queue_full_policy '%s' is invalid (expected 'reject_newest' or "
+                "'drop_oldest'). Using 'reject_newest'",
+                policy_str.c_str());
+    capture_queue_full_policy_ = QueueFullPolicy::kRejectNewest;
+  }
+
+  RCLCPP_INFO(get_logger(), "Capture concurrency: pool_size=%d, queue_depth=%d, policy=%s", capture_pool_size_,
+              capture_queue_depth_,
+              capture_queue_full_policy_ == QueueFullPolicy::kRejectNewest ? "reject_newest" : "drop_oldest");
+
   auto max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
   if (max_snapshots < 0) {
     RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %ld. Disabling limit.", max_snapshots);

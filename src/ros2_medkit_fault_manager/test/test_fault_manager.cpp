@@ -718,6 +718,32 @@ TEST(FaultManagerNodeParameterTest, AutoConfirmAfterSec) {
   EXPECT_DOUBLE_EQ(config.auto_confirm_after_sec, 15.0);
 }
 
+TEST(FaultManagerNodeParameterTest, ClampsInvalidCaptureParams) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"snapshots.capture_pool_size", -3},
+      {"snapshots.capture_queue_depth", 0},
+      {"snapshots.capture_queue_full_policy", std::string("bogus")},
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  EXPECT_EQ(node->capture_pool_size_for_test(), 1);
+  EXPECT_EQ(node->capture_queue_depth_for_test(), 1);
+  EXPECT_EQ(node->capture_queue_full_policy_for_test(), ros2_medkit_fault_manager::QueueFullPolicy::kRejectNewest);
+}
+
+TEST(FaultManagerNodeParameterTest, ParsesDropOldestPolicy) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"snapshots.capture_queue_full_policy", std::string("drop_oldest")},
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  EXPECT_EQ(node->capture_queue_full_policy_for_test(), ros2_medkit_fault_manager::QueueFullPolicy::kDropOldest);
+}
+
 // FaultEvent Publishing Tests
 //
 // Each test iteration uses a unique namespace to prevent DDS cross-contamination
