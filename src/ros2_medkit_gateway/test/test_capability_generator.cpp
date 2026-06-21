@@ -466,27 +466,55 @@ TEST(ThreadSafeEntityCacheGenerationTest, GenerationStartsAtZero) {
 }
 
 TEST(ThreadSafeEntityCacheGenerationTest, GenerationIncrementsOnUpdateAll) {
+  // Empty-into-empty is a no-op; a real change (inserting an entity) must bump.
   ThreadSafeEntityCache cache;
-  cache.update_all({}, {}, {}, {});
+  Area ar;
+  ar.id = "ar1";
+  ar.name = "Area 1";
+  cache.update_all({ar}, {}, {}, {});
+  EXPECT_EQ(cache.generation(), 1u);
+
+  // Identical second call - no-op, generation must NOT advance.
+  cache.update_all({ar}, {}, {}, {});
   EXPECT_EQ(cache.generation(), 1u);
 }
 
 TEST(ThreadSafeEntityCacheGenerationTest, GenerationIncrementsOnEachUpdate) {
+  // Each per-type updater bumps generation ONLY when it changes the cache.
+  // We seed distinct entities per call so every call is a real change.
   ThreadSafeEntityCache cache;
 
-  cache.update_areas({});
+  Area ar;
+  ar.id = "ar1";
+  ar.name = "Area 1";
+  cache.update_areas({ar});
   EXPECT_EQ(cache.generation(), 1u);
 
-  cache.update_components({});
+  Component comp;
+  comp.id = "comp1";
+  comp.name = "Comp 1";
+  cache.update_components({comp});
   EXPECT_EQ(cache.generation(), 2u);
 
-  cache.update_apps({});
+  App app;
+  app.id = "app1";
+  app.name = "App 1";
+  app.component_id = "comp1";
+  cache.update_apps({app});
   EXPECT_EQ(cache.generation(), 3u);
 
-  cache.update_functions({});
+  Function func;
+  func.id = "func1";
+  func.name = "Func 1";
+  cache.update_functions({func});
   EXPECT_EQ(cache.generation(), 4u);
 
-  cache.update_all({}, {}, {}, {});
+  // update_all with different data (remove the area, keep rest) - real change.
+  cache.update_all({}, {comp}, {app}, {func});
+  EXPECT_EQ(cache.generation(), 5u);
+
+  // Repeat the same update_all - identical, must NOT bump.
+  cache.update_all({}, {comp}, {app}, {func});
   EXPECT_EQ(cache.generation(), 5u);
 }
 
@@ -540,16 +568,35 @@ TEST_F(CapabilityGeneratorTest, DifferentGenerationsProduceDifferentCacheKeys) {
 
 TEST(CacheGenerationTest, GenerationCounterTracksEntityUpdates) {
   // Standalone test verifying the generation counter mechanism
-  // that CapabilityGenerator depends on for cache invalidation
+  // that CapabilityGenerator depends on for cache invalidation.
+  // Only REAL changes (insert / modify / remove) advance the counter;
+  // identical repeated calls must not, so the spec cache stays valid
+  // across no-op discovery ticks.
   ThreadSafeEntityCache cache;
   EXPECT_EQ(cache.generation(), 0u);
 
-  cache.update_areas({});
+  Area ar;
+  ar.id = "ar1";
+  ar.name = "Area 1";
+  cache.update_areas({ar});
   EXPECT_EQ(cache.generation(), 1u);
 
-  cache.update_components({});
+  Component comp;
+  comp.id = "comp1";
+  comp.name = "Comp 1";
+  cache.update_components({comp});
   EXPECT_EQ(cache.generation(), 2u);
 
-  // Each update increments, which would cause CapabilityGenerator
-  // to clear its spec_cache_ in get_cache_key()
+  // Identical repeated calls are no-ops - generation must not advance.
+  cache.update_areas({ar});
+  EXPECT_EQ(cache.generation(), 2u);
+
+  cache.update_components({comp});
+  EXPECT_EQ(cache.generation(), 2u);
+
+  // A real modification (rename) DOES bump - CapabilityGenerator would
+  // see a new cache key and regenerate the spec.
+  ar.name = "Area 1 Renamed";
+  cache.update_areas({ar});
+  EXPECT_EQ(cache.generation(), 3u);
 }
