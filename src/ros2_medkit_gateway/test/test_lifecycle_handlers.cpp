@@ -212,7 +212,7 @@ TEST_F(LifecycleHandlersTest, GetStatusOfflineAppReturnsNotReady) {
   EXPECT_EQ(result->status, "notReady");
 }
 
-// GET /components/{host_controller}/status -> 200, status == "ready" (has host_metadata)
+// GET /components/{host_controller}/status -> 200, status == "ready" (reachable local component)
 TEST_F(LifecycleHandlersTest, GetStatusHostComponentReturnsReady) {
   auto raw =
       make_request_with_match("/api/v1/components/host_controller/status", R"(/api/v1/components/([^/]+)/status)");
@@ -234,7 +234,7 @@ TEST_F(LifecycleHandlersTest, GetStatusComponentZeroAppsReturnsReady) {
   EXPECT_EQ(result->status, "ready");  // reachable local component, zero apps -> ready
 }
 
-// GET /components/{live_subsystem}/status -> "ready" (a hosted App is online)
+// GET /components/{live_subsystem}/status -> "ready" (reachable local component; one hosted App online)
 TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlineHostedAppReturnsReady) {
   auto raw =
       make_request_with_match("/api/v1/components/live_subsystem/status", R"(/api/v1/components/([^/]+)/status)");
