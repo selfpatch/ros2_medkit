@@ -204,6 +204,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("logs.buffer_size",
                     200);  // Ring buffer capacity per node; entries exceeding this are dropped (oldest first)
 
+  // Entity cache capacity. Pre-reserves the cache backing stores so steady-state
+  // refreshes below this entity count cause no structural reallocation.
+  // Valid range: 16-1000000 (values outside this range are clamped with a warning).
+  // Default: 256 (covers most production graphs with headroom).
+  declare_parameter("entity_cache.capacity", 256);
+
   // Topic-sample default timeout used by the data-access path.
   declare_parameter("topic_sample_timeout_sec", 1.0);
 
@@ -764,6 +770,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     RCLCPP_WARN(get_logger(), "logs.buffer_size %" PRId64 " clamped to %" PRId64, raw_buffer_size, clamped);
   }
   auto log_buffer_size = static_cast<size_t>(clamped);
+
+  // Apply entity_cache.capacity: clamp to [16, 1000000] and pre-reserve the cache.
+  // Reserve is called here (in the ctor) so the backing stores are sized before
+  // the first refresh_cache() call. thread_safe_cache_ is a value member so it
+  // is already default-constructed at this point; reserve() only grows it.
+  static constexpr int kMinCacheCapacity = 16;
+  static constexpr int kMaxCacheCapacity = 1000000;
+  auto raw_cache_capacity = get_parameter("entity_cache.capacity").as_int();
+  auto clamped_cache_capacity =
+      std::clamp(raw_cache_capacity, static_cast<int64_t>(kMinCacheCapacity), static_cast<int64_t>(kMaxCacheCapacity));
+  if (clamped_cache_capacity != raw_cache_capacity) {
+    RCLCPP_WARN(get_logger(), "entity_cache.capacity %" PRId64 " clamped to %" PRId64, raw_cache_capacity,
+                clamped_cache_capacity);
+  }
+  thread_safe_cache_.reserve(static_cast<size_t>(clamped_cache_capacity));
+
   log_source_ = std::make_shared<ros2::Ros2LogSource>(this);
   // Inject a sink that forwards LogManager's neutral diagnostics back to the
   // gateway's rclcpp logger so plugin-provider exceptions remain visible to
@@ -2120,6 +2142,20 @@ void GatewayNode::refresh_cache() {
     // Update ThreadSafeEntityCache atomically (entities + node_to_app under single lock)
     thread_safe_cache_.update_all(std::move(areas), std::move(all_components), std::move(apps), std::move(functions),
                                   std::move(node_to_app));
+
+    // Emit a one-shot WARN when the entity cache grew beyond its reserved capacity.
+    // Growing is harmless but causes structural reallocation; embedded / memory-
+    // constrained deployments should raise entity_cache.capacity to prevent it.
+    if (!warned_cache_grow_) {
+      const auto stats = thread_safe_cache_.get_stats();
+      if (stats.grew) {
+        RCLCPP_WARN(get_logger(),
+                    "entity_cache capacity %zu exceeded (grew); raise entity_cache.capacity "
+                    "for embedded determinism",
+                    stats.capacity);
+        warned_cache_grow_ = true;
+      }
+    }
 
     // Update topic type cache (avoids expensive ROS graph queries on /data requests)
     if (data_access_mgr_) {

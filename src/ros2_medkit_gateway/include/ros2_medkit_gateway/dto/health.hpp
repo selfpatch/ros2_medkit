@@ -132,6 +132,7 @@ struct Health {
   std::optional<HealthDiscovery> discovery;
   std::optional<nlohmann::json> x_medkit_data_provider;          // wire key: "x-medkit-data-provider"
   std::optional<nlohmann::json> x_medkit_subscription_executor;  // wire key: "x-medkit-subscription-executor"
+  std::optional<nlohmann::json> x_medkit_entity_cache;           // wire key: "x-medkit-entity-cache"
   std::optional<nlohmann::json> peers;                           // free-form array of peer status objects
   std::optional<int64_t> warning_schema_version;
   std::optional<std::vector<HealthAggregationWarning>> warnings;
@@ -141,7 +142,8 @@ template <>
 inline constexpr auto dto_fields<Health> = std::make_tuple(
     field("status", &Health::status), field("timestamp", &Health::timestamp), field("discovery", &Health::discovery),
     field("x-medkit-data-provider", &Health::x_medkit_data_provider),
-    field("x-medkit-subscription-executor", &Health::x_medkit_subscription_executor), field("peers", &Health::peers),
+    field("x-medkit-subscription-executor", &Health::x_medkit_subscription_executor),
+    field("x-medkit-entity-cache", &Health::x_medkit_entity_cache), field("peers", &Health::peers),
     field("warning_schema_version", &Health::warning_schema_version), field("warnings", &Health::warnings));
 
 template <>

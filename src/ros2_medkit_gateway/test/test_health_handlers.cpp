@@ -398,3 +398,43 @@ TEST_F(HealthHandlersLiveTest, HealthDiscoveryBlockContainsExpectedFields) {
   EXPECT_FALSE(disc.contains("pipeline"));
   EXPECT_FALSE(disc.contains("linking"));
 }
+
+TEST_F(HealthHandlersLiveTest, HealthEntityCacheStatsPresent) {
+  // x-medkit-entity-cache block is present with the required fields
+  httplib::Client client("127.0.0.1", server_port_);
+  auto res = client.Get(std::string(API_BASE_PATH) + "/health");
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 200);
+
+  auto body = json::parse(res->body);
+
+  ASSERT_TRUE(body.contains("x-medkit-entity-cache"))
+      << "/health must include x-medkit-entity-cache when entity_cache.capacity is configured";
+  const auto & ec = body["x-medkit-entity-cache"];
+
+  EXPECT_TRUE(ec.contains("capacity")) << "x-medkit-entity-cache must include capacity";
+  EXPECT_TRUE(ec["capacity"].is_number_unsigned());
+  // Default capacity is 256 (from declare_parameter("entity_cache.capacity", 256))
+  EXPECT_EQ(ec["capacity"].get<std::size_t>(), 256u);
+
+  EXPECT_TRUE(ec.contains("areas")) << "x-medkit-entity-cache must include areas";
+  EXPECT_TRUE(ec["areas"].is_number_unsigned());
+
+  EXPECT_TRUE(ec.contains("components")) << "x-medkit-entity-cache must include components";
+  EXPECT_TRUE(ec["components"].is_number_unsigned());
+
+  EXPECT_TRUE(ec.contains("apps")) << "x-medkit-entity-cache must include apps";
+  EXPECT_TRUE(ec["apps"].is_number_unsigned());
+
+  EXPECT_TRUE(ec.contains("functions")) << "x-medkit-entity-cache must include functions";
+  EXPECT_TRUE(ec["functions"].is_number_unsigned());
+
+  EXPECT_TRUE(ec.contains("generation")) << "x-medkit-entity-cache must include generation";
+  EXPECT_TRUE(ec["generation"].is_number_unsigned());
+
+  EXPECT_TRUE(ec.contains("grew")) << "x-medkit-entity-cache must include grew";
+  EXPECT_TRUE(ec["grew"].is_boolean());
+  // A fresh cache with default capacity=256 must not have grown
+  EXPECT_FALSE(ec["grew"].get<bool>());
+}

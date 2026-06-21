@@ -193,6 +193,18 @@ ros2_medkit_gateway:
       # Default: 3600 (1 hour)
       max_duration_sec: 3600
 
+    # Entity Cache Configuration
+    entity_cache:
+      # Pre-reserved capacity for the thread-safe entity cache.
+      # Setting this to a value at or above the expected peak entity count prevents
+      # structural reallocation during steady-state refreshes (desirable for
+      # memory-constrained or real-time embedded deployments).
+      # Growing beyond the reserved capacity is harmless but triggers a one-shot
+      # WARN log; raise this value if you see that warning.
+      # Valid range: 16-1000000 (values outside this range are clamped with a warning).
+      # Default: 256 (covers most production graphs with headroom)
+      capacity: 256
+
     # Logging Configuration
     logs:
       # Ring buffer capacity per node name.

@@ -97,6 +97,15 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
           response.x_medkit_subscription_executor = x["x-medkit-subscription-executor"];
         }
       }
+
+      // Surface entity cache live counts and capacity via x-medkit-entity-cache.
+      // Enables external monitors and operators to verify the cache is sized
+      // correctly (grew == true signals that entity_cache.capacity should be raised).
+      const auto stats = ctx_.node()->get_thread_safe_cache().get_stats();
+      response.x_medkit_entity_cache =
+          json{{"capacity", stats.capacity}, {"areas", stats.area_count},         {"components", stats.component_count},
+               {"apps", stats.app_count},    {"functions", stats.function_count}, {"generation", stats.generation},
+               {"grew", stats.grew}};
     }
 
     // Add peer status when aggregation is active

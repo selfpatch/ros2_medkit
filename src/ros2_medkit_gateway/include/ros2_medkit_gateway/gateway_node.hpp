@@ -351,6 +351,9 @@ class GatewayNode : public rclcpp::Node {
 
   // Cache with thread safety
   ThreadSafeEntityCache thread_safe_cache_;
+  // One-shot WARN when entity_cache capacity is exceeded (grew on first refresh after reserve).
+  // Cleared only at construction time; never reset so the WARN fires at most once per run.
+  bool warned_cache_grow_{false};
 
   // Graph-change-driven discovery refresh.
   //
