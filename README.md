@@ -8,7 +8,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 
 <p align="center">
-  <img src="docs/_static/images/medkit_hero.gif" alt="A Nav2 NavigateToPose goal aborts: stock ROS 2 diagnostics leave you a log line lost in the noise, while ros2_medkit turns it into one structured fault over REST" width="820">
+  <img src="docs/_static/images/medkit_hero.gif" alt="A Nav2 NavigateToPose goal aborts: stock ROS 2 diagnostics leave you a log line lost in the noise, while ros2_medkit turns it into one structured fault over REST" width="100%">
 </p>
 
 <p align="center">
