@@ -189,9 +189,9 @@ class FaultManagerNode : public rclcpp::Node {
   /// Correlation engine for fault correlation/muting (nullptr if disabled)
   std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
 
-  /// Tracks active capture threads for clean shutdown (join before destruction)
-  std::mutex capture_threads_mutex_;
-  std::vector<std::thread> capture_threads_;
+  /// Bounded pool that runs capture jobs off the service thread (issue #441).
+  /// Declared after snapshot_capture_/rosbag_capture_ so it is destroyed first.
+  std::unique_ptr<CaptureThreadPool> capture_pool_;
 
   /// Per-fault cooldown tracking for snapshot recapture
   std::mutex last_capture_mutex_;
