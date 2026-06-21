@@ -56,8 +56,8 @@ struct EnqueueOutcome {
 /// thread count a hard upper bound under a fault storm. See issue #441.
 class CaptureThreadPool {
  public:
-  /// @param pool_size  Number of worker threads (caller must pass >= 1).
-  /// @param queue_depth  Max pending jobs (caller must pass >= 1).
+  /// @param pool_size  Number of worker threads (clamped to >= 1).
+  /// @param queue_depth  Max pending jobs (clamped to >= 1).
   /// @param full_policy  Behavior when the pending queue is full.
   /// @param logger  Logger for worker-side capture failures.
   /// @param capture_fn  Invoked per job on a worker thread. Must be thread-safe
