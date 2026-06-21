@@ -51,6 +51,7 @@ medkit_detect_compat_defs()
 
 # Library target (shared between executable and tests)
 add_library(fault_manager_lib STATIC
+  src/capture_thread_pool.cpp
   src/fault_manager_node.cpp
   src/fault_storage.cpp
   src/sqlite_fault_storage.cpp
@@ -224,6 +225,12 @@ if(BUILD_TESTING)
     TIMEOUT 120
   )
   set_tests_properties(test_rosbag_entity_scope PROPERTIES LABELS "integration")
+
+  # CaptureThreadPool unit tests (no ROS node, no domain id needed)
+  ament_add_gtest(test_capture_thread_pool test/test_capture_thread_pool.cpp)
+  target_link_libraries(test_capture_thread_pool fault_manager_lib)
+  medkit_target_dependencies(test_capture_thread_pool rclcpp)
+
   ros2_medkit_relax_vendor_warnings()
 endif()
 
