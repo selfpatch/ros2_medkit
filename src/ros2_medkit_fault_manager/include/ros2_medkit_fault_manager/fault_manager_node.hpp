@@ -20,6 +20,7 @@
 #include <unordered_map>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
@@ -63,6 +64,16 @@ class FaultManagerNode : public rclcpp::Node {
   /// Get the storage type being used
   const std::string & get_storage_type() const {
     return storage_type_;
+  }
+
+  int capture_pool_size_for_test() const {
+    return capture_pool_size_;
+  }
+  int capture_queue_depth_for_test() const {
+    return capture_queue_depth_;
+  }
+  QueueFullPolicy capture_queue_full_policy_for_test() const {
+    return capture_queue_full_policy_;
   }
 
   /// Check if entity matches any reporting source
@@ -144,6 +155,9 @@ class FaultManagerNode : public rclcpp::Node {
   int32_t healing_threshold_{3};
   double auto_confirm_after_sec_{0.0};
   double snapshot_recapture_cooldown_sec_{60.0};
+  int capture_pool_size_{2};
+  int capture_queue_depth_{16};
+  QueueFullPolicy capture_queue_full_policy_{QueueFullPolicy::kRejectNewest};
   DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
   std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
