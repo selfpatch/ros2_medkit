@@ -657,6 +657,12 @@ if(BUILD_TESTING)
     target_link_libraries(test_flat_hash_map gateway_core)
   endif()
 
+  # SlotStore object pool (pure C++17, no ROS node)
+  ament_add_gtest(test_slot_store test/test_slot_store.cpp)
+  if(TARGET test_slot_store)
+    target_link_libraries(test_slot_store gateway_core)
+  endif()
+
   # DTO contract core (pure C++17, no ROS node)
   ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
   target_link_libraries(test_dto_contract gateway_core)
