@@ -100,6 +100,12 @@ void LogBridgeNode::log_callback(const rcl_interfaces::msg::Log::ConstSharedPtr 
   if (source_id == own_node_name_ || source_id == "/log_bridge") {
     return;
   }
+  // Skip the medkit stack's own infrastructure nodes (else fault_manager's own
+  // /rosout lines feed back as faults about medkit). Matched on the raw logger
+  // name, which keeps the namespace (node_source_id collapses it to the ns).
+  if (exclude_medkit_stack_ && is_medkit_stack_logger(msg->name)) {
+    return;
+  }
   if (!node_is_eligible(source_id)) {
     return;
   }
@@ -148,17 +154,16 @@ std::string LogBridgeNode::node_source_id(const std::string & log_name) {
   return node;
 }
 
+bool LogBridgeNode::is_medkit_stack_logger(const std::string & logger_name) {
+  // Match medkit's own infrastructure against the raw logger name so a
+  // namespaced node (e.g. "robot1.fault_manager") is still caught, even though
+  // node_source_id would collapse its FQN to the namespace.
+  static const std::vector<std::string> kMedkitStack = {"fault_manager", "ros2_medkit_gateway", "diagnostic_bridge",
+                                                        "action_status_bridge"};
+  return contains_substr(kMedkitStack, logger_name);
+}
+
 bool LogBridgeNode::node_is_eligible(const std::string & source_id) const {
-  // Skip the medkit stack's own infrastructure nodes by default: promoting
-  // their /rosout lines would report faults about medkit itself (e.g. the
-  // fault_manager logging a confirmed fault feeds back as a new fault).
-  if (exclude_medkit_stack_) {
-    static const std::vector<std::string> kMedkitStack = {"fault_manager", "ros2_medkit_gateway", "diagnostic_bridge",
-                                                          "action_status_bridge"};
-    if (contains_substr(kMedkitStack, source_id)) {
-      return false;
-    }
-  }
   if (!include_only_nodes_.empty() && !contains_substr(include_only_nodes_, source_id)) {
     return false;
   }

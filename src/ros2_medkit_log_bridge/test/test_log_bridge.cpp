@@ -219,21 +219,21 @@ TEST_F(LogBridgeTest, NodeEligibility_IncludeOnlySubstring) {
   EXPECT_FALSE(node->node_is_eligible("/amcl"));
 }
 
-TEST_F(LogBridgeTest, NodeEligibility_ExcludesMedkitStackByDefault) {
-  auto node = make_node_with({});
-  // medkit's own infrastructure must not feed its own logs back as faults
-  EXPECT_FALSE(node->node_is_eligible("/fault_manager"));
-  EXPECT_FALSE(node->node_is_eligible("/robot1/fault_manager"));
-  EXPECT_FALSE(node->node_is_eligible("/ros2_medkit_gateway"));
-  EXPECT_FALSE(node->node_is_eligible("/diagnostic_bridge"));
-  EXPECT_FALSE(node->node_is_eligible("/action_status_bridge"));
-  // ordinary application nodes are still promoted
-  EXPECT_TRUE(node->node_is_eligible("/bt_navigator"));
+// Matched on the raw logger name (msg->name), which is what log_callback feeds
+// it - including the namespaced form "robot1.fault_manager" that node_source_id
+// would otherwise collapse to "/robot1".
+TEST_F(LogBridgeTest, MedkitStackLogger_MatchesOwnInfra) {
+  EXPECT_TRUE(LogBridgeNode::is_medkit_stack_logger("fault_manager"));
+  EXPECT_TRUE(LogBridgeNode::is_medkit_stack_logger("robot1.fault_manager"));
+  EXPECT_TRUE(LogBridgeNode::is_medkit_stack_logger("ros2_medkit_gateway"));
+  EXPECT_TRUE(LogBridgeNode::is_medkit_stack_logger("diagnostic_bridge"));
+  EXPECT_TRUE(LogBridgeNode::is_medkit_stack_logger("action_status_bridge"));
 }
 
-TEST_F(LogBridgeTest, NodeEligibility_MedkitStackExclusionDisablable) {
-  auto node = make_node_with({rclcpp::Parameter("exclude_medkit_stack", false)});
-  EXPECT_TRUE(node->node_is_eligible("/fault_manager"));
+TEST_F(LogBridgeTest, MedkitStackLogger_AllowsApplicationNodes) {
+  EXPECT_FALSE(LogBridgeNode::is_medkit_stack_logger("bt_navigator"));
+  EXPECT_FALSE(LogBridgeNode::is_medkit_stack_logger("robot1.controller_server"));
+  EXPECT_FALSE(LogBridgeNode::is_medkit_stack_logger("amcl"));
 }
 
 // --- source_id normalization to node FQN (entity association) ---

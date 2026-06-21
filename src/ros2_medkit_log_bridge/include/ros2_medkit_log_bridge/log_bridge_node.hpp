@@ -63,6 +63,11 @@ class LogBridgeNode : public rclcpp::Node {
   /// include/exclude lists. Exposed for unit testing.
   bool node_is_eligible(const std::string & source_id) const;
 
+  /// Whether a logger name belongs to the medkit stack's own infrastructure
+  /// (fault_manager, gateway, the other bridges). Matched on the raw logger
+  /// name so namespaced nodes are caught. Exposed for unit testing.
+  static bool is_medkit_stack_logger(const std::string & logger_name);
+
   /// Map an rcl_interfaces/msg/Log.name (a logger name, e.g. "bt_navigator" or
   /// "controller_manager.resource_manager") to the originating node's
   /// fully-qualified name ("/bt_navigator", "/controller_manager"). The gateway

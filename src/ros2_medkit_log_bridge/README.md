@@ -94,6 +94,7 @@ ros2 launch ros2_medkit_log_bridge log_bridge.launch.py
 | `include_only_nodes` | `[]` | if set, only promote nodes whose FQN matches |
 | `max_tracked_nodes` | `512` | cap on per-node reporters; least-recently-used nodes evicted past this |
 | `report_cooldown_sec` | `5.0` | per-fault_code forward debounce; `0.0` disables |
+| `exclude_medkit_stack` | `true` | skip medkit's own infrastructure nodes (`fault_manager`, gateway, the other bridges) so their logs do not feed back as faults; set `false` to debug medkit's own logs |
 
 `exclude_nodes` / `include_only_nodes` match as **unanchored substrings**
 against the node FQN: `planner` matches `/planner_server` and
