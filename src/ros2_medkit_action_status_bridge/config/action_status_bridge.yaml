@@ -13,8 +13,10 @@ action_status_bridge:
     # Normalized to UPPER_SNAKE at load.
     code_prefix: "ACTION"
     # Action-name substrings to skip (unanchored substring match).
-    exclude_actions: []
+    # Defaults to empty; uncomment with a non-empty list to enable, e.g.:
+    # exclude_actions: ["/some_action"]
     # If non-empty, ONLY watch actions matching these substrings.
-    include_only_actions: []
+    # Defaults to empty; uncomment with a non-empty list to enable, e.g.:
+    # include_only_actions: ["/navigate_to_pose"]
     # Max remembered (goal_id:status) keys for log dedup.
     dedup_capacity: 4096
