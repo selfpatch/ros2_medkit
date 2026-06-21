@@ -966,17 +966,22 @@ class TestFaultManagerIntegration(unittest.TestCase):
         """
         fault_codes = [f'STORM_FAULT_{i}' for i in range(8)]
 
-        # Keep temperature flowing on /test/temperature during the capture window.
+        # STORM_FAULT_* codes fall through to default_topics: [/test/default_data].
+        # Publish on that topic so the snapshot capture has data to collect.
+        default_pub = self.node.create_publisher(Temperature, '/test/default_data', 10)
+
         temp_msg = Temperature()
         temp_msg.temperature = 70.0
         temp_msg.variance = 0.1
-        self._publish_and_spin(self.temp_publisher, temp_msg, count=20, interval=0.05)
+
+        # Establish topic presence before faults are confirmed.
+        self._publish_and_spin(default_pub, temp_msg, count=20, interval=0.05)
 
         stop_publishing = threading.Event()
 
         def keep_publishing():
             while not stop_publishing.is_set():
-                self.temp_publisher.publish(temp_msg)
+                default_pub.publish(temp_msg)
                 time.sleep(0.05)
 
         pub_thread = threading.Thread(target=keep_publishing)
@@ -998,18 +1003,17 @@ class TestFaultManagerIntegration(unittest.TestCase):
             pub_thread.join()
 
         # Node is still responsive after the storm (no crash/UAF).
-        # _call_service asserts the future completes; reaching this line proves liveness.
         list_request = ListFaults.Request()
         list_request.filter_by_severity = False
         list_request.severity = 0
         list_request.statuses = [Fault.STATUS_CONFIRMED]
         list_response = self._call_service(self.list_faults_client, list_request)
-        self.assertIsNotNone(list_response)
+        storm = [f for f in list_response.faults if f.fault_code.startswith('STORM_FAULT_')]
+        self.assertGreater(len(storm), 0, 'Storm faults not persisted')
 
-        # At least some faults have a snapshot record; iterate ALL faults.
-        # The STORM_FAULT_* codes map to default_topics (no active publisher),
-        # so topics dict may be empty, but the snapshot record itself must exist
-        # for any fault that was processed by the bounded pool before it drained.
+        # At least some faults captured topic data through the bounded pool.
+        # Count only faults with a non-empty topics dict - the meaningful signal
+        # that the capture path actually ran and received messages on /test/default_data.
         captured = 0
         for code in fault_codes:
             snap_request = GetSnapshots.Request()
@@ -1018,9 +1022,10 @@ class TestFaultManagerIntegration(unittest.TestCase):
             snap_response = self._call_service(self.get_snapshots_client, snap_request)
             if snap_response.success and len(snap_response.data) > 0:
                 data = json.loads(snap_response.data)
-                if data.get('fault_code'):
+                if data.get('topics'):
                     captured += 1
-        self.assertGreater(captured, 0)
+        print(f'Storm capture: {captured}/{len(fault_codes)} faults captured topic data')
+        self.assertGreater(captured, 0, 'No storm fault captured topic data on /test/default_data')
 
 
 @launch_testing.post_shutdown_test()
