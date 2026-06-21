@@ -9,7 +9,11 @@ ros2_medkit_gateway:
     refresh_interval_ms: 2000
     # The web UI runs as a separate origin (its own host/port), so the
     # documented "run the web UI next to the gateway" path needs CORS. Without
-    # it the browser gets "Failed to fetch". Restrict allowed_origins to your
-    # UI origin(s) and/or enable JWT auth for production.
+    # it the browser gets "Failed to fetch". These are the default web UI
+    # origins; a wildcard is deliberately NOT used - with auth disabled and
+    # write methods enabled it would let any site drive cross-origin writes.
+    # Add your own UI origin(s) here, and enable JWT auth for production.
     cors:
-      allowed_origins: ["*"]
+      allowed_origins:
+        - "http://localhost:3000"
+        - "http://localhost:5173"
