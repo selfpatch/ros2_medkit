@@ -129,9 +129,9 @@ struct EntityCacheStats {
   size_t function_count{0};   ///< Live functions
   size_t total_operations{0};
   size_t capacity{0};        ///< Configured reserve capacity (0 = lazy growth)
-  bool grew{false};          ///< true if any backing store/index reallocated since the last refresh
+  bool grew{false};          ///< true if any backing store/index reallocated since reserve()
   uint64_t generation{0};    ///< Current cache generation counter
-  size_t overflow_count{0};  ///< Reserved for incremental reconcile overflow accounting (Task 5)
+  size_t overflow_count{0};  ///< Number of reconcile cycles that triggered a structural grow
   std::chrono::system_clock::time_point last_update;
 };
 
@@ -530,28 +530,49 @@ class ThreadSafeEntityCache {
   // Node FQN -> app entity ID mapping from linking result (for trigger entity resolution)
   FlatHashMap<std::string, std::string> node_to_app_;
 
-  // Reconcile scratch buffers (reserved alongside the stores). seen_ is used on
-  // the overflow/grow path only; dead_ids_/patch_dead_ back the incremental
-  // reconcile introduced in a later task. Kept here so reserve() can size them.
+  // Reconcile scratch buffers (reserved alongside the stores). seen_ marks which
+  // live slots were re-seen during a reconcile pass; dead_ids_ collects ids of
+  // slots to free (collected before mutating to avoid invalidating iteration);
+  // patch_dead_ collects map keys to erase. Pre-reserved so steady-state
+  // reconcile does not allocate; seen_ only ever resize()s on the grow path.
   std::vector<uint8_t> seen_;
   std::vector<std::string> dead_ids_;
   std::vector<std::string> patch_dead_;
 
   // Configured reserve capacity (0 = lazy growth from empty).
   size_t capacity_{0};
-  // Whether any store/index reallocated since the last stats refresh.
+  // Sticky "any backing store/index reallocated since reserve()" flag, folded
+  // from the container grew() flags by refresh_grew() (which clears them).
   bool grew_{false};
-  // Reserved for incremental reconcile overflow accounting (Task 5).
+  // Count of reconcile cycles that triggered a fresh structural grow.
   size_t overflow_count_{0};
 
-  // Internal helpers (called under lock)
-  void rebuild_all_indexes();
-  void rebuild_area_index();
-  void rebuild_component_index();
-  void rebuild_app_index();
-  void rebuild_function_index();
+  // Internal helpers (called under lock). Primary id->slot indexes are kept up
+  // to date incrementally by reconcile(); only the derived relationship and
+  // operation indexes are rebuilt wholesale (cheap, slot-based) after a change.
   void rebuild_relationship_indexes();
   void rebuild_operation_index();
+
+  /// In-place incremental reconcile of one store against `incoming` (move-from).
+  /// Reuses `store`/`index`: only allocates/frees slots that actually change.
+  /// Returns true if any slot was assigned, allocated, or freed (i.e. the live
+  /// set or any payload changed). Duplicate ids within `incoming` collapse to
+  /// last-wins in a single slot. Uses the member scratch buffers `seen_` /
+  /// `dead_ids_` so there is no per-call heap allocation in steady state.
+  template <typename T>
+  bool reconcile(SlotStore<T> & store, FlatHashMap<std::string, uint32_t> & index, std::vector<T> && incoming);
+
+  /// In-place incremental patch of a string-valued map against `incoming`
+  /// (move-from). Erases keys absent from `incoming`, updates changed values,
+  /// inserts new keys, leaves unchanged keys untouched. Returns true iff the
+  /// map content changed. Uses the member scratch buffer `patch_dead_`.
+  bool patch_map(FlatHashMap<std::string, std::string> & map, std::unordered_map<std::string, std::string> && incoming);
+
+  /// Fold each backing container's transient `grew()` flag into the cached
+  /// `grew_` member and clear the container flags. Increments `overflow_count_`
+  /// once whenever a new grow happened since the last refresh. Because this
+  /// clears the container flags, `get_stats()` must report the cached members.
+  void refresh_grew();
 
   // Aggregation helpers (called under shared lock); slot ids guarded with is_live.
   void collect_operations_from_apps(const std::vector<uint32_t> & app_slots,

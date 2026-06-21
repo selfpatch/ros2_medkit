@@ -65,18 +65,27 @@ class SlotStore {
     return static_cast<uint32_t>(items_.size() - 1u);
   }
 
-  /// Copy value into the slot and mark it live.
+  /// Copy value into the slot and mark it live. Assigning over an already-live
+  /// slot updates the payload in place and does NOT change live_count_; only a
+  /// dead -> live transition bumps the count. This makes assign() safe for the
+  /// incremental-reconcile update path that overwrites existing live slots.
   void assign(uint32_t slot, const T & value) {
     items_[static_cast<size_t>(slot)] = value;
-    live_[static_cast<size_t>(slot)] = 1u;
-    ++live_count_;
+    if (live_[static_cast<size_t>(slot)] == 0u) {
+      live_[static_cast<size_t>(slot)] = 1u;
+      ++live_count_;
+    }
   }
 
-  /// Move value into the slot and mark it live.
+  /// Move value into the slot and mark it live. Assigning over an already-live
+  /// slot updates the payload in place and does NOT change live_count_; only a
+  /// dead -> live transition bumps the count.
   void assign(uint32_t slot, T && value) {
     items_[static_cast<size_t>(slot)] = std::move(value);
-    live_[static_cast<size_t>(slot)] = 1u;
-    ++live_count_;
+    if (live_[static_cast<size_t>(slot)] == 0u) {
+      live_[static_cast<size_t>(slot)] = 1u;
+      ++live_count_;
+    }
   }
 
   /// Release the slot: reset payload to T{}, mark dead, push to free-list.

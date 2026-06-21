@@ -78,10 +78,16 @@ class FlatHashMap {
   // -------------------------------------------------------------------------
 
   /// Ensure the table can hold at least `capacity` entries at max_load.
+  ///
+  /// reserve() establishes the baseline capacity and is NOT a structural growth:
+  /// the post-reserve grew_ flag is cleared so grew() reports only reallocations
+  /// that occur because the live set later outgrew the reserved capacity. This
+  /// matches SlotStore, whose reserve() likewise never sets grew().
   void reserve(size_t capacity) {
     size_t needed = next_pow2(static_cast<size_t>(static_cast<double>(capacity) / kMaxLoad + 1.0));
     if (needed > table_.size()) {
       rehash(needed);
+      grew_ = false;  // baseline allocation, not a growth
     }
   }
 
@@ -348,22 +354,37 @@ class FlatHashMap {
     return p;
   }
 
-  /// Grow to at least double current capacity if (occupied+deleted) load is too high.
-  /// O(1): uses the tracked `used_` counter rather than scanning the table.
+  /// Keep the table below max load. When (occupied+deleted) load is too high we
+  /// distinguish two causes, which matters for steady-state add/remove churn:
+  ///   - If the LIVE entries (size_) still fit at the current capacity, the load
+  ///     is driven by accumulated tombstones - rehash to the SAME capacity to
+  ///     vacuum them. This does not grow the table, so grew() stays false and
+  ///     churn over a bounded set never reallocates.
+  ///   - Otherwise the live set genuinely outgrew the table - double capacity.
+  /// O(1): uses the tracked size_/used_ counters rather than scanning the table.
   void ensure_capacity() {
     if (table_.empty()) {
       rehash(4);
       return;
     }
-    if (static_cast<double>(used_ + 1) > kMaxLoad * static_cast<double>(table_.size())) {
-      rehash(table_.size() * 2);
+    const double cap = static_cast<double>(table_.size());
+    if (static_cast<double>(used_ + 1) <= kMaxLoad * cap) {
+      return;  // within load - nothing to do
+    }
+    if (static_cast<double>(size_ + 1) <= kMaxLoad * cap) {
+      rehash(table_.size());  // tombstone-driven: vacuum in place, no growth
+    } else {
+      rehash(table_.size() * 2);  // live set outgrew capacity: grow
     }
   }
 
   /// Rehash into a new table of the given size (must be power-of-two).
-  /// Vacuums tombstones (used_ resets to size_ after rehash). Sets grew_ = true.
+  /// Vacuums tombstones (used_ resets to size_ after rehash). Sets grew_ only
+  /// when the new capacity exceeds the old one - a same-size vacuum preserves
+  /// capacity and must not be reported as a structural growth.
   void rehash(size_t new_cap) {
     new_cap = next_pow2(new_cap);
+    const bool grew_capacity = new_cap > table_.size();
     std::vector<Entry> new_table(new_cap);
     for (Entry & old_e : table_) {
       if (old_e.state != kOccupied) {
@@ -380,7 +401,9 @@ class FlatHashMap {
     }
     table_ = std::move(new_table);
     used_ = size_;  // tombstones vacuumed
-    grew_ = true;
+    if (grew_capacity) {
+      grew_ = true;
+    }
   }
 
   // -------------------------------------------------------------------------

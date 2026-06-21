@@ -21,26 +21,127 @@
 
 namespace ros2_medkit_gateway {
 
-namespace {
+// ============================================================================
+// Incremental reconcile primitives (in-place; reuse the existing stores)
+// ============================================================================
 
-/// Replace the entire contents of a store with `incoming`, assigning slots in
-/// input order (slot i holds incoming[i]). This is a FULL rebuild: a fresh
-/// store is built so no stale free-list entries reorder the slots, preserving
-/// the insertion-order semantics the previous std::vector storage guaranteed
-/// across repeated update_*/update_all calls. The new store keeps at least the
-/// old reserved capacity so steady-state churn still avoids reallocation.
 template <typename T>
-void replace_store(SlotStore<T> & store, std::vector<T> incoming) {
-  size_t reserve_to = std::max(store.capacity(), incoming.size());
-  SlotStore<T> fresh(reserve_to);
-  for (auto & item : incoming) {
-    uint32_t slot = fresh.alloc_slot();
-    fresh.assign(slot, std::move(item));
+bool ThreadSafeEntityCache::reconcile(SlotStore<T> & store, FlatHashMap<std::string, uint32_t> & index,
+                                      std::vector<T> && incoming) {
+  bool changed = false;
+
+  // Mark every currently-allocated slot as not-yet-seen. seen_ is sized to the
+  // slot count; it only resize()s on the grow path below (steady state reuses
+  // the reserved buffer). slot_count() includes dead slots, which is fine: dead
+  // slots stay unseen and are skipped by the live-collect below.
+  const size_t slot_count = store.slot_count();
+  if (seen_.size() < slot_count) {
+    seen_.assign(slot_count, 0u);
+  } else {
+    std::fill(seen_.begin(), seen_.begin() + static_cast<std::ptrdiff_t>(slot_count), 0u);
   }
-  store = std::move(fresh);
+
+  for (auto & e : incoming) {
+    if (uint32_t * slot = index.find(e.id)) {
+      const uint32_t s = *slot;
+      seen_[s] = 1u;
+      // Compare against current payload; only assign (and flag) on a real diff.
+      if (!(store[s] == e)) {
+        store.assign(s, std::move(e));
+        changed = true;
+      }
+    } else {
+      const uint32_t s = store.alloc_slot();
+      // alloc_slot() may have appended a brand-new slot past seen_'s size.
+      if (s >= seen_.size()) {
+        seen_.resize(store.slot_count(), 0u);
+      }
+      seen_[s] = 1u;
+      store.assign(s, std::move(e));
+      // Read the id from the freshly-assigned slot, never from the moved-out e.
+      index.insert_or_assign(store[s].id, s);
+      changed = true;
+    }
+  }
+
+  // Collect ids of live slots that were not re-seen; free them after iterating
+  // so we never mutate the store while for_each_live walks it.
+  dead_ids_.clear();
+  store.for_each_live([&](uint32_t slot, const T & cur) {
+    if (!seen_[slot]) {
+      dead_ids_.push_back(cur.id);
+    }
+  });
+  for (const auto & id : dead_ids_) {
+    if (uint32_t * slot = index.find(id)) {
+      const uint32_t s = *slot;
+      index.erase(id);
+      store.free(s);
+      changed = true;
+    }
+  }
+  dead_ids_.clear();
+
+  return changed;
 }
 
-}  // namespace
+bool ThreadSafeEntityCache::patch_map(FlatHashMap<std::string, std::string> & map,
+                                      std::unordered_map<std::string, std::string> && incoming) {
+  bool changed = false;
+
+  patch_dead_.clear();
+  map.for_each([&](const std::string & k, const std::string &) {
+    if (incoming.count(k) == 0) {
+      patch_dead_.push_back(k);
+    }
+  });
+  for (const auto & k : patch_dead_) {
+    map.erase(k);
+    changed = true;
+  }
+  patch_dead_.clear();
+
+  for (auto & kv : incoming) {
+    std::string * cur = map.find(kv.first);
+    if (!cur) {
+      map.insert_or_assign(kv.first, std::move(kv.second));
+      changed = true;
+    } else if (*cur != kv.second) {
+      *cur = std::move(kv.second);
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+void ThreadSafeEntityCache::refresh_grew() {
+  const bool any_grew = areas_.grew() || components_.grew() || apps_.grew() || functions_.grew() ||
+                        area_index_.grew() || component_index_.grew() || app_index_.grew() || function_index_.grew() ||
+                        component_to_apps_.grew() || area_to_components_.grew() || area_to_subareas_.grew() ||
+                        function_to_apps_.grew() || operation_index_.grew() || topic_type_cache_.grew() ||
+                        node_to_app_.grew();
+  if (any_grew) {
+    grew_ = true;
+    ++overflow_count_;
+  }
+
+  areas_.clear_grew();
+  components_.clear_grew();
+  apps_.clear_grew();
+  functions_.clear_grew();
+  area_index_.clear_grew();
+  component_index_.clear_grew();
+  app_index_.clear_grew();
+  function_index_.clear_grew();
+  component_to_apps_.clear_grew();
+  area_to_components_.clear_grew();
+  area_to_subareas_.clear_grew();
+  function_to_apps_.clear_grew();
+  operation_index_.clear_grew();
+  topic_type_cache_.clear_grew();
+  node_to_app_.clear_grew();
+}
 
 // ============================================================================
 // Construction / capacity
@@ -88,67 +189,83 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
                                        std::unordered_map<std::string, std::string> node_to_app) {
   std::unique_lock lock(mutex_);
 
-  replace_store(areas_, std::move(areas));
-  replace_store(components_, std::move(components));
-  replace_store(apps_, std::move(apps));
-  replace_store(functions_, std::move(functions));
+  bool changed = false;
+  changed |= reconcile(areas_, area_index_, std::move(areas));
+  changed |= reconcile(components_, component_index_, std::move(components));
+  changed |= reconcile(apps_, app_index_, std::move(apps));
+  changed |= reconcile(functions_, function_index_, std::move(functions));
+  changed |= patch_map(node_to_app_, std::move(node_to_app));
 
-  node_to_app_.reset();
-  for (auto & [fqn, app_id] : node_to_app) {
-    node_to_app_.insert_or_assign(fqn, std::move(app_id));
+  if (!changed) {
+    refresh_grew();
+    return;
   }
 
+  rebuild_relationship_indexes();
+  rebuild_operation_index();
   last_update_ = std::chrono::system_clock::now();
-
-  rebuild_all_indexes();
+  refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
   std::unique_lock lock(mutex_);
-  replace_store(areas_, std::move(areas));
-  last_update_ = std::chrono::system_clock::now();
-  rebuild_area_index();
+  if (!reconcile(areas_, area_index_, std::move(areas))) {
+    refresh_grew();
+    return;
+  }
   rebuild_relationship_indexes();
+  last_update_ = std::chrono::system_clock::now();
+  refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_components(std::vector<Component> components) {
   std::unique_lock lock(mutex_);
-  replace_store(components_, std::move(components));
-  last_update_ = std::chrono::system_clock::now();
-  rebuild_component_index();
+  if (!reconcile(components_, component_index_, std::move(components))) {
+    refresh_grew();
+    return;
+  }
   rebuild_relationship_indexes();
   rebuild_operation_index();
+  last_update_ = std::chrono::system_clock::now();
+  refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_apps(std::vector<App> apps) {
   std::unique_lock lock(mutex_);
-  replace_store(apps_, std::move(apps));
-  last_update_ = std::chrono::system_clock::now();
-  rebuild_app_index();
+  if (!reconcile(apps_, app_index_, std::move(apps))) {
+    refresh_grew();
+    return;
+  }
   rebuild_relationship_indexes();
   rebuild_operation_index();
+  last_update_ = std::chrono::system_clock::now();
+  refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_functions(std::vector<Function> functions) {
   std::unique_lock lock(mutex_);
-  replace_store(functions_, std::move(functions));
-  last_update_ = std::chrono::system_clock::now();
-  rebuild_function_index();
+  if (!reconcile(functions_, function_index_, std::move(functions))) {
+    refresh_grew();
+    return;
+  }
   rebuild_relationship_indexes();
+  last_update_ = std::chrono::system_clock::now();
+  refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
 }
 
 void ThreadSafeEntityCache::update_topic_types(std::unordered_map<std::string, std::string> topic_types) {
   std::unique_lock lock(mutex_);
-  topic_type_cache_.reset();
-  for (auto & [name, type] : topic_types) {
-    topic_type_cache_.insert_or_assign(name, std::move(type));
+  if (patch_map(topic_type_cache_, std::move(topic_types))) {
+    refresh_grew();
+    generation_.fetch_add(1, std::memory_order_release);
+  } else {
+    refresh_grew();
   }
-  generation_.fetch_add(1, std::memory_order_release);
 }
 
 std::unordered_map<std::string, std::string> ThreadSafeEntityCache::get_node_to_app() const {
@@ -736,13 +853,10 @@ EntityCacheStats ThreadSafeEntityCache::get_stats() const {
   stats.function_count = functions_.live_count();
   stats.total_operations = operation_index_.size();
   stats.capacity = capacity_;
-  // No read-and-clear refresh exists yet (introduced in Task 5), so derive
-  // `grew` from the live container flags. `grew_` is reserved for that future
-  // cached path and currently stays false.
-  stats.grew = grew_ || areas_.grew() || components_.grew() || apps_.grew() || functions_.grew() ||
-               area_index_.grew() || component_index_.grew() || app_index_.grew() || function_index_.grew() ||
-               component_to_apps_.grew() || area_to_components_.grew() || area_to_subareas_.grew() ||
-               function_to_apps_.grew() || operation_index_.grew() || topic_type_cache_.grew() || node_to_app_.grew();
+  // refresh_grew() folds each container's transient grew() flag into grew_ and
+  // clears the containers, so the cached member is the source of truth here.
+  // Re-querying the containers would always read false post-refresh.
+  stats.grew = grew_;
   stats.generation = generation_.load(std::memory_order_acquire);
   stats.overflow_count = overflow_count_;
   stats.last_update = last_update_;
@@ -830,43 +944,10 @@ uint64_t ThreadSafeEntityCache::generation() const {
 // ============================================================================
 // Index rebuild helpers
 // ============================================================================
-
-void ThreadSafeEntityCache::rebuild_all_indexes() {
-  rebuild_area_index();
-  rebuild_component_index();
-  rebuild_app_index();
-  rebuild_function_index();
-  rebuild_relationship_indexes();
-  rebuild_operation_index();
-}
-
-void ThreadSafeEntityCache::rebuild_area_index() {
-  area_index_.reset();
-  areas_.for_each_live([&](uint32_t slot, const Area & area) {
-    area_index_.insert_or_assign(area.id, slot);
-  });
-}
-
-void ThreadSafeEntityCache::rebuild_component_index() {
-  component_index_.reset();
-  components_.for_each_live([&](uint32_t slot, const Component & comp) {
-    component_index_.insert_or_assign(comp.id, slot);
-  });
-}
-
-void ThreadSafeEntityCache::rebuild_app_index() {
-  app_index_.reset();
-  apps_.for_each_live([&](uint32_t slot, const App & app) {
-    app_index_.insert_or_assign(app.id, slot);
-  });
-}
-
-void ThreadSafeEntityCache::rebuild_function_index() {
-  function_index_.reset();
-  functions_.for_each_live([&](uint32_t slot, const Function & func) {
-    function_index_.insert_or_assign(func.id, slot);
-  });
-}
+//
+// Primary id->slot indexes are maintained incrementally inside reconcile().
+// Only the derived relationship and operation indexes are rebuilt from scratch
+// after a change, since they are pure functions of the (now-updated) stores.
 
 void ThreadSafeEntityCache::rebuild_relationship_indexes() {
   component_to_apps_.reset();

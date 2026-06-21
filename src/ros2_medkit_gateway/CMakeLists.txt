@@ -663,6 +663,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_slot_store gateway_core)
   endif()
 
+  # ThreadSafeEntityCache incremental reconcile (pure C++17, no ROS node)
+  ament_add_gtest(test_thread_safe_entity_cache
+    test/test_thread_safe_entity_cache.cpp)
+  if(TARGET test_thread_safe_entity_cache)
+    target_link_libraries(test_thread_safe_entity_cache gateway_core)
+  endif()
+
   # DTO contract core (pure C++17, no ROS node)
   ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
   target_link_libraries(test_dto_contract gateway_core)

@@ -44,14 +44,30 @@ TEST(FlatHashMap, GetOrCreateAndReset) {
   EXPECT_EQ(m.find("p")->size(), 1u);
 }
 
-TEST(FlatHashMap, GrowsAndVacuumsTombstones) {
+TEST(FlatHashMap, BoundedChurnVacuumsWithoutGrowing) {
+  // Add/remove churn over a bounded live set (size stays <= 2) must reclaim
+  // tombstones via an in-place same-capacity rehash, never growing the table.
+  // This keeps grew() false so a steady-state index does not report growth.
   FlatHashMap<int, int> m(4);
   for (int i = 0; i < 1000; ++i) {
     m.insert_or_assign(i, i);
     m.erase(i - 1);
   }
-  EXPECT_TRUE(m.grew());
+  EXPECT_FALSE(m.grew());
   EXPECT_LE(m.size(), 2u);
+  ASSERT_NE(m.find(999), nullptr);
+  EXPECT_EQ(*m.find(999), 999);
+}
+
+TEST(FlatHashMap, LiveSetOutgrowingCapacityGrows) {
+  // When the live (occupied) set genuinely exceeds the reserved capacity the
+  // table must grow and report grew() == true.
+  FlatHashMap<int, int> m(4);
+  for (int i = 0; i < 1000; ++i) {
+    m.insert_or_assign(i, i);  // never erased: live set grows past capacity
+  }
+  EXPECT_TRUE(m.grew());
+  EXPECT_EQ(m.size(), 1000u);
   ASSERT_NE(m.find(999), nullptr);
   EXPECT_EQ(*m.find(999), 999);
 }
