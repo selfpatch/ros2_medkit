@@ -651,6 +651,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_handler_context gateway_ros2)
   medkit_set_test_domain(test_handler_context)
 
+  # FlatHashMap open-addressed container (pure C++17, no ROS node)
+  ament_add_gtest(test_flat_hash_map test/test_flat_hash_map.cpp)
+  if(TARGET test_flat_hash_map)
+    target_link_libraries(test_flat_hash_map gateway_core)
+  endif()
+
   # DTO contract core (pure C++17, no ROS node)
   ament_add_gtest(test_dto_contract test/test_dto_contract.cpp)
   target_link_libraries(test_dto_contract gateway_core)
