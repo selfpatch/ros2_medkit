@@ -67,8 +67,10 @@ Test the gateway:
 Custom Configuration
 --------------------
 
-The default configuration listens on ``0.0.0.0:8080`` with CORS disabled.
-To use a custom configuration, mount a params file:
+The default configuration listens on ``0.0.0.0:8080``. CORS is enabled with a
+permissive ``allowed_origins: ["*"]`` so the web UI works out of the box;
+restrict it for production (see `CORS for Web UI`_ below). To use a custom
+configuration, mount a params file:
 
 .. code-block:: bash
 
@@ -211,8 +213,8 @@ For containers to discover each other's ROS 2 nodes, use the same ``ROS_DOMAIN_I
 CORS for Web UI
 ---------------
 
-When the Web UI runs in a separate container or host, enable CORS in your
-custom params file. CORS is disabled by default for production safety:
+The image default allows all origins so the Web UI works out of the box. For
+production, restrict ``allowed_origins`` to the specific UI origin(s):
 
 .. code-block:: yaml
 
