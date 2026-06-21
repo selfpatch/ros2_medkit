@@ -18,8 +18,10 @@
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -146,6 +148,23 @@ TEST_F(CaptureThreadPoolTest, PoolSizeOneSerializes) {
   gc.release();
   pool.shutdown();
   EXPECT_EQ(gc.max_active(), 1u);
+}
+
+// Defensive clamp: pool_size/queue_depth of 0 must not UB. In particular
+// queue_depth 0 + kDropOldest would call front() on an empty deque without the
+// clamp. With both clamped to 1, a worker exists and drop_oldest evicts safely.
+TEST_F(CaptureThreadPoolTest, ZeroSizesClampToOne) {
+  GatedCallback gc;
+  CaptureThreadPool pool(0, 0, QueueFullPolicy::kDropOldest, test_logger(), gc.fn());
+  EXPECT_EQ(pool.enqueue("a").result, EnqueueResult::kAccepted);
+  gc.wait_until_active(1);                                        // a worker exists (pool_size clamped to 1)
+  EXPECT_EQ(pool.enqueue("b").result, EnqueueResult::kAccepted);  // queue_depth clamped to 1
+  auto outcome = pool.enqueue("c");                               // full -> evict oldest, no UB
+  EXPECT_EQ(outcome.result, EnqueueResult::kEvictedOldest);
+  ASSERT_TRUE(outcome.evicted_code.has_value());
+  EXPECT_EQ(*outcome.evicted_code, "b");
+  gc.release();
+  pool.shutdown();
 }
 
 TEST_F(CaptureThreadPoolTest, RejectNewestDropsExcessExactly) {
