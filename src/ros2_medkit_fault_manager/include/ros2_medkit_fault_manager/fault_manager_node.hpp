@@ -179,11 +179,11 @@ class FaultManagerNode : public rclcpp::Node {
   rclcpp::Publisher<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr event_publisher_;
 
   /// Snapshot capture for capturing topic data on fault confirmation.
-  /// shared_ptr to allow safe capture-by-value in detached capture threads.
+  /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<SnapshotCapture> snapshot_capture_;
 
   /// Rosbag capture for time-window recording (nullptr if disabled).
-  /// shared_ptr to allow safe capture-by-value in detached capture threads.
+  /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<RosbagCapture> rosbag_capture_;
 
   /// Correlation engine for fault correlation/muting (nullptr if disabled)

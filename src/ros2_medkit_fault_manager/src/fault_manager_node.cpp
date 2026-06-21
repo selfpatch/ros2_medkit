@@ -110,6 +110,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Capture concurrency bound (issue #441): cap concurrent capture threads and
   // bound the pending queue so a fault storm cannot grow memory without limit.
+  // declare_parameter<int> returns int64_t on Jazzy; the static_cast<int> keeps -Wconversion quiet.
   capture_pool_size_ = static_cast<int>(declare_parameter<int>("snapshots.capture_pool_size", 2));
   if (capture_pool_size_ < 1) {
     RCLCPP_WARN(get_logger(), "snapshots.capture_pool_size must be >= 1, got %ld. Clamping to 1",

@@ -15,7 +15,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
