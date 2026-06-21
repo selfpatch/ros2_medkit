@@ -487,17 +487,22 @@ class ThreadSafeEntityCache {
   /**
    * @brief Get the current generation counter
    *
-   * The generation counter advances on every cache mutation (update_all,
-   * update_areas, update_components, update_apps, update_functions,
-   * update_topic_types). Consumers can use this to detect when cached derived
-   * data (e.g., OpenAPI specs) is stale and needs regeneration.
+   * The generation counter advances ONLY when a mutation actually changes the
+   * cache contents. This gate applies to every mutator (update_all, the
+   * per-type update_* methods, and update_topic_types): a no-op call (e.g.,
+   * update_all with the same entity set, or update_topic_types with an
+   * unchanged topic map) does NOT bump the generation.
+   *
+   * Consumers use the generation to detect when cached derived data
+   * (e.g., OpenAPI specs) is stale and needs regeneration. Because the counter
+   * is gated on actual changes, polling it is cheap on a stable graph.
    */
   uint64_t generation() const;
 
  private:
   mutable std::shared_mutex mutex_;
 
-  // Generation counter - advances on every entity mutation
+  // Generation counter - advances only when a mutation changes the cache.
   std::atomic<uint64_t> generation_{0};
 
   // Primary storage: stable-slot object pools (slots never shift on free).

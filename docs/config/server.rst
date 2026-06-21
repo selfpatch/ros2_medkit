@@ -259,6 +259,15 @@ Performance Tuning
      - Safety-backstop refresh interval (ms). Primary discovery is graph-event
        driven (polled every 100 ms); this timer forces a full refresh only if
        a graph event is missed. Range: 100-60000 (0.1s-60s).
+   * - ``entity_cache.capacity``
+     - int
+     - ``256``
+     - Fixed capacity of the thread-safe entity cache object pool, reserved once
+       at startup. Steady-state refresh cycles perform zero structural allocations
+       in the cache layer as long as the live entity count stays within this
+       value. Valid range: 16-1000000 (values outside this range are clamped with
+       a warning). Raise it for graphs larger than the default; exceeding the
+       reserved capacity is harmless but triggers a one-shot WARN log.
 
 Lower values shorten the worst-case recovery window if a graph event is missed
 but increase idle CPU. The default rarely fires on a stable graph because the

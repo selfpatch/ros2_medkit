@@ -10,6 +10,7 @@ The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RES
 - **Auto-discovery**: Automatically detects ROS 2 nodes and topics
 - **SOVD entity model**: Areas, Components (host-level), Apps (ROS 2 nodes), and Functions (namespace-based logical grouping)
 - **REST API**: Standard HTTP/JSON interface
+- **Incremental entity cache**: Discovery refresh diffs add/remove/change and performs zero structural allocations in the cache layer at steady state (object-pool backed, fixed capacity reserved at init via `entity_cache.capacity`)
 - **Real-time updates**: Configurable cache refresh for up-to-date system state
 - **Bulk Data Management**: Upload, download, list, and delete bulk data files (calibration, firmware, etc.)
 - **Resource Locking**: SOVD-compliant entity locking with scoped access control, lock breaking, and automatic expiry
