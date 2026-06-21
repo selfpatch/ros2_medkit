@@ -42,8 +42,9 @@ must line up, or the gateway sees an empty graph:
 
      export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
-  The prebuilt image bundles both FastDDS (default) and CycloneDDS; opt in with
-  the environment variable above.
+  The RMW you select must be installed in the gateway's environment. A binary
+  install pulls in the default RMW; install the matching ``ros-<distro>-rmw-*``
+  package for any other implementation.
 - **Domain ID.** ``ROS_DOMAIN_ID`` must match the stack (default is 0).
 - **Discovery reachability.** The processes must reach each other's DDS
   discovery: same host, a shared network, or - for containers - a shared
@@ -73,12 +74,13 @@ access to the host's DDS traffic and match the environment:
 
 .. code-block:: bash
 
+   # With --network host the gateway shares the host's ports directly
+   # (no -p needed); reach the API at http://localhost:8080.
    docker run --rm \
      --network host \
      -e ROS_DOMAIN_ID=0 \
      -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
-     -p 8080:8080 \
-     ghcr.io/selfpatch/ros2_medkit:latest
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
 If the stack itself runs in a container, share its network namespace instead of
 the host network:
@@ -86,7 +88,9 @@ the host network:
 .. code-block:: bash
 
    docker run --rm --network container:<stack_container> \
-     -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ghcr.io/selfpatch/ros2_medkit:latest
+     -e ROS_DOMAIN_ID=0 \
+     -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
 .. note::
 
@@ -99,10 +103,9 @@ Web UI
 ------
 
 The web UI is a separate service served from its own origin, so the gateway
-must allow that origin via CORS. The Docker image enables a permissive CORS
-default for this; for a manual gateway set ``cors.allowed_origins`` to your UI
-origin(s). See :doc:`web-ui` and :doc:`docker`. Restrict origins and enable
-authentication (:doc:`authentication`) for production.
+must allow that origin via CORS. Set ``cors.allowed_origins`` to your UI
+origin(s) in the gateway params. See :doc:`web-ui` and :doc:`docker`. Restrict
+origins and enable authentication (:doc:`authentication`) for production.
 
 Verify
 ------
@@ -111,7 +114,7 @@ Verify
 
    curl -s http://localhost:8080/api/v1/health           # -> healthy
    curl -s http://localhost:8080/api/v1/apps  | jq '.items | length'   # your nodes
-   curl -s http://localhost:8080/api/v1/faults | jq '."x-medkit".count'
+   curl -s http://localhost:8080/api/v1/faults | jq '.items | length'   # active faults
 
 Troubleshooting
 ---------------
