@@ -94,6 +94,7 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
     std::size_t graph_events_received;
     std::size_t concurrent_cold_waits;
     std::size_t cold_wait_cap;
+    std::size_t unsupported_type_count;
   };
 
   Ros2TopicDataProvider(std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> exec,
@@ -169,6 +170,9 @@ class Ros2TopicDataProvider final : public TopicDataProvider {
 
   // Message types whose package is not installed: warned once, then skipped on
   // subsequent samples instead of re-attempting deserialize per message.
+  // Bounded by kMaxUnsupportedTypes so a stack advertising many distinct
+  // unknown types cannot grow the cache without limit.
+  static constexpr std::size_t kMaxUnsupportedTypes = 4096;
   mutable std::mutex unsupported_types_mtx_;
   std::unordered_set<std::string> unsupported_types_;
 
