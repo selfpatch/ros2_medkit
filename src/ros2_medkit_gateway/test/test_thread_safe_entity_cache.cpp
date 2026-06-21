@@ -21,14 +21,14 @@
 
 using namespace ros2_medkit_gateway;
 
-static App mkapp(std::string id) {
+static App mkapp(const std::string & id) {
   App a;
   a.id = id;
   a.name = id;
   a.component_id = "host";
   return a;
 }
-static Component mkcomp(std::string id) {
+static Component mkcomp(const std::string & id) {
   Component c;
   c.id = id;
   c.name = id;
@@ -86,6 +86,7 @@ TEST(EntityCacheIncremental, ChurnKeepsCapacityBounded) {
   ThreadSafeEntityCache c(64);
   for (int i = 0; i < 500; ++i) {
     std::vector<App> apps;
+    apps.reserve(5);
     for (int k = 0; k < 5; ++k) {
       apps.push_back(mkapp("n" + std::to_string(i * 5 + k)));
     }
@@ -99,6 +100,7 @@ TEST(EntityCacheIncremental, ChurnKeepsCapacityBounded) {
 TEST(EntityCacheIncremental, OverflowGrowsAndFlags) {
   ThreadSafeEntityCache c(8);
   std::vector<App> apps;
+  apps.reserve(64);
   for (int i = 0; i < 64; ++i) {
     apps.push_back(mkapp("n" + std::to_string(i)));
   }

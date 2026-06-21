@@ -1009,6 +1009,8 @@ if(BUILD_TESTING)
   # No medkit_set_test_domain - this is ROS-free (gateway_core only).
   ament_add_gtest(test_entity_cache_alloc test/test_entity_cache_alloc.cpp)
   target_link_libraries(test_entity_cache_alloc gateway_core)
+  # NOTE: test_entity_cache_alloc is intentionally excluded from _test_targets below.
+  # Its global operator new/delete override corrupts lcov allocation counters in other TUs.
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)

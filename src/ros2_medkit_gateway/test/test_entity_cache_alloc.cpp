@@ -41,7 +41,7 @@ void operator delete(void * p) noexcept {
   }
   std::free(p);
 }
-void operator delete(void * p, std::size_t) noexcept {
+void operator delete(void * p, std::size_t /*n*/) noexcept {
   ::operator delete(p);
 }
 using namespace ros2_medkit_gateway;
