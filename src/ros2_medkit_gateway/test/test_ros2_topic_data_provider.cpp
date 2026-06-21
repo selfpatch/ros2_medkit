@@ -99,6 +99,7 @@ TEST_F(Ros2TopicDataProviderTest, ConstructedProviderHasEmptyStats) {
   EXPECT_EQ(s.pool_hits, 0u);
   EXPECT_EQ(s.pool_misses, 0u);
   EXPECT_GT(s.pool_cap, 0u);
+  EXPECT_EQ(s.unsupported_type_count, 0u);
 }
 
 // @verifies REQ_INTEROP_018

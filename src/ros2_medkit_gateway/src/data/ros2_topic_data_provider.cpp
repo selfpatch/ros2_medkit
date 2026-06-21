@@ -500,10 +500,14 @@ tl::expected<TopicSampleResult, ErrorInfo> Ros2TopicDataProvider::sample(const s
       result.timestamp_ns = msg_ns;
     }
   } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
-    bool first_seen;
+    bool first_seen = false;
     {
       std::lock_guard<std::mutex> lk(unsupported_types_mtx_);
-      first_seen = unsupported_types_.insert(type_name).second;
+      // Cap the cache: past the bound stop tracking (and stop warning) rather
+      // than grow memory without limit on a graph with many unknown types.
+      if (unsupported_types_.size() < kMaxUnsupportedTypes) {
+        first_seen = unsupported_types_.insert(type_name).second;
+      }
     }
     if (first_seen) {
       RCLCPP_WARN(exec_->node()->get_logger(),
@@ -948,6 +952,7 @@ nlohmann::json Ros2TopicDataProvider::x_medkit_stats() const {
       {"graph_events_received", p.graph_events_received},
       {"concurrent_cold_waits", p.concurrent_cold_waits},
       {"cold_wait_cap", p.cold_wait_cap},
+      {"unsupported_type_count", p.unsupported_type_count},
   };
   if (exec_) {
     const auto e = exec_->stats();
@@ -983,6 +988,10 @@ Ros2TopicDataProvider::PoolStats Ros2TopicDataProvider::stats() const {
   s.graph_events_received = graph_events_received_.load();
   s.concurrent_cold_waits = concurrent_cold_waits_.load();
   s.cold_wait_cap = cfg_.cold_wait_cap;
+  {
+    std::lock_guard<std::mutex> lk(unsupported_types_mtx_);
+    s.unsupported_type_count = unsupported_types_.size();
+  }
   return s;
 }
 
