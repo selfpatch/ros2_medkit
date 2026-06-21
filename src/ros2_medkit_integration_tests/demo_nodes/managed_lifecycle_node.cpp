@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <chrono>
+#include <cstdio>
 #include <memory>
 
 #include <rclcpp/rclcpp.hpp>
@@ -61,11 +62,22 @@ class ManagedLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 };
 
 int main(int argc, char ** argv) {
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<ManagedLifecycleNode>();
-  rclcpp::executors::SingleThreadedExecutor exec;
-  exec.add_node(node->get_node_base_interface());
-  exec.spin();
-  rclcpp::shutdown();
+  // Wrap the body so no exception escapes main (bugprone-exception-escape): the
+  // run_demo_node helper used by the other demo nodes only accepts an
+  // rclcpp::Node, so a LifecycleNode needs its own main.
+  try {
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<ManagedLifecycleNode>();
+    rclcpp::executors::SingleThreadedExecutor exec;
+    exec.add_node(node->get_node_base_interface());
+    exec.spin();
+    rclcpp::shutdown();
+  } catch (const std::exception & e) {
+    fprintf(stderr, "managed_lifecycle: %s\n", e.what());
+    return 1;
+  } catch (...) {
+    fprintf(stderr, "managed_lifecycle: unknown exception\n");
+    return 1;
+  }
   return 0;
 }
