@@ -106,8 +106,8 @@ WARN log fires when this happens:
 
 .. code-block:: text
 
-   [WARN] entity cache capacity (256) exceeded; grew to N entries.
-   Consider raising entity_cache.capacity.
+   [WARN] entity_cache capacity 256 exceeded (grew); raise
+   entity_cache.capacity for embedded determinism
 
 The gateway continues operating normally. The WARN fires once per process
 lifetime to avoid log spam.
