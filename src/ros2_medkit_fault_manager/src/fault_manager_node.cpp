@@ -21,7 +21,6 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <sstream>
-#include <thread>
 
 #include "ros2_medkit_fault_manager/correlation/config_parser.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
@@ -244,6 +243,22 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
   }
 
+  // Drive captures through a bounded pool instead of one thread per fault.
+  if (snapshot_capture_ || rosbag_capture_) {
+    auto snap = snapshot_capture_;
+    auto bag = rosbag_capture_;
+    capture_pool_ = std::make_unique<CaptureThreadPool>(
+        static_cast<std::size_t>(capture_pool_size_), static_cast<std::size_t>(capture_queue_depth_),
+        capture_queue_full_policy_, get_logger(), [snap, bag](const std::string & fault_code) {
+          if (snap) {
+            snap->capture(fault_code);
+          }
+          if (bag) {
+            bag->on_fault_confirmed(fault_code);
+          }
+        });
+  }
+
   // Initialize correlation engine (nullptr if disabled or not configured)
   correlation_engine_ = create_correlation_engine();
 
@@ -281,22 +296,15 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 }
 
 FaultManagerNode::~FaultManagerNode() {
-  // Stop rosbag capture first (has active subscriptions and timers)
+  // Join capture workers FIRST so no worker is mid-capture when rosbag tears
+  // down. RosbagCapture::stop() is not a barrier against an in-flight
+  // on_fault_confirmed() (it clears subscriptions/buffers without serializing
+  // against the capture path). See issue #441.
+  if (capture_pool_) {
+    capture_pool_->shutdown();
+  }
   if (rosbag_capture_) {
     rosbag_capture_->stop();
-  }
-
-  // Join any active capture threads to prevent use-after-free on node destruction.
-  // Without this, detached threads holding shared_ptrs to SnapshotCapture/RosbagCapture
-  // can access the destroyed node_ pointer, causing SIGSEGV.
-  {
-    std::lock_guard<std::mutex> lock(capture_threads_mutex_);
-    for (auto & t : capture_threads_) {
-      if (t.joinable()) {
-        t.join();
-      }
-    }
-    capture_threads_.clear();
   }
 }
 
@@ -434,46 +442,70 @@ void FaultManagerNode::handle_report_fault(
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
 
-    // Capture snapshots and rosbag when fault is confirmed (even if muted).
-    // Run asynchronously to avoid blocking the service callback for seconds,
-    // which would prevent other service calls (list_faults, get_fault, etc.)
-    // from being processed during capture. SnapshotCapture::capture_topic_on_demand
-    // uses a local callback group + local executor, so it's safe from a separate thread.
-    if (just_confirmed && (snapshot_capture_ || rosbag_capture_)) {
-      // Check recapture cooldown - skip if captured recently for this fault
-      bool should_capture = true;
-      if (snapshot_recapture_cooldown_sec_ > 0.0) {
-        std::lock_guard<std::mutex> lock(last_capture_mutex_);
-        auto it = last_capture_times_.find(request->fault_code);
+    // Capture snapshots/rosbag when a fault confirms. Bounded pool (issue #441):
+    // the cooldown check, enqueue, and cooldown update are atomic under
+    // last_capture_mutex_ to prevent a concurrent same-fault double-enqueue.
+    if (just_confirmed && capture_pool_) {
+      const std::string fault_code = request->fault_code;
+      const bool cooldown_enabled = snapshot_recapture_cooldown_sec_ > 0.0;
+      std::unique_lock<std::mutex> cd_lock(last_capture_mutex_, std::defer_lock);
+      if (cooldown_enabled) {
+        cd_lock.lock();
+      }
+
+      bool on_cooldown = false;
+      if (cooldown_enabled) {
+        auto it = last_capture_times_.find(fault_code);
         if (it != last_capture_times_.end()) {
           auto elapsed = std::chrono::steady_clock::now() - it->second;
-          if (elapsed < std::chrono::duration<double>(snapshot_recapture_cooldown_sec_)) {
-            should_capture = false;
-            RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", request->fault_code.c_str());
-          }
-        }
-        if (should_capture) {
-          last_capture_times_[request->fault_code] = std::chrono::steady_clock::now();
+          on_cooldown = elapsed < std::chrono::duration<double>(snapshot_recapture_cooldown_sec_);
         }
       }
 
-      if (should_capture) {
-        std::string fault_code = request->fault_code;
-        auto snapshot_cap = snapshot_capture_;
-        auto rosbag_cap = rosbag_capture_;
-        std::thread capture_thread([snapshot_cap, rosbag_cap, fault_code]() {
-          if (snapshot_cap) {
-            snapshot_cap->capture(fault_code);
-          }
-          if (rosbag_cap) {
-            rosbag_cap->on_fault_confirmed(fault_code);
-          }
-        });
-        {
-          std::lock_guard<std::mutex> ct_lock(capture_threads_mutex_);
-          capture_threads_.push_back(std::move(capture_thread));
+      if (on_cooldown) {
+        RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", fault_code.c_str());
+      } else {
+        const EnqueueOutcome outcome = capture_pool_->enqueue(fault_code);
+        const auto now = std::chrono::steady_clock::now();
+        // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical
+        // compat); mirror rosbag_capture.cpp's local-copy pattern. Cast the
+        // uint64_t counter to unsigned long long + %llu to avoid -Wuseless-cast
+        // (uint64_t == unsigned long on LP64).
+        rclcpp::Clock throttle_clock(*get_clock());
+        switch (outcome.result) {
+          case EnqueueResult::kAccepted:
+            if (cooldown_enabled) {
+              last_capture_times_[fault_code] = now;
+            }
+            break;
+          case EnqueueResult::kEvictedOldest:
+            if (cooldown_enabled) {
+              last_capture_times_[fault_code] = now;
+              if (outcome.evicted_code) {
+                last_capture_times_.erase(*outcome.evicted_code);  // keep evicted fault retriable
+              }
+            }
+            RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
+                                 "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
+                                 "(pool=%d, queue=%d, total_dropped=%llu)",
+                                 outcome.evicted_code ? outcome.evicted_code->c_str() : "?", fault_code.c_str(),
+                                 capture_pool_size_, capture_queue_depth_,
+                                 static_cast<unsigned long long>(capture_pool_->dropped_captures()));
+            break;
+          case EnqueueResult::kDroppedNewest:
+            // Cooldown NOT recorded: capture still possible if the fault later
+            // heals/clears and re-confirms.
+            RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
+                                 "Capture queue full (reject_newest): dropped capture for '%s' "
+                                 "(pool=%d, queue=%d, total_dropped=%llu)",
+                                 fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
+                                 static_cast<unsigned long long>(capture_pool_->dropped_captures()));
+            break;
+          case EnqueueResult::kRejectedShuttingDown:
+            RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", fault_code.c_str());
+            break;
         }
-      }  // if (should_capture)
+      }
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
