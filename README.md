@@ -52,9 +52,22 @@ curl http://localhost:8080/api/v1/apps/move_group/faults
 # → the aborted MoveGroup goal, as a structured fault with its snapshot
 ```
 
-**The point:** ros2_medkit reads the signals your stack already emits - aborted actions,
-`/rosout` errors, `/diagnostics` - through drop-in bridges. You add nothing to Nav2, MoveIt,
-or your own nodes; you get a remote, queryable, time-traveled fault instead of a log line.
+**Two ways to feed it:**
+
+- **Native, for code you own** - report faults directly with the
+  [`FaultReporter`](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_fault_reporter)
+  client. This is the richest path (your own codes, severities and context) and the canonical way
+  for new code; see the
+  [integration tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/integration.html).
+- **Drop-in bridges, for the stack you will not rewrite** - most real robots run huge existing
+  projects nobody is going to retrofit with diagnostics. Point the bridges at what they already
+  emit and you get structured faults (and states) in minutes, zero code changes:
+  [`/diagnostics`](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_diagnostic_bridge),
+  [`/rosout` logs](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_log_bridge),
+  [aborted actions](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_action_status_bridge).
+
+So you get a remote, queryable, time-traveled fault instead of a log line - whether or not you
+touch the node's code.
 
 ## vs. standard ROS 2 diagnostics
 
@@ -63,7 +76,7 @@ current node health to a desktop GUI. ros2_medkit turns that into a queryable, r
 time-traveled, actionable fault - and it **consumes `/diagnostics` too**, so it is additive,
 not a rip-and-replace.
 
-| | ROS 2 diagnostics | ros2_medkit |
+| | 🔴 ROS 2 diagnostics | 🟢 ros2_medkit |
 |---|---|---|
 | Access | `/diagnostics` topic + rqt GUI (local desktop) | SOVD REST API (remote; any tool / dashboard / agent) |
 | Instrumentation | required (`diagnostic_updater` in node code) | works without it - drop-in bridges (`/rosout`, action status, `/diagnostics` passthrough) |
