@@ -117,25 +117,24 @@ and agents, not just people) and captures the black-box rosbag you then open in 
 
 ## Run it in 5 minutes
 
-**Install** from the ROS 2 distribution (source build and Pixi in the
-[installation docs](https://selfpatch.github.io/ros2_medkit/installation.html)):
+**Two commands. No code changes, no config.** Install from the ROS 2 distribution, then launch
+it next to your already-running robot:
 
 ```bash
-sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble-ros2-medkit-gateway
-```
+# 1. Install (the gateway package pulls in the fault manager + the drop-in bridges)
+sudo apt install ros-jazzy-ros2-medkit-gateway      # or ros-humble-ros2-medkit-gateway
 
-The gateway package pulls in the fault manager and the drop-in bridges.
-
-**Run it next to your robot** - one command attaches to your already-running ROS 2 graph
-(same `ROS_DOMAIN_ID` / RMW, no config) and starts the gateway, the fault manager and the
-generic fault bridges (`/rosout`, action status, `/diagnostics`):
-
-```bash
+# 2. Attach to your running ROS 2 graph - same ROS_DOMAIN_ID / RMW, nothing to configure
 ros2 launch ros2_medkit_gateway bringup.launch.py
-# REST API on http://localhost:8080/api/v1/
+# → REST API live at http://localhost:8080/api/v1/
 ```
 
-**Use it - just curl the REST API** (no UI, no CORS):
+> [!TIP]
+> That is the whole setup. It auto-discovers every node, topic, service and action and starts
+> emitting structured faults over REST - no instrumentation, no changes to your stack. Prefer
+> source or Pixi? See the [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html).
+
+**Then just curl the REST API** (no UI, no CORS):
 
 ```bash
 # Your whole graph as a SOVD entity tree, instantly:
