@@ -42,6 +42,28 @@ from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# Default web UI origins enabled when the user does not override CORS, so the
+# bundled web UI works over HTTPS out of the box (kept in sync with
+# gateway.launch.py; a wildcard is deliberately not used).
+CORS_DEFAULT = 'http://localhost:3000,http://localhost:5173'
+
+
+def cors_override(cors_arg, config_file, default_config):
+    """Return the ``cors.allowed_origins`` entry for the final overrides, or {}.
+
+    The final overrides dict wins per key, so to avoid silently overriding a
+    user's ``config_file``: an explicit ``cors_allowed_origins`` arg always wins
+    (empty -> [''], CORS off); with no arg and a custom config file, inject
+    nothing so the file's value is respected; with no arg and the default config,
+    apply the web UI origins so the bundled UI works out of the box.
+    """
+    if cors_arg.strip() != CORS_DEFAULT:
+        origins = [o.strip() for o in cors_arg.split(',') if o.strip()] or ['']
+        return {'cors.allowed_origins': origins}
+    if not config_file or config_file == default_config:
+        return {'cors.allowed_origins': CORS_DEFAULT.split(',')}
+    return {}
+
 
 def generate_certificates(cert_dir: str) -> dict:
     """
@@ -143,6 +165,7 @@ def launch_setup(context):
     refresh_interval = LaunchConfiguration('refresh_interval_ms').perform(context)
     min_tls_version = LaunchConfiguration('min_tls_version').perform(context)
     override_config = LaunchConfiguration('config_file').perform(context)
+    cors_arg = LaunchConfiguration('cors_allowed_origins').perform(context)
 
     # Use temp directory if not specified
     if not cert_dir:
@@ -191,6 +214,7 @@ def launch_setup(context):
                     'server.tls.key_file': cert_paths['key_file'],
                     'server.tls.min_version': min_tls_version,
                     'refresh_interval_ms': int(refresh_interval),
+                    **cors_override(cors_arg, override_config, default_config),
                 }
             ],
             arguments=['--ros-args', '--log-level', 'info']
@@ -244,6 +268,15 @@ def generate_launch_description():
                 'config', 'gateway_params.yaml'),
             description='Path to YAML config file to override gateway parameters. Default config '
                         'is the ros2_medkit_gateway/config/gateway_params.yaml.'
+        ),
+
+        DeclareLaunchArgument(
+            'cors_allowed_origins',
+            default_value=CORS_DEFAULT,
+            description='Comma-separated CORS origins allowed to call the gateway from a browser, '
+                        'so the web UI works over HTTPS out of the box. Pass an explicit value to '
+                        'override (empty disables CORS); when left at the default, a config_file '
+                        'that sets cors.allowed_origins is respected.'
         ),
 
         # Use OpaqueFunction to generate certs and set up node
