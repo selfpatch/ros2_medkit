@@ -37,7 +37,14 @@ It works because an aborted action goal is often the *only* failure signal Nav2 
 ros2_medkit's action bridge turns that into a structured fault on the `bt_navigator` entity -
 no instrumentation, no callbacks added to Nav2.
 
-### MoveIt: a motion that fails to execute
+> [!TIP]
+> Nothing was added to Nav2. The bridge reads the action status your stack already publishes,
+> so the same trick works for **any** action server - MoveIt, Nav2, or your own nodes.
+
+<details>
+<summary><b>↳ Another example: MoveIt - a motion that fails to execute</b></summary>
+
+<br>
 
 You run MoveIt. A `MoveGroup` goal aborts - no valid plan, or the controller rejects the
 trajectory. Same story: the same action bridge surfaces the aborted move as a fault on the
@@ -47,6 +54,8 @@ trajectory. Same story: the same action bridge surfaces the aborted move as a fa
 curl http://localhost:8080/api/v1/apps/move_group/faults
 # → the aborted MoveGroup goal, as a structured fault with its snapshot
 ```
+
+</details>
 
 **Two ways to feed it:**
 
@@ -69,8 +78,11 @@ touch the node's code.
 
 `diagnostic_updater` + `/diagnostics` + `diagnostic_aggregator` + `rqt_robot_monitor` report
 current node health to a desktop GUI. ros2_medkit turns that into a queryable, remote,
-time-traveled, actionable fault - and it **consumes `/diagnostics` too**, so it is additive,
-not a rip-and-replace.
+time-traveled, actionable fault.
+
+> [!NOTE]
+> It **consumes `/diagnostics` too**, so it is additive, not a rip-and-replace. Keep your
+> existing `diagnostic_updater` publishers; medkit reads them and gives you the rest.
 
 | | 🔴 ROS 2 diagnostics | 🟢 ros2_medkit |
 |---|---|---|
@@ -167,7 +179,10 @@ Nav2 `NavigateToPose` goal aborts):
 }
 ```
 
-**Prefer a dashboard?** Run the web UI alongside it (optional):
+<details>
+<summary><b>Prefer a dashboard? Run the web UI alongside it (optional)</b></summary>
+
+<br>
 
 ```bash
 docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
@@ -177,6 +192,8 @@ docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
 The browser calls the gateway from a different origin, so the gateway must allow that origin via
 CORS (the prebuilt gateway Docker image enables it; for a native bringup set
 `cors.allowed_origins`). See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html).
+
+</details>
 
 For a guided walkthrough, see the
 [Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
