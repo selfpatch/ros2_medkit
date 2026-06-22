@@ -284,11 +284,12 @@ read, so a mis-set parameter can never break request serving.
      - Description
    * - ``server.http_thread_pool_size``
      - int
-     - ``4``
+     - ``6``
      - Worker threads in the HTTP request pool (cpp-httplib). Replaces the
        library default of ``max(8, cores - 1)``. Kept at or above
-       ``sse.max_clients`` so SSE streams cannot starve every worker (see note
-       below). Clamped to ``[1, 1024]``.
+       ``sse.max_clients + data_provider.cold_wait_cap`` so SSE streams and cold
+       ``/data`` waits cannot starve every worker (see note below); the gateway
+       warns at startup if it is set below that sum. Clamped to ``[1, 1024]``.
    * - ``server.keep_alive_timeout_sec``
      - int
      - ``2``
@@ -303,30 +304,35 @@ read, so a mis-set parameter can never break request serving.
      - Threads in the main rclcpp ``MultiThreadedExecutor``. Replaces rclcpp's
        default (host cores, minimum 2). Clamped to ``[1, 256]``.
 
-**HTTP pool, keep-alive, and SSE.** Each active SSE stream (fault dashboard,
-cyclic subscriptions, trigger events - see `SSE (Server-Sent Events)`_) holds
-one HTTP pool thread for its entire lifetime, and the data cold-wait path can
-block up to ``data_provider.cold_wait_cap`` additional threads. On top of that,
-each *recently used* client connection keeps a worker parked for up to
-``keep_alive_timeout_sec`` after its last request. With a small pool, a client
-that opens several short-lived connections per cycle (for example a poller
-hitting ``/apps``, ``/areas`` and ``/functions`` every iteration) can therefore
-pin every worker until the keep-alive timers expire, stalling other requests.
-The defaults (pool ``4``, keep-alive ``2`` s, ``sse.max_clients`` ``2``) leave
-headroom for this; if you raise ``sse.max_clients`` for more concurrent streams,
-raise ``http_thread_pool_size`` to match - a safe target is
-``sse.max_clients + cold_wait_cap`` plus headroom for regular requests - and
-keep ``keep_alive_timeout_sec`` short unless your clients benefit from long-lived
-connection reuse.
+**HTTP pool, keep-alive, and SSE.** Several things hold an HTTP pool worker:
+each active SSE stream (fault dashboard, cyclic subscriptions, trigger events -
+see `SSE (Server-Sent Events)`_) holds one for its entire lifetime; the data
+cold-wait path parks up to ``data_provider.cold_wait_cap`` workers for up to
+``topic_sample_timeout_sec`` each; a bulk-data download holds one
+for the whole transfer (uncounted by any cap); and on top of that each *recently
+used* client connection keeps a worker parked for up to ``keep_alive_timeout_sec``
+after its last request. The shipped pool default (``6``) covers the documented
+worst case ``sse.max_clients (2) + data_provider.cold_wait_cap (4)``; the gateway
+emits a startup warning if ``http_thread_pool_size`` is set below
+``sse.max_clients + data_provider.cold_wait_cap``. The short ``keep_alive_timeout_sec``
+default (``2`` s) stops a poller that opens several short-lived connections per
+cycle (for example hitting ``/apps``, ``/areas`` and ``/functions`` every
+iteration) from pinning the pool until the keep-alive timers expire. If you raise
+``sse.max_clients``, raise ``cold_wait_cap``, or serve concurrent bulk-data
+downloads, raise ``http_thread_pool_size`` to match (and keep
+``keep_alive_timeout_sec`` short unless your clients benefit from long-lived
+connection reuse).
 
-**Executor threads.** The main executor only delivers the gateway node's own
-callbacks (timers, graph events, log and fault subscriptions) and the fast
-service-response callbacks for operation/action RPCs. The blocking wait for an
-RPC runs on the cpp-httplib pool thread (a separate server thread), not on an
-executor thread, and the fault transport uses its own private executor - so a
-small main executor cannot starve or deadlock blocking RPC handlers. Increase
-this only if the node's own callback load grows (for example very frequent
-graph churn).
+**Executor threads.** The main executor delivers the gateway node's own
+callbacks (timers, graph events, log and fault subscriptions) and the
+service-response callbacks that complete operation/action RPC futures. These all
+run on the node's default, *mutually-exclusive* callback group, so they serialize
+through a single thread regardless of ``executor_threads`` - raising it buys no
+RPC-response parallelism. A small executor is safe because the blocking wait for
+an RPC runs on the cpp-httplib pool thread (a separate server thread), never on
+an executor thread, so it cannot deadlock the executor; the fault transport also
+uses its own private executor. Increase this only if the node's own callback load
+grows (for example very frequent graph churn).
 
 Example (more SSE clients needs a larger pool and matching ``sse.max_clients``):
 

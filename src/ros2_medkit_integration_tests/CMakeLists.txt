@@ -115,7 +115,11 @@ if(BUILD_TESTING)
   set(_INTEG_PORT 9100)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 140 END 209)
+  # Primary per-test domain pool. Upper bound is 229: the documented
+  # integration_tests allocation is 140-229, with 230-232 reserved for the
+  # multi-gateway secondary pool (see get_test_domain_id below). One domain is
+  # consumed per feature + scenario test.
+  medkit_init_test_domains(START 140 END 229)
 
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)
