@@ -159,13 +159,31 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
       resp.status = (app && app->is_online) ? "ready" : "notReady";
     }
   } else {
-    // A local component is operational while the gateway is serving this
-    // request (the substrate is reachable). SOVD notReady means stopped,
-    // restarting, or unreachable; a reachable local substrate is none of
-    // these, regardless of how many hosted apps are online. A down hosted
-    // app is that app's own notReady, not the component's. Remote components
-    // are handled earlier by aggregation forwarding.
-    resp.status = "ready";
+    // Local component readiness. The synthetic host component (carrying
+    // host_metadata) is always ready while we are serving this request: its
+    // substrate is the gateway host, which is reachable by definition. Any
+    // other local component derives readiness from its hosted Apps - a
+    // component that hosts Apps is notReady when ALL of them are offline (its
+    // subsystem is down), while a component with no hosted Apps is a pure
+    // grouping and stays ready (a single down App is that App's own notReady,
+    // not enough to mark the component down). Remote components are handled
+    // earlier by aggregation forwarding.
+    auto component = cache.get_component(entity_id);
+    bool ready = true;
+    if (component && !component->host_metadata.has_value()) {
+      const auto app_ids = cache.get_apps_for_component(entity_id);
+      if (!app_ids.empty()) {
+        ready = false;
+        for (const auto & app_id : app_ids) {
+          auto hosted = cache.get_app(app_id);
+          if (hosted && hosted->is_online) {
+            ready = true;
+            break;
+          }
+        }
+      }
+    }
+    resp.status = ready ? "ready" : "notReady";
   }
 
   // No transition URIs for the default (no-provider) path.

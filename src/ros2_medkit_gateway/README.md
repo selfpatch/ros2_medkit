@@ -129,7 +129,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `PUT /api/v1/components/{component_id}/status/shutdown` - Request controlled component shutdown
 - `PUT /api/v1/components/{component_id}/status/force-shutdown` - Request forced component shutdown
 
-`GET /status` always returns a response. For apps, the status is read from the ROS 2 lifecycle `GetState` service when the node is a managed lifecycle node (`active` -> `ready`; any other state, or an unreachable/timed-out read, -> `notReady`); plain (unmanaged) nodes fall back to graph presence (`is_online`). For components, a local component is `ready` while the gateway is reachable. `PUT /status/{action}` returns `501 Not Implemented` until a substrate plugin registers a `LifecycleProvider` for the entity. Accepted transitions return `202` with a `Location` header pointing back to `GET /status`.
+`GET /status` always returns a response. For apps, the status is read from the ROS 2 lifecycle `GetState` service when the node is a managed lifecycle node (`active` -> `ready`; any other state, or an unreachable/timed-out read, -> `notReady`); plain (unmanaged) nodes fall back to graph presence (`is_online`). For components, the host component is `ready` while the gateway is reachable; any other local component is `notReady` when it hosts apps and all of them are offline, and `ready` otherwise (including when it hosts no apps). `PUT /status/{action}` returns `501 Not Implemented` until a substrate plugin registers a `LifecycleProvider` for the entity. Accepted transitions return `202` with a `Location` header pointing back to `GET /status`.
 
 ### Vendor Extension Endpoints
 

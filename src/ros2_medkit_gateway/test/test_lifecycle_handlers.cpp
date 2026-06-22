@@ -247,15 +247,15 @@ TEST_F(LifecycleHandlersTest, GetStatusComponentWithOnlineHostedAppReturnsReady)
   EXPECT_EQ(result->status, "ready");
 }
 
-// GET /components/{dead_subsystem}/status -> "ready" (down hosted app is the app's notReady, not the component's)
-TEST_F(LifecycleHandlersTest, GetStatusComponentAllAppsOfflineReturnsReady) {
+// GET /components/{dead_subsystem}/status -> "notReady" (hosts apps, all offline -> subsystem down)
+TEST_F(LifecycleHandlersTest, GetStatusComponentAllAppsOfflineReturnsNotReady) {
   auto raw =
       make_request_with_match("/api/v1/components/dead_subsystem/status", R"(/api/v1/components/([^/]+)/status)");
   http::TypedRequest req(raw);
 
   auto result = handlers_->handle_get_status(req);
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->status, "ready");  // a down hosted app is the app's notReady, not the component's
+  EXPECT_EQ(result->status, "notReady");  // hosts apps and every one is offline -> the subsystem is down
 }
 
 // PUT /apps/{online_sensor}/status/restart -> 501 (no provider registered)

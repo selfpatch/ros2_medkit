@@ -99,11 +99,15 @@ never blocks or races the gateway executor; it is, however, serialized by an int
 reachable-but-slow managed node holds that mutex across its spin and delays other concurrent
 ``/status`` reads for up to the (short) read timeout.
 
-**Component status:** a local component is ``"ready"`` while the gateway is serving the
-request (the substrate is reachable), independent of how many hosted apps are online,
-including zero. SOVD ``notReady`` means stopped, restarting, or unreachable, which a
-reachable local substrate is not; a down hosted app is that app's own ``notReady``. Remote
-components are reached through aggregation forwarding, so peer reachability drives their status.
+**Component status:** the synthetic host component (the one carrying ``host_metadata``,
+populated by ``HostInfoProvider``) is ``"ready"`` while the gateway is serving the request -
+its substrate is the gateway host, which is reachable by definition. Any other local
+component derives readiness from its hosted Apps: a component that hosts Apps is
+``"notReady"`` when every one of them is offline (its subsystem is down), and ``"ready"`` when
+at least one is online. A component with no hosted Apps is a pure grouping and stays
+``"ready"`` (the local substrate is reachable; a single down App is that App's own
+``"notReady"``, not enough to mark the component down). Remote components are reached through
+aggregation forwarding, so peer reachability drives their status.
 
 When a ``LifecycleProvider`` is registered for the entity the provider's
 response takes precedence over the cache-derived default. The handler also
