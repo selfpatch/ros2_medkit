@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
@@ -378,9 +380,12 @@ class GatewayNode : public rclcpp::Node {
   // at most once per `refresh_debounce_ms_`. `graph_dirty_` marks a pending
   // (consumed-but-not-yet-serviced) graph change; `last_graph_refresh_` is the
   // last graph-driven refresh time. Set via `discovery.refresh_debounce_ms`.
+  // `graph_dirty_`/`last_graph_refresh_` are atomic: under a MultiThreadedExecutor
+  // successive ticks of the graph-check timer can run on different worker threads,
+  // so this cross-tick state is accessed from more than one thread.
   int refresh_debounce_ms_{1000};
-  bool graph_dirty_{false};
-  std::chrono::steady_clock::time_point last_graph_refresh_{};
+  std::atomic<bool> graph_dirty_{false};
+  std::atomic<std::chrono::steady_clock::time_point> last_graph_refresh_{};
 
   // Serializes `refresh_cache()` across the refresh timer, plugin
   // `notify_entities_changed` calls and any other caller. Required because

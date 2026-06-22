@@ -1508,18 +1508,20 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // bounds the per-event allocation churn (issue #442). A pending event is
     // always serviced within refresh_debounce_ms + one 100 ms tick.
     if (graph_event_->check_and_clear()) {
-      graph_dirty_ = true;
+      graph_dirty_.store(true, std::memory_order_relaxed);
     }
-    if (!graph_dirty_) {
+    if (!graph_dirty_.load(std::memory_order_relaxed)) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
-    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_graph_refresh_).count();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_graph_refresh_.load(std::memory_order_relaxed))
+            .count();
     if (elapsed_ms < refresh_debounce_ms_) {
       return;  // within debounce window; refresh on a later tick
     }
-    graph_dirty_ = false;
-    last_graph_refresh_ = now;
+    graph_dirty_.store(false, std::memory_order_relaxed);
+    last_graph_refresh_.store(now, std::memory_order_relaxed);
     refresh_cache();
     // Note: orphan-trigger sweep is deliberately NOT run from the graph-event
     // path. Graph events fire on every node up/down at high frequency,
