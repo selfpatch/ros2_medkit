@@ -51,6 +51,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration('params_file')
     server_host = LaunchConfiguration('server_host')
     server_port = LaunchConfiguration('server_port')
+    cors_allowed_origins = LaunchConfiguration('cors_allowed_origins')
 
     args = [
         DeclareLaunchArgument(
@@ -64,6 +65,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'server_port', default_value='8080',
             description='Gateway REST API port.'),
+        DeclareLaunchArgument(
+            'cors_allowed_origins',
+            default_value='http://localhost:3000,http://localhost:5173',
+            description='Comma-separated CORS origins allowed to call the gateway from a browser, '
+                        'so the web UI works out of the box. Empty disables CORS.'),
         DeclareLaunchArgument(
             'enable_fault_manager', default_value='true',
             description='Start the fault_manager node.'),
@@ -83,7 +89,8 @@ def generate_launch_description():
 
     gateway = _include(
         'ros2_medkit_gateway', 'gateway.launch.py',
-        launch_arguments={'server_host': server_host, 'server_port': server_port})
+        launch_arguments={'server_host': server_host, 'server_port': server_port,
+                          'cors_allowed_origins': cors_allowed_origins})
     fault_manager = _include(
         'ros2_medkit_fault_manager', 'fault_manager.launch.py',
         enable_arg='enable_fault_manager',
