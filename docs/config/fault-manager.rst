@@ -207,7 +207,10 @@ Basic Snapshot Settings
        new snapshots for that fault are rejected. Set to 0 for unlimited.
    * - ``snapshots.capture_pool_size``
      - ``2``
-     - Max concurrent capture threads under a fault storm (>= 1).
+     - Max concurrent capture threads under a fault storm (>= 1). The capture pool is
+       shared and created when snapshots **or** rosbag is enabled, so these parameters
+       bound both. ``capture_pool_size`` parallelizes freeze-frame snapshot capture
+       only; rosbag is single-writer and records one fault at a time regardless.
    * - ``snapshots.capture_queue_depth``
      - ``16``
      - Max pending captures before the full-queue policy applies (>= 1).

@@ -932,7 +932,7 @@ Snapshots are configured via FaultManager parameters:
 | `snapshots.config_file` | string | `""` | Path to YAML config file for `fault_specific` and `patterns` |
 | `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault code. |
 | `snapshots.max_per_fault` | int | `10` | Max snapshots retained per fault. |
-| `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). |
+| `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer (one fault at a time). |
 | `snapshots.capture_queue_depth` | int | `16` | Max pending captures before the full-queue policy applies (>= 1). |
 | `snapshots.capture_queue_full_policy` | string | `reject_newest` | Policy when the queue is full: `reject_newest` or `drop_oldest`. |
 

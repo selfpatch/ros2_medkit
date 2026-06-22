@@ -20,7 +20,10 @@ fault_manager:
     # storage backend is usable).
     snapshots.rosbag.enabled: false
 
-    # Capture concurrency bound under fault storms (issue #441):
+    # Capture concurrency bound under fault storms (issue #441). These govern the
+    # shared capture pool, which is created when snapshots OR rosbag is enabled, so
+    # they also bound rosbag capture. Note: pool_size parallelizes freeze-frame
+    # snapshots only - rosbag is single-writer and records one fault at a time.
     # snapshots.capture_pool_size: 2                  # max concurrent capture threads (>= 1)
     # snapshots.capture_queue_depth: 16               # max pending captures (>= 1)
     # snapshots.capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
