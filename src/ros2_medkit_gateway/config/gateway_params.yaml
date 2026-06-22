@@ -98,6 +98,18 @@ ros2_medkit_gateway:
     # Default: 30000 (30 seconds)
     refresh_interval_ms: 30000
 
+    # Graph-event refresh debounce (milliseconds).
+    # The rclcpp graph event fires many times per second under graph churn
+    # (nodes/topics repeatedly created and destroyed). Each refresh runs the
+    # full discovery pipeline, so coalescing graph events bounds the per-event
+    # allocation churn. A graph change triggers at most one refresh per this
+    # interval; a pending change is always serviced within this interval plus
+    # one 100 ms poll. The ROS graph rarely changes faster than ~1s in practice.
+    #
+    # Valid range: 0-60000 (0 disables debouncing: refresh on every graph event)
+    # Default: 1000 (1 second)
+    discovery.refresh_debounce_ms: 1000
+
     # CORS Configuration
     # Cross-Origin Resource Sharing settings for browser-based clients
     # If cors section is missing or empty, CORS handling is disabled

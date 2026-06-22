@@ -373,6 +373,15 @@ class GatewayNode : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr graph_check_timer_;
   rclcpp::TimerBase::SharedPtr backstop_timer_;
 
+  // Debounce graph-event-driven refreshes (issue #442). The graph event fires
+  // many times per second under graph churn; coalesce so refresh_cache() runs
+  // at most once per `refresh_debounce_ms_`. `graph_dirty_` marks a pending
+  // (consumed-but-not-yet-serviced) graph change; `last_graph_refresh_` is the
+  // last graph-driven refresh time. Set via `discovery.refresh_debounce_ms`.
+  int refresh_debounce_ms_{1000};
+  bool graph_dirty_{false};
+  std::chrono::steady_clock::time_point last_graph_refresh_{};
+
   // Serializes `refresh_cache()` across the refresh timer, plugin
   // `notify_entities_changed` calls and any other caller. Required because
   // the refresh pipeline touches discovery state that is not itself

@@ -181,6 +181,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // by rclcpp graph events; this only controls the periodic forced
   // refresh used when a graph event would otherwise be missed.
   declare_parameter("refresh_interval_ms", 30000);
+  declare_parameter("discovery.refresh_debounce_ms", 1000);
   declare_parameter("fault_manager.namespace", "");
   declare_parameter("fault_manager.service_timeout_sec", 5.0);
   declare_parameter("cors.allowed_origins", std::vector<std::string>{});
@@ -398,6 +399,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
   refresh_interval_ms_ = static_cast<int>(get_parameter("refresh_interval_ms").as_int());
+  refresh_debounce_ms_ = static_cast<int>(get_parameter("discovery.refresh_debounce_ms").as_int());
 
   // Build CORS configuration using builder pattern
   // Throws std::invalid_argument if configuration is invalid
@@ -435,6 +437,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                 "Invalid backstop refresh interval %dms. Must be between 100-60000ms. Using default 30000ms.",
                 refresh_interval_ms_);
     refresh_interval_ms_ = 30000;
+  }
+
+  // Validate graph-event refresh debounce. 0 disables debouncing (refresh on
+  // every graph event, the pre-#442 behaviour); otherwise coalesce graph events
+  // into at most one refresh per this interval. Clamp to [0, 60000] ms.
+  if (refresh_debounce_ms_ < 0 || refresh_debounce_ms_ > 60000) {
+    RCLCPP_WARN(get_logger(),
+                "Invalid discovery.refresh_debounce_ms %dms. Must be between 0-60000ms. Using default 1000ms.",
+                refresh_debounce_ms_);
+    refresh_debounce_ms_ = 1000;
   }
 
   // Log configuration
@@ -1488,9 +1500,26 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     if (!graph_event_) {
       return;
     }
-    if (!graph_event_->check_and_clear()) {
+    // Coalesce graph events: under graph churn (nodes/topics created and
+    // destroyed repeatedly) the event fires many times per second, and each
+    // refresh_cache() runs the full discovery pipeline. Debounce so we run at
+    // most one refresh per `refresh_debounce_ms` (default 1000 ms) - the ROS
+    // graph rarely changes faster than that in practice, and coalescing
+    // bounds the per-event allocation churn (issue #442). A pending event is
+    // always serviced within refresh_debounce_ms + one 100 ms tick.
+    if (graph_event_->check_and_clear()) {
+      graph_dirty_ = true;
+    }
+    if (!graph_dirty_) {
       return;
     }
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_graph_refresh_).count();
+    if (elapsed_ms < refresh_debounce_ms_) {
+      return;  // within debounce window; refresh on a later tick
+    }
+    graph_dirty_ = false;
+    last_graph_refresh_ = now;
     refresh_cache();
     // Note: orphan-trigger sweep is deliberately NOT run from the graph-event
     // path. Graph events fire on every node up/down at high frequency,

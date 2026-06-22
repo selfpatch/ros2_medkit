@@ -259,6 +259,15 @@ Performance Tuning
      - Safety-backstop refresh interval (ms). Primary discovery is graph-event
        driven (polled every 100 ms); this timer forces a full refresh only if
        a graph event is missed. Range: 100-60000 (0.1s-60s).
+   * - ``discovery.refresh_debounce_ms``
+     - int
+     - ``1000``
+     - Debounce for graph-event-driven refreshes (ms). Under graph churn the
+       rclcpp graph event fires many times per second; each refresh runs the
+       full discovery pipeline. Coalesces graph events so a refresh runs at most
+       once per this interval, bounding per-event allocation. A pending change is
+       serviced within this interval plus one 100 ms poll. Range: 0-60000
+       (0 disables debouncing; clamped with a warning if out of range).
    * - ``entity_cache.capacity``
      - int
      - ``256``

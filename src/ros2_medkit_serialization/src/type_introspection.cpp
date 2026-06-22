@@ -85,4 +85,44 @@ TopicTypeInfo TypeIntrospection::get_type_info(const std::string & type_name) {
   }
 }
 
+std::shared_ptr<const nlohmann::json> TypeIntrospection::get_service_type_info(const std::string & service_type) {
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto it = service_type_info_cache_.find(service_type);
+    if (it != service_type_info_cache_.end()) {
+      return it->second;
+    }
+  }
+  // get_type_info is itself cached + throws on failure; build the wrapper once.
+  auto assembled = std::make_shared<nlohmann::json>();
+  (*assembled)["request"] = get_type_info(service_type + "_Request").schema;
+  (*assembled)["response"] = get_type_info(service_type + "_Response").schema;
+  std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto [it, inserted] = service_type_info_cache_.try_emplace(service_type, shared);
+    return it->second;
+  }
+}
+
+std::shared_ptr<const nlohmann::json> TypeIntrospection::get_action_type_info(const std::string & action_type) {
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto it = action_type_info_cache_.find(action_type);
+    if (it != action_type_info_cache_.end()) {
+      return it->second;
+    }
+  }
+  auto assembled = std::make_shared<nlohmann::json>();
+  (*assembled)["goal"] = get_type_info(action_type + "_Goal").schema;
+  (*assembled)["result"] = get_type_info(action_type + "_Result").schema;
+  (*assembled)["feedback"] = get_type_info(action_type + "_Feedback").schema;
+  std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto [it, inserted] = action_type_info_cache_.try_emplace(action_type, shared);
+    return it->second;
+  }
+}
+
 }  // namespace ros2_medkit_serialization

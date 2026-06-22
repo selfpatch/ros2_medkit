@@ -97,6 +97,29 @@ overwrites update entity payloads without touching the pool structure.
    guarantee applies to the cache data structures, not to the payloads
    stored in them.
 
+Discovery-Side Allocation Under Graph Churn
+-------------------------------------------
+
+The cache is only the last step of ``refresh_cache()``. Per-graph-event
+allocation profiling showed the dominant churn under a churning graph was in
+the discovery pipeline, not the cache rebuild, driven by two things:
+
+1. **Eager schema building.** ``discover_apps`` rebuilt the JSON request/
+   response (and goal/result/feedback) schemas for every service and action in
+   the graph on every refresh, then deep-copied them through several
+   intermediate containers. These schemas are immutable per type and are not
+   read from the discovered entities at all - the ``/operations`` handler
+   already resolves them on demand. Discovery now leaves ``type_info`` empty;
+   the handler resolves it lazily and ``TypeIntrospection`` caches the
+   assembled per-type ``type_info`` as a shared, immutable object
+   (``get_service_type_info`` / ``get_action_type_info``), so repeated requests
+   reuse it.
+
+2. **Refresh frequency.** The rclcpp graph event fires many times per second
+   under churn, running the full discovery pipeline each time. Graph events are
+   now debounced (``discovery.refresh_debounce_ms``, default 1 s) so a burst of
+   graph changes coalesces into a single refresh.
+
 Overflow Behaviour
 ------------------
 
