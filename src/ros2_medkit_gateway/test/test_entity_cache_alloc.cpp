@@ -24,8 +24,13 @@
 namespace {
 std::atomic<long> g_net{0};
 std::atomic<bool> g_armed{false};
-}  // namespace
-void * operator new(std::size_t n) {
+
+// All allocation routes through malloc, all deallocation through free. The
+// FULL overload set (scalar + array + nothrow) must be replaced consistently:
+// under AddressSanitizer the default array/nothrow operators are ASan's own
+// (not delegating to our scalar new), so a partial replacement would pair an
+// ASan operator-new with our free() and trip alloc-dealloc-mismatch.
+void * counted_new(std::size_t n) {
   if (g_armed.load(std::memory_order_relaxed)) {
     g_net.fetch_add(1, std::memory_order_relaxed);
   }
@@ -35,14 +40,48 @@ void * operator new(std::size_t n) {
   }
   return p;
 }
-void operator delete(void * p) noexcept {
+void * counted_new_nothrow(std::size_t n) noexcept {
+  if (g_armed.load(std::memory_order_relaxed)) {
+    g_net.fetch_add(1, std::memory_order_relaxed);
+  }
+  return std::malloc(n ? n : 1);
+}
+void counted_delete(void * p) noexcept {
   if (p && g_armed.load(std::memory_order_relaxed)) {
     g_net.fetch_sub(1, std::memory_order_relaxed);
   }
   std::free(p);
 }
+}  // namespace
+void * operator new(std::size_t n) {
+  return counted_new(n);
+}
+void * operator new[](std::size_t n) {
+  return counted_new(n);
+}
+void * operator new(std::size_t n, const std::nothrow_t & /*tag*/) noexcept {
+  return counted_new_nothrow(n);
+}
+void * operator new[](std::size_t n, const std::nothrow_t & /*tag*/) noexcept {
+  return counted_new_nothrow(n);
+}
+void operator delete(void * p) noexcept {
+  counted_delete(p);
+}
+void operator delete[](void * p) noexcept {
+  counted_delete(p);
+}
 void operator delete(void * p, std::size_t /*n*/) noexcept {
-  ::operator delete(p);
+  counted_delete(p);
+}
+void operator delete[](void * p, std::size_t /*n*/) noexcept {
+  counted_delete(p);
+}
+void operator delete(void * p, const std::nothrow_t & /*tag*/) noexcept {
+  counted_delete(p);
+}
+void operator delete[](void * p, const std::nothrow_t & /*tag*/) noexcept {
+  counted_delete(p);
 }
 using namespace ros2_medkit_gateway;
 static App mkapp(const std::string & id) {
