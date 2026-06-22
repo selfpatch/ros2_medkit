@@ -103,6 +103,9 @@ curl localhost:8080/api/v1/apps
 # The headline - structured faults (code, severity, source node, lifecycle, history):
 curl localhost:8080/api/v1/faults
 
+# Watch faults arrive live (Server-Sent Events):
+curl -N localhost:8080/api/v1/faults/stream
+
 # One fault's full context (freeze-frame snapshots + black-box rosbag reference):
 curl localhost:8080/api/v1/apps/bt_navigator/faults/ACTION_NAVIGATE_TO_POSE_ABORTED
 
