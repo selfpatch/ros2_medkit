@@ -27,15 +27,16 @@ ros2_medkit_gateway:
       # IMPORTANT: each active SSE stream (fault dashboard, cyclic
       # subscriptions, trigger events) holds ONE pool thread for its entire
       # lifetime, and the data cold-wait path can block up to
-      # data_provider.cold_wait_cap more. The default sse.max_clients (2) is kept
-      # at or below this pool so SSE streams cannot starve every worker. If you
-      # raise sse.max_clients for more concurrent streams, raise this to match
-      # (rule of thumb: sse.max_clients + data_provider.cold_wait_cap plus
-      # headroom for ordinary requests). See also keep_alive_timeout_sec below:
-      # the pool and the keep-alive timeout together bound how many concurrent
-      # client connections the gateway can serve without stalling.
-      # Default: 4
-      http_thread_pool_size: 4
+      # data_provider.cold_wait_cap more (slow bulk-data downloads also hold a
+      # worker, uncounted). The default (6) covers the shipped worst case:
+      # sse.max_clients (2) + data_provider.cold_wait_cap (4) = 6. If you raise
+      # sse.max_clients or cold_wait_cap, raise this to match - the gateway warns
+      # at startup when pool < sse.max_clients + cold_wait_cap. See also
+      # keep_alive_timeout_sec below: the pool and the keep-alive timeout together
+      # bound how many concurrent client connections the gateway serves without
+      # stalling.
+      # Default: 6
+      http_thread_pool_size: 6
 
       # cpp-httplib keep-alive idle timeout, in seconds. After answering a
       # request the worker stays parked on the (idle) keep-alive connection for
@@ -175,8 +176,10 @@ ros2_medkit_gateway:
       # Maximum number of concurrent SSE connections
       # Applies to fault streams and cyclic subscription streams combined.
       # Each connection pins one server.http_thread_pool_size worker for its
-      # lifetime, so this defaults at or below that pool (3) to leave a worker
-      # for ordinary requests. Raise both together for more concurrent streams.
+      # lifetime, so this is kept within the pool budget: the default (2) plus
+      # data_provider.cold_wait_cap (4) equals server.http_thread_pool_size (6).
+      # Raise the pool to match if you raise this (the gateway warns at startup
+      # when pool < sse.max_clients + cold_wait_cap). Clamped to [1, 1024].
       # Default: 2
       max_clients: 2
 

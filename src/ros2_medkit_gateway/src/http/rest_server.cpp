@@ -86,12 +86,13 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // bounded keep-alive idle timeout (issue #440). clamp_thread_count keeps the
   // pool in [1, 1024]: a pool of 0 would queue every request forever, and a
   // typo'd huge value would spawn that many OS threads. Each active SSE stream
-  // holds one worker for its lifetime, so the default pool is kept at or above
-  // sse.max_clients; if you raise sse.max_clients, raise
-  // server.http_thread_pool_size to match. clamp_keep_alive_timeout keeps the
-  // keep-alive timeout in [1, 3600]s: with a small pool, the cpp-httplib default
-  // (5s) lets a burst of short-lived client connections pin every worker, so we
-  // shorten it (default 2s) to recover workers quickly while retaining reuse.
+  // holds one worker for its lifetime and each cold-/data wait parks one, so the
+  // default pool covers sse.max_clients + data_provider.cold_wait_cap (bulk-data
+  // downloads also hold a worker, uncounted); main.cpp warns at startup if the
+  // pool is set below that sum. clamp_keep_alive_timeout keeps the keep-alive
+  // timeout in [1, 3600]s: with a small pool, the cpp-httplib default (5s) lets
+  // a burst of short-lived client connections pin every worker, so we shorten it
+  // (default 2s) to recover workers quickly while retaining reuse.
   const auto http_thread_pool_size =
       clamp_thread_count(node_->get_parameter("server.http_thread_pool_size").as_int(), 1, 1024);
   const auto keep_alive_timeout_sec =

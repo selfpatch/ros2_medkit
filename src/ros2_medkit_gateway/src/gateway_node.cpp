@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
@@ -148,16 +149,25 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Thread-pool bounds (issue #440). Both pools default to a small fixed size
   // instead of scaling with the host core count, so the footprint stays the
-  // same on a 4-core SBC and a 64-core server. The main executor only delivers
-  // the node's own callbacks (timers, graph events, subscriptions, and fast RPC
-  // response callbacks); the blocking wait for an RPC happens on the cpp-httplib
-  // pool thread, not an executor thread, so a small executor cannot starve it.
-  // Each active SSE stream holds one HTTP pool thread for its lifetime, so
-  // sse.max_clients is kept at or below http_thread_pool_size - raise both
-  // together for more concurrent SSE. Both are clamped to a bounded range on
-  // read (see clamp_thread_count).
+  // same on a 4-core SBC and a 64-core server.
+  //
+  // executor_threads: the main executor only delivers the node's own callbacks
+  // (timers, graph events, subscriptions) and the service-response callbacks
+  // that complete operation/action RPC futures. All of these run on the node's
+  // default callback group, which is mutually-exclusive, so they serialize
+  // through a single thread regardless of this count - raising it buys no
+  // RPC-response parallelism. The reason a small executor is safe is solely that
+  // the blocking wait for an RPC runs on the cpp-httplib pool thread (off the
+  // executor), never on an executor thread, so it cannot deadlock the executor.
+  //
+  // http_thread_pool_size: each active SSE stream pins one worker for its
+  // lifetime and each cold-/data wait parks one for up to
+  // topic_sample_timeout_sec, so the pool defaults at or above
+  // sse.max_clients + data_provider.cold_wait_cap (2 + 4 = 6) to avoid
+  // starvation; main.cpp warns at startup if it is set below that sum. Both
+  // values are clamped to a bounded range on read (see clamp_thread_count).
   declare_parameter("server.executor_threads", 2);
-  declare_parameter("server.http_thread_pool_size", 4);
+  declare_parameter("server.http_thread_pool_size", 6);
 
   // cpp-httplib keep-alive idle timeout (seconds). The library default (5s)
   // parks a request-pool worker on an idle keep-alive connection for that long;
@@ -181,8 +191,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // SSE (Server-Sent Events) parameters
   // Concurrent SSE connections. Each one pins an HTTP pool worker for its
-  // lifetime, so this defaults at or below server.http_thread_pool_size (3) to
-  // leave a worker for ordinary requests; raise both together for more SSE.
+  // lifetime, so this is kept within the pool's budget: the default (2) plus
+  // data_provider.cold_wait_cap (4) equals server.http_thread_pool_size (6),
+  // leaving the pool able to cover the documented worst case. Raise the pool to
+  // match if you raise this (main.cpp warns at startup otherwise). Clamped on
+  // read.
   declare_parameter("sse.max_clients", 2);
   declare_parameter("sse.max_subscriptions", 100);  // Maximum active cyclic subscriptions across all entities
   declare_parameter("sse.max_duration_sec", 3600);  // Maximum subscription duration in seconds (1 hour default)
@@ -658,8 +671,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   subscription_mgr_ = std::make_unique<SubscriptionManager>(max_subscriptions);
   RCLCPP_INFO(get_logger(), "Subscription manager: max_subscriptions=%zu", max_subscriptions);
 
-  // Create SSE client tracker (shared between SseTransportProvider and SSEFaultHandler)
-  auto max_sse_clients = static_cast<size_t>(get_parameter("sse.max_clients").as_int());
+  // Create SSE client tracker (shared between SseTransportProvider and SSEFaultHandler).
+  // Clamp like the pool knobs (issue #440): read raw, a negative value would wrap
+  // to a huge size_t. Bounded to [1, 1024]; main.cpp warns at startup if this
+  // exceeds the HTTP pool budget (pool < sse.max_clients + cold_wait_cap).
+  auto max_sse_clients = clamp_thread_count(get_parameter("sse.max_clients").as_int(), 1, 1024);
   sse_client_tracker_ = std::make_shared<SSEClientTracker>(max_sse_clients);
 
   // Initialize resource sampler and transport registries
