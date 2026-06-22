@@ -20,7 +20,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -106,29 +105,12 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   void rescan_actions();
   void status_callback(const std::string & action_name, const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg);
 
-  /// Result of reporter_for: the reporter to use, plus - when the action was
-  /// just upgraded from the action-name fallback to the resolved server FQN
-  /// while a fault is still active - the failure kind to re-report once so the
-  /// resolved FQN is registered as a reporting source (no state transition
-  /// happens then). `reaffirm_canceled` is unset when no re-report is needed.
-  struct ReporterLookup {
-    ros2_medkit_fault_reporter::FaultReporter * reporter;
-    std::optional<bool> reaffirm_canceled;
-  };
-  ReporterLookup reporter_for(const std::string & action_name);
-
-  /// Create a reporter attributed to the resolved server FQN, swap it in for
-  /// `action_name`, and mark the action resolved. Requires reporters_mutex_ held.
-  ros2_medkit_fault_reporter::FaultReporter * make_resolved_locked(const std::string & action_name,
-                                                                   const std::string & fqn);
-
-  /// Re-resolve actions whose fault was raised on the action-name fallback while
-  /// DDS discovery was unsettled, and register the resolved server FQN on the
-  /// (still active) fault. Driven by the rescan timer because the latched
-  /// terminal status is often the last message a server sends, so the per-message
-  /// path alone may never get another chance to upgrade. No-op once every active
-  /// fault is attributed to its server FQN.
-  void upgrade_unresolved_attribution();
+  /// Get (creating on first use) the FaultReporter for an action. The reporter's
+  /// source_id is fixed when first created: the resolved server FQN if discovery
+  /// has settled, otherwise the action name as a fallback so the fault still fires
+  /// on time. It is never re-attributed afterwards (reporting_sources is
+  /// append-only and the per-entity scope filter is strict-AND).
+  ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & action_name);
 
   /// Resolve the action server's node FQN from its status-topic publisher, for
   /// use as the fault source_id so faults associate with the gateway's SOVD
@@ -154,16 +136,10 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr rescan_timer_;
   std::map<std::string, rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr> subs_;
 
+  // Per-action FaultReporter, created lazily on the first report. The source_id is
+  // fixed at creation (server FQN if resolved, else the action-name fallback) and
+  // never changed. Guarded by reporters_mutex_.
   std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
-  // Actions whose reporter is attributed to the real (discovery-resolved) server
-  // node FQN. Until an action is in this set its reporter uses a fallback source
-  // and is re-resolved on each status message and rescan. Guarded by reporters_mutex_.
-  std::unordered_set<std::string> resolved_actions_;
-  // Actions whose fault is active but still attributed only to the action-name
-  // fallback (DDS discovery had not resolved the server node FQN at raise time).
-  // Maps action -> canceled flag of the active fault, so the resolved FQN can be
-  // registered on it later (message path or rescan). Guarded by reporters_mutex_.
-  std::map<std::string, bool> pending_attribution_;
   std::mutex reporters_mutex_;
 
   // Last reported action-level state, keyed by action name. Drives transitions.
@@ -205,9 +181,9 @@ class ActionStatusBridgeTestAccess {
   bool is_watched(const std::string & action_name) const;
   bool has_state(const std::string & action_name) const;
 
-  /// True if the action's fault is flagged for a pending server-FQN attribution
-  /// upgrade (raised while DDS discovery was unsettled, not yet re-attributed).
-  bool has_pending_attribution(const std::string & action_name) const;
+  /// Identity of the FaultReporter for an action (created on first call). Lets a
+  /// test assert the reporter is created once and never swapped out.
+  const void * reporter_identity(const std::string & action_name);
 
  private:
   ActionStatusBridgeNode * node_;
