@@ -76,16 +76,25 @@ touch the node's code.
 
 ## Run it in 5 minutes
 
-**Two commands. No code changes, no config.** Install from the ROS 2 distribution, then launch
-it next to your already-running robot:
+**One command. No code changes, no config.** Point a container at your already-running robot - it
+ships the gateway, the fault manager and the drop-in bridges, and speaks whatever DDS your stack
+speaks (Fast DDS and CycloneDDS are both baked in):
 
 ```bash
-# 1. Install (the gateway package pulls in the fault manager + the drop-in bridges)
-sudo apt install ros-jazzy-ros2-medkit-gateway      # or ros-humble-ros2-medkit-gateway
-
-# 2. Attach to your running ROS 2 graph - same ROS_DOMAIN_ID / RMW, nothing to configure
-ros2 launch ros2_medkit_gateway bringup.launch.py
+docker run --rm --network host --ipc host \
+  -e ROS_DOMAIN_ID -e RMW_IMPLEMENTATION \
+  ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+  ros2 launch ros2_medkit_gateway bringup.launch.py
 # → REST API live at http://localhost:8080/api/v1/
+```
+
+Swap `jazzy` for `humble`/`lyrical`; the two `-e` flags forward your shell's values so the
+container joins the same DDS graph as your robot. Rolling out to the ROS index now, so soon it is
+a plain apt install too:
+
+```bash
+sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-
+ros2 launch ros2_medkit_gateway bringup.launch.py
 ```
 
 > [!TIP]

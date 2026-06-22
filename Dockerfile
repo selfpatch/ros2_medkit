@@ -62,6 +62,8 @@ COPY src/ros2_medkit_gateway/ ${COLCON_WS}/src/ros2_medkit_gateway/
 COPY src/ros2_medkit_fault_manager/ ${COLCON_WS}/src/ros2_medkit_fault_manager/
 COPY src/ros2_medkit_fault_reporter/ ${COLCON_WS}/src/ros2_medkit_fault_reporter/
 COPY src/ros2_medkit_diagnostic_bridge/ ${COLCON_WS}/src/ros2_medkit_diagnostic_bridge/
+COPY src/ros2_medkit_log_bridge/ ${COLCON_WS}/src/ros2_medkit_log_bridge/
+COPY src/ros2_medkit_action_status_bridge/ ${COLCON_WS}/src/ros2_medkit_action_status_bridge/
 
 # Copy open-core plugins
 COPY src/ros2_medkit_discovery_plugins/ ${COLCON_WS}/src/ros2_medkit_discovery_plugins/
