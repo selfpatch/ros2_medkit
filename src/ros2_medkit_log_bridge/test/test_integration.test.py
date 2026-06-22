@@ -163,4 +163,8 @@ class TestLogBridgeShutdown(unittest.TestCase):
     """Test clean shutdown."""
 
     def test_exit_code(self, proc_info):
-        launch_testing.asserts.assertExitCodes(proc_info)
+        # OK, SIGINT, SIGTERM: the launch harness stops the long-running node by
+        # signal, so SIGTERM is a clean shutdown (matches ALLOWED_EXIT_CODES used
+        # across the other integration tests). The bare default ([0]) made this
+        # flaky whenever the harness escalated SIGINT to SIGTERM.
+        launch_testing.asserts.assertExitCodes(proc_info, allowable_exit_codes=[0, -2, -15])

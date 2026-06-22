@@ -150,6 +150,10 @@ plantuml = "java -Djava.awt.headless=true -jar /usr/share/plantuml/plantuml.jar"
 plantuml_output_format = "svg"
 
 # -- Options for linkcheck ---------------------------------------------------
+# Retry transient external failures (e.g. docs.ros.org read timeouts) instead of
+# failing the whole build on a single network blip.
+linkcheck_retries = 3
+linkcheck_timeout = 30
 linkcheck_ignore = [
     r"http://localhost:\d+",  # Ignore localhost URLs
     r"http://127\.0\.0\.1:\d+",
