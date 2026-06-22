@@ -71,7 +71,9 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
 class StubLifecycleStateReader : public ros2_medkit_gateway::LifecycleStateReader {
  public:
   std::optional<std::string> next;
+  int calls = 0;
   std::optional<std::string> get_state(const std::string & /*get_state_service_path*/) override {
+    ++calls;
     return next;
   }
 };
@@ -725,6 +727,40 @@ TEST_F(LifecycleHandlersTest, GetStatusLifecycleAppInactiveIsNotReady) {
   auto result = lc_handlers.handle_get_status(req);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->status, "notReady");
+}
+
+TEST_F(LifecycleHandlersTest, GetStatusManagedAppOfflineSkipsReaderAndIsNotReady) {
+  // A crashed managed node: its get_state/change_state services still linger in
+  // the last-cached App::services, but it is gone from the graph (is_online ==
+  // false). The handler must short-circuit to "notReady" WITHOUT calling the
+  // reader (an offline node cannot be active, and the reader would otherwise
+  // block on wait_for_service + spin to the timeout on every poll).
+  auto stub = std::make_shared<StubLifecycleStateReader>();
+  stub->next = "active";  // would map to "ready" if (wrongly) consulted
+  LifecycleHandlers lc_handlers(*ctx_, nullptr, stub);
+
+  App lc_app;
+  lc_app.id = "lc_crashed";
+  lc_app.name = "LcCrashed";
+  lc_app.is_online = false;  // gone from the graph, services still cached
+  lc_app.bound_fqn = "/lc_crashed";
+  ServiceInfo gs;
+  gs.full_path = "/lc_crashed/get_state";
+  gs.type = "lifecycle_msgs/srv/GetState";
+  ServiceInfo cs;
+  cs.full_path = "/lc_crashed/change_state";
+  cs.type = "lifecycle_msgs/srv/ChangeState";
+  lc_app.services.push_back(gs);
+  lc_app.services.push_back(cs);
+  auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+  cache.update_all({}, {}, {lc_app}, {});
+
+  auto raw = make_request_with_match("/api/v1/apps/lc_crashed/status", R"(/api/v1/apps/([^/]+)/status)");
+  http::TypedRequest req(raw);
+  auto result = lc_handlers.handle_get_status(req);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, "notReady");
+  EXPECT_EQ(stub->calls, 0);  // reader must not be consulted for an offline node
 }
 
 TEST_F(LifecycleHandlersTest, GetStatusPlainAppStillUsesIsOnline) {

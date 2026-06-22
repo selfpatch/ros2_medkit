@@ -987,6 +987,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_error_info
+      test_lifecycle_status_helpers
       test_ros2_lifecycle_state_reader
       test_ros2_subscription_executor
       test_ros2_subscription_slot

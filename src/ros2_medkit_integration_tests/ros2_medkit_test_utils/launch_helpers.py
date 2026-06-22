@@ -55,6 +55,10 @@ DEMO_NODE_REGISTRY = {
     'long_calibration': ('demo_long_calibration_action', 'long_calibration', '/powertrain/engine'),
     # Lifecycle demo (stays unconfigured by default; auto_activate:=true activates it)
     'managed_lifecycle': ('managed_lifecycle', 'managed_lifecycle', ''),
+    # Same executable, launched with auto_activate:=true so it self-activates to
+    # the "active" lifecycle state (-> status "ready"). Distinct node name so it
+    # can run alongside the unconfigured 'managed_lifecycle' in the same test.
+    'managed_lifecycle_active': ('managed_lifecycle', 'managed_lifecycle_active', ''),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.
@@ -244,6 +248,10 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
         # Apply faulty parameters for lidar_sensor
         if key == 'lidar_sensor' and lidar_faulty:
             node_kwargs['parameters'] = [LIDAR_FAULTY_PARAMS]
+
+        # The activated lifecycle node self-configures + activates on start.
+        if key == 'managed_lifecycle_active':
+            node_kwargs['parameters'] = [{'auto_activate': True}]
 
         actions.append(launch_ros.actions.Node(**node_kwargs))
 
