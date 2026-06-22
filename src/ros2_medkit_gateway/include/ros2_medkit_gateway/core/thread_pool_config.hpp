@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 
 namespace ros2_medkit_gateway {
 
@@ -32,6 +33,20 @@ namespace ros2_medkit_gateway {
 // Pre-condition: 1 <= min_threads <= max_threads.
 inline std::size_t clamp_thread_count(int64_t requested, int64_t min_threads, int64_t max_threads) {
   return static_cast<std::size_t>(std::clamp<int64_t>(requested, min_threads, max_threads));
+}
+
+// Resolve a ROS-parameter keep-alive timeout (seconds) into a usable value
+// (issue #440). cpp-httplib pins one request-pool worker on an idle keep-alive
+// connection for this long before freeing it. With a small bounded pool a long
+// timeout lets a burst of short-lived client connections (e.g. a test polling
+// /apps + /areas + /functions every cycle) hold every worker, so ordinary
+// requests stall up to one timeout per cycle. Too small loses connection reuse
+// for legitimate clients (extra TCP/TLS handshakes). This clamps a mis-set value
+// to a closed [min_sec, max_sec] range so request serving can never break.
+//
+// Pre-condition: 1 <= min_sec <= max_sec.
+inline std::time_t clamp_keep_alive_timeout(int64_t requested, int64_t min_sec, int64_t max_sec) {
+  return static_cast<std::time_t>(std::clamp<int64_t>(requested, min_sec, max_sec));
 }
 
 }  // namespace ros2_medkit_gateway

@@ -17,6 +17,7 @@
 #include <httplib.h>
 
 #include <cstddef>
+#include <ctime>
 #include <memory>
 #include <string>
 
@@ -41,9 +42,15 @@ class HttpServerManager {
    *        pool. When > 0, the server's task queue is bounded to a fixed-size
    *        ThreadPool of this many threads (issue #440). When 0, the cpp-httplib
    *        default (max(8, hardware_concurrency - 1)) is left untouched.
+   * @param keep_alive_timeout_sec How long cpp-httplib pins a request-pool worker
+   *        on an idle keep-alive connection before freeing it (issue #440). When
+   *        > 0, overrides the cpp-httplib default (5s); a smaller value lets a
+   *        small bounded pool recover workers faster. When 0, the library default
+   *        is left untouched.
    * @throws std::runtime_error if TLS is requested but SSL server creation fails
    */
-  explicit HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size = 0);
+  explicit HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size = 0,
+                             std::time_t keep_alive_timeout_sec = 0);
 
   ~HttpServerManager() = default;
 
@@ -101,10 +108,23 @@ class HttpServerManager {
    */
   void apply_thread_pool(httplib::Server & srv) const;
 
+  /**
+   * @brief Override the server's keep-alive idle timeout.
+   *
+   * No-op when keep_alive_timeout_sec_ is 0 (keeps the cpp-httplib default of
+   * 5s). Bounds how long a request-pool worker stays parked on an idle
+   * keep-alive connection, so a small fixed pool cannot be starved by a burst of
+   * short-lived client connections (issue #440). Must be called before listen().
+   */
+  void apply_keep_alive(httplib::Server & srv) const;
+
   TlsConfig tls_config_;
 
   // Fixed cpp-httplib worker-pool size (0 = leave the library default).
   std::size_t thread_pool_size_;
+
+  // cpp-httplib keep-alive idle timeout in seconds (0 = leave the library default).
+  std::time_t keep_alive_timeout_sec_;
 
   // HTTP server (used when TLS is disabled)
   std::unique_ptr<httplib::Server> server_;

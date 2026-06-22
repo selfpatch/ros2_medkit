@@ -269,12 +269,14 @@ Thread Pools
 
 The gateway runs two thread pools. By default both are bounded to a small fixed
 size instead of scaling with the host CPU count, so the gateway's thread
-footprint is the same on a 4-core SBC and a 64-core server. Both values are
-clamped to a minimum of 1.
+footprint is the same on a 4-core SBC and a 64-core server. A third knob,
+``keep_alive_timeout_sec``, bounds how long the HTTP pool keeps a worker parked
+on an idle keep-alive connection. Every value is clamped to a working minimum on
+read, so a mis-set parameter can never break request serving.
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 10 12 48
+   :widths: 32 8 10 50
 
    * - Parameter
      - Type
@@ -282,25 +284,40 @@ clamped to a minimum of 1.
      - Description
    * - ``server.http_thread_pool_size``
      - int
-     - ``3``
+     - ``4``
      - Worker threads in the HTTP request pool (cpp-httplib). Replaces the
        library default of ``max(8, cores - 1)``. Kept at or above
        ``sse.max_clients`` so SSE streams cannot starve every worker (see note
        below). Clamped to ``[1, 1024]``.
+   * - ``server.keep_alive_timeout_sec``
+     - int
+     - ``2``
+     - How long (seconds) a request-pool worker stays parked on an idle
+       keep-alive connection before freeing it. Replaces the cpp-httplib default
+       of ``5``. A shorter value recovers workers from short-lived client
+       connections faster (important with a small pool); a longer value favours
+       connection reuse. Clamped to ``[1, 3600]``.
    * - ``server.executor_threads``
      - int
      - ``2``
      - Threads in the main rclcpp ``MultiThreadedExecutor``. Replaces rclcpp's
        default (host cores, minimum 2). Clamped to ``[1, 256]``.
 
-**HTTP pool and SSE.** Each active SSE stream (fault dashboard, cyclic
-subscriptions, trigger events - see `SSE (Server-Sent Events)`_) holds one HTTP
-pool thread for its entire lifetime, and the data cold-wait path can block up to
-``data_provider.cold_wait_cap`` additional threads. To stop SSE from starving
-ordinary requests, ``sse.max_clients`` defaults (2) at or below
-``http_thread_pool_size`` (3). If you raise ``sse.max_clients`` for more
-concurrent streams, raise ``http_thread_pool_size`` to match - a safe target is
-``sse.max_clients + cold_wait_cap`` plus headroom for regular requests.
+**HTTP pool, keep-alive, and SSE.** Each active SSE stream (fault dashboard,
+cyclic subscriptions, trigger events - see `SSE (Server-Sent Events)`_) holds
+one HTTP pool thread for its entire lifetime, and the data cold-wait path can
+block up to ``data_provider.cold_wait_cap`` additional threads. On top of that,
+each *recently used* client connection keeps a worker parked for up to
+``keep_alive_timeout_sec`` after its last request. With a small pool, a client
+that opens several short-lived connections per cycle (for example a poller
+hitting ``/apps``, ``/areas`` and ``/functions`` every iteration) can therefore
+pin every worker until the keep-alive timers expire, stalling other requests.
+The defaults (pool ``4``, keep-alive ``2`` s, ``sse.max_clients`` ``2``) leave
+headroom for this; if you raise ``sse.max_clients`` for more concurrent streams,
+raise ``http_thread_pool_size`` to match - a safe target is
+``sse.max_clients + cold_wait_cap`` plus headroom for regular requests - and
+keep ``keep_alive_timeout_sec`` short unless your clients benefit from long-lived
+connection reuse.
 
 **Executor threads.** The main executor only delivers the gateway node's own
 callbacks (timers, graph events, log and fault subscriptions) and the fast
@@ -319,6 +336,7 @@ Example (more SSE clients needs a larger pool and matching ``sse.max_clients``):
      ros__parameters:
        server:
          http_thread_pool_size: 16   # workers for heavy SSE + request load
+         keep_alive_timeout_sec: 5   # longer reuse for steady browser clients
          executor_threads: 4
        sse:
          max_clients: 10             # raised together with the HTTP pool

@@ -157,7 +157,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // together for more concurrent SSE. Both are clamped to a bounded range on
   // read (see clamp_thread_count).
   declare_parameter("server.executor_threads", 2);
-  declare_parameter("server.http_thread_pool_size", 3);
+  declare_parameter("server.http_thread_pool_size", 4);
+
+  // cpp-httplib keep-alive idle timeout (seconds). The library default (5s)
+  // parks a request-pool worker on an idle keep-alive connection for that long;
+  // with the small bounded pool above, a burst of short-lived client connections
+  // (e.g. a client polling several endpoints per cycle) can pin every worker and
+  // stall ordinary requests for up to one timeout per cycle. Defaulting to 2s
+  // recovers workers quickly while retaining connection reuse for legitimate
+  // clients. Clamped to [1, 3600] on read (see clamp_keep_alive_timeout).
+  declare_parameter("server.keep_alive_timeout_sec", 2);
   // Safety-backstop refresh interval. Primary discovery refresh is driven
   // by rclcpp graph events; this only controls the periodic forced
   // refresh used when a graph event would otherwise be missed.

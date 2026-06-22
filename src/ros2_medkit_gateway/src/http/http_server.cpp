@@ -19,8 +19,9 @@
 
 namespace ros2_medkit_gateway {
 
-HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size)
-  : tls_config_(tls_config), thread_pool_size_(thread_pool_size) {
+HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size,
+                                     std::time_t keep_alive_timeout_sec)
+  : tls_config_(tls_config), thread_pool_size_(thread_pool_size), keep_alive_timeout_sec_(keep_alive_timeout_sec) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled) {
     // Create SSL server with certificate and key
@@ -35,6 +36,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     // Configure additional TLS settings
     configure_tls();
     apply_thread_pool(*ssl_server_);
+    apply_keep_alive(*ssl_server_);
 
     RCLCPP_INFO(rclcpp::get_logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
                 tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
@@ -42,6 +44,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
   } else {
     server_ = std::make_unique<httplib::Server>();
     apply_thread_pool(*server_);
+    apply_keep_alive(*server_);
     RCLCPP_DEBUG(rclcpp::get_logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
   }
 #else
@@ -52,6 +55,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
   }
   server_ = std::make_unique<httplib::Server>();
   apply_thread_pool(*server_);
+  apply_keep_alive(*server_);
 #endif
 }
 
@@ -67,6 +71,17 @@ void HttpServerManager::apply_thread_pool(httplib::Server & srv) const {
   srv.new_task_queue = [n] {
     return new httplib::ThreadPool(n);
   };
+}
+
+void HttpServerManager::apply_keep_alive(httplib::Server & srv) const {
+  if (keep_alive_timeout_sec_ <= 0) {
+    return;  // Keep the cpp-httplib default (5s).
+  }
+  // Bound how long a request-pool worker stays parked on an idle keep-alive
+  // connection. With a small fixed pool, the library default (5s) lets a burst
+  // of short-lived client connections pin every worker, stalling ordinary
+  // requests for up to one timeout per cycle (issue #440).
+  srv.set_keep_alive_timeout(keep_alive_timeout_sec_);
 }
 
 httplib::Server * HttpServerManager::get_server() {

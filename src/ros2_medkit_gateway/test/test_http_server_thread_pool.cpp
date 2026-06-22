@@ -24,6 +24,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <ctime>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -149,4 +150,17 @@ TEST(ThreadPoolConfigTest, clamp_thread_count_bounds_the_value) {
   // HTTP pool range [1, 1024]
   EXPECT_EQ(clamp_thread_count(3, 1, 1024), 3u);            // in range -> unchanged
   EXPECT_EQ(clamp_thread_count(1u << 20, 1, 1024), 1024u);  // oversized -> cap
+}
+
+// clamp_keep_alive_timeout coerces a mis-set keep-alive timeout (seconds) into
+// the bounded [min_sec, max_sec] range (issue #440): zero/negative floor to
+// min_sec, oversized values cap to max_sec, in-range values pass through. This
+// guarantees a typo can never disable keep-alive entirely (0) nor park workers
+// for a pathological duration.
+TEST(ThreadPoolConfigTest, clamp_keep_alive_timeout_bounds_the_value) {
+  using ros2_medkit_gateway::clamp_keep_alive_timeout;
+  EXPECT_EQ(clamp_keep_alive_timeout(0, 1, 3600), std::time_t{1});          // zero -> floor
+  EXPECT_EQ(clamp_keep_alive_timeout(-10, 1, 3600), std::time_t{1});        // negative -> floor
+  EXPECT_EQ(clamp_keep_alive_timeout(2, 1, 3600), std::time_t{2});          // in range -> unchanged
+  EXPECT_EQ(clamp_keep_alive_timeout(100000, 1, 3600), std::time_t{3600});  // oversized -> cap
 }
