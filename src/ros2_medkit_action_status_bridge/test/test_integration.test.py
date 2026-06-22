@@ -15,10 +15,12 @@
 
 """End-to-end integration tests for ros2_medkit_action_status_bridge."""
 
+import os
 import time
 import unittest
 
 from action_msgs.msg import GoalStatus, GoalStatusArray
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 import launch_ros.actions
 import launch_testing.actions
@@ -56,12 +58,18 @@ def generate_test_description():
         }],
     )
 
+    # Load the packaged config first so assertExitCodes guards against the
+    # shipped action_status_bridge.yaml regressing the empty-untyped-list
+    # startup crash; the inline override only speeds up discovery for the test.
+    config_file = os.path.join(
+        get_package_share_directory('ros2_medkit_action_status_bridge'),
+        'config', 'action_status_bridge.yaml')
     action_status_bridge_node = launch_ros.actions.Node(
         package='ros2_medkit_action_status_bridge',
         executable='action_status_bridge_node',
         name='action_status_bridge',
         output='screen',
-        parameters=[{
+        parameters=[config_file, {
             'rescan_period_sec': 1.0,  # fast discovery for the test
         }],
     )
