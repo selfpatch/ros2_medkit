@@ -93,15 +93,16 @@ std::shared_ptr<const nlohmann::json> TypeIntrospection::get_service_type_info(c
       return it->second;
     }
   }
-  // get_type_info is itself cached + throws on failure; build the wrapper once.
+  // get_type_info is itself cached and returns empty schemas for unknown types
+  // (it does not throw); build the wrapper once.
   auto assembled = std::make_shared<nlohmann::json>();
   (*assembled)["request"] = get_type_info(service_type + "_Request").schema;
   (*assembled)["response"] = get_type_info(service_type + "_Response").schema;
   std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto [it, inserted] = service_type_info_cache_.try_emplace(service_type, shared);
-    return it->second;
+    // try_emplace keeps the first cached instance if another thread raced us.
+    return service_type_info_cache_.try_emplace(service_type, shared).first->second;
   }
 }
 
@@ -120,8 +121,8 @@ std::shared_ptr<const nlohmann::json> TypeIntrospection::get_action_type_info(co
   std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto [it, inserted] = action_type_info_cache_.try_emplace(action_type, shared);
-    return it->second;
+    // try_emplace keeps the first cached instance if another thread raced us.
+    return action_type_info_cache_.try_emplace(action_type, shared).first->second;
   }
 }
 

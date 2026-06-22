@@ -115,5 +115,12 @@ TEST(EntityCacheAlloc, SteadyStateChurnNoNetStructuralGrowth) {
   g_armed.store(false);
   // Only update_all ran while armed; no copies, no container mutation, no getter calls.
   const long kSlack = 4;  // tiny; tolerates allocator bookkeeping noise only. Do NOT inflate.
+  // Only the UPPER bound is meaningful here. The regression this guards against
+  // is the old full rebuild, which allocates under churn -> a positive net. The
+  // steady-state net is legitimately negative (about -1 per tick): every tick's
+  // payloads are pre-built before arming, so payload/structural frees during the
+  // armed window are counted while their allocations are not. A symmetric lower
+  // bound would therefore false-fail without catching any growth, so we do not
+  // assert one (a net that only ever frees cannot grow memory under churn).
   EXPECT_LE(g_net.load(), kSlack) << "cache layer allocated under steady-state churn (regression to rebuild?)";
 }

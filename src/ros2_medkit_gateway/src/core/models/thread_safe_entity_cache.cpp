@@ -154,6 +154,13 @@ ThreadSafeEntityCache::ThreadSafeEntityCache(size_t capacity) {
 void ThreadSafeEntityCache::reserve(size_t capacity) {
   std::unique_lock lock(mutex_);
 
+  // Capacity only ever grows. A smaller request would shrink seen_ (assign) and
+  // capacity_ while the index containers (reserve never shrinks) would not,
+  // breaking the documented "only grows" invariant; treat it as a no-op.
+  if (capacity <= capacity_) {
+    return;
+  }
+
   areas_.reserve(capacity);
   components_.reserve(capacity);
   apps_.reserve(capacity);
