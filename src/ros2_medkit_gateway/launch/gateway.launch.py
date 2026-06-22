@@ -28,7 +28,8 @@ CORS_DEFAULT = 'http://localhost:3000,http://localhost:5173'
 
 
 def cors_override(cors_arg, config_file, default_config):
-    """Return the ``cors.allowed_origins`` entry for the final overrides, or {}.
+    """
+    Return the ``cors.allowed_origins`` entry for the final overrides, or {}.
 
     The final overrides dict is applied after the config file, so anything in it
     wins per key. To avoid silently overriding a user's ``config_file``:
