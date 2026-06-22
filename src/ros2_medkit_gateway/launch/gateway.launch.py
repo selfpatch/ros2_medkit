@@ -77,9 +77,14 @@ def generate_launch_description():
     # parameter). param_overrides is applied last, so cors_allowed_origins is the
     # single override point for CORS; set it empty for the secure (off) default.
     def _launch_setup(context, *_args, **_kwargs):
+        # An empty Python list cannot be passed as a launch parameter, and bare
+        # [] would also be the untyped-empty-list shape that aborts node startup.
+        # When no origins are given, fall back to [''] - the same placeholder the
+        # gateway config uses; config.cpp filters the empty string, so CORS ends
+        # up off without the crash.
         origins = [o.strip() for o in
                    LaunchConfiguration('cors_allowed_origins').perform(context).split(',')
-                   if o.strip()]
+                   if o.strip()] or ['']
         param_overrides = {
             'server.host': LaunchConfiguration('server_host'),
             'server.port': LaunchConfiguration('server_port'),
