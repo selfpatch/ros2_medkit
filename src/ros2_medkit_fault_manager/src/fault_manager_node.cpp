@@ -248,13 +248,19 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   if (snapshot_capture_ || rosbag_capture_) {
     auto snap = snapshot_capture_;
     auto bag = rosbag_capture_;
+    // RosbagCapture is single-writer (one shared ring buffer + one active writer +
+    // one recording state machine), so on_fault_confirmed() is not safe for the
+    // pool_size concurrent calls the pool contract allows. Serialize just the rosbag
+    // leg under this mutex; snapshot capture is independent and stays parallel.
+    auto rosbag_mutex = std::make_shared<std::mutex>();
     capture_pool_ = std::make_unique<CaptureThreadPool>(
         static_cast<std::size_t>(capture_pool_size_), static_cast<std::size_t>(capture_queue_depth_),
-        capture_queue_full_policy_, get_logger(), [snap, bag](const std::string & fault_code) {
+        capture_queue_full_policy_, get_logger(), [snap, bag, rosbag_mutex](const std::string & fault_code) {
           if (snap) {
             snap->capture(fault_code);
           }
           if (bag) {
+            std::lock_guard<std::mutex> bag_lock(*rosbag_mutex);
             bag->on_fault_confirmed(fault_code);
           }
         });
@@ -443,9 +449,11 @@ void FaultManagerNode::handle_report_fault(
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
 
-    // Capture snapshots/rosbag when a fault confirms. Bounded pool (issue #441):
-    // the cooldown check, enqueue, and cooldown update are atomic under
-    // last_capture_mutex_ to prevent a concurrent same-fault double-enqueue.
+    // Capture snapshots/rosbag when a fault confirms via the bounded pool (issue #441).
+    // handle_report_fault runs on the single-threaded executor, so confirmations are
+    // already serialized; last_capture_mutex_ only guards last_capture_times_ itself
+    // (the cooldown check, the update below, and the expired-entry sweep). It is taken
+    // solely when the cooldown is enabled, since the map is otherwise never touched.
     if (just_confirmed && capture_pool_) {
       const std::string fault_code = request->fault_code;
       const bool cooldown_enabled = snapshot_recapture_cooldown_sec_ > 0.0;
@@ -456,10 +464,21 @@ void FaultManagerNode::handle_report_fault(
 
       bool on_cooldown = false;
       if (cooldown_enabled) {
+        const auto cooldown = std::chrono::duration<double>(snapshot_recapture_cooldown_sec_);
+        const auto sweep_now = std::chrono::steady_clock::now();
+        // Bound the map (issue #441): a storm of distinct fault codes would otherwise
+        // leave one permanent entry per code. Entries older than the cooldown can never
+        // gate a capture again, so drop them while we hold the lock.
+        for (auto it = last_capture_times_.begin(); it != last_capture_times_.end();) {
+          if (sweep_now - it->second >= cooldown) {
+            it = last_capture_times_.erase(it);
+          } else {
+            ++it;
+          }
+        }
         auto it = last_capture_times_.find(fault_code);
         if (it != last_capture_times_.end()) {
-          auto elapsed = std::chrono::steady_clock::now() - it->second;
-          on_cooldown = elapsed < std::chrono::duration<double>(snapshot_recapture_cooldown_sec_);
+          on_cooldown = (sweep_now - it->second) < cooldown;
         }
       }
 
