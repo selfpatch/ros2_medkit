@@ -68,6 +68,11 @@ class LogBridgeNode : public rclcpp::Node {
   /// name so namespaced nodes are caught. Exposed for unit testing.
   static bool is_medkit_stack_logger(const std::string & logger_name);
 
+  /// Whether this log should be skipped because it comes from the medkit stack
+  /// itself - applies the exclude_medkit_stack toggle to is_medkit_stack_logger.
+  /// Exposed for unit testing the toggle.
+  bool skips_medkit_stack(const std::string & logger_name) const;
+
   /// Map an rcl_interfaces/msg/Log.name (a logger name, e.g. "bt_navigator" or
   /// "controller_manager.resource_manager") to the originating node's
   /// fully-qualified name ("/bt_navigator", "/controller_manager"). The gateway

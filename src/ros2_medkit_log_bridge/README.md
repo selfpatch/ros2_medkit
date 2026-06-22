@@ -100,3 +100,10 @@ ros2 launch ros2_medkit_log_bridge log_bridge.launch.py
 against the node FQN: `planner` matches `/planner_server` and
 `/robot1/planner_server`. Use a longer, more specific substring (e.g.
 `/planner_server`) to avoid accidental matches.
+
+`exclude_medkit_stack` likewise matches **unanchored substrings** (on the raw
+logger name, so a namespaced `robot1.fault_manager` is still caught). A user
+node whose name contains one of these tokens - e.g. `fault_manager` or
+`diagnostic_bridge` - is therefore also skipped; set `exclude_medkit_stack:
+false` (and use `exclude_nodes` for the real medkit nodes) if that collides
+with your naming.

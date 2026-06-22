@@ -103,7 +103,7 @@ void LogBridgeNode::log_callback(const rcl_interfaces::msg::Log::ConstSharedPtr 
   // Skip the medkit stack's own infrastructure nodes (else fault_manager's own
   // /rosout lines feed back as faults about medkit). Matched on the raw logger
   // name, which keeps the namespace (node_source_id collapses it to the ns).
-  if (exclude_medkit_stack_ && is_medkit_stack_logger(msg->name)) {
+  if (skips_medkit_stack(msg->name)) {
     return;
   }
   if (!node_is_eligible(source_id)) {
@@ -161,6 +161,10 @@ bool LogBridgeNode::is_medkit_stack_logger(const std::string & logger_name) {
   static const std::vector<std::string> kMedkitStack = {"fault_manager", "ros2_medkit_gateway", "diagnostic_bridge",
                                                         "action_status_bridge"};
   return contains_substr(kMedkitStack, logger_name);
+}
+
+bool LogBridgeNode::skips_medkit_stack(const std::string & logger_name) const {
+  return exclude_medkit_stack_ && is_medkit_stack_logger(logger_name);
 }
 
 bool LogBridgeNode::node_is_eligible(const std::string & source_id) const {

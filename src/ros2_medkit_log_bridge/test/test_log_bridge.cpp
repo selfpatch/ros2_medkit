@@ -236,6 +236,20 @@ TEST_F(LogBridgeTest, MedkitStackLogger_AllowsApplicationNodes) {
   EXPECT_FALSE(LogBridgeNode::is_medkit_stack_logger("amcl"));
 }
 
+// The exclude_medkit_stack toggle gates the skip in log_callback (mirrors
+// Cooldown_ZeroDisables for the param path).
+TEST_F(LogBridgeTest, MedkitStack_SkippedByDefault) {
+  auto node = make_node_with({});
+  EXPECT_TRUE(node->skips_medkit_stack("fault_manager"));
+  EXPECT_TRUE(node->skips_medkit_stack("robot1.fault_manager"));
+  EXPECT_FALSE(node->skips_medkit_stack("bt_navigator"));
+}
+
+TEST_F(LogBridgeTest, MedkitStack_ToggleDisables) {
+  auto node = make_node_with({rclcpp::Parameter("exclude_medkit_stack", false)});
+  EXPECT_FALSE(node->skips_medkit_stack("fault_manager"));
+}
+
 // --- source_id normalization to node FQN (entity association) ---
 
 TEST_F(LogBridgeTest, NodeSourceId_PrependsLeadingSlash) {
