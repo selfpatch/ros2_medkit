@@ -91,8 +91,13 @@ the status is read from the node's lifecycle state via ``lifecycle_msgs/srv/GetS
 ``active`` state is ``"ready"``; any other state, or an unreachable/timed-out read, is
 ``"notReady"``. This subsumes liveness, since a dead node's ``get_state`` service is gone. For a
 plain node with no lifecycle services, the status falls back to ``App::is_online`` (presence in
-the ROS 2 graph), which is the best signal available for an unmanaged node. The GetState read runs
-on a private node and executor (spun inline), so it never blocks or races the gateway executor.
+the ROS 2 graph), which is the best signal available for an unmanaged node. A node that is not
+online short-circuits to ``"notReady"`` without a GetState read (an offline node cannot be
+``active``), which also avoids a blocking read against a crashed managed node whose services still
+linger in the cache. The GetState read runs on a private node and executor (spun inline), so it
+never blocks or races the gateway executor; it is, however, serialized by an internal mutex, so a
+reachable-but-slow managed node holds that mutex across its spin and delays other concurrent
+``/status`` reads for up to the (short) read timeout.
 
 **Component status:** a local component is ``"ready"`` while the gateway is serving the
 request (the substrate is reachable), independent of how many hosted apps are online,

@@ -33,7 +33,7 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 def generate_test_description():
     return create_test_launch(
-        demo_nodes=['temp_sensor', 'managed_lifecycle'],
+        demo_nodes=['temp_sensor', 'managed_lifecycle', 'managed_lifecycle_active'],
         fault_manager=False,
     )
 
@@ -42,8 +42,8 @@ def generate_test_description():
 class TestLifecycleStatus(GatewayTestCase):
     """Lifecycle status endpoint tests for apps and components."""
 
-    MIN_EXPECTED_APPS = 2
-    REQUIRED_APPS = {'temp_sensor', 'managed_lifecycle'}
+    MIN_EXPECTED_APPS = 3
+    REQUIRED_APPS = {'temp_sensor', 'managed_lifecycle', 'managed_lifecycle_active'}
 
     # Cache for the dynamically-discovered host component ID.
     _host_component_id = None
@@ -128,6 +128,20 @@ class TestLifecycleStatus(GatewayTestCase):
             timeout=20.0,
         )
         self.assertEqual(data.get('status'), 'notReady')
+
+    def test_managed_lifecycle_activated_is_ready(self):
+        # @verifies REQ_INTEROP_076
+        # The activated lifecycle node (auto_activate:=true) self-configures and
+        # activates to the "active" state. Its status must be read as "ready" via
+        # a real over-the-wire lifecycle_msgs/srv/GetState round-trip (the happy
+        # path the in-process stub cannot prove). Polled because activation
+        # completes shortly after the node starts.
+        data = self.poll_endpoint_until(
+            '/apps/managed_lifecycle_active/status',
+            lambda d: d if d.get('status') == 'ready' else None,
+            timeout=25.0,
+        )
+        self.assertEqual(data.get('status'), 'ready')
 
     def test_app_status_nonexistent_returns_404(self):
         """GET /apps/{app_id}/status returns 404 for a nonexistent app.

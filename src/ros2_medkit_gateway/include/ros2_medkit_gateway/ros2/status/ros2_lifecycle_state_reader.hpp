@@ -32,9 +32,12 @@ namespace ros2_medkit_gateway {
 /// gateway node's MultiThreadedExecutor (the private-node/private-executor idea is
 /// borrowed from ros2_fault_service_transport.cpp; unlike that transport, the target
 /// service path varies per app, so the client is created per call rather than once
-/// in the constructor). Calls are serialized by an internal mutex: a slow or
-/// unreachable lifecycle node holds the mutex for up to ~2x the timeout and blocks
-/// other status reads, so the default timeout is kept short.
+/// in the constructor). create_client, async_send_request, the inline spin, and the
+/// client teardown are serialized by an internal mutex; wait_for_service runs outside
+/// it (backed by an independent graph listener) so an unreachable node does not hold
+/// the mutex. A reachable-but-slow node still holds the mutex across its spin for up to
+/// the timeout and serializes other concurrent /status reads, so the default timeout is
+/// kept short.
 class Ros2LifecycleStateReader : public LifecycleStateReader {
  public:
   explicit Ros2LifecycleStateReader(rclcpp::Node * host,

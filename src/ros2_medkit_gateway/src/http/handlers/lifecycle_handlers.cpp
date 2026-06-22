@@ -140,7 +140,15 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
     if (app && lifecycle_reader_) {
       get_state_path = find_lifecycle_get_state_path(app->services);
     }
-    if (app && lifecycle_reader_ && get_state_path.has_value()) {
+    if (app && !app->is_online) {
+      // An offline node cannot be "active", so skip the lifecycle read. This also
+      // short-circuits a crashed managed node whose get_state/change_state services
+      // still linger in the last-cached App::services: without this, the reader
+      // would wait_for_service to exhaustion + spin to the timeout on every poll,
+      // serializing concurrent /status reads on exactly the failure case operators
+      // poll hardest. A plain offline node already short-circuited here.
+      resp.status = "notReady";
+    } else if (app && lifecycle_reader_ && get_state_path.has_value()) {
       // Managed lifecycle node: read the real state. "active" is the only ready state.
       auto state = lifecycle_reader_->get_state(*get_state_path);
       resp.status = lifecycle_status_from_state(state);
