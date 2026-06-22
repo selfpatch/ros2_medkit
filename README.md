@@ -74,47 +74,6 @@ curl http://localhost:8080/api/v1/apps/move_group/faults
 So you get a remote, queryable, time-traveled fault instead of a log line - whether or not you
 touch the node's code.
 
-## vs. standard ROS 2 diagnostics
-
-`diagnostic_updater` + `/diagnostics` + `diagnostic_aggregator` + `rqt_robot_monitor` report
-current node health to a desktop GUI. ros2_medkit turns that into a queryable, remote,
-time-traveled, actionable fault.
-
-> [!NOTE]
-> It **consumes `/diagnostics` too**, so it is additive, not a rip-and-replace. Keep your
-> existing `diagnostic_updater` publishers; medkit reads them and gives you the rest.
-
-| | 🔴 ROS 2 diagnostics | 🟢 ros2_medkit |
-|---|---|---|
-| Access | `/diagnostics` topic + rqt GUI (local desktop) | SOVD REST API (remote; any tool / dashboard / agent) |
-| Instrumentation | required (`diagnostic_updater` in node code) | works without it - drop-in bridges (`/rosout`, action status, `/diagnostics` passthrough) |
-| State | live OK / WARN / ERROR / STALE | fault lifecycle (debounce, confirm, heal) |
-| Moment of failure | none | freeze-frame snapshot + black-box rosbag |
-| History | none (live only) | persisted, queryable |
-| Model | key/value pairs | structured fault codes + SOVD entity model |
-| Scope | ROS only | ROS today; PLC / ECU on one API |
-| Agent access | none | MCP adapter |
-
-## "I already have Foxglove. Why do I need this?"
-
-Foxglove, Rerun and PlotJuggler are how you *look* at robot data - plots, 3D, logs, live or
-from a bag - and they're great at it. ros2_medkit does the job they leave undone: it turns a
-failure into a **structured fault**.
-
-> Every mature machine industry already draws this line: in a car, an oscilloscope is not a
-> scan tool. UDS / DTC diagnostics sit *above* the signal layer, as structured, queryable
-> state. Robotics just hasn't drawn it yet.
-
-| Common pushback | Why a structured fault still wins |
-|---|---|
-| *"I'll just set an alert."* | A threshold alert fires on a raw signal and is gone - no entity, no lifecycle, no history, and it means something different on every robot. A fault is confirmed, persisted, entity-attributed state - and, being SOVD, it means the same thing across robots and vendors. **Alerting pages a human; diagnostics gives a machine an answer.** |
-| *"I'll just watch the fleet dashboard."* | Visualization is O(humans) - one operator, one timeline, and nobody scrubs 400 of them. A structured fault is O(1): the same code and lifecycle aggregate across the fleet, so *"which 12 of 400 robots have a confirmed navigation fault right now?"* is a query, not a person. |
-| *"I can already see it fail."* | Observability is read-only by design. A structured fault is the precondition for doing something about it - gating an OTA on robot health, triggering remediation. **You can't safely patch what you haven't first diagnosed as a fault.** |
-
-So it is not a replacement for your observability stack - it is the **diagnosis layer
-underneath it**. medkit flags and persists the fault (readable by dashboards, fleet managers
-and agents, not just people) and captures the black-box rosbag you then open in Foxglove.
-
 ## Run it in 5 minutes
 
 **Two commands. No code changes, no config.** Install from the ROS 2 distribution, then launch
@@ -189,6 +148,47 @@ CORS (the prebuilt gateway Docker image enables it; for a native bringup set
 
 For a guided walkthrough, see the
 [Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
+
+## vs. standard ROS 2 diagnostics
+
+`diagnostic_updater` + `/diagnostics` + `diagnostic_aggregator` + `rqt_robot_monitor` report
+current node health to a desktop GUI. ros2_medkit turns that into a queryable, remote,
+time-traveled, actionable fault.
+
+> [!NOTE]
+> It **consumes `/diagnostics` too**, so it is additive, not a rip-and-replace. Keep your
+> existing `diagnostic_updater` publishers; medkit reads them and gives you the rest.
+
+| | 🔴 ROS 2 diagnostics | 🟢 ros2_medkit |
+|---|---|---|
+| Access | `/diagnostics` topic + rqt GUI (local desktop) | SOVD REST API (remote; any tool / dashboard / agent) |
+| Instrumentation | required (`diagnostic_updater` in node code) | works without it - drop-in bridges (`/rosout`, action status, `/diagnostics` passthrough) |
+| State | live OK / WARN / ERROR / STALE | fault lifecycle (debounce, confirm, heal) |
+| Moment of failure | none | freeze-frame snapshot + black-box rosbag |
+| History | none (live only) | persisted, queryable |
+| Model | key/value pairs | structured fault codes + SOVD entity model |
+| Scope | ROS only | ROS today; PLC / ECU on one API |
+| Agent access | none | MCP adapter |
+
+## "I already have Foxglove. Why do I need this?"
+
+Foxglove, Rerun and PlotJuggler are how you *look* at robot data - plots, 3D, logs, live or
+from a bag - and they're great at it. ros2_medkit does the job they leave undone: it turns a
+failure into a **structured fault**.
+
+> Every mature machine industry already draws this line: in a car, an oscilloscope is not a
+> scan tool. UDS / DTC diagnostics sit *above* the signal layer, as structured, queryable
+> state. Robotics just hasn't drawn it yet.
+
+| Common pushback | Why a structured fault still wins |
+|---|---|
+| *"I'll just set an alert."* | A threshold alert fires on a raw signal and is gone - no entity, no lifecycle, no history, and it means something different on every robot. A fault is confirmed, persisted, entity-attributed state - and, being SOVD, it means the same thing across robots and vendors. **Alerting pages a human; diagnostics gives a machine an answer.** |
+| *"I'll just watch the fleet dashboard."* | Visualization is O(humans) - one operator, one timeline, and nobody scrubs 400 of them. A structured fault is O(1): the same code and lifecycle aggregate across the fleet, so *"which 12 of 400 robots have a confirmed navigation fault right now?"* is a query, not a person. |
+| *"I can already see it fail."* | Observability is read-only by design. A structured fault is the precondition for doing something about it - gating an OTA on robot health, triggering remediation. **You can't safely patch what you haven't first diagnosed as a fault.** |
+
+So it is not a replacement for your observability stack - it is the **diagnosis layer
+underneath it**. medkit flags and persists the fault (readable by dashboards, fleet managers
+and agents, not just people) and captures the black-box rosbag you then open in Foxglove.
 
 ## Beyond faults
 
