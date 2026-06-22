@@ -75,7 +75,8 @@ def generate_launch_description():
     # Resolve the cors arg into a string list at launch time (a comma-separated
     # LaunchConfiguration cannot be passed straight through as a string-array
     # parameter). param_overrides is applied last, so cors_allowed_origins is the
-    # single override point for CORS; set it empty for the secure (off) default.
+    # single override point for CORS; the default is non-empty (CORS on for the
+    # web UI), and setting it empty disables CORS.
     def _launch_setup(context, *_args, **_kwargs):
         # An empty Python list cannot be passed as a launch parameter, and bare
         # [] would also be the untyped-empty-list shape that aborts node startup.
