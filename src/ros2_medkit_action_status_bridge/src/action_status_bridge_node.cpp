@@ -208,6 +208,7 @@ void ActionStatusBridgeNode::prune_vanished(const std::map<std::string, std::str
         RCLCPP_INFO(get_logger(), "Action '%s' vanished while failed; healed before dropping", action_name.c_str());
       }
       reporters_.erase(action_name);
+      resolved_actions_.erase(action_name);
     }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -316,34 +317,61 @@ void ActionStatusBridgeNode::status_callback(const std::string & action_name,
 ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for(const std::string & action_name) {
   std::lock_guard<std::mutex> lock(reporters_mutex_);
   auto it = reporters_.find(action_name);
-  if (it != reporters_.end()) {
-    return it->second.get();
+  const bool have = it != reporters_.end();
+  if (have && resolved_actions_.count(action_name) != 0) {
+    return it->second.get();  // already attributed to the resolved server FQN
   }
   // Attribute the fault to the action SERVER's node FQN, not the action name:
   // the gateway resolves a fault to a SOVD entity by node FQN, and an action
   // interface name (e.g. /navigate_to_pose) matches no entity. Multiple
   // reporters on one node are safe (has_parameter guard).
-  const std::string source_id = server_fqn_for_action(action_name);
-  auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), source_id);
+  const std::string fqn = server_fqn_for_action(action_name);
+  if (fqn.empty()) {
+    // DDS discovery has not resolved the server's node name yet. Use a fallback
+    // reporter (keyed by action name) so a fault still fires, but keep it
+    // unresolved so the next status message re-resolves and upgrades to the real
+    // node FQN. Reuse the existing fallback reporter rather than recreating it.
+    if (have) {
+      return it->second.get();
+    }
+    auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), action_name);
+    auto * raw = reporter.get();
+    reporters_[action_name] = std::move(reporter);
+    return raw;
+  }
+  // Resolved: (re)create the reporter attributed to the real server FQN and mark
+  // it resolved so it is never re-resolved again.
+  auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), fqn);
   auto * raw = reporter.get();
-  reporters_.emplace(action_name, std::move(reporter));
+  reporters_[action_name] = std::move(reporter);
+  resolved_actions_.insert(action_name);
   return raw;
+}
+
+std::string ActionStatusBridgeNode::server_fqn_from_endpoint(const std::string & node_name,
+                                                             const std::string & node_namespace) {
+  // During DDS discovery the participant is known before its node name/namespace
+  // propagate; rcl reports these placeholders meanwhile. Treat them (and an
+  // empty name) as unresolved so a fault is never attributed to the placeholder.
+  constexpr const char * kUnknownName = "_NODE_NAME_UNKNOWN_";
+  constexpr const char * kUnknownNamespace = "_NODE_NAMESPACE_UNKNOWN_";
+  if (node_name.empty() || node_name == kUnknownName || node_namespace == kUnknownNamespace) {
+    return "";
+  }
+  return (node_namespace.empty() || node_namespace == "/") ? "/" + node_name : node_namespace + "/" + node_name;
 }
 
 std::string ActionStatusBridgeNode::server_fqn_for_action(const std::string & action_name) {
   // The action server publishes <action>/_action/status, so its node FQN is the
-  // publisher's. A fault only fires while the server is publishing, so this
-  // resolves in practice; fall back to the action name otherwise.
+  // publisher's. Returns "" until discovery resolves a real node name.
   const auto pubs = get_publishers_info_by_topic(action_name + "/_action/status");
   for (const auto & p : pubs) {
-    const std::string name = p.node_name();
-    if (name.empty()) {
-      continue;
+    const std::string fqn = server_fqn_from_endpoint(p.node_name(), p.node_namespace());
+    if (!fqn.empty()) {
+      return fqn;
     }
-    const std::string ns = p.node_namespace();
-    return (ns.empty() || ns == "/") ? "/" + name : ns + "/" + name;
   }
-  return action_name;
+  return "";  // unresolved; caller falls back and re-resolves on a later message
 }
 
 bool ActionStatusBridgeNode::mark_logged(const std::string & goal_status_key) {

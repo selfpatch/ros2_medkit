@@ -74,6 +74,22 @@ TEST_F(ActionStatusBridgeTest, ActionNameFromStatusTopic_NotAStatusTopic) {
   EXPECT_EQ(ActionStatusBridgeNode::action_name_from_status_topic("/_action/status"), "");
 }
 
+// --- server FQN resolution (placeholder handling during DDS discovery) ---
+
+TEST_F(ActionStatusBridgeTest, ServerFqnFromEndpoint_Resolved) {
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("planner_server", "/"), "/planner_server");
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("planner_server", ""), "/planner_server");
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("planner_server", "/nav"), "/nav/planner_server");
+}
+
+TEST_F(ActionStatusBridgeTest, ServerFqnFromEndpoint_UnresolvedReturnsEmpty) {
+  // During discovery rcl reports these placeholders; they must not become a source_id.
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("_NODE_NAME_UNKNOWN_", "_NODE_NAMESPACE_UNKNOWN_"), "");
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("_NODE_NAME_UNKNOWN_", "/nav"), "");
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("planner_server", "_NODE_NAMESPACE_UNKNOWN_"), "");
+  EXPECT_EQ(ActionStatusBridgeNode::server_fqn_from_endpoint("", "/"), "");
+}
+
 // --- fault code generation ---
 
 TEST_F(ActionStatusBridgeTest, FaultCode_Aborted_WellFormed) {

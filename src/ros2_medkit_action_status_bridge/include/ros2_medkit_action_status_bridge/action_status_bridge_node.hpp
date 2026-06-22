@@ -64,6 +64,13 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   /// Returns empty when the topic is not an action status topic.
   static std::string action_name_from_status_topic(const std::string & topic);
 
+  /// Build a node FQN from a publisher endpoint's node name + namespace, or ""
+  /// if unresolved. During DDS discovery rcl reports the placeholders
+  /// "_NODE_NAME_UNKNOWN_" / "_NODE_NAMESPACE_UNKNOWN_" before the real name
+  /// propagates; those (and an empty name) are treated as unresolved so a fault
+  /// is never attributed to the placeholder.
+  static std::string server_fqn_from_endpoint(const std::string & node_name, const std::string & node_namespace);
+
   /// Build the fault code for an action name and terminal status.
   /// Format: <PREFIX>_<ACTION>_<ABORTED|CANCELED>, charset/length per medkit
   /// rules. `canceled` selects the CANCELED suffix.
@@ -93,7 +100,8 @@ class ActionStatusBridgeNode : public rclcpp::Node {
 
   /// Resolve the action server's node FQN from its status-topic publisher, for
   /// use as the fault source_id so faults associate with the gateway's SOVD
-  /// entity. Falls back to the action name if no publisher is visible.
+  /// entity. Returns "" if no publisher with a discovery-resolved node name is
+  /// visible yet (the caller falls back and re-resolves on a later message).
   std::string server_fqn_for_action(const std::string & action_name);
 
   /// Returns true if this (goal, status) pair was not logged before, marking it
@@ -115,6 +123,10 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   std::map<std::string, rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr> subs_;
 
   std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
+  // Actions whose reporter is attributed to the real (discovery-resolved) server
+  // node FQN. Until an action is in this set its reporter uses a fallback source
+  // and is re-resolved on each status message. Guarded by reporters_mutex_.
+  std::unordered_set<std::string> resolved_actions_;
   std::mutex reporters_mutex_;
 
   // Last reported action-level state, keyed by action name. Drives transitions.
