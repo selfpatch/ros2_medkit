@@ -85,4 +85,34 @@ TEST_F(TypeIntrospectionTest, get_type_info_for_unknown_type_returns_empty) {
   EXPECT_TRUE(info.schema.is_object());
 }
 
+// issue #442: assembled service/action type_info is built once per type and
+// shared (cached), so repeated /operations requests reuse it instead of
+// rebuilding + deep-copying the schemas.
+TEST_F(TypeIntrospectionTest, get_service_type_info_assembles_request_response) {
+  auto info = introspection_->get_service_type_info("std_srvs/srv/Trigger");
+  ASSERT_NE(info, nullptr);
+  EXPECT_TRUE(info->contains("request"));
+  EXPECT_TRUE(info->contains("response"));
+}
+
+TEST_F(TypeIntrospectionTest, get_service_type_info_returns_same_shared_instance) {
+  auto a = introspection_->get_service_type_info("std_srvs/srv/Trigger");
+  auto b = introspection_->get_service_type_info("std_srvs/srv/Trigger");
+  EXPECT_EQ(a.get(), b.get());  // cached: same object, not rebuilt
+}
+
+TEST_F(TypeIntrospectionTest, get_action_type_info_assembles_goal_result_feedback) {
+  auto info = introspection_->get_action_type_info("test_msgs/action/Fibonacci");
+  ASSERT_NE(info, nullptr);
+  EXPECT_TRUE(info->contains("goal"));
+  EXPECT_TRUE(info->contains("result"));
+  EXPECT_TRUE(info->contains("feedback"));
+}
+
+TEST_F(TypeIntrospectionTest, get_action_type_info_returns_same_shared_instance) {
+  auto a = introspection_->get_action_type_info("test_msgs/action/Fibonacci");
+  auto b = introspection_->get_action_type_info("test_msgs/action/Fibonacci");
+  EXPECT_EQ(a.get(), b.get());  // cached: same object, not rebuilt
+}
+
 }  // namespace ros2_medkit_serialization

@@ -264,19 +264,11 @@ std::vector<ServiceInfo> Ros2RuntimeIntrospection::discover_services() {
     info.name = extract_name_from_path(service_path);
     info.type = types.empty() ? "" : types[0];
 
-    // Service types: pkg/srv/Type -> Request/Response companions.
-    if (type_introspection_ && !info.type.empty()) {
-      try {
-        json type_info_json;
-        auto request_info = type_introspection_->get_type_info(info.type + "_Request");
-        auto response_info = type_introspection_->get_type_info(info.type + "_Response");
-        type_info_json["request"] = request_info.schema;
-        type_info_json["response"] = response_info.schema;
-        info.type_info = type_info_json;
-      } catch (const std::exception & e) {
-        RCLCPP_DEBUG(node_->get_logger(), "Could not get schema for service '%s': %s", info.type.c_str(), e.what());
-      }
-    }
+    // Schemas (type_info) are resolved lazily by the operations handler
+    // (build_service_xmedkit) on request, keyed by `info.type` and cached in
+    // TypeIntrospection. Building + deep-copying request/response schemas here
+    // on every discovery refresh was the dominant allocation under graph churn
+    // (issue #442); the discovered ServiceInfo only needs path/name/type.
 
     services.push_back(info);
   }
@@ -329,21 +321,9 @@ std::vector<ActionInfo> Ros2RuntimeIntrospection::discover_actions() {
           }
         }
 
-        // Action types: pkg/action/Type -> Goal/Result/Feedback companions.
-        if (type_introspection_ && !info.type.empty()) {
-          try {
-            json type_info_json;
-            auto goal_info = type_introspection_->get_type_info(info.type + "_Goal");
-            auto result_info = type_introspection_->get_type_info(info.type + "_Result");
-            auto feedback_info = type_introspection_->get_type_info(info.type + "_Feedback");
-            type_info_json["goal"] = goal_info.schema;
-            type_info_json["result"] = result_info.schema;
-            type_info_json["feedback"] = feedback_info.schema;
-            info.type_info = type_info_json;
-          } catch (const std::exception & e) {
-            RCLCPP_DEBUG(node_->get_logger(), "Could not get schema for action '%s': %s", info.type.c_str(), e.what());
-          }
-        }
+        // Schemas (type_info) are resolved lazily by the operations handler
+        // (build_action_xmedkit) on request; see the matching note in
+        // discover_services. Avoids per-refresh schema build+copy (issue #442).
 
         actions.push_back(info);
       }

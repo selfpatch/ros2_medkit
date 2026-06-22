@@ -156,15 +156,16 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  try {
-    json type_info_json;
-    auto request_info = type_introspection->get_type_info(svc.type + "_Request");
-    auto response_info = type_introspection->get_type_info(svc.type + "_Response");
-    type_info_json["request"] = request_info.schema;
-    type_info_json["response"] = response_info.schema;
-    x_medkit.type_info = type_info_json;
-  } catch (const std::exception & e) {
-    RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(), e.what());
+  if (type_introspection != nullptr && !svc.type.empty()) {
+    try {
+      // Schemas are assembled once per type and cached (shared) in
+      // TypeIntrospection, so repeated /operations requests reuse them instead
+      // of rebuilding + deep-copying (issue #442).
+      x_medkit.type_info = *type_introspection->get_service_type_info(svc.type);
+    } catch (const std::exception & e) {
+      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
+                   e.what());
+    }
   }
   return x_medkit;
 }
@@ -181,17 +182,12 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  try {
-    json type_info_json;
-    auto goal_info_entry = type_introspection->get_type_info(act.type + "_Goal");
-    auto result_info = type_introspection->get_type_info(act.type + "_Result");
-    auto feedback_info = type_introspection->get_type_info(act.type + "_Feedback");
-    type_info_json["goal"] = goal_info_entry.schema;
-    type_info_json["result"] = result_info.schema;
-    type_info_json["feedback"] = feedback_info.schema;
-    x_medkit.type_info = type_info_json;
-  } catch (const std::exception & e) {
-    RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(), e.what());
+  if (type_introspection != nullptr && !act.type.empty()) {
+    try {
+      x_medkit.type_info = *type_introspection->get_action_type_info(act.type);
+    } catch (const std::exception & e) {
+      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(), e.what());
+    }
   }
   return x_medkit;
 }

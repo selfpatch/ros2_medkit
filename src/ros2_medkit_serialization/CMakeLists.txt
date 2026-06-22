@@ -184,7 +184,7 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_type_introspection test/test_type_introspection.cpp)
   target_link_libraries(test_type_introspection ${PROJECT_NAME})
-  medkit_target_dependencies(test_type_introspection std_msgs)
+  medkit_target_dependencies(test_type_introspection std_msgs std_srvs test_msgs)
 
   # Apply coverage flags to test targets
   if(ENABLE_COVERAGE)

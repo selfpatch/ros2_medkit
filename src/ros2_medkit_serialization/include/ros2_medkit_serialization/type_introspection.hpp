@@ -71,6 +71,28 @@ class TypeIntrospection {
   TopicTypeInfo get_type_info(const std::string & type_name);
 
   /**
+   * @brief Get the assembled service type_info ({request, response} schemas)
+   *
+   * Builds the wrapper once per service type and caches it as a shared,
+   * immutable object so repeated /operations requests reuse it instead of
+   * re-assembling and deep-copying the schemas (issue #442).
+   *
+   * @param service_type Service type (e.g., "std_srvs/srv/Trigger")
+   * @return shared, immutable JSON {"request": ..., "response": ...}
+   */
+  std::shared_ptr<const nlohmann::json> get_service_type_info(const std::string & service_type);
+
+  /**
+   * @brief Get the assembled action type_info ({goal, result, feedback} schemas)
+   *
+   * Cached + shared, same rationale as get_service_type_info.
+   *
+   * @param action_type Action type (e.g., "nav2_msgs/action/NavigateToPose")
+   * @return shared, immutable JSON {"goal": ..., "result": ..., "feedback": ...}
+   */
+  std::shared_ptr<const nlohmann::json> get_action_type_info(const std::string & action_type);
+
+  /**
    * @brief Get the default value template for a message type
    *
    * Uses native JsonSerializer to generate a template with default values.
@@ -97,7 +119,12 @@ class TypeIntrospection {
   std::shared_ptr<JsonSerializer> serializer_;
 
   std::unordered_map<std::string, TopicTypeInfo> type_cache_;  ///< Cache for type info
-  mutable std::mutex cache_mutex_;                             ///< Mutex for thread-safe cache access
+  /// Cache for assembled service/action type_info (shared, immutable). Keyed by
+  /// service/action type. Avoids re-assembling + deep-copying schemas on every
+  /// /operations request (issue #442).
+  std::unordered_map<std::string, std::shared_ptr<const nlohmann::json>> service_type_info_cache_;
+  std::unordered_map<std::string, std::shared_ptr<const nlohmann::json>> action_type_info_cache_;
+  mutable std::mutex cache_mutex_;  ///< Mutex for thread-safe cache access
 };
 
 }  // namespace ros2_medkit_serialization
