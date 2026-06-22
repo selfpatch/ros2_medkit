@@ -657,6 +657,12 @@ if(BUILD_TESTING)
     target_link_libraries(test_flat_hash_map gateway_core)
   endif()
 
+  # Graph-event refresh debounce decision (pure C++17, no ROS node)
+  ament_add_gtest(test_refresh_debounce test/test_refresh_debounce.cpp)
+  if(TARGET test_refresh_debounce)
+    target_link_libraries(test_refresh_debounce gateway_core)
+  endif()
+
   # SlotStore object pool (pure C++17, no ROS node)
   ament_add_gtest(test_slot_store test/test_slot_store.cpp)
   if(TARGET test_slot_store)

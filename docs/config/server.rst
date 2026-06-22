@@ -267,7 +267,8 @@ Performance Tuning
        full discovery pipeline. Coalesces graph events so a refresh runs at most
        once per this interval, bounding per-event allocation. A pending change is
        serviced within this interval plus one 100 ms poll. Range: 0-60000
-       (0 disables debouncing; clamped with a warning if out of range).
+       (0 disables debouncing). A value outside the range is rejected with a
+       warning and the default (1000) is used.
    * - ``entity_cache.capacity``
      - int
      - ``256``
@@ -276,7 +277,11 @@ Performance Tuning
        in the cache layer as long as the live entity count stays within this
        value. Valid range: 16-1000000 (values outside this range are clamped with
        a warning). Raise it for graphs larger than the default; exceeding the
-       reserved capacity is harmless but triggers a one-shot WARN log.
+       reserved capacity is harmless but triggers a one-shot WARN log. Note that a
+       refresh that fully turns the entity set over allocates the new slots before
+       freeing the absent old ones, so the pool transiently holds up to ~2x the
+       steady-state live count - size capacity to about twice the expected peak to
+       keep full-turnover ticks allocation-free.
 
 Lower values shorten the worst-case recovery window if a graph event is missed
 but increase idle CPU. The default rarely fires on a stable graph because the

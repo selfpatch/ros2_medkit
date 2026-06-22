@@ -70,18 +70,25 @@ TopicTypeInfo TypeIntrospection::get_type_info(const std::string & type_name) {
   }
 
   // Get schema (type structure)
+  bool schema_resolved = true;
   try {
     info.schema = get_type_schema(type_name);
   } catch (const std::exception & e) {
-    // If schema fails, use empty object
+    // If schema fails, use empty object and do NOT memoize: resolution may be
+    // transient (e.g. the type support library is not yet loadable), and caching
+    // the empty result would pin it empty for the process lifetime.
     info.schema = nlohmann::json::object();
+    schema_resolved = false;
+  }
+
+  if (!schema_resolved) {
+    return info;  // return empty result without poisoning the cache; retry later
   }
 
   // Cache it (use try_emplace to avoid overwriting if another thread added it first)
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto [it, inserted] = type_cache_.try_emplace(type_name, info);
-    return it->second;  // Return cached version (may be from another thread)
+    return type_cache_.try_emplace(type_name, info).first->second;  // may be another thread's
   }
 }
 
@@ -98,7 +105,15 @@ std::shared_ptr<const nlohmann::json> TypeIntrospection::get_service_type_info(c
   auto assembled = std::make_shared<nlohmann::json>();
   (*assembled)["request"] = get_type_info(service_type + "_Request").schema;
   (*assembled)["response"] = get_type_info(service_type + "_Response").schema;
+  // Memoize only a resolved wrapper. If neither side resolved, the type support
+  // was not available; return without caching so a later request can retry
+  // instead of pinning an empty wrapper for the process lifetime. (A genuinely
+  // empty service still has a non-empty schema object on at least one side.)
+  const bool resolved = !(*assembled)["request"].empty() || !(*assembled)["response"].empty();
   std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
+  if (!resolved) {
+    return shared;
+  }
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     // try_emplace keeps the first cached instance if another thread raced us.
@@ -118,7 +133,14 @@ std::shared_ptr<const nlohmann::json> TypeIntrospection::get_action_type_info(co
   (*assembled)["goal"] = get_type_info(action_type + "_Goal").schema;
   (*assembled)["result"] = get_type_info(action_type + "_Result").schema;
   (*assembled)["feedback"] = get_type_info(action_type + "_Feedback").schema;
+  // Memoize only a resolved wrapper (see get_service_type_info); if none of the
+  // three sides resolved, return without caching so a later request can retry.
+  const bool resolved =
+      !(*assembled)["goal"].empty() || !(*assembled)["result"].empty() || !(*assembled)["feedback"].empty();
   std::shared_ptr<const nlohmann::json> shared = std::move(assembled);
+  if (!resolved) {
+    return shared;
+  }
   {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     // try_emplace keeps the first cached instance if another thread raced us.

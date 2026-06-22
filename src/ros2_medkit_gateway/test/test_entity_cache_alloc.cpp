@@ -84,24 +84,49 @@ void operator delete[](void * p, const std::nothrow_t & /*tag*/) noexcept {
   counted_delete(p);
 }
 using namespace ros2_medkit_gateway;
+
+// Populate an App with a NON-SSO id and a service carrying a non-SSO full_path,
+// so the reconcile + operation-index path copies real heap keys every tick. With
+// short SSO ids and empty payloads nothing on that path would allocate, making
+// the steady-state assertion below pass vacuously.
 static App mkapp(const std::string & id) {
   App a;
   a.id = id;
   a.name = id;
   a.component_id = "host";
+  ServiceInfo svc;
+  svc.name = "calibrate_with_a_deliberately_long_name";
+  svc.full_path = id + "/calibrate_with_a_deliberately_long_name";  // non-SSO operation key
+  svc.type = "std_srvs/srv/Trigger";
+  a.services.push_back(std::move(svc));
   return a;
+}
+
+TEST(EntityCacheAlloc, AllocationInterposerIsActive) {
+  // Positive control: prove the global new/delete interposer actually counts, so
+  // a green steady-state assertion cannot be a vacuous "nothing was measured".
+  g_net.store(0);
+  g_armed.store(true);
+  auto * probe = new std::string(64, 'z');  // heap: the object and its 64-char buffer
+  const long during = g_net.load();
+  g_armed.store(false);
+  delete probe;
+  EXPECT_GT(during, 0) << "global operator new interposer is not active";
 }
 
 TEST(EntityCacheAlloc, SteadyStateChurnNoNetStructuralGrowth) {
   ThreadSafeEntityCache c(256);
-  // Pre-build ALL inputs BEFORE arming. Two alternating SSO id-sets (<=15 chars), recycled every other tick:
-  // structural reconcile work (slot reuse, index reset/refill) must not allocate; key strings are SSO.
+  // Pre-build ALL inputs BEFORE arming. Two alternating id-sets with NON-SSO ids
+  // (and a service each), recycled every other tick: the structural reconcile
+  // work (slot reuse, index reset/refill, operation-index rebuild) must reuse its
+  // backing storage rather than reallocating it under churn.
   const std::size_t kTicks = 200;
   std::vector<std::vector<App>> ticks(kTicks);
   for (std::size_t i = 0; i < kTicks; ++i) {
     for (int k = 0; k < 50; ++k) {
-      ticks[i].push_back(
-          mkapp("a" + std::to_string((i % 2) * 100 + static_cast<std::size_t>(k))));  // ids "a0".."a149", <=5 chars
+      // ids like "application_entity_with_long_id_000" - well past the SSO limit.
+      const std::size_t n = (i % 2) * 100 + static_cast<std::size_t>(k);
+      ticks[i].push_back(mkapp("application_entity_with_long_id_" + std::to_string(n)));
     }
   }
   const std::vector<Component> host{};   // empty (Component churn not under test here)
@@ -117,10 +142,10 @@ TEST(EntityCacheAlloc, SteadyStateChurnNoNetStructuralGrowth) {
   const long kSlack = 4;  // tiny; tolerates allocator bookkeeping noise only. Do NOT inflate.
   // Only the UPPER bound is meaningful here. The regression this guards against
   // is the old full rebuild, which allocates under churn -> a positive net. The
-  // steady-state net is legitimately negative (about -1 per tick): every tick's
-  // payloads are pre-built before arming, so payload/structural frees during the
-  // armed window are counted while their allocations are not. A symmetric lower
-  // bound would therefore false-fail without catching any growth, so we do not
-  // assert one (a net that only ever frees cannot grow memory under churn).
+  // steady-state net is legitimately negative: every tick's payloads (incl. the
+  // non-SSO id/full_path heap strings) are pre-built before arming, so their
+  // frees during the armed window are counted while their allocations are not. A
+  // symmetric lower bound would therefore false-fail without catching any growth
+  // (a net that only ever frees cannot grow memory under churn).
   EXPECT_LE(g_net.load(), kSlack) << "cache layer allocated under steady-state churn (regression to rebuild?)";
 }

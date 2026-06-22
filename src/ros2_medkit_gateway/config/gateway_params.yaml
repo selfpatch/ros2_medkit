@@ -213,6 +213,9 @@ ros2_medkit_gateway:
       # memory-constrained or real-time embedded deployments).
       # Growing beyond the reserved capacity is harmless but triggers a one-shot
       # WARN log; raise this value if you see that warning.
+      # A fully-turning-over refresh allocates the new slots before freeing the
+      # absent old ones, so the pool transiently needs ~2x the steady-state live
+      # count; size this to about twice the expected peak to stay allocation-free.
       # Valid range: 16-1000000 (values outside this range are clamped with a warning).
       # Default: 256 (covers most production graphs with headroom)
       capacity: 256

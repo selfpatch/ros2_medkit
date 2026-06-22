@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -399,7 +400,21 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   server_host_ = get_parameter("server.host").as_string();
   server_port_ = static_cast<int>(get_parameter("server.port").as_int());
   refresh_interval_ms_ = static_cast<int>(get_parameter("refresh_interval_ms").as_int());
-  refresh_debounce_ms_ = static_cast<int>(get_parameter("discovery.refresh_debounce_ms").as_int());
+  // Read as int64 and validate BEFORE narrowing to int: a value above INT_MAX
+  // would otherwise wrap into the valid range and silently bypass the range
+  // check (e.g. 4294967296 -> 0, disabling debounce). 0 disables debouncing
+  // (refresh on every graph event, the pre-#442 behaviour); otherwise coalesce
+  // graph events into at most one refresh per this interval. An out-of-range
+  // value is rejected with a warning and the default (1000 ms) is used.
+  const int64_t refresh_debounce_raw = get_parameter("discovery.refresh_debounce_ms").as_int();
+  if (refresh_debounce_raw < 0 || refresh_debounce_raw > 60000) {
+    RCLCPP_WARN(get_logger(),
+                "Invalid discovery.refresh_debounce_ms %" PRId64 "ms. Must be between 0-60000ms. Using default 1000ms.",
+                refresh_debounce_raw);
+    refresh_debounce_ms_ = 1000;
+  } else {
+    refresh_debounce_ms_ = static_cast<int>(refresh_debounce_raw);
+  }
 
   // Build CORS configuration using builder pattern
   // Throws std::invalid_argument if configuration is invalid
@@ -437,16 +452,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                 "Invalid backstop refresh interval %dms. Must be between 100-60000ms. Using default 30000ms.",
                 refresh_interval_ms_);
     refresh_interval_ms_ = 30000;
-  }
-
-  // Validate graph-event refresh debounce. 0 disables debouncing (refresh on
-  // every graph event, the pre-#442 behaviour); otherwise coalesce graph events
-  // into at most one refresh per this interval. Clamp to [0, 60000] ms.
-  if (refresh_debounce_ms_ < 0 || refresh_debounce_ms_ > 60000) {
-    RCLCPP_WARN(get_logger(),
-                "Invalid discovery.refresh_debounce_ms %dms. Must be between 0-60000ms. Using default 1000ms.",
-                refresh_debounce_ms_);
-    refresh_debounce_ms_ = 1000;
   }
 
   // Log configuration
@@ -1507,20 +1512,17 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // graph rarely changes faster than that in practice, and coalescing
     // bounds the per-event allocation churn (issue #442). A pending event is
     // always serviced within refresh_debounce_ms + one 100 ms tick.
-    if (graph_event_->check_and_clear()) {
-      graph_dirty_.store(true, std::memory_order_relaxed);
-    }
-    if (!graph_dirty_.load(std::memory_order_relaxed)) {
-      return;
-    }
+    const bool event_fired = graph_event_->check_and_clear();
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(now - last_graph_refresh_.load(std::memory_order_relaxed))
             .count();
-    if (elapsed_ms < refresh_debounce_ms_) {
-      return;  // within debounce window; refresh on a later tick
+    const auto decision = decide_graph_refresh(event_fired, graph_dirty_.load(std::memory_order_relaxed), elapsed_ms,
+                                               refresh_debounce_ms_);
+    graph_dirty_.store(decision.dirty, std::memory_order_relaxed);
+    if (!decision.refresh) {
+      return;  // nothing pending, or still within the debounce window
     }
-    graph_dirty_.store(false, std::memory_order_relaxed);
     last_graph_refresh_.store(now, std::memory_order_relaxed);
     refresh_cache();
     // Note: orphan-trigger sweep is deliberately NOT run from the graph-event

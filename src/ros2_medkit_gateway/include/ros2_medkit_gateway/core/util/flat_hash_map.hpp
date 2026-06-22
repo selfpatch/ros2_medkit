@@ -347,6 +347,12 @@ class FlatHashMap {
     if (n == 0) {
       return 1;
     }
+    // Highest representable power of two. Beyond it `p <<= 1` wraps to 0 and the
+    // loop would spin forever, so saturate instead of overflowing.
+    constexpr size_t kMaxPow2 = size_t{1} << (sizeof(size_t) * 8 - 1);
+    if (n >= kMaxPow2) {
+      return kMaxPow2;
+    }
     size_t p = 1;
     while (p < n) {
       p <<= 1;

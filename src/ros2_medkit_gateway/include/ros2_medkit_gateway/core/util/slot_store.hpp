@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -48,48 +49,52 @@ class SlotStore {
     free_list_.reserve(cap);
   }
 
-  /// Allocate a slot index: pop from free-list if available, else append.
-  /// Appending past items_.capacity() causes a vector grow and sets grew_.
+  /// Allocate a slot index and mark it live: pop from free-list if available,
+  /// else append. Returning the slot both removes it from the free-list and
+  /// flips it live (bumping live_count_), so the slot can never be simultaneously
+  /// live and free-listed; assign() then only fills its payload. Appending past
+  /// items_.capacity() causes a vector grow and sets grew_.
   uint32_t alloc_slot() {
     if (!free_list_.empty()) {
       uint32_t slot = free_list_.back();
       free_list_.pop_back();
+      live_[static_cast<size_t>(slot)] = 1u;
+      ++live_count_;
       return slot;
     }
     size_t before = items_.capacity();
     items_.emplace_back();
-    live_.push_back(0u);
+    live_.push_back(1u);
+    ++live_count_;
     if (items_.capacity() != before) {
       grew_ = true;
     }
     return static_cast<uint32_t>(items_.size() - 1u);
   }
 
-  /// Copy value into the slot and mark it live. Assigning over an already-live
-  /// slot updates the payload in place and does NOT change live_count_; only a
-  /// dead -> live transition bumps the count. This makes assign() safe for the
-  /// incremental-reconcile update path that overwrites existing live slots.
+  /// Copy value into a live slot's payload. The slot MUST be live (obtained from
+  /// alloc_slot() for a new entity, or an existing live slot for an update);
+  /// live_count_ is owned entirely by alloc_slot()/free(). Assigning to a dead
+  /// slot is a caller error - it could revive a free-listed slot and alias it.
   void assign(uint32_t slot, const T & value) {
+    assert(live_[static_cast<size_t>(slot)] != 0u);
     items_[static_cast<size_t>(slot)] = value;
-    if (live_[static_cast<size_t>(slot)] == 0u) {
-      live_[static_cast<size_t>(slot)] = 1u;
-      ++live_count_;
-    }
   }
 
-  /// Move value into the slot and mark it live. Assigning over an already-live
-  /// slot updates the payload in place and does NOT change live_count_; only a
-  /// dead -> live transition bumps the count.
+  /// Move value into a live slot's payload. See the copy overload for the
+  /// liveness contract.
   void assign(uint32_t slot, T && value) {
+    assert(live_[static_cast<size_t>(slot)] != 0u);
     items_[static_cast<size_t>(slot)] = std::move(value);
-    if (live_[static_cast<size_t>(slot)] == 0u) {
-      live_[static_cast<size_t>(slot)] = 1u;
-      ++live_count_;
-    }
   }
 
   /// Release the slot: reset payload to T{}, mark dead, push to free-list.
+  /// Idempotent - freeing an already-dead slot is a no-op, so a double free
+  /// cannot underflow live_count_ or push the slot onto the free-list twice.
   void free(uint32_t slot) {
+    if (live_[static_cast<size_t>(slot)] == 0u) {
+      return;
+    }
     items_[static_cast<size_t>(slot)] = T{};
     live_[static_cast<size_t>(slot)] = 0u;
     --live_count_;
