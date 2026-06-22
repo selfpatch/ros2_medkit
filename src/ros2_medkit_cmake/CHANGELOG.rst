@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_cmake
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* ``ROS2MedkitTestDomain``: carve dedicated ``ROS_DOMAIN_ID`` ranges for the new log bridge (210-214) and action-status bridge (215-219) test suites out of the integration-tests range (`#422 <https://github.com/selfpatch/ros2_medkit/pull/422>`_)
+* Contributors: @mfaferek93
+
 0.5.0 (2026-06-08)
 ------------------
 * ``ROS2MedkitWarnings.cmake`` module centralizes compiler warning flags across all packages, with selective ``-Werror`` (namespaced ``MEDKIT_ENABLE_WERROR``, defaults OFF) applied only to flags safe against external headers

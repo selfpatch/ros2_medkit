@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_param_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* No functional changes; version bump for the coordinated 0.6.0 release.
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * Migrated ``ParameterBeaconPlugin`` to the ``get_routes()`` plugin API

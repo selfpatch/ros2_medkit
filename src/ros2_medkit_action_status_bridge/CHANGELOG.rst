@@ -2,13 +2,13 @@
 Changelog for package ros2_medkit_action_status_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.6.0 (2026-06-22)
+------------------
 * Initial release: generic action-status bridge. Watches every
   ``/<action>/_action/status`` topic and turns ABORTED goals into FaultManager
   faults (``<PREFIX>_<ACTION>_ABORTED``), heals on a non-failing terminal state.
   Captures the terminal action verdict that the diagnostic and log bridges
-  cannot see.
+  cannot see (`#423 <https://github.com/selfpatch/ros2_medkit/pull/423>`_).
 * Fault state is per-ACTION, derived from the whole ``GoalStatusArray`` on each
   message: a fault is raised only on the ``healthy -> failed`` transition and
   healed only on ``failed -> healthy``, so it is order-independent and resilient
@@ -20,3 +20,6 @@ Forthcoming
 * Vanished actions (lifecycle deactivate, one-shot nodes) are pruned on rescan.
 * Parameters are range-checked/normalized at load; an incompatible action status
   QoS is now warned about instead of silently dropping faults.
+* Ships a default configuration so the bridge starts out of the box (`#459 <https://github.com/selfpatch/ros2_medkit/pull/459>`_)
+* Fault source is fixed at first report instead of being re-attributed later: faults raised before discovery settles register the server FQN, faults are never attributed to the discovery placeholder node name, and the subscriptions and timer are reset in the destructor (`#466 <https://github.com/selfpatch/ros2_medkit/pull/466>`_)
+* Contributors: @bburda, @mfaferek93

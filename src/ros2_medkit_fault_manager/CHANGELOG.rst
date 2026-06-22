@@ -2,6 +2,13 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* Bounded concurrent snapshot capture under fault storms with a ``CaptureThreadPool`` and configurable capture pool / queue / overflow-policy parameters. The rosbag leg is serialized and the cooldown map is bounded, so a burst of simultaneous faults can no longer exhaust capture threads or grow memory without limit (`#456 <https://github.com/selfpatch/ros2_medkit/pull/456>`_)
+* Entity-scoped rosbag capture by default (`#431 <https://github.com/selfpatch/ros2_medkit/pull/431>`_)
+* Made rosbag capture enablement crash-safe (`#430 <https://github.com/selfpatch/ros2_medkit/pull/430>`_)
+* Contributors: @bburda, @mfaferek93
+
 0.5.0 (2026-06-08)
 ------------------
 * ``ClearFault`` honors the new ``skip_correlation_auto_clear`` request flag so per-entity fault clears can opt out of cascade-clearing correlated symptom fault codes (`#395 <https://github.com/selfpatch/ros2_medkit/issues/395>`_)

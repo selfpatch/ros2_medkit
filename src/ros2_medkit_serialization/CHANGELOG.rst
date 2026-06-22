@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_serialization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* ``TypeIntrospection`` resolves service and action ``type_info`` schemas lazily and caches them as shared, immutable per-type objects, so discovery no longer rebuilds and deep-copies operation schemas on every refresh (`#462 <https://github.com/selfpatch/ros2_medkit/pull/462>`_)
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * ``TypeIntrospection`` relocated into this package as part of the gateway core / ROS 2 layer split

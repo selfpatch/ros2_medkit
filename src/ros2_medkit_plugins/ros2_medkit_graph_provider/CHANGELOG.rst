@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_graph_provider
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* No functional changes; version bump for the coordinated 0.6.0 release.
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * Migrated ``GraphProviderPlugin`` to the ``get_routes()`` plugin API and fixed a route-separator bug

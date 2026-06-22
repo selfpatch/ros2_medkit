@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_integration_tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* New suites covering the SOVD entity status endpoints (REQ_INTEROP_076), lifecycle-aware app and component status (`#455 <https://github.com/selfpatch/ros2_medkit/pull/455>`_), and fault-storm capture liveness under bounded concurrency (`#456 <https://github.com/selfpatch/ros2_medkit/pull/456>`_)
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * New peer-aggregation suites: peer aggregation, cross-ECU fan-out across all resource types, daisy-chain hierarchical aggregation, leaf-collision aggregation, and cross-ECU log aggregation

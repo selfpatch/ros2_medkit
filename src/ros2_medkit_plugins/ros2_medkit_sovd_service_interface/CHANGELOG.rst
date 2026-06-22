@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_sovd_service_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* ``list_entity_faults`` handles a fault ``status`` returned as an object (not just a string), supporting peer-fault aggregation across daisy-chained gateways (`#419 <https://github.com/selfpatch/ros2_medkit/pull/419>`_)
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * Initial release - gateway plugin that exposes the medkit entity tree and fault data over standard ROS 2 services, so other ROS 2 nodes can query entities and faults without going through the HTTP API (`#330 <https://github.com/selfpatch/ros2_medkit/issues/330>`_)

@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* No functional changes; version bump for the coordinated 0.6.0 release.
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * New service definitions ``ListEntities.srv``, ``GetEntityData.srv``, ``GetCapabilities.srv`` and the ``EntityInfo.msg`` type for exposing the entity tree over ROS 2 services (`#330 <https://github.com/selfpatch/ros2_medkit/issues/330>`_)

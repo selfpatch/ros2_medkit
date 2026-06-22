@@ -2,6 +2,22 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* SOVD entity status and lifecycle control endpoints: ``GET /apps/{id}/status`` and ``GET /components/{id}/status``, plus lifecycle control routes backed by a new ``LifecycleProvider`` plugin interface and plugin-manager routing. Control returns ``501 Not Implemented`` until a provider is registered; the routes are RBAC-gated, advertised via a ``status`` link on app and component detail, and declared under the OpenAPI ``Lifecycle`` tag (`#437 <https://github.com/selfpatch/ros2_medkit/pull/437>`_)
+* Accurate app and component status: app status is read from the managed-node lifecycle state through a ``GetState``-backed reader, and a component reports ``notReady`` when all hosted apps are offline while staying ``ready`` as long as it is reachable (`#455 <https://github.com/selfpatch/ros2_medkit/pull/455>`_)
+* Bounded the executor and HTTP server thread pools, sized to the cold-wait plus SSE budget, with misconfiguration guards and a bounded keep-alive timeout (`#457 <https://github.com/selfpatch/ros2_medkit/pull/457>`_)
+* Startup discovery summary logged at boot, with an empty-graph warning when no entities are discovered (`#438 <https://github.com/selfpatch/ros2_medkit/pull/438>`_)
+* Bounded the unsupported-message-type cache and exposed its size; unknown message types now warn once instead of on every sample (`#450 <https://github.com/selfpatch/ros2_medkit/pull/450>`_)
+* OpenAPI query parameters are derived from a typed query contract, tightening the query-parameter schema and its regression gate (`#417 <https://github.com/selfpatch/ros2_medkit/pull/417>`_)
+* ``PluginContext`` can aggregate peer faults across daisy-chained gateways through the SOVD service interface (`#419 <https://github.com/selfpatch/ros2_medkit/pull/419>`_)
+* Single-command bringup of the local medkit stack via ``bringup.launch.py`` and ``bringup_params.yaml`` (`#439 <https://github.com/selfpatch/ros2_medkit/pull/439>`_)
+* Docker image enables CORS for the documented web UI path and uses explicit web UI origins instead of wildcard CORS (`#452 <https://github.com/selfpatch/ros2_medkit/pull/452>`_)
+* Docker image bundles the CycloneDDS RMW as an opt-in alternative implementation (`#451 <https://github.com/selfpatch/ros2_medkit/pull/451>`_)
+* Native gateway launch enables web UI CORS by default and honors the CORS settings from a supplied ``config_file`` (`#461 <https://github.com/selfpatch/ros2_medkit/pull/461>`_)
+* Incremental, embedded-hardened entity cache: ``ThreadSafeEntityCache`` stores entities in a fixed-capacity ``SlotStore`` object pool indexed by open-addressed flat hash maps, and ``update_all`` reconciles the discovery output by id (add / remove / change only) so steady-state refresh does zero structural allocations. Capacity is reserved via ``entity_cache.capacity`` (default 256) and cache stats are exposed on ``/health`` as ``x-medkit-entity-cache``. Discovery refreshes are debounced via ``discovery.refresh_debounce_ms`` (default 1000) and operation ``type_info`` schemas resolve lazily, cutting gateway CPU under graph churn roughly 4x. Entity detail ``operations[]`` no longer embeds schemas eagerly; the schemas remain on the ``/operations`` resource (`#462 <https://github.com/selfpatch/ros2_medkit/pull/462>`_)
+* Contributors: @bburda, @mfaferek93
+
 0.5.0 (2026-06-08)
 ------------------
 

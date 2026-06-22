@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_diagnostic_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.6.0 (2026-06-22)
+------------------
+* Tests: label ``test_integration`` as an integration test so it runs in the integration suite instead of the unit set (`#443 <https://github.com/selfpatch/ros2_medkit/pull/443>`_)
+* Contributors: @bburda
+
 0.5.0 (2026-06-08)
 ------------------
 * Build: adopt the centralized ``ROS2MedkitWarnings`` and ``ROS2MedkitSanitizers`` cmake modules
