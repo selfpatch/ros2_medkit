@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -292,6 +293,44 @@ TEST_F(CaptureThreadPoolTest, ShutdownIsIdempotent) {
   pool.shutdown();
   pool.shutdown();  // must not throw, hang, or double-join
   SUCCEED();
+}
+
+// Hammer enqueue() from a producer thread while shutdown() runs concurrently -
+// the exact interleaving the kRejectedShuttingDown guard exists for (a fault
+// arriving as the destructor sets stop_). Must be race-clean under TSan: every
+// enqueue is cleanly accepted or rejected, never UB, and no job runs that was
+// never accepted.
+TEST_F(CaptureThreadPoolTest, ConcurrentEnqueueDuringShutdownIsClean) {
+  std::atomic<int> ran{0};
+  std::atomic<int> accepted{0};
+  CaptureThreadPool pool(4, 64, QueueFullPolicy::kRejectNewest, test_logger(), [&ran](const std::string &) {
+    ran.fetch_add(1, std::memory_order_relaxed);
+  });
+
+  std::atomic<bool> saw_shutdown{false};
+  std::thread producer([&] {
+    for (int i = 0; i < 100000; ++i) {
+      const EnqueueResult r = pool.enqueue("j" + std::to_string(i)).result;
+      if (r == EnqueueResult::kAccepted) {
+        accepted.fetch_add(1, std::memory_order_relaxed);
+      } else if (r == EnqueueResult::kRejectedShuttingDown) {
+        saw_shutdown.store(true);
+        break;  // pool is down; further enqueues would only ever reject
+      }
+    }
+  });
+
+  // Race the producer: tear the pool down while it is still hammering enqueue().
+  pool.shutdown();
+  producer.join();
+
+  // The producer must have crossed the shutdown transition (else the race was not
+  // exercised), and every post-shutdown enqueue must reject cleanly.
+  EXPECT_TRUE(saw_shutdown.load());
+  EXPECT_EQ(pool.enqueue("after").result, EnqueueResult::kRejectedShuttingDown);
+  // shutdown() discards pending work, so some accepted jobs may not run - but no
+  // job may run that was never accepted.
+  EXPECT_LE(ran.load(), accepted.load());
 }
 
 // shutdown() releases the captured callback (and the shared_ptrs it holds) after
