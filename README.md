@@ -76,33 +76,68 @@ not a rip-and-replace.
 
 ## Run it in 5 minutes
 
-**Install** (ROS 2 Jazzy, Humble, or Lyrical; Pixi and other options in the
+**Install** from the ROS 2 distribution (source build and Pixi in the
 [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html)):
 
 ```bash
-source /opt/ros/jazzy/setup.bash   # or humble / lyrical
-git clone --recurse-submodules https://github.com/selfpatch/ros2_medkit.git
-cd ros2_medkit
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install && source install/setup.bash
+sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble-ros2-medkit-gateway
 ```
 
-**Run it next to your robot** - one command starts the gateway, the fault manager and the
-drop-in bridges:
+The gateway package pulls in the fault manager and the drop-in bridges.
+
+**Run it next to your robot** - one command attaches to your already-running ROS 2 graph
+(same `ROS_DOMAIN_ID` / RMW, no config) and starts the gateway, the fault manager and the
+generic fault bridges (`/rosout`, action status, `/diagnostics`):
 
 ```bash
 ros2 launch ros2_medkit_gateway bringup.launch.py
 # REST API on http://localhost:8080/api/v1/
 ```
 
-**See a fault** (or just let a node log an `ERROR` / an action abort, as above):
+**Use it - just curl the REST API** (no UI, no CORS):
 
 ```bash
-ros2 service call /fault_manager/report_fault ros2_medkit_msgs/srv/ReportFault \
-  "{fault_code: 'DEMO_FAULT', event_type: 0, severity: 2, description: 'hello medkit', source_id: '/your_node'}"
+# Your whole graph as a SOVD entity tree, instantly:
+curl localhost:8080/api/v1/apps
 
-curl http://localhost:8080/api/v1/faults   # the fault appears, with its black-box
+# The headline - structured faults (code, severity, source node, lifecycle, history):
+curl localhost:8080/api/v1/faults
+
+# One fault's full context (freeze-frame snapshots + black-box rosbag reference):
+curl localhost:8080/api/v1/apps/bt_navigator/faults/ACTION_NAVIGATE_TO_POSE_ABORTED
+
+# Download the black-box rosbag captured around that fault:
+curl -O -J localhost:8080/api/v1/apps/bt_navigator/bulk-data/rosbags/ACTION_NAVIGATE_TO_POSE_ABORTED
 ```
+
+Full API: **Swagger UI at http://localhost:8080/api/v1/docs** · [Postman collection](postman/) ·
+[API reference](https://selfpatch.github.io/ros2_medkit/).
+
+**What you get the moment you attach** - no instrumentation, no code changes (right after a
+Nav2 `NavigateToPose` goal aborts):
+
+```jsonc
+// GET /api/v1/faults
+{
+  "items": [
+    { "fault_code": "ACTION_NAVIGATE_TO_POSE_ABORTED",
+      "severity_label": "ERROR", "status": "CONFIRMED",
+      "reporting_sources": ["/bt_navigator"] }
+  ],
+  "x-medkit": { "count": 1 }
+}
+```
+
+**Prefer a dashboard?** Run the web UI alongside it (optional):
+
+```bash
+docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
+# open http://localhost:3000 -> Connect -> http://localhost:8080
+```
+
+The browser calls the gateway from a different origin, so the gateway must allow that origin via
+CORS (the prebuilt gateway Docker image enables it; for a native bringup set
+`cors.allowed_origins`). See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html).
 
 For a guided walkthrough, see the
 [Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
