@@ -105,18 +105,11 @@ failure into a **structured fault**.
 > scan tool. UDS / DTC diagnostics sit *above* the signal layer, as structured, queryable
 > state. Robotics just hasn't drawn it yet.
 
-- **"I'll just set an alert."**  A threshold alert fires on a raw signal and is gone - no
-  entity, no lifecycle, no history, and it means something different on every robot. A fault is
-  confirmed, persisted, entity-attributed state you can query later - and, being SOVD, it means
-  the same thing across robots and vendors. Alerting pages a human; diagnostics gives a machine
-  an answer.
-- **It has to survive a fleet.**  Visualization is O(humans) - one operator, one timeline, and
-  nobody scrubs 400 of them. A structured fault is O(1): the same code and lifecycle aggregate
-  across the fleet, so *"which 12 of 400 robots have a confirmed navigation fault right now?"*
-  is a query, not a person.
-- **You can't act on a plot.**  Observability is read-only by design. A structured fault is the
-  precondition for doing something about it - gating an OTA on robot health, triggering
-  remediation. You can't safely patch what you haven't first diagnosed as a fault.
+| Common pushback | Why a structured fault still wins |
+|---|---|
+| *"I'll just set an alert."* | A threshold alert fires on a raw signal and is gone - no entity, no lifecycle, no history, and it means something different on every robot. A fault is confirmed, persisted, entity-attributed state - and, being SOVD, it means the same thing across robots and vendors. **Alerting pages a human; diagnostics gives a machine an answer.** |
+| *"I'll just watch the fleet dashboard."* | Visualization is O(humans) - one operator, one timeline, and nobody scrubs 400 of them. A structured fault is O(1): the same code and lifecycle aggregate across the fleet, so *"which 12 of 400 robots have a confirmed navigation fault right now?"* is a query, not a person. |
+| *"I can already see it fail."* | Observability is read-only by design. A structured fault is the precondition for doing something about it - gating an OTA on robot health, triggering remediation. **You can't safely patch what you haven't first diagnosed as a fault.** |
 
 So it is not a replacement for your observability stack - it is the **diagnosis layer
 underneath it**. medkit flags and persists the fault (readable by dashboards, fleet managers
