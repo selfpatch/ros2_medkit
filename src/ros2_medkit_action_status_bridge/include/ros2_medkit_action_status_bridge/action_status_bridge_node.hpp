@@ -53,6 +53,15 @@ class ActionStatusBridgeNode : public rclcpp::Node {
  public:
   explicit ActionStatusBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
+  // Resets the rescan timer and status subscriptions before the rest of the node
+  // is destroyed: their callbacks capture `this`, so firing on a partially
+  // destroyed object would crash (subscription destructor pattern).
+  ~ActionStatusBridgeNode() override;
+  ActionStatusBridgeNode(const ActionStatusBridgeNode &) = delete;
+  ActionStatusBridgeNode & operator=(const ActionStatusBridgeNode &) = delete;
+  ActionStatusBridgeNode(ActionStatusBridgeNode &&) = delete;
+  ActionStatusBridgeNode & operator=(ActionStatusBridgeNode &&) = delete;
+
   /// Net fault state of an action, derived from a whole GoalStatusArray.
   ///   - kUnknown: no terminal goal in the array yet (no transition)
   ///   - kHealthy: array has terminal goals and none of them are failing

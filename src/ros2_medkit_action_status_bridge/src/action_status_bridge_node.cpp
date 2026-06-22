@@ -84,6 +84,16 @@ ActionStatusBridgeNode::ActionStatusBridgeNode(const rclcpp::NodeOptions & optio
               code_prefix_.c_str(), static_cast<unsigned>(aborted_severity_), rescan_period_sec_);
 }
 
+ActionStatusBridgeNode::~ActionStatusBridgeNode() {
+  // Stop the rescan timer first so no new subscription is created during
+  // teardown, then drop all status subscriptions. Their callbacks capture
+  // `this`; letting them fire on a partially destroyed node causes SIGABRT
+  // (subscription destructor pattern). subs_ is only mutated from the (now
+  // stopped) rescan path, so no lock is needed here.
+  rescan_timer_.reset();
+  subs_.clear();
+}
+
 void ActionStatusBridgeNode::load_parameters() {
   const int aborted_severity = declare_parameter<int>("aborted_severity", ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR);
   if (aborted_severity < ros2_medkit_msgs::msg::Fault::SEVERITY_INFO ||
