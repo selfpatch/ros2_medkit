@@ -20,6 +20,9 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -95,7 +98,8 @@ ActionStatusBridgeNode::~ActionStatusBridgeNode() {
 }
 
 void ActionStatusBridgeNode::load_parameters() {
-  const int aborted_severity = declare_parameter<int>("aborted_severity", ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR);
+  const int aborted_severity =
+      static_cast<int>(declare_parameter<int>("aborted_severity", ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR));
   if (aborted_severity < ros2_medkit_msgs::msg::Fault::SEVERITY_INFO ||
       aborted_severity > ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
     RCLCPP_WARN(get_logger(), "aborted_severity %d out of range [0,3]; clamping to ERROR", aborted_severity);
@@ -122,7 +126,7 @@ void ActionStatusBridgeNode::load_parameters() {
   include_only_actions_ =
       declare_parameter<std::vector<std::string>>("include_only_actions", std::vector<std::string>{});
 
-  const int dedup_capacity = declare_parameter<int>("dedup_capacity", 4096);
+  const int dedup_capacity = static_cast<int>(declare_parameter<int>("dedup_capacity", 4096));
   if (dedup_capacity <= 0) {
     RCLCPP_WARN(get_logger(), "dedup_capacity %d not positive; using 4096", dedup_capacity);
     logged_capacity_ = 4096;
@@ -187,6 +191,12 @@ void ActionStatusBridgeNode::rescan_actions() {
   }
 
   prune_vanished(present);
+
+  // Now that discovery may have resolved more server FQNs, register them on any
+  // fault still attributed only to the action-name fallback. This is the reliable
+  // upgrade path: the status message that raised such a fault can be the last one
+  // the server sends, so the per-message path alone may never run again.
+  upgrade_unresolved_attribution();
 }
 
 void ActionStatusBridgeNode::prune_vanished(const std::map<std::string, std::string> & present_topics) {
@@ -219,6 +229,7 @@ void ActionStatusBridgeNode::prune_vanished(const std::map<std::string, std::str
       }
       reporters_.erase(action_name);
       resolved_actions_.erase(action_name);
+      pending_attribution_.erase(action_name);
     }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -279,6 +290,20 @@ ActionStatusBridgeNode::apply_message(const std::string & action_name, const act
       std::lock_guard<std::mutex> lock(state_mutex_);
       last_reported_state_[action_name] = ActionState::kFailed;
     }
+    // Decision state (no IPC): if this fault is not yet attributed to the
+    // resolved server FQN, flag it so the FQN is registered once discovery
+    // settles. The healthy->failed transition that would otherwise carry the FQN
+    // may never recur (the latched terminal status is often the server's last
+    // message), so the rescan timer upgrades it instead. Updated regardless of
+    // `reporter` (the null reporter is a test-only seam).
+    {
+      std::lock_guard<std::mutex> lock(reporters_mutex_);
+      if (resolved_actions_.count(action_name) == 0) {
+        pending_attribution_[action_name] = canceled;
+      } else {
+        pending_attribution_.erase(action_name);
+      }
+    }
     return ActionState::kFailed;
   }
 
@@ -294,6 +319,10 @@ ActionStatusBridgeNode::apply_message(const std::string & action_name, const act
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       last_reported_state_[action_name] = ActionState::kHealthy;
+    }
+    {
+      std::lock_guard<std::mutex> lock(reporters_mutex_);
+      pending_attribution_.erase(action_name);  // healed: no FQN upgrade needed
     }
     return ActionState::kHealthy;
   }
@@ -321,15 +350,27 @@ void ActionStatusBridgeNode::status_callback(const std::string & action_name,
     }
   }
 
-  apply_message(action_name, *msg, reporter_for(action_name));
+  const auto lookup = reporter_for(action_name);
+  if (lookup.reaffirm_canceled.has_value()) {
+    // The server FQN just resolved while this action's fault is already active.
+    // Re-report the active code on the resolved reporter so the FQN is added to
+    // the fault's reporting_sources (EVENT_UPDATED on the already-confirmed
+    // fault: no new snapshot, no transition) - this is what lets the gateway
+    // associate the fault with the server's SOVD entity.
+    const bool canceled = *lookup.reaffirm_canceled;
+    lookup.reporter->report(fault_code_for(action_name, canceled), aborted_severity_,
+                            std::string("Action ") + action_name + (canceled ? " canceled" : " aborted"));
+    RCLCPP_INFO(get_logger(), "Action %s fault attribution resolved to server FQN", action_name.c_str());
+  }
+  apply_message(action_name, *msg, lookup.reporter);
 }
 
-ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for(const std::string & action_name) {
+ActionStatusBridgeNode::ReporterLookup ActionStatusBridgeNode::reporter_for(const std::string & action_name) {
   std::lock_guard<std::mutex> lock(reporters_mutex_);
   auto it = reporters_.find(action_name);
   const bool have = it != reporters_.end();
   if (have && resolved_actions_.count(action_name) != 0) {
-    return it->second.get();  // already attributed to the resolved server FQN
+    return {it->second.get(), std::nullopt};  // already attributed to the resolved server FQN
   }
   // Attribute the fault to the action SERVER's node FQN, not the action name:
   // the gateway resolves a fault to a SOVD entity by node FQN, and an action
@@ -338,24 +379,69 @@ ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for
   const std::string fqn = server_fqn_for_action(action_name);
   if (fqn.empty()) {
     // DDS discovery has not resolved the server's node name yet. Use a fallback
-    // reporter (keyed by action name) so a fault still fires, but keep it
-    // unresolved so the next status message re-resolves and upgrades to the real
-    // node FQN. Reuse the existing fallback reporter rather than recreating it.
+    // reporter (keyed by action name) so a fault still fires immediately (and its
+    // snapshot is captured at fault time); it is upgraded to the real FQN once
+    // discovery settles. Reuse the existing fallback reporter rather than
+    // recreating it.
     if (have) {
-      return it->second.get();
+      return {it->second.get(), std::nullopt};
     }
     auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), action_name);
     auto * raw = reporter.get();
     reporters_[action_name] = std::move(reporter);
-    return raw;
+    return {raw, std::nullopt};
   }
-  // Resolved: (re)create the reporter attributed to the real server FQN and mark
-  // it resolved so it is never re-resolved again.
+  // Resolved: swap in a reporter attributed to the real server FQN. If a fault is
+  // already active for this action (raised on the fallback), signal the caller to
+  // re-report its code once so the FQN is added to the fault's reporting_sources.
+  auto * raw = make_resolved_locked(action_name, fqn);
+  std::optional<bool> reaffirm;
+  auto pit = pending_attribution_.find(action_name);
+  if (pit != pending_attribution_.end()) {
+    reaffirm = pit->second;
+    pending_attribution_.erase(pit);
+  }
+  return {raw, reaffirm};
+}
+
+ros2_medkit_fault_reporter::FaultReporter *
+ActionStatusBridgeNode::make_resolved_locked(const std::string & action_name, const std::string & fqn) {
   auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), fqn);
   auto * raw = reporter.get();
   reporters_[action_name] = std::move(reporter);
   resolved_actions_.insert(action_name);
   return raw;
+}
+
+void ActionStatusBridgeNode::upgrade_unresolved_attribution() {
+  // Snapshot the pending set so FaultReporter::report() (a service call) never
+  // runs while reporters_mutex_ is held.
+  std::vector<std::pair<std::string, bool>> pending;
+  {
+    std::lock_guard<std::mutex> lock(reporters_mutex_);
+    pending.assign(pending_attribution_.begin(), pending_attribution_.end());
+  }
+  for (const auto & [action_name, canceled] : pending) {
+    ros2_medkit_fault_reporter::FaultReporter * resolved = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(reporters_mutex_);
+      if (resolved_actions_.count(action_name) != 0) {
+        pending_attribution_.erase(action_name);  // a status message already upgraded it
+        continue;
+      }
+      const std::string fqn = server_fqn_for_action(action_name);
+      if (fqn.empty()) {
+        continue;  // still mid-discovery; retry on the next rescan
+      }
+      resolved = make_resolved_locked(action_name, fqn);
+      pending_attribution_.erase(action_name);
+    }
+    // Register the resolved FQN on the already-active fault (EVENT_UPDATED: no new
+    // snapshot, no transition).
+    resolved->report(fault_code_for(action_name, canceled), aborted_severity_,
+                     std::string("Action ") + action_name + (canceled ? " canceled" : " aborted"));
+    RCLCPP_INFO(get_logger(), "Action %s fault attribution resolved to server FQN (rescan)", action_name.c_str());
+  }
 }
 
 std::string ActionStatusBridgeNode::server_fqn_from_endpoint(const std::string & node_name,
@@ -507,6 +593,11 @@ bool ActionStatusBridgeTestAccess::is_watched(const std::string & action_name) c
 bool ActionStatusBridgeTestAccess::has_state(const std::string & action_name) const {
   std::lock_guard<std::mutex> lock(node_->state_mutex_);
   return node_->last_reported_state_.find(action_name) != node_->last_reported_state_.end();
+}
+
+bool ActionStatusBridgeTestAccess::has_pending_attribution(const std::string & action_name) const {
+  std::lock_guard<std::mutex> lock(node_->reporters_mutex_);
+  return node_->pending_attribution_.find(action_name) != node_->pending_attribution_.end();
 }
 
 }  // namespace ros2_medkit_action_status_bridge

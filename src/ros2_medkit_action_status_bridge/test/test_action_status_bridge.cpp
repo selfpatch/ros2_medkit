@@ -276,6 +276,33 @@ TEST_F(ActionStatusBridgeTest, Apply_PerActionIsolation) {
   EXPECT_EQ(node->apply_message("/nav", one_goal(3, GoalStatus::STATUS_SUCCEEDED), nullptr), State::kHealthy);
 }
 
+// --- attribution upgrade bookkeeping (unresolved raise -> pending -> cleared) ---
+
+TEST_F(ActionStatusBridgeTest, Apply_UnresolvedRaiseFlagsPendingAttribution) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+  // No publisher exists for the action, so the server FQN is unresolved: the
+  // raise is attributed to the action-name fallback and flagged for a later
+  // server-FQN upgrade.
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), nullptr), State::kFailed);
+  EXPECT_TRUE(access.has_pending_attribution("/nav"));
+  // Healing clears the pending upgrade (the fault is no longer active).
+  EXPECT_EQ(node->apply_message("/nav", one_goal(2, GoalStatus::STATUS_SUCCEEDED), nullptr), State::kHealthy);
+  EXPECT_FALSE(access.has_pending_attribution("/nav"));
+}
+
+TEST_F(ActionStatusBridgeTest, Apply_PendingAttributionDroppedWhenActionVanishes) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), nullptr), State::kFailed);
+  EXPECT_TRUE(access.has_pending_attribution("/nav"));
+  // Add the watch entry so prune can see the topic, then make it vanish: prune
+  // drops all per-action state including the pending attribution upgrade.
+  access.add_watched("/nav");
+  access.prune_to({});
+  EXPECT_FALSE(access.has_pending_attribution("/nav"));
+}
+
 // --- rescan add + prune ---
 
 TEST_F(ActionStatusBridgeTest, RescanPrune_DropsVanishedAction) {
