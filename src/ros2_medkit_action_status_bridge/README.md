@@ -21,8 +21,9 @@ generically, by observing the goal-status topic.
 ## What it does
 
 - Discovers every action on the graph by scanning for `*/_action/status`
-  topics (re-scanned on a timer to catch actions that appear later, and to drop
-  actions that vanish, e.g. a Nav2 lifecycle deactivate or a one-shot node).
+  topics (re-scanned on a timer to catch actions that appear later, to drop
+  actions that vanish, e.g. a Nav2 lifecycle deactivate or a one-shot node, and
+  to retry any fault whose delivery to the FaultManager was deferred).
 - `ABORTED (6)` -> fault (`SEVERITY_ERROR` by default).
 - `CANCELED (5)` -> fault only if `canceled_is_fault` (off by default; cancel is
   usually intentional). When enabled it emits a `_CANCELED` code.
@@ -48,6 +49,16 @@ A fault is raised only on the `healthy -> failed` transition and healed only on
 another goal is still failed, and a dropped terminal message cannot leave a
 fault stuck. Per-goal dedup (keyed on `goal_id:status`) only suppresses
 duplicate log lines; it never gates the transition.
+
+The bridge tracks the latest observed state (the *desired* state) separately
+from what the FaultManager was actually told. The transition is committed only
+once the report is delivered: if the FaultManager service is not discovered yet
+- e.g. an action's status topic is `transient_local` (latched) and its terminal
+status reaches the bridge during the startup discovery window, before the report
+client connects - the transition stays pending and is retried on the next
+rescan, rather than the high-severity fault being silently dropped. (The latched
+status is delivered to a subscription only once, so without this retry the
+dropped report would never recover.)
 
 ## Scope: the terminal verdict, not the reason
 

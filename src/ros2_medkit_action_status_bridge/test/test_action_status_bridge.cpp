@@ -289,6 +289,27 @@ TEST_F(ActionStatusBridgeTest, ReporterFor_StickyCreatedOnceNeverSwapped) {
   EXPECT_EQ(access.reporter_identity("/nav"), first);
 }
 
+// --- deferred delivery: a fault that cannot reach the FaultManager yet (its
+// service is not discovered) must be kept pending and retried, never silently
+// dropped. This is the startup discovery race a latched ABORTED status hits. ---
+
+TEST_F(ActionStatusBridgeTest, Reconcile_FaultDeferredWhenServiceUnavailable) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+  auto * reporter = access.reporter_for("/nav");
+  ASSERT_NE(reporter, nullptr);
+  // No FaultManager runs in this unit test, so the report service is not ready.
+  ASSERT_FALSE(reporter->is_service_ready());
+
+  // An ABORTED whose report cannot be delivered must NOT commit the reported
+  // state (otherwise a later SUCCEEDED would "heal" a fault the manager never
+  // received) and must stay pending so a rescan can retry it once the service
+  // appears.
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), reporter), State::kUnknown);
+  EXPECT_FALSE(access.reported_failed("/nav"));  // not falsely recorded as delivered
+  EXPECT_TRUE(access.pending_failed("/nav"));    // remembered for retry, not dropped
+}
+
 // --- rescan add + prune ---
 
 TEST_F(ActionStatusBridgeTest, RescanPrune_DropsVanishedAction) {

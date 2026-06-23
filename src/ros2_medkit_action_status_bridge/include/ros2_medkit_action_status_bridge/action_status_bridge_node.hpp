@@ -93,17 +93,34 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   /// the goals in the array does not affect the result (any failing goal wins).
   static ActionState derive_state(const action_msgs::msg::GoalStatusArray & msg, bool canceled_is_fault);
 
-  /// Update per-action state from a message and act on the transition only.
-  /// Returns the state that was reported on (kFailed on raise, kHealthy on
-  /// heal) or kUnknown when nothing was reported. Side-effect free w.r.t.
-  /// reporting when `reporter` is null (test seam): the transition decision and
-  /// stored per-action state still update, so tests assert on the return value.
+  /// Update the desired per-action state from a message and reconcile it,
+  /// acting on the transition only. Returns the state that was reported on
+  /// (kFailed on raise, kHealthy on heal) or kUnknown when nothing was reported
+  /// - including when the report could not be delivered yet (the FaultManager
+  /// service is not discovered), in which case the transition stays pending and
+  /// is retried on the next rescan. A null `reporter` is the unit-test seam:
+  /// delivery is a no-op treated as successful, so the transition decision and
+  /// stored per-action state still update and tests assert on the return value.
   ActionState apply_message(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg,
                             ros2_medkit_fault_reporter::FaultReporter * reporter);
 
  private:
   void rescan_actions();
   void status_callback(const std::string & action_name, const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg);
+
+  /// Deliver the pending raise/heal for one action when the desired state
+  /// differs from what the FaultManager was last told AND the report is
+  /// deliverable (a null reporter is the test seam, treated as deliverable; a
+  /// real reporter must have a discovered service). Commits `last_reported_state_`
+  /// only after delivery, so a report that cannot go out yet stays pending and
+  /// is retried later instead of being silently dropped. Returns the state
+  /// reported on this call (kFailed/kHealthy) or kUnknown when nothing was sent.
+  ActionState reconcile(const std::string & action_name, ros2_medkit_fault_reporter::FaultReporter * reporter);
+
+  /// Re-attempt every action whose desired state has not been delivered to the
+  /// FaultManager yet. Driven from the rescan timer so a report dropped during
+  /// the startup discovery window is retried once the service is discovered.
+  void reconcile_pending();
 
   /// Get (creating on first use) the FaultReporter for an action. The reporter's
   /// source_id is fixed when first created: the resolved server FQN if discovery
@@ -142,7 +159,20 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
   std::mutex reporters_mutex_;
 
-  // Last reported action-level state, keyed by action name. Drives transitions.
+  // Desired (latest observed) action-level state derived from status messages:
+  // the source of truth the bridge tries to make the FaultManager reflect.
+  // `canceled` records whether a failure was a CANCELED (vs ABORTED), to pick
+  // the right fault code when the report is delivered later.
+  struct DesiredState {
+    ActionState net{ActionState::kUnknown};
+    bool canceled{false};
+  };
+
+  // Desired vs last-reported state, both keyed by action name and guarded by
+  // state_mutex_. The transition raises/heals only when they differ; a report
+  // that cannot be delivered yet leaves last_reported_state_ behind desired_,
+  // so reconcile_pending() retries it on the next rescan instead of dropping it.
+  std::map<std::string, DesiredState> desired_state_;
   std::map<std::string, ActionState> last_reported_state_;
   std::mutex state_mutex_;
 
@@ -180,6 +210,19 @@ class ActionStatusBridgeTestAccess {
 
   bool is_watched(const std::string & action_name) const;
   bool has_state(const std::string & action_name) const;
+
+  /// True if the FaultManager was actually told this action is failed (the
+  /// last-reported state was committed, i.e. the report was delivered).
+  bool reported_failed(const std::string & action_name) const;
+
+  /// True if a failed state is observed but not yet delivered: the desired state
+  /// is failed while the last-reported state is not. This is the "pending retry"
+  /// condition - the fault is remembered, not dropped.
+  bool pending_failed(const std::string & action_name) const;
+
+  /// The FaultReporter for an action (created on first call). Lets a test drive
+  /// the deferred-delivery path with a real reporter whose service is not ready.
+  ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & action_name);
 
   /// Identity of the FaultReporter for an action (created on first call). Lets a
   /// test assert the reporter is created once and never swapped out.
