@@ -306,6 +306,12 @@ size_t SSEFaultHandler::connected_clients() const {
   return client_tracker_->connected_clients();
 }
 
+uint64_t SSEFaultHandler::events_received() const {
+  // next_event_id_ starts at 1 and is incremented once per received event in
+  // on_fault_event, so (next_event_id_ - 1) is the count consumed so far.
+  return next_event_id_.load(std::memory_order_relaxed) - 1;
+}
+
 std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
   const auto sanitized_event_type = sanitize_sse_event_type(queued.event.event_type);
 

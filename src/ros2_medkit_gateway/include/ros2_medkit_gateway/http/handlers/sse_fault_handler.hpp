@@ -120,6 +120,16 @@ class SSEFaultHandler {
   size_t connected_clients() const;
 
   /**
+   * @brief Total number of fault events received and processed so far.
+   *
+   * Monotonically increasing (it never resets, even when the replay buffer
+   * evicts old events). Lets tests wait deterministically until a published
+   * event has actually been consumed by `on_fault_event` - which is where the
+   * owning entity is snapshotted - instead of spinning for a fixed time.
+   */
+  uint64_t events_received() const;
+
+  /**
    * @brief Signal shutdown so in-flight chunked-content-provider loops exit.
    *
    * Call this BEFORE stopping the HTTP server. The server thread's join
