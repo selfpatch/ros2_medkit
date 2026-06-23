@@ -104,6 +104,11 @@ ros2 launch ros2_medkit_gateway bringup.launch.py
 > emitting structured faults over REST - no instrumentation, no changes to your stack. Prefer
 > source or Pixi? See the [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html).
 
+> [!NOTE]
+> The log and action-status bridges are on by default; the `/diagnostics` bridge is opt-in. If your
+> stack publishes `/diagnostics` via `diagnostic_updater`, turn it on with
+> `ros2 launch ros2_medkit_gateway bringup.launch.py enable_diagnostic_bridge:=true`.
+
 **Then just curl the REST API** (no UI, no CORS):
 
 ```bash
