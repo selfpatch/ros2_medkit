@@ -310,6 +310,60 @@ TEST_F(ActionStatusBridgeTest, Reconcile_FaultDeferredWhenServiceUnavailable) {
   EXPECT_TRUE(access.pending_failed("/nav"));    // remembered for retry, not dropped
 }
 
+TEST_F(ActionStatusBridgeTest, Reconcile_DeferredRaiseDeliveredOnceServiceReady) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+  auto * reporter = access.reporter_for("/nav");
+  ASSERT_FALSE(reporter->is_service_ready());
+
+  // Defer: service not ready -> pending, not delivered.
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), reporter), State::kUnknown);
+  EXPECT_TRUE(access.pending_failed("/nav"));
+
+  // Retry once the report is deliverable (null-reporter seam stands in for a
+  // discovered service): the deferred raise is now delivered, nothing left pending.
+  EXPECT_EQ(access.reconcile_deliverable("/nav"), State::kFailed);
+  EXPECT_TRUE(access.reported_failed("/nav"));
+  EXPECT_FALSE(access.pending_failed("/nav"));
+}
+
+TEST_F(ActionStatusBridgeTest, Reconcile_DeferredHealDeliveredOnceServiceReady) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+
+  // Raise + deliver (null seam), so a real fault exists to heal.
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), nullptr), State::kFailed);
+  ASSERT_TRUE(access.reported_failed("/nav"));
+
+  // A SUCCEEDED whose heal cannot be delivered yet: stays reported-failed (the
+  // heal is not lost, just deferred).
+  auto * reporter = access.reporter_for("/nav");
+  ASSERT_FALSE(reporter->is_service_ready());
+  EXPECT_EQ(node->apply_message("/nav", one_goal(2, GoalStatus::STATUS_SUCCEEDED), reporter), State::kUnknown);
+  EXPECT_TRUE(access.reported_failed("/nav"));  // heal deferred, fault still active
+
+  // Retry once deliverable: the heal lands.
+  EXPECT_EQ(access.reconcile_deliverable("/nav"), State::kHealthy);
+  EXPECT_FALSE(access.reported_failed("/nav"));
+}
+
+TEST_F(ActionStatusBridgeTest, ReconcilePending_RetriesWithoutDroppingWhileServiceDown) {
+  auto node = std::make_shared<ActionStatusBridgeNode>();
+  ActionStatusBridgeTestAccess access(node.get());
+  auto * reporter = access.reporter_for("/nav");
+  ASSERT_FALSE(reporter->is_service_ready());
+
+  EXPECT_EQ(node->apply_message("/nav", one_goal(1, GoalStatus::STATUS_ABORTED), reporter), State::kUnknown);
+  ASSERT_TRUE(access.pending_failed("/nav"));
+
+  // The retry pass (what the fast retry timer fires) must keep retrying without
+  // dropping the pending fault while the service stays down.
+  access.run_reconcile_pending();
+  access.run_reconcile_pending();
+  EXPECT_TRUE(access.pending_failed("/nav"));
+  EXPECT_FALSE(access.reported_failed("/nav"));
+}
+
 // --- rescan add + prune ---
 
 TEST_F(ActionStatusBridgeTest, RescanPrune_DropsVanishedAction) {

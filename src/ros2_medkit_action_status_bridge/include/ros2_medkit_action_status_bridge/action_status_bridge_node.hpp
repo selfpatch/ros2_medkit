@@ -118,9 +118,16 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   ActionState reconcile(const std::string & action_name, ros2_medkit_fault_reporter::FaultReporter * reporter);
 
   /// Re-attempt every action whose desired state has not been delivered to the
-  /// FaultManager yet. Driven from the rescan timer so a report dropped during
-  /// the startup discovery window is retried once the service is discovered.
+  /// FaultManager yet, then arm/disarm the retry timer. Driven from the fast
+  /// retry timer (and the rescan as a backstop) so a report deferred during a
+  /// discovery window is delivered within one short tick of the service
+  /// appearing - keeping the FaultManager freeze-frame snapshot contemporaneous.
   void reconcile_pending();
+
+  /// Arm the fast retry timer when at least one transition is undelivered, and
+  /// disarm it once everything is delivered, so an idle bridge does no periodic
+  /// work. Caller must not hold state_mutex_.
+  void update_retry_timer();
 
   /// Get (creating on first use) the FaultReporter for an action. The reporter's
   /// source_id is fixed when first created: the resolved server FQN if discovery
@@ -151,6 +158,12 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   static std::string to_upper_snake(const std::string & in, size_t max_len);
 
   rclcpp::TimerBase::SharedPtr rescan_timer_;
+  // Fast, lightweight timer that retries undelivered reports. Decoupled from the
+  // (slow, expensive) rescan so a fault deferred because the FaultManager service
+  // was not yet discovered is delivered within one short tick of it appearing -
+  // keeping the FaultManager's freeze-frame snapshot as close to the event as the
+  // discovery floor allows. See the delivery-latency note in the README.
+  rclcpp::TimerBase::SharedPtr retry_timer_;
   std::map<std::string, rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr> subs_;
 
   // Per-action FaultReporter, created lazily on the first report. The source_id is
@@ -187,6 +200,7 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   bool canceled_is_fault_;
   bool heal_on_succeeded_;
   double rescan_period_sec_;
+  double retry_period_sec_;
   std::string code_prefix_;
   std::vector<std::string> exclude_actions_;
   std::vector<std::string> include_only_actions_;
@@ -223,6 +237,15 @@ class ActionStatusBridgeTestAccess {
   /// The FaultReporter for an action (created on first call). Lets a test drive
   /// the deferred-delivery path with a real reporter whose service is not ready.
   ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & action_name);
+
+  /// Run the retry pass (what the retry timer fires) so a test can exercise the
+  /// deferred-then-delivered loop without a live timer.
+  void run_reconcile_pending();
+
+  /// Reconcile one action treating delivery as available (the null-reporter
+  /// seam), so a test can prove a previously deferred transition is delivered
+  /// once the service becomes ready.
+  ActionStatusBridgeNode::ActionState reconcile_deliverable(const std::string & action_name);
 
   /// Identity of the FaultReporter for an action (created on first call). Lets a
   /// test assert the reporter is created once and never swapped out.

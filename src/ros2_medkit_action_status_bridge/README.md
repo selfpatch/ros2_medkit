@@ -55,10 +55,10 @@ from what the FaultManager was actually told. The transition is committed only
 once the report is delivered: if the FaultManager service is not discovered yet
 - e.g. an action's status topic is `transient_local` (latched) and its terminal
 status reaches the bridge during the startup discovery window, before the report
-client connects - the transition stays pending and is retried on the next
-rescan, rather than the high-severity fault being silently dropped. (The latched
-status is delivered to a subscription only once, so without this retry the
-dropped report would never recover.)
+client connects - the transition stays pending and is retried, rather than the
+high-severity fault being silently dropped. (The latched status is delivered to
+a subscription only once, so without this retry the dropped report would never
+recover.) See [Delivery latency and freeze-frame](#delivery-latency-and-freeze-frame).
 
 ## Scope: the terminal verdict, not the reason
 
@@ -68,6 +68,49 @@ This bridge delivers the generic "it aborted" event. The action-specific
 enrichment concern (a future action-result reader using runtime message
 introspection / dynmsg). Per-project plugins are only needed for human-readable
 labels, not to surface the fault.
+
+## Delivery latency and freeze-frame
+
+The FaultManager captures the freeze-frame (topic snapshot, rosbag) **when it
+receives the report**, so the value of that context decays with delivery
+latency: a late fault is reported against state that has already moved on. The
+bridge therefore optimises for delivering a fault to the FaultManager as soon as
+physically possible.
+
+- **Happy path (service discovered):** the fault is reported synchronously in
+  the status callback, the instant the terminal status arrives. This is the
+  normal runtime case and is already ASAP - nothing is deferred.
+- **Degraded path (service not yet discovered):** a fault cannot physically be
+  delivered before the FaultManager `report_fault` service is discovered (startup
+  before the FaultManager is up, or a FaultManager restart). The transition is
+  kept pending and retried on a dedicated **fast retry timer** (`retry_period_sec`,
+  default 50 ms), decoupled from the slow discovery `rescan`. So the fault lands
+  within one short tick of the service appearing - keeping the freeze-frame as
+  contemporaneous as the discovery floor allows.
+
+We deliberately do **not** block the (single-threaded) executor waiting for the
+service: blocking would stall detection of *other* actions' faults during an
+outage to shave the last few milliseconds off one fault - a bad trade when the
+freeze-frame is already only ~tens of ms fresher. The retry timer is armed only
+while a delivery is pending, so an idle bridge does no periodic work.
+
+**Known boundaries** (narrow, and shrunk further by the fast retry; both are
+consequences of the level-triggered, net-state model, not silent loss in the
+common case):
+
+- *Flap entirely within an outage:* if an action both fails **and** recovers
+  while the report channel is undiscovered, the net observed state collapses to
+  healthy and no retroactive raise+heal pair is emitted (there is nothing to
+  freeze-frame after the fact anyway). A flap while the channel is up still
+  produces a raise+heal per cycle as normal.
+- *Vanish during an outage:* if a still-failed action disappears from the graph
+  (its state is dropped, so it cannot be retried) at the exact moment the service
+  is undiscovered, its heal cannot be delivered and the fault may remain active
+  in the FaultManager. This is logged as a warning rather than dropped silently.
+- *Latched historical fault at startup:* a goal that aborted before the bridge
+  existed delivers its latched status on first subscribe; its freeze-frame
+  reflects post-hoc startup state regardless of delivery speed, so prompt
+  delivery just records that it happened.
 
 ## Run it
 
@@ -83,6 +126,7 @@ ros2 launch ros2_medkit_action_status_bridge action_status_bridge.launch.py
 | `canceled_is_fault` | `false` | treat CANCELED as a fault |
 | `heal_on_succeeded` | `true` | send PASSED on a successful goal |
 | `rescan_period_sec` | `2.0` | how often to look for new actions |
+| `retry_period_sec` | `0.05` | fast retry cadence for reports deferred while the FaultManager service is undiscovered (armed only while pending) |
 | `code_prefix` | `ACTION` | prefix for generated codes |
 | `exclude_actions` | `[]` | action-name substrings to skip |
 | `include_only_actions` | `[]` | if set, only watch these |

@@ -9,6 +9,11 @@ action_status_bridge:
     heal_on_succeeded: true
     # How often to rescan the graph for new (and vanished) action status topics.
     rescan_period_sec: 2.0
+    # Fast retry cadence (seconds) for delivering a fault that was deferred while
+    # the FaultManager service was not yet discovered. Kept short so the
+    # freeze-frame snapshot stays contemporaneous; the timer is armed only while a
+    # delivery is pending.
+    retry_period_sec: 0.05
     # Prefix for generated fault codes (<PREFIX>_<ACTION>_ABORTED/_CANCELED).
     # Normalized to UPPER_SNAKE at load.
     code_prefix: "ACTION"
