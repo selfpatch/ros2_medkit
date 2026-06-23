@@ -215,12 +215,21 @@ class SSEFaultHandlerTest : public ::testing::Test {
   }
 
   void enqueue_event(const FaultEvent & event) {
+    // Wait until the handler has actually consumed this event (its
+    // on_fault_event ran and snapshotted the owning entity) before returning,
+    // so a test that mutates the entity cache afterwards cannot race the
+    // snapshot. A fixed spin budget was too short under sanitizer slowdown.
+    const uint64_t before = handler_->events_received();
     publisher_->publish(event);
 
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 500; ++i) {  // up to ~5s, generous for sanitizer runs
       executor_->spin_some();
+      if (handler_->events_received() > before) {
+        return;
+      }
       std::this_thread::sleep_for(10ms);
     }
+    FAIL() << "Timed out waiting for the SSE handler to receive the published fault event";
   }
 
   void wait_for_subscribers() {
