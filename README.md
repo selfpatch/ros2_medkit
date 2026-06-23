@@ -82,15 +82,17 @@ speaks (Fast DDS and CycloneDDS are both baked in):
 
 ```bash
 docker run --rm --network host --ipc host \
-  -e ROS_DOMAIN_ID -e RMW_IMPLEMENTATION \
+  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+  -e RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}" \
   ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
   ros2 launch ros2_medkit_gateway bringup.launch.py
 # → REST API live at http://localhost:8080/api/v1/
 ```
 
-Swap `jazzy` for `humble`/`lyrical`; the two `-e` flags forward your shell's values so the
-container joins the same DDS graph as your robot. Rolling out to the ROS index now, so soon it is
-a plain apt install too:
+Swap `jazzy` for `humble`/`lyrical`; the two `-e` flags forward your shell's `ROS_DOMAIN_ID` and
+`RMW_IMPLEMENTATION` (falling back to domain `0` / Fast DDS if unset) so the container joins the
+same DDS graph as your robot. The packages are heading into the ROS index, so once your distro
+picks them up it is a plain apt install too:
 
 ```bash
 sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-

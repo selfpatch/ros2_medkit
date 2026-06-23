@@ -24,7 +24,13 @@ source "${COLCON_WS}/install/setup.bash"
 # Default to FastDDS (can be overridden via RMW_IMPLEMENTATION env var)
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
-# Pass all arguments directly to the gateway node.
-# Default CMD: --ros-args --params-file /etc/ros2_medkit/params.yaml
-# Override:    docker run ros2_medkit --ros-args --params-file /my/config.yaml -p server.port:=9090
-exec ros2 run ros2_medkit_gateway gateway_node "$@"
+# Dispatch on the first argument:
+#   - empty, or starts with "-" (the default CMD "--ros-args --params-file ..."
+#     or an override like --ros-args -p server.port:=9090): run the gateway node
+#     directly, so `docker run <img>` and arg-only overrides keep working.
+#   - a full command (e.g. `ros2 launch ros2_medkit_gateway bringup.launch.py`
+#     or `bash`): exec it as-is, so the image can launch the whole bringup stack.
+if [ -z "$1" ] || [ "${1#-}" != "$1" ]; then
+  exec ros2 run ros2_medkit_gateway gateway_node "$@"
+fi
+exec "$@"

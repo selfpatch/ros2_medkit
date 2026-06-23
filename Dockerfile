@@ -125,10 +125,12 @@ COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
 # their full paths in your custom params file.
 RUN mkdir -p /opt/ros2_medkit/plugins
 
-# Non-root user for production safety
+# Non-root user for production safety. /var/lib/ros2_medkit is the default
+# fault_manager database_path parent; create and chown it so the fault manager
+# can persist faults.db without running as root.
 RUN groupadd -r medkit && useradd -r -g medkit -d /home/medkit -s /bin/bash medkit && \
-    mkdir -p /home/medkit && chown medkit:medkit /home/medkit && \
-    chown -R medkit:medkit ${COLCON_WS}/install /etc/ros2_medkit /opt/ros2_medkit
+    mkdir -p /home/medkit /var/lib/ros2_medkit && chown medkit:medkit /home/medkit && \
+    chown -R medkit:medkit ${COLCON_WS}/install /etc/ros2_medkit /opt/ros2_medkit /var/lib/ros2_medkit
 
 # Entrypoint that sources ROS and starts the gateway
 COPY docker/entrypoint.sh /entrypoint.sh
