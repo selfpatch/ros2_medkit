@@ -33,12 +33,6 @@ inline rclcpp::Logger opcua_poller_logger() {
   static auto logger = rclcpp::get_logger("opcua.poller");
   return logger;
 }
-
-inline bool poller_debug_enabled() {
-  // rcutils API for Humble compatibility; Jazzy+ adds rclcpp::Logger::
-  // get_effective_level but Humble does not.
-  return rcutils_logging_logger_is_enabled_for("opcua.poller", RCUTILS_LOG_SEVERITY_DEBUG);
-}
 }  // namespace
 
 namespace {
@@ -68,7 +62,11 @@ constexpr size_t kFieldAckedState = 5;
 constexpr size_t kFieldConfirmedState = 6;
 constexpr size_t kFieldShelvingState = 7;
 constexpr size_t kFieldBranchId = 8;
-constexpr size_t kAlarmFieldCount = 9;
+constexpr size_t kFieldConditionName = 9;  // issue #389 (multi-alarm identity)
+constexpr size_t kAlarmFieldCount = 9;     // count of fixed alarm-state fields (indices 0-8)
+// ConditionName is always appended at index kFieldConditionName; configured
+// associated values follow at index kFieldConditionName + 1 onward.
+constexpr size_t kFirstAssociatedValueField = kFieldConditionName + 1;
 
 // Standard NodeIds for the types that *directly* define each field (open62541
 // servers reject SAOs whose BrowsePath is inherited rather than direct).
@@ -77,11 +75,11 @@ constexpr uint32_t kConditionType = 2782;
 constexpr uint32_t kAcknowledgeableConditionType = 2881;
 constexpr uint32_t kAlarmConditionType = 2915;
 
-std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs() {
+std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs(const AlarmEventConfig & cfg) {
   // Each clause carries the type that *directly* defines its first browse
   // segment - inheritance traversal is not honored by the open62541 server
   // validator (verified against 1.4.6 with FULL ns0).
-  return {
+  std::vector<OpcuaClient::EventFieldSpec> specs = {
       {opcua::NodeId(0, kBaseEventType), {{0, "EventId"}}, UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kBaseEventType), {{0, "Severity"}}, UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kBaseEventType), {{0, "Message"}}, UA_ATTRIBUTEID_VALUE},
@@ -93,7 +91,65 @@ std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs() {
        {{0, "ShelvingState"}, {0, "CurrentState"}, {0, "Id"}},
        UA_ATTRIBUTEID_VALUE},
       {opcua::NodeId(0, kConditionType), {{0, "BranchId"}}, UA_ATTRIBUTEID_VALUE},
+      // Issue #389: ConditionName, used to route distinct conditions from one
+      // source to distinct faults.
+      {opcua::NodeId(0, kConditionType), {{0, "ConditionName"}}, UA_ATTRIBUTEID_VALUE},
   };
+  // Issue #389: configured associated values (e.g. Siemens SD_1..SD_n) as
+  // BaseEventType properties.
+  for (const auto & av : cfg.associated_values) {
+    specs.push_back({opcua::NodeId(0, kBaseEventType), {{av.namespace_index, av.name}}, UA_ATTRIBUTEID_VALUE});
+  }
+  return specs;
+}
+
+// Render an arbitrary scalar event field value to a short string for inclusion
+// in a fault description (associated values can be of any builtin type).
+std::string variant_to_display(const opcua::Variant & v) {
+  if (v.isEmpty()) {
+    return "";
+  }
+  if (v.isType<opcua::LocalizedText>()) {
+    return std::string(v.getScalarCopy<opcua::LocalizedText>().getText());
+  }
+  if (v.isType<opcua::String>()) {
+    return std::string(v.getScalarCopy<opcua::String>());
+  }
+  if (v.isType<bool>()) {
+    return v.getScalarCopy<bool>() ? "true" : "false";
+  }
+  if (v.isType<int16_t>()) {
+    return std::to_string(v.getScalarCopy<int16_t>());
+  }
+  if (v.isType<uint16_t>()) {
+    return std::to_string(v.getScalarCopy<uint16_t>());
+  }
+  if (v.isType<int32_t>()) {
+    return std::to_string(v.getScalarCopy<int32_t>());
+  }
+  if (v.isType<uint32_t>()) {
+    return std::to_string(v.getScalarCopy<uint32_t>());
+  }
+  if (v.isType<int64_t>()) {
+    return std::to_string(v.getScalarCopy<int64_t>());
+  }
+  if (v.isType<float>()) {
+    return std::to_string(v.getScalarCopy<float>());
+  }
+  if (v.isType<double>()) {
+    return std::to_string(v.getScalarCopy<double>());
+  }
+  return "";
+}
+
+std::string variant_to_string_scalar(const opcua::Variant & v) {
+  if (v.isType<opcua::String>()) {
+    return std::string(v.getScalarCopy<opcua::String>());
+  }
+  if (v.isType<opcua::LocalizedText>()) {
+    return std::string(v.getScalarCopy<opcua::LocalizedText>().getText());
+  }
+  return "";
 }
 
 // Extract a scalar of type T from a Variant, returning the default if absent.
@@ -243,10 +299,12 @@ void OpcuaPoller::setup_event_subscriptions() {
     return;
   }
 
-  const auto select_specs = build_alarm_event_select_specs();
   event_monitored_item_ids_.clear();
 
   for (const auto & cfg : node_map_.event_alarms()) {
+    // Per-source select specs so each source can carry its own associated
+    // values (issue #389) in addition to the fixed alarm-state fields.
+    const auto select_specs = build_alarm_event_select_specs(cfg);
     // Capture cfg BY VALUE: even though range-for ``const auto & cfg`` binds
     // to a vector element that outlives the loop, an `&cfg`-by-reference
     // capture would chain through a local reference variable whose name
@@ -266,61 +324,168 @@ void OpcuaPoller::setup_event_subscriptions() {
     }
   }
 
-  // Fire ConditionRefresh so the server pushes any conditions that fired
-  // before our subscription started (Part 9 §5.5.7 mandates the bracketing
-  // RefreshStartEvent / RefreshEndEvent which we treat as ordinary events
-  // tagged by EventType).
+  // Replay conditions that were already active before this (re)subscribe so a
+  // reconnect / restart does not drop the live fault set. Strategy-driven:
+  // ConditionRefresh (Part 9 §5.5.7) and/or a read-based fallback (issue
+  // #389) for servers that reject the method.
   if (!event_monitored_item_ids_.empty()) {
-    condition_refresh();
+    replay_active_conditions();
   }
 }
 
-void OpcuaPoller::condition_refresh() {
+ConditionReplayStrategy OpcuaPoller::parse_replay_strategy(const std::string & name) {
+  std::string n = name;
+  std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (n == "method") {
+    return ConditionReplayStrategy::Method;
+  }
+  if (n == "read" || n == "read_fallback" || n == "readfallback") {
+    return ConditionReplayStrategy::Read;
+  }
+  if (n == "off" || n == "none" || n == "disabled") {
+    return ConditionReplayStrategy::Off;
+  }
+  return ConditionReplayStrategy::Auto;
+}
+
+void OpcuaPoller::replay_active_conditions() {
+  // Shared warn sink (operator-visible) used by the strategy branches.
+  auto warn = [this](const std::string & msg) {
+    if (config_.log_warn) {
+      config_.log_warn(msg);
+    } else {
+      RCLCPP_WARN(opcua_poller_logger(), "%s", msg.c_str());
+    }
+  };
+
+  switch (config_.condition_replay_strategy) {
+    case ConditionReplayStrategy::Off:
+      return;
+    case ConditionReplayStrategy::Method:
+      if (!try_condition_refresh() && !condition_refresh_warned_) {
+        warn(
+            "OPC-UA ConditionRefresh rejected and replay strategy is 'method'; active conditions "
+            "will NOT be replayed on reconnect with this server. Live transitions still flow. See issue #389.");
+        condition_refresh_warned_ = true;
+      } else if (condition_refresh_warned_) {
+        condition_refresh_warned_ = false;
+      }
+      return;
+    case ConditionReplayStrategy::Read:
+      read_fallback_replay();
+      return;
+    case ConditionReplayStrategy::Auto:
+      if (try_condition_refresh()) {
+        condition_refresh_warned_ = false;
+        return;
+      }
+      if (!condition_refresh_warned_) {
+        warn("OPC-UA ConditionRefresh rejected; using read-based active-condition replay fallback (issue #389).");
+        condition_refresh_warned_ = true;
+      }
+      read_fallback_replay();
+      return;
+  }
+}
+
+bool OpcuaPoller::try_condition_refresh() {
   // Server object NodeId (i=2253) hosts the ConditionRefresh method
-  // (i=3875 - per Part 9 §5.5.7). We use the standard NodeId; servers that
-  // diverge from the spec (rare) will return BadMethodInvalid which is
-  // logged but does not abort subscribing.
+  // (i=3875 - per Part 9 §5.5.7). Servers that reject it (BadMethodInvalid in
+  // open62541, BadNodeIdUnknown on Siemens S7-1500, etc.) return an error;
+  // the caller then decides whether to fall back to the read-based replay.
   static constexpr uint32_t kServerObjectId = 2253;
   static constexpr uint32_t kConditionRefreshMethodId = 3875;
   std::vector<opcua::Variant> args;
   args.push_back(opcua::Variant::fromScalar(static_cast<uint32_t>(event_subscription_id_)));
   auto result =
       client_.call_method(opcua::NodeId(0, kServerObjectId), opcua::NodeId(0, kConditionRefreshMethodId), args);
-  if (!result.has_value()) {
-    // Not fatal but operator-visible: when ConditionRefresh is rejected by
-    // the server (BadMethodInvalid in open62541 v1.4.x, BadNotImplemented
-    // on Siemens S7-1500, etc.) the gateway will not re-receive any active
-    // conditions on reconnect; only live transitions surface in /faults.
-    // Worth a single warn per connect so the operator knows their
-    // alarm-replay-on-reconnect contract is broken with this PLC.
-    if (!condition_refresh_warned_) {
-      const std::string msg = "OPC-UA ConditionRefresh rejected (" + result.error().message +
-                              "); active conditions will NOT be replayed on reconnect with this server. "
-                              "Live transitions still flow. See issue #389.";
-      if (config_.log_warn) {
-        config_.log_warn(msg);
-      } else {
-        // Fallback when the plugin did not wire log_warn through PollerConfig
-        // (e.g., direct unit tests). RCLCPP_WARN goes to /rosout instead of
-        // raw stderr so the warn integrates with normal log filtering.
-        RCLCPP_WARN(opcua_poller_logger(), "%s", msg.c_str());
+  return result.has_value();
+}
+
+void OpcuaPoller::read_fallback_replay() {
+  // Browse each configured alarm source, read its conditions' current state,
+  // and drive the same state machine as live events. Conditions that are no
+  // longer active are reconciled (cleared) afterwards.
+  std::set<std::string> seen;
+  for (const auto & cfg : node_map_.event_alarms()) {
+    auto conditions = client_.read_source_conditions(cfg.source_node_id);
+    for (const auto & snap : conditions) {
+      AlarmEventInput input;
+      input.enabled_state = snap.enabled_state;
+      input.active_state = snap.active_state;
+      input.acked_state = snap.acked_state;
+      input.confirmed_state = snap.confirmed_state;
+      // Read-based replay never observes a historical branch (we read the
+      // current branch state directly) and shelving is folded into the live
+      // event path; treat read snapshots as live, non-shelved state.
+      input.shelved = false;
+      input.branch_id_present = false;
+
+      // Resolve identity to a specific fault. EventType is not available from
+      // a state read, so event_type-only mappings will not match here; routing
+      // by condition_name / source_node still works.
+      ResolvedAlarm resolved =
+          NodeMap::resolve_alarm(cfg, snap.condition_name, cfg.source_node_id_str, /*event_type=*/"");
+      if (!resolved.matched) {
+        continue;
       }
-      condition_refresh_warned_ = true;
+      AlarmEventConfig eff = cfg;
+      eff.fault_code = resolved.fault_code;
+      eff.severity_override = resolved.severity_override;
+      eff.message_override = resolved.message_override;
+
+      seen.insert(snap.condition_id.toString());
+      apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr);
     }
-  } else {
-    // Reset the throttle: a successful refresh means the server is
-    // cooperating again, so the next failure (e.g., after a restart of a
-    // server with a different config) earns a fresh warn.
-    condition_refresh_warned_ = false;
+  }
+  reconcile_after_read(seen);
+}
+
+void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen) {
+  std::vector<AlarmEventDelivery> clears;
+  {
+    std::unique_lock lock(conditions_mutex_);
+    for (auto & [cid, runtime] : conditions_) {
+      const bool was_active =
+          (runtime.last_status == SovdAlarmStatus::Confirmed || runtime.last_status == SovdAlarmStatus::Healed);
+      if (was_active && seen.find(cid) == seen.end()) {
+        // Tracked as active but absent from the read scan -> the alarm
+        // cleared while we were offline. Clear the SOVD fault.
+        runtime.last_status = SovdAlarmStatus::Cleared;
+        AlarmEventDelivery d;
+        d.fault_code = runtime.fault_code;
+        d.entity_id = runtime.entity_id;
+        d.next_status = SovdAlarmStatus::Cleared;
+        d.action = AlarmAction::ClearFault;
+        d.condition_id = cid;
+        clears.push_back(std::move(d));
+      }
+    }
+  }
+  if (clears.empty()) {
+    return;
+  }
+  EventAlarmCallback cb_copy;
+  {
+    std::lock_guard cb_lock(event_alarm_callback_mutex_);
+    cb_copy = event_alarm_callback_;
+  }
+  if (cb_copy) {
+    for (const auto & d : clears) {
+      cb_copy(d);
+    }
   }
 }
 
 void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
-                           const opcua::NodeId & /*source_node*/, const opcua::NodeId & event_type,
+                           const opcua::NodeId & source_node, const opcua::NodeId & event_type,
                            const opcua::NodeId & condition_id) {
-  RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                      "on_event fault=" << cfg.fault_code << " event_type=" << event_type.toString()
-                                        << " condition=" << condition_id.toString() << " values=" << values.size());
+  RCLCPP_DEBUG_STREAM(opcua_poller_logger(), "on_event source_fault=" << cfg.fault_code
+                                                                      << " event_type=" << event_type.toString()
+                                                                      << " condition=" << condition_id.toString()
+                                                                      << " values=" << values.size());
   // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
   // diagnostics only; the state machine itself does not need to know
   // because RefreshStart / RefreshEnd notifications carry no condition
@@ -380,14 +545,69 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     input.branch_id_present = false;
   }
 
-  // ``condition_id`` is supplied by add_event_monitored_item via the
-  // auto-prepended SAO with empty BrowsePath + AttributeId=NodeId
-  // (Part 9 §5.5.2.13). Key the runtime map on its stringForm so distinct
-  // condition instances within the same event source remain separate.
-  std::string condition_id_str = condition_id.toString();
+  uint16_t severity = variant_or<uint16_t>(values[kFieldSeverity], 0);
+  std::string message = variant_to_localized_text(values[kFieldMessage]);
 
-  ConditionRuntime runtime_snapshot;
-  SovdAlarmStatus prev_status;
+  // Issue #389: resolve this event's identity (ConditionName / SourceNode /
+  // EventType) to a specific fault via the config's mappings. This lets one
+  // OPC-UA source emit many distinct conditions that surface as distinct
+  // SOVD faults with their own text.
+  std::string condition_name;
+  if (values.size() > kFieldConditionName) {
+    condition_name = variant_to_string_scalar(values[kFieldConditionName]);
+  }
+  ResolvedAlarm resolved = NodeMap::resolve_alarm(cfg, condition_name, source_node.toString(), event_type.toString());
+  if (!resolved.matched) {
+    // No mapping and no source-level fault_code applies to this condition.
+    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                        "on_event: no fault mapping for condition_name='" << condition_name << "' - ignoring");
+    return;
+  }
+
+  // Append configured associated values (e.g. SD_1..SD_n) to the description.
+  for (size_t i = 0; i < cfg.associated_values.size(); ++i) {
+    const size_t idx = kFirstAssociatedValueField + i;
+    if (idx >= values.size()) {
+      break;
+    }
+    const std::string rendered = variant_to_display(values[idx]);
+    if (rendered.empty()) {
+      continue;
+    }
+    if (!message.empty()) {
+      message += "; ";
+    }
+    message += cfg.associated_values[i].label + "=" + rendered;
+  }
+
+  // Build the effective config for this specific event (resolved fault_code +
+  // overrides) so apply_condition_state tracks the right fault_code / entity.
+  AlarmEventConfig eff = cfg;
+  eff.fault_code = resolved.fault_code;
+  eff.severity_override = resolved.severity_override;
+  eff.message_override = resolved.message_override;
+
+  // Capture the live EventId for spec-compliant Acknowledge / Confirm.
+  opcua::ByteString event_id;
+  bool have_event_id = false;
+  if (values[kFieldEventId].isType<opcua::ByteString>()) {
+    event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
+    have_event_id = true;
+  }
+
+  apply_condition_state(eff, condition_id, input, severity, message, have_event_id ? &event_id : nullptr);
+}
+
+void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
+                                        const AlarmEventInput & input, uint16_t severity, const std::string & message,
+                                        const opcua::ByteString * event_id) {
+  // Key the runtime map on the ConditionId string form so distinct condition
+  // instances within the same event source remain separate (Part 9
+  // §5.5.2.13). Shared by the live event path and the read-based replay.
+  const std::string condition_id_str = condition_id.toString();
+
+  AlarmEventDelivery delivery;
+  bool dispatch = false;
   {
     std::unique_lock lock(conditions_mutex_);
     auto it = conditions_.find(condition_id_str);
@@ -397,27 +617,12 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
       fresh.entity_id = cfg.entity_id;
       fresh.fault_code = cfg.fault_code;
       fresh.last_status = SovdAlarmStatus::Suppressed;
-      auto inserted = conditions_.emplace(condition_id_str, std::move(fresh));
-      it = inserted.first;
+      it = conditions_.emplace(condition_id_str, std::move(fresh)).first;
     }
-    prev_status = it->second.last_status;
+    const SovdAlarmStatus prev_status = it->second.last_status;
 
-    // Track the latest EventId for spec-compliant Acknowledge calls.
-    if (values[kFieldEventId].isType<opcua::ByteString>()) {
-      it->second.latest_event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
-      if (poller_debug_enabled()) {
-        std::ostringstream hex_oss;
-        const auto * bytes = it->second.latest_event_id.data();
-        for (size_t i = 0; i < std::min<size_t>(it->second.latest_event_id.length(), 16); ++i) {
-          char buf[3];
-          std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned>(bytes[i]) & 0xffu);
-          hex_oss << buf;
-        }
-        RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                            "captured EventId len=" << it->second.latest_event_id.length() << " hex=" << hex_oss.str());
-      }
-    } else {
-      RCLCPP_DEBUG(opcua_poller_logger(), "EventId field not a ByteString");
+    if (event_id != nullptr) {
+      it->second.latest_event_id = *event_id;
     }
 
     auto outcome = AlarmStateMachine::compute(prev_status, input);
@@ -428,42 +633,34 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
                             << " branch=" << input.branch_id_present << " prev=" << static_cast<int>(prev_status)
                             << " action=" << static_cast<int>(outcome.action));
     it->second.last_status = outcome.next_status;
-    runtime_snapshot = it->second;
 
     if (outcome.action == AlarmAction::NoOp) {
-      // No downstream notification - drop while still holding the lock to
-      // avoid a callback round-trip for redundant events.
+      // Redundant observation (same as last status) - drop while still holding
+      // the lock to avoid a needless callback round-trip.
       return;
     }
 
-    AlarmEventDelivery delivery;
     delivery.fault_code = cfg.fault_code;
     delivery.entity_id = cfg.entity_id;
     delivery.next_status = outcome.next_status;
     delivery.action = outcome.action;
-    delivery.severity = variant_or<uint16_t>(values[kFieldSeverity], 0);
-    if (!cfg.message_override.empty()) {
-      delivery.message = cfg.message_override;
-    } else {
-      delivery.message = variant_to_localized_text(values[kFieldMessage]);
-    }
+    delivery.severity = severity;
+    delivery.severity_override = cfg.severity_override;
+    delivery.message = cfg.message_override.empty() ? message : cfg.message_override;
     delivery.condition_id = condition_id_str;
+    dispatch = true;
+  }  // conditions_mutex_ released before invoking the user callback
 
-    // Release lock BEFORE invoking user callback (which may take its own
-    // locks or block on a ROS service - we must not hold conditions_mutex_
-    // across that).
-    lock.unlock();
-
-    EventAlarmCallback cb_copy;
-    {
-      std::lock_guard cb_lock(event_alarm_callback_mutex_);
-      cb_copy = event_alarm_callback_;
-    }
-    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                        "dispatching action=" << static_cast<int>(delivery.action) << " cb_set=" << (cb_copy ? 1 : 0));
-    if (cb_copy) {
-      cb_copy(delivery);
-    }
+  if (!dispatch) {
+    return;
+  }
+  EventAlarmCallback cb_copy;
+  {
+    std::lock_guard cb_lock(event_alarm_callback_mutex_);
+    cb_copy = event_alarm_callback_;
+  }
+  if (cb_copy) {
+    cb_copy(delivery);
   }
 }
 

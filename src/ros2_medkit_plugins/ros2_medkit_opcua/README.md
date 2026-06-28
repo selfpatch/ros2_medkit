@@ -250,10 +250,40 @@ nodes:
 # CodeSys 3.5+, Rockwell via FactoryTalk Linx). Mutually exclusive per entry
 # with the threshold-based alarm form above.
 event_alarms:
+  # Simple form: one source -> one fault.
   - alarm_source: "ns=4;s=Alarms.Overpressure"
     entity_id: tank_process
     fault_code: PLC_OVERPRESSURE
+
+  # Multi-alarm form (issue #389): one source emits many conditions (e.g. the
+  # Server object as a catch-all, or one Object owning several Program_Alarms)
+  # routed to distinct faults by condition identity. `mappings` are evaluated
+  # in order; the first whose non-empty match fields all equal the observed
+  # event wins, falling back to the source-level `fault_code` (if set).
+  - alarm_source: "ns=0;i=2253"          # Server object (system-wide)
+    entity_id: line_1
+    fault_code: PLC_GENERIC_ALARM        # catch-all fallback (optional)
+    mappings:
+      - condition_name: "Overpressure"   # match ConditionType.ConditionName
+        fault_code: PLC_OVERPRESSURE
+        severity_override: ERROR
+        message: "Tank overpressure"
+      - source_node: "ns=3;s=PumpA"      # or match by event SourceNode
+        event_type: "ns=0;i=2915"        # and/or EventType (AND-combined)
+        fault_code: PLC_PUMP_A_FAULT
+    # Append vendor associated values (Siemens Program_Alarm SD_1..SD_n) to the
+    # fault description as "label=value".
+    associated_values:
+      - "SD_1"
+      - name: "SD_2"
+        label: "Setpoint"
 ```
+
+Mapping precedence: a mapping with more (non-empty) match fields is matched
+only when all of them equal the observed event; declaration order breaks ties.
+An event matching no mapping uses the source-level `fault_code`; if that is also
+empty the event is ignored. A mapping-level `severity_override` / `message`
+overrides the source-level one; otherwise the source-level value is inherited.
 
 The plugin auto-registers `acknowledge_fault` and `confirm_fault` operations
 on every entity that has at least one `event_alarms` entry. Invoke them with:
@@ -285,6 +315,64 @@ ros2_medkit_gateway:
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
+| `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
+
+### OPC-UA client security (SecurityPolicy, certificates, user auth)
+
+By default the client connects with `SecurityPolicy=None` and an `Anonymous`
+user (unencrypted, unauthenticated). This is fine for an isolated lab LAN but
+not for a hardened server. The following parameters enable a signed/encrypted
+SecureChannel with a client application-instance certificate, a server trust
+store, and a user identity. All are opt-in; leaving them unset reproduces the
+legacy behaviour.
+
+```yaml
+plugins.opcua.security_policy: "Basic256Sha256"       # None | Basic256Sha256 | Aes128Sha256RsaOaep | Aes256Sha256RsaPss
+plugins.opcua.security_mode: "SignAndEncrypt"          # None | Sign | SignAndEncrypt
+plugins.opcua.client_cert_path: "/etc/ros2_medkit/opcua/client_cert.der"  # X.509 v3, DER
+plugins.opcua.client_key_path:  "/etc/ros2_medkit/opcua/client_key.pem"   # private key, PEM
+plugins.opcua.application_uri:  "urn:selfpatch:medkit:opcua-client"        # MUST match the cert SAN URI
+plugins.opcua.trust_list_paths: ["/etc/ros2_medkit/opcua/server_cert.der"]  # DER trust store
+plugins.opcua.reject_untrusted: true                   # false = accept any server cert (lab/TOFU only)
+plugins.opcua.user_auth_mode: "UsernamePassword"       # Anonymous | UsernamePassword | X509
+plugins.opcua.username: "medkit"
+plugins.opcua.password: "..."                           # inject from a secret store at deploy time
+plugins.opcua.user_cert_path: "/etc/ros2_medkit/opcua/user_cert.der"  # X509 user token only
+```
+
+Notes:
+- A non-None `security_policy` requires `client_cert_path` + `client_key_path`;
+  a secured connection with no cert fails fast (before contacting the server).
+- `application_uri` must equal the URI entry in the client certificate's
+  SubjectAltName or the server rejects the channel with
+  `BadCertificateUriInvalid`.
+- The client cert (its public part) must be added to the server's trusted
+  client list, and the server cert (DER) added to `trust_list_paths`, unless
+  `reject_untrusted: false`.
+- The encryption backend (OpenSSL) is compiled in; a build without it logs an
+  error and refuses any secured profile.
+
+### Active-condition replay on reconnect (issue #389)
+
+When the gateway (re)subscribes after a drop or restart, conditions that are
+already active on the server would otherwise not be re-reported (only live
+transitions flow). The standard recovery is OPC-UA `ConditionRefresh`, but some
+servers (Siemens S7-1500) reject it with `BadNodeIdUnknown`. The
+`condition_replay_strategy` parameter controls recovery:
+
+| Value | Behaviour |
+|-------|-----------|
+| `method` | Call `ConditionRefresh` only (warns if rejected) |
+| `read` | Skip the method; browse each `alarm_source`, read current condition state, reconcile the fault set |
+| `auto` (default) | Try `ConditionRefresh`; on rejection fall back to `read` |
+| `off` | No replay (only live transitions surface) |
+
+The read fallback browses each `alarm_source` for child AlarmCondition
+instances and reads their state, so it relies on the conditions being
+browseable under the configured source (point `alarm_source` at the owning
+Object, not the Server catch-all, for full restart recovery). It does not
+recover the live `EventId`, so an operator ack/confirm may need the next live
+event before it succeeds.
 
 Node map entries also support an optional `ros2_topic` field to override the auto-generated ROS 2 topic name for the PLC value bridge:
 
@@ -310,6 +398,16 @@ Write operations use the `set_` prefix convention:
 |----------|-------------|
 | `OPCUA_ENDPOINT_URL` | OPC-UA server URL |
 | `OPCUA_NODE_MAP_PATH` | Path to node map YAML |
+| `OPCUA_SECURITY_POLICY` | `None` / `Basic256Sha256` / `Aes128Sha256RsaOaep` / `Aes256Sha256RsaPss` |
+| `OPCUA_SECURITY_MODE` | `None` / `Sign` / `SignAndEncrypt` |
+| `OPCUA_CLIENT_CERT` / `OPCUA_CLIENT_KEY` | Client cert (DER) / key (PEM) paths |
+| `OPCUA_APPLICATION_URI` | Client application URI (must match cert SAN) |
+| `OPCUA_TRUST_LIST` | Colon-separated DER trust-store paths |
+| `OPCUA_REJECT_UNTRUSTED` | `false`/`0`/`no` to accept any server cert (lab only) |
+| `OPCUA_USER_AUTH` | `Anonymous` / `UsernamePassword` / `X509` |
+| `OPCUA_USERNAME` / `OPCUA_PASSWORD` | Username-password identity |
+| `OPCUA_USER_CERT` | X.509 user-token cert (DER) |
+| `OPCUA_CONDITION_REPLAY` | `method` / `read` / `auto` / `off` |
 
 ## Hardware Deployment
 
@@ -417,16 +515,22 @@ bash scripts/stop.sh
 | Error handling | 3 | Unknown entity, unknown operation, invalid JSON |
 | **Total** | **16** | |
 
-## Security Limitations
+## Security
 
-**Current version uses Anonymous auth with SecurityPolicy=None.** All OPC-UA communication is unencrypted and unauthenticated. This is acceptable for isolated LANs and demo environments but NOT suitable for production networks exposed to untrusted traffic.
+The client supports a signed/encrypted SecureChannel (`SecurityPolicy`
+Basic256Sha256 / Aes128 / Aes256, `MessageSecurityMode` Sign / SignAndEncrypt),
+a client application-instance certificate, a server trust store with
+reject-untrusted, and user identity (Anonymous / Username-Password / X.509).
+See "OPC-UA client security" above for configuration.
 
-Planned for future versions:
-- OPC-UA certificate-based authentication (Basic256Sha256)
-- Username/password authentication
-- Configurable security policy per connection
+**The default remains `SecurityPolicy=None` + `Anonymous` (unencrypted,
+unauthenticated)** for backward compatibility and isolated-LAN demos; enable a
+secured profile for any network exposed to untrusted traffic. The plugin logs
+the effective security profile at startup and warns when running unsecured or
+with `reject_untrusted: false`.
 
-The plugin logs a startup message indicating the auth mode in use.
+Northbound (gateway REST) hardening is documented separately in the gateway's
+`design/hardening.rst` and the `gateway_params.secure.yaml` field profile.
 
 Write operations include configurable `min_value`/`max_value` range validation to prevent out-of-range values being sent to PLC actuators.
 

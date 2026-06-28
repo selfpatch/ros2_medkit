@@ -174,6 +174,13 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     auto ms = std::clamp(config["poll_interval_ms"].get<int>(), 100, 60000);
     poller_config_.poll_interval = std::chrono::milliseconds(ms);
   }
+  if (config.contains("condition_replay_strategy")) {
+    poller_config_.condition_replay_strategy =
+        OpcuaPoller::parse_replay_strategy(config["condition_replay_strategy"].get<std::string>());
+  }
+  if (auto * env = std::getenv("OPCUA_CONDITION_REPLAY")) {
+    poller_config_.condition_replay_strategy = OpcuaPoller::parse_replay_strategy(env);
+  }
 
   // Environment variables override YAML config (for Docker)
   if (auto * env = std::getenv("OPCUA_ENDPOINT_URL")) {
@@ -612,11 +619,11 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
 
   // Map raw OPC-UA Severity (1-1000) to SOVD severity bucket.
   // Selfpatch convention documented in design/index.rst; not from IEC 62682.
-  // Severity_override on the AlarmEventConfig wins when set.
+  // The resolved severity_override (mapping- or source-level, issue #389)
+  // wins when set.
   auto severity_str = [&]() {
-    auto * cfg = node_map_.find_event_alarm(delivery.entity_id, delivery.fault_code);
-    if (cfg && !cfg->severity_override.empty()) {
-      return cfg->severity_override;
+    if (!delivery.severity_override.empty()) {
+      return delivery.severity_override;
     }
     if (delivery.severity >= 801) {
       return std::string("CRITICAL");

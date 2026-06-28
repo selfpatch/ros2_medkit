@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -57,9 +58,10 @@ struct AlarmEventDelivery {
   std::string entity_id;
   SovdAlarmStatus next_status;
   AlarmAction action;
-  uint16_t severity{0};      // raw OPC-UA Severity 1-1000
-  std::string message;       // event Message field (or AlarmEventConfig override)
-  std::string condition_id;  // string form of OPC-UA ConditionId
+  uint16_t severity{0};           // raw OPC-UA Severity 1-1000
+  std::string severity_override;  // resolved severity bucket override (issue #389), empty = derive from severity
+  std::string message;            // event Message field (or resolved override)
+  std::string condition_id;       // string form of OPC-UA ConditionId
 };
 using EventAlarmCallback = std::function<void(const AlarmEventDelivery & delivery)>;
 
@@ -79,12 +81,27 @@ struct ConditionRuntime {
 /// Callback after each poll cycle (for publishing values to ROS 2 topics)
 using PollCallback = std::function<void(const PollSnapshot & snapshot)>;
 
+/// Strategy for replaying already-active OPC-UA conditions on (re)subscribe
+/// (issue #389). Some servers (e.g. Siemens S7-1500) reject the standard
+/// ConditionRefresh method with BadNodeIdUnknown, so the active alarm set is
+/// otherwise lost across a reconnect / gateway restart.
+///   - Method: call ConditionRefresh only (Part 9 §5.5.7 standard path).
+///   - Read:   skip ConditionRefresh; browse the alarm sources and read each
+///             condition's current state, then reconcile the fault set.
+///   - Auto:   try ConditionRefresh first; on rejection fall back to Read.
+///   - Off:    no replay (only live transitions surface).
+enum class ConditionReplayStrategy { Method, Read, Auto, Off };
+
 /// Configuration for the poller
 struct PollerConfig {
   bool prefer_subscriptions{false};  // poll mode by default (subscriptions need event loop)
   double subscription_interval_ms{500.0};
   std::chrono::milliseconds poll_interval{1000};
   std::chrono::milliseconds reconnect_interval{5000};
+  /// Active-condition replay strategy on (re)subscribe (issue #389).
+  /// Default Auto: ConditionRefresh with a read-based fallback so hardened
+  /// servers that reject the method still recover their active alarms.
+  ConditionReplayStrategy condition_replay_strategy{ConditionReplayStrategy::Auto};
   /// Optional warn-level log sink for operator-visible failures inside the
   /// poll thread. Set by the plugin owning the poller to its log_warn
   /// helper so events like ``ConditionRefresh failed`` reach the ROS 2 log
@@ -139,6 +156,10 @@ class OpcuaPoller {
   /// currently active for the entity.
   std::optional<ConditionRuntime> lookup_condition(const std::string & entity_id, const std::string & fault_code) const;
 
+  /// Parse a replay-strategy name ("method", "read", "auto", "off").
+  /// Case-insensitive; unknown input falls back to Auto.
+  static ConditionReplayStrategy parse_replay_strategy(const std::string & name);
+
  private:
   void poll_loop();
   void do_poll();
@@ -151,7 +172,28 @@ class OpcuaPoller {
   void on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
                 const opcua::NodeId & source_node, const opcua::NodeId & event_type,
                 const opcua::NodeId & condition_id);
-  void condition_refresh();
+
+  /// Run the configured active-condition replay (issue #389). Dispatches to
+  /// ConditionRefresh and/or the read-based fallback per
+  /// ``condition_replay_strategy``.
+  void replay_active_conditions();
+  /// Call OPC-UA ConditionRefresh. Returns true when the server accepted it.
+  bool try_condition_refresh();
+  /// Read-based fallback: browse each alarm source, read current condition
+  /// state, drive the state machine, and reconcile the fault set.
+  void read_fallback_replay();
+  /// Clear faults for conditions that were active before the replay but are
+  /// no longer present/active in the read scan (``seen`` = condition ids
+  /// observed this scan).
+  void reconcile_after_read(const std::set<std::string> & seen);
+
+  /// Apply one condition state observation (from a live event or a read scan)
+  /// to the tracked condition map + state machine, dispatching the resulting
+  /// fault action. ``event_id`` is the live EventId for ack/confirm (null for
+  /// read-based observations).
+  void apply_condition_state(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
+                             const AlarmEventInput & input, uint16_t severity, const std::string & message,
+                             const opcua::ByteString * event_id);
 
   OpcuaClient & client_;
   const NodeMap & node_map_;

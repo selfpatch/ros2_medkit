@@ -809,6 +809,96 @@ std::string OpcuaClient::server_description() const {
   return impl_->server_desc;
 }
 
+std::vector<OpcuaClient::ConditionStateSnapshot>
+OpcuaClient::read_source_conditions(const opcua::NodeId & source_node) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  std::vector<ConditionStateSnapshot> out;
+  if (!impl_->connected) {
+    return out;
+  }
+
+  // Read a Boolean two-step state variable (e.g. ActiveState/Id). Returns the
+  // fallback when the path is absent or not Boolean. ``found`` reports whether
+  // the path resolved at all (used to decide if a child is a condition).
+  auto read_state_id = [](opcua::Node<opcua::Client> & cond, const char * state_name, bool fallback,
+                          bool * found) -> bool {
+    try {
+      auto node = cond.browseChild({{0, state_name}, {0, "Id"}});
+      auto val = node.readValue();
+      if (found) {
+        *found = true;
+      }
+      if (val.isType<bool>()) {
+        return val.getScalarCopy<bool>();
+      }
+      return fallback;
+    } catch (const opcua::BadStatus &) {
+      if (found) {
+        *found = false;
+      }
+      return fallback;
+    }
+  };
+
+  try {
+    opcua::Node<opcua::Client> src(impl_->client, source_node);
+    auto children = src.browseChildren(opcua::ReferenceTypeId::HierarchicalReferences, opcua::NodeClass::Object);
+    for (auto & child : children) {
+      ConditionStateSnapshot snap;
+      snap.condition_id = child.id();
+
+      // A child is only treated as an alarm condition when ActiveState/Id
+      // resolves; everything else under the source is ignored.
+      bool is_condition = false;
+      snap.active_state = read_state_id(child, "ActiveState", false, &is_condition);
+      if (!is_condition) {
+        continue;
+      }
+
+      snap.enabled_state = read_state_id(child, "EnabledState", true, nullptr);
+      snap.acked_state = read_state_id(child, "AckedState", true, nullptr);
+      snap.confirmed_state = read_state_id(child, "ConfirmedState", true, nullptr);
+
+      try {
+        auto retain = child.browseChild({{0, "Retain"}}).readValue();
+        if (retain.isType<bool>()) {
+          snap.retain = retain.getScalarCopy<bool>();
+        }
+      } catch (const opcua::BadStatus &) {
+      }
+      try {
+        auto sev = child.browseChild({{0, "Severity"}}).readValue();
+        if (sev.isType<uint16_t>()) {
+          snap.severity = sev.getScalarCopy<uint16_t>();
+        }
+      } catch (const opcua::BadStatus &) {
+      }
+      try {
+        auto cname = child.browseChild({{0, "ConditionName"}}).readValue();
+        if (cname.isType<opcua::String>()) {
+          snap.condition_name = std::string(cname.getScalarCopy<opcua::String>());
+        }
+      } catch (const opcua::BadStatus &) {
+      }
+      try {
+        auto msg = child.browseChild({{0, "Message"}}).readValue();
+        if (msg.isType<opcua::LocalizedText>()) {
+          snap.message = std::string(msg.getScalarCopy<opcua::LocalizedText>().getText());
+        } else if (msg.isType<opcua::String>()) {
+          snap.message = std::string(msg.getScalarCopy<opcua::String>());
+        }
+      } catch (const opcua::BadStatus &) {
+      }
+
+      out.push_back(std::move(snap));
+    }
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+  }
+
+  return out;
+}
+
 // ----------------------------------------------------------------------------
 // Issue #386: native OPC-UA AlarmCondition event subscription primitives.
 // open62541pp v0.16 has no native EventFilter / event subscription API, so the

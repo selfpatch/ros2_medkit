@@ -177,22 +177,18 @@ bool NodeMap::load(const std::string & yaml_path) {
       auto_browse_ = root["auto_browse"].as<bool>();
     }
 
-    // Node entries
-    auto nodes = root["nodes"];
-    if (!nodes || !nodes.IsSequence()) {
-      // Clear any stale state from previous load
-      entries_.clear();
-      entity_index_.clear();
-      node_id_index_.clear();
-      entity_defs_.clear();
-      return false;
-    }
-
+    // Node entries. The ``nodes:`` section is optional: a config may declare
+    // only ``event_alarms:`` (native AlarmCondition subscriptions with no
+    // scalar data points to poll). The final emptiness check below rejects a
+    // file that declares neither.
     entries_.clear();
     entity_index_.clear();
     node_id_index_.clear();
 
-    if (nodes.size() > 10000) {
+    auto nodes = root["nodes"];
+    const bool has_nodes = nodes && nodes.IsSequence();
+
+    if (has_nodes && nodes.size() > 10000) {
       RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
                    "Node map has %zu entries (max 10000) - refusing to load to prevent resource exhaustion",
                    nodes.size());
@@ -281,7 +277,7 @@ bool NodeMap::load(const std::string & yaml_path) {
       return s;
     };
 
-    for (size_t i = 0; i < nodes.size(); ++i) {
+    for (size_t i = 0; has_nodes && i < nodes.size(); ++i) {
       const auto & n = nodes[i];
 
       // Validate required fields
@@ -566,9 +562,9 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
       for (size_t i = 0; i < event_alarms_node.size(); ++i) {
         const auto & a = event_alarms_node[i];
-        if (!a["alarm_source"] || !a["entity_id"] || !a["fault_code"]) {
+        if (!a["alarm_source"] || !a["entity_id"]) {
           RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                      "event_alarms[%zu] missing alarm_source/entity_id/fault_code - skipping", i);
+                      "event_alarms[%zu] missing alarm_source/entity_id - skipping", i);
           continue;
         }
         // Required strings routed through the same guarded read as the nodes
@@ -578,17 +574,76 @@ bool NodeMap::load(const std::string & yaml_path) {
         const std::string alarm_label = "event_alarms[" + std::to_string(i) + "]";
         auto alarm_source = parse_string(a["alarm_source"], "alarm_source", alarm_label);
         auto alarm_entity_id = parse_string(a["entity_id"], "entity_id", alarm_label);
-        auto alarm_fault_code = parse_string(a["fault_code"], "fault_code", alarm_label);
-        if (!alarm_source || !alarm_entity_id || !alarm_fault_code) {
+        if (!alarm_source || !alarm_entity_id) {
           continue;
+        }
+        // Source-level fault_code is optional when ``mappings`` route every
+        // alarm (issue #389); when present it must still be a usable string.
+        std::string alarm_fault_code;
+        if (a["fault_code"]) {
+          auto parsed_fault_code = parse_string(a["fault_code"], "fault_code", alarm_label);
+          if (!parsed_fault_code) {
+            continue;
+          }
+          alarm_fault_code = *parsed_fault_code;
         }
         AlarmEventConfig cfg;
         cfg.source_node_id_str = *alarm_source;
         cfg.source_node_id = parse_node_id(cfg.source_node_id_str);
         cfg.entity_id = *alarm_entity_id;
-        cfg.fault_code = *alarm_fault_code;
+        cfg.fault_code = alarm_fault_code;
         cfg.severity_override = a["severity_override"].as<std::string>("");
         cfg.message_override = a["message"].as<std::string>("");
+
+        // Issue #389: per-condition-identity mappings (multi-alarm).
+        if (a["mappings"] && a["mappings"].IsSequence()) {
+          for (const auto & m : a["mappings"]) {
+            if (!m["fault_code"]) {
+              RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                          "event_alarms[%zu] mapping missing fault_code - skipping", i);
+              continue;
+            }
+            auto mapping_fault_code = parse_string(m["fault_code"], "mappings.fault_code", alarm_label);
+            if (!mapping_fault_code) {
+              continue;
+            }
+            AlarmMapping mapping;
+            mapping.match_condition_name = m["condition_name"].as<std::string>("");
+            mapping.match_source_node = m["source_node"].as<std::string>("");
+            mapping.match_event_type = m["event_type"].as<std::string>("");
+            mapping.fault_code = *mapping_fault_code;
+            mapping.severity_override = m["severity_override"].as<std::string>("");
+            mapping.message_override = m["message"].as<std::string>("");
+            cfg.mappings.push_back(std::move(mapping));
+          }
+        }
+
+        // Issue #389: extra associated-value event fields (e.g. SD_1..SD_n).
+        if (a["associated_values"] && a["associated_values"].IsSequence()) {
+          for (const auto & v : a["associated_values"]) {
+            AssociatedValueRef ref;
+            if (v.IsScalar()) {
+              ref.name = v.as<std::string>();
+            } else {
+              ref.namespace_index = v["namespace_index"].as<uint16_t>(0);
+              ref.name = v["name"].as<std::string>("");
+              ref.label = v["label"].as<std::string>("");
+            }
+            if (ref.name.empty()) {
+              continue;
+            }
+            if (ref.label.empty()) {
+              ref.label = ref.name;
+            }
+            cfg.associated_values.push_back(std::move(ref));
+          }
+        }
+
+        if (cfg.fault_code.empty() && cfg.mappings.empty()) {
+          RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                      "event_alarms[%zu] has neither fault_code nor mappings - skipping", i);
+          continue;
+        }
         event_alarms_.push_back(std::move(cfg));
       }
     }
@@ -679,10 +734,27 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
 
       for (const auto & cfg : event_alarms_) {
-        if (!check_unique(cfg.fault_code, cfg.entity_id, "event_alarms")) {
+        // The source-level fault_code may be empty when every alarm is routed
+        // through ``mappings`` (issue #389); only real codes enter the set.
+        if (!cfg.fault_code.empty() && !check_unique(cfg.fault_code, cfg.entity_id, "event_alarms")) {
           return false;
         }
+        for (const auto & m : cfg.mappings) {
+          if (!check_unique(m.fault_code, cfg.entity_id, "event_alarms")) {
+            return false;
+          }
+        }
       }
+    }
+
+    // A config that declares neither a 'nodes:' section nor any event alarms
+    // carries no mappings and is almost always a mistake (wrong file / typo).
+    // A present-but-empty 'nodes:' section is still a valid config.
+    if (!has_nodes && event_alarms_.empty()) {
+      RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                   "Node map has neither 'nodes:' nor 'event_alarms:' entries - nothing to map");
+      entity_defs_.clear();
+      return false;
     }
 
     build_entity_defs();
@@ -697,11 +769,51 @@ bool NodeMap::load(const std::string & yaml_path) {
 const AlarmEventConfig * NodeMap::find_event_alarm(const std::string & entity_id,
                                                    const std::string & fault_code) const {
   for (const auto & cfg : event_alarms_) {
-    if (cfg.entity_id == entity_id && cfg.fault_code == fault_code) {
+    if (cfg.entity_id != entity_id) {
+      continue;
+    }
+    if (cfg.fault_code == fault_code) {
       return &cfg;
+    }
+    for (const auto & m : cfg.mappings) {
+      if (m.fault_code == fault_code) {
+        return &cfg;
+      }
     }
   }
   return nullptr;
+}
+
+ResolvedAlarm NodeMap::resolve_alarm(const AlarmEventConfig & cfg, const std::string & condition_name,
+                                     const std::string & source_node, const std::string & event_type) {
+  ResolvedAlarm out;
+  // First mapping whose non-empty match fields all equal the observed event
+  // wins (declaration order = precedence).
+  for (const auto & m : cfg.mappings) {
+    if (!m.match_condition_name.empty() && m.match_condition_name != condition_name) {
+      continue;
+    }
+    if (!m.match_source_node.empty() && m.match_source_node != source_node) {
+      continue;
+    }
+    if (!m.match_event_type.empty() && m.match_event_type != event_type) {
+      continue;
+    }
+    out.fault_code = m.fault_code;
+    // A mapping-level override wins; otherwise inherit the source-level one.
+    out.severity_override = m.severity_override.empty() ? cfg.severity_override : m.severity_override;
+    out.message_override = m.message_override.empty() ? cfg.message_override : m.message_override;
+    out.matched = true;
+    return out;
+  }
+  // No mapping matched: fall back to the source-level fault_code (catch-all).
+  if (!cfg.fault_code.empty()) {
+    out.fault_code = cfg.fault_code;
+    out.severity_override = cfg.severity_override;
+    out.message_override = cfg.message_override;
+    out.matched = true;
+  }
+  return out;
 }
 
 std::vector<const NodeMapEntry *> NodeMap::entries_for_entity(const std::string & entity_id) const {

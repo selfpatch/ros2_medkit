@@ -59,6 +59,14 @@ TEST(OpcuaClientTest, ReadWhenDisconnected) {
   EXPECT_FALSE(result.good);
 }
 
+// Issue #389 (read-based active-condition replay): browsing for conditions on a
+// disconnected client returns nothing rather than throwing.
+TEST(OpcuaClientTest, ReadSourceConditionsWhenDisconnected) {
+  OpcuaClient client;
+  auto conds = client.read_source_conditions(opcua::NodeId(0, UA_NS0ID_SERVER));
+  EXPECT_TRUE(conds.empty());
+}
+
 TEST(OpcuaClientTest, WriteWhenDisconnected) {
   OpcuaClient client;
   EXPECT_FALSE(client.write_value({1, "SomeNode"}, 42.0));

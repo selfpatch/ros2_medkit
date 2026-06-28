@@ -260,6 +260,31 @@ class OpcuaClient {
   static tl::expected<void, MethodErrorInfo> classify_call_result(uint32_t overall_status_code,
                                                                   const std::vector<uint32_t> & arg_results);
 
+  /// Current state of one OPC-UA Condition instance, read directly from the
+  /// address space (issue #389 reconnect replay). Used as the read-based
+  /// fallback when ConditionRefresh is unavailable: instead of waiting for
+  /// the server to replay buffered events, the client browses the alarm
+  /// source for its condition instances and reads their state variables.
+  struct ConditionStateSnapshot {
+    opcua::NodeId condition_id;
+    std::string condition_name;  // ConditionType.ConditionName (issue #389 mapping)
+    bool enabled_state{true};
+    bool active_state{false};
+    bool acked_state{true};
+    bool confirmed_state{true};
+    bool retain{false};
+    uint16_t severity{0};
+    std::string message;
+  };
+
+  /// Browse ``source_node`` for AlarmCondition instances and read their
+  /// current state (ActiveState/Id, AckedState/Id, ConfirmedState/Id,
+  /// EnabledState/Id, Retain, Severity, Message). Only immediate children
+  /// that expose an ``ActiveState`` node are treated as conditions; other
+  /// children are skipped. Returns an empty vector when disconnected or when
+  /// the source has no readable conditions.
+  std::vector<ConditionStateSnapshot> read_source_conditions(const opcua::NodeId & source_node);
+
   /// Get server description string (for status endpoint)
   std::string server_description() const;
 

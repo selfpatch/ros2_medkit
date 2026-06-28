@@ -39,6 +39,33 @@ struct AlarmConfig {
   bool above_threshold{true};  // true = alarm when value > threshold
 };
 
+/// Reference to one extra OPC-UA event field to select and surface as an
+/// associated value (issue #389). Used for vendor associated values such as
+/// Siemens Program_Alarm ``SD_1``..``SD_n``. ``label`` is what appears in the
+/// fault description; ``name``/``namespace_index`` address the event field via
+/// a SimpleAttributeOperand on BaseEventType.
+struct AssociatedValueRef {
+  uint16_t namespace_index{0};
+  std::string name;
+  std::string label;  // defaults to ``name`` when unset
+};
+
+/// One condition-identity mapping inside an ``event_alarms`` source (issue
+/// #389). A single OPC-UA source (e.g. the Server object as a catch-all, or a
+/// real owning Object) can emit many distinct conditions; each mapping routes
+/// a subset to its own SOVD fault. Match fields are AND-combined; an empty
+/// match field is a wildcard. The first mapping whose non-empty match fields
+/// all equal the observed event wins (declaration order = precedence).
+struct AlarmMapping {
+  std::string match_condition_name;  // ConditionType.ConditionName (empty = any)
+  std::string match_source_node;     // event SourceNode id string (empty = any)
+  std::string match_event_type;      // event EventType id string (empty = any)
+
+  std::string fault_code;
+  std::string severity_override;
+  std::string message_override;
+};
+
 /// Configuration for a native OPC-UA AlarmConditionType event subscription
 /// (issue #386). The plugin subscribes to events emitted from
 /// ``alarm_source`` and bridges them through ``AlarmStateMachine`` into
@@ -54,7 +81,9 @@ struct AlarmEventConfig {
   /// SOVD entity that should host the resulting fault.
   std::string entity_id;
 
-  /// SOVD fault code (e.g. ``PLC_OVERPRESSURE``).
+  /// Source-level / fallback SOVD fault code (e.g. ``PLC_OVERPRESSURE``).
+  /// Used when no ``mappings`` entry matches an observed event. May be empty
+  /// when every alarm is routed through ``mappings``.
   std::string fault_code;
 
   /// Optional severity override. When empty, ``AlarmStateMachine`` derives
@@ -65,6 +94,24 @@ struct AlarmEventConfig {
   /// Optional friendly message override; falls back to the event's
   /// ``Message`` field when empty.
   std::string message_override;
+
+  /// Issue #389: per-condition-identity mappings (multi-alarm). Resolved in
+  /// declaration order; first match wins, falling back to the source-level
+  /// ``fault_code`` above.
+  std::vector<AlarmMapping> mappings;
+
+  /// Issue #389: extra event fields to append to the fault description.
+  std::vector<AssociatedValueRef> associated_values;
+};
+
+/// Result of resolving an observed event against an ``AlarmEventConfig``
+/// (issue #389). ``matched`` is false when neither a mapping nor the
+/// source-level fault_code applies (the event should be ignored).
+struct ResolvedAlarm {
+  std::string fault_code;
+  std::string severity_override;
+  std::string message_override;
+  bool matched{false};
 };
 
 /// Mapping entry: OPC-UA NodeId -> SOVD entity data point
@@ -146,8 +193,15 @@ class NodeMap {
   }
 
   /// Find an event-mode alarm by ``(entity_id, fault_code)`` (used by the
-  /// SOVD ``acknowledge_fault`` / ``confirm_fault`` operations).
+  /// SOVD ``acknowledge_fault`` / ``confirm_fault`` operations). Matches the
+  /// source-level fault_code or any of the entry's mapping fault_codes.
   const AlarmEventConfig * find_event_alarm(const std::string & entity_id, const std::string & fault_code) const;
+
+  /// Resolve an observed event against a config's mappings (issue #389).
+  /// First matching mapping wins; falls back to the source-level fault_code.
+  /// Pure / static so the precedence rules are unit-testable without a server.
+  static ResolvedAlarm resolve_alarm(const AlarmEventConfig & cfg, const std::string & condition_name,
+                                     const std::string & source_node, const std::string & event_type);
 
   /// Get derived SOVD entity definitions
   const std::vector<PlcEntityDef> & entity_defs() const {
