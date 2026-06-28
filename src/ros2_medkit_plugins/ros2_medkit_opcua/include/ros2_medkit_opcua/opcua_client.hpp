@@ -42,12 +42,62 @@ struct ReadResult {
 /// Callback for subscription data changes
 using DataChangeCallback = std::function<void(const std::string & node_id, const OpcuaValue & value)>;
 
+/// OPC-UA SecurityPolicy selector. Maps to the policy URI sent during the
+/// SecureChannel handshake. ``None`` is the only value that works without a
+/// client application-instance certificate; everything else requires
+/// ``client_cert_path`` + ``client_key_path`` and an encryption-enabled build.
+enum class SecurityPolicy { None, Basic256Sha256, Aes128Sha256RsaOaep, Aes256Sha256RsaPss };
+
+/// OPC-UA MessageSecurityMode. ``None`` = cleartext; ``Sign`` = signed but not
+/// encrypted; ``SignAndEncrypt`` = signed + encrypted. Independent of the
+/// SecurityPolicy selector above (the server endpoint must offer the pair).
+enum class SecurityMode { None, Sign, SignAndEncrypt };
+
+/// Session user identity token type. ``Anonymous`` needs no credentials;
+/// ``UsernamePassword`` uses ``username``/``password``; ``X509`` presents a
+/// user certificate (``user_cert_path``).
+enum class UserAuthMode { Anonymous, UsernamePassword, X509 };
+
 /// Configuration for OPC-UA connection
 struct OpcuaClientConfig {
   std::string endpoint_url = "opc.tcp://localhost:4840";
   std::chrono::milliseconds connect_timeout{5000};
   std::chrono::milliseconds reconnect_interval{3000};
-  // TODO: OPC-UA security (certificates, Basic256Sha256)
+
+  // --- SecureChannel security (opt-in; defaults reproduce the legacy
+  // anonymous + SecurityPolicy=None behaviour) ---
+  SecurityPolicy security_policy{SecurityPolicy::None};
+  SecurityMode security_mode{SecurityMode::None};
+
+  /// Client application-instance certificate (X.509 v3, DER-encoded) and its
+  /// private key (PEM-encoded). Required for any SecurityPolicy other than
+  /// None. Empty when running unsecured.
+  std::string client_cert_path;
+  std::string client_key_path;
+
+  /// Application URI advertised by the client. MUST match the URI entry in
+  /// the certificate's SubjectAltName, otherwise the server rejects the
+  /// SecureChannel with BadCertificateUriInvalid. Empty leaves the
+  /// open62541 default ("urn:open62541.client.application").
+  std::string application_uri;
+
+  /// Trusted server / CA certificates (DER-encoded) forming the trust store.
+  /// Used to validate the server certificate when ``reject_untrusted`` is
+  /// true.
+  std::vector<std::string> trust_list_paths;
+
+  /// When true (default) the server certificate must chain to an entry in
+  /// ``trust_list_paths``; an untrusted server is rejected. When false the
+  /// client accepts any server certificate (lab / trust-on-first-use only).
+  bool reject_untrusted{true};
+
+  // --- Session user identity ---
+  UserAuthMode user_auth_mode{UserAuthMode::Anonymous};
+  std::string username;
+  std::string password;
+  /// User X.509 token certificate (DER-encoded), used when
+  /// ``user_auth_mode == X509``.
+  std::string user_cert_path;
 };
 
 /// RAII wrapper around open62541pp::Client with auto-reconnect
@@ -212,6 +262,32 @@ class OpcuaClient {
 
   /// Get server description string (for status endpoint)
   std::string server_description() const;
+
+  // --- Security config parsing helpers (pure, unit-testable without a
+  // server). Case-insensitive; unknown input falls back to the safe default
+  // and sets ``*ok = false`` when provided. ---
+
+  /// Parse a SecurityPolicy name ("None", "Basic256Sha256",
+  /// "Aes128Sha256RsaOaep", "Aes256Sha256RsaPss"). Falls back to None.
+  static SecurityPolicy parse_security_policy(const std::string & name, bool * ok = nullptr);
+
+  /// Map a SecurityPolicy to its OPC-UA policy URI
+  /// (e.g. "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256").
+  static std::string security_policy_uri(SecurityPolicy policy);
+
+  /// Parse a MessageSecurityMode name ("None", "Sign", "SignAndEncrypt").
+  /// Falls back to None.
+  static SecurityMode parse_security_mode(const std::string & name, bool * ok = nullptr);
+
+  /// Parse a user-identity mode ("Anonymous", "Username"/"UsernamePassword",
+  /// "X509"/"Certificate"). Falls back to Anonymous.
+  static UserAuthMode parse_user_auth_mode(const std::string & name, bool * ok = nullptr);
+
+  /// True when the config requests a secured SecureChannel (any
+  /// SecurityPolicy other than None, or any MessageSecurityMode other than
+  /// None). Username/password or X.509 identity alone does NOT imply an
+  /// encrypted channel.
+  static bool requires_secure_channel(const OpcuaClientConfig & config);
 
  private:
   struct Impl;

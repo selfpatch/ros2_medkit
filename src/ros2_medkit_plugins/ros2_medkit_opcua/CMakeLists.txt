@@ -56,6 +56,12 @@ fetchcontent_declare(
 set(UAPP_INTERNAL_OPEN62541 ON CACHE BOOL "" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
 
+# Enable the OpenSSL encryption backend so the client can negotiate signed /
+# encrypted SecureChannels (SecurityPolicy Basic256Sha256 etc.) and present a
+# client application-instance certificate. Without this open62541 is built
+# SecurityPolicy=None only and the encrypted ClientConfig overloads compile out.
+set(UA_ENABLE_ENCRYPTION "OPENSSL" CACHE STRING "" FORCE)
+
 # open62541 + open62541pp are third-party code pulled via FetchContent.
 # ROS2MedkitWarnings promotes -Wswitch-enum, -Wnull-dereference, and other
 # warnings to errors project-wide, and those fire on upstream C sources that
