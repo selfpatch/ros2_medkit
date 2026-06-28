@@ -64,5 +64,11 @@ COPY --from=builder ${COLCON_WS}/install/ ${COLCON_WS}/install/
 RUN mkdir -p /config
 COPY src/ros2_medkit_plugins/ros2_medkit_opcua/config/tank_demo_nodes.yaml /config/tank_nodes.yaml
 COPY src/ros2_medkit_plugins/ros2_medkit_opcua/docker/gateway_params.yaml /config/gateway_params.yaml
+# Secure field profile for appliance deployments (auth + TLS + restricted CORS
+# + rate limiting on). The demo gateway_params.yaml above is wide open and is
+# for local testing only. Appliance / plant-network deployments must launch
+# with --params-file /config/gateway_params.secure.yaml and provision the
+# REQUIRED secrets + certificate (see ros2_medkit_gateway design/hardening.rst).
+COPY src/ros2_medkit_gateway/config/gateway_params.secure.yaml /config/gateway_params.secure.yaml
 
 EXPOSE 8080

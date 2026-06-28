@@ -1,0 +1,117 @@
+# ROS 2 Medkit Gateway - secure field profile
+#
+# Hardened parameter preset for on-prem / plant-network (appliance)
+# deployments. It turns ON every control that the default development config
+# leaves OFF: JWT auth, TLS, restricted CORS, and rate limiting. Use this file
+# instead of gateway_params.yaml for any deployment reachable from an
+# untrusted network.
+#
+#   ros2 run ros2_medkit_gateway gateway_node \
+#     --ros-args --params-file gateway_params.secure.yaml
+#
+# Items marked "REQUIRED" below must be set before the gateway will start /
+# accept clients. See design/hardening.rst for the full checklist and
+# credential / certificate provisioning steps.
+
+ros2_medkit_gateway:
+  ros__parameters:
+    server:
+      # Appliance binds all interfaces; TLS + auth below protect the surface.
+      # Narrow to a management interface IP when the deployment allows it.
+      host: "0.0.0.0"
+      port: 8443
+
+      # TLS/HTTPS - REQUIRED. Provision a real certificate (see
+      # scripts/generate_dev_certs.sh for the dev-only equivalent). The key
+      # file must be chmod 600 and owned by the gateway service user.
+      tls:
+        enabled: true
+        cert_file: "/etc/ros2_medkit/certs/cert.pem"   # REQUIRED
+        key_file: "/etc/ros2_medkit/certs/key.pem"     # REQUIRED (chmod 600)
+        ca_file: ""
+        # 1.3 preferred on a controlled fleet; drop to 1.2 only for legacy
+        # clients that cannot negotiate 1.3.
+        min_version: "1.3"
+
+    # CORS - restrict to the explicit origins that serve the operator UI.
+    # Never use ["*"] with credentials. Empty list disables CORS entirely
+    # (correct for API-only appliances with no browser UI).
+    cors:
+      allowed_origins: ["https://medkit-ui.local"]  # REQUIRED if a browser UI is used; else [""]
+      allowed_methods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"]
+      allowed_headers: ["Content-Type", "Accept", "Authorization"]
+      allow_credentials: true
+      max_age_seconds: 600
+
+    # Authentication (JWT + RBAC) - REQUIRED on.
+    auth:
+      enabled: true
+      # HS256 shared secret (>= 32 chars) or, for RS256, the private key path.
+      # REQUIRED - inject from a secret store / env at deploy time; do NOT
+      # commit a real secret to source control.
+      jwt_secret: ""            # REQUIRED
+      jwt_public_key: ""
+      jwt_algorithm: "HS256"
+      token_expiry_seconds: 3600
+      refresh_token_expiry_seconds: 86400
+      # "all" forces auth on every request (reads + writes). Use "write" only
+      # when unauthenticated reads are explicitly acceptable on this network.
+      require_auth_for: "all"
+      issuer: "ros2_medkit_gateway"
+      # Provision the minimum set of role-scoped clients. Format:
+      # "client_id:client_secret:role" (roles: viewer/operator/configurator/admin).
+      # REQUIRED - replace with real, rotated credentials.
+      clients: [""]            # REQUIRED
+
+    # Rate limiting - ON to bound abuse / runaway clients.
+    rate_limiting:
+      enabled: true
+      global_requests_per_minute: 600
+      client_requests_per_minute: 120
+      # Tighten mutating endpoints (operations / data writes).
+      endpoint_limits: ["/api/v1/*/operations/*:30"]
+      client_cleanup_interval_seconds: 300
+      client_max_idle_seconds: 600
+
+    # Diagnostic scripts - disabled by default on an appliance. Enable
+    # deliberately and keep uploads off (manifest-defined scripts only).
+    scripts:
+      scripts_dir: ""
+      allow_uploads: false
+      max_file_size_mb: 10
+      max_concurrent_executions: 5
+      default_timeout_sec: 300
+      max_execution_history: 100
+
+    # Bulk data uploads - cap the payload size; raise only if the deployment
+    # genuinely needs large uploads.
+    bulk_data:
+      storage_dir: "/var/lib/ros2_medkit/bulk_data"
+      max_upload_size: 26214400  # 25 MiB
+      categories: [""]
+
+    # SOVD resource locking on, so concurrent operators cannot stamp on each
+    # other's mutations.
+    locking:
+      enabled: true
+      default_max_expiration: 3600
+      cleanup_interval: 30
+      defaults:
+        components:
+          lock_required_scopes: ["operations"]
+          breakable: true
+        apps:
+          lock_required_scopes: ["operations"]
+          breakable: true
+
+    # OpenAPI /docs endpoints off on a hardened appliance (reduce surface).
+    docs:
+      enabled: false
+
+    # Peer aggregation: if used across hosts, require TLS and do NOT forward
+    # client tokens to mDNS-discovered peers unless every peer is trusted.
+    aggregation:
+      enabled: false
+      require_tls: true
+      forward_auth: false
+      peer_scheme: "https"

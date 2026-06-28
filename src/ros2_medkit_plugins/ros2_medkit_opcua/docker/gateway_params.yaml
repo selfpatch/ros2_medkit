@@ -1,3 +1,6 @@
+# DEMO ONLY - wide open (no auth, no TLS, CORS "*"). For appliance / plant
+# deployments use /config/gateway_params.secure.yaml instead (auth + TLS +
+# restricted CORS + rate limiting). See ros2_medkit_gateway design/hardening.rst.
 ros2_medkit_gateway:
   ros__parameters:
     server:
