@@ -1466,4 +1466,163 @@ nodes:
   EXPECT_FALSE(map.load(path));
 }
 
+// ---------------------------------------------------------------------------
+// Issue #389: multi-alarm mapping + associated values.
+// ---------------------------------------------------------------------------
+
+TEST(ResolveAlarmTest, FallsBackToSourceFaultCode) {
+  AlarmEventConfig cfg;
+  cfg.entity_id = "tank";
+  cfg.fault_code = "PLC_GENERIC";
+  cfg.severity_override = "WARNING";
+  auto r = NodeMap::resolve_alarm(cfg, "AnyName", "ns=2;s=Src", "ns=0;i=2915");
+  EXPECT_TRUE(r.matched);
+  EXPECT_EQ(r.fault_code, "PLC_GENERIC");
+  EXPECT_EQ(r.severity_override, "WARNING");
+}
+
+TEST(ResolveAlarmTest, NoMappingNoFallbackIsUnmatched) {
+  AlarmEventConfig cfg;
+  cfg.entity_id = "tank";  // no fault_code, no mappings
+  auto r = NodeMap::resolve_alarm(cfg, "X", "Y", "Z");
+  EXPECT_FALSE(r.matched);
+}
+
+TEST(ResolveAlarmTest, FirstMatchingMappingWinsByConditionName) {
+  AlarmEventConfig cfg;
+  cfg.entity_id = "tank";
+  cfg.fault_code = "PLC_CATCHALL";
+  cfg.mappings.push_back({/*cond*/ "Overpressure", "", "", "PLC_OVERPRESSURE", "ERROR", "Overpressure!"});
+  cfg.mappings.push_back({/*cond*/ "LowLevel", "", "", "PLC_LOW_LEVEL", "WARNING", "Low level"});
+
+  auto r1 = NodeMap::resolve_alarm(cfg, "Overpressure", "ns=2;s=Tank", "ns=0;i=2915");
+  EXPECT_TRUE(r1.matched);
+  EXPECT_EQ(r1.fault_code, "PLC_OVERPRESSURE");
+  EXPECT_EQ(r1.severity_override, "ERROR");
+  EXPECT_EQ(r1.message_override, "Overpressure!");
+
+  auto r2 = NodeMap::resolve_alarm(cfg, "LowLevel", "ns=2;s=Tank", "ns=0;i=2915");
+  EXPECT_EQ(r2.fault_code, "PLC_LOW_LEVEL");
+
+  // Unmatched condition name -> source-level catch-all.
+  auto r3 = NodeMap::resolve_alarm(cfg, "Unknown", "ns=2;s=Tank", "ns=0;i=2915");
+  EXPECT_TRUE(r3.matched);
+  EXPECT_EQ(r3.fault_code, "PLC_CATCHALL");
+}
+
+TEST(ResolveAlarmTest, MatchBySourceNodeAndEventType) {
+  AlarmEventConfig cfg;
+  cfg.entity_id = "tank";
+  cfg.mappings.push_back({"", "ns=2;s=PumpA", "ns=0;i=2915", "PLC_PUMP_A", "", ""});
+  // SourceNode mismatch -> unmatched (no fallback fault_code).
+  EXPECT_FALSE(NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpB", "ns=0;i=2915").matched);
+  // Both match.
+  auto r = NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpA", "ns=0;i=2915");
+  EXPECT_TRUE(r.matched);
+  EXPECT_EQ(r.fault_code, "PLC_PUMP_A");
+}
+
+TEST(ResolveAlarmTest, MappingInheritsSourceLevelOverridesWhenUnset) {
+  AlarmEventConfig cfg;
+  cfg.entity_id = "tank";
+  cfg.severity_override = "CRITICAL";
+  cfg.message_override = "src-msg";
+  cfg.mappings.push_back({"Cond", "", "", "PLC_X", "", ""});  // no per-mapping overrides
+  auto r = NodeMap::resolve_alarm(cfg, "Cond", "s", "e");
+  EXPECT_EQ(r.severity_override, "CRITICAL");
+  EXPECT_EQ(r.message_override, "src-msg");
+}
+
+TEST_F(NodeMapTest, LoadsMappingsAndAssociatedValues) {
+  std::string path = "/tmp/test_node_map_mappings.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=0;i=2253"
+    entity_id: plant
+    fault_code: PLC_GENERIC
+    mappings:
+      - condition_name: "Overpressure"
+        fault_code: PLC_OVERPRESSURE
+        severity_override: ERROR
+        message: "Tank overpressure"
+      - condition_name: "LowLevel"
+        fault_code: PLC_LOW_LEVEL
+    associated_values:
+      - "SD_1"
+      - name: "SD_2"
+        label: "Setpoint"
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  const auto & cfg = map.event_alarms()[0];
+  EXPECT_EQ(cfg.fault_code, "PLC_GENERIC");
+  ASSERT_EQ(cfg.mappings.size(), 2u);
+  EXPECT_EQ(cfg.mappings[0].match_condition_name, "Overpressure");
+  EXPECT_EQ(cfg.mappings[0].fault_code, "PLC_OVERPRESSURE");
+  ASSERT_EQ(cfg.associated_values.size(), 2u);
+  EXPECT_EQ(cfg.associated_values[0].name, "SD_1");
+  EXPECT_EQ(cfg.associated_values[0].label, "SD_1");  // defaults to name
+  EXPECT_EQ(cfg.associated_values[1].label, "Setpoint");
+
+  // find_event_alarm resolves a mapping fault_code, not just the source code.
+  EXPECT_NE(map.find_event_alarm("plant", "PLC_LOW_LEVEL"), nullptr);
+  EXPECT_NE(map.find_event_alarm("plant", "PLC_GENERIC"), nullptr);
+}
+
+TEST_F(NodeMapTest, MappingOnlyEntryNeedsNoSourceFaultCode) {
+  std::string path = "/tmp/test_node_map_mapping_only.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=0;i=2253"
+    entity_id: plant
+    mappings:
+      - condition_name: "A"
+        fault_code: PLC_A
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_TRUE(map.event_alarms()[0].fault_code.empty());
+  EXPECT_EQ(map.event_alarms()[0].mappings.size(), 1u);
+}
+
+TEST_F(NodeMapTest, RejectsMappingFaultCodeCollisionWithThreshold) {
+  // A mapping fault_code that collides with a threshold alarm fault_code on
+  // the same entity must be rejected, same as a source-level collision.
+  std::string path = "/tmp/test_node_map_mapping_collision.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: tank
+    data_name: pressure
+    alarm:
+      fault_code: PLC_OVERPRESSURE
+      threshold: 90.0
+event_alarms:
+  - alarm_source: "ns=0;i=2253"
+    entity_id: tank
+    mappings:
+      - condition_name: "Overpressure"
+        fault_code: PLC_OVERPRESSURE
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
 }  // namespace ros2_medkit_gateway

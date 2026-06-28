@@ -329,4 +329,17 @@ nodes:
   EXPECT_THROW(plugin.configure(config), std::runtime_error);
 }
 
+// Issue #389: condition-replay strategy parsing (used by the poller's
+// reconnect / restart active-condition replay).
+TEST(ConditionReplayStrategyParse, KnownValues) {
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("method"), ConditionReplayStrategy::Method);
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("read"), ConditionReplayStrategy::Read);
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("read_fallback"), ConditionReplayStrategy::Read);
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("off"), ConditionReplayStrategy::Off);
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("auto"), ConditionReplayStrategy::Auto);
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("AUTO"), ConditionReplayStrategy::Auto);
+  // Unknown -> safe default (Auto: method with read fallback).
+  EXPECT_EQ(OpcuaPoller::parse_replay_strategy("bogus"), ConditionReplayStrategy::Auto);
+}
+
 }  // namespace ros2_medkit_gateway
