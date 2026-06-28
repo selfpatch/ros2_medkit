@@ -92,6 +92,81 @@ TEST(OpcuaClientTest, WriteValueWithTypeHintDisconnected) {
   EXPECT_EQ(result.error().code, OpcuaClient::WriteError::NotConnected);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #389: OPC-UA client security config parsing (pure helpers, no server).
+// ---------------------------------------------------------------------------
+
+TEST(OpcuaClientSecurity, ParseSecurityPolicy) {
+  bool ok = false;
+  EXPECT_EQ(OpcuaClient::parse_security_policy("None", &ok), SecurityPolicy::None);
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(OpcuaClient::parse_security_policy("", &ok), SecurityPolicy::None);
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(OpcuaClient::parse_security_policy("basic256sha256"), SecurityPolicy::Basic256Sha256);
+  EXPECT_EQ(OpcuaClient::parse_security_policy("Basic256Sha256"), SecurityPolicy::Basic256Sha256);
+  EXPECT_EQ(OpcuaClient::parse_security_policy("Aes128Sha256RsaOaep"), SecurityPolicy::Aes128Sha256RsaOaep);
+  EXPECT_EQ(OpcuaClient::parse_security_policy("Aes256_Sha256_RsaPss"), SecurityPolicy::Aes256Sha256RsaPss);
+  // Unknown -> safe default + ok=false.
+  EXPECT_EQ(OpcuaClient::parse_security_policy("Bogus", &ok), SecurityPolicy::None);
+  EXPECT_FALSE(ok);
+}
+
+TEST(OpcuaClientSecurity, SecurityPolicyUri) {
+  EXPECT_EQ(OpcuaClient::security_policy_uri(SecurityPolicy::None), "http://opcfoundation.org/UA/SecurityPolicy#None");
+  EXPECT_EQ(OpcuaClient::security_policy_uri(SecurityPolicy::Basic256Sha256),
+            "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256");
+  EXPECT_EQ(OpcuaClient::security_policy_uri(SecurityPolicy::Aes128Sha256RsaOaep),
+            "http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep");
+  EXPECT_EQ(OpcuaClient::security_policy_uri(SecurityPolicy::Aes256Sha256RsaPss),
+            "http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss");
+}
+
+TEST(OpcuaClientSecurity, ParseSecurityMode) {
+  bool ok = false;
+  EXPECT_EQ(OpcuaClient::parse_security_mode("none", &ok), SecurityMode::None);
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(OpcuaClient::parse_security_mode("Sign"), SecurityMode::Sign);
+  EXPECT_EQ(OpcuaClient::parse_security_mode("SignAndEncrypt"), SecurityMode::SignAndEncrypt);
+  EXPECT_EQ(OpcuaClient::parse_security_mode("sign_and_encrypt"), SecurityMode::SignAndEncrypt);
+  EXPECT_EQ(OpcuaClient::parse_security_mode("bogus", &ok), SecurityMode::None);
+  EXPECT_FALSE(ok);
+}
+
+TEST(OpcuaClientSecurity, ParseUserAuthMode) {
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode("anonymous"), UserAuthMode::Anonymous);
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode(""), UserAuthMode::Anonymous);
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode("username"), UserAuthMode::UsernamePassword);
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode("UsernamePassword"), UserAuthMode::UsernamePassword);
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode("x509"), UserAuthMode::X509);
+  EXPECT_EQ(OpcuaClient::parse_user_auth_mode("certificate"), UserAuthMode::X509);
+}
+
+TEST(OpcuaClientSecurity, RequiresSecureChannel) {
+  OpcuaClientConfig cfg;
+  EXPECT_FALSE(OpcuaClient::requires_secure_channel(cfg));  // defaults: None/None
+  cfg.user_auth_mode = UserAuthMode::UsernamePassword;
+  // Username/password alone does NOT imply an encrypted channel.
+  EXPECT_FALSE(OpcuaClient::requires_secure_channel(cfg));
+  cfg.security_mode = SecurityMode::Sign;
+  EXPECT_TRUE(OpcuaClient::requires_secure_channel(cfg));
+  cfg.security_mode = SecurityMode::None;
+  cfg.security_policy = SecurityPolicy::Basic256Sha256;
+  EXPECT_TRUE(OpcuaClient::requires_secure_channel(cfg));
+}
+
+TEST(OpcuaClientSecurity, ConnectSecureWithoutCertFailsFast) {
+  // A secured profile with no client cert/key must fail config-time, before
+  // touching the network, and leave the client disconnected.
+  OpcuaClient client;
+  OpcuaClientConfig cfg;
+  cfg.endpoint_url = "opc.tcp://localhost:49998";
+  cfg.connect_timeout = std::chrono::milliseconds(500);
+  cfg.security_policy = SecurityPolicy::Basic256Sha256;
+  cfg.security_mode = SecurityMode::SignAndEncrypt;
+  EXPECT_FALSE(client.connect(cfg));
+  EXPECT_FALSE(client.is_connected());
+}
+
 TEST(OpcuaClientTest, CurrentConfigPersistence) {
   OpcuaClient client;
   OpcuaClientConfig cfg;

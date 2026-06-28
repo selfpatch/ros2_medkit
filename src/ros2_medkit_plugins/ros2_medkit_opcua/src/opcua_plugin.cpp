@@ -116,8 +116,49 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   if (config.contains("endpoint_url")) {
     client_config_.endpoint_url = config["endpoint_url"].get<std::string>();
   }
-  // NOTE: OPC-UA security (username/password, certificates) not yet implemented.
-  // Connect uses Anonymous auth with SecurityPolicy=None.
+
+  // OPC-UA SecureChannel security + user identity. All opt-in; defaults keep
+  // the legacy anonymous + SecurityPolicy=None behaviour.
+  if (config.contains("security_policy")) {
+    client_config_.security_policy = OpcuaClient::parse_security_policy(config["security_policy"].get<std::string>());
+  }
+  if (config.contains("security_mode") || config.contains("message_security_mode")) {
+    const std::string mode_str = config.contains("security_mode") ? config["security_mode"].get<std::string>()
+                                                                  : config["message_security_mode"].get<std::string>();
+    client_config_.security_mode = OpcuaClient::parse_security_mode(mode_str);
+  }
+  if (config.contains("client_cert_path")) {
+    client_config_.client_cert_path = config["client_cert_path"].get<std::string>();
+  }
+  if (config.contains("client_key_path")) {
+    client_config_.client_key_path = config["client_key_path"].get<std::string>();
+  }
+  if (config.contains("application_uri")) {
+    client_config_.application_uri = config["application_uri"].get<std::string>();
+  }
+  if (config.contains("trust_list_paths") && config["trust_list_paths"].is_array()) {
+    client_config_.trust_list_paths.clear();
+    for (const auto & p : config["trust_list_paths"]) {
+      if (p.is_string() && !p.get<std::string>().empty()) {
+        client_config_.trust_list_paths.push_back(p.get<std::string>());
+      }
+    }
+  }
+  if (config.contains("reject_untrusted")) {
+    client_config_.reject_untrusted = config["reject_untrusted"].get<bool>();
+  }
+  if (config.contains("user_auth_mode")) {
+    client_config_.user_auth_mode = OpcuaClient::parse_user_auth_mode(config["user_auth_mode"].get<std::string>());
+  }
+  if (config.contains("username")) {
+    client_config_.username = config["username"].get<std::string>();
+  }
+  if (config.contains("password")) {
+    client_config_.password = config["password"].get<std::string>();
+  }
+  if (config.contains("user_cert_path")) {
+    client_config_.user_cert_path = config["user_cert_path"].get<std::string>();
+  }
 
   if (config.contains("node_map_path")) {
     node_map_path_ = config["node_map_path"].get<std::string>();
@@ -140,6 +181,58 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   }
   if (auto * env = std::getenv("OPCUA_NODE_MAP_PATH")) {
     node_map_path_ = env;
+  }
+  // Security env overrides (for Docker / appliance deployments).
+  if (auto * env = std::getenv("OPCUA_SECURITY_POLICY")) {
+    client_config_.security_policy = OpcuaClient::parse_security_policy(env);
+  }
+  if (auto * env = std::getenv("OPCUA_SECURITY_MODE")) {
+    client_config_.security_mode = OpcuaClient::parse_security_mode(env);
+  }
+  if (auto * env = std::getenv("OPCUA_CLIENT_CERT")) {
+    client_config_.client_cert_path = env;
+  }
+  if (auto * env = std::getenv("OPCUA_CLIENT_KEY")) {
+    client_config_.client_key_path = env;
+  }
+  if (auto * env = std::getenv("OPCUA_APPLICATION_URI")) {
+    client_config_.application_uri = env;
+  }
+  if (auto * env = std::getenv("OPCUA_TRUST_LIST")) {
+    // Colon-separated list of DER trust-store paths.
+    client_config_.trust_list_paths.clear();
+    std::string list = env;
+    size_t start = 0;
+    while (start <= list.size()) {
+      size_t sep = list.find(':', start);
+      std::string path = list.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+      if (!path.empty()) {
+        client_config_.trust_list_paths.push_back(path);
+      }
+      if (sep == std::string::npos) {
+        break;
+      }
+      start = sep + 1;
+    }
+  }
+  if (auto * env = std::getenv("OPCUA_REJECT_UNTRUSTED")) {
+    std::string v = env;
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    client_config_.reject_untrusted = !(v == "0" || v == "false" || v == "no");
+  }
+  if (auto * env = std::getenv("OPCUA_USER_AUTH")) {
+    client_config_.user_auth_mode = OpcuaClient::parse_user_auth_mode(env);
+  }
+  if (auto * env = std::getenv("OPCUA_USERNAME")) {
+    client_config_.username = env;
+  }
+  if (auto * env = std::getenv("OPCUA_PASSWORD")) {
+    client_config_.password = env;
+  }
+  if (auto * env = std::getenv("OPCUA_USER_CERT")) {
+    client_config_.user_cert_path = env;
   }
 
   if (!node_map_path_.empty()) {
@@ -184,9 +277,7 @@ void OpcuaPlugin::set_context(PluginContext & context) {
     }
   }
 
-  log_warn(
-      "OPC-UA security: Anonymous auth, SecurityPolicy=None. "
-      "Not suitable for untrusted networks.");
+  log_security_profile();
 
   if (client_->connect(client_config_)) {
     log_info("Connected to OPC-UA server: " + client_config_.endpoint_url);
@@ -654,6 +745,60 @@ void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
     }
 
     pub_it->second->publish(msg);
+  }
+}
+
+void OpcuaPlugin::log_security_profile() const {
+  auto policy_name = [](SecurityPolicy p) -> std::string {
+    switch (p) {
+      case SecurityPolicy::None:
+        return "None";
+      case SecurityPolicy::Basic256Sha256:
+        return "Basic256Sha256";
+      case SecurityPolicy::Aes128Sha256RsaOaep:
+        return "Aes128Sha256RsaOaep";
+      case SecurityPolicy::Aes256Sha256RsaPss:
+        return "Aes256Sha256RsaPss";
+    }
+    return "None";
+  };
+  auto mode_name = [](SecurityMode m) -> std::string {
+    switch (m) {
+      case SecurityMode::None:
+        return "None";
+      case SecurityMode::Sign:
+        return "Sign";
+      case SecurityMode::SignAndEncrypt:
+        return "SignAndEncrypt";
+    }
+    return "None";
+  };
+  auto auth_name = [](UserAuthMode a) -> std::string {
+    switch (a) {
+      case UserAuthMode::Anonymous:
+        return "Anonymous";
+      case UserAuthMode::UsernamePassword:
+        return "Username/Password";
+      case UserAuthMode::X509:
+        return "X.509";
+    }
+    return "Anonymous";
+  };
+
+  const std::string profile = "OPC-UA security: SecurityPolicy=" + policy_name(client_config_.security_policy) +
+                              ", MessageSecurityMode=" + mode_name(client_config_.security_mode) +
+                              ", user=" + auth_name(client_config_.user_auth_mode);
+
+  const bool unsecured =
+      !OpcuaClient::requires_secure_channel(client_config_) && client_config_.user_auth_mode == UserAuthMode::Anonymous;
+  if (unsecured) {
+    log_warn(profile + ". Unsecured - not suitable for untrusted networks.");
+  } else {
+    if (!client_config_.reject_untrusted) {
+      log_warn(profile + ". WARNING: reject_untrusted=false (accepts any server certificate).");
+    } else {
+      log_info(profile);
+    }
   }
 }
 

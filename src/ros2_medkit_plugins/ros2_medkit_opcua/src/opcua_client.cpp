@@ -16,8 +16,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <sstream>
 #include <thread>
 #include <type_traits>
@@ -26,6 +28,10 @@
 
 #include <open62541/client_subscriptions.h>
 #include <open62541/types.h>
+#include <open62541pp/config.hpp>
+#ifdef UA_ENABLE_ENCRYPTION
+#include <open62541/plugin/pki_default.h>
+#endif
 #include <rclcpp/logging.hpp>
 #include <rcutils/logging.h>
 
@@ -146,6 +152,26 @@ OpcuaValue variant_to_value(const opcua::Variant & var) {
   return std::string("<unsupported type>");
 }
 
+// Lower-case copy for case-insensitive config parsing.
+std::string to_lower(const std::string & s) {
+  std::string out = s;
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return out;
+}
+
+// Read a whole file into an opcua::ByteString (binary-safe). Returns an empty
+// ByteString on failure; the caller treats empty cert/key as a config error.
+opcua::ByteString read_file_bytes(const std::string & path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    return opcua::ByteString{};
+  }
+  std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  return opcua::ByteString(std::string_view(data));
+}
+
 opcua::Variant value_to_variant(const OpcuaValue & val) {
   return std::visit(
       [](auto && v) -> opcua::Variant {
@@ -211,6 +237,212 @@ OpcuaClient::~OpcuaClient() {
   disconnect();
 }
 
+// --- Security config helpers (pure / unit-testable) ---
+
+SecurityPolicy OpcuaClient::parse_security_policy(const std::string & name, bool * ok) {
+  if (ok) {
+    *ok = true;
+  }
+  const std::string n = to_lower(name);
+  if (n.empty() || n == "none") {
+    return SecurityPolicy::None;
+  }
+  if (n == "basic256sha256") {
+    return SecurityPolicy::Basic256Sha256;
+  }
+  if (n == "aes128sha256rsaoaep" || n == "aes128_sha256_rsaoaep") {
+    return SecurityPolicy::Aes128Sha256RsaOaep;
+  }
+  if (n == "aes256sha256rsapss" || n == "aes256_sha256_rsapss") {
+    return SecurityPolicy::Aes256Sha256RsaPss;
+  }
+  if (ok) {
+    *ok = false;
+  }
+  return SecurityPolicy::None;
+}
+
+std::string OpcuaClient::security_policy_uri(SecurityPolicy policy) {
+  switch (policy) {
+    case SecurityPolicy::None:
+      return "http://opcfoundation.org/UA/SecurityPolicy#None";
+    case SecurityPolicy::Basic256Sha256:
+      return "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256";
+    case SecurityPolicy::Aes128Sha256RsaOaep:
+      return "http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep";
+    case SecurityPolicy::Aes256Sha256RsaPss:
+      return "http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss";
+  }
+  return "http://opcfoundation.org/UA/SecurityPolicy#None";
+}
+
+SecurityMode OpcuaClient::parse_security_mode(const std::string & name, bool * ok) {
+  if (ok) {
+    *ok = true;
+  }
+  const std::string n = to_lower(name);
+  if (n.empty() || n == "none") {
+    return SecurityMode::None;
+  }
+  if (n == "sign") {
+    return SecurityMode::Sign;
+  }
+  if (n == "signandencrypt" || n == "sign_and_encrypt") {
+    return SecurityMode::SignAndEncrypt;
+  }
+  if (ok) {
+    *ok = false;
+  }
+  return SecurityMode::None;
+}
+
+UserAuthMode OpcuaClient::parse_user_auth_mode(const std::string & name, bool * ok) {
+  if (ok) {
+    *ok = true;
+  }
+  const std::string n = to_lower(name);
+  if (n.empty() || n == "anonymous") {
+    return UserAuthMode::Anonymous;
+  }
+  if (n == "username" || n == "usernamepassword" || n == "username_password" || n == "password") {
+    return UserAuthMode::UsernamePassword;
+  }
+  if (n == "x509" || n == "certificate" || n == "cert") {
+    return UserAuthMode::X509;
+  }
+  if (ok) {
+    *ok = false;
+  }
+  return UserAuthMode::Anonymous;
+}
+
+bool OpcuaClient::requires_secure_channel(const OpcuaClientConfig & config) {
+  return config.security_policy != SecurityPolicy::None || config.security_mode != SecurityMode::None;
+}
+
+namespace {
+
+#ifdef UA_ENABLE_ENCRYPTION
+opcua::MessageSecurityMode to_ua_security_mode(SecurityMode mode) {
+  switch (mode) {
+    case SecurityMode::None:
+      return opcua::MessageSecurityMode::None;
+    case SecurityMode::Sign:
+      return opcua::MessageSecurityMode::Sign;
+    case SecurityMode::SignAndEncrypt:
+      return opcua::MessageSecurityMode::SignAndEncrypt;
+  }
+  return opcua::MessageSecurityMode::None;
+}
+#endif
+
+// Rebuild ``client`` with the SecureChannel + user-identity profile requested
+// by ``cfg``. A fresh ClientConfig is mandatory for secured connections
+// because the application-instance certificate and trust list can only be
+// supplied at construction (UA_ClientConfig_setDefaultEncryption). Returns
+// false on a fatal configuration error (already logged); the caller then
+// reports the connect as failed without contacting the server.
+bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg) {
+  const bool secure = OpcuaClient::requires_secure_channel(cfg);
+
+  if (!secure) {
+    // Unsecured channel (SecurityPolicy=None, MessageSecurityMode=None). A
+    // username/password or X.509 identity may still be applied below.
+    client = opcua::Client();
+  } else {
+#ifndef UA_ENABLE_ENCRYPTION
+    RCLCPP_ERROR(opcua_client_logger(),
+                 "OPC-UA SecurityPolicy/MessageSecurityMode requested but this build has no "
+                 "encryption support (UA_ENABLE_ENCRYPTION is off)");
+    return false;
+#else
+    if (cfg.client_cert_path.empty() || cfg.client_key_path.empty()) {
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA secured connection requires client_cert_path and client_key_path");
+      return false;
+    }
+    auto cert = read_file_bytes(cfg.client_cert_path);
+    auto key = read_file_bytes(cfg.client_key_path);
+    if (cert.empty() || key.empty()) {
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA: failed to read client cert/key ('%s' / '%s')",
+                   cfg.client_cert_path.c_str(), cfg.client_key_path.c_str());
+      return false;
+    }
+
+    std::vector<opcua::ByteString> trust;
+    trust.reserve(cfg.trust_list_paths.size());
+    for (const auto & p : cfg.trust_list_paths) {
+      auto b = read_file_bytes(p);
+      if (b.empty()) {
+        RCLCPP_WARN(opcua_client_logger(), "OPC-UA: skipping unreadable trust-list entry '%s'", p.c_str());
+        continue;
+      }
+      trust.push_back(std::move(b));
+    }
+
+    opcua::ClientConfig cc(cert, key, trust, {});
+
+    // Force the requested SecurityPolicy. An empty URI lets open62541 pick the
+    // highest the server offers; we want explicit selection so a downgraded
+    // server endpoint cannot silently weaken the channel.
+    const std::string policy_uri = OpcuaClient::security_policy_uri(cfg.security_policy);
+    if (cfg.security_policy != SecurityPolicy::None && !policy_uri.empty()) {
+      UA_String_clear(&cc.handle()->securityPolicyUri);
+      cc.handle()->securityPolicyUri = UA_STRING_ALLOC(policy_uri.c_str());
+    }
+
+    cc.setSecurityMode(to_ua_security_mode(cfg.security_mode));
+
+    // The application URI must match the URI SAN in the client certificate or
+    // the server rejects the channel with BadCertificateUriInvalid.
+    if (!cfg.application_uri.empty()) {
+      UA_String_clear(&cc.handle()->clientDescription.applicationUri);
+      cc.handle()->clientDescription.applicationUri = UA_STRING_ALLOC(cfg.application_uri.c_str());
+    }
+
+    // Trust handling: by default validate the server certificate against the
+    // trust list. When reject_untrusted is false, accept any server
+    // certificate (lab / trust-on-first-use only).
+    if (!cfg.reject_untrusted) {
+      auto & cv = cc.handle()->certificateVerification;
+      if (cv.clear) {
+        cv.clear(&cv);
+      }
+      UA_CertificateVerification_AcceptAll(&cv);
+    }
+
+    client = opcua::Client(std::move(cc));
+#endif
+  }
+
+  // User identity token (applied regardless of channel encryption).
+  switch (cfg.user_auth_mode) {
+    case UserAuthMode::Anonymous:
+      client.config().setUserIdentityToken(opcua::AnonymousIdentityToken{});
+      break;
+    case UserAuthMode::UsernamePassword:
+      client.config().setUserIdentityToken(opcua::UserNameIdentityToken(cfg.username, cfg.password));
+      break;
+    case UserAuthMode::X509: {
+#ifdef UA_ENABLE_ENCRYPTION
+      auto ucert = read_file_bytes(cfg.user_cert_path);
+      if (ucert.empty()) {
+        RCLCPP_ERROR(opcua_client_logger(), "OPC-UA X.509 user auth: failed to read user_cert_path '%s'",
+                     cfg.user_cert_path.c_str());
+        return false;
+      }
+      client.config().setUserIdentityToken(opcua::X509IdentityToken(std::move(ucert)));
+#else
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA X.509 user auth requires an encryption-enabled build");
+      return false;
+#endif
+      break;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   impl_->config = config;
@@ -220,6 +452,14 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
       impl_->connected = true;
       return true;
     }
+
+    // (Re)build the client with the requested security profile before every
+    // connect so reconnects re-apply the same SecureChannel settings.
+    if (!apply_security_config(impl_->client, config)) {
+      impl_->connected = false;
+      return false;
+    }
+
     impl_->client.config().setTimeout(static_cast<uint32_t>(config.connect_timeout.count()));
     impl_->client.connect(config.endpoint_url);
     impl_->connected = true;
@@ -235,7 +475,8 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
     }
 
     return true;
-  } catch (const opcua::BadStatus &) {
+  } catch (const opcua::BadStatus & e) {
+    RCLCPP_WARN(opcua_client_logger(), "OPC-UA connect to '%s' failed: %s", config.endpoint_url.c_str(), e.what());
     impl_->connected = false;
     return false;
   }

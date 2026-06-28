@@ -126,6 +126,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Publish PLC values to ROS 2 topics (called after each poll)
   void publish_values(const PollSnapshot & snap);
 
+  // Log the effective OPC-UA security profile (policy / mode / user auth) at
+  // startup; warns when running unsecured.
+  void log_security_profile() const;
+
   // Build JSON response for data endpoint
   nlohmann::json build_data_response(const std::string & entity_id) const;
 
