@@ -17,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cctype>
+#include <cinttypes>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -448,7 +449,8 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
 
   try {
     auto log = std::make_unique<FaultAuditLog>(audit_path, retention);
-    RCLCPP_INFO(get_logger(), "Fault audit log enabled: %s (transitions=%s, retention=%ld, resume_seq=%ld)",
+    RCLCPP_INFO(get_logger(),
+                "Fault audit log enabled: %s (transitions=%s, retention=%" PRId64 ", resume_seq=%" PRId64 ")",
                 audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention, log->head().seq);
     return log;
   } catch (const std::exception & e) {

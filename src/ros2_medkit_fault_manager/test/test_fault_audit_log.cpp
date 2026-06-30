@@ -59,7 +59,11 @@ void raw_exec(const std::string & db_path, const std::string & sql) {
 /// can confirm the append-only triggers reject a write.
 int raw_exec_rc(const std::string & db_path, const std::string & sql) {
   sqlite3 * db = nullptr;
-  EXPECT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
+  if (sqlite3_open(db_path.c_str(), &db) != SQLITE_OK) {
+    ADD_FAILURE() << "sqlite3_open failed: " << (db ? sqlite3_errmsg(db) : "out of memory");
+    sqlite3_close(db);  // sqlite3 allows close on a failed-open handle (incl. nullptr).
+    return SQLITE_ERROR;
+  }
   int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
   sqlite3_close(db);
   return rc;
