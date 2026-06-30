@@ -350,22 +350,21 @@ ConditionReplayStrategy OpcuaPoller::parse_replay_strategy(const std::string & n
   return ConditionReplayStrategy::Auto;
 }
 
-void OpcuaPoller::replay_active_conditions() {
-  // Shared warn sink (operator-visible) used by the strategy branches.
-  auto warn = [this](const std::string & msg) {
-    if (config_.log_warn) {
-      config_.log_warn(msg);
-    } else {
-      RCLCPP_WARN(opcua_poller_logger(), "%s", msg.c_str());
-    }
-  };
+void OpcuaPoller::warn_operator(const std::string & msg) {
+  if (config_.log_warn) {
+    config_.log_warn(msg);
+  } else {
+    RCLCPP_WARN(opcua_poller_logger(), "%s", msg.c_str());
+  }
+}
 
+void OpcuaPoller::replay_active_conditions() {
   switch (config_.condition_replay_strategy) {
     case ConditionReplayStrategy::Off:
       return;
     case ConditionReplayStrategy::Method:
       if (!try_condition_refresh() && !condition_refresh_warned_) {
-        warn(
+        warn_operator(
             "OPC-UA ConditionRefresh rejected and replay strategy is 'method'; active conditions "
             "will NOT be replayed on reconnect with this server. Live transitions still flow. See issue #389.");
         condition_refresh_warned_ = true;
@@ -382,7 +381,8 @@ void OpcuaPoller::replay_active_conditions() {
         return;
       }
       if (!condition_refresh_warned_) {
-        warn("OPC-UA ConditionRefresh rejected; using read-based active-condition replay fallback (issue #389).");
+        warn_operator(
+            "OPC-UA ConditionRefresh rejected; using read-based active-condition replay fallback (issue #389).");
         condition_refresh_warned_ = true;
       }
       read_fallback_replay();
@@ -391,30 +391,57 @@ void OpcuaPoller::replay_active_conditions() {
 }
 
 bool OpcuaPoller::try_condition_refresh() {
-  // Server object NodeId (i=2253) hosts the ConditionRefresh method
-  // (i=3875 - per Part 9 §5.5.7). Servers that reject it (BadMethodInvalid in
-  // open62541, BadNodeIdUnknown on Siemens S7-1500, etc.) return an error;
-  // the caller then decides whether to fall back to the read-based replay.
-  static constexpr uint32_t kServerObjectId = 2253;
+  // Per Part 9 §5.5.7 ConditionRefresh is a Method of the ConditionType, so the
+  // Call's ObjectId MUST be the well-known ConditionType node (i=2782), NOT the
+  // Server object (i=2253). Calling it on the Server object is the root cause of
+  // BadNodeIdUnknown / BadMethodInvalid rejections on conformant servers
+  // (including Siemens S7-1500, which documents ConditionRefresh as supported -
+  // only ConditionRefresh2 is unsupported). The method itself is i=3875
+  // (ConditionType.ConditionRefresh) and takes the SubscriptionId argument.
+  static constexpr uint32_t kConditionTypeId = 2782;
   static constexpr uint32_t kConditionRefreshMethodId = 3875;
   std::vector<opcua::Variant> args;
   args.push_back(opcua::Variant::fromScalar(static_cast<uint32_t>(event_subscription_id_)));
   auto result =
-      client_.call_method(opcua::NodeId(0, kServerObjectId), opcua::NodeId(0, kConditionRefreshMethodId), args);
+      client_.call_method(opcua::NodeId(0, kConditionTypeId), opcua::NodeId(0, kConditionRefreshMethodId), args);
   return result.has_value();
+}
+
+OpcuaPoller::ReadReplayDisposition
+OpcuaPoller::classify_read_snapshot(const OpcuaClient::ConditionStateSnapshot & snap) {
+  // Transient read/browse failure: present but unreliable. Keep it (so reconcile
+  // does not clear) but do not feed an untrustworthy state into the machine.
+  if (snap.state_read_failed) {
+    return ReadReplayDisposition::KeepOnly;
+  }
+  // EnabledState=false: a Disabled condition is never active and is never
+  // replayed by ConditionRefresh (Part 9 §5.7.2). Exclude it entirely so a
+  // stale tracked fault can reconcile away.
+  if (!snap.enabled_state) {
+    return ReadReplayDisposition::Skip;
+  }
+  // Retain mirrors ConditionRefresh's interesting-state filter (Part 9
+  // §5.5.2): only Retain==true conditions are replayed. A condition that has
+  // gone quiet (Retain==false) is no longer of interest.
+  if (!snap.retain) {
+    return ReadReplayDisposition::Skip;
+  }
+  return ReadReplayDisposition::Feed;
 }
 
 void OpcuaPoller::read_fallback_replay() {
   // Browse each configured alarm source, read its conditions' current state,
   // and drive the same state machine as live events. Conditions that are no
-  // longer active are reconciled (cleared) afterwards - but only for sources
-  // whose scan succeeded, so a transient disconnect never falsely clears.
+  // longer active/interesting are reconciled (cleared) afterwards - but only
+  // for sources whose scan succeeded AND that positively expose Condition
+  // instance nodes, so neither a transient disconnect nor an EventNotifier-only
+  // server (S7-1500) can falsely clear live alarms (issue #478).
   //
-  // This fallback assumes each AlarmCondition instance is browseable as an
-  // immediate child of its alarm source. Validated against the open62541
-  // reference server; NOT yet validated against a real Siemens S7-1500, whose
-  // condition-instance address-space layout must be confirmed before this path
-  // can be relied on there.
+  // This fallback assumes each AlarmCondition instance is browseable from its
+  // alarm source (hierarchical child or via HasCondition). Validated against
+  // the open62541 reference server; NOT yet validated against a real Siemens
+  // S7-1500, whose condition-instance address-space layout must be confirmed
+  // before this path can be relied on there (use ConditionRefresh on Siemens).
   std::set<std::string> seen;
   std::set<std::string> failed_sources;
   for (const auto & cfg : node_map_.event_alarms()) {
@@ -426,18 +453,40 @@ void OpcuaPoller::read_fallback_replay() {
       failed_sources.insert(cfg.source_node_id_str);
       continue;
     }
+    if (!conditions.empty()) {
+      // The source exposes Condition instances as nodes -> read-fallback is
+      // viable here and reconcile may clear stale faults for it.
+      read_modeled_sources_.insert(cfg.source_node_id_str);
+      read_unsupported_warned_sources_.erase(cfg.source_node_id_str);
+    } else if (read_modeled_sources_.find(cfg.source_node_id_str) == read_modeled_sources_.end()) {
+      // Successful scan, zero Condition instance nodes, and this source has
+      // never yielded any. Almost certainly an EventNotifier-only server
+      // (e.g. S7-1500). Do NOT clear its tracked faults; warn once.
+      if (read_unsupported_warned_sources_.insert(cfg.source_node_id_str).second) {
+        warn_operator(
+            "OPC-UA read-based active-condition replay found no Condition instance nodes under source '" +
+            cfg.source_node_id_str +
+            "'. This server appears to expose alarms via EventNotifier only (e.g. Siemens S7-1500), so the "
+            "read fallback cannot recover the active set; tracked faults are preserved (not cleared) and live "
+            "transitions still flow. Prefer ConditionRefresh ('method' or 'auto'). See issue #478.");
+      }
+    }
     for (const auto & snap : conditions) {
-      if (snap.state_read_failed) {
-        // Condition is present but its ActiveState read failed transiently.
-        // Keep it in ``seen`` (so reconcile does not clear it) without feeding
-        // an unreliable state into the state machine.
-        seen.insert(snap.condition_id.toString());
+      const std::string cid = snap.condition_id.toString();
+      const ReadReplayDisposition disp = classify_read_snapshot(snap);
+      if (disp == ReadReplayDisposition::Skip) {
+        // Not interesting (Disabled or Retain=false): leave out of ``seen`` so
+        // any stale tracked fault reconciles away.
         continue;
       }
-      // Mark every successfully observed condition as seen, even if it matches
+      // Mark every interesting/observed condition as seen, even if it matches
       // no mapping below. Otherwise reconcile_after_read would treat a live (but
       // unmapped) condition as "cleared while offline" and wrongly clear it.
-      seen.insert(snap.condition_id.toString());
+      seen.insert(cid);
+      if (disp == ReadReplayDisposition::KeepOnly) {
+        // Present but unreliable (transient read failure): kept, not fed.
+        continue;
+      }
 
       AlarmEventInput input;
       input.enabled_state = snap.enabled_state;
@@ -466,12 +515,13 @@ void OpcuaPoller::read_fallback_replay() {
       apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr);
     }
   }
-  reconcile_after_read(seen, failed_sources);
+  reconcile_after_read(seen, failed_sources, read_modeled_sources_);
 }
 
 bool OpcuaPoller::should_clear_condition(SovdAlarmStatus last_status, const std::string & condition_id,
                                          const std::string & source_id, const std::set<std::string> & seen,
-                                         const std::set<std::string> & failed_sources) {
+                                         const std::set<std::string> & failed_sources,
+                                         const std::set<std::string> & modeled_sources) {
   const bool was_active = (last_status == SovdAlarmStatus::Confirmed || last_status == SovdAlarmStatus::Healed);
   if (!was_active) {
     return false;
@@ -481,16 +531,23 @@ bool OpcuaPoller::should_clear_condition(SovdAlarmStatus last_status, const std:
   if (failed_sources.find(source_id) != failed_sources.end()) {
     return false;
   }
+  // Safety gate (issue #478): only clear when the source is positively known to
+  // model Condition instances as address-space nodes. An EventNotifier-only
+  // server (S7-1500) yields zero condition nodes, so an empty read scan must
+  // never wipe its tracked faults - this is the single most important guard.
+  if (modeled_sources.find(source_id) == modeled_sources.end()) {
+    return false;
+  }
   return seen.find(condition_id) == seen.end();
 }
 
-void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen,
-                                       const std::set<std::string> & failed_sources) {
+void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources,
+                                       const std::set<std::string> & modeled_sources) {
   std::vector<AlarmEventDelivery> clears;
   {
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
-      if (should_clear_condition(runtime.last_status, cid, runtime.source_id, seen, failed_sources)) {
+      if (should_clear_condition(runtime.last_status, cid, runtime.source_id, seen, failed_sources, modeled_sources)) {
         // Tracked as active but absent from a successful read scan -> the alarm
         // cleared while we were offline. Clear the SOVD fault.
         runtime.last_status = SovdAlarmStatus::Cleared;
@@ -666,7 +723,7 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
       it->second.latest_event_id = *event_id;
     }
 
-    auto outcome = AlarmStateMachine::compute(prev_status, input);
+    auto outcome = AlarmStateMachine::compute(prev_status, input, config_.require_confirm_for_clear);
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
                         "state machine: enabled="
                             << input.enabled_state << " active=" << input.active_state << " acked=" << input.acked_state

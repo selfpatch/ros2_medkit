@@ -342,39 +342,110 @@ TEST(ConditionReplayStrategyParse, KnownValues) {
   EXPECT_EQ(OpcuaPoller::parse_replay_strategy("bogus"), ConditionReplayStrategy::Auto);
 }
 
-// -- Issue #479: read-replay reconcile must not falsely clear faults ---------
+// -- Issue #479/#478: read-replay reconcile must not falsely clear faults -----
 
 TEST(ReconcileShouldClearCondition, ClearsActiveConditionAbsentFromSuccessfulScan) {
-  // An active condition that the (successful) scan did not observe is gone.
-  std::set<std::string> seen;            // condition not seen this scan
-  std::set<std::string> failed_sources;  // its source scanned fine
-  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
-  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources));
+  // An active condition that the (successful) scan did not observe is gone -
+  // but only when its source is positively known to model condition nodes.
+  std::set<std::string> seen;                      // condition not seen this scan
+  std::set<std::string> failed_sources;            // its source scanned fine
+  std::set<std::string> modeled_sources{"src-1"};  // source exposes condition nodes
+  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources,
+                                                  modeled_sources));
+  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources,
+                                                  modeled_sources));
 }
 
 TEST(ReconcileShouldClearCondition, KeepsConditionStillSeen) {
   std::set<std::string> seen{"cond-1"};
   std::set<std::string> failed_sources;
-  EXPECT_FALSE(
-      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
+  std::set<std::string> modeled_sources{"src-1"};
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
 }
 
 TEST(ReconcileShouldClearCondition, SkipsClearWhenSourceScanFailed) {
-  // The core false-clear guard: source scan failed (browse error / disconnect),
+  // The false-clear guard: source scan failed (browse error / disconnect),
   // so the condition's absence from ``seen`` must NOT clear it.
   std::set<std::string> seen;                     // not observed...
   std::set<std::string> failed_sources{"src-1"};  // ...because its source failed
-  EXPECT_FALSE(
-      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
-  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources));
+  std::set<std::string> modeled_sources{"src-1"};
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
+}
+
+// Issue #478 safety-gate: an empty scan from a source that has NEVER yielded a
+// condition instance node (EventNotifier-only server, e.g. S7-1500) must NOT
+// clear the still-active tracked fault. This is the single most important
+// outcome of the hardening.
+TEST(ReconcileShouldClearCondition, NeverClearsWhenSourceNotPositivelyModeled) {
+  std::set<std::string> seen;             // condition not seen (server has no nodes)
+  std::set<std::string> failed_sources;   // the browse itself succeeded (empty)
+  std::set<std::string> modeled_sources;  // src-1 has never yielded a condition node
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
 }
 
 TEST(ReconcileShouldClearCondition, NeverClearsInactiveCondition) {
   std::set<std::string> seen;
   std::set<std::string> failed_sources;
-  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Cleared, "cond-1", "src-1", seen, failed_sources));
-  EXPECT_FALSE(
-      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Suppressed, "cond-1", "src-1", seen, failed_sources));
+  std::set<std::string> modeled_sources{"src-1"};
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Cleared, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Suppressed, "cond-1", "src-1", seen, failed_sources,
+                                                   modeled_sources));
+}
+
+// -- Issue #478: read-scan snapshot classification (Retain / EnabledState /
+// transient-keep filter that mirrors ConditionRefresh semantics). --------------
+
+namespace {
+OpcuaClient::ConditionStateSnapshot make_snap(bool enabled, bool active, bool retain, bool read_failed = false) {
+  OpcuaClient::ConditionStateSnapshot s;
+  s.enabled_state = enabled;
+  s.active_state = active;
+  s.retain = retain;
+  s.state_read_failed = read_failed;
+  return s;
+}
+}  // namespace
+
+TEST(ReadSnapshotClassify, RetainTrueActiveIsFed) {
+  auto d = OpcuaPoller::classify_read_snapshot(make_snap(/*enabled=*/true, /*active=*/true, /*retain=*/true));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::Feed);
+}
+
+TEST(ReadSnapshotClassify, RetainTrueInactiveStillInterestingIsFed) {
+  // ActiveState=false but Retain=true => unacked/unconfirmed, still of interest
+  // (ConditionRefresh would replay it). Fed so the HEALED latch is preserved.
+  auto d = OpcuaPoller::classify_read_snapshot(make_snap(/*enabled=*/true, /*active=*/false, /*retain=*/true));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::Feed);
+}
+
+TEST(ReadSnapshotClassify, RetainFalseIsSkipped) {
+  // Retain=false => no longer interesting; not seen so a stale fault reconciles.
+  auto d = OpcuaPoller::classify_read_snapshot(make_snap(/*enabled=*/true, /*active=*/false, /*retain=*/false));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::Skip);
+}
+
+TEST(ReadSnapshotClassify, DisabledIsSkippedEvenIfActiveAndRetained) {
+  // EnabledState=false must never be treated as active in the read path, even
+  // when ActiveState/Retain would otherwise mark it interesting.
+  auto d = OpcuaPoller::classify_read_snapshot(make_snap(/*enabled=*/false, /*active=*/true, /*retain=*/true));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::Skip);
+}
+
+TEST(ReadSnapshotClassify, TransientReadFailureIsKeptNotFed) {
+  // A transient read/browse failure (flagged) keeps the condition (so reconcile
+  // does not clear it) but does not feed an unreliable state into the machine.
+  // KeepOnly takes precedence over every other field.
+  auto d = OpcuaPoller::classify_read_snapshot(
+      make_snap(/*enabled=*/false, /*active=*/false, /*retain=*/false, /*read_failed=*/true));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::KeepOnly);
 }
 
 }  // namespace ros2_medkit_gateway

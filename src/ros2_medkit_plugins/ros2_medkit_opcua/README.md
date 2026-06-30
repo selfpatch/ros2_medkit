@@ -316,6 +316,7 @@ ros2_medkit_gateway:
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
+| `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
 
 ### OPC-UA client security (SecurityPolicy, certificates, user auth)
 
@@ -352,13 +353,18 @@ Notes:
 - The encryption backend (OpenSSL) is compiled in; a build without it logs an
   error and refuses any secured profile.
 
-### Active-condition replay on reconnect (issue #389)
+### Active-condition replay on reconnect (issue #389/#478)
 
 When the gateway (re)subscribes after a drop or restart, conditions that are
 already active on the server would otherwise not be re-reported (only live
-transitions flow). The standard recovery is OPC-UA `ConditionRefresh`, but some
-servers (Siemens S7-1500) reject it with `BadNodeIdUnknown`. The
-`condition_replay_strategy` parameter controls recovery:
+transitions flow). The standard recovery is OPC-UA `ConditionRefresh`. Per
+Part 9 §5.5.7 it is a method of the **ConditionType** node (`i=2782`), so the
+Call is issued there (not the Server object) - calling it on the Server object
+was the root cause of `BadNodeIdUnknown` rejections, including on Siemens
+S7-1500, which documents `ConditionRefresh` as supported (only the optional
+`ConditionRefresh2` is not). With the corrected target, `ConditionRefresh` is
+expected to work on conformant servers and the read fallback should rarely be
+needed. The `condition_replay_strategy` parameter controls recovery:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -367,12 +373,35 @@ servers (Siemens S7-1500) reject it with `BadNodeIdUnknown`. The
 | `auto` (default) | Try `ConditionRefresh`; on rejection fall back to `read` |
 | `off` | No replay (only live transitions surface) |
 
-The read fallback browses each `alarm_source` for child AlarmCondition
-instances and reads their state, so it relies on the conditions being
-browseable under the configured source (point `alarm_source` at the owning
-Object, not the Server catch-all, for full restart recovery). It does not
-recover the live `EventId`, so an operator ack/confirm may need the next live
-event before it succeeds.
+The read fallback browses each `alarm_source` for AlarmCondition instances -
+both hierarchical Object children and targets of the `HasCondition` reference
+(`i=9006`), recursing one level - and reads their state. It mirrors
+`ConditionRefresh` semantics: only conditions with `Retain==true` form the
+active set, a `Disabled` condition (`EnabledState/Id=false`) is never treated
+as active, and a transient read failure keeps the condition rather than
+dropping it.
+
+**Safety guarantee (#478):** the read fallback NEVER clears a tracked fault for
+a source that has not positively exposed at least one Condition instance node.
+An EventNotifier-only server (e.g. S7-1500, which models no per-condition
+instance nodes) makes the browse return zero conditions; rather than wiping the
+active alarm set, the gateway preserves the last-known faults, logs an operator
+warning that read-fallback is unsupported on this server, and keeps live
+transitions flowing. Use `ConditionRefresh` (`method`/`auto`) on such servers.
+The read fallback does not recover the live `EventId`, so an operator
+ack/confirm may need the next live event before it succeeds.
+
+### Confirm-less servers and `require_confirm_for_clear` (issue #478)
+
+By default a native alarm auto-clears only after the operator has both
+Acknowledged AND Confirmed it (OPC-UA Part 9 §5.7). Some servers do not
+implement the optional `Confirm` transition - Siemens S7-1500 supports
+`Acknowledge` / `ConditionRefresh` / `AddComment` but not `Confirm`, so
+`ConfirmedState` never becomes true and an inactive alarm would latch forever.
+Set `require_confirm_for_clear: false` (or `OPCUA_REQUIRE_CONFIRM_FOR_CLEAR=0`)
+so the alarm clears on `Acknowledge` alone. The default (`true`) is unchanged
+and spec-strict; the relaxed path still requires acknowledgement and needs
+real-S7-1500 validation.
 
 Node map entries also support an optional `ros2_topic` field to override the auto-generated ROS 2 topic name for the PLC value bridge:
 
@@ -408,6 +437,7 @@ Write operations use the `set_` prefix convention:
 | `OPCUA_USERNAME` / `OPCUA_PASSWORD` | Username-password identity |
 | `OPCUA_USER_CERT` | X.509 user-token cert (DER) |
 | `OPCUA_CONDITION_REPLAY` | `method` / `read` / `auto` / `off` |
+| `OPCUA_REQUIRE_CONFIRM_FOR_CLEAR` | `0`/`false`/`no`/`off` to clear native alarms on Acknowledge alone (Confirm-less servers) |
 
 ## Hardware Deployment
 

@@ -314,4 +314,46 @@ TEST(AlarmStateMachineTest, InactiveUnackedFromSuppressedReportsHealed) {
   EXPECT_EQ(out.action, AlarmAction::ReportHealed);
 }
 
+// -- Issue #478: require_confirm_for_clear (Siemens Confirm-less clear path) --
+
+TEST(AlarmStateMachineTest, AckedNotConfirmedLatchesWhenConfirmRequiredDefault) {
+  // Default behaviour (require_confirm_for_clear=true): an acked-but-not-
+  // confirmed inactive alarm stays latched (HEALED). No regression.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.acked_state = true;
+  in.confirmed_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Confirmed, in);  // default true
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Healed);
+  EXPECT_EQ(out.action, AlarmAction::ReportHealed);
+}
+
+TEST(AlarmStateMachineTest, AckedClearsWhenConfirmNotRequired) {
+  // Confirm-less server (S7-1500): with require_confirm_for_clear=false an
+  // acknowledged inactive alarm clears even though ConfirmedState never
+  // becomes true.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.acked_state = true;
+  in.confirmed_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Confirmed, in, /*require_confirm_for_clear=*/false);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Cleared);
+  EXPECT_EQ(out.action, AlarmAction::ClearFault);
+}
+
+TEST(AlarmStateMachineTest, UnackedStillLatchesWhenConfirmNotRequired) {
+  // Even with the Confirm gate dropped, an UN-acknowledged inactive alarm must
+  // still latch (HEALED): acknowledgement is the minimum operator action.
+  AlarmEventInput in;
+  in.enabled_state = true;
+  in.active_state = false;
+  in.acked_state = false;
+  in.confirmed_state = false;
+  auto out = AlarmStateMachine::compute(SovdAlarmStatus::Confirmed, in, /*require_confirm_for_clear=*/false);
+  EXPECT_EQ(out.next_status, SovdAlarmStatus::Healed);
+  EXPECT_EQ(out.action, AlarmAction::ReportHealed);
+}
+
 }  // namespace ros2_medkit_gateway

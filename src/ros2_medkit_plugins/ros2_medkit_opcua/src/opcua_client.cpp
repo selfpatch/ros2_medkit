@@ -20,6 +20,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <type_traits>
@@ -826,14 +827,26 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
     return out;
   }
 
+  // A browse failure during state-variable resolution is "path absent" only
+  // for the explicit not-found status codes. Anything else (timeout, channel
+  // drop, server busy) is a transient failure that must NOT be read as "this
+  // child is not a condition" - otherwise a momentary glitch silently drops a
+  // live condition and lets reconcile clear its fault.
+  auto is_path_absent_code = [](UA_StatusCode code) {
+    return code == UA_STATUSCODE_BADNOMATCH || code == UA_STATUSCODE_BADNODEIDUNKNOWN ||
+           code == UA_STATUSCODE_BADNOTFOUND || code == UA_STATUSCODE_BADBROWSENAMEINVALID;
+  };
+
   // Read a Boolean two-step state variable (e.g. ActiveState/Id). Returns the
   // fallback when the path is absent or not Boolean. ``resolved`` reports
   // whether the ``state_name/Id`` path browsed successfully (used to decide if
   // a child is a condition); ``read_failed`` reports that the path resolved but
   // its value could not be read this scan (transient failure, distinct from the
-  // path simply not existing).
-  auto read_state_id = [](opcua::Node<opcua::Client> & cond, const char * state_name, bool fallback, bool * resolved,
-                          bool * read_failed) -> bool {
+  // path simply not existing). A transient BROWSE failure (as opposed to a
+  // genuine path-absent code) is also treated as resolved+read_failed so the
+  // condition is kept and flagged rather than dropped (issue #478).
+  auto read_state_id = [&is_path_absent_code](opcua::Node<opcua::Client> & cond, const char * state_name, bool fallback,
+                                              bool * resolved, bool * read_failed) -> bool {
     try {
       auto node = cond.browseChild({{0, state_name}, {0, "Id"}});
       if (resolved) {
@@ -852,18 +865,69 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
         }
         return fallback;
       }
-    } catch (const opcua::BadStatus &) {
-      // Path absent: this child is not an alarm condition.
+    } catch (const opcua::BadStatus & e) {
+      if (is_path_absent_code(e.code())) {
+        // Path genuinely absent: this child is not an alarm condition.
+        if (resolved) {
+          *resolved = false;
+        }
+        return fallback;
+      }
+      // Transient browse failure: conservatively keep the condition and flag it
+      // so the caller does not drop it (and let reconcile wrongly clear it).
       if (resolved) {
-        *resolved = false;
+        *resolved = true;
+      }
+      if (read_failed) {
+        *read_failed = true;
       }
       return fallback;
     }
   };
 
+  // Collect candidate condition nodes from the source. AlarmCondition
+  // instances may be linked as hierarchical Object children OR via the
+  // non-hierarchical HasCondition reference (i=9006, Part 9 §5.5.3); we follow
+  // both and recurse one level through HasCondition so conditions owned by an
+  // intermediate Object are still found. De-duplicated by NodeId string.
+  constexpr uint32_t kHasConditionRefId = 9006;
+  auto collect_candidates = [&](opcua::Node<opcua::Client> & src, std::vector<opcua::Node<opcua::Client>> & out_nodes,
+                                std::set<std::string> & seen_ids) {
+    auto add = [&](opcua::Node<opcua::Client> n) {
+      if (seen_ids.insert(n.id().toString()).second) {
+        out_nodes.push_back(std::move(n));
+      }
+    };
+    auto hier = src.browseChildren(opcua::ReferenceTypeId::HierarchicalReferences, opcua::NodeClass::Object);
+    for (auto & c : hier) {
+      add(c);
+    }
+    try {
+      auto linked = src.browseChildren(opcua::NodeId(0, kHasConditionRefId), opcua::NodeClass::Object);
+      for (auto & c : linked) {
+        add(c);
+      }
+    } catch (const opcua::BadStatus &) {
+      // HasCondition browse unsupported on this server: hierarchical children
+      // already collected, continue.
+    }
+    // One-level recursion through HasCondition from each hierarchical child.
+    for (auto & c : hier) {
+      try {
+        auto linked = c.browseChildren(opcua::NodeId(0, kHasConditionRefId), opcua::NodeClass::Object);
+        for (auto & gc : linked) {
+          add(gc);
+        }
+      } catch (const opcua::BadStatus &) {
+      }
+    }
+  };
+
   try {
     opcua::Node<opcua::Client> src(impl_->client, source_node);
-    auto children = src.browseChildren(opcua::ReferenceTypeId::HierarchicalReferences, opcua::NodeClass::Object);
+    std::vector<opcua::Node<opcua::Client>> children;
+    std::set<std::string> candidate_ids;
+    collect_candidates(src, children, candidate_ids);
     for (auto & child : children) {
       ConditionStateSnapshot snap;
       snap.condition_id = child.id();
