@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/core/discovery/models/asset_identity.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 
 #include <nlohmann/json.hpp>
@@ -50,6 +51,7 @@ struct Component {
   std::vector<ActionInfo> actions;        ///< Actions exposed by this component
   ComponentTopics topics;                 ///< Topics this component publishes/subscribes
   std::optional<json> host_metadata;      ///< Host system metadata (for runtime default component)
+  AssetIdentity identity;                 ///< Asset-identity nameplate (merged across sources, per-field provenance)
 
   /**
    * @brief Convert to JSON representation
@@ -93,6 +95,9 @@ struct Component {
     x_medkit["topics"] = topics.to_json();
     if (host_metadata.has_value()) {
       x_medkit["host"] = host_metadata.value();
+    }
+    if (!identity.empty()) {
+      x_medkit["identity"] = identity.to_json();
     }
     j["x-medkit"] = x_medkit;
 
@@ -178,7 +183,7 @@ inline bool operator==(const Component & a, const Component & b) {
          a.description == b.description && a.variant == b.variant && a.tags == b.tags &&
          a.parent_component_id == b.parent_component_id && a.depends_on == b.depends_on &&
          a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
-         a.topics == b.topics && a.host_metadata == b.host_metadata;
+         a.topics == b.topics && a.host_metadata == b.host_metadata && a.identity == b.identity;
 }
 inline bool operator!=(const Component & a, const Component & b) {
   return !(a == b);

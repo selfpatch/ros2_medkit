@@ -642,6 +642,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_merge_pipeline test/test_merge_pipeline.cpp)
   target_link_libraries(test_merge_pipeline gateway_ros2)
 
+  # Add asset-identity model + merge tests
+  ament_add_gtest(test_asset_identity test/test_asset_identity.cpp)
+  target_link_libraries(test_asset_identity gateway_ros2)
+
   # Add capability builder tests
   ament_add_gtest(test_capability_builder test/test_capability_builder.cpp)
   target_link_libraries(test_capability_builder gateway_ros2)

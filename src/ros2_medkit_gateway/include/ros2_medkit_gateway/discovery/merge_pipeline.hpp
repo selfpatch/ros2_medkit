@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/discovery/discovery_layer.hpp"
+#include "ros2_medkit_gateway/core/discovery/identity_merge.hpp"
 #include "ros2_medkit_gateway/core/discovery/manifest/manifest.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
@@ -58,6 +59,16 @@ class MergePipeline {
   void add_layer(std::unique_ptr<DiscoveryLayer> layer);
 
   /**
+   * @brief Set the asset-identity merge configuration (precedence + key strategy).
+   *
+   * Identity authority is independent of the structural MergePolicy: this controls
+   * which source wins per identity field and how the identity key is derived.
+   */
+  void set_identity_merge_config(IdentityMergeConfig config) {
+    identity_config_ = std::move(config);
+  }
+
+  /**
    * @brief Execute all layers and merge results
    * @return Merged entities with diagnostics report
    */
@@ -97,6 +108,7 @@ class MergePipeline {
 
   rclcpp::Logger logger_;
   std::vector<std::unique_ptr<DiscoveryLayer>> layers_;
+  IdentityMergeConfig identity_config_;
   MergeReport last_report_;
   std::unique_ptr<RuntimeLinker> linker_;
   ManifestConfig manifest_config_;
