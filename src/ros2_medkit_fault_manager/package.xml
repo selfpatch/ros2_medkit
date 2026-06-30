@@ -16,6 +16,7 @@
   <depend>ros2_medkit_serialization</depend>
   <depend>libsqlite3-dev</depend>
   <depend>nlohmann-json-dev</depend>
+  <depend>libssl-dev</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
 

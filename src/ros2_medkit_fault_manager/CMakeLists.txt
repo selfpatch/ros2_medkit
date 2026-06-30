@@ -41,6 +41,8 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# OpenSSL EVP SHA-256 for the tamper-evident audit log hash chain
+find_package(OpenSSL REQUIRED)
 # yaml-cpp is required as transitive dependency from ros2_medkit_serialization
 medkit_find_yaml_cpp()
 # rosbag2 for time-window snapshot recording
@@ -55,6 +57,7 @@ add_library(fault_manager_lib STATIC
   src/fault_manager_node.cpp
   src/fault_storage.cpp
   src/sqlite_fault_storage.cpp
+  src/fault_audit_log.cpp
   src/snapshot_capture.cpp
   src/rosbag_capture.cpp
   src/correlation/types.cpp
@@ -81,6 +84,7 @@ target_link_libraries(fault_manager_lib PUBLIC
   SQLite::SQLite3
   nlohmann_json::nlohmann_json
   yaml-cpp::yaml-cpp
+  OpenSSL::Crypto
 )
 
 medkit_apply_compat_defs(fault_manager_lib)
@@ -142,6 +146,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
   medkit_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
   medkit_set_test_domain(test_sqlite_storage)
+
+  # Fault audit log tests (hash chain, verify, rotation, reopen)
+  ament_add_gtest(test_fault_audit_log test/test_fault_audit_log.cpp)
+  target_link_libraries(test_fault_audit_log fault_manager_lib)
 
   # Snapshot capture tests
   ament_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)

@@ -27,3 +27,17 @@ fault_manager:
     # snapshots.capture_pool_size: 2                  # max concurrent capture threads (>= 1)
     # snapshots.capture_queue_depth: 16               # max pending captures (>= 1)
     # snapshots.capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
+
+    # Tamper-evident, append-only audit log of fault state transitions
+    # (occurred/confirmed/cleared). OFF by default: it adds a write + storage cost
+    # per transition. When enabled, each transition appends one immutable,
+    # hash-chained row so any later edit or deletion is detectable via verify.
+    audit_log.enabled: false
+    # Which transitions to record: "all" or "confirmed_only".
+    # audit_log.transitions: all
+    # SQLite path. Empty => sibling "fault_audit.db" next to the fault DB
+    # (or :memory: when the fault store is in-memory).
+    # audit_log.database_path: ""
+    # Seal + prune the oldest segment beyond this many retained records
+    # (0 = unlimited). A sealed anchor keeps the surviving tail verifiable.
+    # audit_log.retention_max_records: 0

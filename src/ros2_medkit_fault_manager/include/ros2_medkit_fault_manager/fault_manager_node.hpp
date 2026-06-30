@@ -23,6 +23,7 @@
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
+#include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -148,6 +149,18 @@ class FaultManagerNode : public rclcpp::Node {
   /// Falls back to global config if no entity-specific overrides match.
   DebounceConfig resolve_config(const std::string & source_id) const;
 
+  /// Create the tamper-evident audit log from parameters (nullptr if disabled).
+  std::unique_ptr<FaultAuditLog> create_audit_log();
+
+  /// Append a fault state-transition to the audit log when enabled. No-op when
+  /// the log is off, or when only confirmations are logged and this is not one.
+  /// @param transition One of the kTransition* constants.
+  /// @param fault The fault state at the time of the transition.
+  /// @param source_id The reporting source that drove the transition.
+  /// @param occurred_at_ns Wall-clock timestamp of the transition.
+  void audit_transition(const char * transition, const ros2_medkit_msgs::msg::Fault & fault,
+                        const std::string & source_id, int64_t occurred_at_ns);
+
   std::string storage_type_;
   std::string database_path_;
   int32_t confirmation_threshold_{-1};
@@ -161,6 +174,10 @@ class FaultManagerNode : public rclcpp::Node {
   DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
   std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
+
+  /// Tamper-evident audit log of fault transitions (nullptr when disabled).
+  std::unique_ptr<FaultAuditLog> audit_log_;
+  bool audit_confirmed_only_{false};  ///< When true, only "confirmed" transitions are logged
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;
