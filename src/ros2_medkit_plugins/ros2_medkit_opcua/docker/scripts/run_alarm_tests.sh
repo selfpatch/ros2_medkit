@@ -227,7 +227,34 @@ mkdir -p /tmp/alarm_test_config
 cat >/tmp/alarm_test_config/alarm_nodes.yaml <<EOF
 area_id: plc_systems
 component_id: alarm_test_runtime
-nodes: []
+# Polled detection points (status_bits + fault_enum) exercising the shared
+# fault-detection evaluator end-to-end alongside the event_alarms below. The
+# StatusWord / FaultCode Int32 registers are driven via the server's
+# ``set <NodeName> <int>`` CLI command. Fault codes are globally unique vs the
+# event_alarms codes so the shared fault tracker never flaps.
+nodes:
+  - node_id: "ns=2;s=StatusWord"
+    entity_id: tank_process
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 3
+        fault_code: PLC_PUMP_OVERLOAD
+        severity: ERROR
+        message: "Pump overload"
+  - node_id: "ns=2;s=FaultCode"
+    entity_id: tank_process
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      ok_value: 0
+      codes:
+        - code: 10
+          fault_code: PLC_VFD_OVERVOLTAGE
+          severity: ERROR
+        - code: 11
+          fault_code: PLC_VFD_OVERCURRENT
+          severity: ERROR
 event_alarms:
   - alarm_source: "ns=2;s=Alarms.Overpressure"
     entity_id: tank_process
@@ -352,6 +379,28 @@ echo "enable SensorLost" >&3
 echo "fire SensorLost 900" >&3
 wait_until_status PLC_SENSOR_LOST CONFIRMED 30
 echo "  OK PLC_SENSOR_LOST re-armed after Enable"
+
+echo "  [scenario] status-word bit decode (poll path)"
+# bit 3 set => value 8 raises PLC_PUMP_OVERLOAD; clearing the word clears it.
+echo "set StatusWord 8" >&3
+wait_until_status PLC_PUMP_OVERLOAD CONFIRMED 30
+echo "set StatusWord 0" >&3
+wait_no_fault PLC_PUMP_OVERLOAD 30
+echo "  OK PLC_PUMP_OVERLOAD raised on bit3 then cleared"
+
+echo "  [scenario] fault-code enum decode (poll path)"
+# code 11 => PLC_VFD_OVERCURRENT; transition to code 10 must raise
+# PLC_VFD_OVERVOLTAGE and clear PLC_VFD_OVERCURRENT; ok_value clears both.
+echo "set FaultCode 11" >&3
+wait_until_status PLC_VFD_OVERCURRENT CONFIRMED 30
+echo "set FaultCode 10" >&3
+wait_until_status PLC_VFD_OVERVOLTAGE CONFIRMED 30
+wait_no_fault PLC_VFD_OVERCURRENT 30
+echo "  OK enum transition 11->10: PLC_VFD_OVERVOLTAGE raised, PLC_VFD_OVERCURRENT cleared"
+echo "set FaultCode 0" >&3
+wait_no_fault PLC_VFD_OVERVOLTAGE 30
+wait_no_fault PLC_VFD_OVERCURRENT 30
+echo "  OK both VFD faults cleared on ok_value"
 
 echo "  [scenario] reconnect re-subscribes after server restart"
 # This scenario does NOT verify ConditionRefresh re-emit - the test_alarm_server
