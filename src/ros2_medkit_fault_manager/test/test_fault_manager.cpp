@@ -451,20 +451,21 @@ TEST_F(FaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
 
 TEST_F(FaultStorageTest, PassedEventIncrementsCounter) {
   rclcpp::Clock clock;
+  // confirmation_threshold = -3 so 2 FAILED stays PREFAILED (a confirmed fault is
+  // latched and would not move to PREPASSED on a heal).
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
 
-  // Report 2 FAILED events (counter = -2)
+  // Report 2 FAILED events (counter = -2, PREFAILED)
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                              clock.now(), default_config());
+                              clock.now(), config);
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                              clock.now(), default_config());
+                              clock.now(), config);
 
   // Report 3 PASSED events (counter = -2 + 3 = +1)
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                              default_config());
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                              default_config());
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                              default_config());
+  for (int i = 0; i < 3; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+  }
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
@@ -474,11 +475,12 @@ TEST_F(FaultStorageTest, PassedEventIncrementsCounter) {
 TEST_F(FaultStorageTest, HealingDisabledByDefault) {
   rclcpp::Clock clock;
 
-  // Report 1 FAILED event
+  // Report 1 FAILED event -> confirmed (threshold -1)
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now(), default_config());
 
-  // Report many PASSED events (counter = -1 + 10 = +9, but healing disabled)
+  // With healing disabled, a heal heartbeat must not downgrade a confirmed fault.
+  // The counter clamps at healing_threshold and the status latches CONFIRMED.
   for (int i = 0; i < 10; ++i) {
     storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
                                 default_config());
@@ -486,7 +488,7 @@ TEST_F(FaultStorageTest, HealingDisabledByDefault) {
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->status, Fault::STATUS_PREPASSED);  // Not HEALED since healing disabled
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // stays confirmed, not silently downgraded
 }
 
 TEST_F(FaultStorageTest, HealingWhenEnabled) {
@@ -614,6 +616,38 @@ TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
   fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
+}
+
+// Regression for #428 on the in-memory backend: a heal heartbeat must not run the
+// debounce counter off, and confirmed/healed status must latch (one report cannot
+// flip it).
+TEST_F(FaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -1;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                              clock.now(), config);
+  ASSERT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+
+  // Long heal heartbeat: counter clamps at healing_threshold, then heals.
+  for (int i = 0; i < 100; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+  }
+  EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_HEALED);
+
+  // Re-confirmation is bounded and the healed status latches until the counter
+  // walks all the way back down to the confirmation threshold.
+  for (int i = 0; i < 3; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                clock.now(), config);
+    EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+  }
+  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                              clock.now(), config);
+  EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(FaultStorageTest, GetAllFaultsReturnsAllFaults) {

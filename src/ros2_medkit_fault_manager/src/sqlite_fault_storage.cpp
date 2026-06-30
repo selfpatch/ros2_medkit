@@ -395,8 +395,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         ++new_count;
       }
 
-      // Decrement debounce counter with saturation
-      if (debounce_counter > std::numeric_limits<int32_t>::min()) {
+      // Decrement debounce counter, clamped at the confirmation threshold (lower
+      // bound). Without this floor it only stops at INT32_MIN, so after a long heal
+      // heartbeat the counter has to climb all the way back before a fault confirms.
+      if (debounce_counter > config.confirmation_threshold) {
         --debounce_counter;
       }
 
@@ -406,6 +408,11 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
       } else if (debounce_counter <= config.confirmation_threshold) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+      } else if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
+        // Hysteresis latch: a healed fault stays healed until the counter walks all
+        // the way back down to the confirmation threshold (handled above). A single
+        // FAILED must not flip it straight to a pending state.
+        new_status = current_status;
       } else if (debounce_counter < 0) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
       } else if (debounce_counter > 0) {
@@ -448,14 +455,22 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
       }
     } else {
-      // PASSED event - increment debounce counter with saturation
-      if (debounce_counter < std::numeric_limits<int32_t>::max()) {
+      // PASSED event - increment debounce counter, clamped at the healing threshold
+      // (upper bound). Without this ceiling a periodic heal heartbeat on a healthy
+      // system drives the counter to INT32_MAX, so a real fault then takes a huge
+      // number of reports to confirm.
+      if (debounce_counter < config.healing_threshold) {
         ++debounce_counter;
       }
 
       std::string new_status = current_status;
       if (config.healing_enabled && debounce_counter >= config.healing_threshold) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+      } else if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+        // Hysteresis latch: a confirmed fault stays confirmed until the counter
+        // climbs all the way up to the healing threshold (handled above). A single
+        // heal must not flip a confirmed fault back to a pending state.
+        new_status = current_status;
       } else if (debounce_counter > 0) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
       } else if (debounce_counter < 0) {

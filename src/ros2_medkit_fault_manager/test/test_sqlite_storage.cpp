@@ -514,24 +514,80 @@ TEST_F(SqliteFaultStorageTest, ConfirmationPersistsAfterReopen) {
 
 TEST_F(SqliteFaultStorageTest, PassedEventIncrementsCounter) {
   rclcpp::Clock clock;
+  // confirmation_threshold = -3 so 2 FAILED stays PREFAILED (not CONFIRMED). A
+  // confirmed fault is latched and would not move to PREPASSED on a heal.
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
 
-  // Report 2 FAILED events
+  // Report 2 FAILED events (counter -2, PREFAILED)
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), default_config());
+                               clock.now(), config);
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), default_config());
+                               clock.now(), config);
 
-  // Report 3 PASSED events
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                               default_config());
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                               default_config());
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(),
-                               default_config());
+  // Report 3 PASSED events (counter -2 -> +1)
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+  }
 
   auto fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->status, Fault::STATUS_PREPASSED);  // Counter > 0
+  EXPECT_EQ(fault->status, Fault::STATUS_PREPASSED);  // Counter > 0, never confirmed so not latched
+}
+
+// Regression for #428: a periodic heal heartbeat on a healthy system used to push
+// the debounce counter toward INT32_MAX, so a real fault then took a huge number of
+// reports to confirm. The counter must clamp at the thresholds, and a confirmed or
+// healed status must latch (one report must not flip it).
+TEST_F(SqliteFaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -1;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               clock.now(), config);
+  ASSERT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+
+  // Long heal heartbeat: counter clamps at healing_threshold instead of running off.
+  for (int i = 0; i < 100; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+  }
+  auto healed = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(healed.has_value());
+  EXPECT_EQ(healed->status, Fault::STATUS_HEALED);
+
+  // Re-confirmation is now bounded to (healing_threshold - confirmation_threshold)
+  // reports, and the healed status latches until the counter walks all the way down.
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+    EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+  }
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               clock.now(), config);
+  auto reconfirmed = storage_->get_fault("FAULT_1");
+  ASSERT_TRUE(reconfirmed.has_value());
+  EXPECT_EQ(reconfirmed->status, Fault::STATUS_CONFIRMED);
+}
+
+// A confirmed fault must not be un-confirmed by a heal heartbeat when auto-healing
+// is off, and the counter must stay bounded.
+TEST_F(SqliteFaultStorageTest, ConfirmedFaultSurvivesHealHeartbeat) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -1;
+  config.healing_enabled = false;  // healing_threshold (default 3) still bounds the counter
+
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               clock.now(), config);
+  ASSERT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+
+  for (int i = 0; i < 20; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+    EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED) << "un-confirmed after " << (i + 1);
+  }
 }
 
 TEST_F(SqliteFaultStorageTest, HealingWhenEnabled) {
