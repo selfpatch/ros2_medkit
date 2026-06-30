@@ -22,9 +22,15 @@
 
 #include <open62541pp/open62541pp.hpp>
 
+#include "ros2_medkit_fault_detection/fault_detection.hpp"
+
 namespace ros2_medkit_gateway {
 
-/// Alarm configuration for a node that maps to a SOVD fault
+/// Threshold-mode alarm configuration for a node that maps to a SOVD fault.
+/// Retained for backward compatibility with the original ``alarm:`` node-map
+/// block; at load time it is also lowered to a shared
+/// ``fault_detection::ThresholdRule`` (see ``NodeMapEntry::detection``) so the
+/// runtime evaluator is the same one used by status-bit and enum modes.
 struct AlarmConfig {
   std::string fault_code;
   std::string severity;  // "ERROR", "WARNING", "INFO"
@@ -73,8 +79,14 @@ struct NodeMapEntry {
   bool writable{false};             // Can be written via x-plc-operations
   std::optional<double> min_value;  // Optional range validation for writes
   std::optional<double> max_value;
-  std::optional<AlarmConfig> alarm;  // Optional alarm -> fault mapping
+  std::optional<AlarmConfig> alarm;  // Optional threshold alarm -> fault mapping (back-compat)
   std::string ros2_topic;            // ROS 2 topic for value bridging (auto: /plc/{entity}/{name})
+
+  // Shared fault-detection rule for this point: threshold, status-word bit
+  // decode, or fault-code enum. Built at load time from the ``alarm:``,
+  // ``status_bits:`` or ``fault_enum:`` node-map block. The poller evaluates
+  // this through the shared ``fault_detection::evaluate`` regardless of mode.
+  std::optional<ros2_medkit::fault_detection::DetectionRule> detection;
 
   bool has_range() const {
     return min_value.has_value() && max_value.has_value();
@@ -120,6 +132,11 @@ class NodeMap {
 
   /// Get all entries that have threshold-based alarm configuration
   std::vector<const NodeMapEntry *> alarm_entries() const;
+
+  /// Get all entries carrying a shared fault-detection rule (threshold,
+  /// status-word bit decode, or fault-code enum). This is the set the poller
+  /// evaluates each cycle.
+  std::vector<const NodeMapEntry *> detection_entries() const;
 
   /// Get all native OPC-UA AlarmConditionType event-mode entries (issue #386).
   const std::vector<AlarmEventConfig> & event_alarms() const {

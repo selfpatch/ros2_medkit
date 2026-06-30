@@ -290,6 +290,22 @@ bool NodeMap::load(const std::string & yaml_path) {
             "/plc/" + sanitize_topic_segment(entry.entity_id) + "/" + sanitize_topic_segment(entry.data_name);
       }
 
+      // Fault-detection block. Three mutually exclusive modes per point, all
+      // lowered onto the shared ``fault_detection`` evaluator:
+      //   alarm:        numeric threshold (above/below) - original behaviour
+      //   status_bits:  decode named bits of an integer status word
+      //   fault_enum:   map a fault-code register value to a fault + text
+      namespace fd = ros2_medkit::fault_detection;
+      const int detection_modes =
+          (n["alarm"] ? 1 : 0) + (n["status_bits"] ? 1 : 0) + (n["fault_enum"] ? 1 : 0);
+      if (detection_modes > 1) {
+        RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                     "Entry node_id=%s declares more than one of alarm/status_bits/fault_enum - "
+                     "these detection modes are mutually exclusive",
+                     entry.node_id_str.c_str());
+        return false;
+      }
+
       if (n["alarm"]) {
         AlarmConfig alarm;
         alarm.fault_code = n["alarm"]["fault_code"].as<std::string>();
@@ -297,7 +313,53 @@ bool NodeMap::load(const std::string & yaml_path) {
         alarm.message = n["alarm"]["message"].as<std::string>(alarm.fault_code);
         alarm.threshold = n["alarm"]["threshold"].as<double>(0.0);
         alarm.above_threshold = n["alarm"]["above_threshold"].as<bool>(true);
+
+        fd::ThresholdRule rule;
+        rule.fault = {alarm.fault_code, alarm.severity, alarm.message};
+        rule.threshold = alarm.threshold;
+        rule.above = alarm.above_threshold;
+        entry.detection = std::move(rule);
         entry.alarm = std::move(alarm);
+      } else if (n["status_bits"]) {
+        fd::StatusWordRule rule;
+        for (const auto & b : n["status_bits"]) {
+          if (!b["bit"] || !b["fault_code"]) {
+            RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                        "status_bits entry on node_id=%s missing bit/fault_code - skipping",
+                        entry.node_id_str.c_str());
+            continue;
+          }
+          fd::BitRule br;
+          br.bit = b["bit"].as<unsigned>();
+          br.fault = {b["fault_code"].as<std::string>(), b["severity"].as<std::string>("ERROR"),
+                      b["message"].as<std::string>(b["fault_code"].as<std::string>())};
+          rule.bits.push_back(std::move(br));
+        }
+        if (!rule.bits.empty()) {
+          entry.detection = std::move(rule);
+        }
+      } else if (n["fault_enum"]) {
+        fd::EnumMapRule rule;
+        rule.ok_value = n["fault_enum"]["ok_value"].as<std::int64_t>(0);
+        const auto codes = n["fault_enum"]["codes"];
+        if (codes && codes.IsSequence()) {
+          for (const auto & c : codes) {
+            if (!c["code"] || !c["fault_code"]) {
+              RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                          "fault_enum entry on node_id=%s missing code/fault_code - skipping",
+                          entry.node_id_str.c_str());
+              continue;
+            }
+            fd::EnumRule er;
+            er.code = c["code"].as<std::int64_t>();
+            er.fault = {c["fault_code"].as<std::string>(), c["severity"].as<std::string>("ERROR"),
+                        c["message"].as<std::string>(c["fault_code"].as<std::string>())};
+            rule.codes.push_back(std::move(er));
+          }
+        }
+        if (!rule.codes.empty()) {
+          entry.detection = std::move(rule);
+        }
       }
 
       size_t idx = entries_.size();
@@ -450,6 +512,16 @@ std::vector<const NodeMapEntry *> NodeMap::alarm_entries() const {
   return result;
 }
 
+std::vector<const NodeMapEntry *> NodeMap::detection_entries() const {
+  std::vector<const NodeMapEntry *> result;
+  for (const auto & entry : entries_) {
+    if (entry.detection.has_value()) {
+      result.push_back(&entry);
+    }
+  }
+  return result;
+}
+
 void NodeMap::build_entity_defs() {
   entity_defs_.clear();
 
@@ -466,7 +538,7 @@ void NodeMap::build_entity_defs() {
     if (entry.writable) {
       def.writable_names.push_back(entry.data_name);
     }
-    if (entry.alarm.has_value()) {
+    if (entry.detection.has_value()) {
       def.has_faults = true;
     }
   }

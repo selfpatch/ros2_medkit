@@ -582,53 +582,56 @@ void OpcuaPoller::do_poll() {
 }
 
 void OpcuaPoller::evaluate_alarms() {
-  auto alarm_entries = node_map_.alarm_entries();
-  if (alarm_entries.empty()) {
+  namespace fd = ros2_medkit::fault_detection;
+
+  auto detection_entries = node_map_.detection_entries();
+  if (detection_entries.empty()) {
     return;
   }
 
-  // Collect state changes while holding snapshot mutex
-  struct AlarmChange {
-    std::string fault_code;
-    AlarmConfig config;
-    bool active;
+  // Translate a polled OPC-UA value into the shared, protocol-agnostic value
+  // type understood by the fault-detection evaluator.
+  auto to_fd_value = [](const OpcuaValue & v) -> fd::Value {
+    return std::visit(
+        [](auto && val) -> fd::Value {
+          using T = std::decay_t<decltype(val)>;
+          if constexpr (std::is_same_v<T, bool>) {
+            return fd::Value{val};
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            return fd::Value{val};
+          } else if constexpr (std::is_floating_point_v<T>) {
+            return fd::Value{static_cast<double>(val)};
+          } else {
+            return fd::Value{static_cast<std::int64_t>(val)};
+          }
+        },
+        v);
   };
-  std::vector<AlarmChange> changes;
+
+  // Collect raise/clear edges while holding the snapshot mutex.
+  struct FaultChange {
+    std::string entity_id;
+    fd::FaultSignal signal;
+  };
+  std::vector<FaultChange> changes;
 
   {
     std::lock_guard<std::mutex> snap_lock(snapshot_mutex_);
 
-    for (const auto * entry : alarm_entries) {
+    for (const auto * entry : detection_entries) {
       auto it = snapshot_.values.find(entry->node_id_str);
       if (it == snapshot_.values.end()) {
         continue;
       }
 
-      const auto & alarm = *entry->alarm;
-      bool active = false;
+      auto signals = fd::evaluate(to_fd_value(it->second), *entry->detection);
+      for (const auto & s : signals) {
+        snapshot_.alarms[s.fault_code] = s.active;
+      }
 
-      std::visit(
-          [&active, &alarm](auto && val) {
-            using T = std::decay_t<decltype(val)>;
-            if constexpr (std::is_same_v<T, bool>) {
-              active = val;
-            } else if constexpr (std::is_arithmetic_v<T>) {
-              double dval = static_cast<double>(val);
-              if (alarm.above_threshold) {
-                active = dval > alarm.threshold;
-              } else {
-                active = dval < alarm.threshold;
-              }
-            }
-          },
-          it->second);
-
-      auto & prev_state = alarm_states_[alarm.fault_code];
-      snapshot_.alarms[alarm.fault_code] = active;
-
-      if (active != prev_state) {
-        prev_state = active;
-        changes.push_back({alarm.fault_code, alarm, active});
+      // Edge-detect raise/clear; only transitions reach the callback.
+      for (auto & edge : alarm_tracker_.apply(signals)) {
+        changes.push_back({entry->entity_id, std::move(edge)});
       }
     }
   }  // snapshot_mutex_ released
@@ -638,7 +641,7 @@ void OpcuaPoller::evaluate_alarms() {
     std::lock_guard<std::mutex> alarm_lock(alarm_mutex_);
     if (alarm_callback_) {
       for (const auto & c : changes) {
-        alarm_callback_(c.fault_code, c.config, c.active);
+        alarm_callback_(c.entity_id, c.signal);
       }
     }
   }

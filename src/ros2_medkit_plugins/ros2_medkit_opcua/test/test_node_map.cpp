@@ -605,4 +605,146 @@ nodes:
   EXPECT_FALSE(map.load(path));
 }
 
+// -- Shared fault-detection node-map wiring (issue #481) ---------------------
+
+namespace fd = ros2_medkit::fault_detection;
+
+TEST_F(NodeMapTest, ThresholdAlarmLoweredToDetectionRule) {
+  std::string path = "/tmp/test_node_map_threshold_detect.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: temp
+    alarm:
+      fault_code: HIGH_TEMP
+      severity: ERROR
+      message: "Over temp"
+      threshold: 80.0
+      above_threshold: true
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(det.has_value());
+  ASSERT_TRUE(std::holds_alternative<fd::ThresholdRule>(*det));
+  const auto & r = std::get<fd::ThresholdRule>(*det);
+  EXPECT_EQ(r.fault.fault_code, "HIGH_TEMP");
+  EXPECT_DOUBLE_EQ(r.threshold, 80.0);
+  EXPECT_TRUE(r.above);
+}
+
+TEST_F(NodeMapTest, StatusBitsParsedIntoDetection) {
+  std::string path = "/tmp/test_node_map_status_bits.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=StatusWord"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 3
+        fault_code: PUMP_OVERLOAD
+        severity: ERROR
+        message: "Pump overload"
+      - bit: 7
+        fault_code: FILTER_DIRTY
+        severity: WARNING
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(det.has_value());
+  ASSERT_TRUE(std::holds_alternative<fd::StatusWordRule>(*det));
+  const auto & r = std::get<fd::StatusWordRule>(*det);
+  ASSERT_EQ(r.bits.size(), 2u);
+  EXPECT_EQ(r.bits[0].bit, 3u);
+  EXPECT_EQ(r.bits[0].fault.fault_code, "PUMP_OVERLOAD");
+  EXPECT_EQ(r.bits[1].bit, 7u);
+  // Message defaults to the fault code when omitted.
+  EXPECT_EQ(r.bits[1].fault.message, "FILTER_DIRTY");
+
+  auto signals = fd::evaluate(fd::Value{static_cast<std::int64_t>(0b1000)}, *det);
+  ASSERT_EQ(signals.size(), 2u);
+  EXPECT_TRUE(signals[0].active);   // bit 3 set
+  EXPECT_FALSE(signals[1].active);  // bit 7 clear
+}
+
+TEST_F(NodeMapTest, FaultEnumParsedIntoDetection) {
+  std::string path = "/tmp/test_node_map_fault_enum.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=FaultCode"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      ok_value: 0
+      codes:
+        - code: 10
+          fault_code: VFD_OVERVOLTAGE
+          severity: ERROR
+          message: "DC bus overvoltage"
+        - code: 11
+          fault_code: VFD_OVERCURRENT
+          severity: ERROR
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(det.has_value());
+  ASSERT_TRUE(std::holds_alternative<fd::EnumMapRule>(*det));
+  const auto & r = std::get<fd::EnumMapRule>(*det);
+  EXPECT_EQ(r.ok_value, 0);
+  ASSERT_EQ(r.codes.size(), 2u);
+  EXPECT_EQ(r.codes[0].code, 10);
+  EXPECT_EQ(r.codes[0].fault.message, "DC bus overvoltage");
+
+  auto signals = fd::evaluate(fd::Value{static_cast<std::int64_t>(10)}, *det);
+  ASSERT_EQ(signals.size(), 2u);
+  EXPECT_TRUE(signals[0].active);   // code 10
+  EXPECT_FALSE(signals[1].active);  // code 11
+}
+
+TEST_F(NodeMapTest, RejectsMultipleDetectionModesOnOneNode) {
+  std::string path = "/tmp/test_node_map_multi_mode.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    alarm:
+      fault_code: A
+      threshold: 1.0
+    status_bits:
+      - bit: 0
+        fault_code: B
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
 }  // namespace ros2_medkit_gateway

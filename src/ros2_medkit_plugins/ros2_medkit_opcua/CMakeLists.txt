@@ -27,6 +27,7 @@ include(ROS2MedkitWarnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(ros2_medkit_gateway REQUIRED)
+find_package(ros2_medkit_fault_detection REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -98,6 +99,7 @@ target_include_directories(ros2_medkit_opcua_plugin PRIVATE
 medkit_target_dependencies(ros2_medkit_opcua_plugin
   ros2_medkit_msgs
   ros2_medkit_gateway
+  ros2_medkit_fault_detection
   rclcpp
   std_msgs
 )
@@ -168,6 +170,7 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_opcua_plugin
     ros2_medkit_msgs
     ros2_medkit_gateway
+    ros2_medkit_fault_detection
     rclcpp
     std_msgs
   )
@@ -188,6 +191,7 @@ if(BUILD_TESTING)
   )
   medkit_target_dependencies(test_node_map
     ros2_medkit_gateway
+    ros2_medkit_fault_detection
     rclcpp
   )
   target_link_libraries(test_node_map
