@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
@@ -915,4 +916,80 @@ TEST(PeerClientHappyPath, fetch_entities_rejects_collection_exceeding_limit) {
 
   svr.stop();
   t.join();
+}
+
+// Asset-identity survives a full peer round-trip: a Component with an identity
+// nameplate is serialized via Component::to_json (as a peer would emit it under
+// x-medkit.identity), parsed back by PeerClient::fetch_entities, then merged into a
+// local entity by EntityMerger. The remote nameplate must be preserved end-to-end.
+// Refs #482
+TEST(PeerClientHappyPath, asset_identity_survives_fetch_and_merge) {
+  // Build the remote Component with a populated identity and serialize it exactly the
+  // way the gateway emits component detail responses.
+  Component remote;
+  remote.id = "plc_1";
+  remote.name = "Line PLC";
+  remote.identity.manufacturer = "Siemens AG";
+  remote.identity.serial_number = "SN-42";
+  remote.identity.firmware_version = "2.9.4";
+  remote.identity.extra["slot"] = "3";
+  remote.identity.provenance["serial_number"] = "opcua";
+  const std::string remote_detail = remote.to_json().dump();
+
+  httplib::Server svr;
+  svr.Get("/api/v1/areas", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/components", [&](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[{"id":"plc_1","name":"Line PLC"}]})", "application/json");
+  });
+  svr.Get("/api/v1/components/plc_1", [&](const httplib::Request &, httplib::Response & res) {
+    res.set_content(remote_detail, "application/json");
+  });
+  svr.Get("/api/v1/components/plc_1/subcomponents", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  svr.Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "peer_plc", 5000);
+  auto result = client.fetch_entities();
+  svr.stop();
+  t.join();
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->components.size(), 1u);
+  const auto & parsed = result->components[0].identity;
+
+  // parse_component must have read x-medkit.identity back into the model.
+  EXPECT_EQ(parsed.manufacturer, "Siemens AG");
+  EXPECT_EQ(parsed.serial_number, "SN-42");
+  EXPECT_EQ(parsed.firmware_version, "2.9.4");
+  EXPECT_EQ(parsed.extra.at("slot"), "3");
+  EXPECT_EQ(parsed.provenance.at("serial_number"), "opcua");
+
+  // Collision merge: a local component with the same id but no identity must inherit
+  // the remote nameplate (gap-fill), and a remote-only component carries it directly.
+  Component local;
+  local.id = "plc_1";
+  local.name = "Line PLC";
+  local.source = "manifest";
+
+  EntityMerger merger("peer_plc");
+  auto merged = merger.merge_components({local}, result->components);
+  ASSERT_EQ(merged.size(), 1u);
+  const auto & merged_id = merged[0].identity;
+  EXPECT_EQ(merged_id.manufacturer, "Siemens AG");
+  EXPECT_EQ(merged_id.serial_number, "SN-42");
+  EXPECT_EQ(merged_id.firmware_version, "2.9.4");
+  EXPECT_EQ(merged_id.extra.at("slot"), "3");
 }

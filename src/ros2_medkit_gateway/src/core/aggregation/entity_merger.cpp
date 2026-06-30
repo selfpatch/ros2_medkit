@@ -16,6 +16,8 @@
 
 #include <unordered_set>
 
+#include "ros2_medkit_gateway/core/discovery/identity_merge.hpp"
+
 namespace ros2_medkit_gateway {
 
 EntityMerger::EntityMerger(const std::string & peer_name) : peer_name_(peer_name) {
@@ -170,6 +172,15 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       if (merged.description.empty() && !remote_comp.description.empty()) {
         merged.description = remote_comp.description;
       }
+
+      // Merge the remote asset-identity nameplate into the local one. The peer is
+      // tagged as the lowest authority (peer:<name> is not in the default precedence),
+      // so this is a gap-fill: empty local fields are populated from the remote, but a
+      // value the local side already knows is never overridden. Stamp local provenance
+      // first so existing local fields are protected during the merge.
+      static const discovery::IdentityMergeConfig kIdentityConfig;
+      discovery::stamp_identity_provenance(merged.identity, merged.source);
+      discovery::merge_identity(merged.identity, remote_comp.identity, peer_source(), kIdentityConfig);
 
       // A Component ID refers to one physical ECU. When the same ID is
       // present locally and remotely, the peer is the authoritative owner

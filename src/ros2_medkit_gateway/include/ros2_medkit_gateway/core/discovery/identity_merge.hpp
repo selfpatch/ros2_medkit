@@ -16,10 +16,8 @@
 
 #include "ros2_medkit_gateway/core/discovery/models/asset_identity.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,54 +26,30 @@ namespace ros2_medkit_gateway {
 namespace discovery {
 
 /**
- * @brief How the identity key for an asset is derived.
- *
- * The identity key is what decides whether two records describe the *same* asset
- * and should therefore have their identity merged.
- */
-enum class IdentityKeyStrategy {
-  AUTO,             ///< serial -> model+slot -> endpoint -> configured id (first that resolves)
-  SERIAL,           ///< serial number only
-  ORDER_CODE_SLOT,  ///< model (order code) + extra["slot"]
-  ENDPOINT,         ///< network endpoint
-  CONFIGURED_ID     ///< the configured Component id (always available, never cross-source)
-};
-
-inline std::optional<IdentityKeyStrategy> identity_key_strategy_from_string(const std::string & s) {
-  if (s == "auto") {
-    return IdentityKeyStrategy::AUTO;
-  }
-  if (s == "serial") {
-    return IdentityKeyStrategy::SERIAL;
-  }
-  if (s == "order_code_slot") {
-    return IdentityKeyStrategy::ORDER_CODE_SLOT;
-  }
-  if (s == "endpoint") {
-    return IdentityKeyStrategy::ENDPOINT;
-  }
-  if (s == "configured_id") {
-    return IdentityKeyStrategy::CONFIGURED_ID;
-  }
-  return std::nullopt;
-}
-
-/**
  * @brief Configuration for identity merging.
  *
- * `source_precedence` lists source names from highest to lowest authority. A source
- * not in the list is treated as the lowest authority (it can still fill empty fields
- * but never overrides a known source). Identity authority is deliberately decoupled
- * from the structural merge policy: a manifest may be the authoritative *structure*
- * source while a live protocol read is the authoritative *identity* source.
+ * `source_precedence` ranks identity authority from highest to lowest. Entries are
+ * matched against a source's canonical identifier - the contributing entity's
+ * `Component.source` field ("manifest", "plugin", "runtime", "node", "heuristic",
+ * "config", or a protocol-class tag a provider sets such as "opcua"/"s7"), NOT the
+ * free-form discovery-layer / plugin name. A source not in the list ranks lowest: it
+ * can still fill empty fields but never overrides a known source.
  *
- * Default precedence (highest first): live protocol device-info beats the hand
- * authored manifest, which beats whatever runtime discovery guessed.
+ * Identity authority is deliberately decoupled from the structural merge policy: a
+ * manifest may be the authoritative *structure* source while a live protocol read is
+ * the authoritative *identity* source.
+ *
+ * Default precedence (highest first): a live protocol device-info read (a `plugin`
+ * source, or a protocol-specific source tag) beats the hand-authored `manifest`,
+ * which beats whatever runtime discovery guessed. The protocol-specific tags lead the
+ * list so that a provider which sets a concrete `Component.source` (e.g. "opcua") is
+ * honoured; the generic "plugin" tag covers the common case where the plugin layer
+ * stamps every plugin entity with source="plugin".
  */
 struct IdentityMergeConfig {
-  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",      "profinet",
-                                             "manifest", "config", "runtime",     "node",   "heuristic"};
-  IdentityKeyStrategy key_strategy{IdentityKeyStrategy::AUTO};
+  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",  "profinet",
+                                             "plugin",   "manifest", "config",    "runtime", "node", "topic",
+                                             "heuristic"};
 };
 
 /**
@@ -89,47 +63,6 @@ inline size_t source_rank(const std::string & source, const IdentityMergeConfig 
     }
   }
   return config.source_precedence.size();
-}
-
-/**
- * @brief Compute the identity key for an asset.
- * @param identity     The (possibly partial) asset identity.
- * @param configured_id Fallback stable id (typically Component.id).
- * @param strategy     Key derivation strategy.
- * @return A non-empty identity key, or empty string if the chosen strategy cannot
- *         resolve one (e.g. SERIAL strategy on an asset with no serial).
- */
-inline std::string compute_identity_key(const AssetIdentity & identity, const std::string & configured_id,
-                                        IdentityKeyStrategy strategy) {
-  auto slot = [&]() -> std::string {
-    auto it = identity.extra.find("slot");
-    return it != identity.extra.end() ? it->second : std::string{};
-  };
-  switch (strategy) {
-    case IdentityKeyStrategy::SERIAL:
-      return identity.serial_number;
-    case IdentityKeyStrategy::ORDER_CODE_SLOT:
-      if (identity.model.empty()) {
-        return std::string{};
-      }
-      return identity.model + "/" + slot();
-    case IdentityKeyStrategy::ENDPOINT:
-      return identity.network_endpoint;
-    case IdentityKeyStrategy::CONFIGURED_ID:
-      return configured_id;
-    case IdentityKeyStrategy::AUTO:
-    default:
-      if (!identity.serial_number.empty()) {
-        return "serial:" + identity.serial_number;
-      }
-      if (!identity.model.empty() && !slot().empty()) {
-        return "ordercode:" + identity.model + "/" + slot();
-      }
-      if (!identity.network_endpoint.empty()) {
-        return "endpoint:" + identity.network_endpoint;
-      }
-      return "id:" + configured_id;
-  }
 }
 
 namespace detail {

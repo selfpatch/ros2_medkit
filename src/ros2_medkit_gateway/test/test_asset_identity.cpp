@@ -110,38 +110,6 @@ TEST(ComponentIdentityCompat, IdentityEmittedUnderXMedkitWhenPresent) {
 }
 
 // ---------------------------------------------------------------------------
-// Identity key derivation
-// ---------------------------------------------------------------------------
-
-TEST(IdentityKey, AutoPrefersSerial) {
-  AssetIdentity id;
-  id.serial_number = "SN-42";
-  id.network_endpoint = "opc.tcp://h:4840";
-  EXPECT_EQ(compute_identity_key(id, "cfg", IdentityKeyStrategy::AUTO), "serial:SN-42");
-}
-
-TEST(IdentityKey, AutoFallsBackThroughOrderCodeEndpointConfiguredId) {
-  AssetIdentity id;
-  id.model = "6ES7";
-  id.extra["slot"] = "3";
-  EXPECT_EQ(compute_identity_key(id, "cfg", IdentityKeyStrategy::AUTO), "ordercode:6ES7/3");
-
-  AssetIdentity ep;
-  ep.network_endpoint = "opc.tcp://h:4840";
-  EXPECT_EQ(compute_identity_key(ep, "cfg", IdentityKeyStrategy::AUTO), "endpoint:opc.tcp://h:4840");
-
-  AssetIdentity none;
-  EXPECT_EQ(compute_identity_key(none, "cfg", IdentityKeyStrategy::AUTO), "id:cfg");
-}
-
-TEST(IdentityKey, ExplicitStrategiesReturnEmptyWhenUnresolvable) {
-  AssetIdentity id;  // no serial, no model
-  EXPECT_EQ(compute_identity_key(id, "cfg", IdentityKeyStrategy::SERIAL), "");
-  EXPECT_EQ(compute_identity_key(id, "cfg", IdentityKeyStrategy::ORDER_CODE_SLOT), "");
-  EXPECT_EQ(compute_identity_key(id, "cfg", IdentityKeyStrategy::CONFIGURED_ID), "cfg");
-}
-
-// ---------------------------------------------------------------------------
 // merge_identity: precedence + per-field provenance + extensible map
 // ---------------------------------------------------------------------------
 
@@ -274,4 +242,21 @@ TEST(MergeIdentity, ConfigurablePrecedenceOrder) {
 
   EXPECT_EQ(merged.manufacturer, "ManifestVendor");
   EXPECT_EQ(merged.provenance.at("manufacturer"), "manifest");
+}
+
+TEST(MergeIdentity, KnownSourceOverridesUnseededTarget) {
+  // Documented footgun: a target whose fields were set WITHOUT stamping provenance is
+  // treated as owned by an unknown (lowest authority) source, so any listed source
+  // overrides it. This guards that contract.
+  IdentityMergeConfig cfg;
+
+  AssetIdentity target;
+  target.manufacturer = "UnstampedGuess";  // value present, provenance NOT seeded
+
+  AssetIdentity opcua;
+  opcua.manufacturer = "Siemens AG";  // listed (known) source
+  merge_identity(target, opcua, "opcua", cfg);
+
+  EXPECT_EQ(target.manufacturer, "Siemens AG");
+  EXPECT_EQ(target.provenance.at("manufacturer"), "opcua");
 }

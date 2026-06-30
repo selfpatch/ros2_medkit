@@ -169,12 +169,11 @@ void merge_topics(ComponentTopics & target, const ComponentTopics & source, Merg
 }
 
 // Per-entity-type field-group merge dispatch.
-// `source_name` and `id_cfg` are only consumed by the Component identity merge;
-// they are accepted for all entity types so the caller can stay generic.
+// `id_cfg` is only consumed by the Component identity merge; it is accepted for all
+// entity types so the caller can stay generic.
 template <typename Entity>
 void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup group, const MergeResolution & res,
-                             const std::string & source_name, const IdentityMergeConfig & id_cfg) {
-  (void)source_name;
+                             const IdentityMergeConfig & id_cfg) {
   (void)id_cfg;
   if constexpr (std::is_same_v<Entity, Area>) {
     switch (group) {
@@ -204,8 +203,10 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
         merge_scalar(target.description, source.description, res.scalar);
         merge_collection(target.tags, source.tags, res.collection);
         // Asset identity has its own per-field precedence (config-driven, decoupled
-        // from the structural MergePolicy) and records provenance per field.
-        merge_identity(target.identity, source.identity, source_name, id_cfg);
+        // from the structural MergePolicy) and records provenance per field. Authority
+        // is ranked on the contributing entity's canonical `source` tag (e.g.
+        // "manifest", "plugin", "opcua"), not the free-form discovery-layer name.
+        merge_identity(target.identity, source.identity, source.source, id_cfg);
         break;
       case FieldGroup::HIERARCHY:
         merge_scalar(target.namespace_path, source.namespace_path, res.scalar);
@@ -350,10 +351,10 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
     size_t owner_layer_idx = entries[0].layer_idx;
     report.entity_source[id] = layers_[owner_layer_idx]->name();
 
-    // Seed asset-identity provenance with the base layer so subsequent identity
-    // merges can compare authority per field.
+    // Seed asset-identity provenance with the base entity's canonical source tag so
+    // subsequent identity merges can compare authority per field.
     if constexpr (std::is_same_v<Entity, Component>) {
-      stamp_identity_provenance(merged.identity, layers_[owner_layer_idx]->name());
+      stamp_identity_provenance(merged.identity, merged.source);
     }
 
     // Track current owning layer per field group (initially all owned by first layer)
@@ -377,8 +378,7 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
           report.conflict_count++;
         }
 
-        apply_field_group_merge(merged, entries[i].entity, fg, res, layers_[source_layer_idx]->name(),
-                                identity_config_);
+        apply_field_group_merge(merged, entries[i].entity, fg, res, identity_config_);
 
         // If source won with a strictly higher-priority policy, it becomes
         // the owner of this field group for subsequent merge comparisons.

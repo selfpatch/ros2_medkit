@@ -1584,20 +1584,22 @@ records **per-field provenance** (which source set each field) under `_provenanc
 - **Precedence** is config-driven (`IdentityMergeConfig::source_precedence`, highest first)
   and is deliberately **decoupled from the structural `MergePolicy`**: a manifest can be the
   authoritative *structure* source while a live protocol read is the authoritative *identity*
-  source. Default order: protocol device-info (`opcua`, `s7`, `ethernet_ip`, `modbus`, `ads`,
-  `profinet`) > `manifest` > `config` > runtime sources. A higher-authority source overrides a
+  source. Authority is ranked on each contributing entity's canonical `Component.source` tag
+  ("manifest", "plugin", "runtime", "node", "config", or a protocol-class tag a provider sets
+  such as "opcua"), **not** the free-form discovery-layer name. Default order: protocol
+  device-info (`opcua`, `s7`, `ethernet_ip`, `modbus`, `ads`, `profinet`, and the generic
+  `plugin`) > `manifest` > `config` > runtime sources. A higher-authority source overrides a
   field; lower-authority sources only fill gaps; unknown sources rank lowest. Empty values never
   overwrite.
-- **Identity key.** `compute_identity_key()` derives the key that decides whether two records
-  describe the same asset. Strategies: `serial`, `order_code_slot` (`model` + `extra["slot"]`),
-  `endpoint`, `configured_id`, and `auto` (serial -> order-code+slot -> endpoint -> configured id).
-  The discovery pipeline merges Components by `Component.id`, which is the `configured_id`
-  strategy; the other strategies let sources that assign ids (CSV/manifest import, protocol
-  probes) correlate records that arrive under different ids before they reach the pipeline.
+
+Components are correlated for merging by `Component.id`; identity is merged whenever two
+sources contribute the same Component id (in the discovery pipeline, and gap-filled across
+peer aggregation).
 
 The pipeline calls `merge_identity` inside the `IDENTITY` field group for Components, seeding
-provenance with the base (highest-priority) layer. Configure via
-`MergePipeline::set_identity_merge_config()`.
+provenance with the base (highest-priority) layer's source tag. Configure via
+`MergePipeline::set_identity_merge_config()`; precedence entries must equal the canonical
+`Component.source` values you expect at runtime.
 
 ## Demo Nodes
 

@@ -286,15 +286,17 @@ TEST_F(MergePipelineTest, EnrichmentFillsEmptyFields) {
 
 TEST_F(MergePipelineTest, AssetIdentityMergedFromMultipleSourcesWithProvenance) {
   // Same Component id from two sources. The manifest carries manufacturer + role;
-  // a protocol read ("opcua") carries serial + firmware and a better manufacturer.
-  // Identity precedence (opcua > manifest) is independent of structural policy.
+  // a protocol read carries serial + firmware and a better manufacturer. Identity
+  // precedence (opcua > manifest) is independent of structural policy. The layers are
+  // deliberately NOT named after their source tags: authority is ranked on each
+  // entity's canonical `Component.source`, never the free-form layer name.
   Component manifest_comp = make_component("plc_1", "line", "/line");
   manifest_comp.source = "manifest";
   manifest_comp.identity.manufacturer = "Siemens";
   manifest_comp.identity.role = "plc";
 
   Component opcua_comp = make_component("plc_1", "line", "/line");
-  opcua_comp.source = "plugin";
+  opcua_comp.source = "opcua";  // protocol-class tag set by the provider
   opcua_comp.identity.manufacturer = "Siemens AG";
   opcua_comp.identity.serial_number = "SN-42";
   opcua_comp.identity.firmware_version = "2.9.4";
@@ -305,9 +307,9 @@ TEST_F(MergePipelineTest, AssetIdentityMergedFromMultipleSourcesWithProvenance) 
   LayerOutput opcua_out;
   opcua_out.components.push_back(opcua_comp);
 
-  // manifest added first (highest structural priority -> base).
-  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_out));
-  pipeline_.add_layer(std::make_unique<TestLayer>("opcua", opcua_out));
+  // First layer added is the highest structural priority -> base. Names are arbitrary.
+  pipeline_.add_layer(std::make_unique<TestLayer>("structure_layer", manifest_out));
+  pipeline_.add_layer(std::make_unique<TestLayer>("device_info_layer", opcua_out));
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.components.size(), 1u);
@@ -333,8 +335,10 @@ TEST_F(MergePipelineTest, AssetIdentityPrecedenceConfigurable) {
   pipeline_.set_identity_merge_config(cfg);
 
   Component manifest_comp = make_component("plc_1", "line", "/line");
+  manifest_comp.source = "manifest";
   manifest_comp.identity.manufacturer = "Manifest Vendor";
   Component opcua_comp = make_component("plc_1", "line", "/line");
+  opcua_comp.source = "opcua";
   opcua_comp.identity.manufacturer = "Opcua Vendor";
 
   LayerOutput manifest_out;
@@ -342,8 +346,9 @@ TEST_F(MergePipelineTest, AssetIdentityPrecedenceConfigurable) {
   LayerOutput opcua_out;
   opcua_out.components.push_back(opcua_comp);
 
-  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_out));
-  pipeline_.add_layer(std::make_unique<TestLayer>("opcua", opcua_out));
+  // Layer names intentionally unrelated to the source tags.
+  pipeline_.add_layer(std::make_unique<TestLayer>("layer_a", manifest_out));
+  pipeline_.add_layer(std::make_unique<TestLayer>("layer_b", opcua_out));
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.components.size(), 1u);

@@ -181,6 +181,12 @@ Component parse_component(const nlohmann::json & j) {
     if (xm.contains("dependsOn") && xm["dependsOn"].is_array()) {
       comp.depends_on = xm["dependsOn"].get<std::vector<std::string>>();
     }
+    // Asset-identity nameplate (with per-field provenance). Emitted by peers under
+    // x-medkit.identity only when populated; parse it back so identity survives
+    // aggregation instead of being silently dropped.
+    if (xm.contains("identity") && xm["identity"].is_object()) {
+      comp.identity = AssetIdentity::from_json(xm["identity"]);
+    }
   }
   if (j.contains("translationId")) {
     comp.translation_id = j["translationId"].get<std::string>();
