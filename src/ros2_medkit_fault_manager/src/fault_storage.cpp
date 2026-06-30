@@ -19,6 +19,54 @@
 
 namespace ros2_medkit_fault_manager {
 
+int32_t clamp_debounce_counter(int32_t counter, const DebounceConfig & config) {
+  // Manual min/max rather than std::clamp: well-defined even if a bad config has lo > hi
+  // (sanitize_debounce_config normally prevents that, but the storage layer must never UB).
+  if (counter < config.confirmation_threshold) {
+    return config.confirmation_threshold;
+  }
+  if (counter > config.healing_threshold) {
+    return config.healing_threshold;
+  }
+  return counter;
+}
+
+std::string compute_debounce_status(int32_t counter, const std::string & current_status,
+                                    const DebounceConfig & config) {
+  namespace msg = ros2_medkit_msgs::msg;
+  if (counter <= config.confirmation_threshold) {
+    return msg::Fault::STATUS_CONFIRMED;
+  }
+  if (config.healing_enabled && counter >= config.healing_threshold) {
+    return msg::Fault::STATUS_HEALED;
+  }
+  // Hysteresis latch: a confirmed or healed fault stays put until the counter reaches the opposite
+  // threshold (handled above). A single opposite-direction report must not flip it to a pending state.
+  if (current_status == msg::Fault::STATUS_CONFIRMED || current_status == msg::Fault::STATUS_HEALED) {
+    return current_status;
+  }
+  if (counter < 0) {
+    return msg::Fault::STATUS_PREFAILED;
+  }
+  if (counter > 0) {
+    return msg::Fault::STATUS_PREPASSED;
+  }
+  return current_status;  // counter == 0 keeps the current status (avoids flapping at the boundary)
+}
+
+bool sanitize_debounce_config(DebounceConfig & config) {
+  bool valid = true;
+  if (config.confirmation_threshold >= 0) {
+    config.confirmation_threshold = -1;
+    valid = false;
+  }
+  if (config.healing_threshold <= 0) {
+    config.healing_threshold = 3;
+    valid = false;
+  }
+  return valid;
+}
+
 ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   ros2_medkit_msgs::msg::Fault msg;
   msg.fault_code = fault_code;
@@ -49,24 +97,9 @@ DebounceConfig InMemoryFaultStorage::get_debounce_config() const {
 }
 
 void InMemoryFaultStorage::update_status(FaultState & state, const DebounceConfig & config) {
-  // Note: CLEARED faults are handled in report_fault_event() before this is called
-
-  if (state.debounce_counter <= config.confirmation_threshold) {
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  } else if (config.healing_enabled && state.debounce_counter >= config.healing_threshold) {
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
-  } else if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED ||
-             state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
-    // Hysteresis latch: a confirmed or healed fault stays put until the counter
-    // walks all the way to the opposite threshold (handled above). A single report
-    // must not flip it back to a pending state.
-  } else if (state.debounce_counter < 0) {
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
-  } else if (state.debounce_counter > 0) {
-    state.status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
-  }
-  // Note: debounce_counter == 0 keeps current status (hysteresis behavior).
-  // This avoids rapid status flapping at the zero crossing boundary.
+  // CLEARED faults are handled in report_fault_event() before this is called.
+  // Delegate to the shared state machine so both backends behave identically.
+  state.status = compute_debounce_status(state.debounce_counter, state.status, config);
 }
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
@@ -148,12 +181,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       ++state.occurrence_count;
     }
 
-    // Decrement debounce counter (towards confirmation), clamped at the confirmation
-    // threshold so a long burst of FAILED events can't drive it to INT32_MIN (which
-    // would then delay later healing).
-    if (state.debounce_counter > config.confirmation_threshold) {
-      --state.debounce_counter;
-    }
+    // Decrement towards confirmation, clamped to the thresholds (a long FAILED burst can't
+    // run the counter off to INT32_MIN and delay later healing).
+    state.debounce_counter = clamp_debounce_counter(state.debounce_counter - 1, config);
 
     // Add source if not already present
     state.reporting_sources.insert(source_id);
@@ -177,11 +207,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     // PASSED event
     state.last_passed_time = timestamp;
 
-    // Increment debounce counter (towards healing), clamped at the healing
-    // threshold so a heal heartbeat can't drive it off to INT32_MAX.
-    if (state.debounce_counter < config.healing_threshold) {
-      ++state.debounce_counter;
-    }
+    // Increment towards healing, clamped to the thresholds (a heal heartbeat can't run the
+    // counter off to INT32_MAX and then delay a real fault from confirming).
+    state.debounce_counter = clamp_debounce_counter(state.debounce_counter + 1, config);
   }
 
   // Update status based on debounce counter
@@ -435,6 +463,18 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults()
   }
 
   return result;
+}
+
+size_t InMemoryFaultStorage::reclassify_healed_as_cleared() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  size_t changed = 0;
+  for (auto & [code, state] : faults_) {
+    if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
+      state.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
+      ++changed;
+    }
+  }
+  return changed;
 }
 
 }  // namespace ros2_medkit_fault_manager

@@ -31,9 +31,12 @@
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
+using ros2_medkit_fault_manager::clamp_debounce_counter;
+using ros2_medkit_fault_manager::compute_debounce_status;
 using ros2_medkit_fault_manager::DebounceConfig;
 using ros2_medkit_fault_manager::FaultManagerNode;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
+using ros2_medkit_fault_manager::sanitize_debounce_config;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 using ros2_medkit_msgs::srv::ClearFault;
@@ -651,6 +654,100 @@ TEST_F(FaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
   EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
 }
 
+// Latch holds in both directions, same as the SQLite backend: CONFIRMED with a positive counter
+// stays CONFIRMED on FAILED.
+TEST_F(FaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.healing_threshold = 3;
+  config.critical_immediate_confirm = true;
+
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "crit", "/n",
+                              clock.now(), config);
+  ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  for (int i = 0; i < 3; ++i) {
+    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                              config);
+  EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
+}
+
+// HEALED with a negative counter stays HEALED on PASSED.
+TEST_F(FaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                              config);
+  for (int i = 0; i < 4; ++i) {
+    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
+  for (int i = 0; i < 5; ++i) {  // +3 -> -2, latched HEALED
+    storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                                config);
+    ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+  }
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
+}
+
+TEST_F(FaultStorageTest, ReclassifyHealedAsCleared) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                              config);
+  for (int i = 0; i < 4; ++i) {
+    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
+
+  EXPECT_EQ(storage_.reclassify_healed_as_cleared(), 1u);
+  EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CLEARED);
+}
+
+// Unit tests for the shared debounce helpers.
+TEST(DebounceHelpers, ClampDebounceCounterBounds) {
+  DebounceConfig config;
+  config.confirmation_threshold = -2;
+  config.healing_threshold = 2;
+  EXPECT_EQ(clamp_debounce_counter(100, config), 2);
+  EXPECT_EQ(clamp_debounce_counter(-100, config), -2);
+  EXPECT_EQ(clamp_debounce_counter(1, config), 1);
+}
+
+TEST(DebounceHelpers, SanitizeDebounceConfigFixesBadThresholds) {
+  DebounceConfig good;
+  EXPECT_TRUE(sanitize_debounce_config(good));  // defaults are valid
+
+  DebounceConfig bad;
+  bad.confirmation_threshold = 0;
+  bad.healing_threshold = 0;
+  EXPECT_FALSE(sanitize_debounce_config(bad));
+  EXPECT_LT(bad.confirmation_threshold, 0);
+  EXPECT_GT(bad.healing_threshold, 0);
+}
+
+TEST(DebounceHelpers, ComputeDebounceStatusLatches) {
+  DebounceConfig config;               // healing 3, healing disabled
+  config.confirmation_threshold = -3;  // so counters -1..+2 sit between the thresholds (latch range)
+  // A confirmed fault with a positive counter stays confirmed (latch), not PREPASSED.
+  EXPECT_EQ(compute_debounce_status(2, Fault::STATUS_CONFIRMED, config), Fault::STATUS_CONFIRMED);
+  // A healed fault with a negative counter stays healed (latch), not PREFAILED.
+  EXPECT_EQ(compute_debounce_status(-1, Fault::STATUS_HEALED, config), Fault::STATUS_HEALED);
+  // A pending fault is not latched.
+  EXPECT_EQ(compute_debounce_status(1, Fault::STATUS_PREFAILED, config), Fault::STATUS_PREPASSED);
+}
+
 TEST_F(FaultStorageTest, GetAllFaultsReturnsAllFaults) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
@@ -714,7 +811,7 @@ TEST(FaultManagerNodeParameterTest, CustomConfirmationThreshold) {
   EXPECT_EQ(config.confirmation_threshold, -5);
 }
 
-TEST(FaultManagerNodeParameterTest, ConfirmationThresholdDisabled) {
+TEST(FaultManagerNodeParameterTest, ConfirmationThresholdZeroSanitizedToDefault) {
   rclcpp::NodeOptions options;
   options.parameter_overrides({
       {"storage_type", "memory"},
@@ -722,9 +819,10 @@ TEST(FaultManagerNodeParameterTest, ConfirmationThresholdDisabled) {
   });
   auto node = std::make_shared<FaultManagerNode>(options);
 
-  // 0 means immediate confirmation
+  // 0 is invalid (must be < 0, otherwise the clamp would pin the counter and statuses get stuck).
+  // It is sanitized to the safe default -1, which still confirms immediately on the first FAILED.
   auto config = node->get_storage().get_debounce_config();
-  EXPECT_EQ(config.confirmation_threshold, 0);
+  EXPECT_EQ(config.confirmation_threshold, -1);
 }
 
 TEST(FaultManagerNodeParameterTest, HealingEnabled) {

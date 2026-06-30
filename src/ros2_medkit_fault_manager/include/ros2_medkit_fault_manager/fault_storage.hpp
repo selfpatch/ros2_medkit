@@ -28,7 +28,16 @@
 
 namespace ros2_medkit_fault_manager {
 
-/// Debounce configuration for fault filtering
+/// Debounce configuration for fault filtering.
+///
+/// Status lifecycle uses a bounded counter (AUTOSAR-DEM-style) plus a hysteresis latch:
+/// FAILED events decrement the counter, PASSED events increment it, and the counter is always
+/// clamped to [confirmation_threshold, healing_threshold]. CONFIRMED and HEALED latch - they
+/// persist until the counter reaches the opposite threshold, so a single opposite-direction report
+/// cannot flip them. One consequence is a latch delay: a fault that becomes active again is not
+/// immediately back in the default (CONFIRMED-only) list - it can take up to
+/// (healing_threshold - confirmation_threshold) reports to re-confirm. During that window
+/// occurrence_count and last_occurred still reflect the activity.
 struct DebounceConfig {
   /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value,
   /// and the debounce counter is clamped to this lower bound so a long burst of FAILED events
@@ -54,6 +63,18 @@ struct DebounceConfig {
   /// 0.0 = disabled.
   double auto_confirm_after_sec{0.0};
 };
+
+/// Clamp the debounce counter into [confirmation_threshold, healing_threshold].
+int32_t clamp_debounce_counter(int32_t counter, const DebounceConfig & config);
+
+/// Compute the debounce status from the counter and the current status (the current status drives
+/// the CONFIRMED/HEALED hysteresis latch). Does NOT apply the CRITICAL immediate-confirm bypass -
+/// callers handle that. This is the single source of truth shared by both storage backends.
+std::string compute_debounce_status(int32_t counter, const std::string & current_status, const DebounceConfig & config);
+
+/// Validate a (merged) debounce config in place, enforcing confirmation_threshold < 0 < healing_threshold.
+/// Offending fields are reset to safe defaults (-1 / 3). Returns true if the config was already valid.
+bool sanitize_debounce_config(DebounceConfig & config);
 
 /// Internal fault state stored in memory
 struct FaultState {
@@ -197,6 +218,14 @@ class FaultStorage {
   /// @return Vector of all faults in storage
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
 
+  /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
+  /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
+  /// the latch. Default is a no-op (in-memory storage starts empty).
+  /// @return number of faults reclassified
+  virtual size_t reclassify_healed_as_cleared() {
+    return 0;
+  }
+
  protected:
   FaultStorage() = default;
   FaultStorage(const FaultStorage &) = default;
@@ -243,6 +272,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
+  size_t reclassify_healed_as_cleared() override;
 
  private:
   /// Update fault status based on debounce counter and given config
