@@ -53,6 +53,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
+- **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
 ## Parameters
 
@@ -108,6 +109,23 @@ patterns:
 **SQLite (default)**: Faults are persisted to disk and survive node restarts. Uses WAL mode for optimal performance.
 
 **Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
+
+## Advanced: Tamper-Evident Audit Log
+
+An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `cleared`) so the fault history is verifiable and any later edit or deletion is detectable. It is **off by default** because it adds a write and storage cost per transition.
+
+Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only - the manager only ever inserts rows.
+
+`verify()` walks the persisted chain oldest-first and recomputes every link: editing a row breaks its `record_hash`, deleting a row breaks the next row's `prev_hash` linkage, and deleting the newest row is caught by the persisted-head check.
+
+**Retention/rotation**: when more than `audit_log.retention_max_records` rows are retained, the oldest segment is *sealed* (its final `seq` + hash are persisted as an anchor) and then pruned. The surviving tail still verifies because the oldest retained row links back to the sealed anchor.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `audit_log.enabled` | bool | `false` | Enable the tamper-evident audit log |
+| `audit_log.transitions` | string | `"all"` | Which transitions to record: `"all"` or `"confirmed_only"` |
+| `audit_log.database_path` | string | `""` | SQLite path. Empty => sibling `fault_audit.db` next to the fault DB (or `:memory:` for in-memory fault stores) |
+| `audit_log.retention_max_records` | int | `0` | Seal + prune the oldest segment beyond this many retained records (0 = unlimited) |
 
 ## Usage
 

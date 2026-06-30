@@ -1,0 +1,270 @@
+// Copyright 2026 mfaferek93, bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
+#include <sqlite3.h>
+
+#include <filesystem>
+#include <memory>
+#include <random>
+#include <string>
+
+#include "ros2_medkit_fault_manager/fault_audit_log.hpp"
+
+using ros2_medkit_fault_manager::AuditEvent;
+using ros2_medkit_fault_manager::FaultAuditLog;
+using ros2_medkit_fault_manager::kTransitionCleared;
+using ros2_medkit_fault_manager::kTransitionConfirmed;
+using ros2_medkit_fault_manager::kTransitionOccurred;
+
+namespace {
+
+AuditEvent make_event(const std::string & code, const char * transition, int64_t ts) {
+  AuditEvent e;
+  e.fault_code = code;
+  e.transition = transition;
+  e.severity = 2;
+  e.status = "CONFIRMED";
+  e.source_id = "/robot/source";
+  e.description = "pump pressure low";
+  e.occurred_at_ns = ts;
+  return e;
+}
+
+/// Run a single SQL statement directly against the audit DB file (used to
+/// simulate tampering an immutable row).
+void raw_exec(const std::string & db_path, const std::string & sql) {
+  sqlite3 * db = nullptr;
+  ASSERT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
+  char * err = nullptr;
+  int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
+  std::string err_str = err ? err : "";
+  sqlite3_free(err);
+  sqlite3_close(db);
+  ASSERT_EQ(rc, SQLITE_OK) << err_str;
+}
+
+}  // namespace
+
+class FaultAuditLogTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    path_ = (std::filesystem::temp_directory_path() / ("test_audit_" + std::to_string(dist(gen)) + ".db")).string();
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+    std::filesystem::remove(path_ + "-wal", ec);
+    std::filesystem::remove(path_ + "-shm", ec);
+  }
+
+  std::string path_;
+};
+
+// Each transition appends a chained row with a monotonic seq and linked hashes.
+TEST_F(FaultAuditLogTest, AppendsChainedRowPerTransition) {
+  FaultAuditLog log(path_);
+
+  EXPECT_EQ(log.append(make_event("F1", kTransitionOccurred, 100)), 1);
+  EXPECT_EQ(log.append(make_event("F1", kTransitionConfirmed, 200)), 2);
+  EXPECT_EQ(log.append(make_event("F1", kTransitionCleared, 300)), 3);
+
+  auto records = log.read();
+  ASSERT_EQ(records.size(), 3u);
+
+  // First row links to genesis; each subsequent prev_hash equals the prior hash.
+  EXPECT_EQ(records[0].seq, 1);
+  EXPECT_EQ(records[0].prev_hash, FaultAuditLog::genesis_hash());
+  EXPECT_EQ(records[1].prev_hash, records[0].record_hash);
+  EXPECT_EQ(records[2].prev_hash, records[1].record_hash);
+
+  // record_hash is the sha256 of prev_hash + canonical(event).
+  const std::string expected =
+      FaultAuditLog::sha256_hex(records[0].prev_hash + FaultAuditLog::canonicalize(1, records[0].event));
+  EXPECT_EQ(records[0].record_hash, expected);
+
+  EXPECT_EQ(log.record_count(), 3);
+  EXPECT_EQ(log.head().seq, 3);
+  EXPECT_EQ(log.head().record_hash, records[2].record_hash);
+}
+
+// Verify confirms an untampered chain.
+TEST_F(FaultAuditLogTest, VerifyUntamperedChain) {
+  FaultAuditLog log(path_);
+  for (int i = 0; i < 10; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+  auto result = log.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 10);
+}
+
+// Known SHA-256 vector proves the EVP wiring (sha256("") == e3b0c442...).
+TEST_F(FaultAuditLogTest, Sha256KnownVector) {
+  EXPECT_EQ(FaultAuditLog::sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+// Editing a past row makes verify fail.
+TEST_F(FaultAuditLogTest, EditingPastRowFailsVerify) {
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionOccurred, 200));
+    log.append(make_event("F3", kTransitionOccurred, 300));
+    ASSERT_TRUE(log.verify().ok);
+  }
+
+  // Tamper: change a stored field without recomputing the hash.
+  raw_exec(path_, "UPDATE audit_log SET description = 'forged' WHERE seq = 2");
+
+  FaultAuditLog reopened(path_);
+  auto result = reopened.verify();
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.bad_seq, 2);
+}
+
+// Deleting a middle row makes verify fail (chain gap).
+TEST_F(FaultAuditLogTest, DeletingMiddleRowFailsVerify) {
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionOccurred, 200));
+    log.append(make_event("F3", kTransitionOccurred, 300));
+  }
+
+  raw_exec(path_, "DELETE FROM audit_log WHERE seq = 2");
+
+  FaultAuditLog reopened(path_);
+  EXPECT_FALSE(reopened.verify().ok);
+}
+
+// Deleting the newest row is caught by the persisted head check.
+TEST_F(FaultAuditLogTest, DeletingNewestRowFailsVerify) {
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionOccurred, 200));
+    log.append(make_event("F3", kTransitionOccurred, 300));
+  }
+
+  // Drop the last row but leave the head pointing at seq 3.
+  raw_exec(path_, "DELETE FROM audit_log WHERE seq = 3");
+
+  FaultAuditLog reopened(path_);
+  EXPECT_FALSE(reopened.verify().ok);
+}
+
+// The chain head persists across a reopen and the chain resumes from it.
+TEST_F(FaultAuditLogTest, HeadPersistsAcrossReopen) {
+  std::string head_hash;
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionConfirmed, 200));
+    head_hash = log.head().record_hash;
+    EXPECT_EQ(log.head().seq, 2);
+  }
+
+  FaultAuditLog reopened(path_);
+  EXPECT_EQ(reopened.head().seq, 2);
+  EXPECT_EQ(reopened.head().record_hash, head_hash);
+
+  // The next append continues the same chain.
+  EXPECT_EQ(reopened.append(make_event("F3", kTransitionCleared, 300)), 3);
+  auto records = reopened.read();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_EQ(records[2].prev_hash, head_hash);
+  EXPECT_TRUE(reopened.verify().ok);
+}
+
+// Rotation seals a segment and prunes it, leaving the tail verifiable.
+TEST_F(FaultAuditLogTest, RotationSealsAndPrunesButStaysVerifiable) {
+  FaultAuditLog log(path_, /*retention_max_records=*/5);
+  for (int i = 1; i <= 12; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+
+  // Only the most recent 5 rows are retained.
+  EXPECT_EQ(log.record_count(), 5);
+  auto records = log.read();
+  ASSERT_EQ(records.size(), 5u);
+  EXPECT_EQ(records.front().seq, 8);
+  EXPECT_EQ(records.back().seq, 12);
+  EXPECT_EQ(log.head().seq, 12);
+
+  // The surviving tail still verifies via the sealed anchor.
+  auto result = log.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 5);
+}
+
+// Tampering a row inside a rotated tail is still detected.
+TEST_F(FaultAuditLogTest, RotationThenTamperFails) {
+  {
+    FaultAuditLog log(path_, /*retention_max_records=*/5);
+    for (int i = 1; i <= 12; ++i) {
+      log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+    }
+  }
+  raw_exec(path_, "UPDATE audit_log SET source_id = 'forged' WHERE seq = 10");
+
+  FaultAuditLog reopened(path_, 5);
+  auto result = reopened.verify();
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.bad_seq, 10);
+}
+
+// Removing the sealed anchor breaks the link for the oldest retained row.
+TEST_F(FaultAuditLogTest, MissingAnchorFailsVerify) {
+  {
+    FaultAuditLog log(path_, /*retention_max_records=*/5);
+    for (int i = 1; i <= 12; ++i) {
+      log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+    }
+  }
+  raw_exec(path_, "DELETE FROM audit_anchors");
+
+  FaultAuditLog reopened(path_, 5);
+  EXPECT_FALSE(reopened.verify().ok);
+}
+
+// canonicalize is deterministic and order-stable.
+TEST_F(FaultAuditLogTest, CanonicalizeDeterministic) {
+  auto e = make_event("F1", kTransitionConfirmed, 12345);
+  EXPECT_EQ(FaultAuditLog::canonicalize(7, e), FaultAuditLog::canonicalize(7, e));
+  // seq is part of the canonical form, so a different seq changes the bytes.
+  EXPECT_NE(FaultAuditLog::canonicalize(7, e), FaultAuditLog::canonicalize(8, e));
+}
+
+// read(after_seq) returns only newer records, oldest-first.
+TEST_F(FaultAuditLogTest, ReadAfterSeq) {
+  FaultAuditLog log(path_);
+  for (int i = 1; i <= 5; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+  auto tail = log.read(/*limit=*/0, /*after_seq=*/3);
+  ASSERT_EQ(tail.size(), 2u);
+  EXPECT_EQ(tail[0].seq, 4);
+  EXPECT_EQ(tail[1].seq, 5);
+}
+
+int main(int argc, char ** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

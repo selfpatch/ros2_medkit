@@ -151,6 +151,9 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Create storage backend
   storage_ = create_storage();
 
+  // Create the tamper-evident fault audit log (disabled by default)
+  audit_log_ = create_audit_log();
+
   // Apply snapshot limit to storage
   if (max_snapshots > 0) {
     storage_->set_max_snapshots_per_fault(static_cast<size_t>(max_snapshots));
@@ -385,6 +388,91 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
   return std::make_unique<InMemoryFaultStorage>();
 }
 
+std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
+  const bool enabled = declare_parameter<bool>("audit_log.enabled", false);
+
+  // Which transitions to record: "all" (occurred/confirmed/cleared) or
+  // "confirmed_only".
+  const std::string transitions = declare_parameter<std::string>("audit_log.transitions", "all");
+  audit_confirmed_only_ = (transitions == "confirmed_only");
+  if (transitions != "all" && transitions != "confirmed_only") {
+    RCLCPP_WARN(get_logger(), "audit_log.transitions '%s' invalid, using 'all'", transitions.c_str());
+    audit_confirmed_only_ = false;
+  }
+
+  // Retention: seal + prune the oldest segment beyond this many records (0 = off).
+  auto retention = declare_parameter<int64_t>("audit_log.retention_max_records", 0);
+  if (retention < 0) {
+    RCLCPP_WARN(get_logger(), "audit_log.retention_max_records < 0, disabling rotation");
+    retention = 0;
+  }
+
+  // Path: explicit override, else a sibling of the fault DB, else :memory:.
+  std::string audit_path = declare_parameter<std::string>("audit_log.database_path", "");
+
+  if (!enabled) {
+    return nullptr;  // No table, no file, no write overhead when off.
+  }
+
+  if (audit_path.empty()) {
+    if (database_path_ == ":memory:" || storage_type_ != "sqlite") {
+      audit_path = ":memory:";
+    } else {
+      std::filesystem::path base(database_path_);
+      audit_path = (base.parent_path() / "fault_audit.db").string();
+    }
+  }
+
+  if (audit_path != ":memory:") {
+    std::filesystem::path p(audit_path);
+    auto parent = p.parent_path();
+    if (!parent.empty() && !std::filesystem::exists(parent)) {
+      try {
+        std::filesystem::create_directories(parent);
+      } catch (const std::filesystem::filesystem_error & e) {
+        RCLCPP_ERROR(get_logger(), "Failed to create audit log directory '%s': %s", parent.string().c_str(), e.what());
+        throw;
+      }
+    }
+  }
+
+  try {
+    auto log = std::make_unique<FaultAuditLog>(audit_path, retention);
+    RCLCPP_INFO(get_logger(), "Fault audit log enabled: %s (transitions=%s, retention=%ld, resume_seq=%ld)",
+                audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention, log->head().seq);
+    return log;
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to open fault audit log '%s': %s", audit_path.c_str(), e.what());
+    throw;
+  }
+}
+
+void FaultManagerNode::audit_transition(const char * transition, const ros2_medkit_msgs::msg::Fault & fault,
+                                        const std::string & source_id, int64_t occurred_at_ns) {
+  if (!audit_log_) {
+    return;
+  }
+  if (audit_confirmed_only_ && std::string(transition) != kTransitionConfirmed) {
+    return;
+  }
+
+  AuditEvent event;
+  event.fault_code = fault.fault_code;
+  event.transition = transition;
+  event.severity = fault.severity;
+  event.status = fault.status;
+  event.source_id = source_id;
+  event.description = fault.description;
+  event.occurred_at_ns = occurred_at_ns;
+
+  try {
+    audit_log_->append(event);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to append audit record for '%s' (%s): %s", fault.fault_code.c_str(), transition,
+                 e.what());
+  }
+}
+
 void FaultManagerNode::handle_report_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
@@ -428,9 +516,10 @@ void FaultManagerNode::handle_report_fault(
   auto resolved_config = resolve_config(request->source_id);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
+  const rclcpp::Time event_time = get_wall_clock_time();
   bool is_new =
       storage_->report_fault_event(request->fault_code, request->event_type, request->severity, request->description,
-                                   request->source_id, get_wall_clock_time(), resolved_config);
+                                   request->source_id, event_time, resolved_config);
 
   response->accepted = true;
 
@@ -486,6 +575,16 @@ void FaultManagerNode::handle_report_fault(
       }
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
+
+    // Append tamper-evident audit records for the transitions that just happened.
+    // Recorded regardless of correlation muting: muting affects display, not the
+    // fact that the state transition occurred.
+    if (is_new) {
+      audit_transition(kTransitionOccurred, *fault_after, request->source_id, event_time.nanoseconds());
+    }
+    if (just_confirmed) {
+      audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time.nanoseconds());
+    }
 
     // Capture snapshots/rosbag when a fault confirms via the bounded pool (issue #441).
     // handle_report_fault runs on the single-threaded executor, so confirmations are
@@ -695,6 +794,12 @@ void FaultManagerNode::handle_clear_fault(
     // Auto-clear correlated symptoms
     for (const auto & symptom_code : auto_cleared_codes) {
       storage_->clear_fault(symptom_code);
+      if (audit_log_) {
+        auto symptom = storage_->get_fault(symptom_code);
+        if (symptom) {
+          audit_transition(kTransitionCleared, *symptom, "clear_service", get_wall_clock_time().nanoseconds());
+        }
+      }
       RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
                    request->fault_code.c_str());
       // Also cleanup rosbag for auto-cleared faults
@@ -722,6 +827,7 @@ void FaultManagerNode::handle_clear_fault(
     auto fault = storage_->get_fault(request->fault_code);
     if (fault) {
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
+      audit_transition(kTransitionCleared, *fault, "clear_service", get_wall_clock_time().nanoseconds());
     }
   } else {
     response->message = "Fault not found: " + request->fault_code;

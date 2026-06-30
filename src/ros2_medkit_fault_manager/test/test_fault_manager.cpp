@@ -16,12 +16,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <optional>
+#include <random>
 #include <thread>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -1514,6 +1517,122 @@ TEST_F(SnapshotCooldownTest, CooldownPreventsRapidRecapture) {
   // This is a basic smoke test verifying the cooldown path doesn't crash
   // and the node handles rapid re-confirmation gracefully.
   SUCCEED();
+}
+
+// End-to-end check that the node hooks the audit log on the fault write path.
+// Reports a CRITICAL fault (immediate confirm => occurred + confirmed), then
+// clears it (=> cleared), and inspects the persisted audit DB by reopening it.
+class FaultAuditIntegrationTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    audit_path_ = (std::filesystem::temp_directory_path() / ("test_node_audit_" + std::to_string(dist(gen)) + ".db"))
+                      .string();
+    ns_ = "/test_audit_" + std::to_string(dist(gen));
+
+    rclcpp::NodeOptions fm_options;
+    fm_options.parameter_overrides({
+        {"storage_type", "memory"},
+        {"confirmation_threshold", -1},
+        {"audit_log.enabled", true},
+        {"audit_log.database_path", audit_path_},
+    });
+    fm_options.arguments({"--ros-args", "-r", "__ns:=" + ns_});
+    fault_manager_ = std::make_shared<FaultManagerNode>(fm_options);
+
+    rclcpp::NodeOptions test_options;
+    test_options.arguments({"--ros-args", "-r", "__ns:=" + ns_});
+    test_node_ = std::make_shared<rclcpp::Node>("test_audit_client", test_options);
+
+    report_client_ = test_node_->create_client<ReportFault>(ns_ + "/fault_manager/report_fault");
+    clear_client_ = test_node_->create_client<ClearFault>(ns_ + "/fault_manager/clear_fault");
+    ASSERT_TRUE(report_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(clear_client_->wait_for_service(std::chrono::seconds(5)));
+  }
+
+  void TearDown() override {
+    report_client_.reset();
+    clear_client_.reset();
+    test_node_.reset();
+    fault_manager_.reset();
+    std::error_code ec;
+    std::filesystem::remove(audit_path_, ec);
+    std::filesystem::remove(audit_path_ + "-wal", ec);
+    std::filesystem::remove(audit_path_ + "-shm", ec);
+  }
+
+  template <typename FutureT>
+  bool spin_until_ready(FutureT & future) {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+      rclcpp::spin_some(fault_manager_);
+      rclcpp::spin_some(test_node_);
+      if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+  }
+
+  std::string audit_path_;
+  std::string ns_;
+  std::shared_ptr<FaultManagerNode> fault_manager_;
+  std::shared_ptr<rclcpp::Node> test_node_;
+  rclcpp::Client<ReportFault>::SharedPtr report_client_;
+  rclcpp::Client<ClearFault>::SharedPtr clear_client_;
+};
+
+TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
+  auto report = std::make_shared<ReportFault::Request>();
+  report->fault_code = "AUDIT_FAULT";
+  report->event_type = ReportFault::Request::EVENT_FAILED;
+  report->severity = Fault::SEVERITY_CRITICAL;  // immediate confirm
+  report->description = "overpressure";
+  report->source_id = "/plc/pump";
+  auto rf = report_client_->async_send_request(report);
+  ASSERT_TRUE(spin_until_ready(rf));
+  ASSERT_TRUE(rf.get()->accepted);
+
+  auto clear = std::make_shared<ClearFault::Request>();
+  clear->fault_code = "AUDIT_FAULT";
+  auto cf = clear_client_->async_send_request(clear);
+  ASSERT_TRUE(spin_until_ready(cf));
+  ASSERT_TRUE(cf.get()->success);
+
+  // Reopen the audit DB independently and inspect the persisted chain.
+  ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
+  auto records = audit.read();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_EQ(records[0].event.transition, ros2_medkit_fault_manager::kTransitionOccurred);
+  EXPECT_EQ(records[1].event.transition, ros2_medkit_fault_manager::kTransitionConfirmed);
+  EXPECT_EQ(records[2].event.transition, ros2_medkit_fault_manager::kTransitionCleared);
+  EXPECT_EQ(records[0].event.fault_code, "AUDIT_FAULT");
+  EXPECT_EQ(records[1].event.source_id, "/plc/pump");
+
+  auto result = audit.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 3);
+}
+
+TEST(FaultAuditDisabledTest, NoAuditFileWhenDisabled) {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dist;
+  const std::string audit_path =
+      (std::filesystem::temp_directory_path() / ("test_audit_off_" + std::to_string(dist(gen)) + ".db")).string();
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"audit_log.database_path", audit_path},  // default enabled=false
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  // With the feature off, no audit database file is created.
+  EXPECT_FALSE(std::filesystem::exists(audit_path));
 }
 
 int main(int argc, char ** argv) {
