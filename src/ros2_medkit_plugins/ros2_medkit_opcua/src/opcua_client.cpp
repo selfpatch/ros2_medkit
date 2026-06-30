@@ -124,11 +124,15 @@ OpcuaValue variant_to_value(const opcua::Variant & var) {
   }
   if (var.isType<uint64_t>()) {
     // OpcuaValue has no unsigned 64-bit slot; reinterpret the bit pattern as
-    // int64_t. C++20 mandates two's complement, so the bits are preserved for
-    // status-word decode and for fault-enum codes that fit in int64_t. Values
-    // above INT64_MAX wrap to negative when compared numerically (enum mode);
-    // status-word bit decode is unaffected because it masks the raw bits.
-    return static_cast<int64_t>(var.getScalarCopy<uint64_t>());
+    // int64_t. A plain static_cast of a value above INT64_MAX is only
+    // implementation-defined under C++17, so copy the bits via memcpy to make
+    // the reinterpretation well-defined. The raw bits are preserved for
+    // status-word bit decode (which masks them) and for fault-enum codes that
+    // fit in int64_t; codes above INT64_MAX read as negative in enum mode.
+    const uint64_t raw = var.getScalarCopy<uint64_t>();
+    int64_t signed_bits;
+    std::memcpy(&signed_bits, &raw, sizeof(signed_bits));
+    return signed_bits;
   }
   if (var.isType<float>()) {
     return var.getScalarCopy<float>();

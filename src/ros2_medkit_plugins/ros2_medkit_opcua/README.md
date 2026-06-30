@@ -215,8 +215,9 @@ nodes:
 # UInt32 / UInt64). A signed type (Int16/Int32) whose top bit is set is
 # sign-extended when widened to the 64-bit decode register, which sets every
 # bit above the register width and raises spurious bit faults. `bit:` positions
-# are 0-based and must be < 64; higher positions are dead config and rejected at
-# load. Fault codes must be globally unique across all `alarm` / `status_bits` /
+# are 0-based and must be < 64; higher positions are dead config, so the loader
+# logs a warning and skips that bit rule while still loading the rest of the
+# config. Fault codes must be globally unique across all `alarm` / `status_bits` /
 # `fault_enum` entries (the loader rejects duplicates); reusing a code on two
 # nodes makes its fault flap.
 

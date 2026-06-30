@@ -44,17 +44,20 @@ ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  # clang_format is registered explicitly below; excluding it here prevents
+  # ament_lint_auto from registering a second clang_format test.
   list(APPEND AMENT_LINT_AUTO_EXCLUDE
     ament_cmake_uncrustify
     ament_cmake_cpplint
-    ament_cmake_clang_tidy)
+    ament_cmake_clang_tidy
+    ament_cmake_clang_format)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_clang_format QUIET)
   if(ament_cmake_clang_format_FOUND)
     file(GLOB_RECURSE _format_files "include/*.hpp" "test/*.cpp")
     ament_clang_format(${_format_files}
-      CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../.clang-format")
+      CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   endif()
 
   find_package(ament_cmake_gtest REQUIRED)
