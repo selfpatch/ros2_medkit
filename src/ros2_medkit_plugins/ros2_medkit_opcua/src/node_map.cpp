@@ -296,8 +296,7 @@ bool NodeMap::load(const std::string & yaml_path) {
       //   status_bits:  decode named bits of an integer status word
       //   fault_enum:   map a fault-code register value to a fault + text
       namespace fd = ros2_medkit::fault_detection;
-      const int detection_modes =
-          (n["alarm"] ? 1 : 0) + (n["status_bits"] ? 1 : 0) + (n["fault_enum"] ? 1 : 0);
+      const int detection_modes = (n["alarm"] ? 1 : 0) + (n["status_bits"] ? 1 : 0) + (n["fault_enum"] ? 1 : 0);
       if (detection_modes > 1) {
         RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
                      "Entry node_id=%s declares more than one of alarm/status_bits/fault_enum - "
@@ -325,8 +324,7 @@ bool NodeMap::load(const std::string & yaml_path) {
         for (const auto & b : n["status_bits"]) {
           if (!b["bit"] || !b["fault_code"]) {
             RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                        "status_bits entry on node_id=%s missing bit/fault_code - skipping",
-                        entry.node_id_str.c_str());
+                        "status_bits entry on node_id=%s missing bit/fault_code - skipping", entry.node_id_str.c_str());
             continue;
           }
           fd::BitRule br;

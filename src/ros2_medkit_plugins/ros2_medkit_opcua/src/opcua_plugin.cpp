@@ -493,7 +493,7 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
 // -- Fault bridge --
 
 void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
-                                 const ros2_medkit::fault_detection::FaultSignal & signal) {
+                                  const ros2_medkit::fault_detection::FaultSignal & signal) {
   if (shutdown_requested_.load()) {
     return;
   }

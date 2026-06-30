@@ -46,8 +46,8 @@ struct PollSnapshot {
 /// Fires once per raise/clear edge with the hosting entity and the shared
 /// ``FaultSignal`` (fault code, severity, message, active) produced by the
 /// shared evaluator. Threshold, status-bit and enum modes all use this path.
-using AlarmChangeCallback = std::function<void(const std::string & entity_id,
-                                               const ros2_medkit::fault_detection::FaultSignal & signal)>;
+using AlarmChangeCallback =
+    std::function<void(const std::string & entity_id, const ros2_medkit::fault_detection::FaultSignal & signal)>;
 
 /// Callback when a native OPC-UA AlarmCondition lifecycle transitions to a
 /// new SOVD status (issue #386). Fires at most once per logical transition;
