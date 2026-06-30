@@ -18,6 +18,7 @@
   <depend>std_msgs</depend>
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_gateway</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>nlohmann-json-dev</depend>
   <depend>yaml_cpp_vendor</depend>
   <depend>libssl-dev</depend>

@@ -188,9 +188,10 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   }
 
   poller_ = std::make_unique<OpcuaPoller>(*client_, node_map_);
-  poller_->set_alarm_callback([this](const std::string & code, const AlarmConfig & cfg, bool active) {
-    on_alarm_change(code, cfg, active);
-  });
+  poller_->set_alarm_callback(
+      [this](const std::string & entity_id, const ros2_medkit::fault_detection::FaultSignal & signal) {
+        on_alarm_change(entity_id, signal);
+      });
   poller_->set_event_alarm_callback([this](const AlarmEventDelivery & delivery) {
     on_event_alarm(delivery);
   });
@@ -491,29 +492,18 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
 
 // -- Fault bridge --
 
-void OpcuaPlugin::on_alarm_change(const std::string & fault_code, const AlarmConfig & config, bool active) {
+void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
+                                 const ros2_medkit::fault_detection::FaultSignal & signal) {
   if (shutdown_requested_.load()) {
     return;
   }
-  std::string entity_id;
-  for (const auto & entry : node_map_.entries()) {
-    if (entry.alarm.has_value() && entry.alarm->fault_code == fault_code) {
-      entity_id = entry.entity_id;
-      break;
-    }
-  }
 
-  if (entity_id.empty()) {
-    log_warn("Alarm " + fault_code + " has no entity mapping");
-    return;
-  }
-
-  if (active) {
-    log_info("Alarm activated: " + fault_code + " on " + entity_id);
-    send_report_fault(entity_id, fault_code, config.severity, config.message);
+  if (signal.active) {
+    log_info("Alarm activated: " + signal.fault_code + " on " + entity_id);
+    send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
-    log_info("Alarm cleared: " + fault_code + " on " + entity_id);
-    send_clear_fault(fault_code);
+    log_info("Alarm cleared: " + signal.fault_code + " on " + entity_id);
+    send_clear_fault(signal.fault_code);
   }
 }
 

@@ -42,9 +42,12 @@ struct PollSnapshot {
   uint64_t error_count{0};
 };
 
-/// Callback when an alarm state changes (for fault reporting)
-using AlarmChangeCallback =
-    std::function<void(const std::string & fault_code, const AlarmConfig & config, bool active)>;
+/// Callback when a fault-detection signal transitions (for fault reporting).
+/// Fires once per raise/clear edge with the hosting entity and the shared
+/// ``FaultSignal`` (fault code, severity, message, active) produced by the
+/// shared evaluator. Threshold, status-bit and enum modes all use this path.
+using AlarmChangeCallback = std::function<void(const std::string & entity_id,
+                                               const ros2_medkit::fault_detection::FaultSignal & signal)>;
 
 /// Callback when a native OPC-UA AlarmCondition lifecycle transitions to a
 /// new SOVD status (issue #386). Fires at most once per logical transition;
@@ -166,7 +169,9 @@ class OpcuaPoller {
 
   mutable std::mutex alarm_mutex_;
   AlarmChangeCallback alarm_callback_;
-  std::unordered_map<std::string, bool> alarm_states_;  // fault_code -> last known state
+  // Shared raise/clear edge detector across all detection modes, keyed by
+  // fault_code. Replaces the previous threshold-only last-state map.
+  ros2_medkit::fault_detection::FaultTransitionTracker alarm_tracker_;
 
   // Issue #386: event-mode AlarmCondition state.
   EventAlarmCallback event_alarm_callback_;

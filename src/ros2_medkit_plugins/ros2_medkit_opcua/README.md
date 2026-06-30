@@ -169,12 +169,47 @@ nodes:
     writable: true                # Allow writes via x-plc-operations
     min_value: 0.0                # Optional: range validation for writes
     max_value: 100.0
-    alarm:                        # Optional: map to SOVD fault
+    alarm:                        # Optional: numeric threshold -> SOVD fault
       fault_code: PLC_LOW_LEVEL
       severity: WARNING
       message: Tank level below minimum
       threshold: 100.0
       above_threshold: false      # Alarm when value < threshold
+
+  # Status-word bit decode: one integer register, one fault per named bit.
+  # Mutually exclusive per node with `alarm:` / `fault_enum:`.
+  - node_id: "ns=2;s=Pump.StatusWord"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 3                     # bit position, 0 = least significant
+        fault_code: PUMP_OVERLOAD
+        severity: ERROR
+        message: Pump motor overload
+      - bit: 7
+        fault_code: FILTER_DIRTY
+        severity: WARNING          # message defaults to the fault_code
+
+  # Fault-code enum: a register value selects at most one fault + text.
+  - node_id: "ns=2;s=Vfd.FaultCode"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      ok_value: 0                  # value meaning "no fault" (default 0)
+      codes:
+        - code: 10
+          fault_code: VFD_OVERVOLTAGE
+          severity: ERROR
+          message: DC bus overvoltage
+        - code: 11
+          fault_code: VFD_OVERCURRENT
+          severity: ERROR
+
+# The three modes (`alarm`, `status_bits`, `fault_enum`) are evaluated by the
+# shared `ros2_medkit_fault_detection` module so every protocol plugin maps raw
+# values to faults identically. They are mutually exclusive on a single node.
 
 # Native OPC-UA AlarmConditionType events (issue #386). Subscribes to alarms
 # defined inside the PLC (Siemens Program_Alarm / ProDiag, Beckhoff TF6100,
