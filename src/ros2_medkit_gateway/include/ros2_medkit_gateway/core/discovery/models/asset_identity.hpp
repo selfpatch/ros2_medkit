@@ -82,10 +82,15 @@ struct AssetIdentity {
    * @brief Serialize to JSON (camelCase keys, only non-empty fields emitted).
    *
    * Provenance is emitted under "_provenance" when present so consumers can audit
-   * which source set each field. Returns an empty object when ::empty().
+   * which source set each field. Returns an empty object when ::empty(): provenance
+   * alone (which should never exist without fields) is not emitted for an empty
+   * identity, so the empty case truly serializes to {}.
    */
   json to_json() const {
     json j = json::object();
+    if (empty()) {
+      return j;
+    }
     if (!manufacturer.empty()) {
       j["manufacturer"] = manufacturer;
     }

@@ -104,8 +104,13 @@ inline bool incoming_wins(bool field_set, const std::string & current_owner, con
  *        to `source`, unless that field already has a provenance entry.
  *
  * Used to seed provenance for the first (base) source before merging others.
+ * A no-op when `source` is empty: an unknown owner is the implicit default, so
+ * stamping it would only add `_provenance` entries with empty values.
  */
 inline void stamp_identity_provenance(AssetIdentity & identity, const std::string & source) {
+  if (source.empty()) {
+    return;
+  }
   for (const auto & [prov_key, member] : detail::identity_fields()) {
     if (!(identity.*member).empty() && identity.provenance.find(prov_key) == identity.provenance.end()) {
       identity.provenance[prov_key] = source;

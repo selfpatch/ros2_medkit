@@ -59,10 +59,10 @@ class MergePipeline {
   void add_layer(std::unique_ptr<DiscoveryLayer> layer);
 
   /**
-   * @brief Set the asset-identity merge configuration (precedence + key strategy).
+   * @brief Set the asset-identity merge configuration (source precedence).
    *
    * Identity authority is independent of the structural MergePolicy: this controls
-   * which source wins per identity field and how the identity key is derived.
+   * which source wins per identity field, ranked on `Component.source`.
    */
   void set_identity_merge_config(IdentityMergeConfig config) {
     identity_config_ = std::move(config);
