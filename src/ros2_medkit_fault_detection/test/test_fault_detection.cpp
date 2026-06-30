@@ -15,6 +15,7 @@
 #include "ros2_medkit_fault_detection/fault_detection.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -76,6 +77,42 @@ TEST(ThresholdRule, BooleanPointIsAlarmOnTrue) {
   EXPECT_FALSE(fd::evaluate(fd::Value{false}, r)[0].active);
 }
 
+TEST(ThresholdRule, BooleanHonoursDirection) {
+  // above=false expresses the common case where logic-true is healthy and the
+  // FAULT is false (normally-closed contact, watchdog-OK / ready bit).
+  fd::ThresholdRule r;
+  r.fault = {"NOT_READY", "ERROR", "Drive not ready"};
+  r.threshold = 0.0;
+  r.above = false;
+
+  EXPECT_TRUE(fd::evaluate(fd::Value{false}, r)[0].active);
+  EXPECT_FALSE(fd::evaluate(fd::Value{true}, r)[0].active);
+}
+
+TEST(ThresholdRule, NonFiniteValueHoldsState) {
+  // A disconnected analog sensor reports NaN/inf. The evaluator must emit
+  // nothing (not active=false), so the tracker holds a previously-raised fault
+  // instead of a bad read clearing a real alarm.
+  fd::ThresholdRule r;
+  r.fault = {"HIGH_TEMP", "ERROR", "hot"};
+  r.threshold = 80.0;
+  r.above = true;
+
+  fd::FaultTransitionTracker tracker;
+  ASSERT_EQ(tracker.apply(fd::evaluate(fd::Value{90.0}, r)).size(), 1u);
+  ASSERT_TRUE(tracker.active("HIGH_TEMP"));
+
+  auto nan_out = fd::evaluate(fd::Value{std::numeric_limits<double>::quiet_NaN()}, r);
+  EXPECT_TRUE(nan_out.empty());
+  EXPECT_TRUE(tracker.apply(nan_out).empty());
+  EXPECT_TRUE(tracker.active("HIGH_TEMP"));
+
+  auto inf_out = fd::evaluate(fd::Value{std::numeric_limits<double>::infinity()}, r);
+  EXPECT_TRUE(inf_out.empty());
+  EXPECT_TRUE(tracker.apply(inf_out).empty());
+  EXPECT_TRUE(tracker.active("HIGH_TEMP"));
+}
+
 // -- Status-word bit decode --------------------------------------------------
 
 TEST(StatusWordRule, NamedBitDecode) {
@@ -104,6 +141,47 @@ TEST(StatusWordRule, AllClearWhenZero) {
   }
 }
 
+TEST(StatusWordRule, NonFiniteValueHoldsState) {
+  // +inf rounded to int64 is INT64_MAX, which would light up every bit; NaN
+  // rounds to 0 (all clear) and would clear a standing fault. Both must instead
+  // emit nothing so the tracker preserves prior state.
+  fd::StatusWordRule r;
+  r.bits = {{0u, {"E_STOP", "CRITICAL", "Emergency stop"}}, {3u, {"PUMP_OVERLOAD", "ERROR", "Pump overload"}}};
+
+  fd::FaultTransitionTracker tracker;
+  ASSERT_EQ(tracker.apply(fd::evaluate(fd::Value{static_cast<std::int64_t>(0b1)}, r)).size(), 1u);
+  ASSERT_TRUE(tracker.active("E_STOP"));
+
+  auto inf_out = fd::evaluate(fd::Value{std::numeric_limits<double>::infinity()}, r);
+  EXPECT_TRUE(inf_out.empty());  // no flood
+  EXPECT_TRUE(tracker.apply(inf_out).empty());
+  EXPECT_TRUE(tracker.active("E_STOP"));
+  EXPECT_FALSE(tracker.active("PUMP_OVERLOAD"));
+
+  auto nan_out = fd::evaluate(fd::Value{std::numeric_limits<double>::quiet_NaN()}, r);
+  EXPECT_TRUE(nan_out.empty());
+  EXPECT_TRUE(tracker.apply(nan_out).empty());
+  EXPECT_TRUE(tracker.active("E_STOP"));
+}
+
+TEST(StatusWordRule, WidthMasksSignExtendedHighBits) {
+  // A 16-bit signed status word with bit15 set, read as int64, sign-extends and
+  // sets bits 16..63. A configured width masks them so only in-range bits fire.
+  fd::StatusWordRule r;
+  r.width = 16;
+  r.bits = {{15u, {"REAL_FAULT", "ERROR", "real"}}, {20u, {"SPURIOUS", "ERROR", "spurious"}}};
+
+  const auto sign_extended = static_cast<std::int64_t>(0xFFFFFFFFFFFF8000ULL);
+  auto out = fd::evaluate(fd::Value{sign_extended}, r);
+  EXPECT_TRUE(find(out, "REAL_FAULT")->active);
+  EXPECT_FALSE(find(out, "SPURIOUS")->active);
+
+  // Without a width the same value would spuriously fire bit 20.
+  fd::StatusWordRule wide;
+  wide.bits = {{20u, {"SPURIOUS", "ERROR", "spurious"}}};
+  EXPECT_TRUE(find(fd::evaluate(fd::Value{sign_extended}, wide), "SPURIOUS")->active);
+}
+
 // -- Fault-code enum ---------------------------------------------------------
 
 TEST(EnumMapRule, CodeMapsToFaultAndText) {
@@ -130,6 +208,69 @@ TEST(EnumMapRule, OkValueRaisesNothing) {
   auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(0)}, r);
   ASSERT_EQ(out.size(), 1u);
   EXPECT_FALSE(out[0].active);
+}
+
+TEST(EnumMapRule, UnmappedNonOkRaisesCatchAll) {
+  // A non-ok value with no configured label must stay visible via the catch-all
+  // (firmware adds codes the config has not enumerated), not read as healthy.
+  fd::EnumMapRule r;
+  r.ok_value = 0;
+  r.codes = {{10, {"OVERVOLT", "ERROR", "ov"}}, {11, {"OVERCURR", "ERROR", "oc"}}};
+  r.unknown_fault = {"VFD_UNMAPPED", "ERROR", ""};
+
+  auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(99)}, r);
+  ASSERT_EQ(out.size(), 3u);
+  EXPECT_FALSE(find(out, "OVERVOLT")->active);
+  EXPECT_FALSE(find(out, "OVERCURR")->active);
+  const auto * unk = find(out, "VFD_UNMAPPED");
+  ASSERT_NE(unk, nullptr);
+  EXPECT_TRUE(unk->active);
+  EXPECT_EQ(unk->message, "unmapped fault code 99");
+
+  // ok and mapped values keep the catch-all inactive so the tracker clears it.
+  EXPECT_FALSE(find(fd::evaluate(fd::Value{static_cast<std::int64_t>(0)}, r), "VFD_UNMAPPED")->active);
+  auto mapped = fd::evaluate(fd::Value{static_cast<std::int64_t>(10)}, r);
+  EXPECT_TRUE(find(mapped, "OVERVOLT")->active);
+  EXPECT_FALSE(find(mapped, "VFD_UNMAPPED")->active);
+}
+
+TEST(EnumMapRule, NonFiniteValueHoldsState) {
+  // NaN decodes to 0 == ok_value (reads healthy) and inf to INT64_MAX; either
+  // would clear a standing enum fault. Both must emit nothing instead.
+  fd::EnumMapRule r;
+  r.ok_value = 0;
+  r.codes = {{10, {"OVERVOLT", "ERROR", "ov"}}};
+  r.unknown_fault.fault_code = "UNMAPPED";
+
+  fd::FaultTransitionTracker tracker;
+  ASSERT_EQ(tracker.apply(fd::evaluate(fd::Value{static_cast<std::int64_t>(10)}, r)).size(), 1u);
+  ASSERT_TRUE(tracker.active("OVERVOLT"));
+
+  auto nan_out = fd::evaluate(fd::Value{std::numeric_limits<double>::quiet_NaN()}, r);
+  EXPECT_TRUE(nan_out.empty());
+  EXPECT_TRUE(tracker.apply(nan_out).empty());
+  EXPECT_TRUE(tracker.active("OVERVOLT"));
+
+  EXPECT_TRUE(fd::evaluate(fd::Value{std::numeric_limits<double>::infinity()}, r).empty());
+  EXPECT_TRUE(tracker.active("OVERVOLT"));
+}
+
+TEST(Evaluator, UncoercibleStringHoldsState) {
+  // A string payload (wrong datatype, error string, partial poll) is undecidable
+  // for every rule kind: emit nothing so a standing fault is preserved.
+  fd::ThresholdRule t;
+  t.fault = {"HIGH_TEMP", "ERROR", "hot"};
+  t.threshold = 80.0;
+  EXPECT_TRUE(fd::evaluate(fd::Value{std::string{"sensor error"}}, t).empty());
+
+  fd::StatusWordRule s;
+  s.bits = {{0u, {"E_STOP", "CRITICAL", "e"}}};
+  EXPECT_TRUE(fd::evaluate(fd::Value{std::string{"bad"}}, s).empty());
+
+  fd::EnumMapRule e;
+  e.codes = {{10, {"OVERVOLT", "ERROR", "ov"}}};
+  e.unknown_fault.fault_code = "UNK";
+  EXPECT_TRUE(fd::evaluate(fd::Value{std::string{"bad"}}, e).empty());
 }
 
 // -- Raise / clear transitions ----------------------------------------------

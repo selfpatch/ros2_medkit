@@ -199,6 +199,69 @@ bool NodeMap::load(const std::string & yaml_path) {
       return false;
     }
 
+    const auto logger = rclcpp::get_logger("opcua.node_map");
+
+    // Defensive scalar decode: when a numeric/boolean field is *present* but
+    // fails to convert, warn (naming node_id) and fall back to the default
+    // rather than silently substituting a semantics-changing value (e.g.
+    // ``threshold: "100 bar"`` -> 0.0 inverts a below-threshold alarm). yaml-cpp
+    // ``as<T>(fallback)`` cannot tell "absent" from "present but bad". (#481)
+    auto parse_double = [logger](const YAML::Node & node, double def, const char * field,
+                                 const std::string & node_id) -> double {
+      if (!node) {
+        return def;
+      }
+      try {
+        return node.as<double>();
+      } catch (const YAML::Exception &) {
+        RCLCPP_WARN(logger, "node_id=%s: non-numeric %s ignored - using default", node_id.c_str(), field);
+        return def;
+      }
+    };
+    auto parse_bool = [logger](const YAML::Node & node, bool def, const char * field,
+                               const std::string & node_id) -> bool {
+      if (!node) {
+        return def;
+      }
+      try {
+        return node.as<bool>();
+      } catch (const YAML::Exception &) {
+        RCLCPP_WARN(logger, "node_id=%s: non-boolean %s ignored - using default", node_id.c_str(), field);
+        return def;
+      }
+    };
+    auto parse_int64 = [logger](const YAML::Node & node, std::int64_t def, const char * field,
+                                const std::string & node_id) -> std::int64_t {
+      if (!node) {
+        return def;
+      }
+      try {
+        return node.as<std::int64_t>();
+      } catch (const YAML::Exception &) {
+        RCLCPP_WARN(logger, "node_id=%s: non-integer %s ignored - using default", node_id.c_str(), field);
+        return def;
+      }
+    };
+    // Severity must be one of the documented SOVD buckets; warn + default to
+    // ERROR on a typo (e.g. ``SEVERE`` / wrong case) so it is not misrouted. (#481)
+    auto validate_severity = [logger](const std::string & sev, const std::string & node_id) -> std::string {
+      if (sev != "INFO" && sev != "WARNING" && sev != "ERROR" && sev != "CRITICAL") {
+        RCLCPP_WARN(logger, "node_id=%s: unknown severity '%s' - defaulting to ERROR", node_id.c_str(), sev.c_str());
+        return "ERROR";
+      }
+      return sev;
+    };
+    // Deterministic, unique-per-point catch-all code for an unmapped enum value.
+    auto derive_unknown_code = [](const std::string & entity, const std::string & data) -> std::string {
+      std::string s = entity + "_" + data + "_UNMAPPED";
+      for (auto & c : s) {
+        c = (std::isalnum(static_cast<unsigned char>(c)) != 0)
+                ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                : '_';
+      }
+      return s;
+    };
+
     for (size_t i = 0; i < nodes.size(); ++i) {
       const auto & n = nodes[i];
 
@@ -310,10 +373,11 @@ bool NodeMap::load(const std::string & yaml_path) {
       if (n["alarm"]) {
         AlarmConfig alarm;
         alarm.fault_code = n["alarm"]["fault_code"].as<std::string>();
-        alarm.severity = n["alarm"]["severity"].as<std::string>("ERROR");
+        alarm.severity = validate_severity(n["alarm"]["severity"].as<std::string>("ERROR"), entry.node_id_str);
         alarm.message = n["alarm"]["message"].as<std::string>(alarm.fault_code);
-        alarm.threshold = n["alarm"]["threshold"].as<double>(0.0);
-        alarm.above_threshold = n["alarm"]["above_threshold"].as<bool>(true);
+        alarm.threshold = parse_double(n["alarm"]["threshold"], 0.0, "alarm.threshold", entry.node_id_str);
+        alarm.above_threshold =
+            parse_bool(n["alarm"]["above_threshold"], true, "alarm.above_threshold", entry.node_id_str);
 
         fd::ThresholdRule rule;
         rule.fault = {alarm.fault_code, alarm.severity, alarm.message};
@@ -323,51 +387,108 @@ bool NodeMap::load(const std::string & yaml_path) {
         entry.alarm = std::move(alarm);
       } else if (n["status_bits"]) {
         fd::StatusWordRule rule;
-        for (const auto & b : n["status_bits"]) {
-          if (!b["bit"] || !b["fault_code"]) {
-            RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                        "status_bits entry on node_id=%s missing bit/fault_code - skipping", entry.node_id_str.c_str());
-            continue;
+        // Optional source register width: mask off sign-extended high bits so a
+        // signed status word read with its sign bit set does not fire spurious
+        // faults above the real register width. (#481)
+        if (n["status_word_width"]) {
+          const auto w = parse_int64(n["status_word_width"], 0, "status_word_width", entry.node_id_str);
+          if (w >= 1 && w <= 64) {
+            rule.width = static_cast<unsigned>(w);
+          } else {
+            RCLCPP_WARN(logger, "status_word_width=%lld on node_id=%s out of range (1..64) - ignoring",
+                        static_cast<long long>(w), entry.node_id_str.c_str());
           }
-          fd::BitRule br;
-          br.bit = b["bit"].as<unsigned>();
-          if (br.bit >= 64) {
-            // The status word is decoded as a 64-bit register, so bits at or
-            // above 64 can never be set and the rule would be dead config.
-            RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                        "status_bits entry on node_id=%s has bit=%u >= 64 (max status-word width); "
-                        "this fault can never fire - skipping",
-                        entry.node_id_str.c_str(), br.bit);
-            continue;
+        }
+        const auto & bits_node = n["status_bits"];
+        if (bits_node.IsSequence()) {
+          for (const auto & b : bits_node) {
+            if (!b["bit"] || !b["fault_code"]) {
+              RCLCPP_WARN(logger, "status_bits entry on node_id=%s missing bit/fault_code - skipping",
+                          entry.node_id_str.c_str());
+              continue;
+            }
+            fd::BitRule br;
+            // A wrong-typed bit value skips just this bit (consistent with the
+            // missing-field path above), never aborts the whole file. (#481)
+            try {
+              br.bit = b["bit"].as<unsigned>();
+            } catch (const YAML::Exception &) {
+              RCLCPP_WARN(logger, "status_bits entry on node_id=%s has non-integer bit - skipping",
+                          entry.node_id_str.c_str());
+              continue;
+            }
+            if (br.bit >= 64) {
+              // The status word is decoded as a 64-bit register, so bits at or
+              // above 64 can never be set and the rule would be dead config.
+              RCLCPP_WARN(logger,
+                          "status_bits entry on node_id=%s has bit=%u >= 64 (max status-word width); "
+                          "this fault can never fire - skipping",
+                          entry.node_id_str.c_str(), br.bit);
+              continue;
+            }
+            if (rule.width > 0 && br.bit >= rule.width) {
+              RCLCPP_WARN(logger,
+                          "status_bits entry on node_id=%s has bit=%u >= status_word_width=%u; "
+                          "this fault can never fire - skipping",
+                          entry.node_id_str.c_str(), br.bit, rule.width);
+              continue;
+            }
+            br.fault = {b["fault_code"].as<std::string>(),
+                        validate_severity(b["severity"].as<std::string>("ERROR"), entry.node_id_str),
+                        b["message"].as<std::string>(b["fault_code"].as<std::string>())};
+            rule.bits.push_back(std::move(br));
           }
-          br.fault = {b["fault_code"].as<std::string>(), b["severity"].as<std::string>("ERROR"),
-                      b["message"].as<std::string>(b["fault_code"].as<std::string>())};
-          rule.bits.push_back(std::move(br));
         }
         if (!rule.bits.empty()) {
           entry.detection = std::move(rule);
+        } else {
+          RCLCPP_WARN(logger,
+                      "status_bits on node_id=%s declared but produced no usable rules - "
+                      "no faults will be detected for this point",
+                      entry.node_id_str.c_str());
         }
       } else if (n["fault_enum"]) {
         fd::EnumMapRule rule;
-        rule.ok_value = n["fault_enum"]["ok_value"].as<std::int64_t>(0);
+        rule.ok_value = parse_int64(n["fault_enum"]["ok_value"], 0, "fault_enum.ok_value", entry.node_id_str);
         const auto codes = n["fault_enum"]["codes"];
         if (codes && codes.IsSequence()) {
           for (const auto & c : codes) {
             if (!c["code"] || !c["fault_code"]) {
-              RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                          "fault_enum entry on node_id=%s missing code/fault_code - skipping",
+              RCLCPP_WARN(logger, "fault_enum entry on node_id=%s missing code/fault_code - skipping",
                           entry.node_id_str.c_str());
               continue;
             }
             fd::EnumRule er;
-            er.code = c["code"].as<std::int64_t>();
-            er.fault = {c["fault_code"].as<std::string>(), c["severity"].as<std::string>("ERROR"),
+            // A wrong-typed code value skips just this entry, never aborts. (#481)
+            try {
+              er.code = c["code"].as<std::int64_t>();
+            } catch (const YAML::Exception &) {
+              RCLCPP_WARN(logger, "fault_enum entry on node_id=%s has non-integer code - skipping",
+                          entry.node_id_str.c_str());
+              continue;
+            }
+            er.fault = {c["fault_code"].as<std::string>(),
+                        validate_severity(c["severity"].as<std::string>("ERROR"), entry.node_id_str),
                         c["message"].as<std::string>(c["fault_code"].as<std::string>())};
             rule.codes.push_back(std::move(er));
           }
         }
         if (!rule.codes.empty()) {
+          // Catch-all: a non-ok value matching no configured code stays visible
+          // rather than reading as healthy. Code is YAML-overridable, else
+          // derived deterministically from the point. (#481)
+          rule.unknown_fault.fault_code = n["fault_enum"]["unknown_fault_code"]
+                                              ? n["fault_enum"]["unknown_fault_code"].as<std::string>()
+                                              : derive_unknown_code(entry.entity_id, entry.data_name);
+          rule.unknown_fault.severity =
+              validate_severity(n["fault_enum"]["unknown_severity"].as<std::string>("ERROR"), entry.node_id_str);
+          rule.unknown_fault.message = n["fault_enum"]["unknown_message"].as<std::string>("");
           entry.detection = std::move(rule);
+        } else {
+          RCLCPP_WARN(logger,
+                      "fault_enum on node_id=%s declared but produced no usable rules - "
+                      "no faults will be detected for this point",
+                      entry.node_id_str.c_str());
         }
       }
 
@@ -464,6 +585,9 @@ bool NodeMap::load(const std::string & yaml_path) {
               } else if constexpr (std::is_same_v<T, fd::EnumMapRule>) {
                 for (const auto & e : rule.codes) {
                   detection_faults.emplace_back(entry.entity_id, e.fault.fault_code);
+                }
+                if (!rule.unknown_fault.fault_code.empty()) {
+                  detection_faults.emplace_back(entry.entity_id, rule.unknown_fault.fault_code);
                 }
               }
             },
@@ -564,6 +688,10 @@ const NodeMapEntry * NodeMap::find_by_node_id(const std::string & node_id_str) c
   return nullptr;
 }
 
+// Test / back-compat only: the live fault-evaluation path is
+// detection_entries() (see opcua_poller.cpp). This returns just the
+// threshold-mode subset carrying the legacy ``alarm`` block and is not consulted
+// at runtime; do not wire new callers to it.
 std::vector<const NodeMapEntry *> NodeMap::alarm_entries() const {
   std::vector<const NodeMapEntry *> result;
   for (const auto & entry : entries_) {

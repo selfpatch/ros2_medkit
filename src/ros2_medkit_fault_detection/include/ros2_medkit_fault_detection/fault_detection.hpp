@@ -71,6 +71,11 @@ struct BitRule {
 /// Status-word decode: one integer register, many named-bit faults.
 struct StatusWordRule {
   std::vector<BitRule> bits;
+  /// Source register width in bits. 0 = treat the decoded value as a full
+  /// 64-bit word (no masking). When set in [1, 63] the raw value is masked to
+  /// that width before decode, so a signed register read with its sign bit set
+  /// (which sign-extends into int64) does not light up spurious high bits.
+  unsigned width{0};
 };
 
 /// One entry of a fault-code enum register.
@@ -83,6 +88,11 @@ struct EnumRule {
 struct EnumMapRule {
   std::vector<EnumRule> codes;
   std::int64_t ok_value{0};  // value meaning "no fault" (no rule raised)
+  /// Catch-all raised when the register reports a non-ok value that matches no
+  /// configured code (firmware revisions routinely add codes the config has
+  /// not enumerated). Empty ``fault_code`` disables the catch-all. When its
+  /// ``message`` is empty the evaluator fills in "unmapped fault code <N>".
+  FaultSpec unknown_fault{};
 };
 
 /// One of the composable detection modes for a single mapped point.
@@ -121,7 +131,11 @@ inline bool as_double(const Value & v, double & out) {
 }
 
 /// Coerce a value to a 64-bit integer for bit / enum decode. bool -> 0/1,
-/// int as-is, double rounded to nearest. Strings are not decodable.
+/// int as-is, double rounded to nearest. Non-finite doubles (NaN / inf) and
+/// doubles outside the int64 range are *undecidable* and yield ``false`` so the
+/// caller can hold state rather than fabricate garbage bits / enum codes (e.g.
+/// llround(+inf) is INT64_MAX, which would light up every status-word bit).
+/// Strings are not decodable.
 inline bool as_int(const Value & v, std::int64_t & out) {
   return std::visit(
       [&out](auto && x) -> bool {
@@ -133,6 +147,12 @@ inline bool as_int(const Value & v, std::int64_t & out) {
           out = x;
           return true;
         } else if constexpr (std::is_same_v<T, double>) {
+          // -2^63 (INT64_MIN, exact in double) .. 2^63 (one past INT64_MAX).
+          constexpr double kMin = -9223372036854775808.0;
+          constexpr double kMax = 9223372036854775808.0;
+          if (!std::isfinite(x) || x < kMin || x >= kMax) {
+            return false;
+          }
           out = static_cast<std::int64_t>(std::llround(x));
           return true;
         } else {
@@ -158,8 +178,15 @@ inline FaultSignal make_signal(const FaultSpec & spec, bool active) {
 /// Returns the full set of faults the rule governs, each flagged active or
 /// inactive. A threshold rule yields one signal; a status-word rule yields one
 /// per configured bit; an enum rule yields one per configured code (the
-/// matching code active, the rest inactive) so a transition tracker can clear
-/// the previous code and raise the new one.
+/// matching code active, the rest inactive) plus an optional catch-all, so a
+/// transition tracker can clear the previous code and raise the new one.
+///
+/// Undecidable input holds state. A value that cannot be coerced for the rule -
+/// a non-finite double (NaN / inf, e.g. a disconnected analog sensor or a
+/// div-by-zero on the PLC) or an uncoercible value (a string, a failed numeric
+/// conversion) - yields an *empty* vector: the evaluator emits NO signal, so a
+/// ``FaultTransitionTracker`` preserves the prior state instead of clearing a
+/// standing fault. A bad read must never mask a real alarm.
 inline std::vector<FaultSignal> evaluate(const Value & value, const DetectionRule & rule) {
   std::vector<FaultSignal> out;
 
@@ -168,35 +195,55 @@ inline std::vector<FaultSignal> evaluate(const Value & value, const DetectionRul
         using T = std::decay_t<decltype(r)>;
 
         if constexpr (std::is_same_v<T, ThresholdRule>) {
-          bool active = false;
           if (std::holds_alternative<bool>(value)) {
-            // A boolean point is alarm-on-true, threshold ignored. Preserves
-            // the original OPC UA threshold-path behaviour for Bool tags.
-            active = std::get<bool>(value);
+            // A boolean point honours the direction: above=true is
+            // alarm-on-true, above=false is alarm-on-false (a normally-closed
+            // contact, a watchdog-OK / ready bit whose FAULT state is false).
+            const bool b = std::get<bool>(value);
+            out.push_back(detail::make_signal(r.fault, r.above ? b : !b));
           } else {
             double d = 0.0;
-            if (detail::as_double(value, d)) {
-              active = r.above ? (d > r.threshold) : (d < r.threshold);
+            if (detail::as_double(value, d) && std::isfinite(d)) {
+              out.push_back(detail::make_signal(r.fault, r.above ? (d > r.threshold) : (d < r.threshold)));
             }
+            // else: undecidable (string / NaN / inf) -> emit nothing, hold last state.
           }
-          out.push_back(detail::make_signal(r.fault, active));
 
         } else if constexpr (std::is_same_v<T, StatusWordRule>) {
           std::int64_t raw = 0;
-          const bool ok = detail::as_int(value, raw);
-          const auto mask = static_cast<std::uint64_t>(raw);
+          if (!detail::as_int(value, raw)) {
+            return;  // undecidable -> emit nothing, hold last state
+          }
+          auto mask = static_cast<std::uint64_t>(raw);
+          if (r.width > 0 && r.width < 64) {
+            mask &= (1ULL << r.width) - 1ULL;  // ignore sign-extended high bits
+          }
           for (const auto & b : r.bits) {
-            bool active = ok && b.bit < 64 && ((mask >> b.bit) & 0x1ULL);
+            const bool active = b.bit < 64 && (((mask >> b.bit) & 0x1ULL) != 0ULL);
             out.push_back(detail::make_signal(b.fault, active));
           }
 
         } else if constexpr (std::is_same_v<T, EnumMapRule>) {
           std::int64_t code = 0;
-          const bool ok = detail::as_int(value, code);
-          const bool healthy = ok && code == r.ok_value;
+          if (!detail::as_int(value, code)) {
+            return;  // undecidable -> emit nothing, hold last state
+          }
+          const bool healthy = code == r.ok_value;
+          bool matched = false;
           for (const auto & e : r.codes) {
-            bool active = ok && !healthy && code == e.code;
+            const bool active = !healthy && code == e.code;
+            matched = matched || active;
             out.push_back(detail::make_signal(e.fault, active));
+          }
+          // Catch-all so a non-ok value with no configured label stays visible
+          // rather than reading as healthy.
+          if (!r.unknown_fault.fault_code.empty()) {
+            const bool active = !healthy && !matched;
+            FaultSignal s = detail::make_signal(r.unknown_fault, active);
+            if (active && r.unknown_fault.message.empty()) {
+              s.message = "unmapped fault code " + std::to_string(code);
+            }
+            out.push_back(std::move(s));
           }
         }
       },

@@ -722,9 +722,11 @@ nodes:
   EXPECT_EQ(r.codes[0].fault.message, "DC bus overvoltage");
 
   auto signals = fd::evaluate(fd::Value{static_cast<std::int64_t>(10)}, *det);
-  ASSERT_EQ(signals.size(), 2u);
+  // Two configured codes plus the auto-added unmapped catch-all.
+  ASSERT_EQ(signals.size(), 3u);
   EXPECT_TRUE(signals[0].active);   // code 10
   EXPECT_FALSE(signals[1].active);  // code 11
+  EXPECT_FALSE(signals[2].active);  // catch-all (a mapped code is not "unmapped")
 }
 
 TEST_F(NodeMapTest, RejectsDuplicateDetectionFaultCode) {
@@ -1067,6 +1069,235 @@ nodes:
     ASSERT_NE(overload, nullptr);
     EXPECT_FALSE(overload->signal.active);
   }
+}
+
+// -- Undecidable input, catch-all, and malformed-config handling (issue #481) -
+
+TEST_F(NodeMapTest, EmptyStatusBitsBlockLoadsWithoutDetection) {
+  // A declared-but-empty status_bits block yields zero rules. The loader must
+  // keep the data point but emit no detection (warned), not silently ship a
+  // non-functional fault map and not reject the whole file.
+  std::string path = "/tmp/test_node_map_empty_status_bits.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits: []
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.entries().size(), 1u);
+  EXPECT_TRUE(map.detection_entries().empty());
+}
+
+TEST_F(NodeMapTest, FaultEnumWithoutCodesLoadsWithoutDetection) {
+  std::string path = "/tmp/test_node_map_empty_enum.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Fault"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      ok_value: 0
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.entries().size(), 1u);
+  EXPECT_TRUE(map.detection_entries().empty());
+}
+
+TEST_F(NodeMapTest, WrongTypedBitSkippedNotAborted) {
+  // A single mistyped bit must skip just that bit (consistent with the
+  // missing-field path), never tear down the entire node map.
+  std::string path = "/tmp/test_node_map_bad_bit.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: "three"
+        fault_code: BAD_BIT
+      - bit: 3
+        fault_code: PUMP_OVERLOAD
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(std::holds_alternative<fd::StatusWordRule>(*det));
+  const auto & r = std::get<fd::StatusWordRule>(*det);
+  ASSERT_EQ(r.bits.size(), 1u);
+  EXPECT_EQ(r.bits[0].fault.fault_code, "PUMP_OVERLOAD");
+}
+
+TEST_F(NodeMapTest, WrongTypedEnumCodeSkippedNotAborted) {
+  std::string path = "/tmp/test_node_map_bad_code.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Fault"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      codes:
+        - code: high
+          fault_code: BAD_CODE
+        - code: 10
+          fault_code: VFD_OVERVOLTAGE
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(std::holds_alternative<fd::EnumMapRule>(*det));
+  const auto & r = std::get<fd::EnumMapRule>(*det);
+  ASSERT_EQ(r.codes.size(), 1u);
+  EXPECT_EQ(r.codes[0].code, 10);
+}
+
+TEST_F(NodeMapTest, FaultEnumGetsCatchAllUnknownFault) {
+  std::string path = "/tmp/test_node_map_enum_catchall.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Fault"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      ok_value: 0
+      codes:
+        - code: 10
+          fault_code: VFD_OVERVOLTAGE
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(std::holds_alternative<fd::EnumMapRule>(*det));
+  const auto & r = std::get<fd::EnumMapRule>(*det);
+  ASSERT_FALSE(r.unknown_fault.fault_code.empty());
+
+  // An unenumerated non-ok value raises the catch-all rather than reading ok.
+  auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(77)}, *det);
+  const fd::FaultSignal * unk = nullptr;
+  for (const auto & s : out) {
+    if (s.fault_code == r.unknown_fault.fault_code) {
+      unk = &s;
+    }
+  }
+  ASSERT_NE(unk, nullptr);
+  EXPECT_TRUE(unk->active);
+  EXPECT_EQ(unk->message, "unmapped fault code 77");
+}
+
+TEST_F(NodeMapTest, NonNumericThresholdFallsBackAndLoads) {
+  // A present-but-unparseable threshold must warn and fall back, not silently
+  // invert/disable detection and not abort the load.
+  std::string path = "/tmp/test_node_map_bad_threshold.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    alarm:
+      fault_code: BAD_THRESH
+      threshold: "100 bar"
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_TRUE(map.entries()[0].alarm.has_value());
+  EXPECT_DOUBLE_EQ(map.entries()[0].alarm->threshold, 0.0);
+}
+
+TEST_F(NodeMapTest, InvalidSeverityDefaultsToError) {
+  std::string path = "/tmp/test_node_map_bad_severity.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent1
+    data_name: val1
+    alarm:
+      fault_code: SEV_TEST
+      severity: SEVERE
+      threshold: 50.0
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_TRUE(map.entries()[0].alarm.has_value());
+  EXPECT_EQ(map.entries()[0].alarm->severity, "ERROR");
+}
+
+TEST_F(NodeMapTest, StatusWordWidthMasksSignExtension) {
+  std::string path = "/tmp/test_node_map_status_width.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: drive
+    data_name: status_word
+    data_type: int
+    status_word_width: 16
+    status_bits:
+      - bit: 15
+        fault_code: DRIVE_FAULT
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(std::holds_alternative<fd::StatusWordRule>(*det));
+  const auto & r = std::get<fd::StatusWordRule>(*det);
+  EXPECT_EQ(r.width, 16u);
+
+  // bit15 set in a sign-extended 16-bit word: only DRIVE_FAULT, no spurious bits.
+  const auto sign_extended = static_cast<std::int64_t>(0xFFFFFFFFFFFF8000ULL);
+  auto out = fd::evaluate(fd::Value{sign_extended}, *det);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].active);
 }
 
 TEST_F(NodeMapTest, RejectsMultipleDetectionModesOnOneNode) {

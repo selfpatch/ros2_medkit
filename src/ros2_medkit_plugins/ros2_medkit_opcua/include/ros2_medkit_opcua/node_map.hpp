@@ -130,7 +130,9 @@ class NodeMap {
   /// Find entry by OPC-UA node ID string
   const NodeMapEntry * find_by_node_id(const std::string & node_id_str) const;
 
-  /// Get all entries that have threshold-based alarm configuration
+  /// Get all entries that have threshold-based alarm configuration.
+  /// Test / back-compat only - the live fault-evaluation path is
+  /// detection_entries(); nothing reads this at runtime.
   std::vector<const NodeMapEntry *> alarm_entries() const;
 
   /// Get all entries carrying a shared fault-detection rule (threshold,
