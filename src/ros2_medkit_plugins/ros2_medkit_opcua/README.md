@@ -210,6 +210,15 @@ nodes:
 # The three modes (`alarm`, `status_bits`, `fault_enum`) are evaluated by the
 # shared `ros2_medkit_fault_detection` module so every protocol plugin maps raw
 # values to faults identically. They are mutually exclusive on a single node.
+#
+# Status words: expose the register as an UNSIGNED OPC-UA type (Byte / UInt16 /
+# UInt32 / UInt64). A signed type (Int16/Int32) whose top bit is set is
+# sign-extended when widened to the 64-bit decode register, which sets every
+# bit above the register width and raises spurious bit faults. `bit:` positions
+# are 0-based and must be < 64; higher positions are dead config and rejected at
+# load. Fault codes must be globally unique across all `alarm` / `status_bits` /
+# `fault_enum` entries (the loader rejects duplicates); reusing a code on two
+# nodes makes its fault flap.
 
 # Native OPC-UA AlarmConditionType events (issue #386). Subscribes to alarms
 # defined inside the PLC (Siemens Program_Alarm / ProDiag, Beckhoff TF6100,

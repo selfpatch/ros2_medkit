@@ -25,7 +25,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <variant>
 
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -329,6 +331,15 @@ bool NodeMap::load(const std::string & yaml_path) {
           }
           fd::BitRule br;
           br.bit = b["bit"].as<unsigned>();
+          if (br.bit >= 64) {
+            // The status word is decoded as a 64-bit register, so bits at or
+            // above 64 can never be set and the rule would be dead config.
+            RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                        "status_bits entry on node_id=%s has bit=%u >= 64 (max status-word width); "
+                        "this fault can never fire - skipping",
+                        entry.node_id_str.c_str(), br.bit);
+            continue;
+          }
           br.fault = {b["fault_code"].as<std::string>(), b["severity"].as<std::string>("ERROR"),
                       b["message"].as<std::string>(b["fault_code"].as<std::string>())};
           rule.bits.push_back(std::move(br));
@@ -413,25 +424,78 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // Cross-section collision check (bburda review on PR #387). The two
-    // alarm pipelines - threshold polling under ``nodes[*].alarm`` and
-    // native event subscription under ``event_alarms`` - must not address
-    // the same ``(entity_id, fault_code)``: fault_manager would receive
-    // both ``report_fault`` calls and the resulting status flapping is
-    // impossible to debug at runtime. The two paths produce different
-    // semantics (debounced vs state-machine driven) so the merge is not
-    // even well-defined.
+    // Fault-code collision validation. Two distinct concerns are checked here
+    // against the full set of fault codes the polled detection entries can
+    // emit (threshold + every status_bits bit + every fault_enum code), not
+    // just ``nodes[*].alarm`` as the original check did.
+    //
+    //   1. Global uniqueness of every emitted detection fault_code. The
+    //      poller shares one ``FaultTransitionTracker`` keyed by fault_code
+    //      alone, and clears are global by code, but evaluation runs
+    //      per-entry. Two detection entries emitting the same fault_code
+    //      (even on different entities) would therefore flap raise+clear
+    //      every poll cycle. Reject duplicates so the intent - one code, one
+    //      source - is documented and enforced at load.
+    //
+    //   2. Cross-pipeline collision with native ``event_alarms`` on the same
+    //      ``(entity_id, fault_code)`` (bburda review on PR #387). The
+    //      threshold/bit/enum polling path and the AlarmCondition
+    //      subscription path produce different semantics (debounced vs
+    //      state-machine driven), so fault_manager receiving both a polled
+    //      report and a state-machine report for one SOVD fault flaps and is
+    //      impossible to debug at runtime.
     {
+      namespace fd = ros2_medkit::fault_detection;
+      // (entity_id, fault_code) for every fault a detection entry can emit.
+      std::vector<std::pair<std::string, std::string>> detection_faults;
+      for (const auto & entry : entries_) {
+        if (!entry.detection.has_value()) {
+          continue;
+        }
+        std::visit(
+            [&](const auto & rule) {
+              using T = std::decay_t<decltype(rule)>;
+              if constexpr (std::is_same_v<T, fd::ThresholdRule>) {
+                detection_faults.emplace_back(entry.entity_id, rule.fault.fault_code);
+              } else if constexpr (std::is_same_v<T, fd::StatusWordRule>) {
+                for (const auto & b : rule.bits) {
+                  detection_faults.emplace_back(entry.entity_id, b.fault.fault_code);
+                }
+              } else if constexpr (std::is_same_v<T, fd::EnumMapRule>) {
+                for (const auto & e : rule.codes) {
+                  detection_faults.emplace_back(entry.entity_id, e.fault.fault_code);
+                }
+              }
+            },
+            *entry.detection);
+      }
+
+      // 1. Global uniqueness by fault_code across all detection entries.
+      std::set<std::string> seen_codes;
+      for (const auto & fault : detection_faults) {
+        if (!seen_codes.insert(fault.second).second) {
+          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                       "fault_code '%s' is emitted by more than one detection entry "
+                       "(threshold/status_bits/fault_enum); fault codes must be globally unique because "
+                       "the shared fault tracker is keyed by code alone (a collision flaps raise/clear "
+                       "every poll cycle) - rename one of them",
+                       fault.second.c_str());
+          return false;
+        }
+      }
+
+      // 2. Cross-pipeline collision with event_alarms by (entity_id, fault_code).
       std::set<std::pair<std::string, std::string>> event_keys;
       for (const auto & cfg : event_alarms_) {
         event_keys.emplace(cfg.entity_id, cfg.fault_code);
       }
-      for (const auto & entry : entries_) {
-        if (entry.alarm.has_value() && event_keys.count({entry.entity_id, entry.alarm->fault_code}) > 0) {
+      for (const auto & [entity_id, code] : detection_faults) {
+        if (event_keys.count({entity_id, code}) > 0) {
           RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                       "Duplicate (entity_id=%s, fault_code=%s) declared by both nodes[*].alarm "
-                       "(threshold mode) and event_alarms[*] (subscription mode) - mutually exclusive",
-                       entry.entity_id.c_str(), entry.alarm->fault_code.c_str());
+                       "Duplicate (entity_id=%s, fault_code=%s) declared by both a polled detection entry "
+                       "(threshold/status_bits/fault_enum) and event_alarms[*] (subscription mode) - "
+                       "mutually exclusive",
+                       entity_id.c_str(), code.c_str());
           return false;
         }
       }

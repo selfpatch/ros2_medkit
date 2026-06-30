@@ -122,6 +122,14 @@ OpcuaValue variant_to_value(const opcua::Variant & var) {
   if (var.isType<int64_t>()) {
     return var.getScalarCopy<int64_t>();
   }
+  if (var.isType<uint64_t>()) {
+    // OpcuaValue has no unsigned 64-bit slot; reinterpret the bit pattern as
+    // int64_t. C++20 mandates two's complement, so the bits are preserved for
+    // status-word decode and for fault-enum codes that fit in int64_t. Values
+    // above INT64_MAX wrap to negative when compared numerically (enum mode);
+    // status-word bit decode is unaffected because it masks the raw bits.
+    return static_cast<int64_t>(var.getScalarCopy<uint64_t>());
+  }
   if (var.isType<float>()) {
     return var.getScalarCopy<float>();
   }

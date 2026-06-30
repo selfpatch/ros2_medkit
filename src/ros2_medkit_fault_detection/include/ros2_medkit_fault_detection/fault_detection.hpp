@@ -211,6 +211,12 @@ inline std::vector<FaultSignal> evaluate(const Value & value, const DetectionRul
 /// clear transitions), which a plugin forwards to the fault manager as
 /// report / clear. Keyed by ``fault_code``, so it tracks threshold, bit and
 /// enum faults uniformly.
+///
+/// Contract: a single tracker may be shared across many points only if every
+/// ``fault_code`` is globally unique. Because the key is the code alone, two
+/// points emitting the same code would alternately raise and clear it each
+/// cycle. Consumers that share one tracker (e.g. the OPC UA poller across all
+/// node-map entries) must enforce that uniqueness at config-load time.
 class FaultTransitionTracker {
  public:
   std::vector<FaultSignal> apply(const std::vector<FaultSignal> & signals) {

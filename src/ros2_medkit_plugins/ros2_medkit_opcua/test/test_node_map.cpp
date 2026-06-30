@@ -16,8 +16,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <fstream>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
@@ -722,6 +725,348 @@ nodes:
   ASSERT_EQ(signals.size(), 2u);
   EXPECT_TRUE(signals[0].active);   // code 10
   EXPECT_FALSE(signals[1].active);  // code 11
+}
+
+TEST_F(NodeMapTest, RejectsDuplicateDetectionFaultCode) {
+  // The poller shares one FaultTransitionTracker keyed by fault_code alone, so
+  // two detection entries emitting the same code (here on different entities)
+  // would flap raise/clear every cycle. The loader must reject the whole file
+  // at load time. (issue #481)
+  std::string path = "/tmp/test_node_map_dup_fault_code.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent_a
+    data_name: temp_a
+    alarm:
+      fault_code: SHARED_CODE
+      threshold: 80.0
+  - node_id: "ns=1;i=2"
+    entity_id: ent_b
+    data_name: temp_b
+    alarm:
+      fault_code: SHARED_CODE
+      threshold: 90.0
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, RejectsDuplicateCodeAcrossStatusBitsAndEnum) {
+  // Uniqueness spans every emitted code, not just threshold alarms: a bit code
+  // colliding with an enum code on another node is still a shared-tracker
+  // collision. (issue #481)
+  std::string path = "/tmp/test_node_map_dup_mixed.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 2
+        fault_code: COLLIDE
+  - node_id: "ns=1;s=Fault"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      codes:
+        - code: 7
+          fault_code: COLLIDE
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, RejectsStatusBitsCollidingWithEventAlarm) {
+  // The author's original collision check only looked at nodes[*].alarm; a
+  // status_bits (or fault_enum) code colliding with an event_alarms
+  // (entity_id, fault_code) must be rejected too, otherwise fault_manager gets
+  // both a polled report and a state-machine report for one SOVD fault.
+  // (issue #481)
+  std::string path = "/tmp/test_node_map_bits_event_collision.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: tank_process
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 1
+        fault_code: PLC_OVERPRESSURE
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.Overpressure"
+    entity_id: tank_process
+    fault_code: PLC_OVERPRESSURE
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, AcceptsDistinctCodesAcrossDetectionModes) {
+  // The uniqueness rule must not false-positive on genuinely distinct codes
+  // spread across threshold / status_bits / fault_enum entries.
+  std::string path = "/tmp/test_node_map_distinct_modes.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: tank
+    data_name: temp
+    alarm:
+      fault_code: HIGH_TEMP
+      threshold: 80.0
+  - node_id: "ns=1;s=Status"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 3
+        fault_code: PUMP_OVERLOAD
+      - bit: 7
+        fault_code: FILTER_DIRTY
+  - node_id: "ns=1;s=Fault"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      codes:
+        - code: 10
+          fault_code: VFD_OVERVOLTAGE
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  EXPECT_EQ(map.detection_entries().size(), 3u);
+}
+
+TEST_F(NodeMapTest, StatusBitOutOfRangeSkipped) {
+  // A bit position >= 64 can never be set in the 64-bit decode register, so it
+  // is dead config: warn and drop the bit, keep the rest. (issue #481)
+  std::string path = "/tmp/test_node_map_bit_oob.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Status"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 64
+        fault_code: NEVER_FIRES
+      - bit: 3
+        fault_code: PUMP_OVERLOAD
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  const auto & det = map.detection_entries()[0]->detection;
+  ASSERT_TRUE(std::holds_alternative<fd::StatusWordRule>(*det));
+  const auto & r = std::get<fd::StatusWordRule>(*det);
+  ASSERT_EQ(r.bits.size(), 1u);
+  EXPECT_EQ(r.bits[0].bit, 3u);
+  EXPECT_EQ(r.bits[0].fault.fault_code, "PUMP_OVERLOAD");
+}
+
+// -- Poller-level shared-tracker integration (issue #481) --------------------
+//
+// Exercises the exact loop OpcuaPoller::evaluate_alarms runs: one shared
+// FaultTransitionTracker, iterating detection entries built by the real
+// NodeMap loader and evaluated by the shared fault_detection evaluator. Proves
+// there is no cross-entry flapping and that status-word bits transition
+// independently. Driven without a live OPC UA server by feeding synthetic
+// values keyed by node_id, mirroring the poller's snapshot.
+
+namespace {
+
+struct DetectionChange {
+  std::string entity_id;
+  fd::FaultSignal signal;
+};
+
+// Mirror of OpcuaPoller::evaluate_alarms: for each detection entry, look up its
+// value, evaluate, and push the value through the SHARED tracker; return the
+// raise/clear edges. Entries whose node has no value yet are skipped.
+std::vector<DetectionChange> evaluate_cycle(const NodeMap & map, fd::FaultTransitionTracker & tracker,
+                                            const std::unordered_map<std::string, fd::Value> & values) {
+  std::vector<DetectionChange> changes;
+  for (const auto * entry : map.detection_entries()) {
+    auto it = values.find(entry->node_id_str);
+    if (it == values.end()) {
+      continue;
+    }
+    auto signals = fd::evaluate(it->second, *entry->detection);
+    for (auto & edge : tracker.apply(signals)) {
+      changes.push_back({entry->entity_id, std::move(edge)});
+    }
+  }
+  return changes;
+}
+
+const DetectionChange * find_change(const std::vector<DetectionChange> & v, const std::string & code) {
+  for (const auto & c : v) {
+    if (c.signal.fault_code == code) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST_F(NodeMapTest, PollerNoCrossEntryFlapping) {
+  std::string path = "/tmp/test_node_map_poller_two_entries.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=TempA"
+    entity_id: ent_a
+    data_name: temp_a
+    data_type: float
+    alarm:
+      fault_code: A_HIGH
+      threshold: 80.0
+  - node_id: "ns=1;s=TempB"
+    entity_id: ent_b
+    data_name: temp_b
+    data_type: float
+    alarm:
+      fault_code: B_HIGH
+      threshold: 80.0
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.detection_entries().size(), 2u);
+
+  fd::FaultTransitionTracker tracker;
+  std::unordered_map<std::string, fd::Value> values;
+
+  // Both healthy: no transitions.
+  values["ns=1;s=TempA"] = fd::Value{70.0};
+  values["ns=1;s=TempB"] = fd::Value{70.0};
+  EXPECT_TRUE(evaluate_cycle(map, tracker, values).empty());
+
+  // A crosses high, B stays healthy: exactly one raise for A.
+  values["ns=1;s=TempA"] = fd::Value{90.0};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    EXPECT_EQ(changes[0].entity_id, "ent_a");
+    EXPECT_EQ(changes[0].signal.fault_code, "A_HIGH");
+    EXPECT_TRUE(changes[0].signal.active);
+  }
+
+  // Steady state with A still high: the shared tracker must NOT clear B (which
+  // it never raised) nor re-emit A. This is the regression the fix guards.
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_TRUE(evaluate_cycle(map, tracker, values).empty());
+  }
+
+  // Now B crosses high too: exactly one raise for B, A untouched.
+  values["ns=1;s=TempB"] = fd::Value{95.0};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    EXPECT_EQ(changes[0].entity_id, "ent_b");
+    EXPECT_EQ(changes[0].signal.fault_code, "B_HIGH");
+    EXPECT_TRUE(changes[0].signal.active);
+  }
+
+  // A clears, B stays high: exactly one clear for A.
+  values["ns=1;s=TempA"] = fd::Value{60.0};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    EXPECT_EQ(changes[0].signal.fault_code, "A_HIGH");
+    EXPECT_FALSE(changes[0].signal.active);
+  }
+}
+
+TEST_F(NodeMapTest, PollerStatusWordBitsTransitionIndependently) {
+  std::string path = "/tmp/test_node_map_poller_status_word.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=StatusWord"
+    entity_id: pump
+    data_name: status_word
+    data_type: int
+    status_bits:
+      - bit: 0
+        fault_code: PUMP_OVERLOAD
+      - bit: 3
+        fault_code: FILTER_DIRTY
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+
+  fd::FaultTransitionTracker tracker;
+  std::unordered_map<std::string, fd::Value> values;
+
+  // All clear.
+  values["ns=1;s=StatusWord"] = fd::Value{static_cast<std::int64_t>(0)};
+  EXPECT_TRUE(evaluate_cycle(map, tracker, values).empty());
+
+  // Bit 0 set only: raise PUMP_OVERLOAD, FILTER_DIRTY stays clear.
+  values["ns=1;s=StatusWord"] = fd::Value{static_cast<std::int64_t>(0b0001)};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    const auto * overload = find_change(changes, "PUMP_OVERLOAD");
+    ASSERT_NE(overload, nullptr);
+    EXPECT_TRUE(overload->signal.active);
+  }
+
+  // Bit 3 also set: raise FILTER_DIRTY only, PUMP_OVERLOAD stays raised.
+  values["ns=1;s=StatusWord"] = fd::Value{static_cast<std::int64_t>(0b1001)};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    const auto * dirty = find_change(changes, "FILTER_DIRTY");
+    ASSERT_NE(dirty, nullptr);
+    EXPECT_TRUE(dirty->signal.active);
+  }
+
+  // Bit 0 clears, bit 3 stays: clear PUMP_OVERLOAD only.
+  values["ns=1;s=StatusWord"] = fd::Value{static_cast<std::int64_t>(0b1000)};
+  {
+    auto changes = evaluate_cycle(map, tracker, values);
+    ASSERT_EQ(changes.size(), 1u);
+    const auto * overload = find_change(changes, "PUMP_OVERLOAD");
+    ASSERT_NE(overload, nullptr);
+    EXPECT_FALSE(overload->signal.active);
+  }
 }
 
 TEST_F(NodeMapTest, RejectsMultipleDetectionModesOnOneNode) {
