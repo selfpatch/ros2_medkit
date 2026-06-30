@@ -67,6 +67,16 @@ TEST(OpcuaClientTest, ReadSourceConditionsWhenDisconnected) {
   EXPECT_TRUE(conds.empty());
 }
 
+// Issue #479: a disconnected scan must report scan_ok=false so the poller does
+// NOT treat the empty result as "no active conditions" and falsely clear faults.
+TEST(OpcuaClientTest, ReadSourceConditionsReportsScanFailureWhenDisconnected) {
+  OpcuaClient client;
+  bool scan_ok = true;  // must be flipped to false
+  auto conds = client.read_source_conditions(opcua::NodeId(0, UA_NS0ID_SERVER), &scan_ok);
+  EXPECT_TRUE(conds.empty());
+  EXPECT_FALSE(scan_ok);
+}
+
 TEST(OpcuaClientTest, WriteWhenDisconnected) {
   OpcuaClient client;
   EXPECT_FALSE(client.write_value({1, "SomeNode"}, 42.0));
@@ -160,6 +170,36 @@ TEST(OpcuaClientSecurity, RequiresSecureChannel) {
   cfg.security_mode = SecurityMode::None;
   cfg.security_policy = SecurityPolicy::Basic256Sha256;
   EXPECT_TRUE(OpcuaClient::requires_secure_channel(cfg));
+}
+
+// Issue #478: non-anonymous credentials on an unencrypted channel must be
+// flagged as cleartext so the plugin can warn loudly.
+TEST(OpcuaClientSecurity, CredentialsSentInClear) {
+  OpcuaClientConfig cfg;
+  // Anonymous on a plain channel: nothing to leak.
+  EXPECT_FALSE(OpcuaClient::credentials_sent_in_clear(cfg));
+
+  // Username/password with no secured channel: credentials travel in clear.
+  cfg.user_auth_mode = UserAuthMode::UsernamePassword;
+  EXPECT_TRUE(OpcuaClient::credentials_sent_in_clear(cfg));
+
+  // X.509 identity with no secured channel: still cleartext.
+  cfg.user_auth_mode = UserAuthMode::X509;
+  EXPECT_TRUE(OpcuaClient::credentials_sent_in_clear(cfg));
+
+  // Once the channel is signed, credentials are protected.
+  cfg.security_mode = SecurityMode::Sign;
+  EXPECT_FALSE(OpcuaClient::credentials_sent_in_clear(cfg));
+
+  // Encryption via the policy alone (mode None) also protects them.
+  cfg.security_mode = SecurityMode::None;
+  cfg.security_policy = SecurityPolicy::Basic256Sha256;
+  EXPECT_FALSE(OpcuaClient::credentials_sent_in_clear(cfg));
+
+  // Anonymous is never cleartext regardless of channel.
+  cfg.user_auth_mode = UserAuthMode::Anonymous;
+  cfg.security_policy = SecurityPolicy::None;
+  EXPECT_FALSE(OpcuaClient::credentials_sent_in_clear(cfg));
 }
 
 TEST(OpcuaClientSecurity, ConnectSecureWithoutCertFailsFast) {

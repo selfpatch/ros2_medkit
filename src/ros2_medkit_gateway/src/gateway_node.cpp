@@ -496,8 +496,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                         .build();
       // Note: HttpServerManager will log TLS configuration details
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "Invalid TLS configuration: %s. TLS disabled.", e.what());
-      tls_config_ = TlsConfig{};  // Disabled
+      // Fail closed: TLS was explicitly requested but could not be built (e.g.
+      // missing/invalid cert or key). Refuse to start rather than silently
+      // serving plaintext HTTP. Disabling here would expose the API in the
+      // clear under a configuration that asked for encryption.
+      RCLCPP_FATAL(get_logger(),
+                   "TLS is enabled (server.tls.enabled=true) but the TLS configuration is invalid: %s. "
+                   "Refusing to start in plaintext - fix the certificate/key configuration or disable TLS.",
+                   e.what());
+      throw std::runtime_error(std::string("Invalid TLS configuration: ") + e.what());
     }
   } else {
     RCLCPP_INFO(get_logger(), "TLS/HTTPS: disabled");
@@ -551,8 +558,15 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                   algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
                   get_parameter("auth.require_auth_for").as_string().c_str());
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "Invalid authentication configuration: %s. Authentication disabled.", e.what());
-      auth_config_ = AuthConfig{};  // Disabled
+      // Fail closed: authentication was explicitly requested but could not be
+      // built (e.g. empty jwt_secret). Refuse to start rather than silently
+      // serving an unauthenticated API under a configuration that asked for
+      // auth.
+      RCLCPP_FATAL(get_logger(),
+                   "Authentication is enabled (auth.enabled=true) but the auth configuration is invalid: %s. "
+                   "Refusing to start unauthenticated - fix the auth configuration or disable auth.",
+                   e.what());
+      throw std::runtime_error(std::string("Invalid authentication configuration: ") + e.what());
     }
   } else {
     RCLCPP_INFO(get_logger(), "Authentication: disabled");

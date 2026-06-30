@@ -796,16 +796,20 @@ void OpcuaPlugin::log_security_profile() const {
                               ", MessageSecurityMode=" + mode_name(client_config_.security_mode) +
                               ", user=" + auth_name(client_config_.user_auth_mode);
 
-  const bool unsecured =
-      !OpcuaClient::requires_secure_channel(client_config_) && client_config_.user_auth_mode == UserAuthMode::Anonymous;
-  if (unsecured) {
+  const bool secure_channel = OpcuaClient::requires_secure_channel(client_config_);
+
+  if (OpcuaClient::credentials_sent_in_clear(client_config_)) {
+    // Username/password or X.509 credentials sent without a Sign/SignAndEncrypt
+    // channel travel in the clear and can be intercepted on the wire.
+    log_warn(profile +
+             ". WARNING: user credentials cross an unencrypted OPC-UA channel (MessageSecurityMode=None) - "
+             "they can be intercepted. Use Sign or SignAndEncrypt on an untrusted network.");
+  } else if (!secure_channel) {
     log_warn(profile + ". Unsecured - not suitable for untrusted networks.");
+  } else if (!client_config_.reject_untrusted) {
+    log_warn(profile + ". WARNING: reject_untrusted=false (accepts any server certificate).");
   } else {
-    if (!client_config_.reject_untrusted) {
-      log_warn(profile + ". WARNING: reject_untrusted=false (accepts any server certificate).");
-    } else {
-      log_info(profile);
-    }
+    log_info(profile);
   }
 }
 

@@ -75,6 +75,10 @@ struct ConditionRuntime {
   opcua::ByteString latest_event_id;
   std::string entity_id;
   std::string fault_code;
+  /// String form of the alarm source NodeId that owns this condition. Used by
+  /// the read-based reconcile to skip clearing conditions whose source scan
+  /// failed (issue #479).
+  std::string source_id;
   SovdAlarmStatus last_status{SovdAlarmStatus::Suppressed};
 };
 
@@ -160,6 +164,16 @@ class OpcuaPoller {
   /// Case-insensitive; unknown input falls back to Auto.
   static ConditionReplayStrategy parse_replay_strategy(const std::string & name);
 
+  /// Decide whether a tracked condition should be cleared after a read-based
+  /// replay scan (issue #479). A condition is cleared only when it was active,
+  /// was NOT observed this scan (``seen``), and its owning source scan
+  /// succeeded. If the source is in ``failed_sources`` the condition is left
+  /// untouched - its absence from ``seen`` means "not scanned", not "gone".
+  /// Pure and static so the false-clear guard is unit-testable without a server.
+  static bool should_clear_condition(SovdAlarmStatus last_status, const std::string & condition_id,
+                                     const std::string & source_id, const std::set<std::string> & seen,
+                                     const std::set<std::string> & failed_sources);
+
  private:
   void poll_loop();
   void do_poll();
@@ -184,8 +198,10 @@ class OpcuaPoller {
   void read_fallback_replay();
   /// Clear faults for conditions that were active before the replay but are
   /// no longer present/active in the read scan (``seen`` = condition ids
-  /// observed this scan).
-  void reconcile_after_read(const std::set<std::string> & seen);
+  /// observed this scan). Conditions whose owning source is in
+  /// ``failed_sources`` (its browse failed this scan) are left untouched so a
+  /// transient disconnect cannot falsely clear live alarms (issue #479).
+  void reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources);
 
   /// Apply one condition state observation (from a live event or a read scan)
   /// to the tracked condition map + state machine, dispatching the resulting

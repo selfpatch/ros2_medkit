@@ -407,11 +407,33 @@ bool OpcuaPoller::try_condition_refresh() {
 void OpcuaPoller::read_fallback_replay() {
   // Browse each configured alarm source, read its conditions' current state,
   // and drive the same state machine as live events. Conditions that are no
-  // longer active are reconciled (cleared) afterwards.
+  // longer active are reconciled (cleared) afterwards - but only for sources
+  // whose scan succeeded, so a transient disconnect never falsely clears.
+  //
+  // This fallback assumes each AlarmCondition instance is browseable as an
+  // immediate child of its alarm source. Validated against the open62541
+  // reference server; NOT yet validated against a real Siemens S7-1500, whose
+  // condition-instance address-space layout must be confirmed before this path
+  // can be relied on there.
   std::set<std::string> seen;
+  std::set<std::string> failed_sources;
   for (const auto & cfg : node_map_.event_alarms()) {
-    auto conditions = client_.read_source_conditions(cfg.source_node_id);
+    bool scan_ok = false;
+    auto conditions = client_.read_source_conditions(cfg.source_node_id, &scan_ok);
+    if (!scan_ok) {
+      // Browse failed (disconnect / Bad status). Record the source so reconcile
+      // does not clear its still-tracked conditions on an empty/partial scan.
+      failed_sources.insert(cfg.source_node_id_str);
+      continue;
+    }
     for (const auto & snap : conditions) {
+      if (snap.state_read_failed) {
+        // Condition is present but its ActiveState read failed transiently.
+        // Keep it in ``seen`` (so reconcile does not clear it) without feeding
+        // an unreliable state into the state machine.
+        seen.insert(snap.condition_id.toString());
+        continue;
+      }
       AlarmEventInput input;
       input.enabled_state = snap.enabled_state;
       input.active_state = snap.active_state;
@@ -440,18 +462,32 @@ void OpcuaPoller::read_fallback_replay() {
       apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr);
     }
   }
-  reconcile_after_read(seen);
+  reconcile_after_read(seen, failed_sources);
 }
 
-void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen) {
+bool OpcuaPoller::should_clear_condition(SovdAlarmStatus last_status, const std::string & condition_id,
+                                         const std::string & source_id, const std::set<std::string> & seen,
+                                         const std::set<std::string> & failed_sources) {
+  const bool was_active = (last_status == SovdAlarmStatus::Confirmed || last_status == SovdAlarmStatus::Healed);
+  if (!was_active) {
+    return false;
+  }
+  // Never clear a condition whose source scan failed this cycle: its absence
+  // from ``seen`` means "not scanned", not "no longer active".
+  if (failed_sources.find(source_id) != failed_sources.end()) {
+    return false;
+  }
+  return seen.find(condition_id) == seen.end();
+}
+
+void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen,
+                                       const std::set<std::string> & failed_sources) {
   std::vector<AlarmEventDelivery> clears;
   {
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
-      const bool was_active =
-          (runtime.last_status == SovdAlarmStatus::Confirmed || runtime.last_status == SovdAlarmStatus::Healed);
-      if (was_active && seen.find(cid) == seen.end()) {
-        // Tracked as active but absent from the read scan -> the alarm
+      if (should_clear_condition(runtime.last_status, cid, runtime.source_id, seen, failed_sources)) {
+        // Tracked as active but absent from a successful read scan -> the alarm
         // cleared while we were offline. Clear the SOVD fault.
         runtime.last_status = SovdAlarmStatus::Cleared;
         AlarmEventDelivery d;
@@ -616,6 +652,7 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
       fresh.condition_id = condition_id;
       fresh.entity_id = cfg.entity_id;
       fresh.fault_code = cfg.fault_code;
+      fresh.source_id = cfg.source_node_id_str;
       fresh.last_status = SovdAlarmStatus::Suppressed;
       it = conditions_.emplace(condition_id_str, std::move(fresh)).first;
     }

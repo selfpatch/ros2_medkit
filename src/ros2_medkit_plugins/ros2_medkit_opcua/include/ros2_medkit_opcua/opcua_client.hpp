@@ -275,15 +275,33 @@ class OpcuaClient {
     bool retain{false};
     uint16_t severity{0};
     std::string message;
+    /// True when the condition's ActiveState/Id node resolved but its value
+    /// could not be read this scan (transient read failure). The caller must
+    /// treat the condition as still present (do not clear it) even though its
+    /// state fields fell back to their defaults.
+    bool state_read_failed{false};
   };
 
   /// Browse ``source_node`` for AlarmCondition instances and read their
   /// current state (ActiveState/Id, AckedState/Id, ConfirmedState/Id,
   /// EnabledState/Id, Retain, Severity, Message). Only immediate children
   /// that expose an ``ActiveState`` node are treated as conditions; other
-  /// children are skipped. Returns an empty vector when disconnected or when
-  /// the source has no readable conditions.
-  std::vector<ConditionStateSnapshot> read_source_conditions(const opcua::NodeId & source_node);
+  /// children are skipped.
+  ///
+  /// ``scan_ok`` (when provided) distinguishes a successful empty scan from a
+  /// failed one: it is set true only when the source browse completed, and
+  /// false when disconnected or when the browse raised a Bad status. Callers
+  /// must NOT reconcile (clear) active faults for a source whose scan failed,
+  /// otherwise a transient disconnect would falsely clear live alarms.
+  ///
+  /// NOTE: this read-based fallback assumes each AlarmCondition instance is
+  /// browseable as an immediate child of its alarm source via
+  /// HierarchicalReferences. That holds for the open62541 reference server,
+  /// but has NOT yet been validated against a real Siemens S7-1500 (whose
+  /// address-space layout for condition instances must be confirmed before
+  /// this path can be claimed to work there).
+  std::vector<ConditionStateSnapshot> read_source_conditions(const opcua::NodeId & source_node,
+                                                             bool * scan_ok = nullptr);
 
   /// Get server description string (for status endpoint)
   std::string server_description() const;
@@ -313,6 +331,12 @@ class OpcuaClient {
   /// None). Username/password or X.509 identity alone does NOT imply an
   /// encrypted channel.
   static bool requires_secure_channel(const OpcuaClientConfig & config);
+
+  /// True when user credentials (username/password or X.509) would be sent
+  /// over an unencrypted SecureChannel: a non-anonymous identity combined with
+  /// no secured channel. Such credentials can be intercepted on the wire and
+  /// the caller is expected to warn loudly.
+  static bool credentials_sent_in_clear(const OpcuaClientConfig & config);
 
  private:
   struct Impl;

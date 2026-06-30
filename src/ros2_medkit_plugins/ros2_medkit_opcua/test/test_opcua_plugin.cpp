@@ -342,4 +342,39 @@ TEST(ConditionReplayStrategyParse, KnownValues) {
   EXPECT_EQ(OpcuaPoller::parse_replay_strategy("bogus"), ConditionReplayStrategy::Auto);
 }
 
+// -- Issue #479: read-replay reconcile must not falsely clear faults ---------
+
+TEST(ReconcileShouldClearCondition, ClearsActiveConditionAbsentFromSuccessfulScan) {
+  // An active condition that the (successful) scan did not observe is gone.
+  std::set<std::string> seen;            // condition not seen this scan
+  std::set<std::string> failed_sources;  // its source scanned fine
+  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
+  EXPECT_TRUE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources));
+}
+
+TEST(ReconcileShouldClearCondition, KeepsConditionStillSeen) {
+  std::set<std::string> seen{"cond-1"};
+  std::set<std::string> failed_sources;
+  EXPECT_FALSE(
+      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
+}
+
+TEST(ReconcileShouldClearCondition, SkipsClearWhenSourceScanFailed) {
+  // The core false-clear guard: source scan failed (browse error / disconnect),
+  // so the condition's absence from ``seen`` must NOT clear it.
+  std::set<std::string> seen;                     // not observed...
+  std::set<std::string> failed_sources{"src-1"};  // ...because its source failed
+  EXPECT_FALSE(
+      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Confirmed, "cond-1", "src-1", seen, failed_sources));
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Healed, "cond-1", "src-1", seen, failed_sources));
+}
+
+TEST(ReconcileShouldClearCondition, NeverClearsInactiveCondition) {
+  std::set<std::string> seen;
+  std::set<std::string> failed_sources;
+  EXPECT_FALSE(OpcuaPoller::should_clear_condition(SovdAlarmStatus::Cleared, "cond-1", "src-1", seen, failed_sources));
+  EXPECT_FALSE(
+      OpcuaPoller::should_clear_condition(SovdAlarmStatus::Suppressed, "cond-1", "src-1", seen, failed_sources));
+}
+
 }  // namespace ros2_medkit_gateway

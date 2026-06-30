@@ -320,6 +320,10 @@ bool OpcuaClient::requires_secure_channel(const OpcuaClientConfig & config) {
   return config.security_policy != SecurityPolicy::None || config.security_mode != SecurityMode::None;
 }
 
+bool OpcuaClient::credentials_sent_in_clear(const OpcuaClientConfig & config) {
+  return config.user_auth_mode != UserAuthMode::Anonymous && !requires_secure_channel(config);
+}
+
 namespace {
 
 #ifdef UA_ENABLE_ENCRYPTION
@@ -809,32 +813,49 @@ std::string OpcuaClient::server_description() const {
   return impl_->server_desc;
 }
 
-std::vector<OpcuaClient::ConditionStateSnapshot>
-OpcuaClient::read_source_conditions(const opcua::NodeId & source_node) {
+std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_conditions(const opcua::NodeId & source_node,
+                                                                                     bool * scan_ok) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   std::vector<ConditionStateSnapshot> out;
+  // Default to "scan failed" so an early return (disconnected) or a thrown
+  // browse never looks like a clean "no conditions" result to the caller.
+  if (scan_ok) {
+    *scan_ok = false;
+  }
   if (!impl_->connected) {
     return out;
   }
 
   // Read a Boolean two-step state variable (e.g. ActiveState/Id). Returns the
-  // fallback when the path is absent or not Boolean. ``found`` reports whether
-  // the path resolved at all (used to decide if a child is a condition).
-  auto read_state_id = [](opcua::Node<opcua::Client> & cond, const char * state_name, bool fallback,
-                          bool * found) -> bool {
+  // fallback when the path is absent or not Boolean. ``resolved`` reports
+  // whether the ``state_name/Id`` path browsed successfully (used to decide if
+  // a child is a condition); ``read_failed`` reports that the path resolved but
+  // its value could not be read this scan (transient failure, distinct from the
+  // path simply not existing).
+  auto read_state_id = [](opcua::Node<opcua::Client> & cond, const char * state_name, bool fallback, bool * resolved,
+                          bool * read_failed) -> bool {
     try {
       auto node = cond.browseChild({{0, state_name}, {0, "Id"}});
-      auto val = node.readValue();
-      if (found) {
-        *found = true;
+      if (resolved) {
+        *resolved = true;
       }
-      if (val.isType<bool>()) {
-        return val.getScalarCopy<bool>();
+      try {
+        auto val = node.readValue();
+        if (val.isType<bool>()) {
+          return val.getScalarCopy<bool>();
+        }
+        return fallback;
+      } catch (const opcua::BadStatus &) {
+        // Path exists but the read failed transiently: keep the condition.
+        if (read_failed) {
+          *read_failed = true;
+        }
+        return fallback;
       }
-      return fallback;
     } catch (const opcua::BadStatus &) {
-      if (found) {
-        *found = false;
+      // Path absent: this child is not an alarm condition.
+      if (resolved) {
+        *resolved = false;
       }
       return fallback;
     }
@@ -848,16 +869,20 @@ OpcuaClient::read_source_conditions(const opcua::NodeId & source_node) {
       snap.condition_id = child.id();
 
       // A child is only treated as an alarm condition when ActiveState/Id
-      // resolves; everything else under the source is ignored.
+      // resolves; everything else under the source is ignored. A transient
+      // read failure on a resolved ActiveState keeps the condition (flagged so
+      // the caller does not drop/clear it) instead of silently discarding it.
       bool is_condition = false;
-      snap.active_state = read_state_id(child, "ActiveState", false, &is_condition);
+      bool active_read_failed = false;
+      snap.active_state = read_state_id(child, "ActiveState", false, &is_condition, &active_read_failed);
       if (!is_condition) {
         continue;
       }
+      snap.state_read_failed = active_read_failed;
 
-      snap.enabled_state = read_state_id(child, "EnabledState", true, nullptr);
-      snap.acked_state = read_state_id(child, "AckedState", true, nullptr);
-      snap.confirmed_state = read_state_id(child, "ConfirmedState", true, nullptr);
+      snap.enabled_state = read_state_id(child, "EnabledState", true, nullptr, nullptr);
+      snap.acked_state = read_state_id(child, "AckedState", true, nullptr, nullptr);
+      snap.confirmed_state = read_state_id(child, "ConfirmedState", true, nullptr, nullptr);
 
       try {
         auto retain = child.browseChild({{0, "Retain"}}).readValue();
@@ -892,8 +917,14 @@ OpcuaClient::read_source_conditions(const opcua::NodeId & source_node) {
 
       out.push_back(std::move(snap));
     }
+    // The source browse completed without throwing: this is a trustworthy
+    // scan (possibly with zero conditions), safe to reconcile against.
+    if (scan_ok) {
+      *scan_ok = true;
+    }
   } catch (const opcua::BadStatus & e) {
     maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    // scan_ok stays false: a browse failure must not be read as "no conditions".
   }
 
   return out;

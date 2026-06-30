@@ -909,6 +909,47 @@ TEST_F(TestGatewayNode, test_invalid_function_id_bad_request) {
 }
 
 // =============================================================================
+// Secure-profile fail-closed tests (issue #477): when auth/TLS is explicitly
+// enabled but its configuration is invalid, the node must refuse to start
+// rather than silently fall back to an unauthenticated / plaintext server.
+// =============================================================================
+
+TEST_F(TestGatewayNode, auth_enabled_with_empty_secret_fails_closed) {
+  // auth.enabled=true with an empty HS256 secret: the AuthConfigBuilder rejects
+  // it, and the node must propagate that as a fatal (throw) instead of disabling
+  // auth and serving unauthenticated.
+  node_.reset();
+  int free_port = reserve_free_port();
+  ASSERT_NE(free_port, 0);
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("server.port", free_port),
+      rclcpp::Parameter("auth.enabled", true),
+      rclcpp::Parameter("auth.jwt_secret", std::string("")),
+      rclcpp::Parameter("auth.jwt_algorithm", std::string("HS256")),
+  });
+  EXPECT_THROW({ auto n = std::make_shared<ros2_medkit_gateway::GatewayNode>(options); }, std::exception);
+}
+
+TEST_F(TestGatewayNode, tls_enabled_with_missing_cert_fails_closed) {
+  // server.tls.enabled=true with no cert/key: the TlsConfigBuilder rejects it,
+  // and the node must refuse to start in plaintext.
+  node_.reset();
+  int free_port = reserve_free_port();
+  ASSERT_NE(free_port, 0);
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("server.port", free_port),
+      rclcpp::Parameter("server.tls.enabled", true),
+      rclcpp::Parameter("server.tls.cert_file", std::string("")),
+      rclcpp::Parameter("server.tls.key_file", std::string("")),
+  });
+  EXPECT_THROW({ auto n = std::make_shared<ros2_medkit_gateway::GatewayNode>(options); }, std::exception);
+}
+
+// =============================================================================
 // Entity type path extraction tests
 // =============================================================================
 
