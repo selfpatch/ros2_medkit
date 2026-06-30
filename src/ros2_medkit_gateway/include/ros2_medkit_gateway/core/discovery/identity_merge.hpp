@@ -34,11 +34,11 @@ namespace discovery {
  * and should therefore have their identity merged.
  */
 enum class IdentityKeyStrategy {
-  AUTO,           ///< serial -> model+slot -> endpoint -> configured id (first that resolves)
-  SERIAL,         ///< serial number only
+  AUTO,             ///< serial -> model+slot -> endpoint -> configured id (first that resolves)
+  SERIAL,           ///< serial number only
   ORDER_CODE_SLOT,  ///< model (order code) + extra["slot"]
-  ENDPOINT,       ///< network endpoint
-  CONFIGURED_ID   ///< the configured Component id (always available, never cross-source)
+  ENDPOINT,         ///< network endpoint
+  CONFIGURED_ID     ///< the configured Component id (always available, never cross-source)
 };
 
 inline std::optional<IdentityKeyStrategy> identity_key_strategy_from_string(const std::string & s) {
@@ -73,9 +73,8 @@ inline std::optional<IdentityKeyStrategy> identity_key_strategy_from_string(cons
  * authored manifest, which beats whatever runtime discovery guessed.
  */
 struct IdentityMergeConfig {
-  std::vector<std::string> source_precedence{"opcua",      "s7",       "ethernet_ip", "modbus",
-                                             "ads",        "profinet", "manifest",    "config",
-                                             "runtime",    "node",     "heuristic"};
+  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",      "profinet",
+                                             "manifest", "config", "runtime",     "node",   "heuristic"};
   IdentityKeyStrategy key_strategy{IdentityKeyStrategy::AUTO};
 };
 

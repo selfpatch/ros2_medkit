@@ -216,7 +216,7 @@ TEST(MergeIdentity, ExtensibleMapMergedWithProvenanceAndPrecedence) {
   stamp_identity_provenance(merged, "manifest");
 
   AssetIdentity opcua;
-  opcua.extra["asset_tag"] = "NEW-TAG";  // higher authority overrides
+  opcua.extra["asset_tag"] = "NEW-TAG";      // higher authority overrides
   opcua.extra["mac"] = "00:11:22:33:44:55";  // new key fills gap
   merge_identity(merged, opcua, "opcua", cfg);
 
@@ -250,7 +250,7 @@ TEST(MergeIdentity, UnknownSourceFillsGapsButDoesNotOverrideKnown) {
 
   AssetIdentity unknown;
   unknown.manufacturer = "Whatever";  // unknown source must not beat a listed source
-  unknown.serial_number = "SN-1";  // but fills an empty field
+  unknown.serial_number = "SN-1";     // but fills an empty field
   merge_identity(merged, unknown, "some_unlisted_source", cfg);
 
   EXPECT_EQ(merged.manufacturer, "Siemens");
