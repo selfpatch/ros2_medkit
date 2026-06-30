@@ -219,6 +219,16 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   if (auto * env = std::getenv("OPCUA_CONDITION_REPLAY")) {
     poller_config_.condition_replay_strategy = OpcuaPoller::parse_replay_strategy(env);
   }
+  // Issue #478: drop the Confirm gate for servers that do not implement the
+  // optional Confirm transition (e.g. Siemens S7-1500) so alarms clear on
+  // Acknowledge alone. Default true keeps the spec-strict behaviour.
+  if (config.contains("require_confirm_for_clear")) {
+    poller_config_.require_confirm_for_clear = config["require_confirm_for_clear"].get<bool>();
+  }
+  if (auto * env = std::getenv("OPCUA_REQUIRE_CONFIRM_FOR_CLEAR")) {
+    const std::string v = env;
+    poller_config_.require_confirm_for_clear = !(v == "0" || v == "false" || v == "no" || v == "off");
+  }
 
   // Environment variables override YAML config (for Docker)
   if (auto * env = std::getenv("OPCUA_ENDPOINT_URL")) {

@@ -249,15 +249,27 @@ Decision order, first match wins:
 |     |                                      | below)                                |
 +-----+--------------------------------------+---------------------------------------+
 | 5b  | ``ActiveState == false``,            | ``CLEARED``                           |
-|     | ``Acked == true``,                   |                                       |
-|     | ``Confirmed == true``                |                                       |
+|     | ``Acked == true`` and                |                                       |
+|     | (``Confirmed == true`` or            |                                       |
+|     | not ``require_confirm_for_clear``)   |                                       |
 +-----+--------------------------------------+---------------------------------------+
 
-``Retain`` is intentionally NOT used for state determination. Per Part 9
-§5.5.2.10 it controls visibility during ``ConditionRefresh`` bursts only;
-lifecycle is driven entirely by Active / Acked / Confirmed. The SOVD
-``PREFAILED`` state has no native equivalent and is reserved for the
-threshold-polling pre-trigger path.
+``require_confirm_for_clear`` (default ``true``) gates rule 5b on both
+Acknowledge and Confirm. Some servers do not implement the optional ``Confirm``
+transition - Siemens S7-1500 supports ``Acknowledge`` / ``ConditionRefresh`` /
+``AddComment`` but not ``Confirm`` - so ``ConfirmedState`` never becomes true
+and the alarm would latch in ``HEALED`` forever. Setting the flag ``false``
+(YAML ``require_confirm_for_clear`` / env ``OPCUA_REQUIRE_CONFIRM_FOR_CLEAR``)
+clears such an alarm on ``Acknowledge`` alone. The default is unchanged
+(spec-strict, no regression) and the relaxed path still requires
+acknowledgement; it needs real-S7-1500 validation (issue #478).
+
+``Retain`` is NOT used by this live state-machine table (lifecycle is driven by
+Active / Acked / Confirmed; per Part 9 §5.5.2.10 ``Retain`` controls visibility
+during ``ConditionRefresh`` bursts). It IS used in the read-based reconnect
+replay path (below) as the interesting-state filter, mirroring what
+``ConditionRefresh`` would replay. The SOVD ``PREFAILED`` state has no native
+equivalent and is reserved for the threshold-polling pre-trigger path.
 
 .. note::
 
@@ -298,14 +310,44 @@ ConditionRefresh
 ----------------
 
 After creating event monitored items the plugin invokes ``ConditionRefresh``
-(Server object ``i=2253``, method ``i=3875``) so the server pushes any
-condition that fired before the subscription started. The same call fires
-on every successful reconnect.
+so the server pushes any condition that fired before the subscription started.
+The same call fires on every successful reconnect.
+
+Per Part 9 §5.5.7 ``ConditionRefresh`` is a Method of the **ConditionType**, so
+the Call's ObjectId is the well-known ConditionType node ``i=2782`` (method
+``i=3875``), NOT the Server object ``i=2253``. Calling it on the Server object
+was the root cause of ``BadNodeIdUnknown`` rejections on conformant servers,
+including Siemens S7-1500, which documents ``ConditionRefresh`` as supported
+(only the optional ``ConditionRefresh2`` is not). With the corrected target the
+method is expected to succeed on Siemens, making the read fallback unnecessary
+there (issue #478).
 
 The bracketing ``RefreshStartEventType`` (i=2787) and ``RefreshEndEventType``
 (i=2788) are recognized and used to set a diagnostic flag; live notifications
 arriving during the burst are applied normally because the state machine is
 driven by per-condition ``ConditionId`` and runs idempotently.
+
+Read-based replay fallback
+--------------------------
+
+When ``ConditionRefresh`` is rejected (``condition_replay_strategy`` =
+``read`` / ``auto``) the plugin browses each ``alarm_source`` for AlarmCondition
+instances - hierarchical Object children plus targets of the ``HasCondition``
+reference (``i=9006``), recursing one level - reads their current state, and
+drives the same state machine. It mirrors ``ConditionRefresh`` semantics:
+
+- only conditions with ``Retain == true`` form the active set;
+- a ``Disabled`` condition (``EnabledState/Id = false``) is never active;
+- a transient browse/read failure keeps the condition (it is not dropped and
+  must not be reconciled away).
+
+**Safety gate (issue #478).** The reconcile that clears faults for conditions
+no longer present NEVER fires for a source that has not positively exposed at
+least one Condition instance node. An EventNotifier-only server (S7-1500 models
+no per-condition instance nodes) returns a successful but empty browse; rather
+than wiping the tracked active alarms, the plugin preserves them, logs an
+operator warning, and relies on ``ConditionRefresh`` / live transitions. This
+prevents the net-negative outcome where a reconnect erased a still-active alarm.
 
 Acknowledge / Confirm round-trip
 --------------------------------
@@ -336,7 +378,13 @@ Vendor matrix
 | Vendor / runtime     | AlarmConditionType  | Notes                         |
 +======================+=====================+===============================+
 | Siemens S7-1500      | yes (FW V2.9+)      | ProDiag, Program_Alarm,       |
-|                      |                     | system diagnostics            |
+|                      |                     | system diagnostics.           |
+|                      |                     | ConditionRefresh +            |
+|                      |                     | Acknowledge supported, NO     |
+|                      |                     | Confirm (set                  |
+|                      |                     | require_confirm_for_clear     |
+|                      |                     | false). EventNotifier-only:   |
+|                      |                     | no condition instance nodes   |
 +----------------------+---------------------+-------------------------------+
 | Beckhoff TwinCAT 3   | yes (TF6100)        | ``Confirm`` propagates to     |
 |                      |                     | PLC code; ``Ack`` does not    |

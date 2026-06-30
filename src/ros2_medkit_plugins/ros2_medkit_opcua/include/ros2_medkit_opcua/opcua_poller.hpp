@@ -106,6 +106,14 @@ struct PollerConfig {
   /// Default Auto: ConditionRefresh with a read-based fallback so hardened
   /// servers that reject the method still recover their active alarms.
   ConditionReplayStrategy condition_replay_strategy{ConditionReplayStrategy::Auto};
+  /// When true (default) a native AlarmCondition auto-clears only after BOTH
+  /// Acknowledge and Confirm (OPC-UA Part 9 §5.7). Set false for servers that
+  /// do not implement the optional Confirm transition (e.g. Siemens S7-1500,
+  /// which supports Acknowledge / ConditionRefresh / AddComment but not
+  /// Confirm) so the alarm clears on Acknowledge alone instead of latching
+  /// forever. Default true preserves the spec-strict behaviour. Issue #478;
+  /// needs real-S7-1500 validation.
+  bool require_confirm_for_clear{true};
   /// Optional warn-level log sink for operator-visible failures inside the
   /// poll thread. Set by the plugin owning the poller to its log_warn
   /// helper so events like ``ConditionRefresh failed`` reach the ROS 2 log
@@ -164,15 +172,36 @@ class OpcuaPoller {
   /// Case-insensitive; unknown input falls back to Auto.
   static ConditionReplayStrategy parse_replay_strategy(const std::string & name);
 
+  /// How a read-scan condition snapshot participates in the read-based replay.
+  ///   - Feed:     interesting + reliable -> mark seen and drive the state
+  ///               machine (mirrors a ConditionRefresh replay event).
+  ///   - KeepOnly: present but unreliable (transient read/browse failure) ->
+  ///               mark seen so reconcile does not clear it, but do NOT feed an
+  ///               unreliable state into the state machine.
+  ///   - Skip:     not interesting (Disabled, or Retain=false) -> neither
+  ///               marked seen nor fed, so a stale tracked fault can reconcile.
+  enum class ReadReplayDisposition { Feed, KeepOnly, Skip };
+
+  /// Classify one read-scan condition snapshot for reconnect replay (issue
+  /// #478). Mirrors ConditionRefresh's interesting-state filter: a Disabled
+  /// condition (EnabledState/Id=false) is never active, and only conditions
+  /// with Retain==true are replayed; a transient read failure is kept but not
+  /// trusted. Pure / static so the filter is unit-testable without a server.
+  static ReadReplayDisposition classify_read_snapshot(const OpcuaClient::ConditionStateSnapshot & snap);
+
   /// Decide whether a tracked condition should be cleared after a read-based
-  /// replay scan (issue #479). A condition is cleared only when it was active,
-  /// was NOT observed this scan (``seen``), and its owning source scan
-  /// succeeded. If the source is in ``failed_sources`` the condition is left
-  /// untouched - its absence from ``seen`` means "not scanned", not "gone".
+  /// replay scan (issue #479 / #478). A condition is cleared only when it was
+  /// active, was NOT observed this scan (``seen``), its owning source scan
+  /// succeeded (not in ``failed_sources``), AND its source is positively known
+  /// to model Condition instances as address-space nodes (in
+  /// ``modeled_sources``). The last gate is the #478 safety guarantee: an
+  /// EventNotifier-only server (e.g. S7-1500) exposes no per-condition nodes,
+  /// so its empty read scan must never wipe the tracked fault set.
   /// Pure and static so the false-clear guard is unit-testable without a server.
   static bool should_clear_condition(SovdAlarmStatus last_status, const std::string & condition_id,
                                      const std::string & source_id, const std::set<std::string> & seen,
-                                     const std::set<std::string> & failed_sources);
+                                     const std::set<std::string> & failed_sources,
+                                     const std::set<std::string> & modeled_sources);
 
  private:
   void poll_loop();
@@ -201,7 +230,15 @@ class OpcuaPoller {
   /// observed this scan). Conditions whose owning source is in
   /// ``failed_sources`` (its browse failed this scan) are left untouched so a
   /// transient disconnect cannot falsely clear live alarms (issue #479).
-  void reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources);
+  /// ``modeled_sources`` lists the sources positively known to expose Condition
+  /// instance nodes; conditions whose source is absent from it are never
+  /// cleared, so an EventNotifier-only server cannot wipe live alarms (#478).
+  void reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources,
+                            const std::set<std::string> & modeled_sources);
+
+  /// Emit an operator-visible warning via the configured ``log_warn`` sink,
+  /// falling back to the poller's ROS 2 logger.
+  void warn_operator(const std::string & msg);
 
   /// Apply one condition state observation (from a live event or a read scan)
   /// to the tracked condition map + state machine, dispatching the resulting
@@ -240,6 +277,19 @@ class OpcuaPoller {
 
   mutable std::shared_mutex conditions_mutex_;
   std::unordered_map<std::string, ConditionRuntime> conditions_;  // ConditionId stringForm -> runtime
+
+  // Issue #478 read-fallback safety state. Touched only from the replay path
+  // (start() before the poll thread exists, then the poll thread on reconnect),
+  // never concurrently, so no extra lock is needed.
+  //
+  // ``read_modeled_sources_``: alarm sources positively known to expose
+  // Condition instances as address-space nodes (a read scan yielded >=1
+  // ActiveState/Id condition). Only such sources are eligible for read-based
+  // clearing; EventNotifier-only servers (S7-1500) never enter this set, so
+  // their tracked faults survive an empty read scan.
+  std::set<std::string> read_modeled_sources_;
+  // Sources already warned about as read-fallback-unsupported (warn once each).
+  std::set<std::string> read_unsupported_warned_sources_;
 
   // ConditionRefresh bracketing state. open62541 sends the buffered
   // historical condition burst between RefreshStartEvent and
