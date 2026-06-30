@@ -22,6 +22,7 @@
 // "ERR <reason>" to stdout for the test harness to poll. See
 // docs in the header comment of fire(), clear(), ack(), etc. below.
 
+#include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/server.h>
 #include <open62541/server_config_default.h>
@@ -31,7 +32,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <signal.h>
@@ -155,6 +158,23 @@ UA_StatusCode add_int32_variable(UA_Server * server, const std::string & name, U
       UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attr, nullptr, nullptr);
   UA_NodeId_clear(&requested);
   return rc;
+}
+
+// A single readable Double variable (``ns=<ns>;s=Tank.Level`` = 42.0). The
+// secured integration test maps this node and reads it back over the encrypted
+// SecureChannel to prove a value read - not just an event subscription -
+// traverses the Basic256Sha256 channel.
+UA_StatusCode add_variable(UA_Server * server, UA_UInt16 ns) {
+  UA_VariableAttributes attr = UA_VariableAttributes_default;
+  UA_Double value = 42.0;
+  UA_Variant_setScalar(&attr.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+  attr.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("TankLevel"));
+  attr.accessLevel = UA_ACCESSLEVELMASK_READ;
+  UA_NodeId node_id = UA_NODEID_STRING(ns, const_cast<char *>("Tank.Level"));
+  UA_QualifiedName qname = UA_QUALIFIEDNAME(ns, const_cast<char *>("TankLevel"));
+  return UA_Server_addVariableNode(server, node_id, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), qname,
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attr, nullptr, nullptr);
 }
 
 UA_StatusCode set_two_state(UA_Server * server, const UA_NodeId & cond, const char * field, UA_Boolean value) {
@@ -321,6 +341,147 @@ UA_StatusCode handle_enable(UA_Server * server, const Condition & c, bool enable
   return set_two_state(server, c.node, "EnabledState", enable);
 }
 
+#ifdef UA_ENABLE_ENCRYPTION
+
+// Read a whole file into a heap-allocated UA_ByteString. Returns an empty
+// ByteString (length 0) on failure; the caller treats that as a fatal config
+// error. open62541's OpenSSL backend auto-detects DER (0x30 0x82 magic) vs PEM
+// for both certificates and keys, so the test harness can hand us a DER cert
+// and a PEM key without us caring about the encoding here.
+UA_ByteString load_file(const std::string & path) {
+  UA_ByteString out = UA_BYTESTRING_NULL;
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    return out;
+  }
+  std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  out.length = data.size();
+  out.data = static_cast<UA_Byte *>(UA_malloc(out.length));
+  if (!out.data) {
+    out.length = 0;
+    return out;
+  }
+  std::memcpy(out.data, data.data(), out.length);
+  return out;
+}
+
+// Chained ActivateSession callback. open62541's UA_AccessControl_default owns
+// the real user-token check; we wrap it only to emit a deterministic, greppable
+// line proving which SecurityPolicy + MessageSecurityMode the SecureChannel
+// actually negotiated. The test harness asserts on ``securityMode=3`` (=
+// SignAndEncrypt) so the suite cannot pass against a downgraded / None channel.
+using ActivateSessionFn = UA_StatusCode (*)(UA_Server *, UA_AccessControl *, const UA_EndpointDescription *,
+                                            const UA_ByteString *, const UA_NodeId *, const UA_ExtensionObject *,
+                                            void **);
+ActivateSessionFn g_orig_activate_session = nullptr;
+
+UA_StatusCode logging_activate_session(UA_Server * server, UA_AccessControl * ac,
+                                       const UA_EndpointDescription * endpoint, const UA_ByteString * channel_cert,
+                                       const UA_NodeId * session_id, const UA_ExtensionObject * user_token,
+                                       void ** session_ctx) {
+  std::string policy_uri;
+  int mode = -1;
+  if (endpoint) {
+    policy_uri.assign(reinterpret_cast<const char *>(endpoint->securityPolicyUri.data),
+                      endpoint->securityPolicyUri.length);
+    mode = static_cast<int>(endpoint->securityMode);
+  }
+  std::cout << "SECURE_SESSION securityPolicyUri=" << policy_uri << " securityMode=" << mode
+            << " (1=None,2=Sign,3=SignAndEncrypt)" << std::endl;
+  UA_StatusCode rc = g_orig_activate_session ? g_orig_activate_session(server, ac, endpoint, channel_cert, session_id,
+                                                                       user_token, session_ctx)
+                                             : UA_STATUSCODE_BADINTERNALERROR;
+  std::cout << "SECURE_SESSION activate rc=" << UA_StatusCode_name(rc) << std::endl;
+  return rc;
+}
+
+// Build a secured server config: Basic256Sha256 with Sign AND SignAndEncrypt,
+// the client app-instance cert in the trust list, and username/password access
+// control with anonymous login DISABLED. We use
+// UA_ServerConfig_setDefaultWithSecurityPolicies, which (per OPC UA discovery)
+// also exposes a SecurityPolicy=None endpoint - open62541's connect-by-URL
+// client opens a transient None channel purely to GetEndpoints, then opens the
+// real encrypted channel for the session. The negotiated session security is
+// proven by the SECURE_SESSION log line (securityMode=3), not by the absence of
+// a None endpoint. Returns a UA status code; on success the caller adds the
+// conditions exactly as in the insecure path.
+UA_StatusCode configure_secure(UA_ServerConfig * config, UA_UInt16 port, const std::string & cert_path,
+                               const std::string & key_path, const std::string & trust_path,
+                               const std::string & app_uri, const std::string & username,
+                               const std::string & password) {
+  UA_ByteString cert = load_file(cert_path);
+  UA_ByteString key = load_file(key_path);
+  UA_ByteString trust = load_file(trust_path);
+  if (cert.length == 0 || key.length == 0) {
+    UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "secure: failed to read cert '%s' / key '%s'",
+                 cert_path.c_str(), key_path.c_str());
+    UA_ByteString_clear(&cert);
+    UA_ByteString_clear(&key);
+    UA_ByteString_clear(&trust);
+    return UA_STATUSCODE_BADCONFIGURATIONERROR;
+  }
+
+  const UA_ByteString * trust_list = (trust.length > 0) ? &trust : nullptr;
+  size_t trust_list_size = (trust.length > 0) ? 1 : 0;
+  UA_StatusCode rc = UA_ServerConfig_setDefaultWithSecurityPolicies(config, port, &cert, &key, trust_list,
+                                                                    trust_list_size, nullptr, 0, nullptr, 0);
+  if (rc != UA_STATUSCODE_GOOD) {
+    UA_ByteString_clear(&cert);
+    UA_ByteString_clear(&key);
+    UA_ByteString_clear(&trust);
+    return rc;
+  }
+
+  // The server's applicationUri MUST equal the URI SAN in its own certificate
+  // (setDefaultWithSecurityPolicies defaults it to urn:open62541.server.*).
+  // open62541 stamps it into every endpoint at startup.
+  UA_String_clear(&config->applicationDescription.applicationUri);
+  config->applicationDescription.applicationUri = UA_STRING_ALLOC(app_uri.c_str());
+
+  // Replace the permissive default access control (anonymous allowed) with a
+  // username/password policy that rejects anonymous logins outright.
+  // UA_AccessControl_default clears the previous access control itself (it
+  // calls accessControl.clear at entry), so we must NOT clear it here first -
+  // a manual clear double-frees the context and segfaults on open62541 1.3.
+  UA_UsernamePasswordLogin login;
+  login.username = UA_STRING_ALLOC(username.c_str());
+  login.password = UA_STRING_ALLOC(password.c_str());
+  // The user-token policy advertises Basic256Sha256 so the password is
+  // encrypted at the token layer too (on top of the encrypted channel). A null
+  // URI is NOT portable: open62541 1.3 dereferences it unconditionally and
+  // segfaults. Non-owning UA_STRING is fine - the plugin copies it.
+  UA_String token_policy_uri =
+      UA_STRING(const_cast<char *>("http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256"));
+  // open62541 <= 1.3 (bundled by open62541pp v0.16.0, used by the CMake fixture
+  // build) takes an extra UA_CertificateVerification* (the x509 user-token
+  // validator) before userTokenPolicyUri; 1.4+ (the docker image pin) dropped
+  // it. We only use username/password, so pass null for it either way.
+#if defined(UA_OPEN62541_VER_MAJOR) && UA_OPEN62541_VER_MAJOR == 1 && UA_OPEN62541_VER_MINOR < 4
+  rc = UA_AccessControl_default(config, false /*allowAnonymous*/, nullptr /*verifyX509*/, &token_policy_uri, 1, &login);
+#else
+  rc = UA_AccessControl_default(config, false /*allowAnonymous*/, &token_policy_uri, 1, &login);
+#endif
+  UA_String_clear(&login.username);
+  UA_String_clear(&login.password);
+  if (rc != UA_STATUSCODE_GOOD) {
+    UA_ByteString_clear(&cert);
+    UA_ByteString_clear(&key);
+    UA_ByteString_clear(&trust);
+    return rc;
+  }
+
+  // Install the logging wrapper around the freshly-built access control.
+  g_orig_activate_session = config->accessControl.activateSession;
+  config->accessControl.activateSession = logging_activate_session;
+
+  UA_ByteString_clear(&cert);
+  UA_ByteString_clear(&key);
+  UA_ByteString_clear(&trust);
+  return rc;
+}
+
+#endif  // UA_ENABLE_ENCRYPTION
+
 void cli_loop(UA_Server * server, UA_UInt16 ns) {
   std::string line;
   while (g_running && std::getline(std::cin, line)) {
@@ -435,17 +596,53 @@ int main(int argc, char ** argv) {
   signal(SIGTERM, stop_handler);
 
   UA_UInt16 port = 4842;
+  bool secure = false;
+  std::string cert_path, key_path, trust_path, username = "medkit", password = "secret";
+  std::string app_uri = "urn:test:alarms:server";
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       port = static_cast<UA_UInt16>(std::atoi(argv[++i]));
+    } else if (std::strcmp(argv[i], "--secure") == 0) {
+      secure = true;
+    } else if (std::strcmp(argv[i], "--cert") == 0 && i + 1 < argc) {
+      cert_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
+      key_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--trust") == 0 && i + 1 < argc) {
+      trust_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--app-uri") == 0 && i + 1 < argc) {
+      app_uri = argv[++i];
+    } else if (std::strcmp(argv[i], "--username") == 0 && i + 1 < argc) {
+      username = argv[++i];
+    } else if (std::strcmp(argv[i], "--password") == 0 && i + 1 < argc) {
+      password = argv[++i];
     }
   }
 
   UA_Server * server = UA_Server_new();
   UA_ServerConfig * config = UA_Server_getConfig(server);
-  UA_ServerConfig_setMinimal(config, port, nullptr);
+  if (secure) {
+#ifdef UA_ENABLE_ENCRYPTION
+    UA_StatusCode src = configure_secure(config, port, cert_path, key_path, trust_path, app_uri, username, password);
+    if (src != UA_STATUSCODE_GOOD) {
+      UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "secure config failed: %s", UA_StatusCode_name(src));
+      UA_Server_delete(server);
+      return 1;
+    }
+#else
+    UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                 "--secure requested but this build has no UA_ENABLE_ENCRYPTION support");
+    UA_Server_delete(server);
+    return 1;
+#endif
+  } else {
+    UA_ServerConfig_setMinimal(config, port, nullptr);
+  }
 
   UA_UInt16 ns = UA_Server_addNamespace(server, NS_URI);
+  if (add_variable(server, ns) != UA_STATUSCODE_GOOD) {
+    UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register Tank.Level variable");
+  }
 
   Condition op, oh, sl;
   if (add_condition(server, "Overpressure", ns, op) != UA_STATUSCODE_GOOD ||
@@ -469,7 +666,7 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  std::cout << "READY port=" << port << " namespace=" << ns << std::endl;
+  std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;
   std::thread cli(cli_loop, server, ns);
 
   UA_StatusCode rc = UA_Server_run(server, reinterpret_cast<volatile UA_Boolean *>(&g_running));

@@ -256,3 +256,89 @@ jobs:
             echo "=== ${c} logs ==="
             docker logs "${c}" 2>&1 | tail -80 || true
           done
+
+  integration-secured:
+    name: Integration (Secured A&C)
+    # Issue #477: proves the OPC-UA client security code's
+    # apply_security_config() SUCCESS path - a real Basic256Sha256 +
+    # SignAndEncrypt SecureChannel with a username token against the
+    # encryption-enabled test_alarm_server fixture. Needs fault_manager_node
+    # built alongside the gateway, openssl for cert generation, and
+    # ROS2_MEDKIT_OPCUA_SECURE_REQUIRE=1 so the test runs for real instead of
+    # skipping with CTest code 77.
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:noble
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pre-install ROS 2 apt source
+        uses: ./.github/actions/ros-apt-source
+
+      - name: Set up ROS 2 jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install ccache
+        run: apt-get install -y ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-opcua-secured-${{ github.sha }}
+          restore-keys: |
+            ccache-opcua-secured-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          # openssl: cert generation. libssl-dev: encryption backend for both
+          # the plugin's open62541pp and the fixture's static open62541.
+          apt-get install -y ros-jazzy-test-msgs libyaml-cpp-dev libssl-dev openssl
+          source /opt/ros/jazzy/setup.bash
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y \
+            --skip-keys='nav2_msgs ament_cmake_clang_format ament_cmake_clang_tidy'
+
+      - name: Build gateway + OPC-UA plugin + fault_manager
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          # fault_manager_node is a sibling package the secured test launches;
+          # it is not a build dependency of the plugin, so name it explicitly.
+          colcon build --symlink-install \
+            --packages-up-to ros2_medkit_opcua ros2_medkit_fault_manager \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --event-handlers console_direct+
+          ccache -s
+
+      - name: Run secured A&C integration test
+        timeout-minutes: 15
+        env:
+          ROS2_MEDKIT_OPCUA_SECURE_REQUIRE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --return-code-on-test-failure \
+            --packages-select ros2_medkit_opcua \
+            --ctest-args -R test_opcua_secured \
+            --event-handlers console_direct+
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose

@@ -13,7 +13,7 @@ FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake git python3 ca-certificates \
+        build-essential cmake git python3 ca-certificates libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin matches the SHA used by the plugin's open62541pp dependency
@@ -34,6 +34,7 @@ RUN cmake -S /src/open62541 -B /tmp/o62-build \
         -DBUILD_SHARED_LIBS=OFF \
         -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON \
         -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON \
+        -DUA_ENABLE_ENCRYPTION=OPENSSL \
         -DUA_NAMESPACE_ZERO=FULL \
         -DUA_BUILD_EXAMPLES=OFF \
         -DUA_BUILD_TOOLS=OFF \
@@ -42,15 +43,16 @@ RUN cmake -S /src/open62541 -B /tmp/o62-build \
         -DCMAKE_C_FLAGS=-w \
     && cmake --build /tmp/o62-build -j"$(nproc)" --target install
 
+# The static lib is built with the OpenSSL encryption backend, so link OpenSSL.
 RUN g++ -O2 -std=c++17 -w \
         -I/opt/open62541/include \
         /src/test_alarm_server/test_alarm_server.cpp \
         /opt/open62541/lib/libopen62541.a \
-        -lpthread -o /opt/test_alarm_server
+        -lssl -lcrypto -lpthread -o /opt/test_alarm_server
 
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libstdc++6 ca-certificates \
+        libstdc++6 ca-certificates libssl3 openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/test_alarm_server /usr/local/bin/test_alarm_server
 EXPOSE 4842

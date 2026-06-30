@@ -272,6 +272,11 @@ if(BUILD_TESTING)
         -DBUILD_SHARED_LIBS=OFF
         -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON
         -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON
+        # Secured A&C test (issue #477): the fixture also serves an
+        # encryption-only endpoint (Basic256Sha256 Sign/SignAndEncrypt) so the
+        # gateway's apply_security_config() success path can be exercised
+        # against a real SecureChannel. Requires the OpenSSL backend.
+        -DUA_ENABLE_ENCRYPTION=OPENSSL
         -DUA_NAMESPACE_ZERO=FULL
         -DUA_BUILD_EXAMPLES=OFF
         -DUA_BUILD_TOOLS=OFF
@@ -295,8 +300,10 @@ if(BUILD_TESTING)
     add_dependencies(test_alarm_server alarm_open62541_ep)
     target_include_directories(test_alarm_server SYSTEM PRIVATE
       "${_alarm_o62_include}")
+    # The static open62541 above is built with UA_ENABLE_ENCRYPTION=OPENSSL, so
+    # the fixture links OpenSSL for the secured-endpoint code path.
     target_link_libraries(test_alarm_server PRIVATE
-      "${_alarm_o62_lib}" Threads::Threads)
+      "${_alarm_o62_lib}" OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
     set_target_properties(test_alarm_server PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     target_compile_options(test_alarm_server PRIVATE -w)
@@ -323,6 +330,31 @@ if(BUILD_TESTING)
       LABELS "integration"
       SKIP_RETURN_CODE 77
       TIMEOUT 60)
+
+    # ---- Secured A&C integration test (issue #477) ------------------------
+    # Drives the gateway's apply_security_config() success path against the
+    # encryption-enabled fixture above: negotiates a Basic256Sha256 +
+    # SignAndEncrypt SecureChannel with a username token, asserts a secured
+    # read + a CONFIRMED alarm, and that a wrong password fails closed.
+    #
+    # Skips with CTest exit 77 unless ROS2_MEDKIT_OPCUA_SECURE_REQUIRE is set
+    # (mirrors the asyncua smoke-test skip). It also needs gateway_node +
+    # fault_manager_node + openssl on PATH, so the default unit-tests job (which
+    # does not build fault_manager) skips cleanly while the dedicated secured CI
+    # job runs it for real.
+    install(PROGRAMS
+      test/integration/gen_test_certs.sh
+      test/integration/test_opcua_secured.test.py
+      DESTINATION lib/${PROJECT_NAME})
+    add_test(NAME test_opcua_secured
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_secured.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
+    set_tests_properties(test_opcua_secured PROPERTIES
+      LABELS "integration"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 300)
   endif()
 
   ros2_medkit_relax_vendor_warnings()

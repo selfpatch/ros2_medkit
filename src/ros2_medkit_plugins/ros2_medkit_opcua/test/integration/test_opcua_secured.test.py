@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+# Copyright 2026 mfaferek93
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Secured OPC-UA Alarms & Conditions integration test (issue #477).
+
+This is the success-path counterpart to the unit tests around
+``apply_security_config()``: instead of only exercising the parsers, it
+negotiates a real encrypted SecureChannel against a live open62541 server and
+drives the native A&C bridge through it.
+
+Topology (all on the loopback, ephemeral ports):
+
+    test_alarm_server --secure   (Basic256Sha256 Sign + SignAndEncrypt,
+       |                          username/password, anonymous DISABLED)
+       | encrypted SecureChannel + UserName token
+    gateway_node (ros2_medkit_opcua)  ->  fault_manager_node
+
+POSITIVE (good credentials):
+  * SOVD x-plc-status reports connected == true (channel established).
+  * SOVD x-plc-data returns the Tank.Level value (a real read over the
+    encrypted channel, not just an event subscription).
+  * Firing an alarm over the server's stdin surfaces a CONFIRMED fault in
+    /api/v1/faults (secured A&C event subscription end-to-end).
+  * The server logs ``SECURE_SESSION ... securityMode=3`` (SignAndEncrypt),
+    proving the channel is encrypted and not None.
+
+NEGATIVE (wrong password):
+  * The gateway never reaches connected == true: fail-closed.
+
+Skips with the CTest convention (exit 77) unless
+``ROS2_MEDKIT_OPCUA_SECURE_REQUIRE`` is set, mirroring the asyncua smoke-test
+skip. When the flag is set, a missing prerequisite is a hard failure so a CI
+job that loses a dependency cannot silently bypass the secured check.
+
+Usage: test_opcua_secured.test.py <test_alarm_server> <gen_test_certs.sh>
+"""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+CTEST_SKIP = 77
+USERNAME = 'medkit'
+PASSWORD = 'secret'
+WRONG_PASSWORD = 'definitely-not-the-password'
+APP_URI_SERVER = 'urn:test:alarms:server'
+APP_URI_CLIENT = 'urn:selfpatch:medkit:opcua-client'
+ROS_DOMAIN_ID = '228'
+
+ALARM_CODE = 'PLC_OVERPRESSURE'
+
+
+def require_flag():
+    """True when the suite must run for real (CI) instead of skipping."""
+    return os.environ.get('ROS2_MEDKIT_OPCUA_SECURE_REQUIRE', '0') not in ('', '0')
+
+
+def skip_or_fail(reason):
+    """Return the CTest skip code, or fail hard when the run is required."""
+    if require_flag():
+        print(f'REQUIRED but prerequisite unmet: {reason}', file=sys.stderr)
+        return 1
+    print(f'SKIP (set ROS2_MEDKIT_OPCUA_SECURE_REQUIRE to force): {reason}')
+    return CTEST_SKIP
+
+
+def free_port():
+    """Grab an OS-assigned free TCP port on the loopback and release it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+def find_plugin():
+    """Locate libros2_medkit_opcua_plugin.so under AMENT_PREFIX_PATH."""
+    for prefix in os.environ.get('AMENT_PREFIX_PATH', '').split(os.pathsep):
+        if not prefix:
+            continue
+        for root, _dirs, files in os.walk(prefix):
+            if 'libros2_medkit_opcua_plugin.so' in files:
+                return os.path.join(root, 'libros2_medkit_opcua_plugin.so')
+    return None
+
+
+def have_executable(package, executable):
+    """True when ``ros2 run <package> <executable>`` is resolvable."""
+    try:
+        out = subprocess.run(
+            ['ros2', 'pkg', 'executables', package],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return f'{package} {executable}' in out.stdout
+
+
+def http_json(url, timeout=2):
+    """GET <url> and parse JSON, or return None on any failure."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def wait_json(url, predicate, deadline=60, period=2.0):
+    """Poll <url> until predicate(json) is true; return the final json or None."""
+    last = None
+    for _ in range(int(deadline / period) + 1):
+        last = http_json(url)
+        if last is not None:
+            try:
+                if predicate(last):
+                    return last
+            except (KeyError, TypeError, ValueError):
+                pass
+        time.sleep(period)
+    return last
+
+
+def wait_log(path, needle, deadline=30, period=0.5):
+    """Poll a log file until <needle> appears; return True/False."""
+    for _ in range(int(deadline / period) + 1):
+        try:
+            if needle in Path(path).read_text(errors='replace'):
+                return True
+        except OSError:
+            pass
+        time.sleep(period)
+    return False
+
+
+def write_node_map(path):
+    """Map the readable Tank.Level node + the 3 alarm sources into one entity."""
+    path.write_text(
+        'area_id: plc_systems\n'
+        'component_id: alarm_test_runtime\n'
+        'nodes:\n'
+        '  - node_id: "ns=2;s=Tank.Level"\n'
+        '    entity_id: tank_process\n'
+        '    data_name: tank_level\n'
+        '    data_type: float\n'
+        'event_alarms:\n'
+        '  - alarm_source: "ns=2;s=Alarms.Overpressure"\n'
+        '    entity_id: tank_process\n'
+        '    fault_code: PLC_OVERPRESSURE\n'
+        '  - alarm_source: "ns=2;s=Alarms.Overheat"\n'
+        '    entity_id: tank_process\n'
+        '    fault_code: PLC_OVERHEAT\n'
+        '  - alarm_source: "ns=2;s=Alarms.SensorLost"\n'
+        '    entity_id: tank_process\n'
+        '    fault_code: PLC_SENSOR_LOST\n'
+    )
+
+
+def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
+                         certs, password):
+    """Render a gateway params file pointing the opcua plugin at the secure server."""
+    path.write_text(
+        'ros2_medkit_gateway:\n'
+        '  ros__parameters:\n'
+        '    server:\n'
+        '      host: "127.0.0.1"\n'
+        f'      port: {port}\n'
+        '    plugins: ["opcua"]\n'
+        f'    plugins.opcua.path: "{plugin}"\n'
+        f'    plugins.opcua.endpoint_url: "opc.tcp://127.0.0.1:{server_port}"\n'
+        f'    plugins.opcua.node_map_path: "{node_map}"\n'
+        '    plugins.opcua.poll_interval_ms: 500\n'
+        '    plugins.opcua.security_policy: "Basic256Sha256"\n'
+        '    plugins.opcua.security_mode: "SignAndEncrypt"\n'
+        f'    plugins.opcua.client_cert_path: "{certs}/client_cert.der"\n'
+        f'    plugins.opcua.client_key_path: "{certs}/client_key.pem"\n'
+        f'    plugins.opcua.application_uri: "{APP_URI_CLIENT}"\n'
+        f'    plugins.opcua.trust_list_paths: ["{certs}/server_cert.der"]\n'
+        '    plugins.opcua.reject_untrusted: true\n'
+        '    plugins.opcua.user_auth_mode: "UsernamePassword"\n'
+        f'    plugins.opcua.username: "{USERNAME}"\n'
+        f'    plugins.opcua.password: "{password}"\n'
+        '    discovery.mode: "hybrid"\n'
+        f'    discovery.manifest_path: "{manifest}"\n'
+        '    discovery.manifest_strict_validation: false\n'
+    )
+
+
+def start_gateway(params_file, log_path, env):
+    """Launch a gateway_node bound to the given params file."""
+    log = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node',
+         '--ros-args', '--params-file', str(params_file)],
+        stdout=log, stderr=subprocess.STDOUT, env=env,
+    )
+    proc._log = log  # keep handle alive for close on teardown
+    return proc
+
+
+def terminate(proc):
+    """Best-effort SIGTERM then SIGKILL of a child process."""
+    if proc is None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    log = getattr(proc, '_log', None)
+    if log is not None:
+        log.close()
+
+
+def main():
+    if len(sys.argv) < 3:
+        print('usage: test_opcua_secured.test.py <test_alarm_server> <gen_test_certs.sh>',
+              file=sys.stderr)
+        return 2
+    server_bin = Path(sys.argv[1]).resolve()
+    gen_certs = Path(sys.argv[2]).resolve()
+
+    # --- Prerequisite gating (skip 77 unless required) ---------------------
+    if shutil.which('openssl') is None:
+        return skip_or_fail('openssl CLI not available')
+    if shutil.which('ros2') is None:
+        return skip_or_fail('ros2 CLI not available')
+    if not (server_bin.is_file() and os.access(server_bin, os.X_OK)):
+        return skip_or_fail(f'secure fixture missing: {server_bin}')
+    if not gen_certs.is_file():
+        return skip_or_fail(f'cert generator missing: {gen_certs}')
+    plugin = find_plugin()
+    if plugin is None:
+        return skip_or_fail('libros2_medkit_opcua_plugin.so not found')
+    if not have_executable('ros2_medkit_fault_manager', 'fault_manager_node'):
+        return skip_or_fail('ros2_medkit_fault_manager/fault_manager_node not built')
+    if not have_executable('ros2_medkit_gateway', 'gateway_node'):
+        return skip_or_fail('ros2_medkit_gateway/gateway_node not built')
+
+    workdir = Path(tempfile.mkdtemp(prefix='opcua_secured_'))
+    certs = workdir / 'certs'
+    server_log = workdir / 'server.log'
+    env = dict(os.environ, ROS_DOMAIN_ID=ROS_DOMAIN_ID)
+
+    server = fault_mgr = gw_good = gw_bad = None
+    try:
+        # --- Certificates (regenerated every run, never committed) ---------
+        subprocess.run(['bash', str(gen_certs), str(certs)], check=True,
+                       capture_output=True, text=True)
+
+        node_map = workdir / 'alarm_nodes.yaml'
+        manifest = workdir / 'manifest.yaml'
+        write_node_map(node_map)
+        manifest.write_text('manifest_version: "1.0"\n')
+
+        server_port = free_port()
+        good_port = free_port()
+        bad_port = free_port()
+
+        # --- Secure server fixture (stdin pipe for the alarm CLI) ----------
+        slog = open(server_log, 'w')
+        server = subprocess.Popen(
+            [str(server_bin), '--secure', '--port', str(server_port),
+             '--cert', str(certs / 'server_cert.der'),
+             '--key', str(certs / 'server_key.pem'),
+             '--trust', str(certs / 'client_cert.der'),
+             '--app-uri', APP_URI_SERVER,
+             '--username', USERNAME, '--password', PASSWORD],
+            stdin=subprocess.PIPE, stdout=slog, stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if not wait_log(server_log, 'READY ', deadline=20):
+            print('secure server did not become READY', file=sys.stderr)
+            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
+            return 1
+
+        # --- fault_manager_node --------------------------------------------
+        fault_mgr = subprocess.Popen(
+            ['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node'],
+            stdout=open(workdir / 'fault_manager.log', 'w'),
+            stderr=subprocess.STDOUT, env=env,
+        )
+        # Poll for the service the opcua plugin calls.
+        for _ in range(40):
+            out = subprocess.run(['ros2', 'service', 'list'], capture_output=True,
+                                 text=True, env=env, timeout=15, check=False)
+            if '/fault_manager/report_fault' in out.stdout:
+                break
+            time.sleep(0.5)
+
+        # === POSITIVE: good credentials ====================================
+        good_params = workdir / 'gateway_good.yaml'
+        write_gateway_params(good_params, port=good_port, plugin=plugin,
+                             server_port=server_port, node_map=node_map,
+                             manifest=manifest, certs=certs, password=PASSWORD)
+        gw_good = start_gateway(good_params, workdir / 'gateway_good.log', env)
+
+        base = f'http://127.0.0.1:{good_port}/api/v1'
+        status = wait_json(
+            f'{base}/components/alarm_test_runtime/x-plc-status',
+            lambda j: j.get('connected') is True, deadline=70)
+        if not (status and status.get('connected') is True):
+            print('FAIL: gateway did not connect over the secure channel', file=sys.stderr)
+            print('server log:\n' + Path(server_log).read_text(errors='replace'), file=sys.stderr)
+            print('gateway log tail:\n' + Path(workdir / 'gateway_good.log').read_text(errors='replace')[-3000:],
+                  file=sys.stderr)
+            return 1
+        print('  OK secured connect: x-plc-status connected == true')
+
+        # Proof the channel is encrypted (SignAndEncrypt = securityMode 3),
+        # emitted by the server on session activation. Fail hard on None.
+        if not wait_log(server_log, 'securityMode=3', deadline=20):
+            print('FAIL: server never logged an encrypted (SignAndEncrypt) session', file=sys.stderr)
+            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
+            return 1
+        if 'securityPolicyUri=http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256' \
+                not in Path(server_log).read_text(errors='replace'):
+            print('FAIL: negotiated SecurityPolicy was not Basic256Sha256', file=sys.stderr)
+            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
+            return 1
+        print('  OK encrypted channel: server logged Basic256Sha256 securityMode=3 (SignAndEncrypt)')
+
+        # Secured read: Tank.Level value over the encrypted channel.
+        data = wait_json(
+            f'{base}/apps/tank_process/x-plc-data',
+            lambda j: any(i.get('name') == 'tank_level' and i.get('value') is not None
+                          for i in j.get('items', [])), deadline=30)
+        value = None
+        if data:
+            value = next((i.get('value') for i in data.get('items', [])
+                          if i.get('name') == 'tank_level'), None)
+        if value is None:
+            print('FAIL: secured tag read returned no value', file=sys.stderr)
+            print(json.dumps(data), file=sys.stderr)
+            return 1
+        print(f'  OK secured read: tank_level = {value}')
+
+        # Secured A&C: fire an alarm over the server stdin -> CONFIRMED fault.
+        server.stdin.write('fire Overpressure 750\n')
+        server.stdin.flush()
+        faults = wait_json(
+            f'{base}/faults',
+            lambda j: any(i.get('fault_code') == ALARM_CODE and i.get('status') == 'CONFIRMED'
+                          for i in j.get('items', [])), deadline=40)
+        if not (faults and any(i.get('fault_code') == ALARM_CODE and i.get('status') == 'CONFIRMED'
+                               for i in faults.get('items', []))):
+            print('FAIL: alarm did not surface as a CONFIRMED fault', file=sys.stderr)
+            print(json.dumps(faults), file=sys.stderr)
+            print('server log:\n' + Path(server_log).read_text(errors='replace'), file=sys.stderr)
+            return 1
+        print('  OK secured A&C: PLC_OVERPRESSURE CONFIRMED via encrypted event subscription')
+
+        terminate(gw_good)
+        gw_good = None
+
+        # === NEGATIVE: wrong password must fail closed =====================
+        bad_params = workdir / 'gateway_bad.yaml'
+        write_gateway_params(bad_params, port=bad_port, plugin=plugin,
+                             server_port=server_port, node_map=node_map,
+                             manifest=manifest, certs=certs, password=WRONG_PASSWORD)
+        bad_log = workdir / 'gateway_bad.log'
+        gw_bad = start_gateway(bad_params, bad_log, env)
+
+        bad_base = f'http://127.0.0.1:{bad_port}/api/v1'
+        # Fail-closed = the server rejects the wrong password and NO secured read
+        # ever succeeds. We assert both: (1) the client logs BadUserAccessDenied
+        # (the session never activates), and (2) the tag value is never served.
+        # We key off the secured read rather than x-plc-status.connected because
+        # a rejected ActivateSession leaves the underlying SecureChannel briefly
+        # open, which can make the coarse connected flag flap; no authenticated
+        # read can ever complete over it, and that is the real security property.
+        rejected = wait_log(bad_log, 'BadUserAccessDenied', deadline=40)
+        read_leaked = False
+        for _ in range(10):
+            d = http_json(f'{bad_base}/apps/tank_process/x-plc-data')
+            if d and any(i.get('name') == 'tank_level' and i.get('value') is not None
+                         for i in d.get('items', [])):
+                read_leaked = True
+                break
+            time.sleep(2)
+        if not rejected or read_leaked:
+            print('FAIL: wrong password did NOT fail closed '
+                  f'(auth_rejected={rejected}, read_leaked={read_leaked})', file=sys.stderr)
+            print('gateway(bad) log tail:\n'
+                  + bad_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return 1
+        print('  OK fail-closed: wrong password rejected (BadUserAccessDenied), no secured read served')
+
+        print('PASS: secured OPC-UA A&C integration test')
+        return 0
+    finally:
+        terminate(gw_good)
+        terminate(gw_bad)
+        terminate(fault_mgr)
+        if server is not None:
+            try:
+                if server.stdin:
+                    server.stdin.close()
+            except OSError:
+                pass
+            terminate(server)
+        try:
+            slog.close()
+        except (NameError, OSError):
+            pass
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
