@@ -589,6 +589,106 @@ TEST_F(SqliteFaultStorageTest, ConfirmedFaultSurvivesHealHeartbeat) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
     EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED) << "un-confirmed after " << (i + 1);
   }
+
+  // The counter is now positive (clamped at +3). One FAILED must keep it CONFIRMED, not flip it to
+  // PREPASSED via the `counter > 0` branch - that was the asymmetric-latch bug.
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               clock.now(), config);
+  EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+}
+
+// Latch must hold in BOTH directions and identically on both backends (regression for the
+// asymmetric per-branch latch). A CONFIRMED fault with a positive counter stays CONFIRMED on FAILED.
+TEST_F(SqliteFaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.healing_threshold = 3;
+  config.critical_immediate_confirm = true;
+
+  // CRITICAL confirms immediately at counter -1.
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "crit", "/n",
+                               clock.now(), config);
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  // PASSED events raise the counter into positive territory; latch keeps it CONFIRMED.
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  // One normal FAILED: counter still positive, must NOT become PREPASSED.
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                               config);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+}
+
+// A HEALED fault with a negative counter stays HEALED on PASSED (opposite direction of the bug above).
+TEST_F(SqliteFaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                               config);
+  for (int i = 0; i < 4; ++i) {  // counter -1 -> +3 -> HEALED
+    storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+  // FAILED events drive the counter negative while HEALED is latched (not yet at confirmation -3).
+  for (int i = 0; i < 5; ++i) {  // +3 -> -2
+    storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                                 config);
+    ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+  }
+  // One PASSED: counter goes -2 -> -1, still negative; must stay HEALED, not flip to PREFAILED.
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+}
+
+// A database written by an older build can hold a runaway counter. It must be clamped back on first
+// touch so re-confirmation is bounded, not ~INT32 events away.
+TEST_F(SqliteFaultStorageTest, RunawayCounterFromOldDbRecovers) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -1;
+  config.healing_threshold = 3;
+
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                               config);
+  // Simulate the old bug: poke a huge counter directly into the DB behind the storage's back.
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, "UPDATE faults SET debounce_counter = 100000, status = 'PREPASSED'", nullptr, nullptr,
+                           nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  // The counter is clamped back into range on first touch, so a bounded number of FAILED events
+  // re-confirms (healing_threshold - confirmation_threshold = 4), not the ~100000 the runaway implied.
+  for (int i = 0; i < 4; ++i) {
+    storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                                 config);
+  }
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+}
+
+TEST_F(SqliteFaultStorageTest, ReclassifyHealedAsCleared) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                               config);
+  for (int i = 0; i < 4; ++i) {
+    storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  }
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+
+  EXPECT_EQ(storage_->reclassify_healed_as_cleared(), 1u);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CLEARED);
 }
 
 TEST_F(SqliteFaultStorageTest, HealingWhenEnabled) {

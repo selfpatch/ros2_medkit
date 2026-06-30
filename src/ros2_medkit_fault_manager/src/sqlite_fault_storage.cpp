@@ -365,6 +365,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     std::string current_status = check_stmt.column_text(3);
     int32_t debounce_counter = check_stmt.column_int(4);
 
+    // Bring a runaway counter persisted by an older build (the bug this fixes) back into range on
+    // first touch; this also keeps the +1/-1 below overflow-safe. The counter is local to this call.
+    debounce_counter = clamp_debounce_counter(debounce_counter, config);
+
     // CLEARED faults can be reactivated by FAILED events
     bool is_reactivation = false;
     if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
@@ -395,31 +399,16 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         ++new_count;
       }
 
-      // Decrement debounce counter, clamped at the confirmation threshold (lower
-      // bound). Without this floor a long burst of FAILED events drives it to
-      // INT32_MIN, and a later heal then has to climb all the way back before the
-      // fault can clear.
-      if (debounce_counter > config.confirmation_threshold) {
-        --debounce_counter;
-      }
+      // Decrement towards confirmation, clamped to the thresholds.
+      debounce_counter = clamp_debounce_counter(debounce_counter - 1, config);
 
-      // Check for immediate confirmation of CRITICAL
-      std::string new_status = current_status;
+      // CRITICAL bypasses debounce; otherwise the shared state machine decides (with hysteresis).
+      std::string new_status;
       if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
         new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-      } else if (debounce_counter <= config.confirmation_threshold) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-      } else if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
-        // Hysteresis latch: a healed fault stays healed until the counter walks all
-        // the way back down to the confirmation threshold (handled above). A single
-        // FAILED must not flip it straight to a pending state.
-        new_status = current_status;
-      } else if (debounce_counter < 0) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
-      } else if (debounce_counter > 0) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
+      } else {
+        new_status = compute_debounce_status(debounce_counter, current_status, config);
       }
-      // Note: debounce_counter == 0 keeps current status
 
       // Update with new values
       SqliteStatement update_stmt(
@@ -456,27 +445,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
       }
     } else {
-      // PASSED event - increment debounce counter, clamped at the healing threshold
-      // (upper bound). Without this ceiling a periodic heal heartbeat on a healthy
-      // system drives the counter to INT32_MAX, so a real fault then takes a huge
-      // number of reports to confirm.
-      if (debounce_counter < config.healing_threshold) {
-        ++debounce_counter;
-      }
+      // PASSED event - increment towards healing, clamped to the thresholds.
+      debounce_counter = clamp_debounce_counter(debounce_counter + 1, config);
 
-      std::string new_status = current_status;
-      if (config.healing_enabled && debounce_counter >= config.healing_threshold) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
-      } else if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
-        // Hysteresis latch: a confirmed fault stays confirmed until the counter
-        // climbs all the way up to the healing threshold (handled above). A single
-        // heal must not flip a confirmed fault back to a pending state.
-        new_status = current_status;
-      } else if (debounce_counter > 0) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED;
-      } else if (debounce_counter < 0) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
-      }
+      std::string new_status = compute_debounce_status(debounce_counter, current_status, config);
 
       SqliteStatement update_stmt(
           db_,
@@ -502,17 +474,13 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     return false;  // PASSED event for non-existent fault is ignored
   }
 
-  // Determine initial status based on debounce logic
+  // Determine initial status based on debounce logic (shared with the in-memory backend).
   std::string initial_status;
   constexpr int32_t initial_counter = -1;  // First FAILED event sets counter to -1
-  // CRITICAL severity bypasses debounce and confirms immediately
   if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
     initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  } else if (initial_counter <= config.confirmation_threshold) {
-    // Counter already meets threshold (e.g., threshold >= -1)
-    initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   } else {
-    initial_status = ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED;
+    initial_status = compute_debounce_status(initial_counter, "", config);
   }
 
   // New fault - insert with debounce_counter = -1
@@ -659,6 +627,26 @@ bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   }
 
   return sqlite3_changes(db_) > 0;
+}
+
+size_t SqliteFaultStorage::reclassify_healed_as_cleared() {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
+  SqliteStatement del(db_,
+                      "DELETE FROM snapshots WHERE fault_code IN (SELECT fault_code FROM faults WHERE status = ?)");
+  del.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+  if (del.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
+  }
+
+  SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE status = ?");
+  stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+  if (stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to reclassify HEALED faults: ") + sqlite3_errmsg(db_));
+  }
+  return static_cast<size_t>(sqlite3_changes(db_));
 }
 
 size_t SqliteFaultStorage::size() const {

@@ -148,6 +148,17 @@ The fault manager uses an AUTOSAR DEM-style debounce model:
 - Fault becomes **CONFIRMED** when counter reaches `confirmation_threshold`
 - Fault becomes **HEALED** when counter reaches `healing_threshold` (if enabled)
 
+The counter is always clamped to `[confirmation_threshold, healing_threshold]`, so a long run of
+one-sided events cannot push it out to the integer limits and delay the opposite transition.
+`confirmation_threshold < 0 < healing_threshold` is required; invalid thresholds fall back to safe
+defaults with a warning.
+
+`CONFIRMED` and `HEALED` are **latched** (hysteresis): once reached, the status holds until the
+counter reaches the opposite threshold, so a single opposite-direction event cannot flip it. As a
+result a fault that becomes active again can take up to `healing_threshold - confirmation_threshold`
+events to return to the default (CONFIRMED-only) list; `occurrence_count` and `last_occurred` still
+update meanwhile.
+
 ### Fault Lifecycle with Debounce
 
 ```

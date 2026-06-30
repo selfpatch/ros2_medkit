@@ -227,3 +227,19 @@ Faults follow an AUTOSAR DEM-style debounce lifecycle:
 FAILED events decrement the debounce counter (towards confirmation).
 PASSED events increment the debounce counter (towards healing).
 CRITICAL severity bypasses debounce and confirms immediately.
+
+The counter is always clamped to ``[confirmation_threshold, healing_threshold]`` so a long run of
+one-sided events cannot push it out to the integer limits and delay the opposite transition.
+
+CONFIRMED and HEALED are *latched* (hysteresis): once reached, the status holds until the counter
+walks all the way to the opposite threshold. So PREFAILED/PREPASSED depend on the counter sign, but
+a CONFIRMED or HEALED fault keeps its status while the counter is between the thresholds - a single
+opposite-direction event cannot flip it. One consequence is a re-confirmation delay: a fault that
+becomes active again is not back in the default (CONFIRMED-only) list until the counter has fallen by
+up to ``healing_threshold - confirmation_threshold`` events. During that window ``occurrence_count``
+and ``last_occurred`` still reflect the activity.
+
+Thresholds must satisfy ``confirmation_threshold < 0 < healing_threshold``; the node validates the
+merged per-entity config at startup, logs a warning, and falls back to safe defaults if not. When
+healing is disabled, any HEALED row left by a previous (healing-enabled) run is reclassified to
+CLEARED once at startup so it does not behave inconsistently under the latch.

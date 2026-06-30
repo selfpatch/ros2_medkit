@@ -164,12 +164,50 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   global_config_.healing_enabled = healing_enabled_;
   global_config_.healing_threshold = healing_threshold_;
   global_config_.auto_confirm_after_sec = auto_confirm_after_sec_;
+  if (!sanitize_debounce_config(global_config_)) {
+    RCLCPP_WARN(get_logger(),
+                "Invalid debounce thresholds (need confirmation_threshold < 0 < healing_threshold); using safe "
+                "defaults: confirmation=%d healing=%d",
+                global_config_.confirmation_threshold, global_config_.healing_threshold);
+  }
   storage_->set_debounce_config(global_config_);
+
+  // One-time cleanup: when healing is disabled, a HEALED row left by a previous (healing-enabled) run
+  // would behave inconsistently under the latch, so reclassify it as CLEARED at startup.
+  if (!global_config_.healing_enabled) {
+    size_t reclassified = storage_->reclassify_healed_as_cleared();
+    if (reclassified > 0) {
+      RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED", reclassified);
+    }
+  }
 
   // Load per-entity threshold overrides (optional)
   auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds.config_file", "");
   if (!entity_thresholds_file.empty()) {
     auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file);
+    // Validate each override against the global config: the merge is field by field, so an override
+    // can break confirmation_threshold < 0 < healing_threshold even when the global config is valid.
+    for (auto & entry : entries) {
+      DebounceConfig merged = global_config_;
+      if (entry.confirmation_threshold) {
+        merged.confirmation_threshold = *entry.confirmation_threshold;
+      }
+      if (entry.healing_threshold) {
+        merged.healing_threshold = *entry.healing_threshold;
+      }
+      if (!sanitize_debounce_config(merged)) {
+        RCLCPP_WARN(get_logger(),
+                    "Entity '%s' debounce thresholds invalid (need confirmation_threshold < 0 < healing_threshold); "
+                    "using safe defaults",
+                    entry.prefix.c_str());
+        if (entry.confirmation_threshold) {
+          entry.confirmation_threshold = merged.confirmation_threshold;
+        }
+        if (entry.healing_threshold) {
+          entry.healing_threshold = merged.healing_threshold;
+        }
+      }
+    }
     if (!entries.empty()) {
       threshold_resolver_ = std::make_unique<EntityThresholdResolver>(std::move(entries));
       RCLCPP_INFO(get_logger(), "Loaded %zu per-entity threshold overrides from %s", threshold_resolver_->size(),
@@ -1183,10 +1221,14 @@ bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting
 }
 
 DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id) const {
+  DebounceConfig config = global_config_;
   if (threshold_resolver_) {
-    return threshold_resolver_->resolve(source_id, global_config_);
+    config = threshold_resolver_->resolve(source_id, global_config_);
   }
-  return global_config_;
+  // Defensive: the merged config is validated at load time, but never hand the storage backend a
+  // config that violates confirmation_threshold < 0 < healing_threshold (the counter would stick).
+  sanitize_debounce_config(config);
+  return config;
 }
 
 }  // namespace ros2_medkit_fault_manager
