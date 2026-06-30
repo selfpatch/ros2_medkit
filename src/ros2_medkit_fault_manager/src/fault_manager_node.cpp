@@ -365,6 +365,24 @@ FaultManagerNode::~FaultManagerNode() {
   if (rosbag_capture_) {
     rosbag_capture_->stop();
   }
+
+  // Close the chain with a "logging deactivated" marker (CIR (EU) 2024/2690
+  // sec. 3.2). Best-effort and appended directly (recorded even in confirmed_only
+  // mode); a failure here must not throw out of the destructor.
+  if (audit_log_) {
+    try {
+      AuditEvent marker;
+      marker.fault_code = "__audit__";
+      marker.transition = kTransitionLoggingDeactivated;
+      marker.status = "INACTIVE";
+      marker.source_id = "fault_manager";
+      marker.description = "audit logging deactivated";
+      marker.occurred_at_ns = get_wall_clock_time().nanoseconds();
+      audit_log_->append(marker);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_deactivated' marker: %s", e.what());
+    }
+  }
 }
 
 std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
@@ -418,6 +436,11 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
     retention = 0;
   }
 
+  // Fail-closed: when set, an append failure is a hard error (the operation
+  // aborts and the audit is marked unhealthy) instead of being logged and
+  // silently dropped. Off by default so the audit never blocks fault processing.
+  audit_fail_closed_ = declare_parameter<bool>("audit_log.fail_closed", false);
+
   // Path: explicit override, else a sibling of the fault DB, else :memory:.
   std::string audit_path = declare_parameter<std::string>("audit_log.database_path", "");
 
@@ -450,8 +473,26 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
   try {
     auto log = std::make_unique<FaultAuditLog>(audit_path, retention);
     RCLCPP_INFO(get_logger(),
-                "Fault audit log enabled: %s (transitions=%s, retention=%" PRId64 ", resume_seq=%" PRId64 ")",
-                audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention, log->head().seq);
+                "Fault audit log enabled: %s (transitions=%s, retention=%" PRId64
+                ", fail_closed=%s, resume_seq=%" PRId64 ")",
+                audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention,
+                audit_fail_closed_ ? "true" : "false", log->head().seq);
+
+    // Record a "logging activated" marker so the chain documents its own start
+    // (CIR (EU) 2024/2690 sec. 3.2). Appended directly, so it is recorded even in
+    // confirmed_only mode. Best-effort: a failure here does not abort startup.
+    AuditEvent marker;
+    marker.fault_code = "__audit__";
+    marker.transition = kTransitionLoggingActivated;
+    marker.status = "ACTIVE";
+    marker.source_id = "fault_manager";
+    marker.description = "audit logging activated";
+    marker.occurred_at_ns = get_wall_clock_time().nanoseconds();
+    try {
+      log->append(marker);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_activated' marker: %s", e.what());
+    }
     return log;
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to open fault audit log '%s': %s", audit_path.c_str(), e.what());
@@ -480,8 +521,22 @@ void FaultManagerNode::audit_transition(const char * transition, const ros2_medk
   try {
     audit_log_->append(event);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(get_logger(), "Failed to append audit record for '%s' (%s): %s", fault.fault_code.c_str(), transition,
-                 e.what());
+    // A dropped append is a hole in the chain that verify() can never see (it
+    // proves nothing was deleted, not that everything was written). Always make
+    // it loud and visible via the health counter so the gap is observable.
+    audit_dropped_writes_.fetch_add(1, std::memory_order_relaxed);
+    audit_healthy_.store(false, std::memory_order_relaxed);
+    const uint64_t dropped = audit_dropped_writes_.load(std::memory_order_relaxed);
+    RCLCPP_ERROR(get_logger(), "Failed to append audit record for '%s' (%s): %s [audit dropped_writes=%" PRIu64 "]",
+                 fault.fault_code.c_str(), transition, e.what(), dropped);
+    if (audit_fail_closed_) {
+      // Compliance-strict: refuse to proceed as if nothing happened. Abort the
+      // operation so the broken audit cannot be silently outlived.
+      RCLCPP_FATAL(get_logger(),
+                   "audit_log.fail_closed is set: aborting operation because the audit append failed for '%s' (%s)",
+                   fault.fault_code.c_str(), transition);
+      throw;
+    }
   }
 }
 
@@ -587,6 +642,12 @@ void FaultManagerNode::handle_report_fault(
     }
     // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
 
+    // A PASSED event can drive an existing fault past the healing threshold to
+    // HEALED. That is the fault's END and must be audited (with a distinct kind
+    // and source) so the timeline is complete, not just occurred+confirmed.
+    const bool just_healed = !is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_HEALED &&
+                             fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+
     // Append tamper-evident audit records for the transitions that just happened.
     // Recorded regardless of correlation muting: muting affects display, not the
     // fact that the state transition occurred.
@@ -595,6 +656,9 @@ void FaultManagerNode::handle_report_fault(
     }
     if (just_confirmed) {
       audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time.nanoseconds());
+    }
+    if (just_healed) {
+      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time.nanoseconds());
     }
 
     // Capture snapshots/rosbag when a fault confirms via the bounded pool (issue #441).

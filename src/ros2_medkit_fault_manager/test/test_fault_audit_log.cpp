@@ -26,6 +26,7 @@ using ros2_medkit_fault_manager::AuditEvent;
 using ros2_medkit_fault_manager::FaultAuditLog;
 using ros2_medkit_fault_manager::kTransitionCleared;
 using ros2_medkit_fault_manager::kTransitionConfirmed;
+using ros2_medkit_fault_manager::kTransitionHealed;
 using ros2_medkit_fault_manager::kTransitionOccurred;
 
 namespace {
@@ -332,6 +333,44 @@ TEST_F(FaultAuditLogTest, RotationPrunePassesAppendOnlyTrigger) {
   }
   EXPECT_EQ(log.record_count(), 3);
   EXPECT_TRUE(log.verify().ok);
+}
+
+// A "healed" auto-recovery row chains and verifies like any other transition, and
+// stays distinct from a "cleared" so the timeline can tell them apart.
+TEST_F(FaultAuditLogTest, HealedTransitionChainVerifies) {
+  FaultAuditLog log(path_);
+  log.append(make_event("F1", kTransitionOccurred, 100));
+  log.append(make_event("F1", kTransitionConfirmed, 200));
+  log.append(make_event("F1", kTransitionHealed, 300));
+
+  auto records = log.read();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_EQ(records[2].event.transition, kTransitionHealed);
+  EXPECT_NE(records[2].event.transition, std::string(kTransitionCleared));
+  EXPECT_TRUE(log.verify().ok);
+}
+
+// Defense-in-depth (item 4): the prune guard itself is protected. An out-of-band
+// connection cannot flip audit_prune_guard open, so it cannot then delete a
+// prefix past the append-only delete trigger. The in-process prune still works.
+TEST_F(FaultAuditLogTest, GuardProtectTriggerBlocksExternalGuardFlip) {
+  {
+    FaultAuditLog log(path_, /*retention_max_records=*/3);
+    for (int i = 1; i <= 8; ++i) {
+      log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+    }
+    EXPECT_EQ(log.record_count(), 3);  // in-process prune succeeded despite the protect trigger
+    EXPECT_TRUE(log.verify().ok);
+  }
+
+  // An external writer (no in-process temp unlock marker) cannot open the guard.
+  EXPECT_NE(raw_exec_rc(path_, "UPDATE audit_prune_guard SET enabled = 1 WHERE id = 1"), SQLITE_OK);
+  // With the guard still closed, a raw DELETE remains blocked by the delete trigger.
+  EXPECT_NE(raw_exec_rc(path_, "DELETE FROM audit_log"), SQLITE_OK);
+
+  FaultAuditLog reopened(path_, 3);
+  EXPECT_EQ(reopened.record_count(), 3);
+  EXPECT_TRUE(reopened.verify().ok);
 }
 
 int main(int argc, char ** argv) {

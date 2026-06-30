@@ -29,13 +29,13 @@ fault_manager:
     # snapshots.capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
 
     # Append-only, hash-chained audit log of fault state transitions
-    # (occurred/confirmed/cleared). OFF by default: it adds a write + storage cost
-    # per transition. When enabled, each transition appends one immutable,
-    # hash-chained row, so verify() detects edits or deletions that did NOT also
-    # recompute the chain (casual/accidental tampering). The chain is unkeyed and
-    # lives in a single writable file, so it is NOT proof against an attacker who
-    # can rewrite the whole file; true tamper-proofing needs a signed head or
-    # external anchoring (out of scope here). See README "Threat model".
+    # (occurred/confirmed/healed/cleared). OFF by default: it adds a write +
+    # storage cost per transition. When enabled, each transition appends one
+    # immutable, hash-chained row, so verify() detects edits or deletions that did
+    # NOT also recompute the chain (casual/accidental tampering). The chain is
+    # unkeyed and lives in a single writable file, so it is NOT proof against an
+    # attacker who can rewrite the whole file; true tamper-proofing needs a signed
+    # head or external anchoring (out of scope here). See README "Threat model".
     audit_log.enabled: false
     # Which transitions to record: "all" or "confirmed_only".
     # audit_log.transitions: all
@@ -45,3 +45,8 @@ fault_manager:
     # Seal + prune the oldest segment beyond this many retained records
     # (0 = unlimited). A sealed anchor keeps the surviving tail verifiable.
     # audit_log.retention_max_records: 0
+    # Fail-closed (compliance-strict): when true, an audit append failure is a hard
+    # error that aborts the operation instead of being logged and dropped. Default
+    # false keeps fault processing running; either way a dropped-writes health
+    # counter makes the gap visible.
+    # audit_log.fail_closed: false

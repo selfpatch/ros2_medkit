@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <atomic>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -1537,6 +1539,8 @@ class FaultAuditIntegrationTest : public ::testing::Test {
     fm_options.parameter_overrides({
         {"storage_type", "memory"},
         {"confirmation_threshold", -1},
+        {"healing_enabled", true},
+        {"healing_threshold", 1},  // counter >= 1 heals (two PASSED after one FAILED)
         {"audit_log.enabled", true},
         {"audit_log.database_path", audit_path_},
     });
@@ -1603,19 +1607,66 @@ TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
   ASSERT_TRUE(spin_until_ready(cf));
   ASSERT_TRUE(cf.get()->success);
 
-  // Reopen the audit DB independently and inspect the persisted chain.
+  // Reopen the audit DB independently and inspect the persisted chain. The chain
+  // opens with a "logging_activated" lifecycle marker (seq 1), then the three
+  // fault transitions. The "logging_deactivated" marker is only appended when the
+  // node is destroyed (TearDown), so it is not visible to this read.
   ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
   auto records = audit.read();
-  ASSERT_EQ(records.size(), 3u);
-  EXPECT_EQ(records[0].event.transition, ros2_medkit_fault_manager::kTransitionOccurred);
-  EXPECT_EQ(records[1].event.transition, ros2_medkit_fault_manager::kTransitionConfirmed);
-  EXPECT_EQ(records[2].event.transition, ros2_medkit_fault_manager::kTransitionCleared);
-  EXPECT_EQ(records[0].event.fault_code, "AUDIT_FAULT");
-  EXPECT_EQ(records[1].event.source_id, "/plc/pump");
+  ASSERT_EQ(records.size(), 4u);
+  EXPECT_EQ(records[0].event.transition, ros2_medkit_fault_manager::kTransitionLoggingActivated);
+  EXPECT_EQ(records[1].event.transition, ros2_medkit_fault_manager::kTransitionOccurred);
+  EXPECT_EQ(records[2].event.transition, ros2_medkit_fault_manager::kTransitionConfirmed);
+  EXPECT_EQ(records[3].event.transition, ros2_medkit_fault_manager::kTransitionCleared);
+  EXPECT_EQ(records[1].event.fault_code, "AUDIT_FAULT");
+  EXPECT_EQ(records[2].event.source_id, "/plc/pump");
 
   auto result = audit.verify();
   EXPECT_TRUE(result.ok) << result.error;
-  EXPECT_EQ(result.checked, 3);
+  EXPECT_EQ(result.checked, 4);
+}
+
+// Completeness: an auto-healed fault must record its END. One FAILED confirms the
+// fault (occurred + confirmed); two PASSED drive the debounce counter to the
+// healing threshold, which must append a distinct "healed" row (source auto_heal),
+// and the full occurred -> confirmed -> healed chain must verify.
+TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
+  auto send_report = [&](uint8_t event_type) {
+    auto req = std::make_shared<ReportFault::Request>();
+    req->fault_code = "HEAL_FAULT";
+    req->event_type = event_type;
+    req->severity = Fault::SEVERITY_ERROR;  // not CRITICAL: goes through debounce
+    req->description = "intermittent sensor";
+    req->source_id = "/robot/sensor";
+    auto fut = report_client_->async_send_request(req);
+    ASSERT_TRUE(spin_until_ready(fut));
+    ASSERT_TRUE(fut.get()->accepted);
+  };
+
+  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1, threshold -1 => CONFIRMED
+  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0 (hysteresis): stays CONFIRMED
+  send_report(ReportFault::Request::EVENT_PASSED);  // counter 1 >= healing_threshold => HEALED
+
+  ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
+  std::vector<std::string> transitions;
+  std::string heal_source;
+  for (const auto & rec : audit.read()) {
+    if (rec.event.fault_code == "HEAL_FAULT") {
+      transitions.push_back(rec.event.transition);
+      if (rec.event.transition == ros2_medkit_fault_manager::kTransitionHealed) {
+        heal_source = rec.event.source_id;
+      }
+    }
+  }
+
+  ASSERT_EQ(transitions.size(), 3u) << "expected occurred, confirmed, healed";
+  EXPECT_EQ(transitions[0], ros2_medkit_fault_manager::kTransitionOccurred);
+  EXPECT_EQ(transitions[1], ros2_medkit_fault_manager::kTransitionConfirmed);
+  EXPECT_EQ(transitions[2], ros2_medkit_fault_manager::kTransitionHealed);
+  EXPECT_EQ(heal_source, "auto_heal");
+
+  auto result = audit.verify();
+  EXPECT_TRUE(result.ok) << result.error;
 }
 
 TEST(FaultAuditDisabledTest, NoAuditFileWhenDisabled) {
@@ -1683,6 +1734,104 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   EXPECT_TRUE(saw_confirmed) << "timer-driven confirmation was not audited";
   EXPECT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_CONFIRMED);
   EXPECT_TRUE(audit->verify().ok);
+}
+
+namespace {
+
+/// Force the node's next audit append to fail by inserting a row at the seq the
+/// node will try next (MAX(seq)+1), so its INSERT collides on the seq PRIMARY KEY.
+/// Done from a separate connection; the append-only triggers do not block INSERT.
+void poison_next_audit_seq(const std::string & db_path) {
+  sqlite3 * db = nullptr;
+  ASSERT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
+  const char * sql =
+      "INSERT INTO audit_log (seq, occurred_at_ns, fault_code, transition, severity, status, source_id, "
+      "description, prev_hash, record_hash) "
+      "SELECT COALESCE(MAX(seq), 0) + 1, 0, 'x', 'x', 0, 'x', 'x', 'x', 'x', 'x' FROM audit_log;";
+  char * err = nullptr;
+  int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+  std::string err_str = err ? err : "";
+  sqlite3_free(err);
+  sqlite3_close(db);
+  ASSERT_EQ(rc, SQLITE_OK) << err_str;
+}
+
+Fault make_failclosed_fault() {
+  Fault f;
+  f.fault_code = "FAILCLOSED";
+  f.severity = Fault::SEVERITY_ERROR;
+  f.status = "CONFIRMED";
+  f.description = "injected";
+  return f;
+}
+
+std::string make_temp_audit_path(const char * prefix) {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dist;
+  return (std::filesystem::temp_directory_path() / (std::string(prefix) + std::to_string(dist(gen)) + ".db")).string();
+}
+
+void remove_audit_files(const std::string & path) {
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  std::filesystem::remove(path + "-wal", ec);
+  std::filesystem::remove(path + "-shm", ec);
+}
+
+}  // namespace
+
+// Silent-gap guard, default behaviour: when fail_closed is false, an append
+// failure must NOT abort the operation, but it must be VISIBLE - the dropped
+// counter increments and the audit is flagged unhealthy (not silently lost).
+TEST(FaultAuditFailClosedTest, FailOpenFlagsButDoesNotThrow) {
+  const std::string audit_path = make_temp_audit_path("test_audit_failopen_");
+  {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "memory"},
+        {"audit_log.enabled", true},
+        {"audit_log.database_path", audit_path},
+        {"audit_log.fail_closed", false},
+    });
+    auto node = std::make_shared<FaultManagerNode>(options);
+    ASSERT_TRUE(node->audit_healthy());
+    EXPECT_EQ(node->audit_dropped_writes(), 0u);
+
+    poison_next_audit_seq(audit_path);
+
+    EXPECT_NO_THROW(
+        node->audit_transition_for_test(ros2_medkit_fault_manager::kTransitionConfirmed, make_failclosed_fault()));
+    EXPECT_EQ(node->audit_dropped_writes(), 1u);
+    EXPECT_FALSE(node->audit_healthy());
+  }
+  remove_audit_files(audit_path);
+}
+
+// Silent-gap guard, compliance-strict: with fail_closed true, an injected append
+// failure must abort the operation (throw) rather than silently proceed, and the
+// same health signals must fire.
+TEST(FaultAuditFailClosedTest, FailClosedAbortsAndFlags) {
+  const std::string audit_path = make_temp_audit_path("test_audit_failclosed_");
+  {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "memory"},
+        {"audit_log.enabled", true},
+        {"audit_log.database_path", audit_path},
+        {"audit_log.fail_closed", true},
+    });
+    auto node = std::make_shared<FaultManagerNode>(options);
+
+    poison_next_audit_seq(audit_path);
+
+    EXPECT_THROW(
+        node->audit_transition_for_test(ros2_medkit_fault_manager::kTransitionConfirmed, make_failclosed_fault()),
+        std::exception);
+    EXPECT_EQ(node->audit_dropped_writes(), 1u);
+    EXPECT_FALSE(node->audit_healthy());
+  }
+  remove_audit_files(audit_path);
 }
 
 int main(int argc, char ** argv) {
