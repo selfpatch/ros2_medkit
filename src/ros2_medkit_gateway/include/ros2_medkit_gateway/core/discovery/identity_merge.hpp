@@ -47,9 +47,9 @@ namespace discovery {
  * stamps every plugin entity with source="plugin".
  */
 struct IdentityMergeConfig {
-  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",  "profinet",
-                                             "plugin",   "manifest", "config",    "runtime", "node", "topic",
-                                             "heuristic"};
+  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",
+                                             "profinet", "plugin", "manifest",    "config", "runtime",
+                                             "node",     "topic",  "heuristic"};
 };
 
 /**
