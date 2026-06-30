@@ -113,8 +113,7 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   void handle_plc_status(const ros2_medkit_gateway::PluginRequest & req, ros2_medkit_gateway::PluginResponse & res);
 
   // Fault-detection signal (threshold / status-bit / enum) -> Fault bridge
-  void on_alarm_change(const std::string & entity_id,
-                       const ros2_medkit::fault_detection::FaultSignal & signal);
+  void on_alarm_change(const std::string & entity_id, const ros2_medkit::fault_detection::FaultSignal & signal);
 
   // Issue #386: native AlarmConditionType event lifecycle bridge.
   void on_event_alarm(const AlarmEventDelivery & delivery);
