@@ -21,19 +21,19 @@ field profile preset ``config/gateway_params.secure.yaml`` instead of
 What the secure profile turns on
 --------------------------------
 
-============================ ============== ===========================================
-Control                      Default        Secure profile
-============================ ============== ===========================================
-``auth.enabled``             false          true
-``auth.require_auth_for``    write          all (auth on reads + writes)
-``server.tls.enabled``       false          true (HTTPS, min TLS 1.3)
-``cors.allowed_origins``     ``[""]``       explicit origin list (no wildcard)
-``rate_limiting.enabled``    false          true (global + per-client + per-endpoint)
-``scripts.allow_uploads``   true           false (manifest-defined scripts only)
-``docs.enabled``             true           false (reduced surface)
-``bulk_data.max_upload``     100 MiB        25 MiB
-``locking`` on operations    none           lock required before mutation
-============================ ============== ===========================================
+================================ ============== ===========================================
+Control                          Default        Secure profile
+================================ ============== ===========================================
+``auth.enabled``                 false          true
+``auth.require_auth_for``        write          all (auth on reads + writes)
+``server.tls.enabled``           false          true (HTTPS, min TLS 1.3)
+``cors.allowed_origins``         ``[""]``       explicit origin list (no wildcard)
+``rate_limiting.enabled``        false          true (global + per-client + per-endpoint)
+``scripts.allow_uploads``        true           false (manifest-defined scripts only)
+``docs.enabled``                 true           false (reduced surface)
+``bulk_data.max_upload_size``    100 MiB        25 MiB
+``locking`` on operations        none           lock required before mutation
+================================ ============== ===========================================
 
 Credential and certificate provisioning
 ----------------------------------------

@@ -434,6 +434,11 @@ void OpcuaPoller::read_fallback_replay() {
         seen.insert(snap.condition_id.toString());
         continue;
       }
+      // Mark every successfully observed condition as seen, even if it matches
+      // no mapping below. Otherwise reconcile_after_read would treat a live (but
+      // unmapped) condition as "cleared while offline" and wrongly clear it.
+      seen.insert(snap.condition_id.toString());
+
       AlarmEventInput input;
       input.enabled_state = snap.enabled_state;
       input.active_state = snap.active_state;
@@ -458,7 +463,6 @@ void OpcuaPoller::read_fallback_replay() {
       eff.severity_override = resolved.severity_override;
       eff.message_override = resolved.message_override;
 
-      seen.insert(snap.condition_id.toString());
       apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr);
     }
   }

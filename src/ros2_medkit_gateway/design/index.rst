@@ -674,6 +674,7 @@ Additional Design Documents
    aggregation
    dto_contract
    entity_cache_architecture
+   hardening
    lifecycle
    plugin_entity_notifications
    ros2_subscription_architecture
