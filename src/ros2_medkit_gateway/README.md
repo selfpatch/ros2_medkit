@@ -1544,6 +1544,61 @@ Runtime mode mapping:
 /standalone_node                -> Component: <hostname>, App: standalone_node
 ```
 
+### Asset Identity (nameplate) and merge-by-identity
+
+Each Component can carry an **asset identity**: the stable nameplate of the physical
+or logical asset it represents (an ECU, PLC, drive, sensor), separate from its runtime
+ROS 2 footprint. The model lives in `core/discovery/models/asset_identity.hpp`.
+
+Typed fields (queryable, AAS-mappable) plus a generic `extra` key-value map for
+vendor-specific attributes we do not model up front:
+
+| Field | JSON key | AAS Nameplate (IDTA 02006) |
+|-------|----------|----------------------------|
+| `manufacturer` | `manufacturer` | ManufacturerName |
+| `model` (order code) | `model` | ManufacturerProductDesignation |
+| `serial_number` | `serialNumber` | SerialNumber |
+| `hardware_revision` | `hardwareRevision` | HardwareVersion |
+| `firmware_version` | `firmwareVersion` | FirmwareVersion |
+| `software_version` | `softwareVersion` | SoftwareVersion |
+| `network_endpoint` | `networkEndpoint` | Asset Interface Description (AID) endpoint |
+| `role` | `role` | functional role (BoM/usage context) |
+| `extra` | `extra` | additional Nameplate properties |
+
+The whole block maps to an Asset Administration Shell later without rework: the asset
+itself is the shell (`Component.id` as localId), this block is the **Nameplate** submodel,
+the Component hierarchy is the **BoM** submodel, and `network_endpoint` is an **AID** entry.
+
+Identity is emitted under `x-medkit.identity` only when populated, so identity-less
+components keep their existing JSON unchanged.
+
+**Why typed fields and a map?** Typed fields are the common, queryable, standard-mappable
+attributes; the `extra` map is the escape hatch for vendor keys (rack/slot, MAC, asset tag)
+that do not warrant a schema change. Both merge with the same rules.
+
+**Merge-by-identity with provenance.** A single asset is usually described by several
+sources (a hand-authored manifest, a live protocol device-info read, runtime discovery).
+`merge_identity()` (`core/discovery/identity_merge.hpp`) combines them field by field and
+records **per-field provenance** (which source set each field) under `_provenance`.
+
+- **Precedence** is config-driven (`IdentityMergeConfig::source_precedence`, highest first)
+  and is deliberately **decoupled from the structural `MergePolicy`**: a manifest can be the
+  authoritative *structure* source while a live protocol read is the authoritative *identity*
+  source. Default order: protocol device-info (`opcua`, `s7`, `ethernet_ip`, `modbus`, `ads`,
+  `profinet`) > `manifest` > `config` > runtime sources. A higher-authority source overrides a
+  field; lower-authority sources only fill gaps; unknown sources rank lowest. Empty values never
+  overwrite.
+- **Identity key.** `compute_identity_key()` derives the key that decides whether two records
+  describe the same asset. Strategies: `serial`, `order_code_slot` (`model` + `extra["slot"]`),
+  `endpoint`, `configured_id`, and `auto` (serial -> order-code+slot -> endpoint -> configured id).
+  The discovery pipeline merges Components by `Component.id`, which is the `configured_id`
+  strategy; the other strategies let sources that assign ids (CSV/manifest import, protocol
+  probes) correlate records that arrive under different ids before they reach the pipeline.
+
+The pipeline calls `merge_identity` inside the `IDENTITY` field group for Components, seeding
+provenance with the base (highest-priority) layer. Configure via
+`MergePipeline::set_identity_merge_config()`.
+
 ## Demo Nodes
 
 The package includes demo automotive nodes for testing:

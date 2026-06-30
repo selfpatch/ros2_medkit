@@ -284,6 +284,73 @@ TEST_F(MergePipelineTest, EnrichmentFillsEmptyFields) {
   EXPECT_FALSE(result.components[0].topics.publishes.empty());
 }
 
+TEST_F(MergePipelineTest, AssetIdentityMergedFromMultipleSourcesWithProvenance) {
+  // Same Component id from two sources. The manifest carries manufacturer + role;
+  // a protocol read ("opcua") carries serial + firmware and a better manufacturer.
+  // Identity precedence (opcua > manifest) is independent of structural policy.
+  Component manifest_comp = make_component("plc_1", "line", "/line");
+  manifest_comp.source = "manifest";
+  manifest_comp.identity.manufacturer = "Siemens";
+  manifest_comp.identity.role = "plc";
+
+  Component opcua_comp = make_component("plc_1", "line", "/line");
+  opcua_comp.source = "plugin";
+  opcua_comp.identity.manufacturer = "Siemens AG";
+  opcua_comp.identity.serial_number = "SN-42";
+  opcua_comp.identity.firmware_version = "2.9.4";
+  opcua_comp.identity.extra["slot"] = "3";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  LayerOutput opcua_out;
+  opcua_out.components.push_back(opcua_comp);
+
+  // manifest added first (highest structural priority -> base).
+  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_out));
+  pipeline_.add_layer(std::make_unique<TestLayer>("opcua", opcua_out));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  const auto & id = result.components[0].identity;
+
+  EXPECT_EQ(id.manufacturer, "Siemens AG");  // opcua outranks manifest
+  EXPECT_EQ(id.role, "plc");                 // only manifest had it
+  EXPECT_EQ(id.serial_number, "SN-42");
+  EXPECT_EQ(id.firmware_version, "2.9.4");
+  EXPECT_EQ(id.extra.at("slot"), "3");
+
+  EXPECT_EQ(id.provenance.at("manufacturer"), "opcua");
+  EXPECT_EQ(id.provenance.at("role"), "manifest");
+  EXPECT_EQ(id.provenance.at("serial_number"), "opcua");
+  EXPECT_EQ(id.provenance.at("firmware_version"), "opcua");
+  EXPECT_EQ(id.provenance.at("extra.slot"), "opcua");
+}
+
+TEST_F(MergePipelineTest, AssetIdentityPrecedenceConfigurable) {
+  // Flip precedence so the manifest wins identity over the protocol read.
+  IdentityMergeConfig cfg;
+  cfg.source_precedence = {"manifest", "opcua"};
+  pipeline_.set_identity_merge_config(cfg);
+
+  Component manifest_comp = make_component("plc_1", "line", "/line");
+  manifest_comp.identity.manufacturer = "Manifest Vendor";
+  Component opcua_comp = make_component("plc_1", "line", "/line");
+  opcua_comp.identity.manufacturer = "Opcua Vendor";
+
+  LayerOutput manifest_out;
+  manifest_out.components.push_back(manifest_comp);
+  LayerOutput opcua_out;
+  opcua_out.components.push_back(opcua_comp);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>("manifest", manifest_out));
+  pipeline_.add_layer(std::make_unique<TestLayer>("opcua", opcua_out));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_EQ(result.components[0].identity.manufacturer, "Manifest Vendor");
+  EXPECT_EQ(result.components[0].identity.provenance.at("manufacturer"), "manifest");
+}
+
 TEST_F(MergePipelineTest, AuthoritativeVsAuthoritativeHigherPriorityWins) {
   // Both layers claim AUTHORITATIVE for IDENTITY
   // Higher priority (first added) wins, conflict logged
