@@ -49,6 +49,44 @@ inline bool plugin_debug_enabled() {
   return rcutils_logging_logger_is_enabled_for("opcua.plugin", RCUTILS_LOG_SEVERITY_DEBUG);
 }
 
+// Security-config parse wrappers. An unrecognized value must NOT silently fall
+// back to the insecure default (SecurityPolicy::None / SecurityMode::None /
+// anonymous auth): a typo would quietly downgrade a hardened link. Fail loud and
+// refuse - the thrown exception disables the plugin in PluginManager::configure_plugins.
+SecurityPolicy require_security_policy(const std::string & value) {
+  bool ok = true;
+  const auto parsed = OpcuaClient::parse_security_policy(value, &ok);
+  if (!ok) {
+    RCLCPP_ERROR(opcua_plugin_logger(),
+                 "Unrecognized OPC-UA security_policy '%s'; refusing to start with an insecure fallback",
+                 value.c_str());
+    throw std::invalid_argument("opcua: unrecognized security_policy '" + value + "'");
+  }
+  return parsed;
+}
+
+SecurityMode require_security_mode(const std::string & value) {
+  bool ok = true;
+  const auto parsed = OpcuaClient::parse_security_mode(value, &ok);
+  if (!ok) {
+    RCLCPP_ERROR(opcua_plugin_logger(),
+                 "Unrecognized OPC-UA security_mode '%s'; refusing to start with an insecure fallback", value.c_str());
+    throw std::invalid_argument("opcua: unrecognized security_mode '" + value + "'");
+  }
+  return parsed;
+}
+
+UserAuthMode require_user_auth_mode(const std::string & value) {
+  bool ok = true;
+  const auto parsed = OpcuaClient::parse_user_auth_mode(value, &ok);
+  if (!ok) {
+    RCLCPP_ERROR(opcua_plugin_logger(),
+                 "Unrecognized OPC-UA user_auth_mode '%s'; refusing to start with an insecure fallback", value.c_str());
+    throw std::invalid_argument("opcua: unrecognized user_auth_mode '" + value + "'");
+  }
+  return parsed;
+}
+
 /// Parse a JSON "value" field, coerce to the node's declared data_type, and
 /// validate against the optional min/max range. Shared by handle_plc_operations,
 /// DataProvider::write_data, and OperationProvider::execute_operation to keep
@@ -120,12 +158,12 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   // OPC-UA SecureChannel security + user identity. All opt-in; defaults keep
   // the legacy anonymous + SecurityPolicy=None behaviour.
   if (config.contains("security_policy")) {
-    client_config_.security_policy = OpcuaClient::parse_security_policy(config["security_policy"].get<std::string>());
+    client_config_.security_policy = require_security_policy(config["security_policy"].get<std::string>());
   }
   if (config.contains("security_mode") || config.contains("message_security_mode")) {
     const std::string mode_str = config.contains("security_mode") ? config["security_mode"].get<std::string>()
                                                                   : config["message_security_mode"].get<std::string>();
-    client_config_.security_mode = OpcuaClient::parse_security_mode(mode_str);
+    client_config_.security_mode = require_security_mode(mode_str);
   }
   if (config.contains("client_cert_path")) {
     client_config_.client_cert_path = config["client_cert_path"].get<std::string>();
@@ -148,7 +186,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     client_config_.reject_untrusted = config["reject_untrusted"].get<bool>();
   }
   if (config.contains("user_auth_mode")) {
-    client_config_.user_auth_mode = OpcuaClient::parse_user_auth_mode(config["user_auth_mode"].get<std::string>());
+    client_config_.user_auth_mode = require_user_auth_mode(config["user_auth_mode"].get<std::string>());
   }
   if (config.contains("username")) {
     client_config_.username = config["username"].get<std::string>();
@@ -191,10 +229,10 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   }
   // Security env overrides (for Docker / appliance deployments).
   if (auto * env = std::getenv("OPCUA_SECURITY_POLICY")) {
-    client_config_.security_policy = OpcuaClient::parse_security_policy(env);
+    client_config_.security_policy = require_security_policy(env);
   }
   if (auto * env = std::getenv("OPCUA_SECURITY_MODE")) {
-    client_config_.security_mode = OpcuaClient::parse_security_mode(env);
+    client_config_.security_mode = require_security_mode(env);
   }
   if (auto * env = std::getenv("OPCUA_CLIENT_CERT")) {
     client_config_.client_cert_path = env;
@@ -230,7 +268,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     client_config_.reject_untrusted = !(v == "0" || v == "false" || v == "no");
   }
   if (auto * env = std::getenv("OPCUA_USER_AUTH")) {
-    client_config_.user_auth_mode = OpcuaClient::parse_user_auth_mode(env);
+    client_config_.user_auth_mode = require_user_auth_mode(env);
   }
   if (auto * env = std::getenv("OPCUA_USERNAME")) {
     client_config_.username = env;

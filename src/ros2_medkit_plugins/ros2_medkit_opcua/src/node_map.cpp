@@ -186,6 +186,15 @@ bool NodeMap::load(const std::string & yaml_path) {
     node_id_index_.clear();
 
     auto nodes = root["nodes"];
+    // A ``nodes:`` key that is present but neither null nor a sequence (e.g. a
+    // scalar or a map) is a config error, not an absent section. Fail loudly
+    // instead of silently dropping every node mapping. An explicitly empty
+    // ``nodes:`` (null) stays valid and is handled by the emptiness check below.
+    if (nodes && !nodes.IsNull() && !nodes.IsSequence()) {
+      RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                   "'nodes:' must be a sequence of node entries - refusing to load");
+      return false;
+    }
     const bool has_nodes = nodes && nodes.IsSequence();
 
     if (has_nodes && nodes.size() > 10000) {

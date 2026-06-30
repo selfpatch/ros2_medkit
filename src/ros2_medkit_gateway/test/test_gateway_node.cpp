@@ -929,7 +929,7 @@ TEST_F(TestGatewayNode, auth_enabled_with_empty_secret_fails_closed) {
       rclcpp::Parameter("auth.jwt_secret", std::string("")),
       rclcpp::Parameter("auth.jwt_algorithm", std::string("HS256")),
   });
-  EXPECT_THROW({ auto n = std::make_shared<ros2_medkit_gateway::GatewayNode>(options); }, std::exception);
+  EXPECT_THROW(std::make_shared<ros2_medkit_gateway::GatewayNode>(options), std::exception);
 }
 
 TEST_F(TestGatewayNode, tls_enabled_with_missing_cert_fails_closed) {
@@ -946,7 +946,7 @@ TEST_F(TestGatewayNode, tls_enabled_with_missing_cert_fails_closed) {
       rclcpp::Parameter("server.tls.cert_file", std::string("")),
       rclcpp::Parameter("server.tls.key_file", std::string("")),
   });
-  EXPECT_THROW({ auto n = std::make_shared<ros2_medkit_gateway::GatewayNode>(options); }, std::exception);
+  EXPECT_THROW(std::make_shared<ros2_medkit_gateway::GatewayNode>(options), std::exception);
 }
 
 // =============================================================================
