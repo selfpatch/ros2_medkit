@@ -670,16 +670,34 @@ bool SqliteFaultStorage::contains(const std::string & fault_code) const {
   return stmt.step() == SQLITE_ROW;
 }
 
-size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  std::vector<std::string> confirmed;
   if (config_.auto_confirm_after_sec <= 0.0) {
-    return 0;  // Time-based confirmation disabled
+    return confirmed;  // Time-based confirmation disabled
   }
 
   int64_t current_ns = current_time.nanoseconds();
   int64_t threshold_ns = static_cast<int64_t>(config_.auto_confirm_after_sec * 1e9);
   int64_t cutoff_ns = current_ns - threshold_ns;
+
+  // Collect the codes that will flip first so the caller can audit each one. The
+  // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
+  // so the returned list matches the rows actually confirmed below.
+  {
+    SqliteStatement select_stmt(
+        db_, "SELECT fault_code FROM faults WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+    select_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+    select_stmt.bind_int64(2, cutoff_ns);
+    while (select_stmt.step() == SQLITE_ROW) {
+      confirmed.push_back(select_stmt.column_text(0));
+    }
+  }
+
+  if (confirmed.empty()) {
+    return confirmed;
+  }
 
   SqliteStatement update_stmt(
       db_, "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
@@ -691,7 +709,7 @@ size_t SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & cu
     throw std::runtime_error(std::string("Failed to confirm faults: ") + sqlite3_errmsg(db_));
   }
 
-  return static_cast<size_t>(sqlite3_changes(db_));
+  return confirmed;
 }
 
 void SqliteFaultStorage::set_max_snapshots_per_fault(size_t max_count) {

@@ -327,10 +327,20 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Create auto-confirmation timer if enabled
   if (auto_confirm_after_sec_ > 0.0) {
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
-      size_t confirmed = storage_->check_time_based_confirmation(get_wall_clock_time());
-      if (confirmed > 0) {
-        RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed);
+      const auto confirmed = storage_->check_time_based_confirmation(get_wall_clock_time());
+      if (confirmed.empty()) {
+        return;
       }
+      // Audit every timer-driven PREFAILED->CONFIRMED transition. Without this the
+      // confirmations are invisible to the audit log's verify().
+      const int64_t confirmed_at_ns = get_wall_clock_time().nanoseconds();
+      for (const auto & fault_code : confirmed) {
+        auto fault = storage_->get_fault(fault_code);
+        if (fault) {
+          audit_transition(kTransitionConfirmed, *fault, "auto_confirm_timer", confirmed_at_ns);
+        }
+      }
+      RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed.size());
     });
     RCLCPP_INFO(get_logger(),
                 "FaultManager node started (storage=%s, confirmation_threshold=%d, "

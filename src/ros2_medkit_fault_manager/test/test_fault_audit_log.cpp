@@ -42,8 +42,8 @@ AuditEvent make_event(const std::string & code, const char * transition, int64_t
   return e;
 }
 
-/// Run a single SQL statement directly against the audit DB file (used to
-/// simulate tampering an immutable row).
+/// Run SQL directly against the audit DB file (used to simulate tampering an
+/// immutable row). Asserts success.
 void raw_exec(const std::string & db_path, const std::string & sql) {
   sqlite3 * db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
@@ -54,6 +54,22 @@ void raw_exec(const std::string & db_path, const std::string & sql) {
   sqlite3_close(db);
   ASSERT_EQ(rc, SQLITE_OK) << err_str;
 }
+
+/// Run SQL directly and return the raw result code (does not assert), so a test
+/// can confirm the append-only triggers reject a write.
+int raw_exec_rc(const std::string & db_path, const std::string & sql) {
+  sqlite3 * db = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
+  int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+  sqlite3_close(db);
+  return rc;
+}
+
+/// Drop the DB-level append-only triggers so a raw tamper write can land. This
+/// mimics an attacker who bypassed the (defense-in-depth, not security boundary)
+/// triggers; verify() must still detect the recompute-free edit afterwards.
+const char * const kDropTriggers =
+    "DROP TRIGGER IF EXISTS audit_log_no_update; DROP TRIGGER IF EXISTS audit_log_no_delete; ";
 
 }  // namespace
 
@@ -130,7 +146,7 @@ TEST_F(FaultAuditLogTest, EditingPastRowFailsVerify) {
   }
 
   // Tamper: change a stored field without recomputing the hash.
-  raw_exec(path_, "UPDATE audit_log SET description = 'forged' WHERE seq = 2");
+  raw_exec(path_, std::string(kDropTriggers) + "UPDATE audit_log SET description = 'forged' WHERE seq = 2");
 
   FaultAuditLog reopened(path_);
   auto result = reopened.verify();
@@ -147,7 +163,7 @@ TEST_F(FaultAuditLogTest, DeletingMiddleRowFailsVerify) {
     log.append(make_event("F3", kTransitionOccurred, 300));
   }
 
-  raw_exec(path_, "DELETE FROM audit_log WHERE seq = 2");
+  raw_exec(path_, std::string(kDropTriggers) + "DELETE FROM audit_log WHERE seq = 2");
 
   FaultAuditLog reopened(path_);
   EXPECT_FALSE(reopened.verify().ok);
@@ -163,10 +179,32 @@ TEST_F(FaultAuditLogTest, DeletingNewestRowFailsVerify) {
   }
 
   // Drop the last row but leave the head pointing at seq 3.
-  raw_exec(path_, "DELETE FROM audit_log WHERE seq = 3");
+  raw_exec(path_, std::string(kDropTriggers) + "DELETE FROM audit_log WHERE seq = 3");
 
   FaultAuditLog reopened(path_);
   EXPECT_FALSE(reopened.verify().ok);
+}
+
+// Truncation bypass: deleting the newest row AND the head row must still FAIL.
+// The head row is read directly from the DB, so a missing head on a non-empty
+// log is treated as tampering rather than silently rebuilt from MAX(seq).
+TEST_F(FaultAuditLogTest, DeletingNewestRowAndHeadFailsVerify) {
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionOccurred, 200));
+    log.append(make_event("F3", kTransitionOccurred, 300));
+    ASSERT_TRUE(log.verify().ok);
+  }
+
+  // Drop the newest row and the persisted head row together.
+  raw_exec(path_, std::string(kDropTriggers) +
+                      "DELETE FROM audit_log WHERE seq = 3; DELETE FROM audit_chain_head WHERE id = 1;");
+
+  FaultAuditLog reopened(path_);
+  auto result = reopened.verify();
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.bad_seq, 2);  // last surviving row
 }
 
 // The chain head persists across a reopen and the chain resumes from it.
@@ -221,7 +259,7 @@ TEST_F(FaultAuditLogTest, RotationThenTamperFails) {
       log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
     }
   }
-  raw_exec(path_, "UPDATE audit_log SET source_id = 'forged' WHERE seq = 10");
+  raw_exec(path_, std::string(kDropTriggers) + "UPDATE audit_log SET source_id = 'forged' WHERE seq = 10");
 
   FaultAuditLog reopened(path_, 5);
   auto result = reopened.verify();
@@ -261,6 +299,35 @@ TEST_F(FaultAuditLogTest, ReadAfterSeq) {
   ASSERT_EQ(tail.size(), 2u);
   EXPECT_EQ(tail[0].seq, 4);
   EXPECT_EQ(tail[1].seq, 5);
+}
+
+// Defense-in-depth: the append-only triggers reject an out-of-band UPDATE or
+// DELETE on audit_log while the in-process rotation prune still works.
+TEST_F(FaultAuditLogTest, AppendOnlyTriggersRejectOutOfBandWrites) {
+  {
+    FaultAuditLog log(path_);
+    log.append(make_event("F1", kTransitionOccurred, 100));
+    log.append(make_event("F2", kTransitionOccurred, 200));
+  }
+
+  // Both a raw UPDATE and a raw DELETE are aborted by the triggers.
+  EXPECT_NE(raw_exec_rc(path_, "UPDATE audit_log SET description = 'forged' WHERE seq = 1"), SQLITE_OK);
+  EXPECT_NE(raw_exec_rc(path_, "DELETE FROM audit_log WHERE seq = 1"), SQLITE_OK);
+
+  // Rows are intact and the chain still verifies.
+  FaultAuditLog reopened(path_);
+  EXPECT_EQ(reopened.record_count(), 2);
+  EXPECT_TRUE(reopened.verify().ok);
+}
+
+// The guarded rotation prune is exempt from the append-only delete trigger.
+TEST_F(FaultAuditLogTest, RotationPrunePassesAppendOnlyTrigger) {
+  FaultAuditLog log(path_, /*retention_max_records=*/3);
+  for (int i = 1; i <= 8; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+  EXPECT_EQ(log.record_count(), 3);
+  EXPECT_TRUE(log.verify().ok);
 }
 
 int main(int argc, char ** argv) {

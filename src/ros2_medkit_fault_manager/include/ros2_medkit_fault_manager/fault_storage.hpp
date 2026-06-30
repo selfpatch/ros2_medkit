@@ -171,8 +171,8 @@ class FaultStorage {
 
   /// Check and confirm PREFAILED faults that have been pending too long (time-based confirmation)
   /// @param current_time Current timestamp for age calculation
-  /// @return Number of faults that were confirmed
-  virtual size_t check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
+  /// @return Fault codes that were confirmed by this call (so the caller can audit each).
+  virtual std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
   /// Set maximum snapshots per fault code (0 = unlimited)
   virtual void set_max_snapshots_per_fault(size_t /*max_count*/) {
@@ -259,7 +259,7 @@ class InMemoryFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
-  size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
+  std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
 

@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,8 +28,8 @@ namespace ros2_medkit_fault_manager {
 ///
 /// `transition` is one of the kTransition* constants below. The remaining
 /// fields describe the fault at the moment of the transition; all of them feed
-/// the canonical serialization that the hash chain is computed over, so any
-/// later edit to a stored row is detectable.
+/// the canonical serialization that the hash chain is computed over, so an edit
+/// to a stored row that does not also recompute the chain breaks verify().
 struct AuditEvent {
   std::string fault_code;
   std::string transition;     ///< occurred | confirmed | cleared | ack
@@ -78,6 +79,15 @@ struct AuditVerifyResult {
 ///
 /// The table is treated as append-only: this class only ever INSERTs rows (and,
 /// on rotation, deletes a sealed prefix). It never UPDATEs an existing record.
+/// BEFORE UPDATE / BEFORE DELETE triggers reject out-of-band edits (the guarded
+/// rotation prune excepted) as defense-in-depth.
+///
+/// Threat model: the hash chain is UNKEYED and the head/anchors live in the same
+/// writable file. verify() catches edits or deletions that did not also recompute
+/// the chain (casual or accidental tampering), but anyone with write access to the
+/// file can recompute the whole chain (and drop the triggers) and forge a
+/// consistent history. True tamper-proofing needs a key/signature over the head or
+/// external anchoring; that is out of scope here.
 class FaultAuditLog {
  public:
   /// Open (or create) the audit log database.
@@ -129,6 +139,10 @@ class FaultAuditLog {
 
  private:
   void initialize_schema();
+  /// Read the persisted chain head row (audit_chain_head id=1) straight from the
+  /// DB. Returns nullopt when the row is absent. verify() relies on this so a
+  /// deleted head row is treated as tampering rather than silently recovered.
+  std::optional<ChainHead> read_head_row_locked() const;
   ChainHead load_head_locked() const;
   void store_head_locked(const ChainHead & head_record);
   /// Seal + prune the oldest segment if the retained count exceeds the limit.

@@ -59,7 +59,7 @@ class SqliteFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
-  size_t check_time_based_confirmation(const rclcpp::Time & current_time) override;
+  std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
 

@@ -725,13 +725,14 @@ TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
 
   // Check before timeout - should not confirm
   auto before_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(5e9));
-  size_t confirmed_early = storage_->check_time_based_confirmation(before_timeout);
-  EXPECT_EQ(confirmed_early, 0u);
+  auto confirmed_early = storage_->check_time_based_confirmation(before_timeout);
+  EXPECT_TRUE(confirmed_early.empty());
 
   // Check after timeout - should confirm
   auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
-  size_t confirmed = storage_->check_time_based_confirmation(after_timeout);
-  EXPECT_EQ(confirmed, 1u);
+  auto confirmed = storage_->check_time_based_confirmation(after_timeout);
+  ASSERT_EQ(confirmed.size(), 1u);
+  EXPECT_EQ(confirmed[0], "FAULT_1");
 
   auto fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());

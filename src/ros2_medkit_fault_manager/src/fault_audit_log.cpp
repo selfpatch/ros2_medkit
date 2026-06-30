@@ -19,6 +19,7 @@
 #include <array>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -215,32 +216,54 @@ void FaultAuditLog::initialize_schema() {
     );
   )",
                 "create audit_anchors table");
+
+  // Append-only enforcement at the DB layer (defense-in-depth, NOT a security
+  // boundary: anyone able to write the file can also DROP these triggers). The
+  // single-row guard lets the in-process rotation prune delete a sealed prefix
+  // while every other UPDATE/DELETE on audit_log is rejected.
+  exec_or_throw(db_,
+                R"(
+    CREATE TABLE IF NOT EXISTS audit_prune_guard (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO audit_prune_guard (id, enabled) VALUES (1, 0)
+      ON CONFLICT(id) DO NOTHING;
+    CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+    BEFORE UPDATE ON audit_log
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_log is append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+    BEFORE DELETE ON audit_log
+    WHEN (SELECT enabled FROM audit_prune_guard WHERE id = 1) IS NOT 1
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_log is append-only');
+    END;
+  )",
+                "create append-only triggers");
+}
+
+std::optional<ChainHead> FaultAuditLog::read_head_row_locked() const {
+  Stmt stmt(db_, "SELECT seq, record_hash FROM audit_chain_head WHERE id = 1");
+  if (stmt.step() == SQLITE_ROW) {
+    ChainHead head_record;
+    head_record.seq = stmt.column_int64(0);
+    head_record.record_hash = stmt.column_text(1);
+    return head_record;
+  }
+  return std::nullopt;
 }
 
 ChainHead FaultAuditLog::load_head_locked() const {
-  // Prefer the persisted head row.
-  {
-    Stmt stmt(db_, "SELECT seq, record_hash FROM audit_chain_head WHERE id = 1");
-    if (stmt.step() == SQLITE_ROW) {
-      ChainHead head_record;
-      head_record.seq = stmt.column_int64(0);
-      head_record.record_hash = stmt.column_text(1);
-      return head_record;
-    }
+  // Resume strictly from the persisted head row. There is deliberately no
+  // MAX(seq) fallback: append+head-update are written in one transaction, so a
+  // missing head row while rows exist means tampering, not a recoverable crash.
+  // verify() reports that case as a failure rather than silently fabricating a
+  // head from the surviving rows.
+  if (auto head_record = read_head_row_locked()) {
+    return *head_record;
   }
-
-  // No head row. Recover from the last retained record if any exist (defensive:
-  // a crash between INSERT and head update would land here on reopen).
-  {
-    Stmt stmt(db_, "SELECT seq, record_hash FROM audit_log ORDER BY seq DESC LIMIT 1");
-    if (stmt.step() == SQLITE_ROW) {
-      ChainHead head_record;
-      head_record.seq = stmt.column_int64(0);
-      head_record.record_hash = stmt.column_text(1);
-      return head_record;
-    }
-  }
-
   return ChainHead{0, genesis_hash()};
 }
 
@@ -346,11 +369,18 @@ void FaultAuditLog::rotate_if_needed_locked() {
       throw std::runtime_error(std::string("audit: failed to write anchor: ") + sqlite3_errmsg(db_));
     }
 
+    // Open the prune guard so the BEFORE DELETE trigger allows this sealed-prefix
+    // delete. Both the guard flip and the delete are in this transaction, so a
+    // ROLLBACK restores the guard to its closed state.
+    exec_or_throw(db_, "UPDATE audit_prune_guard SET enabled = 1 WHERE id = 1", "open prune guard");
+
     Stmt del(db_, "DELETE FROM audit_log WHERE seq <= ?");
     del.bind_int64(1, boundary_seq);
     if (del.step() != SQLITE_DONE) {
       throw std::runtime_error(std::string("audit: failed to prune records: ") + sqlite3_errmsg(db_));
     }
+
+    exec_or_throw(db_, "UPDATE audit_prune_guard SET enabled = 0 WHERE id = 1", "close prune guard");
     exec_or_throw(db_, "COMMIT", "commit rotate");
   } catch (...) {
     exec_or_throw(db_, "ROLLBACK", "rollback rotate");
@@ -492,27 +522,37 @@ AuditVerifyResult FaultAuditLog::verify() const {
     expected_seq = rec.seq + 1;
   }
 
-  // The persisted head must match the last retained record (catches deletion of
-  // the newest row, which the row walk alone cannot see).
+  // Read the persisted head row DIRECTLY from the DB (not the cached head_). A
+  // missing head row cannot be silently recovered from MAX(seq), so deleting the
+  // newest record together with the head row is reported as tampering instead of
+  // verifying clean.
+  const std::optional<ChainHead> persisted = read_head_row_locked();
+
   if (result.checked > 0) {
-    if (head_.seq != expected_seq - 1 || head_.record_hash != expected_prev) {
+    // A non-empty log must carry its head row, and it must match the last record.
+    if (!persisted) {
       result.ok = false;
-      result.bad_seq = head_.seq;
+      result.bad_seq = expected_seq - 1;
+      result.error = "audit_chain_head row missing while audit_log is non-empty (head deleted / truncated)";
+      return result;
+    }
+    if (persisted->seq != expected_seq - 1 || persisted->record_hash != expected_prev) {
+      result.ok = false;
+      result.bad_seq = persisted->seq;
       result.error = "persisted head does not match the last retained record";
       return result;
     }
-  } else {
-    // Empty retained log: head must be either genesis (never written) or point
-    // at a sealed anchor (everything pruned).
-    if (head_.seq != 0) {
-      Stmt anchor(db_, "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
-      anchor.bind_int64(1, head_.seq);
-      if (anchor.step() != SQLITE_ROW || anchor.column_text(0) != head_.record_hash) {
-        result.ok = false;
-        result.bad_seq = head_.seq;
-        result.error = "head references a record that is neither retained nor sealed";
-        return result;
-      }
+  } else if (persisted && persisted->seq != 0) {
+    // Empty retained log with a head past genesis: everything was pruned, so the
+    // head must point at a sealed anchor. (No head row, or a genesis head, on an
+    // empty log is the never-written case and is fine.)
+    Stmt anchor(db_, "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
+    anchor.bind_int64(1, persisted->seq);
+    if (anchor.step() != SQLITE_ROW || anchor.column_text(0) != persisted->record_hash) {
+      result.ok = false;
+      result.bad_seq = persisted->seq;
+      result.error = "head references a record that is neither retained nor sealed";
+      return result;
     }
   }
 

@@ -62,6 +62,16 @@ class FaultManagerNode : public rclcpp::Node {
     return *storage_;
   }
 
+  /// Get mutable access to fault storage (for testing only).
+  FaultStorage & get_storage_for_test() {
+    return *storage_;
+  }
+
+  /// Get the tamper-evident audit log (nullptr when disabled), for testing only.
+  const FaultAuditLog * get_audit_log_for_test() const {
+    return audit_log_.get();
+  }
+
   /// Get the storage type being used
   const std::string & get_storage_type() const {
     return storage_type_;

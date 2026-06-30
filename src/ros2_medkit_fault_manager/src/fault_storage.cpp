@@ -305,14 +305,14 @@ bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
   return faults_.find(fault_code) != faults_.end();
 }
 
-size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<std::string> InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  std::vector<std::string> confirmed;
   if (config_.auto_confirm_after_sec <= 0.0) {
-    return 0;  // Time-based confirmation disabled
+    return confirmed;  // Time-based confirmation disabled
   }
 
-  size_t confirmed_count = 0;
   const double threshold_ns = config_.auto_confirm_after_sec * 1e9;
 
   for (auto & [code, state] : faults_) {
@@ -320,12 +320,12 @@ size_t InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & 
       const int64_t age_ns = (current_time - state.last_failed_time).nanoseconds();
       if (static_cast<double>(age_ns) >= threshold_ns) {
         state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-        ++confirmed_count;
+        confirmed.push_back(code);
       }
     }
   }
 
-  return confirmed_count;
+  return confirmed;
 }
 
 void InMemoryFaultStorage::set_max_snapshots_per_fault(size_t max_count) {
