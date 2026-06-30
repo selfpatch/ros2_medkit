@@ -396,8 +396,9 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       }
 
       // Decrement debounce counter, clamped at the confirmation threshold (lower
-      // bound). Without this floor it only stops at INT32_MIN, so after a long heal
-      // heartbeat the counter has to climb all the way back before a fault confirms.
+      // bound). Without this floor a long burst of FAILED events drives it to
+      // INT32_MIN, and a later heal then has to climb all the way back before the
+      // fault can clear.
       if (debounce_counter > config.confirmation_threshold) {
         --debounce_counter;
       }

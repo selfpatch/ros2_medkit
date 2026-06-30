@@ -578,7 +578,8 @@ TEST_F(SqliteFaultStorageTest, ConfirmedFaultSurvivesHealHeartbeat) {
   rclcpp::Clock clock;
   DebounceConfig config;
   config.confirmation_threshold = -1;
-  config.healing_enabled = false;  // healing_threshold (default 3) still bounds the counter
+  config.healing_enabled = false;
+  config.healing_threshold = 3;  // upper clamp on the counter, even with healing disabled
 
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);

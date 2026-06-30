@@ -30,7 +30,9 @@ namespace ros2_medkit_fault_manager {
 
 /// Debounce configuration for fault filtering
 struct DebounceConfig {
-  /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value.
+  /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value,
+  /// and the debounce counter is clamped to this lower bound so a long burst of FAILED events
+  /// cannot drive it past confirmation.
   /// Default: -1 (immediate confirmation - first FAILED event confirms the fault).
   /// Set to lower values (e.g., -3) for debounce filtering.
   int32_t confirmation_threshold{-1};
@@ -38,8 +40,11 @@ struct DebounceConfig {
   /// Whether healing is enabled. When true, faults can transition to HEALED status.
   bool healing_enabled{false};
 
-  /// Healing threshold (positive). Fault is HEALED when counter >= this value.
-  /// Default: 3 (3 more PASSED than FAILED events to heal). Only used if healing_enabled.
+  /// Healing threshold (positive). When healing is enabled, the fault is HEALED once the counter
+  /// reaches this value. The counter is always clamped to this upper bound, even when healing is
+  /// disabled, so a heal heartbeat cannot drive it off to INT32_MAX; healing_enabled only controls
+  /// whether reaching the bound produces a HEALED status.
+  /// Default: 3 (3 more PASSED than FAILED events to heal).
   int32_t healing_threshold{3};
 
   /// Whether CRITICAL severity bypasses debounce and confirms immediately.

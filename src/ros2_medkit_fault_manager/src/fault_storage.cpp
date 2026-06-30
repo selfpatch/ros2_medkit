@@ -148,8 +148,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       ++state.occurrence_count;
     }
 
-    // Decrement debounce counter (towards confirmation), clamped at the
-    // confirmation threshold so a heal heartbeat can't drive it off to INT32_MIN.
+    // Decrement debounce counter (towards confirmation), clamped at the confirmation
+    // threshold so a long burst of FAILED events can't drive it to INT32_MIN (which
+    // would then delay later healing).
     if (state.debounce_counter > config.confirmation_threshold) {
       --state.debounce_counter;
     }

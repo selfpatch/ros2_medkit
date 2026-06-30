@@ -455,6 +455,7 @@ TEST_F(FaultStorageTest, PassedEventIncrementsCounter) {
   // latched and would not move to PREPASSED on a heal).
   DebounceConfig config;
   config.confirmation_threshold = -3;
+  config.healing_threshold = 3;  // explicit upper clamp (don't depend on the default)
 
   // Report 2 FAILED events (counter = -2, PREFAILED)
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
