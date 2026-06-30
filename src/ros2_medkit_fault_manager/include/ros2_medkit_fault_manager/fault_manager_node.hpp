@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -70,6 +72,26 @@ class FaultManagerNode : public rclcpp::Node {
   /// Get the tamper-evident audit log (nullptr when disabled), for testing only.
   const FaultAuditLog * get_audit_log_for_test() const {
     return audit_log_.get();
+  }
+
+  /// Health signal: number of audit transitions that failed to append (and were
+  /// therefore lost from the chain). 0 when the audit is healthy or disabled.
+  uint64_t audit_dropped_writes() const {
+    return audit_dropped_writes_.load(std::memory_order_relaxed);
+  }
+
+  /// Health signal: false once any audit append has failed. A compliance-strict
+  /// deployment should treat a false here (or a non-zero audit_dropped_writes())
+  /// as the audit chain being incomplete.
+  bool audit_healthy() const {
+    return audit_healthy_.load(std::memory_order_relaxed);
+  }
+
+  /// Test-only: drive one audit append through the same failure-handling path the
+  /// service handlers use. Throws when audit_log.fail_closed is set and the append
+  /// fails; otherwise observe audit_dropped_writes()/audit_healthy().
+  void audit_transition_for_test(const char * transition, const ros2_medkit_msgs::msg::Fault & fault) {
+    audit_transition(transition, fault, "test", 0);
   }
 
   /// Get the storage type being used
@@ -187,7 +209,10 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Tamper-evident audit log of fault transitions (nullptr when disabled).
   std::unique_ptr<FaultAuditLog> audit_log_;
-  bool audit_confirmed_only_{false};  ///< When true, only "confirmed" transitions are logged
+  bool audit_confirmed_only_{false};               ///< When true, only "confirmed" transitions are logged
+  bool audit_fail_closed_{false};                  ///< When true, an audit append failure aborts the operation
+  std::atomic<uint64_t> audit_dropped_writes_{0};  ///< Count of audit appends that failed (lost rows)
+  std::atomic<bool> audit_healthy_{true};          ///< Cleared on the first failed audit append
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;

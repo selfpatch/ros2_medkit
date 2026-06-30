@@ -32,7 +32,7 @@ namespace ros2_medkit_fault_manager {
 /// to a stored row that does not also recompute the chain breaks verify().
 struct AuditEvent {
   std::string fault_code;
-  std::string transition;     ///< occurred | confirmed | cleared | ack
+  std::string transition;     ///< one of the kTransition* constants below
   uint8_t severity{0};        ///< severity at the time of the transition
   std::string status;         ///< resulting fault status (e.g. CONFIRMED)
   std::string source_id;      ///< reporting source that drove the transition
@@ -44,7 +44,19 @@ struct AuditEvent {
 constexpr const char * kTransitionOccurred = "occurred";
 constexpr const char * kTransitionConfirmed = "confirmed";
 constexpr const char * kTransitionCleared = "cleared";
-constexpr const char * kTransitionAck = "ack";
+/// Auto-recovery: a fault reached the healing threshold via PASSED events. Kept
+/// distinct from kTransitionCleared so an automatic recovery is not mistaken for
+/// a manual clear in the timeline.
+constexpr const char * kTransitionHealed = "healed";
+/// Audit-log lifecycle markers (CIR (EU) 2024/2690 sec. 3.2: activation /
+/// deactivation of logging). Appended directly, independent of the per-fault
+/// transition filter, so the log records its own start and stop.
+constexpr const char * kTransitionLoggingActivated = "logging_activated";
+constexpr const char * kTransitionLoggingDeactivated = "logging_deactivated";
+// NOTE: there is deliberately no "ack" kind. The open fault_manager has no
+// acknowledge action separate from clearing: ~/clear_fault IS the acknowledge,
+// and it is recorded as kTransitionCleared (clear == ack). A separate "ack" kind
+// would never be written, so defining it would only mislead readers of the log.
 
 /// One immutable, hash-chained row read back from the audit log.
 struct AuditRecord {

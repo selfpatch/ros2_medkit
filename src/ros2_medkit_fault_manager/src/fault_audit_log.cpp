@@ -91,6 +91,15 @@ void exec_or_throw(sqlite3 * db, const char * sql, const char * what) {
   }
 }
 
+/// SQL function registered ONLY on this in-process connection. The prune-guard
+/// protection trigger calls it, so an out-of-band connection (which never
+/// registered it) cannot flip the guard: preparing the UPDATE fails on the
+/// unknown function. Connection-scoped, hence not a security boundary - a
+/// write-capable adversary can register the same function or drop the trigger.
+void audit_prune_authorized(sqlite3_context * ctx, int /*argc*/, sqlite3_value ** /*argv*/) {
+  sqlite3_result_int(ctx, 1);
+}
+
 }  // namespace
 
 FaultAuditLog::FaultAuditLog(const std::string & db_path, int64_t retention_max_records)
@@ -107,6 +116,15 @@ FaultAuditLog::FaultAuditLog(const std::string & db_path, int64_t retention_max_
 
   exec_or_throw(db_, "PRAGMA journal_mode=WAL;", "enable WAL");
   sqlite3_busy_timeout(db_, 5000);
+
+  // Authorize this connection for the prune-guard protection trigger (see below).
+  if (sqlite3_create_function_v2(db_, "audit_prune_authorized", 0, SQLITE_UTF8, nullptr, &audit_prune_authorized,
+                                 nullptr, nullptr, nullptr) != SQLITE_OK) {
+    std::string error = sqlite3_errmsg(db_);
+    sqlite3_close(db_);
+    db_ = nullptr;
+    throw std::runtime_error("audit: failed to register prune-authorization function: " + error);
+  }
 
   initialize_schema();
   head_ = load_head_locked();
@@ -242,6 +260,24 @@ void FaultAuditLog::initialize_schema() {
     END;
   )",
                 "create append-only triggers");
+
+  // Protect the prune guard itself. Without this, an external writer could simply
+  // `UPDATE audit_prune_guard SET enabled = 1` and then DELETE rows past the
+  // append-only delete trigger. The guard may only be flipped by a connection on
+  // which audit_prune_authorized() is registered (this in-process connection); an
+  // out-of-band UPDATE fails because that function is unknown to it. This is still
+  // defense-in-depth, not a security boundary: a write-capable adversary can
+  // register the same function or DROP this trigger. verify() remains the backstop.
+  exec_or_throw(db_,
+                R"(
+    CREATE TRIGGER IF NOT EXISTS audit_prune_guard_protect
+    BEFORE UPDATE ON audit_prune_guard
+    WHEN audit_prune_authorized() IS NOT 1
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_prune_guard is protected (in-process prune only)');
+    END;
+  )",
+                "create prune-guard protection trigger");
 }
 
 std::optional<ChainHead> FaultAuditLog::read_head_row_locked() const {
