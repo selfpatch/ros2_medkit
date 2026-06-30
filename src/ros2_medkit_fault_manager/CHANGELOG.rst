@@ -4,7 +4,7 @@ Changelog for package ros2_medkit_fault_manager
 
 Forthcoming
 -----------
-* Optional tamper-evident, append-only audit log of fault state transitions: each transition appends one immutable, hash-chained row (``record_hash = sha256(prev_hash + canonical(event))`` via OpenSSL EVP SHA-256) with a persisted chain head, a ``verify`` routine, a read API, and retention that seals a segment anchor before pruning. Off by default (`#483 <https://github.com/selfpatch/ros2_medkit/issues/483>`_)
+* Optional append-only, hash-chained audit log of fault state transitions: each transition appends one immutable row (``record_hash = sha256(prev_hash + canonical(event))`` via OpenSSL EVP SHA-256) with a persisted chain head, a ``verify`` routine, a read API, and retention that seals a segment anchor before pruning. Time-based (PREFAILED->CONFIRMED) auto-confirmations are also audited. ``verify`` reads the chain head directly from the database, so deleting the newest row together with the head row is reported as tampering instead of silently recovering. ``BEFORE UPDATE`` / ``BEFORE DELETE`` triggers reject out-of-band edits as defense-in-depth. The chain is unkeyed and stored in a single writable file, so ``verify`` detects edits/deletions that did not recompute the chain (casual or accidental tampering); it is not a defence against an attacker who can rewrite the whole file. Off by default (`#483 <https://github.com/selfpatch/ros2_medkit/issues/483>`_)
 
 0.6.0 (2026-06-22)
 ------------------

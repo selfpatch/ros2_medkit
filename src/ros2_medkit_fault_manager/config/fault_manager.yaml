@@ -28,10 +28,14 @@ fault_manager:
     # snapshots.capture_queue_depth: 16               # max pending captures (>= 1)
     # snapshots.capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
 
-    # Tamper-evident, append-only audit log of fault state transitions
+    # Append-only, hash-chained audit log of fault state transitions
     # (occurred/confirmed/cleared). OFF by default: it adds a write + storage cost
     # per transition. When enabled, each transition appends one immutable,
-    # hash-chained row so any later edit or deletion is detectable via verify.
+    # hash-chained row, so verify() detects edits or deletions that did NOT also
+    # recompute the chain (casual/accidental tampering). The chain is unkeyed and
+    # lives in a single writable file, so it is NOT proof against an attacker who
+    # can rewrite the whole file; true tamper-proofing needs a signed head or
+    # external anchoring (out of scope here). See README "Threat model".
     audit_log.enabled: false
     # Which transitions to record: "all" or "confirmed_only".
     # audit_log.transitions: all

@@ -532,9 +532,9 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationDisabledByDefault) {
 
   // Advance time and check - should not auto-confirm (auto_confirm_after_sec = 0)
   auto future_time = rclcpp::Time(clock.now().nanoseconds() + static_cast<int64_t>(20e9));
-  size_t confirmed = storage_.check_time_based_confirmation(future_time);
+  auto confirmed = storage_.check_time_based_confirmation(future_time);
 
-  EXPECT_EQ(confirmed, 0u);
+  EXPECT_TRUE(confirmed.empty());
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
@@ -554,13 +554,14 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationWhenEnabled) {
 
   // Check before timeout - should not confirm
   auto before_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(5e9));
-  size_t confirmed_early = storage_.check_time_based_confirmation(before_timeout);
-  EXPECT_EQ(confirmed_early, 0u);
+  auto confirmed_early = storage_.check_time_based_confirmation(before_timeout);
+  EXPECT_TRUE(confirmed_early.empty());
 
   // Check after timeout - should confirm
   auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
-  size_t confirmed = storage_.check_time_based_confirmation(after_timeout);
-  EXPECT_EQ(confirmed, 1u);
+  auto confirmed = storage_.check_time_based_confirmation(after_timeout);
+  ASSERT_EQ(confirmed.size(), 1u);
+  EXPECT_EQ(confirmed[0], "FAULT_1");
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
@@ -1632,6 +1633,56 @@ TEST(FaultAuditDisabledTest, NoAuditFileWhenDisabled) {
 
   // With the feature off, no audit database file is created.
   EXPECT_FALSE(std::filesystem::exists(audit_path));
+}
+
+// Timer-driven (PREFAILED->CONFIRMED) auto-confirmations must be audited, not
+// silently applied. Sets auto_confirm_after_sec and asserts a "confirmed" audit
+// row appears after the 1 Hz timer fires.
+TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      {"storage_type", "memory"},
+      {"confirmation_threshold", -3},  // keep the fault PREFAILED so only the timer confirms it
+      {"auto_confirm_after_sec", 0.2},
+      {"audit_log.enabled", true},  // in-memory audit DB (memory storage)
+  });
+  auto node = std::make_shared<FaultManagerNode>(options);
+
+  const auto * audit = node->get_audit_log_for_test();
+  ASSERT_NE(audit, nullptr);
+
+  // Land a fault in PREFAILED directly in storage; the node's auto-confirm timer
+  // must later flip it to CONFIRMED and append the audit row.
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.auto_confirm_after_sec = 0.2;
+  rclcpp::Clock clock(RCL_SYSTEM_TIME);
+  node->get_storage_for_test().report_fault_event("AUTO_CONF_1", ReportFault::Request::EVENT_FAILED,
+                                                  Fault::SEVERITY_ERROR, "stuck", "/robot/src", clock.now(), config);
+  ASSERT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_PREFAILED);
+
+  // Spin until a confirmed audit row appears or the budget expires (the wall
+  // timer fires once per second).
+  bool saw_confirmed = false;
+  auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+    rclcpp::spin_some(node);
+    for (const auto & rec : audit->read()) {
+      if (rec.event.fault_code == "AUTO_CONF_1" &&
+          rec.event.transition == ros2_medkit_fault_manager::kTransitionConfirmed) {
+        saw_confirmed = true;
+        break;
+      }
+    }
+    if (saw_confirmed) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  EXPECT_TRUE(saw_confirmed) << "timer-driven confirmation was not audited";
+  EXPECT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_TRUE(audit->verify().ok);
 }
 
 int main(int argc, char ** argv) {
