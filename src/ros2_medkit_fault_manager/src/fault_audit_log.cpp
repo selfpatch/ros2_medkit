@@ -93,7 +93,7 @@ void exec_or_throw(sqlite3 * db, const char * sql, const char * what) {
 }  // namespace
 
 FaultAuditLog::FaultAuditLog(const std::string & db_path, int64_t retention_max_records)
-    : db_path_(db_path), retention_max_records_(retention_max_records < 0 ? 0 : retention_max_records) {
+  : db_path_(db_path), retention_max_records_(retention_max_records < 0 ? 0 : retention_max_records) {
   int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
   if (sqlite3_open_v2(db_path.c_str(), &db_, flags, nullptr) != SQLITE_OK) {
     std::string error = db_ ? sqlite3_errmsg(db_) : "unknown error";

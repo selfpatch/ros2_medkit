@@ -116,8 +116,7 @@ TEST_F(FaultAuditLogTest, VerifyUntamperedChain) {
 
 // Known SHA-256 vector proves the EVP wiring (sha256("") == e3b0c442...).
 TEST_F(FaultAuditLogTest, Sha256KnownVector) {
-  EXPECT_EQ(FaultAuditLog::sha256_hex(""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  EXPECT_EQ(FaultAuditLog::sha256_hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 }
 
 // Editing a past row makes verify fail.

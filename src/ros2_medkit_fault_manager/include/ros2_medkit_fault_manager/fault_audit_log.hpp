@@ -31,11 +31,11 @@ namespace ros2_medkit_fault_manager {
 /// later edit to a stored row is detectable.
 struct AuditEvent {
   std::string fault_code;
-  std::string transition;   ///< occurred | confirmed | cleared | ack
-  uint8_t severity{0};      ///< severity at the time of the transition
-  std::string status;       ///< resulting fault status (e.g. CONFIRMED)
-  std::string source_id;    ///< reporting source that drove the transition
-  std::string description;  ///< human-readable description
+  std::string transition;     ///< occurred | confirmed | cleared | ack
+  uint8_t severity{0};        ///< severity at the time of the transition
+  std::string status;         ///< resulting fault status (e.g. CONFIRMED)
+  std::string source_id;      ///< reporting source that drove the transition
+  std::string description;    ///< human-readable description
   int64_t occurred_at_ns{0};  ///< wall-clock timestamp of the transition
 };
 
@@ -55,16 +55,16 @@ struct AuditRecord {
 
 /// Persisted head of the hash chain.
 struct ChainHead {
-  int64_t seq{0};            ///< 0 when the chain is empty
-  std::string record_hash;   ///< genesis hash when the chain is empty
+  int64_t seq{0};           ///< 0 when the chain is empty
+  std::string record_hash;  ///< genesis hash when the chain is empty
 };
 
 /// Result of verifying the persisted chain.
 struct AuditVerifyResult {
   bool ok{true};
-  int64_t checked{0};   ///< number of records walked
-  int64_t bad_seq{0};   ///< seq of the first offending record (0 if ok)
-  std::string error;    ///< human-readable reason when !ok
+  int64_t checked{0};  ///< number of records walked
+  int64_t bad_seq{0};  ///< seq of the first offending record (0 if ok)
+  std::string error;   ///< human-readable reason when !ok
 };
 
 /// Append-only, hash-chained audit log of fault state transitions.

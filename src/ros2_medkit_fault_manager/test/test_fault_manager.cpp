@@ -1528,8 +1528,8 @@ class FaultAuditIntegrationTest : public ::testing::Test {
     std::random_device rd;
     std::mt19937_64 gen(rd());
     std::uniform_int_distribution<uint64_t> dist;
-    audit_path_ = (std::filesystem::temp_directory_path() / ("test_node_audit_" + std::to_string(dist(gen)) + ".db"))
-                      .string();
+    audit_path_ =
+        (std::filesystem::temp_directory_path() / ("test_node_audit_" + std::to_string(dist(gen)) + ".db")).string();
     ns_ = "/test_audit_" + std::to_string(dist(gen));
 
     rclcpp::NodeOptions fm_options;
@@ -1626,8 +1626,7 @@ TEST(FaultAuditDisabledTest, NoAuditFileWhenDisabled) {
 
   rclcpp::NodeOptions options;
   options.parameter_overrides({
-      {"storage_type", "memory"},
-      {"audit_log.database_path", audit_path},  // default enabled=false
+      {"storage_type", "memory"}, {"audit_log.database_path", audit_path},  // default enabled=false
   });
   auto node = std::make_shared<FaultManagerNode>(options);
 
