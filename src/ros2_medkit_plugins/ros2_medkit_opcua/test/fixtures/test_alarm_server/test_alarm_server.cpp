@@ -136,6 +136,27 @@ UA_StatusCode add_condition(UA_Server * server, const std::string & name, UA_UIn
   return rc;
 }
 
+// Add a writable Int32 variable under ObjectsFolder in the user namespace with
+// a predictable string NodeId ``ns;s=<name>`` so the gateway's polled
+// detection config (``node_id: "ns=2;s=StatusWord"``) can address it. Exercises
+// the status_bits / fault_enum poll path that is independent of the
+// AlarmConditionType event path above.
+UA_StatusCode add_int32_variable(UA_Server * server, const std::string & name, UA_UInt16 ns) {
+  UA_VariableAttributes attr = UA_VariableAttributes_default;
+  UA_Int32 initial = 0;
+  UA_Variant_setScalar(&attr.value, &initial, &UA_TYPES[UA_TYPES_INT32]);
+  attr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+  attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+  attr.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>(name.c_str()));
+  UA_NodeId requested = UA_NODEID_STRING_ALLOC(ns, name.c_str());
+  UA_QualifiedName qname = UA_QUALIFIEDNAME(ns, const_cast<char *>(name.c_str()));
+  UA_StatusCode rc = UA_Server_addVariableNode(
+      server, requested, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER), UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), qname,
+      UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attr, nullptr, nullptr);
+  UA_NodeId_clear(&requested);
+  return rc;
+}
+
 UA_StatusCode set_two_state(UA_Server * server, const UA_NodeId & cond, const char * field, UA_Boolean value) {
   UA_Variant v;
   UA_Variant_setScalar(&v, &value, &UA_TYPES[UA_TYPES_BOOLEAN]);
@@ -300,7 +321,7 @@ UA_StatusCode handle_enable(UA_Server * server, const Condition & c, bool enable
   return set_two_state(server, c.node, "EnabledState", enable);
 }
 
-void cli_loop(UA_Server * server) {
+void cli_loop(UA_Server * server, UA_UInt16 ns) {
   std::string line;
   while (g_running && std::getline(std::cin, line)) {
     std::istringstream iss(line);
@@ -312,6 +333,28 @@ void cli_loop(UA_Server * server) {
       break;
     }
     std::lock_guard<std::mutex> guard(g_mutex);
+    // ``set <NodeName> <int>`` writes a polled Int32 variable (StatusWord /
+    // FaultCode). Handled before the condition lookup because these nodes are
+    // plain variables, not AlarmCondition instances in g_conditions.
+    if (cmd == "set") {
+      long val = 0;
+      if (!(iss >> val)) {
+        std::cout << "ERR set_missing_value:" << name << std::endl;
+        continue;
+      }
+      UA_Int32 v32 = static_cast<UA_Int32>(val);
+      UA_Variant var;
+      UA_Variant_setScalar(&var, &v32, &UA_TYPES[UA_TYPES_INT32]);
+      UA_NodeId target = UA_NODEID_STRING_ALLOC(ns, name.c_str());
+      UA_StatusCode rc = UA_Server_writeValue(server, target, var);
+      UA_NodeId_clear(&target);
+      if (rc == UA_STATUSCODE_GOOD) {
+        std::cout << "OK " << name << "=" << val << std::endl;
+      } else {
+        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+      }
+      continue;
+    }
     auto it = g_conditions.find(name);
     if (cmd != "quit" && it == g_conditions.end()) {
       std::cout << "ERR unknown_condition:" << name << std::endl;
@@ -416,8 +459,18 @@ int main(int argc, char ** argv) {
   g_conditions[oh.name] = oh;
   g_conditions[sl.name] = sl;
 
+  // Polled Int32 registers for the status_bits / fault_enum detection path
+  // (independent of the AlarmConditionType events above). Driven via the
+  // ``set <NodeName> <int>`` CLI command.
+  if (add_int32_variable(server, "StatusWord", ns) != UA_STATUSCODE_GOOD ||
+      add_int32_variable(server, "FaultCode", ns) != UA_STATUSCODE_GOOD) {
+    UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register detection variables");
+    UA_Server_delete(server);
+    return 1;
+  }
+
   std::cout << "READY port=" << port << " namespace=" << ns << std::endl;
-  std::thread cli(cli_loop, server);
+  std::thread cli(cli_loop, server, ns);
 
   UA_StatusCode rc = UA_Server_run(server, reinterpret_cast<volatile UA_Boolean *>(&g_running));
   g_running = false;
