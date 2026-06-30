@@ -150,8 +150,8 @@ The fault manager uses an AUTOSAR DEM-style debounce model:
 
 The counter is always clamped to `[confirmation_threshold, healing_threshold]`, so a long run of
 one-sided events cannot push it out to the integer limits and delay the opposite transition.
-`confirmation_threshold < 0 < healing_threshold` is required; invalid thresholds fall back to safe
-defaults with a warning.
+`confirmation_threshold < 0 <= healing_threshold` is required (`healing_threshold = 0` heals on a
+single PASSED event); invalid thresholds fall back to safe defaults with a warning.
 
 `CONFIRMED` and `HEALED` are **latched** (hysteresis): once reached, the status holds until the
 counter reaches the opposite threshold, so a single opposite-direction event cannot flip it. As a

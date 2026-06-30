@@ -60,7 +60,9 @@ bool sanitize_debounce_config(DebounceConfig & config) {
     config.confirmation_threshold = -1;
     valid = false;
   }
-  if (config.healing_threshold <= 0) {
+  // healing_threshold == 0 is valid: it means "heal on a single PASSED event" (the counter reaches
+  // the threshold at 0). Only a negative threshold is rejected.
+  if (config.healing_threshold < 0) {
     config.healing_threshold = 3;
     valid = false;
   }

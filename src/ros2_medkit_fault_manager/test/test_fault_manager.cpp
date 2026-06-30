@@ -729,12 +729,34 @@ TEST(DebounceHelpers, SanitizeDebounceConfigFixesBadThresholds) {
   DebounceConfig good;
   EXPECT_TRUE(sanitize_debounce_config(good));  // defaults are valid
 
+  // healing_threshold == 0 is valid (heal on a single PASSED event); leave it untouched.
+  DebounceConfig single_event_heal;
+  single_event_heal.confirmation_threshold = -1;
+  single_event_heal.healing_threshold = 0;
+  EXPECT_TRUE(sanitize_debounce_config(single_event_heal));
+  EXPECT_EQ(single_event_heal.healing_threshold, 0);
+
   DebounceConfig bad;
-  bad.confirmation_threshold = 0;
-  bad.healing_threshold = 0;
+  bad.confirmation_threshold = 0;  // must be < 0
+  bad.healing_threshold = -1;      // must be >= 0
   EXPECT_FALSE(sanitize_debounce_config(bad));
   EXPECT_LT(bad.confirmation_threshold, 0);
-  EXPECT_GT(bad.healing_threshold, 0);
+  EXPECT_GE(bad.healing_threshold, 0);
+}
+
+// healing_threshold == 0 heals on a single PASSED event (used by action_status_bridge).
+TEST_F(FaultStorageTest, HealingThresholdZeroHealsOnSinglePassed) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -1;
+  config.healing_enabled = true;
+  config.healing_threshold = 0;
+
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
+                              config);
+  ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+  EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
 }
 
 TEST(DebounceHelpers, ComputeDebounceStatusLatches) {

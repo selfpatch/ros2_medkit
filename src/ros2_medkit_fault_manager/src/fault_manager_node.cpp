@@ -166,7 +166,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   global_config_.auto_confirm_after_sec = auto_confirm_after_sec_;
   if (!sanitize_debounce_config(global_config_)) {
     RCLCPP_WARN(get_logger(),
-                "Invalid debounce thresholds (need confirmation_threshold < 0 < healing_threshold); using safe "
+                "Invalid debounce thresholds (need confirmation_threshold < 0 <= healing_threshold); using safe "
                 "defaults: confirmation=%d healing=%d",
                 global_config_.confirmation_threshold, global_config_.healing_threshold);
   }
@@ -186,7 +186,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   if (!entity_thresholds_file.empty()) {
     auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file);
     // Validate each override against the global config: the merge is field by field, so an override
-    // can break confirmation_threshold < 0 < healing_threshold even when the global config is valid.
+    // can break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
     for (auto & entry : entries) {
       DebounceConfig merged = global_config_;
       if (entry.confirmation_threshold) {
@@ -197,7 +197,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
       }
       if (!sanitize_debounce_config(merged)) {
         RCLCPP_WARN(get_logger(),
-                    "Entity '%s' debounce thresholds invalid (need confirmation_threshold < 0 < healing_threshold); "
+                    "Entity '%s' debounce thresholds invalid (need confirmation_threshold < 0 <= healing_threshold); "
                     "using safe defaults",
                     entry.prefix.c_str());
         if (entry.confirmation_threshold) {
@@ -1226,7 +1226,7 @@ DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id) c
     config = threshold_resolver_->resolve(source_id, global_config_);
   }
   // Defensive: the merged config is validated at load time, but never hand the storage backend a
-  // config that violates confirmation_threshold < 0 < healing_threshold (the counter would stick).
+  // config that violates confirmation_threshold < 0 <= healing_threshold (the counter would stick).
   sanitize_debounce_config(config);
   return config;
 }

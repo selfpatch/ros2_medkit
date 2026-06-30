@@ -49,8 +49,9 @@ struct DebounceConfig {
   /// Whether healing is enabled. When true, faults can transition to HEALED status.
   bool healing_enabled{false};
 
-  /// Healing threshold (positive). When healing is enabled, the fault is HEALED once the counter
-  /// reaches this value. The counter is always clamped to this upper bound, even when healing is
+  /// Healing threshold (non-negative; 0 means heal on a single PASSED event). When healing is enabled,
+  /// the fault is HEALED once the counter reaches this value. The counter is always clamped to this
+  /// upper bound, even when healing is
   /// disabled, so a heal heartbeat cannot drive it off to INT32_MAX; healing_enabled only controls
   /// whether reaching the bound produces a HEALED status.
   /// Default: 3 (3 more PASSED than FAILED events to heal).
@@ -72,8 +73,9 @@ int32_t clamp_debounce_counter(int32_t counter, const DebounceConfig & config);
 /// callers handle that. This is the single source of truth shared by both storage backends.
 std::string compute_debounce_status(int32_t counter, const std::string & current_status, const DebounceConfig & config);
 
-/// Validate a (merged) debounce config in place, enforcing confirmation_threshold < 0 < healing_threshold.
-/// Offending fields are reset to safe defaults (-1 / 3). Returns true if the config was already valid.
+/// Validate a (merged) debounce config in place, enforcing confirmation_threshold < 0 <= healing_threshold
+/// (healing_threshold == 0 means heal on a single PASSED event). Offending fields are reset to safe
+/// defaults (-1 / 3). Returns true if the config was already valid.
 bool sanitize_debounce_config(DebounceConfig & config);
 
 /// Internal fault state stored in memory

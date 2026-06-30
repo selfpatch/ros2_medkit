@@ -239,7 +239,8 @@ becomes active again is not back in the default (CONFIRMED-only) list until the 
 up to ``healing_threshold - confirmation_threshold`` events. During that window ``occurrence_count``
 and ``last_occurred`` still reflect the activity.
 
-Thresholds must satisfy ``confirmation_threshold < 0 < healing_threshold``; the node validates the
+Thresholds must satisfy ``confirmation_threshold < 0 <= healing_threshold`` (``healing_threshold == 0``
+means heal on a single PASSED event); the node validates the
 merged per-entity config at startup, logs a warning, and falls back to safe defaults if not. When
 healing is disabled, any HEALED row left by a previous (healing-enabled) run is reclassified to
 CLEARED once at startup so it does not behave inconsistently under the latch.
