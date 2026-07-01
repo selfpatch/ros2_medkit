@@ -17,12 +17,26 @@
 #include <sqlite3.h>
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace ros2_medkit_fault_manager {
+
+/// Deleter that closes an owned sqlite3 handle. sqlite3_close(nullptr) is a
+/// no-op, and unique_ptr never invokes the deleter on a null pointer anyway.
+struct SqliteDeleter {
+  void operator()(sqlite3 * db) const noexcept {
+    sqlite3_close(db);
+  }
+};
+
+/// Owning handle for the connection. RAII so the handle is always closed,
+/// including on a throw during construction (a raw pointer would leak because
+/// the destructor does not run when the constructor throws).
+using SqliteHandle = std::unique_ptr<sqlite3, SqliteDeleter>;
 
 /// A single fault state-transition to record in the audit log.
 ///
@@ -48,9 +62,9 @@ constexpr const char * kTransitionCleared = "cleared";
 /// distinct from kTransitionCleared so an automatic recovery is not mistaken for
 /// a manual clear in the timeline.
 constexpr const char * kTransitionHealed = "healed";
-/// Audit-log lifecycle markers (CIR (EU) 2024/2690 sec. 3.2: activation /
-/// deactivation of logging). Appended directly, independent of the per-fault
-/// transition filter, so the log records its own start and stop.
+/// Audit-log lifecycle markers: activation / deactivation of logging. Appended
+/// directly, independent of the per-fault transition filter, so the log records
+/// its own start and stop.
 constexpr const char * kTransitionLoggingActivated = "logging_activated";
 constexpr const char * kTransitionLoggingDeactivated = "logging_deactivated";
 // NOTE: there is deliberately no "ack" kind. The open fault_manager has no
@@ -95,11 +109,16 @@ struct AuditVerifyResult {
 /// rotation prune excepted) as defense-in-depth.
 ///
 /// Threat model: the hash chain is UNKEYED and the head/anchors live in the same
-/// writable file. verify() catches edits or deletions that did not also recompute
-/// the chain (casual or accidental tampering), but anyone with write access to the
-/// file can recompute the whole chain (and drop the triggers) and forge a
-/// consistent history. True tamper-proofing needs a key/signature over the head or
-/// external anchoring; that is out of scope here.
+/// writable file, so this is tamper-EVIDENT, not tamper-PROOF. verify() catches
+/// edits or deletions that did not also recompute the chain (casual or accidental
+/// tampering). It does NOT stop a write-capable adversary, and two truncations are
+/// cheap and undetectable by design: (a) dropping the newest row(s) and repointing
+/// audit_chain_head with a single UPDATE to the prior (seq, hash) still verifies -
+/// there is no external record that a later seq ever existed; (b) a forged
+/// prefix-truncation (delete a prefix + insert a matching anchor) is
+/// indistinguishable from legitimate rotation, so a surviving-tail-that-verifies
+/// does not prove the prefix was never present. True tamper-proofing needs a
+/// key/signature over the head or external anchoring; that is out of scope here.
 class FaultAuditLog {
  public:
   /// Open (or create) the audit log database.
@@ -117,7 +136,10 @@ class FaultAuditLog {
   FaultAuditLog & operator=(FaultAuditLog &&) = delete;
 
   /// Append one transition. Computes the chained hash, inserts the row, and
-  /// advances the persisted head, atomically.
+  /// advances the persisted head in a single transaction (atomic within THIS
+  /// database). Once that transaction commits the append is durable; any
+  /// retention rotation that follows is best-effort maintenance and never fails
+  /// the committed append (its failures are counted via rotation_failures()).
   /// @return the monotonic seq assigned to the new record.
   int64_t append(const AuditEvent & event);
 
@@ -134,6 +156,12 @@ class FaultAuditLog {
 
   /// Number of records currently retained (excludes pruned/sealed rows).
   int64_t record_count() const;
+
+  /// Number of best-effort rotation cycles that failed AFTER a durable append.
+  /// A rotation failure (e.g. checkpoint busy, disk-full on the prune) is retried
+  /// on the next append and never turns the already-committed append into a
+  /// reported drop; this counter makes such maintenance failures observable.
+  int64_t rotation_failures() const;
 
   /// Deterministic canonical serialization of an event at a given seq.
   /// Stable field order so verify is reproducible across processes.
@@ -162,9 +190,10 @@ class FaultAuditLog {
 
   std::string db_path_;
   int64_t retention_max_records_{0};
-  sqlite3 * db_{nullptr};
+  SqliteHandle db_;  ///< owning connection; closed by RAII even if the ctor throws
   mutable std::mutex mutex_;
-  ChainHead head_;  ///< cached head, kept in sync with the head table
+  ChainHead head_;                ///< cached head, kept in sync with the head table
+  int64_t rotation_failures_{0};  ///< best-effort rotation failures (guarded by mutex_)
 };
 
 }  // namespace ros2_medkit_fault_manager

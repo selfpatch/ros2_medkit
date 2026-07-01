@@ -76,6 +76,28 @@ int raw_exec_rc(const std::string & db_path, const std::string & sql) {
 const char * const kDropTriggers =
     "DROP TRIGGER IF EXISTS audit_log_no_update; DROP TRIGGER IF EXISTS audit_log_no_delete; ";
 
+/// Drop the guard-gated audit_anchors triggers so a raw anchor write can land
+/// (same attacker model as kDropTriggers, for the anchor table).
+const char * const kDropAnchorTriggers =
+    "DROP TRIGGER IF EXISTS audit_anchors_no_update; DROP TRIGGER IF EXISTS audit_anchors_no_insert; "
+    "DROP TRIGGER IF EXISTS audit_anchors_no_delete; ";
+
+/// Count rows in a table via a fresh connection (used to assert audit_anchors
+/// stays bounded across many rotations).
+int64_t count_table_rows(const std::string & db_path, const std::string & table) {
+  sqlite3 * db = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.c_str(), &db), SQLITE_OK);
+  sqlite3_stmt * stmt = nullptr;
+  const std::string sql = "SELECT COUNT(*) FROM " + table;
+  int64_t rows = -1;
+  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+    rows = sqlite3_column_int64(stmt, 0);
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  return rows;
+}
+
 }  // namespace
 
 class FaultAuditLogTest : public ::testing::Test {
@@ -280,7 +302,7 @@ TEST_F(FaultAuditLogTest, MissingAnchorFailsVerify) {
       log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
     }
   }
-  raw_exec(path_, "DELETE FROM audit_anchors");
+  raw_exec(path_, std::string(kDropAnchorTriggers) + "DELETE FROM audit_anchors");
 
   FaultAuditLog reopened(path_, 5);
   EXPECT_FALSE(reopened.verify().ok);
@@ -370,6 +392,105 @@ TEST_F(FaultAuditLogTest, GuardProtectTriggerBlocksExternalGuardFlip) {
 
   FaultAuditLog reopened(path_, 3);
   EXPECT_EQ(reopened.record_count(), 3);
+  EXPECT_TRUE(reopened.verify().ok);
+}
+
+// Non-UTF-8 bytes in unvalidated content (description / source_id come straight
+// from the ReportFault request) must NOT make canonicalize -> append throw and
+// leave a silent gap. Canonicalization is total: any byte sequence hashes
+// reproducibly and the chain still verifies.
+TEST_F(FaultAuditLogTest, NonUtf8ContentAppendsAndVerifies) {
+  FaultAuditLog log(path_);
+
+  AuditEvent e = make_event("F1", kTransitionOccurred, 100);
+  e.description = "pressure \xff\xfe low";  // invalid UTF-8 bytes
+  e.source_id = "src\x80\x81";              // invalid UTF-8 continuation bytes
+
+  int64_t seq = 0;
+  ASSERT_NO_THROW(seq = log.append(e));
+  EXPECT_EQ(seq, 1);
+
+  // A plain append still chains on top of the non-UTF-8 record.
+  ASSERT_NO_THROW(log.append(make_event("F2", kTransitionConfirmed, 200)));
+
+  // canonicalize is deterministic on the same arbitrary bytes.
+  EXPECT_EQ(FaultAuditLog::canonicalize(1, e), FaultAuditLog::canonicalize(1, e));
+
+  auto result = log.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 2);
+}
+
+// Many rotations must not grow audit_anchors without bound: verify() only ever
+// needs the anchor at the current prune boundary, so older anchors are pruned in
+// the same rotation. audit_log stays at the cap and audit_anchors stays bounded.
+TEST_F(FaultAuditLogTest, ManyRotationsDoNotGrowAnchorsUnbounded) {
+  FaultAuditLog log(path_, /*retention_max_records=*/3);
+  for (int i = 1; i <= 100; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+  EXPECT_EQ(log.record_count(), 3);
+  // Without pruning old anchors this would be ~97 rows; it must stay bounded.
+  EXPECT_LE(count_table_rows(path_, "audit_anchors"), 1);
+
+  // Pruning old anchors must not break verify: the surviving tail still links to
+  // the current boundary anchor.
+  auto result = log.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 3);
+}
+
+// A rotation failure AFTER a durable append must not fail the append: COMMIT
+// already made the record durable, so a broken rotation is counted (retried next
+// time), never surfaced to the caller as a failed/dropped write.
+TEST_F(FaultAuditLogTest, RotationFailureDoesNotFailDurableAppend) {
+  FaultAuditLog log(path_, /*retention_max_records=*/3);
+  for (int i = 1; i <= 5; ++i) {
+    log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+  }
+  ASSERT_EQ(log.record_count(), 3);
+  ASSERT_EQ(log.rotation_failures(), 0);
+
+  // Sabotage rotation out-of-band: drop audit_anchors so the next rotation's
+  // anchor INSERT fails INSIDE rotate_if_needed_locked, after the append COMMIT.
+  raw_exec(path_, std::string(kDropAnchorTriggers) + "DROP TABLE audit_anchors;");
+
+  int64_t seq = 0;
+  EXPECT_NO_THROW(seq = log.append(make_event("F6", kTransitionOccurred, 600)));
+  EXPECT_EQ(seq, 6);
+  EXPECT_EQ(log.rotation_failures(), 1);
+
+  // The append is durable: the record is present and is the newest.
+  auto tail = log.read(/*limit=*/0, /*after_seq=*/5);
+  ASSERT_EQ(tail.size(), 1u);
+  EXPECT_EQ(tail.front().seq, 6);
+  EXPECT_EQ(log.head().seq, 6);
+}
+
+// Defense-in-depth (item 7): audit_anchors carries the same guard-gated triggers
+// as audit_log, so an out-of-band INSERT/UPDATE/DELETE of an anchor is rejected
+// while the guard is closed. The in-process rotation (guard open) still seals and
+// prunes anchors normally.
+TEST_F(FaultAuditLogTest, AnchorTriggersRejectOutOfBandWrites) {
+  {
+    FaultAuditLog log(path_, /*retention_max_records=*/3);
+    for (int i = 1; i <= 8; ++i) {
+      log.append(make_event("F" + std::to_string(i), kTransitionOccurred, 100 + i));
+    }
+    EXPECT_EQ(log.record_count(), 3);
+    EXPECT_TRUE(log.verify().ok);
+  }
+
+  // A forged anchor INSERT, an UPDATE of the real anchor, and a DELETE are all
+  // rejected out-of-band (guard closed), so a forged prefix-truncation cannot be
+  // planted without first dropping the triggers.
+  EXPECT_NE(raw_exec_rc(path_, "INSERT INTO audit_anchors (last_seq, sealed_at_ns, last_hash) VALUES (999, 0, 'x')"),
+            SQLITE_OK);
+  EXPECT_NE(raw_exec_rc(path_, "UPDATE audit_anchors SET last_hash = 'forged'"), SQLITE_OK);
+  EXPECT_NE(raw_exec_rc(path_, "DELETE FROM audit_anchors"), SQLITE_OK);
+
+  // The real anchor survived and the tail still verifies.
+  FaultAuditLog reopened(path_, 3);
   EXPECT_TRUE(reopened.verify().ok);
 }
 
