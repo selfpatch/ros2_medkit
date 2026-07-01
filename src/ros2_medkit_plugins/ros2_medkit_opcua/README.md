@@ -334,7 +334,7 @@ plugins.opcua.client_cert_path: "/etc/ros2_medkit/opcua/client_cert.der"  # X.50
 plugins.opcua.client_key_path:  "/etc/ros2_medkit/opcua/client_key.pem"   # private key, PEM
 plugins.opcua.application_uri:  "urn:selfpatch:medkit:opcua-client"        # MUST match the cert SAN URI
 plugins.opcua.trust_list_paths: ["/etc/ros2_medkit/opcua/server_cert.der"]  # DER trust store
-plugins.opcua.reject_untrusted: true                   # false = accept any server cert (lab/TOFU only)
+plugins.opcua.reject_untrusted: true                   # false = accept ANY server cert (INSECURE, lab only; not trust-on-first-use, nothing pinned)
 plugins.opcua.user_auth_mode: "UsernamePassword"       # Anonymous | UsernamePassword | X509
 plugins.opcua.username: "medkit"
 plugins.opcua.password: "..."                           # inject from a secret store at deploy time
