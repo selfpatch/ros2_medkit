@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <stdexcept>
 
 namespace ros2_medkit_gateway {
 
@@ -143,11 +144,17 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
 
   if (!node_map_path_.empty()) {
     if (!node_map_.load(node_map_path_)) {
+      // FATAL: a node map that fails to load or validate (duplicate/colliding
+      // fault codes, conflicting detection modes, oversized file, ...) must
+      // NOT run. The global fault-code uniqueness that prevents raise/clear
+      // flapping is only enforced at load, so starting the poller against a
+      // rejected map would defeat it. Throw so PluginManager disables the
+      // plugin instead of proceeding to set_context()/starting the poller.
       log_error("Failed to load node map from: " + node_map_path_);
-    } else {
-      log_info("Loaded node map with " + std::to_string(node_map_.entries().size()) +
-               " entries from: " + node_map_path_);
+      throw std::runtime_error("OPC-UA node map failed to load or validate: " + node_map_path_ +
+                               " (see preceding log line for the specific rejection)");
     }
+    log_info("Loaded node map with " + std::to_string(node_map_.entries().size()) + " entries from: " + node_map_path_);
   }
 }
 

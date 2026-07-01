@@ -21,11 +21,11 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 
@@ -242,6 +242,25 @@ bool NodeMap::load(const std::string & yaml_path) {
         return def;
       }
     };
+    // Defensive required-string read: a missing or wrong-typed (sequence / map /
+    // null) string field warns naming node_id + field and returns nullopt so
+    // the caller skips just this node / bit / code. An unguarded
+    // ``.as<std::string>()`` throws YAML::TypedBadConversion, which the outer
+    // catch turns into a whole-file abort that discards every other valid
+    // node. (#481)
+    auto parse_string = [logger](const YAML::Node & node, const char * field,
+                                 const std::string & node_id) -> std::optional<std::string> {
+      if (!node) {
+        RCLCPP_WARN(logger, "node_id=%s: missing %s - skipping", node_id.c_str(), field);
+        return std::nullopt;
+      }
+      try {
+        return node.as<std::string>();
+      } catch (const YAML::Exception &) {
+        RCLCPP_WARN(logger, "node_id=%s: non-string %s - skipping", node_id.c_str(), field);
+        return std::nullopt;
+      }
+    };
     // Severity must be one of the documented SOVD buckets; warn + default to
     // ERROR on a typo (e.g. ``SEVERE`` / wrong case) so it is not misrouted. (#481)
     auto validate_severity = [logger](const std::string & sev, const std::string & node_id) -> std::string {
@@ -274,14 +293,31 @@ bool NodeMap::load(const std::string & yaml_path) {
 
       NodeMapEntry entry;
 
-      entry.node_id_str = n["node_id"].as<std::string>();
+      // Required string fields use guarded reads: a present-but-wrong-typed
+      // value (a sequence / map where a scalar is expected) warns and skips
+      // just this entry rather than aborting the whole file via the outer
+      // catch. (#481)
+      {
+        auto node_id_str = parse_string(n["node_id"], "node_id", "entry " + std::to_string(i));
+        if (!node_id_str) {
+          continue;
+        }
+        entry.node_id_str = *node_id_str;
+      }
       entry.node_id = parse_node_id(entry.node_id_str);
       if (entry.node_id_str.empty()) {
         RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Entry %zu has empty node_id - skipping", i);
         continue;
       }
-      entry.entity_id = n["entity_id"].as<std::string>();
-      entry.data_name = n["data_name"].as<std::string>();
+      {
+        auto entity_id = parse_string(n["entity_id"], "entity_id", entry.node_id_str);
+        auto data_name = parse_string(n["data_name"], "data_name", entry.node_id_str);
+        if (!entity_id || !data_name) {
+          continue;
+        }
+        entry.entity_id = *entity_id;
+        entry.data_name = *data_name;
+      }
       entry.display_name = n["display_name"].as<std::string>(entry.data_name);
       entry.unit = n["unit"].as<std::string>("");
       entry.data_type = n["data_type"].as<std::string>("float");
@@ -371,20 +407,27 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
 
       if (n["alarm"]) {
-        AlarmConfig alarm;
-        alarm.fault_code = n["alarm"]["fault_code"].as<std::string>();
-        alarm.severity = validate_severity(n["alarm"]["severity"].as<std::string>("ERROR"), entry.node_id_str);
-        alarm.message = n["alarm"]["message"].as<std::string>(alarm.fault_code);
-        alarm.threshold = parse_double(n["alarm"]["threshold"], 0.0, "alarm.threshold", entry.node_id_str);
-        alarm.above_threshold =
-            parse_bool(n["alarm"]["above_threshold"], true, "alarm.above_threshold", entry.node_id_str);
+        auto fault_code = parse_string(n["alarm"]["fault_code"], "alarm.fault_code", entry.node_id_str);
+        if (!fault_code) {
+          // No detection for this point; the data point itself still loads.
+          RCLCPP_WARN(logger, "alarm on node_id=%s has no usable fault_code - no fault detection for this point",
+                      entry.node_id_str.c_str());
+        } else {
+          AlarmConfig alarm;
+          alarm.fault_code = *fault_code;
+          alarm.severity = validate_severity(n["alarm"]["severity"].as<std::string>("ERROR"), entry.node_id_str);
+          alarm.message = n["alarm"]["message"].as<std::string>(alarm.fault_code);
+          alarm.threshold = parse_double(n["alarm"]["threshold"], 0.0, "alarm.threshold", entry.node_id_str);
+          alarm.above_threshold =
+              parse_bool(n["alarm"]["above_threshold"], true, "alarm.above_threshold", entry.node_id_str);
 
-        fd::ThresholdRule rule;
-        rule.fault = {alarm.fault_code, alarm.severity, alarm.message};
-        rule.threshold = alarm.threshold;
-        rule.above = alarm.above_threshold;
-        entry.detection = std::move(rule);
-        entry.alarm = std::move(alarm);
+          fd::ThresholdRule rule;
+          rule.fault = {alarm.fault_code, alarm.severity, alarm.message};
+          rule.threshold = alarm.threshold;
+          rule.above = alarm.above_threshold;
+          entry.detection = std::move(rule);
+          entry.alarm = std::move(alarm);
+        }
       } else if (n["status_bits"]) {
         fd::StatusWordRule rule;
         // Optional source register width: mask off sign-extended high bits so a
@@ -433,9 +476,12 @@ bool NodeMap::load(const std::string & yaml_path) {
                           entry.node_id_str.c_str(), br.bit, rule.width);
               continue;
             }
-            br.fault = {b["fault_code"].as<std::string>(),
-                        validate_severity(b["severity"].as<std::string>("ERROR"), entry.node_id_str),
-                        b["message"].as<std::string>(b["fault_code"].as<std::string>())};
+            auto bit_fault_code = parse_string(b["fault_code"], "status_bits.fault_code", entry.node_id_str);
+            if (!bit_fault_code) {
+              continue;  // wrong-typed fault_code: skip just this bit
+            }
+            br.fault = {*bit_fault_code, validate_severity(b["severity"].as<std::string>("ERROR"), entry.node_id_str),
+                        b["message"].as<std::string>(*bit_fault_code)};
             rule.bits.push_back(std::move(br));
           }
         }
@@ -467,9 +513,12 @@ bool NodeMap::load(const std::string & yaml_path) {
                           entry.node_id_str.c_str());
               continue;
             }
-            er.fault = {c["fault_code"].as<std::string>(),
-                        validate_severity(c["severity"].as<std::string>("ERROR"), entry.node_id_str),
-                        c["message"].as<std::string>(c["fault_code"].as<std::string>())};
+            auto code_fault_code = parse_string(c["fault_code"], "fault_enum.fault_code", entry.node_id_str);
+            if (!code_fault_code) {
+              continue;  // wrong-typed fault_code: skip just this enum code
+            }
+            er.fault = {*code_fault_code, validate_severity(c["severity"].as<std::string>("ERROR"), entry.node_id_str),
+                        c["message"].as<std::string>(*code_fault_code)};
             rule.codes.push_back(std::move(er));
           }
         }
@@ -477,9 +526,14 @@ bool NodeMap::load(const std::string & yaml_path) {
           // Catch-all: a non-ok value matching no configured code stays visible
           // rather than reading as healthy. Code is YAML-overridable, else
           // derived deterministically from the point. (#481)
-          rule.unknown_fault.fault_code = n["fault_enum"]["unknown_fault_code"]
-                                              ? n["fault_enum"]["unknown_fault_code"].as<std::string>()
-                                              : derive_unknown_code(entry.entity_id, entry.data_name);
+          if (n["fault_enum"]["unknown_fault_code"]) {
+            auto override_code =
+                parse_string(n["fault_enum"]["unknown_fault_code"], "fault_enum.unknown_fault_code", entry.node_id_str);
+            rule.unknown_fault.fault_code =
+                override_code ? *override_code : derive_unknown_code(entry.entity_id, entry.data_name);
+          } else {
+            rule.unknown_fault.fault_code = derive_unknown_code(entry.entity_id, entry.data_name);
+          }
           rule.unknown_fault.severity =
               validate_severity(n["fault_enum"]["unknown_severity"].as<std::string>("ERROR"), entry.node_id_str);
           rule.unknown_fault.message = n["fault_enum"]["unknown_message"].as<std::string>("");
@@ -545,81 +599,76 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // Fault-code collision validation. Two distinct concerns are checked here
-    // against the full set of fault codes the polled detection entries can
-    // emit (threshold + every status_bits bit + every fault_enum code), not
-    // just ``nodes[*].alarm`` as the original check did.
+    // Global fault-code uniqueness validation. fault_manager keys and clears
+    // faults by ``fault_code`` ALONE (clear_fault(fault_code) /
+    // get_fault(fault_code)); the poller shares one ``FaultTransitionTracker``
+    // that is likewise keyed by code alone. So a fault_code is a global
+    // identifier and must be unique across EVERY source that can emit it,
+    // regardless of entity_id:
     //
-    //   1. Global uniqueness of every emitted detection fault_code. The
-    //      poller shares one ``FaultTransitionTracker`` keyed by fault_code
-    //      alone, and clears are global by code, but evaluation runs
-    //      per-entry. Two detection entries emitting the same fault_code
-    //      (even on different entities) would therefore flap raise+clear
-    //      every poll cycle. Reject duplicates so the intent - one code, one
-    //      source - is documented and enforced at load.
+    //   * every polled detection fault (threshold + each status_bits bit +
+    //     each fault_enum code + the enum catch-all), and
+    //   * every native ``event_alarms`` subscription (issue #386).
     //
-    //   2. Cross-pipeline collision with native ``event_alarms`` on the same
-    //      ``(entity_id, fault_code)`` (bburda review on PR #387). The
-    //      threshold/bit/enum polling path and the AlarmCondition
-    //      subscription path produce different semantics (debounced vs
-    //      state-machine driven), so fault_manager receiving both a polled
-    //      report and a state-machine report for one SOVD fault flaps and is
-    //      impossible to debug at runtime.
+    // Two sources sharing a code - even a polled code on entity_a and an
+    // event_alarms code on entity_b - would collide at fault_manager: one
+    // source's clear wipes the other's fault, or the two flap raise/clear
+    // every cycle. The (entity_id, fault_code) pair the earlier check keyed on
+    // is NOT sufficient, because the fault manager never sees entity_id in its
+    // key. Reject the whole file at load with an actionable error so the intent
+    // - one code, one source - is enforced before anything runs.
     {
       namespace fd = ros2_medkit::fault_detection;
-      // (entity_id, fault_code) for every fault a detection entry can emit.
-      std::vector<std::pair<std::string, std::string>> detection_faults;
+      struct EmittedFault {
+        std::string entity_id;
+        const char * pipeline;  // "polled detection" or "event_alarms"
+      };
+      std::unordered_map<std::string, EmittedFault> seen;  // fault_code -> first source
+      auto check_unique = [&](const std::string & code, const std::string & entity_id, const char * pipeline) -> bool {
+        auto [it, inserted] = seen.emplace(code, EmittedFault{entity_id, pipeline});
+        if (!inserted) {
+          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                       "fault_code '%s' is emitted by more than one source (%s on entity '%s' and %s on "
+                       "entity '%s'); fault codes must be globally unique across all detection entries and "
+                       "event_alarms because the shared fault manager is keyed by code alone (a collision "
+                       "clears the other source's fault or flaps raise/clear) - rename one of them",
+                       code.c_str(), it->second.pipeline, it->second.entity_id.c_str(), pipeline, entity_id.c_str());
+          return false;
+        }
+        return true;
+      };
+
       for (const auto & entry : entries_) {
         if (!entry.detection.has_value()) {
           continue;
         }
+        bool ok = true;
         std::visit(
             [&](const auto & rule) {
               using T = std::decay_t<decltype(rule)>;
               if constexpr (std::is_same_v<T, fd::ThresholdRule>) {
-                detection_faults.emplace_back(entry.entity_id, rule.fault.fault_code);
+                ok = ok && check_unique(rule.fault.fault_code, entry.entity_id, "polled detection");
               } else if constexpr (std::is_same_v<T, fd::StatusWordRule>) {
                 for (const auto & b : rule.bits) {
-                  detection_faults.emplace_back(entry.entity_id, b.fault.fault_code);
+                  ok = ok && check_unique(b.fault.fault_code, entry.entity_id, "polled detection");
                 }
               } else if constexpr (std::is_same_v<T, fd::EnumMapRule>) {
                 for (const auto & e : rule.codes) {
-                  detection_faults.emplace_back(entry.entity_id, e.fault.fault_code);
+                  ok = ok && check_unique(e.fault.fault_code, entry.entity_id, "polled detection");
                 }
                 if (!rule.unknown_fault.fault_code.empty()) {
-                  detection_faults.emplace_back(entry.entity_id, rule.unknown_fault.fault_code);
+                  ok = ok && check_unique(rule.unknown_fault.fault_code, entry.entity_id, "polled detection");
                 }
               }
             },
             *entry.detection);
-      }
-
-      // 1. Global uniqueness by fault_code across all detection entries.
-      std::set<std::string> seen_codes;
-      for (const auto & fault : detection_faults) {
-        if (!seen_codes.insert(fault.second).second) {
-          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                       "fault_code '%s' is emitted by more than one detection entry "
-                       "(threshold/status_bits/fault_enum); fault codes must be globally unique because "
-                       "the shared fault tracker is keyed by code alone (a collision flaps raise/clear "
-                       "every poll cycle) - rename one of them",
-                       fault.second.c_str());
+        if (!ok) {
           return false;
         }
       }
 
-      // 2. Cross-pipeline collision with event_alarms by (entity_id, fault_code).
-      std::set<std::pair<std::string, std::string>> event_keys;
       for (const auto & cfg : event_alarms_) {
-        event_keys.emplace(cfg.entity_id, cfg.fault_code);
-      }
-      for (const auto & [entity_id, code] : detection_faults) {
-        if (event_keys.count({entity_id, code}) > 0) {
-          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                       "Duplicate (entity_id=%s, fault_code=%s) declared by both a polled detection entry "
-                       "(threshold/status_bits/fault_enum) and event_alarms[*] (subscription mode) - "
-                       "mutually exclusive",
-                       entity_id.c_str(), code.c_str());
+        if (!check_unique(cfg.fault_code, cfg.entity_id, "event_alarms")) {
           return false;
         }
       }

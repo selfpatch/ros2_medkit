@@ -24,6 +24,7 @@
 
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -292,6 +293,40 @@ TEST_F(OpcuaPluginTest, GetFaultNotFound) {
   auto result = plugin_.get_fault("tank", "NONEXISTENT");
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, FaultProviderError::FaultNotFound);
+}
+
+// -- configure() validation (issue #481) --
+
+TEST(OpcuaPluginConfigureTest, ThrowsOnInvalidNodeMap) {
+  // A node map that fails validation (here a duplicate fault_code) must make
+  // configure() throw so PluginManager disables the plugin instead of starting
+  // the poller against a map whose global fault-code uniqueness was rejected.
+  std::string path = "/tmp/test_opcua_plugin_invalid_nodemap.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: ent_a
+    data_name: a
+    alarm:
+      fault_code: DUP_CODE
+      threshold: 1.0
+  - node_id: "ns=1;i=2"
+    entity_id: ent_b
+    data_name: b
+    alarm:
+      fault_code: DUP_CODE
+      threshold: 2.0
+)";
+  f.close();
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = path;
+  config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+  EXPECT_THROW(plugin.configure(config), std::runtime_error);
 }
 
 }  // namespace ros2_medkit_gateway

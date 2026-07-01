@@ -861,6 +861,113 @@ nodes:
   EXPECT_EQ(map.detection_entries().size(), 3u);
 }
 
+TEST_F(NodeMapTest, RejectsCodeAcrossPipelinesDifferentEntities) {
+  // Global-by-code uniqueness (issue #481): a polled detection code on
+  // entity_a and an event_alarms code on entity_b share the SAME fault_code.
+  // fault_manager keys and clears by code alone, so the two collide even
+  // though the entities differ; the (entity_id, fault_code) pair the earlier
+  // guard keyed on let this through. The loader must reject the whole file.
+  std::string path = "/tmp/test_node_map_cross_entity_pipeline.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: entity_a
+    data_name: pressure
+    alarm:
+      fault_code: SHARED_CODE
+      threshold: 90.0
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.Something"
+    entity_id: entity_b
+    fault_code: SHARED_CODE
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, MalformedDetectionStringSkipsRuleNotFile) {
+  // issue #481: a wrong-typed string field (here a sequence where a scalar
+  // fault_code is expected) must warn and skip just that rule, not throw
+  // YAML::TypedBadConversion into the outer catch and discard every other
+  // node in the file.
+  std::string path = "/tmp/test_node_map_malformed_string.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=BadEnum"
+    entity_id: vfd
+    data_name: fault_code
+    data_type: int
+    fault_enum:
+      codes:
+        - code: 5
+          fault_code: [not, a, scalar]
+  - node_id: "ns=1;s=GoodTemp"
+    entity_id: tank
+    data_name: temp
+    alarm:
+      fault_code: GOOD_HIGH_TEMP
+      threshold: 80.0
+)";
+  f.close();
+
+  NodeMap map;
+  // Whole file still loads; the malformed enum code is dropped so that node
+  // just has no detection, and the second valid node keeps its rule.
+  ASSERT_TRUE(map.load(path));
+  EXPECT_EQ(map.entries().size(), 2u);
+  const auto * bad = map.find_by_node_id("ns=1;s=BadEnum");
+  ASSERT_NE(bad, nullptr);
+  EXPECT_FALSE(bad->detection.has_value());
+  const auto * good = map.find_by_node_id("ns=1;s=GoodTemp");
+  ASSERT_NE(good, nullptr);
+  ASSERT_TRUE(good->detection.has_value());
+  EXPECT_TRUE(std::holds_alternative<fd::ThresholdRule>(*good->detection));
+}
+
+TEST_F(NodeMapTest, AlarmMissingFaultCodeSkipsDetectionNotFile) {
+  // issue #481: an ``alarm:`` block with no fault_code used to abort the whole
+  // file via an unguarded .as<std::string>(). Now it warns, skips detection
+  // for that point, and keeps loading the rest.
+  std::string path = "/tmp/test_node_map_alarm_no_code.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;i=1"
+    entity_id: tank
+    data_name: pressure
+    alarm:
+      threshold: 90.0
+  - node_id: "ns=1;i=2"
+    entity_id: tank
+    data_name: level
+    alarm:
+      fault_code: LEVEL_LOW
+      threshold: 10.0
+      above_threshold: false
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  EXPECT_EQ(map.entries().size(), 2u);
+  const auto * p = map.find_by_node_id("ns=1;i=1");
+  ASSERT_NE(p, nullptr);
+  EXPECT_FALSE(p->detection.has_value());
+  const auto * l = map.find_by_node_id("ns=1;i=2");
+  ASSERT_NE(l, nullptr);
+  EXPECT_TRUE(l->detection.has_value());
+}
+
 TEST_F(NodeMapTest, StatusBitOutOfRangeSkipped) {
   // A bit position >= 64 can never be set in the 64-bit decode register, so it
   // is dead config: warn and drop the bit, keep the rest. (issue #481)

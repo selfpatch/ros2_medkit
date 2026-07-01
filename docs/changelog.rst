@@ -12,6 +12,8 @@ This page aggregates changelogs from all ros2_medkit packages.
 
 .. include:: ../src/ros2_medkit_fault_reporter/CHANGELOG.rst
 
+.. include:: ../src/ros2_medkit_fault_detection/CHANGELOG.rst
+
 .. include:: ../src/ros2_medkit_diagnostic_bridge/CHANGELOG.rst
 
 .. include:: ../src/ros2_medkit_log_bridge/CHANGELOG.rst

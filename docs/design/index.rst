@@ -9,6 +9,7 @@ This section contains design documentation for the ros2_medkit project packages.
    ros2_medkit_beacon_common/index
    ros2_medkit_cmake/index
    ros2_medkit_diagnostic_bridge/index
+   ros2_medkit_fault_detection/index
    ros2_medkit_fault_manager/index
    ros2_medkit_fault_reporter/index
    ros2_medkit_gateway/index

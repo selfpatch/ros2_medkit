@@ -182,6 +182,11 @@ nodes:
     entity_id: pump
     data_name: status_word
     data_type: int
+    status_word_width: 16          # optional: source register width in bits.
+                                   # Masks off sign-extended high bits so a
+                                   # signed 16-bit word read with its top bit
+                                   # set does not fire spurious faults above
+                                   # bit 15. Range 1..64. See the note below.
     status_bits:
       - bit: 3                     # bit position, 0 = least significant
         fault_code: PUMP_OVERLOAD
@@ -198,6 +203,16 @@ nodes:
     data_type: int
     fault_enum:
       ok_value: 0                  # value meaning "no fault" (default 0)
+      # Catch-all for a non-ok register value that matches no listed code
+      # (firmware revisions routinely add codes the config has not enumerated).
+      # All three keys are optional:
+      #   unknown_fault_code: code raised for the unmapped value. Defaults to a
+      #                       deterministic <ENTITY>_<DATA_NAME>_UNMAPPED.
+      #   unknown_severity:   SOVD bucket for it (default ERROR).
+      #   unknown_message:    text (default "unmapped fault code <N>").
+      unknown_fault_code: VFD_UNKNOWN_FAULT
+      unknown_severity: WARNING
+      unknown_message: Undocumented VFD fault code
       codes:
         - code: 10
           fault_code: VFD_OVERVOLTAGE
@@ -211,15 +226,24 @@ nodes:
 # shared `ros2_medkit_fault_detection` module so every protocol plugin maps raw
 # values to faults identically. They are mutually exclusive on a single node.
 #
-# Status words: expose the register as an UNSIGNED OPC-UA type (Byte / UInt16 /
-# UInt32 / UInt64). A signed type (Int16/Int32) whose top bit is set is
-# sign-extended when widened to the 64-bit decode register, which sets every
-# bit above the register width and raises spurious bit faults. `bit:` positions
-# are 0-based and must be < 64; higher positions are dead config, so the loader
-# logs a warning and skips that bit rule while still loading the rest of the
-# config. Fault codes must be globally unique across all `alarm` / `status_bits` /
-# `fault_enum` entries (the loader rejects duplicates); reusing a code on two
-# nodes makes its fault flap.
+# Status words: prefer exposing the register as an UNSIGNED OPC-UA type (Byte /
+# UInt16 / UInt32 / UInt64). A signed type (Int16/Int32) whose top bit is set is
+# sign-extended when widened to the 64-bit decode register, which sets every bit
+# above the register width and raises spurious bit faults. When you cannot change
+# the server type, set `status_word_width:` (1..64) on the node instead: the
+# loader masks the raw value to that many low bits before decoding, so the
+# sign-extended high bits are dropped in-config. `bit:` positions are 0-based and
+# must be < 64 (and < `status_word_width` when set); higher positions are dead
+# config, so the loader logs a warning and skips that bit rule while still loading
+# the rest of the config.
+#
+# Fault codes must be globally unique across ALL fault sources - every `alarm` /
+# `status_bits` / `fault_enum` entry AND every `event_alarms` entry - regardless
+# of which entity owns them. The fault manager keys and clears faults by
+# fault_code alone, so a code reused on two sources (even on different entities,
+# even one polled and one event-driven) would flap raise/clear or clear the other
+# source's fault. The loader rejects the whole file at load with an actionable
+# error naming both sources.
 
 # Native OPC-UA AlarmConditionType events (issue #386). Subscribes to alarms
 # defined inside the PLC (Siemens Program_Alarm / ProDiag, Beckhoff TF6100,
