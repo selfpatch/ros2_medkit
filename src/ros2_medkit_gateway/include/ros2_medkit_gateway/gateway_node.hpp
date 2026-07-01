@@ -253,6 +253,18 @@ class GatewayNode : public rclcpp::Node {
    */
   void trigger_reentrant_notification_for_testing(const EntityChangeScope & scope);
 
+  /**
+   * @brief Test hook: stop the gateway's own discovery refresh.
+   *
+   * Cancels the graph-event and backstop refresh timers and drops the graph
+   * event so `refresh_cache()` never runs again after this call. Tests that
+   * inject a known entity-cache state directly (via `get_thread_safe_cache()`)
+   * must call this first, otherwise a graph-event-driven `refresh_cache()`
+   * reconciles the cache back to the live ROS graph and silently wipes the
+   * injected entities. Do NOT call this from production code.
+   */
+  void stop_discovery_refresh_for_testing();
+
  private:
   void refresh_cache();
   void start_rest_server();

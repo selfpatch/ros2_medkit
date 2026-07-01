@@ -183,6 +183,16 @@ class SSEFaultHandlerTest : public ::testing::Test {
 
     node_ = std::make_shared<GatewayNode>(options);
 
+    // These tests inject a known entity-cache state directly (apps / node_to_app
+    // via get_thread_safe_cache()) and assert on the x-medkit context the SSE
+    // handler snapshots at fault-arrival time. The gateway's own discovery
+    // refresh, driven by the rclcpp graph-event timer, reconciles that cache
+    // back to the live ROS graph and would wipe the injected entities. Under a
+    // sanitizer's wider timing window a graph-event refresh can land between the
+    // injection and the fault-event delivery, dropping x-medkit. Stop the
+    // refresh drivers so the injected cache is the single source of truth.
+    node_->stop_discovery_refresh_for_testing();
+
     CorsConfig cors_config;
     AuthConfig auth_config;
     TlsConfig tls_config;

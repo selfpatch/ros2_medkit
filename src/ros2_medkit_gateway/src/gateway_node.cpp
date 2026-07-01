@@ -1963,6 +1963,19 @@ void GatewayNode::trigger_reentrant_notification_for_testing(const EntityChangeS
   handle_entity_change_notification(scope);
 }
 
+void GatewayNode::stop_discovery_refresh_for_testing() {
+  // Cancel the two refresh drivers and drop the graph event so no further
+  // refresh_cache() pass can clobber a test-injected entity cache. Safe to
+  // call right after construction (the constructor already ran one refresh).
+  if (graph_check_timer_) {
+    graph_check_timer_->cancel();
+  }
+  if (backstop_timer_) {
+    backstop_timer_->cancel();
+  }
+  graph_event_.reset();
+}
+
 void GatewayNode::refresh_cache() {
   // Serialize refresh passes across the refresh timer, plugin
   // `notify_entities_changed` notifications, and any other caller. The
