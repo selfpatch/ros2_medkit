@@ -72,7 +72,7 @@ ALARM_CODE = 'PLC_OVERPRESSURE'
 
 
 def require_flag():
-    """True when the suite must run for real (CI) instead of skipping."""
+    """Return True when the suite must run for real (CI) instead of skipping."""
     return os.environ.get('ROS2_MEDKIT_OPCUA_SECURE_REQUIRE', '0') not in ('', '0')
 
 
@@ -104,7 +104,7 @@ def find_plugin():
 
 
 def have_executable(package, executable):
-    """True when ``ros2 run <package> <executable>`` is resolvable."""
+    """Return True when ``ros2 run <package> <executable>`` is resolvable."""
     try:
         out = subprocess.run(
             ['ros2', 'pkg', 'executables', package],
@@ -321,15 +321,16 @@ def main():
         if not (status and status.get('connected') is True):
             print('FAIL: gateway did not connect over the secure channel', file=sys.stderr)
             print('server log:\n' + Path(server_log).read_text(errors='replace'), file=sys.stderr)
-            print('gateway log tail:\n' + Path(workdir / 'gateway_good.log').read_text(errors='replace')[-3000:],
-                  file=sys.stderr)
+            gw_tail = Path(workdir / 'gateway_good.log').read_text(errors='replace')[-3000:]
+            print('gateway log tail:\n' + gw_tail, file=sys.stderr)
             return 1
         print('  OK secured connect: x-plc-status connected == true')
 
         # Proof the channel is encrypted (SignAndEncrypt = securityMode 3),
         # emitted by the server on session activation. Fail hard on None.
         if not wait_log(server_log, 'securityMode=3', deadline=20):
-            print('FAIL: server never logged an encrypted (SignAndEncrypt) session', file=sys.stderr)
+            print('FAIL: server never logged an encrypted (SignAndEncrypt) session',
+                  file=sys.stderr)
             print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
             return 1
         if 'securityPolicyUri=http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256' \
@@ -337,7 +338,7 @@ def main():
             print('FAIL: negotiated SecurityPolicy was not Basic256Sha256', file=sys.stderr)
             print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
             return 1
-        print('  OK encrypted channel: server logged Basic256Sha256 securityMode=3 (SignAndEncrypt)')
+        print('  OK encrypted channel: Basic256Sha256 securityMode=3 (SignAndEncrypt)')
 
         # Secured read: Tank.Level value over the encrypted channel.
         data = wait_json(
@@ -403,7 +404,7 @@ def main():
             print('gateway(bad) log tail:\n'
                   + bad_log.read_text(errors='replace')[-3000:], file=sys.stderr)
             return 1
-        print('  OK fail-closed: wrong password rejected (BadUserAccessDenied), no secured read served')
+        print('  OK fail-closed: wrong password rejected (BadUserAccessDenied)')
 
         print('PASS: secured OPC-UA A&C integration test')
         return 0
