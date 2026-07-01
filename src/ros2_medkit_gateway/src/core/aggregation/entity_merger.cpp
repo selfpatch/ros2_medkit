@@ -182,11 +182,15 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       discovery::stamp_identity_provenance(merged.identity, merged.source);
       discovery::merge_identity(merged.identity, remote_comp.identity, peer_source(), kIdentityConfig);
 
-      // A Component ID refers to one physical ECU. When the same ID is
-      // present locally and remotely, the peer is the authoritative owner
-      // of the Component's runtime state (data, logs, hosts, operations,
-      // faults). Route all requests for the merged Component to the peer;
-      // the primary only aggregates its presence in discovery listings.
+      // Note the deliberate divergence between the two attributions below: the
+      // peer is the LEAST authoritative source for *identity* (gap-fill only,
+      // above) yet the authoritative owner of *runtime state* (routing, below).
+      // This is intentional and conservative: a remote peer must not clobber
+      // local nameplate knowledge, but a Component ID refers to one physical ECU
+      // and when the same ID is present locally and remotely the peer owns its
+      // live state (data, logs, hosts, operations, faults). Route all requests
+      // for the merged Component to the peer; the primary only aggregates its
+      // presence in discovery listings.
       routing_table_[merged.id] = peer_name_;
       append_contributor_unique(merged.contributors, peer_source());
     } else {

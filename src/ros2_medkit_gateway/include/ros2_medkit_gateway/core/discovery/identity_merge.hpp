@@ -129,8 +129,17 @@ inline void stamp_identity_provenance(AssetIdentity & identity, const std::strin
  *
  * For each field: if the target field is unset, take the incoming value; otherwise
  * the incoming value wins only if `source_name` has strictly higher authority than
- * the source currently owning the field (per `config.source_precedence`). Provenance
- * is updated whenever a value is written. Empty incoming values never overwrite.
+ * the source currently owning the field (per `config.source_precedence`). Empty
+ * incoming values never overwrite.
+ *
+ * Authority for the override decision is always ranked on `source_name`, but the
+ * provenance recorded for a written field is the incoming field's OWN provenance
+ * when `source` carries one (`source.provenance`), falling back to `source_name`
+ * otherwise. This keeps a field's recorded origin identical whether it arrives via
+ * this in-place merge (collision gap-fill) or via a wholesale copy of the source
+ * (no-collision add): e.g. a peer relaying a field it read over "opcua" keeps
+ * provenance "opcua" instead of being re-stamped "peer:<name>", while the peer's
+ * low authority for overriding local values is preserved.
  *
  * `target` should have had ::stamp_identity_provenance called on it (directly or via
  * a previous merge) so existing fields carry provenance; otherwise existing fields
@@ -138,6 +147,16 @@ inline void stamp_identity_provenance(AssetIdentity & identity, const std::strin
  */
 inline void merge_identity(AssetIdentity & target, const AssetIdentity & source, const std::string & source_name,
                            const IdentityMergeConfig & config) {
+  // Provenance to record for an incoming field: the source's own provenance for
+  // that key when present, else the authority tag we merged it under.
+  const auto recorded_provenance = [&](const std::string & prov_key) -> const std::string & {
+    auto it = source.provenance.find(prov_key);
+    if (it != source.provenance.end() && !it->second.empty()) {
+      return it->second;
+    }
+    return source_name;
+  };
+
   for (const auto & [prov_key, member] : detail::identity_fields()) {
     const std::string & incoming = source.*member;
     if (incoming.empty()) {
@@ -148,7 +167,7 @@ inline void merge_identity(AssetIdentity & target, const AssetIdentity & source,
     const bool target_set = !(target.*member).empty();
     if (detail::incoming_wins(target_set, current_owner, source_name, config)) {
       target.*member = incoming;
-      target.provenance[prov_key] = source_name;
+      target.provenance[prov_key] = recorded_provenance(prov_key);
     }
   }
 
@@ -163,7 +182,7 @@ inline void merge_identity(AssetIdentity & target, const AssetIdentity & source,
     const bool target_set = extra_it != target.extra.end() && !extra_it->second.empty();
     if (detail::incoming_wins(target_set, current_owner, source_name, config)) {
       target.extra[key] = value;
-      target.provenance[prov_key] = source_name;
+      target.provenance[prov_key] = recorded_provenance(prov_key);
     }
   }
 }
