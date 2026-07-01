@@ -110,6 +110,16 @@ struct SnapshotData {
   int64_t captured_at_ns{0};
 };
 
+/// Compact freeze-frame captured when a fault confirms: a single JSON object mapping
+/// each captured topic to its latest value at confirmation time. Unlike per-topic
+/// snapshots, a freeze-frame is keyed by fault_code (one row per code) and is RETAINED
+/// across clear_fault, so the confirmed-state record persists after acknowledgement.
+struct FreezeFrameData {
+  std::string fault_code;
+  std::string data;  ///< Compact JSON object: {"<topic>": <value>, ...}
+  int64_t captured_at_ns{0};
+};
+
 /// Rosbag file metadata for time-window recording
 struct RosbagFileInfo {
   std::string fault_code;
@@ -189,6 +199,17 @@ class FaultStorage {
   virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                                   const std::string & topic_filter = "") const = 0;
 
+  /// Store the compact freeze-frame captured for a fault (JSON dict of topic values).
+  /// Keyed by fault_code: a later capture for the same code replaces the frame. The frame
+  /// is retained across clear_fault so the confirmed-state record survives acknowledgement.
+  /// @param frame The freeze-frame to store
+  virtual void store_freeze_frame(const FreezeFrameData & frame) = 0;
+
+  /// Get the freeze-frame captured for a fault, if any.
+  /// @param fault_code The fault code to look up
+  /// @return The freeze-frame if one was captured, nullopt otherwise
+  virtual std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const = 0;
+
   /// Store rosbag file metadata for a fault
   /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
   virtual void store_rosbag_file(const RosbagFileInfo & info) = 0;
@@ -267,6 +288,9 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
                                           const std::string & topic_filter = "") const override;
 
+  void store_freeze_frame(const FreezeFrameData & frame) override;
+  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+
   void store_rosbag_file(const RosbagFileInfo & info) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   bool delete_rosbag_file(const std::string & fault_code) override;
@@ -283,7 +307,8 @@ class InMemoryFaultStorage : public FaultStorage {
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
   std::vector<SnapshotData> snapshots_;
-  std::map<std::string, RosbagFileInfo> rosbag_files_;  ///< fault_code -> rosbag info
+  std::map<std::string, FreezeFrameData> freeze_frames_;  ///< fault_code -> freeze-frame (retained across clear)
+  std::map<std::string, RosbagFileInfo> rosbag_files_;    ///< fault_code -> rosbag info
   DebounceConfig config_;
   size_t max_snapshots_per_fault_{0};  ///< 0 = unlimited
 };

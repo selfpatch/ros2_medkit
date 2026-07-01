@@ -365,6 +365,20 @@ std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string 
   return result;
 }
 
+void InMemoryFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  freeze_frames_[frame.fault_code] = frame;
+}
+
+std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = freeze_frames_.find(fault_code);
+  if (it == freeze_frames_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
 void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
   std::lock_guard<std::mutex> lock(mutex_);
 

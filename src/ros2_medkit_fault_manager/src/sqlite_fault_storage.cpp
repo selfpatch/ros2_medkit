@@ -188,6 +188,23 @@ void SqliteFaultStorage::initialize_schema() {
     throw std::runtime_error("Failed to create snapshots table: " + error);
   }
 
+  // Create freeze_frames table: one compact JSON dict of captured topic values per fault
+  // code. Unlike snapshots, freeze frames are keyed by fault_code and are NOT removed on
+  // clear_fault, so the confirmed-state record is retained after acknowledgement.
+  const char * create_freeze_frames_table_sql = R"(
+    CREATE TABLE IF NOT EXISTS freeze_frames (
+      fault_code TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      captured_at_ns INTEGER NOT NULL
+    );
+  )";
+
+  if (sqlite3_exec(db_, create_freeze_frames_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create freeze_frames table: " + error);
+  }
+
   // Create rosbag_files table for storing time-window bag file metadata
   const char * create_rosbag_files_table_sql = R"(
     CREATE TABLE IF NOT EXISTS rosbag_files (
@@ -793,6 +810,39 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
   }
 
   return result;
+}
+
+void SqliteFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Keyed by fault_code (PRIMARY KEY): a re-confirm replaces the previous frame.
+  SqliteStatement stmt(db_,
+                       "INSERT OR REPLACE INTO freeze_frames (fault_code, data, captured_at_ns) "
+                       "VALUES (?, ?, ?)");
+  stmt.bind_text(1, frame.fault_code);
+  stmt.bind_text(2, frame.data);
+  stmt.bind_int64(3, frame.captured_at_ns);
+
+  if (stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to store freeze frame: ") + sqlite3_errmsg(db_));
+  }
+}
+
+std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_, "SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = ?");
+  stmt.bind_text(1, fault_code);
+
+  if (stmt.step() != SQLITE_ROW) {
+    return std::nullopt;
+  }
+
+  FreezeFrameData frame;
+  frame.fault_code = stmt.column_text(0);
+  frame.data = stmt.column_text(1);
+  frame.captured_at_ns = stmt.column_int64(2);
+  return frame;
 }
 
 void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {

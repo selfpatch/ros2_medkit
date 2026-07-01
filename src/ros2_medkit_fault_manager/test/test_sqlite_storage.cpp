@@ -879,6 +879,110 @@ TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
   EXPECT_TRUE(snapshots_after.empty());
 }
 
+// Freeze-frame storage tests
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, StoreAndRetrieveFreezeFrame) {
+  using ros2_medkit_fault_manager::FreezeFrameData;
+  rclcpp::Clock clock;
+
+  storage_->report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Pressure high", "/plc_node", clock.now(), default_config());
+
+  FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4},"/plc/valve":{"data":true}})";
+  frame.captured_at_ns = clock.now().nanoseconds();
+  storage_->store_freeze_frame(frame);
+
+  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->fault_code, "PLC_PRESSURE_HIGH");
+  EXPECT_EQ(retrieved->data, frame.data);
+  EXPECT_EQ(retrieved->captured_at_ns, frame.captured_at_ns);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, NoFreezeFrameForUnknownFault) {
+  auto retrieved = storage_->get_freeze_frame("NEVER_CAPTURED");
+  EXPECT_FALSE(retrieved.has_value());
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, FreezeFrameReplacedOnRecapture) {
+  using ros2_medkit_fault_manager::FreezeFrameData;
+  rclcpp::Clock clock;
+
+  FreezeFrameData first;
+  first.fault_code = "PLC_PRESSURE_HIGH";
+  first.data = R"({"/plc/pressure":{"data":8.4}})";
+  first.captured_at_ns = 1000;
+  storage_->store_freeze_frame(first);
+
+  FreezeFrameData second;
+  second.fault_code = "PLC_PRESSURE_HIGH";
+  second.data = R"({"/plc/pressure":{"data":9.9}})";
+  second.captured_at_ns = 2000;
+  storage_->store_freeze_frame(second);
+
+  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, second.data);
+  EXPECT_EQ(retrieved->captured_at_ns, 2000);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, FreezeFrameSurvivesClearFault) {
+  using ros2_medkit_fault_manager::FreezeFrameData;
+  using ros2_medkit_fault_manager::SnapshotData;
+  rclcpp::Clock clock;
+
+  storage_->report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                               "Pressure high", "/plc_node", clock.now(), default_config());
+
+  // A per-topic snapshot (removed on clear) plus a freeze-frame (retained on clear).
+  SnapshotData snapshot;
+  snapshot.fault_code = "PLC_PRESSURE_HIGH";
+  snapshot.topic = "/plc/pressure";
+  snapshot.message_type = "std_msgs/msg/Float64";
+  snapshot.data = R"({"data":8.4})";
+  snapshot.captured_at_ns = clock.now().nanoseconds();
+  storage_->store_snapshot(snapshot);
+
+  FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4}})";
+  frame.captured_at_ns = clock.now().nanoseconds();
+  storage_->store_freeze_frame(frame);
+
+  ASSERT_TRUE(storage_->clear_fault("PLC_PRESSURE_HIGH"));
+
+  // Snapshots are wiped on clear, the freeze-frame is retained and still retrievable.
+  EXPECT_TRUE(storage_->get_snapshots("PLC_PRESSURE_HIGH").empty());
+  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, frame.data);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SqliteFaultStorageTest, FreezeFramePersistsAcrossReopen) {
+  using ros2_medkit_fault_manager::FreezeFrameData;
+
+  FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4}})";
+  frame.captured_at_ns = 4242;
+  storage_->store_freeze_frame(frame);
+
+  // Reopen the same database file.
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, frame.data);
+  EXPECT_EQ(retrieved->captured_at_ns, 4242);
+}
+
 // Rosbag entity-scoped listing tests
 
 // @verifies REQ_INTEROP_071

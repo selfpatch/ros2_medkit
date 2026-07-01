@@ -122,6 +122,7 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(launch_testing_ament_cmake REQUIRED)
+  find_package(std_msgs REQUIRED)
 
   set(ament_cmake_clang_format_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-format")
   list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_uncrustify ament_cmake_cpplint ament_cmake_clang_tidy)
@@ -154,7 +155,7 @@ if(BUILD_TESTING)
   # Snapshot capture tests
   ament_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
-  medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs std_msgs)
   medkit_set_test_domain(test_snapshot_capture)
 
   # Rosbag capture tests

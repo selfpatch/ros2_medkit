@@ -1397,6 +1397,76 @@ TEST(InMemorySnapshotLimitTest, UnlimitedWhenZero) {
   EXPECT_EQ(result.size(), 20u);
 }
 
+// --- InMemoryFaultStorage freeze-frame tests ---
+
+TEST(InMemoryFreezeFrameTest, StoreAndRetrieve) {
+  InMemoryFaultStorage storage;
+
+  ros2_medkit_fault_manager::FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4}})";
+  frame.captured_at_ns = 1000;
+  storage.store_freeze_frame(frame);
+
+  auto retrieved = storage.get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, frame.data);
+  EXPECT_EQ(retrieved->captured_at_ns, 1000);
+}
+
+TEST(InMemoryFreezeFrameTest, AbsentForUnknownFault) {
+  InMemoryFaultStorage storage;
+  EXPECT_FALSE(storage.get_freeze_frame("NEVER_CAPTURED").has_value());
+}
+
+TEST(InMemoryFreezeFrameTest, ReplacedOnRecapture) {
+  InMemoryFaultStorage storage;
+
+  ros2_medkit_fault_manager::FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4}})";
+  frame.captured_at_ns = 1000;
+  storage.store_freeze_frame(frame);
+
+  frame.data = R"({"/plc/pressure":{"data":9.9}})";
+  frame.captured_at_ns = 2000;
+  storage.store_freeze_frame(frame);
+
+  auto retrieved = storage.get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, R"({"/plc/pressure":{"data":9.9}})");
+  EXPECT_EQ(retrieved->captured_at_ns, 2000);
+}
+
+TEST(InMemoryFreezeFrameTest, SurvivesClearFault) {
+  InMemoryFaultStorage storage;
+  rclcpp::Clock clock;
+
+  storage.report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                             "Pressure high", "/plc_node", clock.now(), DebounceConfig{});
+
+  ros2_medkit_fault_manager::SnapshotData snap;
+  snap.fault_code = "PLC_PRESSURE_HIGH";
+  snap.topic = "/plc/pressure";
+  snap.message_type = "std_msgs/msg/Float64";
+  snap.data = R"({"data":8.4})";
+  snap.captured_at_ns = 1000;
+  storage.store_snapshot(snap);
+
+  ros2_medkit_fault_manager::FreezeFrameData frame;
+  frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.data = R"({"/plc/pressure":{"data":8.4}})";
+  frame.captured_at_ns = 1000;
+  storage.store_freeze_frame(frame);
+
+  ASSERT_TRUE(storage.clear_fault("PLC_PRESSURE_HIGH"));
+
+  EXPECT_TRUE(storage.get_snapshots("PLC_PRESSURE_HIGH").empty());
+  auto retrieved = storage.get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_EQ(retrieved->data, frame.data);
+}
+
 // =============================================================================
 // Snapshot recapture cooldown test
 // =============================================================================
