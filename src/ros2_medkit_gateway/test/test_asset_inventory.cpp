@@ -195,6 +195,31 @@ TEST(AssetCsvParseTest, FewerColumnsThanHeaderLeavesFieldsEmpty) {
   EXPECT_TRUE(result.entries[0].serial.empty());
 }
 
+TEST(AssetCsvParseTest, Utf8BomStrippedFromHeader) {
+  // Excel "CSV UTF-8" export prepends a BOM; the first header cell must still be
+  // recognized as 'id' rather than "﻿id" (which would fail id detection).
+  const std::string csv =
+      "\xEF\xBB\xBF"
+      "id,model\n"
+      "plc_1,S7-1500\n";
+  auto result = parse_asset_csv(csv);
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_EQ(result.entries[0].id, "plc_1");
+  EXPECT_EQ(result.entries[0].model, "S7-1500");
+}
+
+TEST(AssetCsvParseTest, LeadingSpaceBeforeQuotedFieldOpensQuote) {
+  // A quote after leading unquoted whitespace must open a quoted field, not be
+  // treated as a literal char (which would corrupt the value and add a column).
+  const std::string csv =
+      "id,model\n"
+      "a, \"Quoted, X\"\n";
+  auto result = parse_asset_csv(csv);
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_EQ(result.entries[0].id, "a");
+  EXPECT_EQ(result.entries[0].model, "Quoted, X");
+}
+
 // ── AssetEntry -> Component mapping ──────────────────────────────────────────
 
 TEST(AssetEntryToComponentTest, FullMapping) {
@@ -212,7 +237,10 @@ TEST(AssetEntryToComponentTest, FullMapping) {
   Component comp = asset_entry_to_component(e);
   EXPECT_EQ(comp.id, "plc_1");
   EXPECT_EQ(comp.source, "inventory");
-  EXPECT_EQ(comp.fqn, "/plc_1");
+  // A bare inventory asset declares no placement, so fqn/namespace stay empty
+  // and never override the real path of a discovered node it merges with.
+  EXPECT_TRUE(comp.fqn.empty());
+  EXPECT_TRUE(comp.namespace_path.empty());
   EXPECT_EQ(comp.name, "Siemens S7-1500");
   EXPECT_EQ(comp.variant, "A2");
   EXPECT_TRUE(has_tag(comp, "controller"));
@@ -291,6 +319,36 @@ assets:
   EXPECT_EQ(comp->area, "floor");
   EXPECT_EQ(comp->name, "Main Pump");  // explicit override wins over derived
   EXPECT_TRUE(has_tag(*comp, "hydraulics"));
+}
+
+TEST(ManifestAssetsTest, NamespaceAndReservedKeysApplied) {
+  // namespace/variant/type/translation_id/depends_on were previously listed as
+  // reserved and then silently dropped; each must now land on the Component.
+  const std::string yaml = R"(
+manifest_version: "1.0"
+assets:
+  - id: drive_1
+    manufacturer: ABB
+    model: ACS880
+    hardware_rev: R1
+    namespace: /plant
+    variant: R2
+    type: actuator
+    translation_id: entity.drive
+    depends_on: [plc_1, bus_a]
+)";
+  ManifestParser parser;
+  Manifest manifest = parser.parse_string(yaml);
+  const Component * comp = find_component(manifest.components, "drive_1");
+  ASSERT_NE(comp, nullptr);
+  EXPECT_EQ(comp->namespace_path, "/plant");
+  EXPECT_EQ(comp->fqn, "/plant/drive_1");  // operator-declared placement
+  EXPECT_EQ(comp->variant, "R2");          // explicit variant beats hardware_rev
+  EXPECT_EQ(comp->type, "actuator");
+  EXPECT_EQ(comp->translation_id, "entity.drive");
+  ASSERT_EQ(comp->depends_on.size(), 2u);
+  EXPECT_EQ(comp->depends_on[0], "plc_1");
+  EXPECT_EQ(comp->depends_on[1], "bus_a");
 }
 
 // ── ManifestManager CSV import ───────────────────────────────────────────────
@@ -374,16 +432,24 @@ TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
   LayerOutput runtime_out;
   runtime_out.components.push_back(runtime_comp);
 
+  // Drive the merge with the SAME policies the production layers use
+  // (ManifestLayer / RuntimeLayer), so the test exercises the real hierarchy
+  // precedence instead of the default ENRICHMENT.
   MergePipeline pipeline(rclcpp::get_logger("test_asset_inventory"));
   pipeline.add_layer(std::make_unique<FakeLayer>(
       "inventory", inventory_out,
       std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::AUTHORITATIVE},
-                                                  {FieldGroup::METADATA, MergePolicy::AUTHORITATIVE},
-                                                  {FieldGroup::LIVE_DATA, MergePolicy::ENRICHMENT}}));
+                                                  {FieldGroup::HIERARCHY, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::ENRICHMENT},
+                                                  {FieldGroup::STATUS, MergePolicy::FALLBACK},
+                                                  {FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
   pipeline.add_layer(std::make_unique<FakeLayer>(
       "runtime", runtime_out,
       std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::IDENTITY, MergePolicy::FALLBACK},
-                                                  {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE}}));
+                                                  {FieldGroup::HIERARCHY, MergePolicy::FALLBACK},
+                                                  {FieldGroup::LIVE_DATA, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::STATUS, MergePolicy::AUTHORITATIVE},
+                                                  {FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
 
   auto merged = pipeline.execute();
   ASSERT_EQ(merged.components.size(), 1u);
@@ -395,4 +461,8 @@ TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
   EXPECT_NE(c.description.find("SN-42"), std::string::npos);
   ASSERT_EQ(c.topics.publishes.size(), 1u);  // live data from the protocol layer
   EXPECT_EQ(c.topics.publishes[0], "/plant/drive_1/status");
+  // The bare inventory asset carries no placement, so the discovered node's real
+  // path must survive the merge - it must NOT be blanked or forced to "/drive_1".
+  EXPECT_EQ(c.namespace_path, "/plant");
+  EXPECT_EQ(c.fqn, "/plant/drive_1");
 }
