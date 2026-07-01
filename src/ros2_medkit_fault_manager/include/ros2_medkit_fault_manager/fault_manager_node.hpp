@@ -76,13 +76,17 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Health signal: number of audit transitions that failed to append (and were
   /// therefore lost from the chain). 0 when the audit is healthy or disabled.
+  /// IN-PROCESS ONLY: this is a C++ getter, not exposed over any service/REST/
+  /// health surface yet, so an operator cannot read it at runtime in this
+  /// revision (a runtime read/verify/health surface is future work).
   uint64_t audit_dropped_writes() const {
     return audit_dropped_writes_.load(std::memory_order_relaxed);
   }
 
   /// Health signal: false once any audit append has failed. A compliance-strict
   /// deployment should treat a false here (or a non-zero audit_dropped_writes())
-  /// as the audit chain being incomplete.
+  /// as the audit chain being incomplete. IN-PROCESS ONLY (see above): not yet
+  /// observable at runtime by an operator.
   bool audit_healthy() const {
     return audit_healthy_.load(std::memory_order_relaxed);
   }
@@ -209,8 +213,12 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Tamper-evident audit log of fault transitions (nullptr when disabled).
   std::unique_ptr<FaultAuditLog> audit_log_;
-  bool audit_confirmed_only_{false};               ///< When true, only "confirmed" transitions are logged
-  bool audit_fail_closed_{false};                  ///< When true, an audit append failure aborts the operation
+  bool audit_confirmed_only_{false};  ///< When true, only "confirmed" transitions are logged
+  /// When true, an audit append failure is re-raised as a fail-FAST signal that
+  /// the chain is broken (operator must act). It does NOT roll back the already-
+  /// committed fault-state change (the fault store is a separate DB); it is not
+  /// atomicity.
+  bool audit_fail_closed_{false};
   std::atomic<uint64_t> audit_dropped_writes_{0};  ///< Count of audit appends that failed (lost rows)
   std::atomic<bool> audit_healthy_{true};          ///< Cleared on the first failed audit append
 

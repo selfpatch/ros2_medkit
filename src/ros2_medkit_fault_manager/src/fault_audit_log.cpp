@@ -31,6 +31,19 @@ namespace {
 /// verifier can confirm the chain starts where it claims to.
 constexpr const char * kGenesisHash = "0000000000000000000000000000000000000000000000000000000000000000";
 
+/// JSON-encode a string value for the canonical form. Audit content
+/// (description / source_id / fault_code / ...) is UNVALIDATED request data and
+/// may contain arbitrary bytes. nlohmann's default (strict) UTF-8 handler THROWS
+/// on any non-UTF-8 byte; that would make canonicalize() -> append() throw and
+/// leave a silent, un-verifiable gap in the chain. The `replace` handler
+/// substitutes U+FFFD for invalid bytes deterministically, so any byte sequence
+/// canonicalizes reproducibly and append never throws on content. Output for
+/// valid UTF-8 is byte-for-byte identical to the old strict dump, so chains
+/// written before this change still verify.
+std::string json_encode(const std::string & value) {
+  return nlohmann::json(value).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 /// RAII wrapper for a prepared SQLite statement (audit-log local copy).
 class Stmt {
  public:
@@ -105,36 +118,33 @@ void audit_prune_authorized(sqlite3_context * ctx, int /*argc*/, sqlite3_value *
 FaultAuditLog::FaultAuditLog(const std::string & db_path, int64_t retention_max_records)
   : db_path_(db_path), retention_max_records_(retention_max_records < 0 ? 0 : retention_max_records) {
   int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
-  if (sqlite3_open_v2(db_path.c_str(), &db_, flags, nullptr) != SQLITE_OK) {
-    std::string error = db_ ? sqlite3_errmsg(db_) : "unknown error";
-    if (db_) {
-      sqlite3_close(db_);
-      db_ = nullptr;
-    }
+  sqlite3 * raw = nullptr;
+  if (sqlite3_open_v2(db_path.c_str(), &raw, flags, nullptr) != SQLITE_OK) {
+    std::string error = raw ? sqlite3_errmsg(raw) : "unknown error";
+    sqlite3_close(raw);  // no-op on nullptr; releases a failed-open handle.
     throw std::runtime_error("audit: failed to open '" + db_path + "': " + error);
   }
+  // Take ownership immediately. From here on ANY throw (including out of the
+  // PRAGMA / schema / head setup below) runs db_'s destructor and closes the
+  // handle: a member unique_ptr is destroyed even when the constructor throws,
+  // whereas a raw pointer whose only cleanup lived in ~FaultAuditLog() would leak.
+  db_.reset(raw);
 
-  exec_or_throw(db_, "PRAGMA journal_mode=WAL;", "enable WAL");
-  sqlite3_busy_timeout(db_, 5000);
+  exec_or_throw(db_.get(), "PRAGMA journal_mode=WAL;", "enable WAL");
+  sqlite3_busy_timeout(db_.get(), 5000);
 
   // Authorize this connection for the prune-guard protection trigger (see below).
-  if (sqlite3_create_function_v2(db_, "audit_prune_authorized", 0, SQLITE_UTF8, nullptr, &audit_prune_authorized,
+  if (sqlite3_create_function_v2(db_.get(), "audit_prune_authorized", 0, SQLITE_UTF8, nullptr, &audit_prune_authorized,
                                  nullptr, nullptr, nullptr) != SQLITE_OK) {
-    std::string error = sqlite3_errmsg(db_);
-    sqlite3_close(db_);
-    db_ = nullptr;
-    throw std::runtime_error("audit: failed to register prune-authorization function: " + error);
+    throw std::runtime_error(std::string("audit: failed to register prune-authorization function: ") +
+                             sqlite3_errmsg(db_.get()));
   }
 
   initialize_schema();
   head_ = load_head_locked();
 }
 
-FaultAuditLog::~FaultAuditLog() {
-  if (db_) {
-    sqlite3_close(db_);
-  }
-}
+FaultAuditLog::~FaultAuditLog() = default;
 
 std::string FaultAuditLog::genesis_hash() {
   return kGenesisHash;
@@ -169,7 +179,8 @@ std::string FaultAuditLog::sha256_hex(const std::string & data) {
 std::string FaultAuditLog::canonicalize(int64_t seq, const AuditEvent & event) {
   // Deterministic field order with JSON-escaped string values. Numeric fields
   // render in fixed decimal form. This is the exact byte sequence the hash is
-  // taken over, so it must be stable across processes and re-reads.
+  // taken over, so it must be stable across processes and re-reads (and total
+  // for arbitrary bytes - see json_encode).
   std::string out;
   out.reserve(192);
   out += "{\"seq\":";
@@ -177,24 +188,24 @@ std::string FaultAuditLog::canonicalize(int64_t seq, const AuditEvent & event) {
   out += ",\"ts\":";
   out += std::to_string(event.occurred_at_ns);
   out += ",\"code\":";
-  out += nlohmann::json(event.fault_code).dump();
+  out += json_encode(event.fault_code);
   out += ",\"transition\":";
-  out += nlohmann::json(event.transition).dump();
+  out += json_encode(event.transition);
   out += ",\"severity\":";
   out += std::to_string(static_cast<int>(event.severity));
   out += ",\"status\":";
-  out += nlohmann::json(event.status).dump();
+  out += json_encode(event.status);
   out += ",\"source\":";
-  out += nlohmann::json(event.source_id).dump();
+  out += json_encode(event.source_id);
   out += ",\"description\":";
-  out += nlohmann::json(event.description).dump();
+  out += json_encode(event.description);
   out += "}";
   return out;
 }
 
 void FaultAuditLog::initialize_schema() {
   // Immutable transition rows. seq is the monotonic chain index.
-  exec_or_throw(db_,
+  exec_or_throw(db_.get(),
                 R"(
     CREATE TABLE IF NOT EXISTS audit_log (
       seq INTEGER PRIMARY KEY,
@@ -213,7 +224,7 @@ void FaultAuditLog::initialize_schema() {
                 "create audit_log table");
 
   // Single-row persisted chain head, so the chain resumes across restarts.
-  exec_or_throw(db_,
+  exec_or_throw(db_.get(),
                 R"(
     CREATE TABLE IF NOT EXISTS audit_chain_head (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -225,7 +236,7 @@ void FaultAuditLog::initialize_schema() {
 
   // Sealed-segment anchors written before pruning. Each captures the final
   // (seq, hash) of a pruned prefix so the surviving tail stays verifiable.
-  exec_or_throw(db_,
+  exec_or_throw(db_.get(),
                 R"(
     CREATE TABLE IF NOT EXISTS audit_anchors (
       last_seq INTEGER PRIMARY KEY,
@@ -239,7 +250,7 @@ void FaultAuditLog::initialize_schema() {
   // boundary: anyone able to write the file can also DROP these triggers). The
   // single-row guard lets the in-process rotation prune delete a sealed prefix
   // while every other UPDATE/DELETE on audit_log is rejected.
-  exec_or_throw(db_,
+  exec_or_throw(db_.get(),
                 R"(
     CREATE TABLE IF NOT EXISTS audit_prune_guard (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -268,7 +279,7 @@ void FaultAuditLog::initialize_schema() {
   // out-of-band UPDATE fails because that function is unknown to it. This is still
   // defense-in-depth, not a security boundary: a write-capable adversary can
   // register the same function or DROP this trigger. verify() remains the backstop.
-  exec_or_throw(db_,
+  exec_or_throw(db_.get(),
                 R"(
     CREATE TRIGGER IF NOT EXISTS audit_prune_guard_protect
     BEFORE UPDATE ON audit_prune_guard
@@ -278,10 +289,41 @@ void FaultAuditLog::initialize_schema() {
     END;
   )",
                 "create prune-guard protection trigger");
+
+  // Guard audit_anchors with the SAME in-process prune guard as audit_log.
+  // verify() links the surviving tail back to a sealed anchor, so an out-of-band
+  // writer that could freely INSERT a fake anchor (or DELETE a real one) could
+  // forge a prefix-truncation that is indistinguishable from legitimate pruning.
+  // Anchors are never UPDATEd by this class, and the in-process rotation INSERT +
+  // prune both run with the guard open, so those pass. Defense-in-depth only, NOT
+  // a security boundary: a write-capable adversary can flip the guard or DROP
+  // these triggers; verify() remains the backstop and cannot see a forged
+  // truncation performed this way.
+  exec_or_throw(db_.get(),
+                R"(
+    CREATE TRIGGER IF NOT EXISTS audit_anchors_no_update
+    BEFORE UPDATE ON audit_anchors
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_anchors is not updatable');
+    END;
+    CREATE TRIGGER IF NOT EXISTS audit_anchors_no_insert
+    BEFORE INSERT ON audit_anchors
+    WHEN (SELECT enabled FROM audit_prune_guard WHERE id = 1) IS NOT 1
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_anchors sealing is in-process only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS audit_anchors_no_delete
+    BEFORE DELETE ON audit_anchors
+    WHEN (SELECT enabled FROM audit_prune_guard WHERE id = 1) IS NOT 1
+    BEGIN
+      SELECT RAISE(ABORT, 'audit_anchors pruning is in-process only');
+    END;
+  )",
+                "create audit_anchors protection triggers");
 }
 
 std::optional<ChainHead> FaultAuditLog::read_head_row_locked() const {
-  Stmt stmt(db_, "SELECT seq, record_hash FROM audit_chain_head WHERE id = 1");
+  Stmt stmt(db_.get(), "SELECT seq, record_hash FROM audit_chain_head WHERE id = 1");
   if (stmt.step() == SQLITE_ROW) {
     ChainHead head_record;
     head_record.seq = stmt.column_int64(0);
@@ -304,13 +346,13 @@ ChainHead FaultAuditLog::load_head_locked() const {
 }
 
 void FaultAuditLog::store_head_locked(const ChainHead & head_record) {
-  Stmt stmt(db_,
+  Stmt stmt(db_.get(),
             "INSERT INTO audit_chain_head (id, seq, record_hash) VALUES (1, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, record_hash = excluded.record_hash");
   stmt.bind_int64(1, head_record.seq);
   stmt.bind_text(2, head_record.record_hash);
   if (stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("audit: failed to store head: ") + sqlite3_errmsg(db_));
+    throw std::runtime_error(std::string("audit: failed to store head: ") + sqlite3_errmsg(db_.get()));
   }
 }
 
@@ -322,9 +364,9 @@ int64_t FaultAuditLog::append(const AuditEvent & event) {
   const std::string canonical = canonicalize(new_seq, event);
   const std::string record_hash = sha256_hex(prev_hash + canonical);
 
-  exec_or_throw(db_, "BEGIN IMMEDIATE", "begin append");
+  exec_or_throw(db_.get(), "BEGIN IMMEDIATE", "begin append");
   try {
-    Stmt insert(db_,
+    Stmt insert(db_.get(),
                 "INSERT INTO audit_log (seq, occurred_at_ns, fault_code, transition, severity, status, "
                 "source_id, description, prev_hash, record_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     insert.bind_int64(1, new_seq);
@@ -338,19 +380,29 @@ int64_t FaultAuditLog::append(const AuditEvent & event) {
     insert.bind_text(9, prev_hash);
     insert.bind_text(10, record_hash);
     if (insert.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("audit: failed to insert record: ") + sqlite3_errmsg(db_));
+      throw std::runtime_error(std::string("audit: failed to insert record: ") + sqlite3_errmsg(db_.get()));
     }
 
     store_head_locked(ChainHead{new_seq, record_hash});
-    exec_or_throw(db_, "COMMIT", "commit append");
+    exec_or_throw(db_.get(), "COMMIT", "commit append");
   } catch (...) {
-    exec_or_throw(db_, "ROLLBACK", "rollback append");
+    exec_or_throw(db_.get(), "ROLLBACK", "rollback append");
     throw;
   }
 
   head_ = ChainHead{new_seq, record_hash};
 
-  rotate_if_needed_locked();
+  // The append is durable now that COMMIT succeeded. Retention rotation is
+  // best-effort maintenance (seal + prune of the oldest segment); a rotation
+  // failure (SQLITE_BUSY on a WAL checkpoint, disk-full on the prune DELETE)
+  // must NOT turn a committed append into a reported dropped write. Swallow it,
+  // count it so the maintenance failure stays observable, and let the next
+  // append retry the rotation.
+  try {
+    rotate_if_needed_locked();
+  } catch (const std::exception &) {
+    ++rotation_failures_;
+  }
   return new_seq;
 }
 
@@ -363,7 +415,7 @@ void FaultAuditLog::rotate_if_needed_locked() {
   int64_t count = 0;
   int64_t min_seq = 0;
   {
-    Stmt stmt(db_, "SELECT COUNT(*), COALESCE(MIN(seq), 0) FROM audit_log");
+    Stmt stmt(db_.get(), "SELECT COUNT(*), COALESCE(MIN(seq), 0) FROM audit_log");
     if (stmt.step() == SQLITE_ROW) {
       count = stmt.column_int64(0);
       min_seq = stmt.column_int64(1);
@@ -382,7 +434,7 @@ void FaultAuditLog::rotate_if_needed_locked() {
   std::string boundary_hash;
   int64_t sealed_at_ns = 0;
   {
-    Stmt stmt(db_, "SELECT record_hash, occurred_at_ns FROM audit_log WHERE seq = ?");
+    Stmt stmt(db_.get(), "SELECT record_hash, occurred_at_ns FROM audit_log WHERE seq = ?");
     stmt.bind_int64(1, boundary_seq);
     if (stmt.step() != SQLITE_ROW) {
       // Should not happen given the count; leave the log intact rather than
@@ -393,33 +445,45 @@ void FaultAuditLog::rotate_if_needed_locked() {
     sealed_at_ns = stmt.column_int64(1);
   }
 
-  exec_or_throw(db_, "BEGIN IMMEDIATE", "begin rotate");
+  exec_or_throw(db_.get(), "BEGIN IMMEDIATE", "begin rotate");
   try {
-    Stmt anchor(db_,
+    // Open the prune guard FIRST so every guarded write below - the anchor
+    // INSERT, the sealed-prefix audit_log DELETE, and the old-anchor DELETE -
+    // passes its guard-gated trigger. Both the flip and the writes are in this
+    // transaction, so a ROLLBACK restores the guard to its closed state.
+    exec_or_throw(db_.get(), "UPDATE audit_prune_guard SET enabled = 1 WHERE id = 1", "open prune guard");
+
+    Stmt anchor(db_.get(),
                 "INSERT INTO audit_anchors (last_seq, sealed_at_ns, last_hash) VALUES (?, ?, ?) "
                 "ON CONFLICT(last_seq) DO NOTHING");
     anchor.bind_int64(1, boundary_seq);
     anchor.bind_int64(2, sealed_at_ns);
     anchor.bind_text(3, boundary_hash);
     if (anchor.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("audit: failed to write anchor: ") + sqlite3_errmsg(db_));
+      throw std::runtime_error(std::string("audit: failed to write anchor: ") + sqlite3_errmsg(db_.get()));
     }
 
-    // Open the prune guard so the BEFORE DELETE trigger allows this sealed-prefix
-    // delete. Both the guard flip and the delete are in this transaction, so a
-    // ROLLBACK restores the guard to its closed state.
-    exec_or_throw(db_, "UPDATE audit_prune_guard SET enabled = 1 WHERE id = 1", "open prune guard");
-
-    Stmt del(db_, "DELETE FROM audit_log WHERE seq <= ?");
+    Stmt del(db_.get(), "DELETE FROM audit_log WHERE seq <= ?");
     del.bind_int64(1, boundary_seq);
     if (del.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("audit: failed to prune records: ") + sqlite3_errmsg(db_));
+      throw std::runtime_error(std::string("audit: failed to prune records: ") + sqlite3_errmsg(db_.get()));
     }
 
-    exec_or_throw(db_, "UPDATE audit_prune_guard SET enabled = 0 WHERE id = 1", "close prune guard");
-    exec_or_throw(db_, "COMMIT", "commit rotate");
+    // Bound audit_anchors: verify() only ever needs the anchor at the current
+    // prune boundary (the oldest retained row links to it, and an all-pruned log
+    // links its head to it). Older anchors describe already-forgotten prefixes
+    // and are never read again, so drop them - otherwise audit_anchors grows one
+    // row per rotation without bound while audit_log stays at the cap.
+    Stmt prune_anchors(db_.get(), "DELETE FROM audit_anchors WHERE last_seq < ?");
+    prune_anchors.bind_int64(1, boundary_seq);
+    if (prune_anchors.step() != SQLITE_DONE) {
+      throw std::runtime_error(std::string("audit: failed to prune anchors: ") + sqlite3_errmsg(db_.get()));
+    }
+
+    exec_or_throw(db_.get(), "UPDATE audit_prune_guard SET enabled = 0 WHERE id = 1", "close prune guard");
+    exec_or_throw(db_.get(), "COMMIT", "commit rotate");
   } catch (...) {
-    exec_or_throw(db_, "ROLLBACK", "rollback rotate");
+    exec_or_throw(db_.get(), "ROLLBACK", "rollback rotate");
     throw;
   }
 }
@@ -434,7 +498,7 @@ std::vector<AuditRecord> FaultAuditLog::read(int64_t limit, int64_t after_seq) c
     sql += " LIMIT ?";
   }
 
-  Stmt stmt(db_, sql.c_str());
+  Stmt stmt(db_.get(), sql.c_str());
   stmt.bind_int64(1, after_seq);
   if (limit > 0) {
     stmt.bind_int64(2, limit);
@@ -465,11 +529,16 @@ ChainHead FaultAuditLog::head() const {
 
 int64_t FaultAuditLog::record_count() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  Stmt stmt(db_, "SELECT COUNT(*) FROM audit_log");
+  Stmt stmt(db_.get(), "SELECT COUNT(*) FROM audit_log");
   if (stmt.step() != SQLITE_ROW) {
     return 0;
   }
   return stmt.column_int64(0);
+}
+
+int64_t FaultAuditLog::rotation_failures() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return rotation_failures_;
 }
 
 AuditVerifyResult FaultAuditLog::verify() const {
@@ -478,7 +547,7 @@ AuditVerifyResult FaultAuditLog::verify() const {
   AuditVerifyResult result;
 
   // Walk every retained row oldest-first, recomputing each link.
-  Stmt stmt(db_,
+  Stmt stmt(db_.get(),
             "SELECT seq, occurred_at_ns, fault_code, transition, severity, status, source_id, description, "
             "prev_hash, record_hash FROM audit_log ORDER BY seq ASC");
 
@@ -511,7 +580,7 @@ AuditVerifyResult FaultAuditLog::verify() const {
           return result;
         }
       } else {
-        Stmt anchor(db_, "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
+        Stmt anchor(db_.get(), "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
         anchor.bind_int64(1, rec.seq - 1);
         if (anchor.step() != SQLITE_ROW) {
           result.ok = false;
@@ -582,7 +651,7 @@ AuditVerifyResult FaultAuditLog::verify() const {
     // Empty retained log with a head past genesis: everything was pruned, so the
     // head must point at a sealed anchor. (No head row, or a genesis head, on an
     // empty log is the never-written case and is fine.)
-    Stmt anchor(db_, "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
+    Stmt anchor(db_.get(), "SELECT last_hash FROM audit_anchors WHERE last_seq = ?");
     anchor.bind_int64(1, persisted->seq);
     if (anchor.step() != SQLITE_ROW || anchor.column_text(0) != persisted->record_hash) {
       result.ok = false;

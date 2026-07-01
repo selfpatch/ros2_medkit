@@ -366,9 +366,9 @@ FaultManagerNode::~FaultManagerNode() {
     rosbag_capture_->stop();
   }
 
-  // Close the chain with a "logging deactivated" marker (CIR (EU) 2024/2690
-  // sec. 3.2). Best-effort and appended directly (recorded even in confirmed_only
-  // mode); a failure here must not throw out of the destructor.
+  // Close the chain with a "logging deactivated" marker. Best-effort and appended
+  // directly (recorded even in confirmed_only mode); a failure here must not throw
+  // out of the destructor.
   if (audit_log_) {
     try {
       AuditEvent marker;
@@ -436,9 +436,12 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
     retention = 0;
   }
 
-  // Fail-closed: when set, an append failure is a hard error (the operation
-  // aborts and the audit is marked unhealthy) instead of being logged and
-  // silently dropped. Off by default so the audit never blocks fault processing.
+  // Fail-closed: when set, an audit append failure is re-raised as a hard error
+  // (fail-FAST) so a broken audit chain cannot be silently outlived. It does NOT
+  // roll back the fault-state change that triggered the transition - that change
+  // has already committed to the SEPARATE fault-store DB and cross-DB atomicity
+  // is not achievable here - it only signals the broken audit so an operator must
+  // act. Off by default so the audit never blocks fault processing.
   audit_fail_closed_ = declare_parameter<bool>("audit_log.fail_closed", false);
 
   // Path: explicit override, else a sibling of the fault DB, else :memory:.
@@ -478,9 +481,9 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
                 audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention,
                 audit_fail_closed_ ? "true" : "false", log->head().seq);
 
-    // Record a "logging activated" marker so the chain documents its own start
-    // (CIR (EU) 2024/2690 sec. 3.2). Appended directly, so it is recorded even in
-    // confirmed_only mode. Best-effort: a failure here does not abort startup.
+    // Record a "logging activated" marker so the chain documents its own start.
+    // Appended directly, so it is recorded even in confirmed_only mode.
+    // Best-effort: a failure here does not abort startup.
     AuditEvent marker;
     marker.fault_code = "__audit__";
     marker.transition = kTransitionLoggingActivated;
@@ -522,18 +525,26 @@ void FaultManagerNode::audit_transition(const char * transition, const ros2_medk
     audit_log_->append(event);
   } catch (const std::exception & e) {
     // A dropped append is a hole in the chain that verify() can never see (it
-    // proves nothing was deleted, not that everything was written). Always make
-    // it loud and visible via the health counter so the gap is observable.
+    // proves nothing was deleted, not that everything was written). The fault-
+    // state transition that triggered this has ALREADY committed to the fault
+    // store, which is a SEPARATE SQLite database: there is no cross-DB atomicity,
+    // so this failure does NOT (and cannot) roll that change back. All we can do
+    // is make the broken audit loud and observable via the health signals.
     audit_dropped_writes_.fetch_add(1, std::memory_order_relaxed);
     audit_healthy_.store(false, std::memory_order_relaxed);
     const uint64_t dropped = audit_dropped_writes_.load(std::memory_order_relaxed);
     RCLCPP_ERROR(get_logger(), "Failed to append audit record for '%s' (%s): %s [audit dropped_writes=%" PRIu64 "]",
                  fault.fault_code.c_str(), transition, e.what(), dropped);
     if (audit_fail_closed_) {
-      // Compliance-strict: refuse to proceed as if nothing happened. Abort the
-      // operation so the broken audit cannot be silently outlived.
+      // Explicit fail-FAST: surface the broken audit to the caller so a
+      // compliance-strict deployment learns the chain is now incomplete and an
+      // operator must act. Rethrowing propagates that signal ONLY - the fault-
+      // state change already committed (see above) and is NOT rolled back; this
+      // is not atomicity.
       RCLCPP_FATAL(get_logger(),
-                   "audit_log.fail_closed is set: aborting operation because the audit append failed for '%s' (%s)",
+                   "audit_log.fail_closed is set: audit append failed for '%s' (%s); the audit chain is now "
+                   "incomplete and requires operator action. The already-committed fault-state change is NOT "
+                   "rolled back (the fault store is a separate database).",
                    fault.fault_code.c_str(), transition);
       throw;
     }
