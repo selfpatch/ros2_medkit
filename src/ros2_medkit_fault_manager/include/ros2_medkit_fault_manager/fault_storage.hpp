@@ -223,9 +223,9 @@ class FaultStorage {
   /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
   /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
   /// the latch. Default is a no-op (in-memory storage starts empty).
-  /// @return number of faults reclassified
-  virtual size_t reclassify_healed_as_cleared() {
-    return 0;
+  /// @return fault codes of the reclassified faults, so the caller can audit each transition
+  virtual std::vector<std::string> reclassify_healed_as_cleared() {
+    return {};
   }
 
  protected:
@@ -274,7 +274,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
-  size_t reclassify_healed_as_cleared() override;
+  std::vector<std::string> reclassify_healed_as_cleared() override;
 
  private:
   /// Update fault status based on debounce counter and given config

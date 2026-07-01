@@ -629,8 +629,24 @@ bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   return sqlite3_changes(db_) > 0;
 }
 
-size_t SqliteFaultStorage::reclassify_healed_as_cleared() {
+std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared() {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Collect the codes that will flip first so the caller can audit each one. The
+  // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
+  // so the returned list matches the rows actually reclassified below.
+  std::vector<std::string> reclassified;
+  {
+    SqliteStatement select_stmt(db_, "SELECT fault_code FROM faults WHERE status = ?");
+    select_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+    while (select_stmt.step() == SQLITE_ROW) {
+      reclassified.push_back(select_stmt.column_text(0));
+    }
+  }
+
+  if (reclassified.empty()) {
+    return reclassified;
+  }
 
   // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
   SqliteStatement del(db_,
@@ -646,7 +662,7 @@ size_t SqliteFaultStorage::reclassify_healed_as_cleared() {
   if (stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to reclassify HEALED faults: ") + sqlite3_errmsg(db_));
   }
-  return static_cast<size_t>(sqlite3_changes(db_));
+  return reclassified;
 }
 
 size_t SqliteFaultStorage::size() const {

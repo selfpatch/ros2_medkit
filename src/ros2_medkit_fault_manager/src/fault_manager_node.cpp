@@ -177,11 +177,23 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   storage_->set_debounce_config(global_config_);
 
   // One-time cleanup: when healing is disabled, a HEALED row left by a previous (healing-enabled) run
-  // would behave inconsistently under the latch, so reclassify it as CLEARED at startup.
+  // would behave inconsistently under the latch, so reclassify it as CLEARED at startup. Each flipped
+  // fault is audited (the audit log is already constructed above); without this the reclassification
+  // would be invisible to the audit log's verify().
   if (!global_config_.healing_enabled) {
-    size_t reclassified = storage_->reclassify_healed_as_cleared();
-    if (reclassified > 0) {
-      RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED", reclassified);
+    const auto reclassified = storage_->reclassify_healed_as_cleared();
+    if (!reclassified.empty()) {
+      if (audit_log_) {
+        const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
+        for (const auto & fault_code : reclassified) {
+          auto fault = storage_->get_fault(fault_code);
+          if (fault) {
+            audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
+          }
+        }
+      }
+      RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED",
+                  reclassified.size());
     }
   }
 

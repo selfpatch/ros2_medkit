@@ -467,16 +467,16 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults()
   return result;
 }
 
-size_t InMemoryFaultStorage::reclassify_healed_as_cleared() {
+std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared() {
   std::lock_guard<std::mutex> lock(mutex_);
-  size_t changed = 0;
+  std::vector<std::string> reclassified;
   for (auto & [code, state] : faults_) {
     if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
-      ++changed;
+      reclassified.push_back(code);
     }
   }
-  return changed;
+  return reclassified;
 }
 
 }  // namespace ros2_medkit_fault_manager

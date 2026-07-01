@@ -687,8 +687,11 @@ TEST_F(SqliteFaultStorageTest, ReclassifyHealedAsCleared) {
   }
   ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
 
-  EXPECT_EQ(storage_->reclassify_healed_as_cleared(), 1u);
+  const auto reclassified = storage_->reclassify_healed_as_cleared();
+  ASSERT_EQ(reclassified.size(), 1u);
+  EXPECT_EQ(reclassified[0], "F");
   EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CLEARED);
+  EXPECT_TRUE(storage_->reclassify_healed_as_cleared().empty());
 }
 
 TEST_F(SqliteFaultStorageTest, HealingWhenEnabled) {

@@ -29,6 +29,7 @@
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
@@ -717,8 +718,11 @@ TEST_F(FaultStorageTest, ReclassifyHealedAsCleared) {
   }
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
 
-  EXPECT_EQ(storage_.reclassify_healed_as_cleared(), 1u);
+  const auto reclassified = storage_.reclassify_healed_as_cleared();
+  ASSERT_EQ(reclassified.size(), 1u);
+  EXPECT_EQ(reclassified[0], "F");
   EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CLEARED);
+  EXPECT_TRUE(storage_.reclassify_healed_as_cleared().empty());
 }
 
 // Unit tests for the shared debounce helpers.
@@ -1817,6 +1821,99 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   EXPECT_TRUE(saw_confirmed) << "timer-driven confirmation was not audited";
   EXPECT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_CONFIRMED);
   EXPECT_TRUE(audit->verify().ok);
+}
+
+namespace {
+
+/// Leave a HEALED fault in a sqlite fault DB, as a previous healing-enabled run would.
+void seed_healed_fault(const std::string & db_path, const std::string & fault_code) {
+  ros2_medkit_fault_manager::SqliteFaultStorage seed(db_path);
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+  rclcpp::Clock clock;
+  seed.report_fault_event(fault_code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "stale", "/robot/src",
+                          clock.now(), config);
+  for (int i = 0; i < 4; ++i) {
+    seed.report_fault_event(fault_code, ReportFault::Request::EVENT_PASSED, 0, "", "/robot/src", clock.now(), config);
+  }
+  ASSERT_EQ(seed.get_fault(fault_code)->status, Fault::STATUS_HEALED);
+}
+
+std::filesystem::path make_temp_dir(const char * prefix) {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dist;
+  auto dir = std::filesystem::temp_directory_path() / (std::string(prefix) + std::to_string(dist(gen)));
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
+}  // namespace
+
+// Startup reclassification (HEALED->CLEARED when healing is disabled) flips faults
+// directly in storage, so each one must be audited or the transition is invisible
+// to the audit log's verify(). Seeds a HEALED row, restarts with healing disabled
+// and the audit on, and expects exactly one "cleared" row with the startup source.
+TEST(FaultAuditStartupReclassifyTest, StartupReclassifyAppendsClearedRow) {
+  const auto dir = make_temp_dir("test_startup_reclassify_");
+  const std::string db_path = (dir / "faults.db").string();
+  const std::string audit_path = (dir / "audit.db").string();
+  seed_healed_fault(db_path, "STALE_HEALED");
+
+  {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "sqlite"},
+        {"database_path", db_path},
+        {"healing_enabled", false},
+        {"audit_log.enabled", true},
+        {"audit_log.database_path", audit_path},
+    });
+    auto node = std::make_shared<FaultManagerNode>(options);
+
+    EXPECT_EQ(node->get_storage().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
+
+    const auto * audit = node->get_audit_log_for_test();
+    ASSERT_NE(audit, nullptr);
+    size_t cleared_rows = 0;
+    for (const auto & rec : audit->read()) {
+      if (rec.event.fault_code == "STALE_HEALED") {
+        EXPECT_EQ(rec.event.transition, ros2_medkit_fault_manager::kTransitionCleared);
+        EXPECT_EQ(rec.event.source_id, "startup_reclassify");
+        EXPECT_EQ(rec.event.status, Fault::STATUS_CLEARED);
+        ++cleared_rows;
+      }
+    }
+    EXPECT_EQ(cleared_rows, 1u) << "expected exactly one audited startup reclassification";
+
+    auto result = audit->verify();
+    EXPECT_TRUE(result.ok) << result.error;
+  }
+  std::filesystem::remove_all(dir);
+}
+
+// With the audit log disabled, startup reclassification must behave exactly as
+// before: the fault is flipped to CLEARED and no audit database is created.
+TEST(FaultAuditStartupReclassifyTest, DisabledAuditStillReclassifies) {
+  const auto dir = make_temp_dir("test_startup_reclassify_off_");
+  const std::string db_path = (dir / "faults.db").string();
+  seed_healed_fault(db_path, "STALE_HEALED");
+
+  {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "sqlite"},
+        {"database_path", db_path},
+        {"healing_enabled", false},  // default audit_log.enabled=false
+    });
+    auto node = std::make_shared<FaultManagerNode>(options);
+
+    EXPECT_EQ(node->get_storage().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
+    EXPECT_EQ(node->get_audit_log_for_test(), nullptr);
+    EXPECT_FALSE(std::filesystem::exists(dir / "fault_audit.db"));
+  }
+  std::filesystem::remove_all(dir);
 }
 
 namespace {
