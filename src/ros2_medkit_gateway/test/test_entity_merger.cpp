@@ -215,6 +215,52 @@ TEST(EntityMerger, components_merge_takes_remote_description_when_local_empty) {
   EXPECT_EQ(result[0].description, "Engine control unit for powertrain management");
 }
 
+TEST(EntityMerger, components_collision_gapfills_identity_preserving_remote_provenance) {
+  // A remote component relays a nameplate field it read over "opcua". On an ID
+  // collision the local side gap-fills the empty field but must keep the field's
+  // ORIGINAL provenance ("opcua"), matching the provenance a no-collision add
+  // would carry - not the low-authority "peer:<name>" relay tag.
+  EntityMerger merger("subsystem_b");
+
+  auto local_comp = make_component("engine_ctrl", "powertrain");  // no identity
+  local_comp.identity.manufacturer = "Siemens";
+  local_comp.identity.provenance["manufacturer"] = "manifest";
+
+  auto remote_comp = make_component("engine_ctrl", "powertrain");
+  remote_comp.identity.serial_number = "SN-42";
+  remote_comp.identity.provenance["serial_number"] = "opcua";
+
+  auto result = merger.merge_components({local_comp}, {remote_comp});
+
+  ASSERT_EQ(result.size(), 1u);
+  // Remote-only field is filled, carrying its original origin.
+  EXPECT_EQ(result[0].identity.serial_number, "SN-42");
+  EXPECT_EQ(result[0].identity.provenance.at("serial_number"), "opcua");
+  // Locally-known field is protected: the peer is lowest authority for identity.
+  EXPECT_EQ(result[0].identity.manufacturer, "Siemens");
+  EXPECT_EQ(result[0].identity.provenance.at("manufacturer"), "manifest");
+  // ... while the peer remains the routed (state-authoritative) owner.
+  EXPECT_EQ(merger.get_routing_table().at("engine_ctrl"), "subsystem_b");
+}
+
+TEST(EntityMerger, components_collision_peer_does_not_override_local_identity) {
+  EntityMerger merger("subsystem_b");
+
+  auto local_comp = make_component("engine_ctrl", "powertrain");
+  local_comp.identity.manufacturer = "Siemens";
+  local_comp.identity.provenance["manufacturer"] = "manifest";
+
+  auto remote_comp = make_component("engine_ctrl", "powertrain");
+  remote_comp.identity.manufacturer = "PeerVendor";  // must NOT win
+  remote_comp.identity.provenance["manufacturer"] = "opcua";
+
+  auto result = merger.merge_components({local_comp}, {remote_comp});
+
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].identity.manufacturer, "Siemens");
+  EXPECT_EQ(result[0].identity.provenance.at("manufacturer"), "manifest");
+}
+
 TEST(EntityMerger, components_no_collision_no_prefix) {
   EntityMerger merger("subsystem_b");
 

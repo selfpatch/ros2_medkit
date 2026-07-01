@@ -69,18 +69,28 @@ LayerOutput PluginLayer::discover() {
   output.apps = std::move(result.new_entities.apps);
   output.functions = std::move(result.new_entities.functions);
 
-  // Tag all plugin-created entities with source="plugin"
+  // Tag plugin-created entities with source="plugin" as a default, but preserve
+  // a concrete source a provider already set (e.g. a protocol tag like "opcua"),
+  // so identity-merge precedence can honour it (see identity_merge.hpp).
   for (auto & area : output.areas) {
-    area.source = "plugin";
+    if (area.source.empty()) {
+      area.source = "plugin";
+    }
   }
   for (auto & comp : output.components) {
-    comp.source = "plugin";
+    if (comp.source.empty()) {
+      comp.source = "plugin";
+    }
   }
   for (auto & app : output.apps) {
-    app.source = "plugin";
+    if (app.source.empty()) {
+      app.source = "plugin";
+    }
   }
   for (auto & func : output.functions) {
-    func.source = "plugin";
+    if (func.source.empty()) {
+      func.source = "plugin";
+    }
   }
 
   // Validate entity IDs from plugin

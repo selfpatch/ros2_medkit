@@ -54,6 +54,52 @@ TEST(AssetIdentityModel, ToJsonOnlyEmitsNonEmptyFields) {
   EXPECT_FALSE(j.contains("firmwareVersion"));
 }
 
+// Wire-level contract: field keys are camelCase (serialNumber) while their
+// provenance keys stay snake_case (serial_number) under _provenance. Pins the
+// documented mapping so a consumer can rely on the field -> provenance-key
+// translation and it cannot silently drift.
+TEST(AssetIdentityModel, ProvenanceKeysStaySnakeCaseWhileFieldKeysAreCamelCase) {
+  AssetIdentity id;
+  id.serial_number = "SN-42";
+  id.hardware_revision = "A2";
+  id.firmware_version = "2.9.4";
+  id.software_version = "1.0";
+  id.network_endpoint = "opc.tcp://192.168.1.10:4840";
+  id.extra["asset_tag"] = "TAG-7";
+  id.provenance["serial_number"] = "opcua";
+  id.provenance["hardware_revision"] = "opcua";
+  id.provenance["firmware_version"] = "opcua";
+  id.provenance["software_version"] = "manifest";
+  id.provenance["network_endpoint"] = "opcua";
+  id.provenance["extra.asset_tag"] = "manifest";
+
+  auto j = id.to_json();
+
+  // Fields serialize under camelCase keys ...
+  EXPECT_TRUE(j.contains("serialNumber"));
+  EXPECT_TRUE(j.contains("hardwareRevision"));
+  EXPECT_TRUE(j.contains("firmwareVersion"));
+  EXPECT_TRUE(j.contains("softwareVersion"));
+  EXPECT_TRUE(j.contains("networkEndpoint"));
+  // ... but the camelCase names must NOT leak into _provenance.
+  EXPECT_FALSE(j["_provenance"].contains("serialNumber"));
+  EXPECT_FALSE(j["_provenance"].contains("hardwareRevision"));
+
+  // Provenance is keyed by the snake_case field name / "extra." prefix.
+  EXPECT_EQ(j["_provenance"]["serial_number"], "opcua");
+  EXPECT_EQ(j["_provenance"]["hardware_revision"], "opcua");
+  EXPECT_EQ(j["_provenance"]["firmware_version"], "opcua");
+  EXPECT_EQ(j["_provenance"]["software_version"], "manifest");
+  EXPECT_EQ(j["_provenance"]["network_endpoint"], "opcua");
+  EXPECT_EQ(j["_provenance"]["extra.asset_tag"], "manifest");
+
+  // The pairing survives a round-trip through from_json.
+  AssetIdentity parsed = AssetIdentity::from_json(j);
+  EXPECT_EQ(parsed.serial_number, "SN-42");
+  EXPECT_EQ(parsed.provenance.at("serial_number"), "opcua");
+  EXPECT_EQ(parsed, id);
+}
+
 TEST(AssetIdentityModel, JsonRoundTrip) {
   AssetIdentity id;
   id.manufacturer = "Siemens";
@@ -242,6 +288,57 @@ TEST(MergeIdentity, ConfigurablePrecedenceOrder) {
 
   EXPECT_EQ(merged.manufacturer, "ManifestVendor");
   EXPECT_EQ(merged.provenance.at("manufacturer"), "manifest");
+}
+
+TEST(MergeIdentity, PreservesIncomingFieldProvenanceOnGapFill) {
+  // A relaying source (low authority, e.g. a peer) carries a field it originally
+  // read over "opcua". The gap-filled field must keep provenance "opcua", not be
+  // re-stamped with the low-authority relay tag, so the recorded origin matches a
+  // wholesale copy of the same source.
+  IdentityMergeConfig cfg;
+
+  AssetIdentity merged;
+  merged.manufacturer = "Siemens";
+  stamp_identity_provenance(merged, "manifest");
+
+  AssetIdentity relayed;
+  relayed.serial_number = "SN-42";
+  relayed.provenance["serial_number"] = "opcua";  // origin the relay learned
+
+  merge_identity(merged, relayed, "peer:robot_a", cfg);
+
+  EXPECT_EQ(merged.serial_number, "SN-42");
+  EXPECT_EQ(merged.provenance.at("serial_number"), "opcua");
+  // The relay's low authority still protects the locally-known field.
+  EXPECT_EQ(merged.manufacturer, "Siemens");
+  EXPECT_EQ(merged.provenance.at("manufacturer"), "manifest");
+}
+
+TEST(MergeIdentity, FallsBackToSourceNameWhenIncomingHasNoProvenance) {
+  // No provenance on the incoming source -> record the authority tag it merged under.
+  IdentityMergeConfig cfg;
+
+  AssetIdentity merged;
+  AssetIdentity incoming;
+  incoming.serial_number = "SN-9";  // no provenance entry
+  merge_identity(merged, incoming, "opcua", cfg);
+
+  EXPECT_EQ(merged.serial_number, "SN-9");
+  EXPECT_EQ(merged.provenance.at("serial_number"), "opcua");
+}
+
+TEST(MergeIdentity, PreservesIncomingExtraProvenanceOnGapFill) {
+  IdentityMergeConfig cfg;
+
+  AssetIdentity merged;
+  AssetIdentity relayed;
+  relayed.extra["mac"] = "00:11:22:33:44:55";
+  relayed.provenance["extra.mac"] = "ethernet_ip";
+
+  merge_identity(merged, relayed, "peer:robot_a", cfg);
+
+  EXPECT_EQ(merged.extra.at("mac"), "00:11:22:33:44:55");
+  EXPECT_EQ(merged.provenance.at("extra.mac"), "ethernet_ip");
 }
 
 TEST(MergeIdentity, KnownSourceOverridesUnseededTarget) {

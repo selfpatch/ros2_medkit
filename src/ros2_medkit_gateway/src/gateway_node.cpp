@@ -1964,14 +1964,28 @@ void GatewayNode::trigger_reentrant_notification_for_testing(const EntityChangeS
 }
 
 void GatewayNode::stop_discovery_refresh_for_testing() {
-  // Cancel the two refresh drivers and drop the graph event so no further
+  // Cancel the refresh drivers and drop the graph event so no further
   // refresh_cache() pass can clobber a test-injected entity cache. Safe to
   // call right after construction (the constructor already ran one refresh).
+  //
+  // Mirror the destructor's teardown order: cancel AND reset all three timers
+  // before releasing graph_event_. The racing party is rclcpp's graph-listener
+  // thread (started by get_graph_event() in the constructor, independent of the
+  // executor), which may concurrently iterate the registered graph events.
+  // Resetting the timers first drops their [this]-captured graph_event_ copies,
+  // so the reset below shrinks the window on the Event control block exactly as
+  // ~GatewayNode does.
   if (graph_check_timer_) {
     graph_check_timer_->cancel();
+    graph_check_timer_.reset();
   }
   if (backstop_timer_) {
     backstop_timer_->cancel();
+    backstop_timer_.reset();
+  }
+  if (startup_summary_timer_) {
+    startup_summary_timer_->cancel();
+    startup_summary_timer_.reset();
   }
   graph_event_.reset();
 }
@@ -2102,7 +2116,9 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(area.id);
-            area.source = "plugin";
+            if (area.source.empty()) {
+              area.source = "plugin";
+            }
             areas.push_back(std::move(area));
           }
           for (auto & comp : result.new_entities.components) {
@@ -2112,7 +2128,9 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(comp.id);
-            comp.source = "plugin";
+            if (comp.source.empty()) {
+              comp.source = "plugin";
+            }
             all_components.push_back(std::move(comp));
           }
           for (auto & app : result.new_entities.apps) {
@@ -2121,7 +2139,9 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(app.id);
-            app.source = "plugin";
+            if (app.source.empty()) {
+              app.source = "plugin";
+            }
             apps.push_back(std::move(app));
           }
           for (auto & func : result.new_entities.functions) {
@@ -2131,7 +2151,9 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(func.id);
-            func.source = "plugin";
+            if (func.source.empty()) {
+              func.source = "plugin";
+            }
             functions.push_back(std::move(func));
           }
         } else {
