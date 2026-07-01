@@ -88,6 +88,9 @@ class ManifestParser {
   Component parse_component(const YAML::Node & node) const;
   /// Parse a manual-inventory asset entry into a Component (identity populated).
   Component parse_asset(const YAML::Node & node) const;
+  /// Parse an optional `identity:` block into an AssetIdentity, stamping
+  /// per-field provenance to "manifest".
+  AssetIdentity parse_identity(const YAML::Node & node) const;
   App parse_app(const YAML::Node & node) const;
   Function parse_function(const YAML::Node & node) const;
   ManifestConfig parse_config(const YAML::Node & node) const;
