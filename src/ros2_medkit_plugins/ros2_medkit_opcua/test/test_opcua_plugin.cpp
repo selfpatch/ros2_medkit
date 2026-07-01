@@ -448,4 +448,22 @@ TEST(ReadSnapshotClassify, TransientReadFailureIsKeptNotFed) {
   EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::KeepOnly);
 }
 
+TEST(ReadSnapshotClassify, ActiveWithUnreadableRetainIsFedNotSkipped) {
+  // Regression (issue #478): Retain defaults false when its optional node is
+  // unreadable this scan. A reliably-active condition must be Fed (so it lands
+  // in ``seen``), never Skipped on the Retain check - otherwise reconcile would
+  // clear a still-active fault on a modeled source.
+  auto d = OpcuaPoller::classify_read_snapshot(make_snap(/*enabled=*/true, /*active=*/true, /*retain=*/false));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::Feed);
+}
+
+TEST(ReadSnapshotClassify, ActiveButFlaggedUnreliableIsKeptNotFed) {
+  // KeepOnly still wins over the active fast-path: an active condition whose
+  // snapshot is flagged unreliable (e.g. a transient Retain read failure) is
+  // preserved via ``seen`` but not fed an untrustworthy state.
+  auto d = OpcuaPoller::classify_read_snapshot(
+      make_snap(/*enabled=*/true, /*active=*/true, /*retain=*/false, /*read_failed=*/true));
+  EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::KeepOnly);
+}
+
 }  // namespace ros2_medkit_gateway

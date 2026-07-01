@@ -949,11 +949,27 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       snap.confirmed_state = read_state_id(child, "ConfirmedState", true, nullptr, nullptr);
 
       try {
-        auto retain = child.browseChild({{0, "Retain"}}).readValue();
-        if (retain.isType<bool>()) {
-          snap.retain = retain.getScalarCopy<bool>();
+        auto retain_node = child.browseChild({{0, "Retain"}});
+        try {
+          auto retain = retain_node.readValue();
+          if (retain.isType<bool>()) {
+            snap.retain = retain.getScalarCopy<bool>();
+          }
+        } catch (const opcua::BadStatus &) {
+          // Retain node resolved but its value could not be read this scan: a
+          // transient failure. Do NOT let retain silently default to false
+          // (which would Skip an inactive-but-retained condition and let
+          // reconcile clear a still-tracked fault). Flag the snapshot unreliable
+          // so it is kept (KeepOnly), not dropped (issue #478).
+          snap.state_read_failed = true;
         }
-      } catch (const opcua::BadStatus &) {
+      } catch (const opcua::BadStatus & e) {
+        // A genuinely absent Retain path (optional on some servers) leaves
+        // retain=false. A transient browse failure resolving it is unreliable,
+        // so keep-and-flag rather than trust the default.
+        if (!is_path_absent_code(e.code())) {
+          snap.state_read_failed = true;
+        }
       }
       try {
         auto sev = child.browseChild({{0, "Severity"}}).readValue();

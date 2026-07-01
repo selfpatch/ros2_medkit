@@ -420,9 +420,18 @@ OpcuaPoller::classify_read_snapshot(const OpcuaClient::ConditionStateSnapshot & 
   if (!snap.enabled_state) {
     return ReadReplayDisposition::Skip;
   }
+  // A reliably-read ActiveState=true condition is always interesting and must
+  // never be Skipped on the Retain check below (issue #478). Retain is an
+  // optional node that can read false by default when it is unreadable this
+  // scan; Skipping a live, reliably-active condition on that basis would drop
+  // it from ``seen`` and let reconcile clear a still-active fault on a modeled
+  // source. ConditionRefresh always replays an active condition, so mirror it.
+  if (snap.active_state) {
+    return ReadReplayDisposition::Feed;
+  }
   // Retain mirrors ConditionRefresh's interesting-state filter (Part 9
-  // §5.5.2): only Retain==true conditions are replayed. A condition that has
-  // gone quiet (Retain==false) is no longer of interest.
+  // §5.5.2): only Retain==true conditions are replayed. An inactive condition
+  // that has gone quiet (Retain==false) is no longer of interest.
   if (!snap.retain) {
     return ReadReplayDisposition::Skip;
   }
@@ -453,15 +462,25 @@ void OpcuaPoller::read_fallback_replay() {
       failed_sources.insert(cfg.source_node_id_str);
       continue;
     }
-    if (!conditions.empty()) {
-      // The source exposes Condition instances as nodes -> read-fallback is
-      // viable here and reconcile may clear stale faults for it.
+    const bool has_reliable_condition =
+        std::any_of(conditions.begin(), conditions.end(), [](const OpcuaClient::ConditionStateSnapshot & s) {
+          return !s.state_read_failed;
+        });
+    if (has_reliable_condition) {
+      // The source positively exposes at least one RELIABLY-read Condition
+      // instance node -> read-fallback is viable here and reconcile may clear
+      // stale faults for it.
       read_modeled_sources_.insert(cfg.source_node_id_str);
       read_unsupported_warned_sources_.erase(cfg.source_node_id_str);
     } else if (read_modeled_sources_.find(cfg.source_node_id_str) == read_modeled_sources_.end()) {
-      // Successful scan, zero Condition instance nodes, and this source has
-      // never yielded any. Almost certainly an EventNotifier-only server
-      // (e.g. S7-1500). Do NOT clear its tracked faults; warn once.
+      // Either zero Condition instance nodes, or every node this scan was a
+      // transient (unreliable) read - and this source has never yielded a
+      // reliably-read condition. Treat an all-transient scan exactly like an
+      // empty/unsupported scan: an EventNotifier-only server (e.g. S7-1500)
+      // yields zero condition nodes, and a lone transient browse error on a
+      // non-condition child must NOT flip the source into 'modeled' (which
+      // would let reconcile wipe the live event-fault set, whose ConditionIds
+      // are never in ``seen``). Do NOT clear its tracked faults; warn once.
       if (read_unsupported_warned_sources_.insert(cfg.source_node_id_str).second) {
         warn_operator(
             "OPC-UA read-based active-condition replay found no Condition instance nodes under source '" +
