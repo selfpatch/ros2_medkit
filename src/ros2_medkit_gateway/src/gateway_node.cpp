@@ -279,6 +279,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // disabled (default). See ManifestManager::set_fragments_dir for the
   // merge semantics.
   declare_parameter("discovery.manifest.fragments_dir", "");
+  // CSV file listing manually inventoried assets (columns: id, manufacturer,
+  // model, serial, hardware_rev, firmware, endpoint, role, plus extras). Each
+  // row is appended to the manifest as a Component and merged into the tree by
+  // id. Requires a manifest-backed discovery mode (manifest_only / hybrid with
+  // discovery.manifest_path set). Empty = disabled (default).
+  declare_parameter("discovery.inventory.csv_path", "");
   declare_parameter("discovery.runtime.enabled", true);
 
   // Software updates parameters
@@ -620,6 +626,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   discovery_config.manifest_strict_validation = get_parameter("discovery.manifest_strict_validation").as_bool();
   discovery_config.manifest_enabled = get_parameter("discovery.manifest.enabled").as_bool();
   discovery_config.manifest_fragments_dir = get_parameter("discovery.manifest.fragments_dir").as_string();
+  discovery_config.inventory_csv_path = get_parameter("discovery.inventory.csv_path").as_string();
   discovery_config.runtime_enabled = get_parameter("discovery.runtime.enabled").as_bool();
 
   // Runtime discovery options

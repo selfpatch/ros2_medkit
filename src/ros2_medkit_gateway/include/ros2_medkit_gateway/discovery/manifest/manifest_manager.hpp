@@ -119,6 +119,29 @@ class ManifestManager {
   std::string get_fragments_dir() const;
 
   /**
+   * @brief Configure a CSV file describing manually inventoried assets.
+   *
+   * When set, every `load_manifest` / `reload_manifest` call parses the CSV
+   * (columns `id, manufacturer, model, serial, hardware_rev, firmware,
+   * endpoint, role`, plus any extra columns) and appends one Component per row
+   * to the base manifest before validation. Each asset merges into the entity
+   * tree by id, combining with protocol-discovered structure the same way a
+   * manifest component does. A parse failure (or a missing `id` column) is
+   * recorded as a validation error and fails the load.
+   *
+   * Call with an empty string to disable CSV import.
+   *
+   * @param path Path to the inventory CSV. Does not need to exist at call time;
+   *             a missing file on load is treated as "no inventory".
+   */
+  void set_inventory_csv_path(const std::string & path);
+
+  /**
+   * @brief Get the currently configured inventory CSV path (empty if unset).
+   */
+  std::string get_inventory_csv_path() const;
+
+  /**
    * @brief Unload current manifest (revert to runtime-only mode)
    */
   void unload_manifest();
@@ -266,9 +289,17 @@ class ManifestManager {
   /// `validation_result_` so callers see them in the normal error flow.
   bool apply_fragments(Manifest & base);
 
+  /// Parse the configured inventory CSV (if any) and append the resulting
+  /// asset Components to `base`. Called with `mutex_` held. Returns true on
+  /// success (or when no CSV is configured / the file is absent); false when
+  /// the CSV cannot be read or parsed. Parse errors are appended to
+  /// `validation_result_` so callers see them in the normal error flow.
+  bool apply_inventory_csv(Manifest & base);
+
   std::optional<Manifest> manifest_;
   std::string manifest_path_;
   std::string fragments_dir_;
+  std::string inventory_csv_path_;
   ValidationResult validation_result_;
   bool strict_mode_{true};
 
