@@ -82,8 +82,16 @@ class Stmt {
   }
 
   std::string column_text(int index) {
+    // sqlite3_column_text yields a NUL-terminated pointer, so std::string(text)
+    // would truncate content at the first embedded NUL. bind_text stores the full
+    // bytes via value.size(), so reading with the real length keeps the write/read
+    // round-trip byte-exact and the recomputed hash matching. sqlite3_column_bytes
+    // must be read AFTER sqlite3_column_text so it reports the UTF-8 byte count.
     const auto * text = reinterpret_cast<const char *>(sqlite3_column_text(stmt_, index));
-    return text ? std::string(text) : std::string();
+    if (text == nullptr) {
+      return std::string();
+    }
+    return std::string(text, static_cast<std::size_t>(sqlite3_column_bytes(stmt_, index)));
   }
 
   int64_t column_int64(int index) {

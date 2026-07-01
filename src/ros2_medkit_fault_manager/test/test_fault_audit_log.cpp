@@ -421,6 +421,39 @@ TEST_F(FaultAuditLogTest, NonUtf8ContentAppendsAndVerifies) {
   EXPECT_EQ(result.checked, 2);
 }
 
+// Embedded NUL bytes in unvalidated content (description / source_id come from
+// the ReportFault request) must survive the write/read round-trip byte-exact.
+// bind_text stores the full length, so the read path must too - reading a
+// NUL-terminated const char* would truncate at the first NUL, change the
+// canonical form on re-read, and make verify() falsely report tampering on
+// legitimate content.
+TEST_F(FaultAuditLogTest, EmbeddedNulContentRoundTripsAndVerifies) {
+  FaultAuditLog log(path_);
+
+  AuditEvent e = make_event("F1", kTransitionOccurred, 100);
+  e.description = std::string("pressure\0low", 12);  // embedded NUL, bytes after it
+  e.source_id = std::string("src\0id", 6);           // embedded NUL, bytes after it
+  e.status = std::string("CON\0FIRMED", 10);         // embedded NUL, bytes after it
+
+  int64_t seq = 0;
+  ASSERT_NO_THROW(seq = log.append(e));
+  EXPECT_EQ(seq, 1);
+
+  // A plain append still chains on top of the embedded-NUL record.
+  ASSERT_NO_THROW(log.append(make_event("F2", kTransitionConfirmed, 200)));
+
+  auto result = log.verify();
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.checked, 2);
+
+  // The stored bytes read back whole, not truncated at the first NUL.
+  auto records = log.read();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].event.description, e.description);
+  EXPECT_EQ(records[0].event.source_id, e.source_id);
+  EXPECT_EQ(records[0].event.status, e.status);
+}
+
 // Many rotations must not grow audit_anchors without bound: verify() only ever
 // needs the anchor at the current prune boundary, so older anchors are pruned in
 // the same rotation. audit_log stays at the cap and audit_anchors stays bounded.
