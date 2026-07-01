@@ -571,11 +571,22 @@ bool NodeMap::load(const std::string & yaml_path) {
                       "event_alarms[%zu] missing alarm_source/entity_id/fault_code - skipping", i);
           continue;
         }
+        // Required strings routed through the same guarded read as the nodes
+        // block: a present-but-wrong-typed value warns and skips just this
+        // event_alarms entry rather than throwing into the outer catch, which
+        // would discard every valid node and disable the plugin. (#481)
+        const std::string alarm_label = "event_alarms[" + std::to_string(i) + "]";
+        auto alarm_source = parse_string(a["alarm_source"], "alarm_source", alarm_label);
+        auto alarm_entity_id = parse_string(a["entity_id"], "entity_id", alarm_label);
+        auto alarm_fault_code = parse_string(a["fault_code"], "fault_code", alarm_label);
+        if (!alarm_source || !alarm_entity_id || !alarm_fault_code) {
+          continue;
+        }
         AlarmEventConfig cfg;
-        cfg.source_node_id_str = a["alarm_source"].as<std::string>();
+        cfg.source_node_id_str = *alarm_source;
         cfg.source_node_id = parse_node_id(cfg.source_node_id_str);
-        cfg.entity_id = a["entity_id"].as<std::string>();
-        cfg.fault_code = a["fault_code"].as<std::string>();
+        cfg.entity_id = *alarm_entity_id;
+        cfg.fault_code = *alarm_fault_code;
         cfg.severity_override = a["severity_override"].as<std::string>("");
         cfg.message_override = a["message"].as<std::string>("");
         event_alarms_.push_back(std::move(cfg));

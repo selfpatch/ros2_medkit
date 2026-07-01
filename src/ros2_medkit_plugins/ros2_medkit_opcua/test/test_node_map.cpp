@@ -1287,6 +1287,42 @@ nodes:
   EXPECT_EQ(r.codes[0].code, 10);
 }
 
+TEST_F(NodeMapTest, WrongTypedEventAlarmStringSkipsEntryNotFile) {
+  // A present-but-wrong-typed required string on one ``event_alarms`` entry
+  // must skip just that entry, consistent with the nodes block, rather than
+  // throwing into the outer catch, which would discard every valid node and
+  // alarm and disable the whole plugin. (#481)
+  std::string path = "/tmp/test_node_map_bad_event_alarm.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Pressure"
+    entity_id: tank_process
+    data_name: pressure
+    alarm:
+      fault_code: PLC_OVERPRESSURE
+      threshold: 90.0
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.Bad"
+    entity_id: [not, a, string]
+    fault_code: BAD_ALARM
+  - alarm_source: "ns=2;s=Alarms.Good"
+    entity_id: tank_process
+    fault_code: PLC_OVERHEAT
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  // Valid node survived the malformed event_alarms entry.
+  ASSERT_EQ(map.detection_entries().size(), 1u);
+  // Only the well-formed alarm was kept; the wrong-typed one was skipped.
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].fault_code, "PLC_OVERHEAT");
+}
+
 TEST_F(NodeMapTest, FaultEnumGetsCatchAllUnknownFault) {
   std::string path = "/tmp/test_node_map_enum_catchall.yaml";
   std::ofstream f(path);
