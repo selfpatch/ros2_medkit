@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include <open62541/client_highlevel.h>
 #include <open62541/client_subscriptions.h>
 #include <open62541/types.h>
 #include <open62541pp/config.hpp>
@@ -1030,6 +1031,183 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
   }
 
   return out;
+}
+
+// ----------------------------------------------------------------------------
+// INV2: device-info (nameplate) reads. ServerStatus/BuildInfo is universal;
+// the OPC-UA DI companion nameplate (Manufacturer/Model/SerialNumber/...) is
+// read best-effort when the server exposes the DI namespace. The raw C API is
+// used for the browse + attribute reads so the code is independent of the
+// open62541pp high-level browse surface (unavailable in v0.16).
+// ----------------------------------------------------------------------------
+
+namespace {
+
+constexpr const char * kDiNamespaceUri = "http://opcfoundation.org/UA/DI/";
+
+// Read a scalar String / LocalizedText node value. Empty on any error or on a
+// non-string type. The caller holds ``client_mutex``.
+std::string read_string_attribute(UA_Client * client, const UA_NodeId & node_id) {
+  UA_Variant value;
+  UA_Variant_init(&value);
+  std::string out;
+  if (UA_Client_readValueAttribute(client, node_id, &value) == UA_STATUSCODE_GOOD) {
+    if (UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_STRING])) {
+      const auto * s = static_cast<const UA_String *>(value.data);
+      out.assign(reinterpret_cast<const char *>(s->data), s->length);
+    } else if (UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT])) {
+      const auto * lt = static_cast<const UA_LocalizedText *>(value.data);
+      out.assign(reinterpret_cast<const char *>(lt->text.data), lt->text.length);
+    }
+  }
+  UA_Variant_clear(&value);
+  return out;
+}
+
+// One forward hierarchical child: its browse name and target NodeId (owned).
+struct ChildRef {
+  uint16_t namespace_index{0};
+  std::string name;
+  UA_NodeId node_id{};
+};
+
+void clear_child_refs(std::vector<ChildRef> & children) {
+  for (auto & child : children) {
+    UA_NodeId_clear(&child.node_id);
+  }
+}
+
+// Browse forward hierarchical children of ``parent``, returning their browse
+// names and NodeIds. Empty on failure. The caller must ``clear_child_refs``.
+std::vector<ChildRef> browse_forward_children(UA_Client * client, const UA_NodeId & parent) {
+  std::vector<ChildRef> children;
+  UA_BrowseRequest request;
+  UA_BrowseRequest_init(&request);
+  request.nodesToBrowse = UA_BrowseDescription_new();
+  if (request.nodesToBrowse == nullptr) {
+    UA_BrowseRequest_clear(&request);
+    return children;
+  }
+  request.nodesToBrowseSize = 1;
+  UA_NodeId_copy(&parent, &request.nodesToBrowse[0].nodeId);
+  request.nodesToBrowse[0].browseDirection = UA_BROWSEDIRECTION_FORWARD;
+  request.nodesToBrowse[0].referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+  request.nodesToBrowse[0].includeSubtypes = true;
+  request.nodesToBrowse[0].resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+
+  UA_BrowseResponse response = UA_Client_Service_browse(client, request);
+  if (response.responseHeader.serviceResult == UA_STATUSCODE_GOOD && response.resultsSize == 1) {
+    const UA_BrowseResult & result = response.results[0];
+    for (size_t i = 0; i < result.referencesSize; ++i) {
+      const UA_ReferenceDescription & ref = result.references[i];
+      ChildRef child;
+      child.namespace_index = ref.browseName.namespaceIndex;
+      child.name.assign(reinterpret_cast<const char *>(ref.browseName.name.data), ref.browseName.name.length);
+      UA_NodeId_copy(&ref.nodeId.nodeId, &child.node_id);
+      children.push_back(std::move(child));
+    }
+  }
+  UA_BrowseResponse_clear(&response);
+  UA_BrowseRequest_clear(&request);
+  return children;
+}
+
+// Namespace index of a companion-spec URI in the server's NamespaceArray, or -1.
+int find_namespace_index(UA_Client * client, const char * uri) {
+  UA_Variant value;
+  UA_Variant_init(&value);
+  int index = -1;
+  if (UA_Client_readValueAttribute(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_NAMESPACEARRAY), &value) ==
+          UA_STATUSCODE_GOOD &&
+      UA_Variant_hasArrayType(&value, &UA_TYPES[UA_TYPES_STRING])) {
+    const auto * entries = static_cast<const UA_String *>(value.data);
+    for (size_t i = 0; i < value.arrayLength; ++i) {
+      std::string ns(reinterpret_cast<const char *>(entries[i].data), entries[i].length);
+      if (ns == uri) {
+        index = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  UA_Variant_clear(&value);
+  return index;
+}
+
+// Fill the DI nameplate fields of ``info`` from the first device under
+// Objects/DeviceSet that carries any identification property. Best-effort.
+void read_di_nameplate(UA_Client * client, uint16_t di_ns, OpcuaClient::DeviceInfo & info) {
+  auto objects_children = browse_forward_children(client, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER));
+  UA_NodeId device_set = UA_NODEID_NULL;
+  for (const auto & child : objects_children) {
+    if (child.namespace_index == di_ns && child.name == "DeviceSet") {
+      UA_NodeId_copy(&child.node_id, &device_set);
+      break;
+    }
+  }
+  clear_child_refs(objects_children);
+  if (UA_NodeId_isNull(&device_set)) {
+    return;
+  }
+
+  auto devices = browse_forward_children(client, device_set);
+  UA_NodeId_clear(&device_set);
+
+  for (const auto & device : devices) {
+    auto props = browse_forward_children(client, device.node_id);
+    auto read_prop = [&](const char * name) -> std::string {
+      for (const auto & prop : props) {
+        if (prop.namespace_index == di_ns && prop.name == name) {
+          return read_string_attribute(client, prop.node_id);
+        }
+      }
+      return {};
+    };
+    std::string manufacturer = read_prop("Manufacturer");
+    std::string model = read_prop("Model");
+    std::string serial = read_prop("SerialNumber");
+    std::string hardware_revision = read_prop("HardwareRevision");
+    std::string software_revision = read_prop("SoftwareRevision");
+    clear_child_refs(props);
+
+    if (!manufacturer.empty() || !model.empty() || !serial.empty() || !hardware_revision.empty() ||
+        !software_revision.empty()) {
+      info.di_manufacturer = std::move(manufacturer);
+      info.di_model = std::move(model);
+      info.di_serial_number = std::move(serial);
+      info.di_hardware_revision = std::move(hardware_revision);
+      info.di_software_revision = std::move(software_revision);
+      break;
+    }
+  }
+  clear_child_refs(devices);
+}
+
+}  // namespace
+
+OpcuaClient::DeviceInfo OpcuaClient::read_device_info() {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  DeviceInfo info;
+  if (!impl_->connected) {
+    return info;
+  }
+  UA_Client * client = impl_->client.handle();
+
+  // Tier 1: ServerStatus/BuildInfo (ns=0 well-known nodes, always present).
+  info.manufacturer_name =
+      read_string_attribute(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_MANUFACTURERNAME));
+  info.product_name =
+      read_string_attribute(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
+  info.software_version =
+      read_string_attribute(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_SOFTWAREVERSION));
+  info.build_number =
+      read_string_attribute(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_BUILDNUMBER));
+
+  // Tier 2: OPC-UA DI nameplate (best-effort, only when the DI namespace exists).
+  const int di_ns = find_namespace_index(client, kDiNamespaceUri);
+  if (di_ns > 0) {
+    read_di_nameplate(client, static_cast<uint16_t>(di_ns), info);
+  }
+  return info;
 }
 
 // ----------------------------------------------------------------------------

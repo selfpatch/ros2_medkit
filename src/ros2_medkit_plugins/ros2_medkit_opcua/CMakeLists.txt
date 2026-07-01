@@ -94,6 +94,7 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/opcua_plugin.cpp
   src/opcua_plugin_exports.cpp
   src/opcua_client.cpp
+  src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
 )
@@ -166,6 +167,7 @@ if(BUILD_TESTING)
     test/test_opcua_plugin.cpp
     src/opcua_plugin.cpp
     src/opcua_client.cpp
+    src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
     TIMEOUT 240
@@ -238,6 +240,24 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   medkit_set_test_domain(test_alarm_state_machine)
+
+  # INV2: pure device-info -> AssetIdentity mapping tests (no server).
+  ament_add_gtest(test_device_identity
+    test/test_device_identity.cpp
+    src/device_identity.cpp
+  )
+  target_include_directories(test_device_identity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_device_identity
+    ros2_medkit_gateway
+    rclcpp
+  )
+  target_link_libraries(test_device_identity
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+  )
+  medkit_set_test_domain(test_device_identity)
 
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
@@ -355,6 +375,39 @@ if(BUILD_TESTING)
       LABELS "integration"
       SKIP_RETURN_CODE 77
       TIMEOUT 300)
+
+    # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
+    # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and
+    # OpcuaPlugin::introspect(). GTEST_SKIP when the fixture binary is missing.
+    ament_add_gtest(test_opcua_identity
+      test/test_opcua_identity.cpp
+      src/opcua_plugin.cpp
+      src/opcua_client.cpp
+      src/device_identity.cpp
+      src/node_map.cpp
+      src/opcua_poller.cpp
+      TIMEOUT 120
+    )
+    add_dependencies(test_opcua_identity test_alarm_server)
+    target_include_directories(test_opcua_identity PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(test_opcua_identity PRIVATE
+      MEDKIT_ALARM_SERVER_BIN="${CMAKE_BINARY_DIR}/test_alarm_server")
+    medkit_target_dependencies(test_opcua_identity
+      ros2_medkit_msgs
+      ros2_medkit_gateway
+      ros2_medkit_fault_detection
+      rclcpp
+      std_msgs
+    )
+    target_link_libraries(test_opcua_identity
+      open62541pp::open62541pp
+      nlohmann_json::nlohmann_json
+      yaml-cpp::yaml-cpp
+      OpenSSL::SSL OpenSSL::Crypto
+    )
+    medkit_set_test_domain(test_opcua_identity)
   endif()
 
   ros2_medkit_relax_vendor_warnings()

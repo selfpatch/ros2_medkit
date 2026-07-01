@@ -558,6 +558,9 @@ DiscoveryHandlers::get_components(const http::TypedRequest & req) {
         ros2.ns = component.namespace_path;
         x_medkit_comp.ros2 = ros2;
       }
+      if (!component.identity.empty()) {
+        x_medkit_comp.identity = component.identity.to_json();
+      }
       item.x_medkit = x_medkit_comp;
 
       response.items.push_back(std::move(item));
@@ -684,6 +687,9 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     }
     if (!comp.contributors.empty()) {
       x_medkit_comp.contributors = sorted_contributors(comp.contributors);
+    }
+    if (!comp.identity.empty()) {
+      x_medkit_comp.identity = comp.identity.to_json();
     }
 
     using Cap = CapabilityBuilder::Capability;

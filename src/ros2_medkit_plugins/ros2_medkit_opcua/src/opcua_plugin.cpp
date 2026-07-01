@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_opcua/opcua_plugin.hpp"
 
+#include "ros2_medkit_opcua/device_identity.hpp"
+
 #include <rclcpp/rclcpp.hpp>
 #include <rcutils/logging.h>
 #include <ros2_medkit_msgs/msg/fault.hpp>
@@ -415,8 +417,29 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   comp.namespace_path = "/" + node_map_.area_id();
   comp.fqn = "/" + node_map_.area_id() + "/" + node_map_.component_id();
   comp.area = node_map_.area_id();
-  comp.source = "plugin";
+  // Protocol tag, preserved by the plugin layer (it only stamps "plugin" on
+  // empty sources), so the identity merge ranks this component's nameplate at
+  // "opcua" precedence instead of the generic "plugin".
+  comp.source = "opcua";
   comp.description = "PLC runtime connected at " + client_config_.endpoint_url;
+
+  // INV2: fill the asset-identity nameplate from the live server's device-info
+  // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate). Read once on the
+  // first connected introspect and cached, since it is stable for a connection.
+  // Provenance is stamped "opcua" per field (in the mapping) so a live device
+  // read outranks a hand-authored manifest in the identity merge.
+  if (client_ && client_->is_connected() && !device_identity_loaded_) {
+    device_identity_ = opcua_device_info_to_identity(client_->read_device_info(), client_config_.endpoint_url);
+    device_identity_loaded_ = true;
+    if (!device_identity_.empty()) {
+      log_info("Populated asset identity from OPC-UA device-info (manufacturer='" + device_identity_.manufacturer +
+               "', model='" + device_identity_.model + "')");
+    }
+  }
+  if (!device_identity_.empty()) {
+    comp.identity = device_identity_;
+  }
+
   result.new_entities.components.push_back(std::move(comp));
 
   // Register x-plc-status on the PLC runtime component only, so non-PLC
