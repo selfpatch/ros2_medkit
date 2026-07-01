@@ -304,7 +304,16 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
 
   Component comp = asset_entry_to_component(entry);
 
-  // Optional tree-placement and presentation overrides.
+  // Optional tree-placement and presentation overrides. Every key listed in
+  // `reserved` above must be consumed here; otherwise it is silently dropped.
+  const std::string ns = get_string(node, "namespace");
+  if (!ns.empty()) {
+    // Operator-declared placement: compute an authoritative fqn like a real
+    // component. Without a namespace, fqn stays empty so a merge with a
+    // discovered node keeps the node's real path instead of a synthetic "/id".
+    comp.namespace_path = ns;
+    comp.fqn = ns + "/" + comp.id;
+  }
   const std::string area = get_string(node, "area");
   if (!area.empty()) {
     comp.area = area;
@@ -320,6 +329,21 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
   const std::string explicit_description = get_string(node, "description");
   if (!explicit_description.empty()) {
     comp.description = explicit_description;
+  }
+  const std::string variant = get_string(node, "variant");
+  if (!variant.empty()) {
+    comp.variant = variant;  // explicit variant wins over the hardware_rev derivation
+  }
+  const std::string type_val = get_string(node, "type");
+  if (!type_val.empty()) {
+    comp.type = type_val;
+  }
+  const std::string translation_id = get_string(node, "translation_id");
+  if (!translation_id.empty()) {
+    comp.translation_id = translation_id;
+  }
+  for (const auto & dep : get_string_vector(node, "depends_on")) {
+    comp.depends_on.push_back(dep);
   }
   for (const auto & tag : get_string_vector(node, "tags")) {
     comp.tags.push_back(tag);

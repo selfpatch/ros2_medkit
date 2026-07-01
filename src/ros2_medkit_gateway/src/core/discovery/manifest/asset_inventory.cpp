@@ -61,6 +61,9 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
   CsvField field;
   bool in_quotes = false;
   bool field_has_content = false;
+  // True while the current unquoted field has only seen leading whitespace, so a
+  // quote after it still opens a quoted field (e.g. `a, "x"` -> field == "x").
+  bool field_only_leading_ws = true;
 
   const auto end_field = [&]() {
     if (!field.quoted) {
@@ -69,6 +72,7 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
     row.push_back(std::move(field));
     field = CsvField{};
     field_has_content = false;
+    field_only_leading_ws = true;
   };
 
   const auto end_row = [&]() {
@@ -82,7 +86,16 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
     row.clear();
   };
 
-  for (std::size_t i = 0; i < text.size(); ++i) {
+  // Skip a leading UTF-8 BOM (0xEF 0xBB 0xBF). Excel's "CSV UTF-8" export always
+  // writes one; left in place it fuses onto the first header cell ("﻿id"),
+  // which fails header detection and takes down the whole inventory import.
+  std::size_t start = 0;
+  if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF && static_cast<unsigned char>(text[1]) == 0xBB &&
+      static_cast<unsigned char>(text[2]) == 0xBF) {
+    start = 3;
+  }
+
+  for (std::size_t i = start; i < text.size(); ++i) {
     const char c = text[i];
     if (in_quotes) {
       if (c == '"') {
@@ -98,10 +111,14 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
       continue;
     }
 
-    if (c == '"' && !field_has_content) {
+    if (c == '"' && field_only_leading_ws && !field.quoted) {
+      // Opening quote of a field, possibly after leading spaces: drop the
+      // accumulated leading whitespace so the quoted value stays verbatim.
+      field.value.clear();
       in_quotes = true;
       field.quoted = true;
       field_has_content = true;
+      field_only_leading_ws = false;
     } else if (c == ',') {
       end_field();
     } else if (c == '\r') {
@@ -111,6 +128,9 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
     } else {
       field.value.push_back(c);
       field_has_content = true;
+      if (std::isspace(static_cast<unsigned char>(c)) == 0) {
+        field_only_leading_ws = false;
+      }
     }
   }
 
@@ -239,7 +259,10 @@ Component asset_entry_to_component(const AssetEntry & entry) {
   Component comp;
   comp.id = entry.id;
   comp.source = "inventory";
-  comp.fqn = "/" + entry.id;
+  // fqn/namespace_path are intentionally left empty: a bare inventory asset
+  // carries no placement, so a synthetic "/id" must not override the real path
+  // of a discovered node it merges with. Placement comes from the manifest
+  // `namespace:` key (see parse_asset) when the operator declares it.
 
   // name <- "<manufacturer> <model>" (left empty when neither is set so the
   // consumer falls back to the id).

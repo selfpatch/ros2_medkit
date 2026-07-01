@@ -84,6 +84,12 @@ void merge_scalar(std::string & target, const std::string & source, MergeWinner 
       }
       break;
     case MergeWinner::TARGET:
+      // An authoritative/higher-priority layer that supplies no value must not
+      // erase a value a lower-priority layer provides; fill the gap instead of
+      // clobbering (e.g. a bare inventory asset must not blank a node's fqn).
+      if (target.empty() && !source.empty()) {
+        target = source;
+      }
       break;
   }
 }
