@@ -1527,6 +1527,11 @@ TEST_F(SnapshotCooldownTest, CooldownPreventsRapidRecapture) {
 // clears it (=> cleared), and inspects the persisted audit DB by reopening it.
 class FaultAuditIntegrationTest : public ::testing::Test {
  protected:
+  /// Healing threshold for the node under test; override per-fixture.
+  virtual int healing_threshold() const {
+    return 1;  // counter >= 1 heals (two PASSED after one FAILED)
+  }
+
   void SetUp() override {
     std::random_device rd;
     std::mt19937_64 gen(rd());
@@ -1540,7 +1545,7 @@ class FaultAuditIntegrationTest : public ::testing::Test {
         {"storage_type", "memory"},
         {"confirmation_threshold", -1},
         {"healing_enabled", true},
-        {"healing_threshold", 1},  // counter >= 1 heals (two PASSED after one FAILED)
+        {"healing_threshold", healing_threshold()},
         {"audit_log.enabled", true},
         {"audit_log.database_path", audit_path_},
     });
@@ -1647,6 +1652,11 @@ TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
   send_report(ReportFault::Request::EVENT_PASSED);  // counter 0 (hysteresis): stays CONFIRMED
   send_report(ReportFault::Request::EVENT_PASSED);  // counter 1 >= healing_threshold => HEALED
 
+  // HEALED is latched and the counter is clamped at the healing threshold: further
+  // PASSED events keep status HEALED and must NOT append duplicate "healed" rows.
+  send_report(ReportFault::Request::EVENT_PASSED);
+  send_report(ReportFault::Request::EVENT_PASSED);
+
   ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
   std::vector<std::string> transitions;
   std::string heal_source;
@@ -1659,7 +1669,7 @@ TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
     }
   }
 
-  ASSERT_EQ(transitions.size(), 3u) << "expected occurred, confirmed, healed";
+  ASSERT_EQ(transitions.size(), 3u) << "expected exactly occurred, confirmed, healed (no duplicates under latch)";
   EXPECT_EQ(transitions[0], ros2_medkit_fault_manager::kTransitionOccurred);
   EXPECT_EQ(transitions[1], ros2_medkit_fault_manager::kTransitionConfirmed);
   EXPECT_EQ(transitions[2], ros2_medkit_fault_manager::kTransitionHealed);
@@ -1667,6 +1677,79 @@ TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
 
   auto result = audit.verify();
   EXPECT_TRUE(result.ok) << result.error;
+}
+
+// The CONFIRMED latch must not create duplicate "confirmed" audit rows: a PASSED
+// event on a confirmed fault keeps it CONFIRMED (latched), so the following FAILED
+// event is an update, not a re-confirmation. Exactly one confirmed row per episode.
+TEST_F(FaultAuditIntegrationTest, ConfirmedLatchNoDuplicateConfirmedRows) {
+  auto send_report = [&](uint8_t event_type) {
+    auto req = std::make_shared<ReportFault::Request>();
+    req->fault_code = "LATCH_FAULT";
+    req->event_type = event_type;
+    req->severity = Fault::SEVERITY_ERROR;
+    req->description = "flapping sensor";
+    req->source_id = "/robot/sensor";
+    auto fut = report_client_->async_send_request(req);
+    ASSERT_TRUE(spin_until_ready(fut));
+    ASSERT_TRUE(fut.get()->accepted);
+  };
+
+  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 <= threshold -1 => CONFIRMED
+  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0: latch keeps CONFIRMED
+  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 again: still CONFIRMED, no new row
+
+  ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
+  size_t confirmed_rows = 0;
+  for (const auto & rec : audit.read()) {
+    if (rec.event.fault_code == "LATCH_FAULT" &&
+        rec.event.transition == ros2_medkit_fault_manager::kTransitionConfirmed) {
+      ++confirmed_rows;
+    }
+  }
+  EXPECT_EQ(confirmed_rows, 1u) << "latched re-confirmation must not append a duplicate confirmed row";
+  EXPECT_TRUE(audit.verify().ok);
+}
+
+// healing_threshold == 0 means a single PASSED event heals. That single-event heal
+// must be audited as exactly one "healed" row, and further PASSED events (counter
+// clamped at 0, status latched HEALED) must not append more.
+class FaultAuditSingleEventHealTest : public FaultAuditIntegrationTest {
+ protected:
+  int healing_threshold() const override {
+    return 0;
+  }
+};
+
+TEST_F(FaultAuditSingleEventHealTest, SinglePassedHealAuditedOnce) {
+  auto send_report = [&](uint8_t event_type) {
+    auto req = std::make_shared<ReportFault::Request>();
+    req->fault_code = "FAST_HEAL";
+    req->event_type = event_type;
+    req->severity = Fault::SEVERITY_ERROR;
+    req->description = "transient glitch";
+    req->source_id = "/robot/imu";
+    auto fut = report_client_->async_send_request(req);
+    ASSERT_TRUE(spin_until_ready(fut));
+    ASSERT_TRUE(fut.get()->accepted);
+  };
+
+  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 => CONFIRMED
+  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0 >= threshold 0 => HEALED
+  send_report(ReportFault::Request::EVENT_PASSED);  // clamped at 0, latched HEALED: no new row
+
+  ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
+  std::vector<std::string> transitions;
+  for (const auto & rec : audit.read()) {
+    if (rec.event.fault_code == "FAST_HEAL") {
+      transitions.push_back(rec.event.transition);
+    }
+  }
+  ASSERT_EQ(transitions.size(), 3u) << "expected exactly occurred, confirmed, healed";
+  EXPECT_EQ(transitions[0], ros2_medkit_fault_manager::kTransitionOccurred);
+  EXPECT_EQ(transitions[1], ros2_medkit_fault_manager::kTransitionConfirmed);
+  EXPECT_EQ(transitions[2], ros2_medkit_fault_manager::kTransitionHealed);
+  EXPECT_TRUE(audit.verify().ok);
 }
 
 TEST(FaultAuditDisabledTest, NoAuditFileWhenDisabled) {
