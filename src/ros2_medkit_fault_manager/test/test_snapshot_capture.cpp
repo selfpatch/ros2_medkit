@@ -14,9 +14,15 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+#include <std_msgs/msg/float64.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
@@ -223,6 +229,75 @@ TEST_F(SnapshotCaptureTest, OnDemandCaptureHandlesNonExistentTopic) {
   // Should timeout gracefully, no snapshot stored
   auto snapshots = storage_->get_snapshots("TEST_FAULT");
   EXPECT_TRUE(snapshots.empty());
+}
+
+// Freeze-frame end-to-end tests
+
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/plc/pressure", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  config.fault_specific["PLC_PRESSURE_HIGH"] = {"/plc/pressure"};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  // Publish continuously so the on-demand one-shot subscription catches a value.
+  std::atomic<bool> stop{false};
+  std::thread pub_thread([&]() {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 42.5;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+
+  // Wait for the publisher to be visible to the capture node before capturing.
+  auto start = std::chrono::steady_clock::now();
+  while (node_->count_publishers("/plc/pressure") == 0 &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_GT(node_->count_publishers("/plc/pressure"), 0u);
+
+  capture.capture("PLC_PRESSURE_HIGH");
+
+  stop.store(true);
+  pub_thread.join();
+
+  auto frame = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  ASSERT_TRUE(frame.has_value());
+  auto parsed = nlohmann::json::parse(frame->data);
+  ASSERT_TRUE(parsed.contains("/plc/pressure"));
+  EXPECT_DOUBLE_EQ(parsed["/plc/pressure"]["data"].get<double>(), 42.5);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, UnconfiguredFaultWritesNoFreezeFrame) {
+  SnapshotConfig config;
+  config.enabled = true;
+  config.fault_specific["OTHER_FAULT"] = {"/plc/pressure"};
+  // No default_topics: an unrelated fault code resolves to an empty capture set.
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  capture.capture("UNMAPPED_FAULT");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("UNMAPPED_FAULT").has_value());
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, DisabledCaptureWritesNoFreezeFrame) {
+  SnapshotConfig config;
+  config.enabled = false;
+  config.default_topics = {"/plc/pressure"};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  capture.capture("ANY_FAULT");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("ANY_FAULT").has_value());
 }
 
 int main(int argc, char ** argv) {
