@@ -400,6 +400,42 @@ TEST(ReconcileShouldClearCondition, NeverClearsInactiveCondition) {
                                                    modeled_sources));
 }
 
+// -- Issue #480: ConditionRefresh burst reconcile must clear a tracked fault
+// that the server did NOT replay (it cleared while we were offline). Unlike the
+// read fallback, a delivered RefreshEnd is an authoritative subscription-wide
+// replay, so there is no per-source modeling gate. --------------------------
+
+TEST(ReconcileAfterRefresh, ClearsActiveConditionNotReplayed) {
+  // Active before the reconnect, absent from the RefreshStart..RefreshEnd burst
+  // => the alarm cleared offline and its latched fault must reconcile away.
+  std::set<std::string> seen;  // server replayed nothing (no active conditions)
+  EXPECT_TRUE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Confirmed, "cond-1", seen));
+  EXPECT_TRUE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Healed, "cond-1", seen));
+}
+
+TEST(ReconcileAfterRefresh, KeepsConditionReplayedInBurst) {
+  // The server replayed this ConditionId during the burst => still active, keep.
+  std::set<std::string> seen{"cond-1"};
+  EXPECT_FALSE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Confirmed, "cond-1", seen));
+  EXPECT_FALSE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Healed, "cond-1", seen));
+}
+
+TEST(ReconcileAfterRefresh, NeverClearsInactiveCondition) {
+  // A condition that was never active (Suppressed/Cleared) is not a latched
+  // fault and must not be touched even when absent from the burst.
+  std::set<std::string> seen;
+  EXPECT_FALSE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Cleared, "cond-1", seen));
+  EXPECT_FALSE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Suppressed, "cond-1", seen));
+}
+
+TEST(ReconcileAfterRefresh, KeepsOtherActiveConditionsWhenOneReplayed) {
+  // Peer condition (same fault_code family, different ConditionId) replayed;
+  // the un-replayed one still clears. Guards the distinct-ConditionId keying.
+  std::set<std::string> seen{"cond-keep"};
+  EXPECT_FALSE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Confirmed, "cond-keep", seen));
+  EXPECT_TRUE(OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus::Confirmed, "cond-gone", seen));
+}
+
 // -- Issue #478: read-scan snapshot classification (Retain / EnabledState /
 // transient-keep filter that mirrors ConditionRefresh semantics). --------------
 

@@ -27,7 +27,7 @@ Control                          Default        Secure profile
 ``auth.enabled``                 false          true
 ``auth.require_auth_for``        write          all (auth on reads + writes)
 ``server.tls.enabled``           false          true (HTTPS, min TLS 1.3)
-``cors.allowed_origins``         ``[""]``       explicit origin list (no wildcard)
+``cors.allowed_origins``         ``[]``         explicit origin list (no wildcard)
 ``rate_limiting.enabled``        false          true (global + per-client + per-endpoint)
 ``scripts.allow_uploads``        true           false (manifest-defined scripts only)
 ``docs.enabled``                 true           false (reduced surface)
@@ -47,6 +47,26 @@ Credential and certificate provisioning
 2. **JWT secret.** Generate a high-entropy secret of at least 32 characters
    (HS256) or provision an RS256 key pair. Inject it at deploy time from a
    secret store or environment variable - do not commit it to source control.
+
+   .. warning::
+
+      ``auth.jwt_secret`` is a plain readable ROS 2 parameter. Beyond source
+      control it is exposed on two planes:
+
+      - **DDS control plane.** Any peer on the ROS 2 graph can read it with
+        ``ros2 param get /<gateway_node> auth.jwt_secret`` - the parameter is
+        declared readable and the DDS domain is unauthenticated by default.
+      - **Process table.** Passing it inline (``-p auth.jwt_secret:=...`` as in
+        the launch example above) also leaks the value via ``ps`` and
+        ``/proc/<pid>/cmdline``.
+
+      Injecting from an environment variable / params file instead of an inline
+      ``-p`` closes the process-table leak, but the value still lands in a
+      readable parameter, so it remains exposed on the DDS plane. To close that,
+      lock down the control plane: ROS 2 security (SROS2) with an access-control
+      policy that denies parameter reads to untrusted participants, or a
+      dedicated / firewalled ``ROS_DOMAIN_ID`` (optionally with
+      ``ROS_LOCALHOST_ONLY=1``) that no untrusted peer can join.
 
 3. **Role-scoped clients.** Create the minimum set of clients in
    ``auth.clients`` (``client_id:client_secret:role``). Roles, least to most

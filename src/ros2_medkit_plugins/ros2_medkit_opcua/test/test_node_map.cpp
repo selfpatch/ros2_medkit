@@ -1625,4 +1625,79 @@ event_alarms:
   EXPECT_FALSE(map.load(path));
 }
 
+TEST_F(NodeMapTest, RejectsDuplicateFaultCodeAcrossEventAlarms) {
+  // Issue #480: two event_alarms resolving to the same (entity_id, fault_code)
+  // must be rejected, not silently deduped. At runtime distinct ConditionIds
+  // are tracked separately and each reports, but a ClearFault is keyed on
+  // fault_code alone, so one condition clearing would wipe the other's fault
+  // while it is still active (flap).
+  std::string path = "/tmp/test_node_map_dup_event_alarm.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.PumpA"
+    entity_id: pump
+    fault_code: PLC_PUMP_FAULT
+  - alarm_source: "ns=2;s=Alarms.PumpB"
+    entity_id: pump
+    fault_code: PLC_PUMP_FAULT
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, RejectsDuplicateFaultCodeAcrossEventAlarmMappings) {
+  // Same flap hazard when the duplicate comes from two mappings (in different
+  // sources) rather than two source-level fault_codes.
+  std::string path = "/tmp/test_node_map_dup_event_alarm_mapping.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.A"
+    entity_id: line
+    mappings:
+      - condition_name: "Jam"
+        fault_code: PLC_LINE_STOP
+  - alarm_source: "ns=2;s=Alarms.B"
+    entity_id: line
+    mappings:
+      - condition_name: "EStop"
+        fault_code: PLC_LINE_STOP
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
+TEST_F(NodeMapTest, RejectsSameFaultCodeOnDifferentEntities) {
+  // Uniqueness is GLOBAL by fault_code, not per (entity_id, fault_code):
+  // fault_manager keys clear_fault/get_fault by code alone, so the same code
+  // on two entities still collides at the manager (one source's clear wipes
+  // the other's fault). The loader must reject it. (issue #481)
+  std::string path = "/tmp/test_node_map_same_code_diff_entity.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=2;s=Alarms.PumpA"
+    entity_id: pump_a
+    fault_code: PLC_PUMP_FAULT
+  - alarm_source: "ns=2;s=Alarms.PumpB"
+    entity_id: pump_b
+    fault_code: PLC_PUMP_FAULT
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_FALSE(map.load(path));
+}
+
 }  // namespace ros2_medkit_gateway

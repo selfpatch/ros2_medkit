@@ -560,6 +560,15 @@ bool OpcuaPoller::should_clear_condition(SovdAlarmStatus last_status, const std:
   return seen.find(condition_id) == seen.end();
 }
 
+bool OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus last_status, const std::string & condition_id,
+                                             const std::set<std::string> & seen) {
+  const bool was_active = (last_status == SovdAlarmStatus::Confirmed || last_status == SovdAlarmStatus::Healed);
+  if (!was_active) {
+    return false;
+  }
+  return seen.find(condition_id) == seen.end();
+}
+
 void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources,
                                        const std::set<std::string> & modeled_sources) {
   std::vector<AlarmEventDelivery> clears;
@@ -580,6 +589,33 @@ void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const
       }
     }
   }
+  dispatch_condition_clears(clears);
+}
+
+void OpcuaPoller::reconcile_after_refresh(const std::set<std::string> & seen) {
+  std::vector<AlarmEventDelivery> clears;
+  {
+    std::unique_lock lock(conditions_mutex_);
+    for (auto & [cid, runtime] : conditions_) {
+      if (!should_clear_after_refresh(runtime.last_status, cid, seen)) {
+        continue;
+      }
+      // Tracked as active but the completed ConditionRefresh burst did not
+      // replay it -> the alarm cleared while we were offline. Clear the fault.
+      runtime.last_status = SovdAlarmStatus::Cleared;
+      AlarmEventDelivery d;
+      d.fault_code = runtime.fault_code;
+      d.entity_id = runtime.entity_id;
+      d.next_status = SovdAlarmStatus::Cleared;
+      d.action = AlarmAction::ClearFault;
+      d.condition_id = cid;
+      clears.push_back(std::move(d));
+    }
+  }
+  dispatch_condition_clears(clears);
+}
+
+void OpcuaPoller::dispatch_condition_clears(const std::vector<AlarmEventDelivery> & clears) {
   if (clears.empty()) {
     return;
   }
@@ -602,20 +638,32 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
                                                                       << " event_type=" << event_type.toString()
                                                                       << " condition=" << condition_id.toString()
                                                                       << " values=" << values.size());
-  // Detect ConditionRefresh bracketing per Part 9 §5.5.7. The flag is for
-  // diagnostics only; the state machine itself does not need to know
-  // because RefreshStart / RefreshEnd notifications carry no condition
-  // payload, so positional-empty values trip the early-return below.
+  // Detect ConditionRefresh bracketing per Part 9 §5.5.7. RefreshStart /
+  // RefreshEnd carry no condition payload. Between them the server replays its
+  // active (Retain=true) condition set; we accumulate every replayed
+  // ConditionId in ``refresh_seen_`` so RefreshEnd can reconcile away tracked
+  // conditions that were NOT replayed - they cleared while we were offline and
+  // would otherwise stay latched Confirmed (issue #480).
   if (event_type.getNamespaceIndex() == 0 && event_type.getIdentifierType() == opcua::NodeIdType::Numeric) {
     auto numeric = event_type.getIdentifierAs<uint32_t>();
     if (numeric == kRefreshStartEventTypeId) {
+      refresh_seen_.clear();
       condition_refresh_in_progress_.store(true, std::memory_order_release);
       return;
     }
     if (numeric == kRefreshEndEventTypeId) {
       condition_refresh_in_progress_.store(false, std::memory_order_release);
+      reconcile_after_refresh(refresh_seen_);
+      refresh_seen_.clear();
       return;
     }
+  }
+
+  // A condition (re)reported inside a refresh burst is still active; remember it
+  // so RefreshEnd does not clear it. Recorded before the field-count bail below
+  // so even a partial-field replay counts as "seen".
+  if (condition_refresh_in_progress_.load(std::memory_order_acquire)) {
+    refresh_seen_.insert(condition_id.toString());
   }
 
   if (values.size() < kAlarmFieldCount) {

@@ -325,6 +325,12 @@ bool OpcuaClient::credentials_sent_in_clear(const OpcuaClientConfig & config) {
   return config.user_auth_mode != UserAuthMode::Anonymous && !requires_secure_channel(config);
 }
 
+bool OpcuaClient::security_config_conflict(const OpcuaClientConfig & config) {
+  const bool policy_none = config.security_policy == SecurityPolicy::None;
+  const bool mode_none = config.security_mode == SecurityMode::None;
+  return policy_none != mode_none;
+}
+
 namespace {
 
 #ifdef UA_ENABLE_ENCRYPTION
@@ -348,6 +354,20 @@ opcua::MessageSecurityMode to_ua_security_mode(SecurityMode mode) {
 // false on a fatal configuration error (already logged); the caller then
 // reports the connect as failed without contacting the server.
 bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg) {
+  // Reject a contradictory SecurityPolicy / MessageSecurityMode pairing before
+  // building anything. Accepting e.g. security_mode=Sign with
+  // security_policy=None would leave the policy URI unpinned and silently
+  // defeat the explicit-selection guarantee below (OPC-UA Part 4 §7.37).
+  if (OpcuaClient::security_config_conflict(cfg)) {
+    const bool policy_none = cfg.security_policy == SecurityPolicy::None;
+    RCLCPP_ERROR(opcua_client_logger(),
+                 "OPC-UA security config is contradictory: %s. security_policy and "
+                 "message_security_mode must both be None or both be set. Refusing to connect.",
+                 policy_none ? "message_security_mode is Sign/SignAndEncrypt but security_policy is None"
+                             : "security_policy is set but message_security_mode is None");
+    return false;
+  }
+
   const bool secure = OpcuaClient::requires_secure_channel(cfg);
 
   if (!secure) {
@@ -405,8 +425,10 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
     }
 
     // Trust handling: by default validate the server certificate against the
-    // trust list. When reject_untrusted is false, accept any server
-    // certificate (lab / trust-on-first-use only).
+    // trust list. When reject_untrusted is false, accept any server certificate
+    // (accept-any: INSECURE, lab only). This is NOT trust-on-first-use - nothing
+    // is pinned, so a substituted or expired server cert is accepted on every
+    // connect with no chain / hostname / URI-SAN check.
     if (!cfg.reject_untrusted) {
       auto & cv = cc.handle()->certificateVerification;
       if (cv.clear) {
@@ -1132,7 +1154,18 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void
   }
 
   if (ctx->callback) {
-    ctx->callback(user_values, source_node, event_type, condition_id);
+    // The callback chain (on_event -> apply_condition_state -> fault report /
+    // clear) must never let an exception unwind through open62541's C frames:
+    // they are not exception-safe (leaks / inconsistent internal state; formally
+    // UB) and an escape past run_iterate would call std::terminate on the poll
+    // thread. Contain everything at the C boundary.
+    try {
+      ctx->callback(user_values, source_node, event_type, condition_id);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA event callback threw, dropping notification: %s", e.what());
+    } catch (...) {
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA event callback threw a non-std exception, dropping notification");
+    }
   }
 }
 

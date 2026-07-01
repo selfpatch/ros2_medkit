@@ -88,7 +88,9 @@ struct OpcuaClientConfig {
 
   /// When true (default) the server certificate must chain to an entry in
   /// ``trust_list_paths``; an untrusted server is rejected. When false the
-  /// client accepts any server certificate (lab / trust-on-first-use only).
+  /// client accepts any server certificate (accept-any: INSECURE, lab only).
+  /// This is NOT trust-on-first-use: nothing is pinned, so a later cert change
+  /// is not detected.
   bool reject_untrusted{true};
 
   // --- Session user identity ---
@@ -337,6 +339,14 @@ class OpcuaClient {
   /// no secured channel. Such credentials can be intercepted on the wire and
   /// the caller is expected to warn loudly.
   static bool credentials_sent_in_clear(const OpcuaClientConfig & config);
+
+  /// True when SecurityPolicy and MessageSecurityMode are set inconsistently:
+  /// exactly one of them is None. OPC-UA (Part 4 §7.37) requires them to move
+  /// together - a mode of Sign/SignAndEncrypt with SecurityPolicy=None would
+  /// leave the policy URI unpinned (silently allowing a downgraded channel),
+  /// and a policy without a mode is equally malformed. A conflicting config is
+  /// rejected before contacting the server.
+  static bool security_config_conflict(const OpcuaClientConfig & config);
 
  private:
   struct Impl;

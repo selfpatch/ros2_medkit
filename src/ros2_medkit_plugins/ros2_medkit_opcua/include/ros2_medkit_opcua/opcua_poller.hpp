@@ -203,6 +203,16 @@ class OpcuaPoller {
                                      const std::set<std::string> & failed_sources,
                                      const std::set<std::string> & modeled_sources);
 
+  /// Decide whether a tracked condition should be cleared after a completed
+  /// ConditionRefresh burst (issue #480). Cleared only when it was active
+  /// (Confirmed/Healed) and its ConditionId was NOT among the ones the server
+  /// replayed during the burst (``seen``). A delivered RefreshEnd is an
+  /// authoritative, subscription-wide replay, so - unlike the read fallback -
+  /// no per-source modeling gate is needed. Pure and static so it is
+  /// unit-testable without a server.
+  static bool should_clear_after_refresh(SovdAlarmStatus last_status, const std::string & condition_id,
+                                         const std::set<std::string> & seen);
+
  private:
   void poll_loop();
   void do_poll();
@@ -235,6 +245,22 @@ class OpcuaPoller {
   /// cleared, so an EventNotifier-only server cannot wipe live alarms (#478).
   void reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources,
                             const std::set<std::string> & modeled_sources);
+
+  /// Reconcile the tracked fault set after a completed ConditionRefresh burst
+  /// (issue #480). ConditionRefresh (Part 9 §5.5.7) replays only Retain=true
+  /// conditions between RefreshStart and RefreshEnd, so a condition that fully
+  /// cleared while we were offline is silently absent from the burst and would
+  /// otherwise stay latched. ``seen`` is the set of ConditionIds the server
+  /// replayed during the burst; any tracked-active condition NOT in it cleared
+  /// offline and is cleared here. Unlike the read fallback this needs no
+  /// per-source modeling gate: a delivered RefreshEnd is an authoritative,
+  /// subscription-wide replay (works on EventNotifier-only servers too).
+  void reconcile_after_refresh(const std::set<std::string> & seen);
+
+  /// Dispatch a batch of ClearFault deliveries to the event-alarm callback.
+  /// Shared by the read- and refresh-based reconcile paths. Must be called with
+  /// no poller lock held (invokes the user callback).
+  void dispatch_condition_clears(const std::vector<AlarmEventDelivery> & clears);
 
   /// Emit an operator-visible warning via the configured ``log_warn`` sink,
   /// falling back to the poller's ROS 2 logger.
@@ -291,16 +317,17 @@ class OpcuaPoller {
   // Sources already warned about as read-fallback-unsupported (warn once each).
   std::set<std::string> read_unsupported_warned_sources_;
 
-  // ConditionRefresh bracketing state. open62541 sends the buffered
-  // historical condition burst between RefreshStartEvent and
-  // RefreshEndEvent; we apply each event during the burst as normal but
-  // use this flag in tests / diagnostics. Production note: per Part 9
-  // §5.5.7 the spec also requires the client to ignore ConditionRefresh
-  // notifications carrying ``Retain=false`` for non-current branches; the
-  // state machine already drops branches via BranchId, and the trampoline
-  // cannot distinguish refresh-burst events from live events without
-  // tracking the EventType, which we do explicitly below.
+  // ConditionRefresh bracketing state. open62541 sends the buffered historical
+  // condition burst between RefreshStartEvent and RefreshEndEvent; we apply each
+  // event during the burst as normal. On RefreshStart we clear ``refresh_seen_``
+  // and accumulate every replayed ConditionId there; on RefreshEnd we reconcile
+  // (clear tracked-active conditions the server did NOT replay - they cleared
+  // offline). Per Part 9 §5.5.7 ConditionRefresh replays only Retain=true /
+  // current-branch conditions; the state machine already drops non-current
+  // branches via BranchId. Touched only on the poll thread (the burst is
+  // delivered via run_iterate there), same convention as read_modeled_sources_.
   std::atomic<bool> condition_refresh_in_progress_{false};
+  std::set<std::string> refresh_seen_;
 
   // Throttle the warn-level log emitted from condition_refresh() failures.
   // Reset to false on each fresh subscribe in setup_event_subscriptions()

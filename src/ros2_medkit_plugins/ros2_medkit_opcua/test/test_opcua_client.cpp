@@ -202,6 +202,39 @@ TEST(OpcuaClientSecurity, CredentialsSentInClear) {
   EXPECT_FALSE(OpcuaClient::credentials_sent_in_clear(cfg));
 }
 
+TEST(OpcuaClientSecurity, SecurityConfigConflict) {
+  OpcuaClientConfig cfg;
+  // Both None (default): consistent, no conflict.
+  EXPECT_FALSE(OpcuaClient::security_config_conflict(cfg));
+
+  // Mode set but policy None: the policy URI would be left unpinned - conflict.
+  cfg.security_mode = SecurityMode::Sign;
+  EXPECT_TRUE(OpcuaClient::security_config_conflict(cfg));
+  cfg.security_mode = SecurityMode::SignAndEncrypt;
+  EXPECT_TRUE(OpcuaClient::security_config_conflict(cfg));
+
+  // Both set: consistent.
+  cfg.security_policy = SecurityPolicy::Basic256Sha256;
+  EXPECT_FALSE(OpcuaClient::security_config_conflict(cfg));
+
+  // Policy set but mode None: equally malformed - conflict.
+  cfg.security_mode = SecurityMode::None;
+  EXPECT_TRUE(OpcuaClient::security_config_conflict(cfg));
+}
+
+TEST(OpcuaClientSecurity, ConnectRejectsContradictorySecurityConfig) {
+  // security_mode=Sign with security_policy=None must fail before touching the
+  // network (would otherwise silently run an unpinned-policy channel).
+  OpcuaClient client;
+  OpcuaClientConfig cfg;
+  cfg.endpoint_url = "opc.tcp://localhost:49997";
+  cfg.connect_timeout = std::chrono::milliseconds(500);
+  cfg.security_mode = SecurityMode::Sign;
+  cfg.security_policy = SecurityPolicy::None;
+  EXPECT_FALSE(client.connect(cfg));
+  EXPECT_FALSE(client.is_connected());
+}
+
 TEST(OpcuaClientSecurity, ConnectSecureWithoutCertFailsFast) {
   // A secured profile with no client cert/key must fail config-time, before
   // touching the network, and leave the client disconnected.

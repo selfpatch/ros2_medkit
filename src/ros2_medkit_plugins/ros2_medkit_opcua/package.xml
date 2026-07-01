@@ -32,6 +32,11 @@
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_clang_format</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <!-- The secured A&C integration test (test/integration/test_opcua_secured.test.py)
+       launches fault_manager_node; without this dep a missing package silently
+       degrades the E2E test to a CTest skip. Runtime coupling is via ROS service
+       only, so test_depend (not depend) is correct. -->
+  <test_depend>ros2_medkit_fault_manager</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
