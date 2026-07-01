@@ -154,6 +154,59 @@ components:
   EXPECT_EQ(comp.tags.size(), 1);
 }
 
+// INV2: a manifest component may declare an asset-identity nameplate. Parsed
+// fields land on Component.identity with per-field provenance stamped
+// "manifest" (so identity is attributable even in MANIFEST_ONLY mode).
+TEST_F(ManifestParserTest, ParseComponentIdentity) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+components:
+  - id: "plc_1"
+    name: "Line PLC"
+    identity:
+      manufacturer: "Siemens"
+      model: "S7-1500"
+      serial_number: "SN-42"
+      hardware_revision: "HW-3"
+      firmware_version: "2.9.4"
+      software_version: "app-1.0"
+      network_endpoint: "opc.tcp://plc:4840"
+      role: "plc"
+      extra:
+        slot: "3"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  ASSERT_EQ(manifest.components.size(), 1);
+  const auto & id = manifest.components[0].identity;
+
+  EXPECT_EQ(id.manufacturer, "Siemens");
+  EXPECT_EQ(id.model, "S7-1500");
+  EXPECT_EQ(id.serial_number, "SN-42");
+  EXPECT_EQ(id.hardware_revision, "HW-3");
+  EXPECT_EQ(id.firmware_version, "2.9.4");
+  EXPECT_EQ(id.software_version, "app-1.0");
+  EXPECT_EQ(id.network_endpoint, "opc.tcp://plc:4840");
+  EXPECT_EQ(id.role, "plc");
+  EXPECT_EQ(id.extra.at("slot"), "3");
+
+  EXPECT_EQ(id.provenance.at("manufacturer"), "manifest");
+  EXPECT_EQ(id.provenance.at("serial_number"), "manifest");
+  EXPECT_EQ(id.provenance.at("extra.slot"), "manifest");
+}
+
+TEST_F(ManifestParserTest, ParseComponentWithoutIdentityIsEmpty) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+components:
+  - id: "plain"
+    name: "Plain"
+)";
+  auto manifest = parser_.parse_string(yaml);
+  ASSERT_EQ(manifest.components.size(), 1);
+  EXPECT_TRUE(manifest.components[0].identity.empty());
+}
+
 TEST_F(ManifestParserTest, ParseApps) {
   const std::string yaml = R"(
 manifest_version: "1.0"

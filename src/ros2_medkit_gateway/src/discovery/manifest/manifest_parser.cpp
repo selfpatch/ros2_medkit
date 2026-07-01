@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/core/discovery/manifest/manifest_parser.hpp"
 
+#include "ros2_medkit_gateway/core/discovery/identity_merge.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -240,6 +242,7 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
   comp.parent_component_id = get_string(node, "parent_component_id");
   comp.depends_on = get_string_vector(node, "depends_on");
   comp.source = "manifest";
+  comp.identity = parse_identity(node);
 
   // Parse type if provided (e.g., "controller", "sensor", "actuator")
   std::string type_val = get_string(node, "type");
@@ -255,6 +258,33 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
   }
 
   return comp;
+}
+
+AssetIdentity ManifestParser::parse_identity(const YAML::Node & node) const {
+  AssetIdentity identity;
+  if (!node["identity"]) {
+    return identity;
+  }
+  const YAML::Node & id_node = node["identity"];
+  identity.manufacturer = get_string(id_node, "manufacturer");
+  identity.model = get_string(id_node, "model");
+  identity.serial_number = get_string(id_node, "serial_number");
+  identity.hardware_revision = get_string(id_node, "hardware_revision");
+  identity.firmware_version = get_string(id_node, "firmware_version");
+  identity.software_version = get_string(id_node, "software_version");
+  identity.network_endpoint = get_string(id_node, "network_endpoint");
+  identity.role = get_string(id_node, "role");
+  if (id_node["extra"] && id_node["extra"].IsMap()) {
+    for (const auto & kv : id_node["extra"]) {
+      identity.extra[kv.first.as<std::string>()] = kv.second.as<std::string>();
+    }
+  }
+  // Pre-stamp provenance so the identity origin is recorded even in
+  // MANIFEST_ONLY mode, where the merge pipeline (which otherwise seeds
+  // provenance from Component.source) is bypassed. Only populated fields are
+  // stamped; a merge later overrides per field with a higher-authority source.
+  stamp_identity_provenance(identity, "manifest");
+  return identity;
 }
 
 App ManifestParser::parse_app(const YAML::Node & node) const {

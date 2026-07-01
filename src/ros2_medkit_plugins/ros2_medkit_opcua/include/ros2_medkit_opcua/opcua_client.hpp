@@ -348,6 +348,38 @@ class OpcuaClient {
   /// rejected before contacting the server.
   static bool security_config_conflict(const OpcuaClientConfig & config);
 
+  /// Device identity read from an OPC-UA server's information model.
+  ///
+  /// Two tiers, both best-effort (empty string when the server does not expose
+  /// a field):
+  ///   - ServerStatus/BuildInfo: present on every compliant server. Describes
+  ///     the OPC-UA *server* (which for an embedded PLC IS the device).
+  ///   - OPC-UA DI nameplate (companion spec ``http://opcfoundation.org/UA/DI/``):
+  ///     the standard per-device identification properties, present only when the
+  ///     server implements the DI model. More specific than BuildInfo.
+  struct DeviceInfo {
+    // ServerStatus/BuildInfo (ns=0 well-known nodes)
+    std::string manufacturer_name;  ///< BuildInfo.ManufacturerName
+    std::string product_name;       ///< BuildInfo.ProductName
+    std::string software_version;   ///< BuildInfo.SoftwareVersion
+    std::string build_number;       ///< BuildInfo.BuildNumber
+
+    // OPC-UA DI DeviceType identification (only when the DI namespace is present)
+    std::string di_manufacturer;       ///< DeviceType.Manufacturer
+    std::string di_model;              ///< DeviceType.Model
+    std::string di_serial_number;      ///< DeviceType.SerialNumber
+    std::string di_hardware_revision;  ///< DeviceType.HardwareRevision
+    std::string di_software_revision;  ///< DeviceType.SoftwareRevision
+  };
+
+  /// Read device identity (nameplate) from the connected server.
+  ///
+  /// Reads ServerStatus/BuildInfo unconditionally and, when the server exposes
+  /// the OPC-UA DI companion namespace, the DeviceSet nameplate. Best-effort:
+  /// returns whatever was readable and never throws. Returns an all-empty
+  /// struct when not connected.
+  DeviceInfo read_device_info();
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

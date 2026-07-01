@@ -78,6 +78,13 @@ components:
     description: "Vehicle control unit"
     tags: ["compute", "control"]
     depends_on: ["lidar_unit", "ghost_component"]
+    identity:
+      manufacturer: "Acme Robotics"
+      model: "ECU-9000"
+      serial_number: "SN-MAIN-001"
+      role: "controller"
+      extra:
+        slot: "1"
   - id: "lidar_unit"
     name: "Lidar Unit"
     namespace: "/sensors"
@@ -433,6 +440,55 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+}
+
+// @verifies REQ_INTEROP_003
+// INV2: manifest-driven asset identity surfaces over SOVD with per-field
+// provenance. The list handler emits x-medkit.identity for a component whose
+// manifest declares an identity block.
+TEST_F(DiscoveryHandlersFixtureTest, ListComponentsIncludesManifestIdentity) {
+  httplib::Request req;
+  TypedRequest typed_req(req);
+
+  auto result = handlers_->get_components(typed_req);
+  auto body = body_json(result);
+  ASSERT_EQ(body["items"].size(), 1u);
+  const auto & identity = body["items"][0]["x-medkit"]["identity"];
+  // Typed fields serialize camelCase (AssetIdentity::to_json).
+  EXPECT_EQ(identity["manufacturer"], "Acme Robotics");
+  EXPECT_EQ(identity["model"], "ECU-9000");
+  EXPECT_EQ(identity["serialNumber"], "SN-MAIN-001");
+  EXPECT_EQ(identity["role"], "controller");
+  EXPECT_EQ(identity["extra"]["slot"], "1");
+  // Provenance keys use the internal snake_case field names.
+  EXPECT_EQ(identity["_provenance"]["manufacturer"], "manifest");
+  EXPECT_EQ(identity["_provenance"]["serial_number"], "manifest");
+  EXPECT_EQ(identity["_provenance"]["extra.slot"], "manifest");
+}
+
+// @verifies REQ_INTEROP_003
+// INV2: the same identity is present on the component detail endpoint.
+TEST_F(DiscoveryHandlersFixtureTest, GetComponentIncludesManifestIdentity) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
+
+  auto result = handlers_->get_component(typed_req);
+  auto body = body_json(result);
+  const auto & identity = body["x-medkit"]["identity"];
+  EXPECT_EQ(identity["manufacturer"], "Acme Robotics");
+  EXPECT_EQ(identity["role"], "controller");
+  EXPECT_EQ(identity["_provenance"]["model"], "manifest");
+}
+
+// @verifies REQ_INTEROP_003
+// A component without a manifest identity block emits no x-medkit.identity.
+TEST_F(DiscoveryHandlersFixtureTest, GetComponentWithoutIdentityOmitsField) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/lidar_unit", R"(/api/v1/components/([^/]+))");
+
+  auto result = handlers_->get_component(typed_req);
+  auto body = body_json(result);
+  EXPECT_FALSE(body["x-medkit"].contains("identity"));
 }
 
 // @verifies REQ_INTEROP_003
