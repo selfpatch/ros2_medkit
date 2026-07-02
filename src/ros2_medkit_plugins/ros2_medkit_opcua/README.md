@@ -238,8 +238,8 @@ nodes:
 # the rest of the config.
 #
 # Fault codes must be globally unique across ALL fault sources - every `alarm` /
-# `status_bits` / `fault_enum` entry AND every `event_alarms` entry - regardless
-# of which entity owns them. The fault manager keys and clears faults by
+# `status_bits` / `fault_enum` entry AND every `event_alarms` entry (including
+# each of its `mappings[].fault_code`) - regardless of which entity owns them. The fault manager keys and clears faults by
 # fault_code alone, so a code reused on two sources (even on different entities,
 # even one polled and one event-driven) would flap raise/clear or clear the other
 # source's fault. The loader rejects the whole file at load with an actionable
