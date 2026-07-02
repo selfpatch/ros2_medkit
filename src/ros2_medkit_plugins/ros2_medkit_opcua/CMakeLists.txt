@@ -371,10 +371,13 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_secured.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
+    # TIMEOUT must exceed the sum of the script's internal wait deadlines so a
+    # slow failing run still reaches its own FAIL diagnostics instead of being
+    # killed by CTest.
     set_tests_properties(test_opcua_secured PROPERTIES
       LABELS "integration"
       SKIP_RETURN_CODE 77
-      TIMEOUT 300)
+      TIMEOUT 420)
 
     # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
     # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and
