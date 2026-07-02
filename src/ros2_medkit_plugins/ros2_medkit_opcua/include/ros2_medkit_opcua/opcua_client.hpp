@@ -110,6 +110,8 @@ class OpcuaClient {
 
   OpcuaClient(const OpcuaClient &) = delete;
   OpcuaClient & operator=(const OpcuaClient &) = delete;
+  OpcuaClient(OpcuaClient &&) = delete;
+  OpcuaClient & operator=(OpcuaClient &&) = delete;
 
   /// Connect to OPC-UA server
   /// @return true if connected successfully

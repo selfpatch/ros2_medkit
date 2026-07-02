@@ -71,6 +71,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   OpcuaPlugin();
   ~OpcuaPlugin() override;
 
+  OpcuaPlugin(const OpcuaPlugin &) = delete;
+  OpcuaPlugin & operator=(const OpcuaPlugin &) = delete;
+  OpcuaPlugin(OpcuaPlugin &&) = delete;
+  OpcuaPlugin & operator=(OpcuaPlugin &&) = delete;
+
   // -- GatewayPlugin interface --
   std::string name() const override {
     return "opcua";

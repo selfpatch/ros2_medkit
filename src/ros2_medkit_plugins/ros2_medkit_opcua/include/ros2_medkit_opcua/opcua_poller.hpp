@@ -130,6 +130,8 @@ class OpcuaPoller {
 
   OpcuaPoller(const OpcuaPoller &) = delete;
   OpcuaPoller & operator=(const OpcuaPoller &) = delete;
+  OpcuaPoller(OpcuaPoller &&) = delete;
+  OpcuaPoller & operator=(OpcuaPoller &&) = delete;
 
   /// Start the poller thread
   void start(const PollerConfig & config);

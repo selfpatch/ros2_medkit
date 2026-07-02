@@ -764,7 +764,7 @@ uint32_t OpcuaClient::create_subscription(double publish_interval_ms, DataChange
     uint32_t sub_id = sub.subscriptionId();
 
     std::lock_guard<std::mutex> sub_lock(impl_->sub_mutex);
-    impl_->subscriptions.push_back({std::move(sub), std::move(callback)});
+    impl_->subscriptions.push_back({sub, std::move(callback)});
 
     return sub_id;
   } catch (const opcua::BadStatus &) {
@@ -1118,16 +1118,13 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void
     return;
   }
 
-  // Copy the UA_Variant fields into open62541pp wrappers. UA_Variant_copy
-  // duplicates the underlying buffer, which the opcua::Variant destructor
-  // will free.
+  // Copy the UA_Variant fields into open62541pp wrappers. The Variant
+  // lvalue constructor deep-copies the underlying buffer, which the
+  // opcua::Variant destructor will free.
   std::vector<opcua::Variant> values;
   values.reserve(n_fields);
   for (size_t i = 0; i < n_fields; ++i) {
-    UA_Variant copy;
-    UA_Variant_init(&copy);
-    UA_Variant_copy(&fields[i], &copy);
-    values.emplace_back(opcua::Variant{std::move(copy)});
+    values.emplace_back(opcua::Variant{fields[i]});
   }
 
   // Auto-prepended positions (matching make_event_filter):
@@ -1349,8 +1346,8 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     auto arg_results = result.getInputArgumentResults();
     std::vector<uint32_t> arg_codes;
     arg_codes.reserve(arg_results.size());
-    for (size_t i = 0; i < arg_results.size(); ++i) {
-      arg_codes.push_back(arg_results[i].get());
+    for (const auto & arg_result : arg_results) {
+      arg_codes.push_back(arg_result.get());
     }
     if (client_debug_enabled()) {
       // RCLCPP_DEBUG_STREAM constructs its std::stringstream unconditionally,
