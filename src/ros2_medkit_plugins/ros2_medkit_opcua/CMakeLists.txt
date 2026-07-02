@@ -74,19 +74,23 @@ fetchcontent_makeavailable(open62541pp)
 set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_medkit_saved_compile_options}")
 unset(_medkit_saved_compile_options)
 
-# Mark open62541pp's interface include directories as SYSTEM so consumers
-# (our plugin and tests) do not propagate strict warnings into third-party
-# header code. CMake propagates SYSTEM-ness only when the interface property
-# is explicitly marked; we do that here on the open62541pp target so downstream
-# target_link_libraries picks it up automatically.
-if(TARGET open62541pp)
-  get_target_property(_op62_includes open62541pp INTERFACE_INCLUDE_DIRECTORIES)
-  if(_op62_includes)
-    set_target_properties(open62541pp PROPERTIES
-      INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_op62_includes}")
+# Mark the interface include directories of open62541pp AND the bundled
+# open62541 target as SYSTEM so consumers (our plugin and tests) do not
+# propagate strict warnings into third-party header code. CMake propagates
+# SYSTEM-ness only when the interface property is explicitly marked. The
+# open62541 target matters for clang-tidy: its headers (e.g.
+# client_highlevel.h) contain old-style casts that -Werror=old-style-cast
+# turns into hard errors when reached through a plain -I path.
+foreach(_op62_target open62541pp open62541)
+  if(TARGET ${_op62_target})
+    get_target_property(_op62_includes ${_op62_target} INTERFACE_INCLUDE_DIRECTORIES)
+    if(_op62_includes)
+      set_target_properties(${_op62_target} PROPERTIES
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_op62_includes}")
+    endif()
+    unset(_op62_includes)
   endif()
-  unset(_op62_includes)
-endif()
+endforeach()
 
 # ---- MODULE target: loaded via dlopen at runtime by PluginManager ----
 # Symbols from ros2_medkit_gateway are resolved from the host process at runtime.
