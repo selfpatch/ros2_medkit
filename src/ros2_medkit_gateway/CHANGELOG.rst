@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Manual asset inventory: a manifest ``assets:`` list and a new ``discovery.inventory.csv_path`` parameter declare assets that no protocol layer can describe (or fully describe). The CSV recognizes the canonical columns ``id, manufacturer, model, serial, hardware_rev, firmware, endpoint, role`` (plus common aliases) and keeps any other column as an extra; RFC-4180-style quoting is honored and rows without an ``id`` are skipped with a warning. Each asset becomes a Component with ``source = "inventory"`` and a structured asset identity carrying per-field provenance, appended to the base manifest on every load / reload and merged into the tree by id alongside protocol-discovered structure. The CSV is size-capped at 1 MiB before being read; a missing file is skipped with a warning (mirrors ``fragments_dir``), while an unreadable or malformed one fails the load / reload. Requires a manifest-backed discovery mode (``manifest_only`` / ``hybrid`` with ``discovery.manifest_path`` set); empty = disabled (default) (`#490 <https://github.com/selfpatch/ros2_medkit/issues/490>`_)
+
 0.6.0 (2026-06-22)
 ------------------
 * SOVD entity status and lifecycle control endpoints: ``GET /apps/{id}/status`` and ``GET /components/{id}/status``, plus lifecycle control routes backed by a new ``LifecycleProvider`` plugin interface and plugin-manager routing. Control returns ``501 Not Implemented`` until a provider is registered; the routes are RBAC-gated, advertised via a ``status`` link on app and component detail, and declared under the OpenAPI ``Lifecycle`` tag (`#437 <https://github.com/selfpatch/ros2_medkit/pull/437>`_)

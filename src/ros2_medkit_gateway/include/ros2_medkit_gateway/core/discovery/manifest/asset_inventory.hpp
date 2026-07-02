@@ -84,16 +84,22 @@ AssetCsvResult parse_asset_csv(const std::string & csv_text);
  *
  * The component is tagged `source = "inventory"` so its provenance stays
  * visible after the merge pipeline combines it (by id) with protocol-discovered
- * structure. Identity is projected onto the existing Component fields until the
- * INV1 structured identity model is available (see the AssetEntry note):
- *   - name        <- "<manufacturer> <model>" (falls back to id at display time)
- *   - variant     <- hardware_rev
- *   - tags        <- role (when present)
- *   - description <- human-readable identity summary (serial, firmware,
- *                    endpoint, extras)
+ * structure. Canonical fields land on the structured `Component::identity`
+ * with per-field provenance `"inventory"` (see the AssetEntry note):
+ *   - name <- "<manufacturer> <model>" (left empty when neither is set so
+ *     consumers fall back to the id)
+ *   - identity.manufacturer / model / serial_number / hardware_revision /
+ *     firmware_version / network_endpoint / role <- the matching entry
+ *     fields; empty fields are skipped and record no provenance
+ *   - identity.extra[header] <- non-empty extras, provenance keyed
+ *     `extra.<header>`
+ *
+ * `fqn` / `namespace_path` are left empty: a bare inventory asset carries no
+ * placement, so a discovered node it merges with keeps its real path.
  *
  * @param entry Asset entry (must have a non-empty id).
- * @return Component with `source = "inventory"` and identity populated.
+ * @return Component with `source = "inventory"` and structured identity
+ *         populated.
  */
 Component asset_entry_to_component(const AssetEntry & entry);
 
