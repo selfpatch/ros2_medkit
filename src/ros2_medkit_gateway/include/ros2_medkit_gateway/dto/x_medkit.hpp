@@ -118,7 +118,11 @@ struct XMedkitComponent {
   std::optional<std::string> description;
   std::optional<std::vector<std::string>> contributors;
   std::optional<nlohmann::json> capabilities;  // free-form JSON array
-  std::optional<bool> missing;                 // broken reference sentinel
+  // Asset-identity nameplate (AssetIdentity::to_json shape: camelCase fields +
+  // "_provenance"). Free-form JSON so the DTO layer reuses the exact
+  // serialization emitted by Component::to_json and consumed by peer parsing.
+  std::optional<nlohmann::json> identity;
+  std::optional<bool> missing;  // broken reference sentinel
 };
 
 template <>
@@ -128,7 +132,7 @@ inline constexpr auto dto_fields<XMedkitComponent> = std::make_tuple(
     field("dependsOn", &XMedkitComponent::depends_on), field("area", &XMedkitComponent::area),
     field("variant", &XMedkitComponent::variant), field("description", &XMedkitComponent::description),
     field("contributors", &XMedkitComponent::contributors), field("capabilities", &XMedkitComponent::capabilities),
-    field("missing", &XMedkitComponent::missing));
+    field("identity", &XMedkitComponent::identity), field("missing", &XMedkitComponent::missing));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent";

@@ -358,10 +358,13 @@ def main():
         # Secured A&C: fire an alarm over the server stdin -> CONFIRMED fault.
         server.stdin.write('fire Overpressure 750\n')
         server.stdin.flush()
+        # Generous deadline for slow CI runners: the alarm has already fired on
+        # the server, but report -> fault_manager -> REST propagation can take
+        # a while under load. A longer deadline only slows the failure path.
         faults = wait_json(
             f'{base}/faults',
             lambda j: any(i.get('fault_code') == ALARM_CODE and i.get('status') == 'CONFIRMED'
-                          for i in j.get('items', [])), deadline=40)
+                          for i in j.get('items', [])), deadline=120)
         if not (faults and any(i.get('fault_code') == ALARM_CODE and i.get('status') == 'CONFIRMED'
                                for i in faults.get('items', []))):
             print('FAIL: alarm did not surface as a CONFIRMED fault', file=sys.stderr)

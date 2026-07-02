@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 // Copyright 2021 Christophe Bedard
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,3 +45,4 @@
 #endif  // DYNMSG_PARSER_DEBUG
 
 #endif  // ROS2_MEDKIT_SERIALIZATION__VENDORED__DYNMSG__CONFIG_HPP_
+// NOLINTEND

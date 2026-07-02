@@ -74,19 +74,23 @@ fetchcontent_makeavailable(open62541pp)
 set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_medkit_saved_compile_options}")
 unset(_medkit_saved_compile_options)
 
-# Mark open62541pp's interface include directories as SYSTEM so consumers
-# (our plugin and tests) do not propagate strict warnings into third-party
-# header code. CMake propagates SYSTEM-ness only when the interface property
-# is explicitly marked; we do that here on the open62541pp target so downstream
-# target_link_libraries picks it up automatically.
-if(TARGET open62541pp)
-  get_target_property(_op62_includes open62541pp INTERFACE_INCLUDE_DIRECTORIES)
-  if(_op62_includes)
-    set_target_properties(open62541pp PROPERTIES
-      INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_op62_includes}")
+# Mark the interface include directories of open62541pp AND the bundled
+# open62541 target as SYSTEM so consumers (our plugin and tests) do not
+# propagate strict warnings into third-party header code. CMake propagates
+# SYSTEM-ness only when the interface property is explicitly marked. The
+# open62541 target matters for clang-tidy: its headers (e.g.
+# client_highlevel.h) contain old-style casts that -Werror=old-style-cast
+# turns into hard errors when reached through a plain -I path.
+foreach(_op62_target open62541pp open62541)
+  if(TARGET ${_op62_target})
+    get_target_property(_op62_includes ${_op62_target} INTERFACE_INCLUDE_DIRECTORIES)
+    if(_op62_includes)
+      set_target_properties(${_op62_target} PROPERTIES
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_op62_includes}")
+    endif()
+    unset(_op62_includes)
   endif()
-  unset(_op62_includes)
-endif()
+endforeach()
 
 # ---- MODULE target: loaded via dlopen at runtime by PluginManager ----
 # Symbols from ros2_medkit_gateway are resolved from the host process at runtime.
@@ -94,6 +98,7 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/opcua_plugin.cpp
   src/opcua_plugin_exports.cpp
   src/opcua_client.cpp
+  src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
 )
@@ -166,6 +171,7 @@ if(BUILD_TESTING)
     test/test_opcua_plugin.cpp
     src/opcua_plugin.cpp
     src/opcua_client.cpp
+    src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
     TIMEOUT 240
@@ -238,6 +244,24 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   medkit_set_test_domain(test_alarm_state_machine)
+
+  # INV2: pure device-info -> AssetIdentity mapping tests (no server).
+  ament_add_gtest(test_device_identity
+    test/test_device_identity.cpp
+    src/device_identity.cpp
+  )
+  target_include_directories(test_device_identity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_device_identity
+    ros2_medkit_gateway
+    rclcpp
+  )
+  target_link_libraries(test_device_identity
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+  )
+  medkit_set_test_domain(test_device_identity)
 
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
@@ -351,10 +375,46 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_secured.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
+    # TIMEOUT must exceed the sum of the script's internal wait deadlines so a
+    # slow failing run still reaches its own FAIL diagnostics instead of being
+    # killed by CTest.
     set_tests_properties(test_opcua_secured PROPERTIES
       LABELS "integration"
       SKIP_RETURN_CODE 77
-      TIMEOUT 300)
+      TIMEOUT 420)
+
+    # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
+    # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and
+    # OpcuaPlugin::introspect(). GTEST_SKIP when the fixture binary is missing.
+    ament_add_gtest(test_opcua_identity
+      test/test_opcua_identity.cpp
+      src/opcua_plugin.cpp
+      src/opcua_client.cpp
+      src/device_identity.cpp
+      src/node_map.cpp
+      src/opcua_poller.cpp
+      TIMEOUT 120
+    )
+    add_dependencies(test_opcua_identity test_alarm_server)
+    target_include_directories(test_opcua_identity PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(test_opcua_identity PRIVATE
+      MEDKIT_ALARM_SERVER_BIN="${CMAKE_BINARY_DIR}/test_alarm_server")
+    medkit_target_dependencies(test_opcua_identity
+      ros2_medkit_msgs
+      ros2_medkit_gateway
+      ros2_medkit_fault_detection
+      rclcpp
+      std_msgs
+    )
+    target_link_libraries(test_opcua_identity
+      open62541pp::open62541pp
+      nlohmann_json::nlohmann_json
+      yaml-cpp::yaml-cpp
+      OpenSSL::SSL OpenSSL::Crypto
+    )
+    medkit_set_test_domain(test_opcua_identity)
   endif()
 
   ros2_medkit_relax_vendor_warnings()

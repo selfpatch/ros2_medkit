@@ -18,6 +18,7 @@
 #include "ros2_medkit_opcua/opcua_client.hpp"
 #include "ros2_medkit_opcua/opcua_poller.hpp"
 
+#include <ros2_medkit_gateway/core/discovery/models/asset_identity.hpp>
 #include <ros2_medkit_gateway/core/plugins/gateway_plugin.hpp>
 #include <ros2_medkit_gateway/core/plugins/plugin_http_types.hpp>
 #include <ros2_medkit_gateway/core/providers/data_provider.hpp>
@@ -70,6 +71,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
  public:
   OpcuaPlugin();
   ~OpcuaPlugin() override;
+
+  OpcuaPlugin(const OpcuaPlugin &) = delete;
+  OpcuaPlugin & operator=(const OpcuaPlugin &) = delete;
+  OpcuaPlugin(OpcuaPlugin &&) = delete;
+  OpcuaPlugin & operator=(OpcuaPlugin &&) = delete;
 
   // -- GatewayPlugin interface --
   std::string name() const override {
@@ -141,6 +147,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   std::unique_ptr<OpcuaClient> client_;
   NodeMap node_map_;
+
+  // INV2: asset-identity nameplate read once from the server's device-info
+  // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate) on the first
+  // connected introspect, then reused. Empty until a successful read.
+  AssetIdentity device_identity_;
+  bool device_identity_loaded_{false};
 
   // ROS 2 service clients for fault reporting
   struct FaultClients;

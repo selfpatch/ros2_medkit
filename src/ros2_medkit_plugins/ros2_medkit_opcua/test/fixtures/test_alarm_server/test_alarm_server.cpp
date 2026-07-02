@@ -482,6 +482,83 @@ UA_StatusCode configure_secure(UA_ServerConfig * config, UA_UInt16 port, const s
 
 #endif  // UA_ENABLE_ENCRYPTION
 
+// INV2: pin explicit ServerStatus/BuildInfo so the identity integration test can
+// assert known nameplate values instead of open62541's build-time defaults.
+void set_build_info(UA_ServerConfig * config) {
+  auto set = [](UA_String * dst, const char * value) {
+    UA_String_clear(dst);
+    *dst = UA_STRING_ALLOC(value);
+  };
+  set(&config->buildInfo.manufacturerName, "SelfPatch Test Manufacturer");
+  set(&config->buildInfo.productName, "SelfPatch Test PLC");
+  set(&config->buildInfo.softwareVersion, "1.2.3");
+  set(&config->buildInfo.buildNumber, "build-4567");
+}
+
+// INV2: expose a minimal OPC-UA DI nameplate (Objects/DeviceSet/TestDevice with
+// the standard identification properties) so the identity read exercises the DI
+// path (SerialNumber / HardwareRevision) that ServerStatus/BuildInfo lacks.
+void add_di_nameplate(UA_Server * server) {
+  UA_UInt16 di_ns = UA_Server_addNamespace(server, "http://opcfoundation.org/UA/DI/");
+
+  UA_NodeId device_set_id = UA_NODEID_NULL;
+  {
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    oa.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("DeviceSet"));
+    UA_Server_addObjectNode(server, UA_NODEID_NULL, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                            UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                            UA_QUALIFIEDNAME(di_ns, const_cast<char *>("DeviceSet")),
+                            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), oa, nullptr, &device_set_id);
+  }
+
+  UA_NodeId device_id = UA_NODEID_NULL;
+  {
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    oa.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("TestDevice"));
+    UA_Server_addObjectNode(server, UA_NODEID_NULL, device_set_id, UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                            UA_QUALIFIEDNAME(di_ns, const_cast<char *>("TestDevice")),
+                            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), oa, nullptr, &device_id);
+  }
+
+  auto add_prop = [&](const char * name, const UA_DataType * type, UA_Variant value) {
+    UA_VariableAttributes va = UA_VariableAttributes_default;
+    va.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>(name));
+    va.accessLevel = UA_ACCESSLEVELMASK_READ;
+    va.dataType = type->typeId;
+    va.value = value;
+    UA_Server_addVariableNode(server, UA_NODEID_NULL, device_id, UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+                              UA_QUALIFIEDNAME(di_ns, const_cast<char *>(name)),
+                              UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), va, nullptr, nullptr);
+  };
+
+  // Per OPC-UA DI: Manufacturer / Model are LocalizedText; SerialNumber and the
+  // revisions are String.
+  UA_LocalizedText manufacturer = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("SelfPatch Devices"));
+  UA_Variant v_manufacturer;
+  UA_Variant_setScalar(&v_manufacturer, &manufacturer, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+  add_prop("Manufacturer", &UA_TYPES[UA_TYPES_LOCALIZEDTEXT], v_manufacturer);
+
+  UA_LocalizedText model = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("SPX-1000"));
+  UA_Variant v_model;
+  UA_Variant_setScalar(&v_model, &model, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+  add_prop("Model", &UA_TYPES[UA_TYPES_LOCALIZEDTEXT], v_model);
+
+  UA_String serial = UA_STRING(const_cast<char *>("SN-0001-TEST"));
+  UA_Variant v_serial;
+  UA_Variant_setScalar(&v_serial, &serial, &UA_TYPES[UA_TYPES_STRING]);
+  add_prop("SerialNumber", &UA_TYPES[UA_TYPES_STRING], v_serial);
+
+  UA_String hardware = UA_STRING(const_cast<char *>("HW-A2"));
+  UA_Variant v_hardware;
+  UA_Variant_setScalar(&v_hardware, &hardware, &UA_TYPES[UA_TYPES_STRING]);
+  add_prop("HardwareRevision", &UA_TYPES[UA_TYPES_STRING], v_hardware);
+
+  UA_String software = UA_STRING(const_cast<char *>("SW-3.4.5"));
+  UA_Variant v_software;
+  UA_Variant_setScalar(&v_software, &software, &UA_TYPES[UA_TYPES_STRING]);
+  add_prop("SoftwareRevision", &UA_TYPES[UA_TYPES_STRING], v_software);
+}
+
 void cli_loop(UA_Server * server, UA_UInt16 ns) {
   std::string line;
   while (g_running && std::getline(std::cin, line)) {
@@ -638,11 +715,15 @@ int main(int argc, char ** argv) {
   } else {
     UA_ServerConfig_setMinimal(config, port, nullptr);
   }
+  set_build_info(config);
 
   UA_UInt16 ns = UA_Server_addNamespace(server, NS_URI);
   if (add_variable(server, ns) != UA_STATUSCODE_GOOD) {
     UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register Tank.Level variable");
   }
+
+  // INV2: standard device-info nameplate for the identity integration test.
+  add_di_nameplate(server);
 
   Condition op, oh, sl;
   if (add_condition(server, "Overpressure", ns, op) != UA_STATUSCODE_GOOD ||

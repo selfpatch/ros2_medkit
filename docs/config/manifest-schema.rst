@@ -236,6 +236,18 @@ Schema
        depends_on: [string]    # Optional - component IDs this depends on
        subcomponents: []       # Optional - nested definitions
 
+       identity:               # Optional - asset-identity nameplate
+         manufacturer: string        # Vendor / manufacturer name
+         model: string               # Product designation / order code
+         serial_number: string       # Unit serial number
+         hardware_revision: string   # Hardware revision
+         firmware_version: string    # Firmware version
+         software_version: string    # Software/application version
+         network_endpoint: string    # e.g. "opc.tcp://plc.local:4840"
+         role: string                # Functional role (e.g. "plc", "drive")
+         extra:                      # Optional - vendor-specific extras
+           <key>: string             # Free-form string map (rack/slot, MAC, asset tag, ...)
+
        lock:                   # Optional - per-entity lock configuration
          required_scopes: [string]  # Collections requiring a lock before mutation
          breakable: boolean         # Whether locks can be broken (default: true)
@@ -308,6 +320,17 @@ Fields
      - [Component]
      - No
      - Nested component definitions
+   * - ``identity``
+     - object
+     - No
+     - Asset-identity nameplate of the asset behind the component. All keys
+       are optional strings (``manufacturer``, ``model``, ``serial_number``,
+       ``hardware_revision``, ``firmware_version``, ``software_version``,
+       ``network_endpoint``, ``role``) plus an extensible ``extra`` string map
+       for vendor-specific keys not modeled up front. Each populated field is
+       recorded with provenance ``manifest``; protocol plugins (e.g. OPC UA
+       device-info) fill in or override fields per the identity merge
+       precedence. Exposed over REST as ``x-medkit.identity``.
 
 Common Component Types
 ~~~~~~~~~~~~~~~~~~~~~~
