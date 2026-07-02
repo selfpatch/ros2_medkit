@@ -230,6 +230,11 @@ TEST_F(SnapshotCaptureTest, OnDemandCaptureHandlesNonExistentTopic) {
   // Should timeout gracefully, no snapshot stored
   auto snapshots = storage_->get_snapshots("TEST_FAULT");
   EXPECT_TRUE(snapshots.empty());
+
+  // A configured capture that sampled nothing still records an empty {} frame.
+  auto frame = storage_->get_freeze_frame("TEST_FAULT");
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_EQ(frame->data, "{}");
 }
 
 // Freeze-frame end-to-end tests
@@ -290,6 +295,112 @@ TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
   auto parsed = nlohmann::json::parse(frame->data);
   ASSERT_TRUE(parsed.contains("/plc/pressure"));
   EXPECT_DOUBLE_EQ(parsed["/plc/pressure"]["data"].get<double>(), 42.5);
+}
+
+// Regression for the empty-recapture overwrite: a re-confirm while the source
+// publishers are down must not clobber a previously retained non-empty frame.
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, EmptyRecaptureKeepsRetainedFreezeFrame) {
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/plc/flow", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  config.fault_specific["PLC_FLOW_LOW"] = {"/plc/flow"};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  {
+    ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+      while (!stop.load()) {
+        std_msgs::msg::Float64 msg;
+        msg.data = 7.25;
+        pub->publish(msg);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    while (node_->count_publishers("/plc/flow") == 0 &&
+           std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_GT(node_->count_publishers("/plc/flow"), 0u);
+
+    capture.capture("PLC_FLOW_LOW");
+  }
+
+  auto frame = storage_->get_freeze_frame("PLC_FLOW_LOW");
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_NE(frame->data, "{}");
+
+  // Take the publisher down and wait until the graph reflects it, then re-capture.
+  pub.reset();
+  auto start = std::chrono::steady_clock::now();
+  while (node_->count_publishers("/plc/flow") > 0 &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_EQ(node_->count_publishers("/plc/flow"), 0u);
+
+  capture.capture("PLC_FLOW_LOW");
+
+  auto retained = storage_->get_freeze_frame("PLC_FLOW_LOW");
+  ASSERT_TRUE(retained.has_value());
+  auto parsed = nlohmann::json::parse(retained->data);
+  ASSERT_TRUE(parsed.contains("/plc/flow"));
+  EXPECT_DOUBLE_EQ(parsed["/plc/flow"]["data"].get<double>(), 7.25);
+}
+
+// Exercises the background-capture cache path into the freeze-frame (cached JSON
+// string parsed back into a structured value).
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/plc/temperature", rclcpp::QoS(10));
+
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 91.5;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+
+  // The publisher already exists on this node, so the topic type is resolvable
+  // when the constructor sets up the background subscription.
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = true;
+  config.fault_specific["PLC_TEMP_HIGH"] = {"/plc/temperature"};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  // Spin so the background subscription caches a message, then capture from cache.
+  // Until the cache fills, capture records an empty first-run {} frame; retry.
+  bool got_frame = false;
+  auto start = std::chrono::steady_clock::now();
+  while (!got_frame && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    rclcpp::spin_some(node_);
+    capture.capture("PLC_TEMP_HIGH");
+    auto frame = storage_->get_freeze_frame("PLC_TEMP_HIGH");
+    got_frame = frame.has_value() && frame->data != "{}";
+    if (!got_frame) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  ASSERT_TRUE(got_frame);
+
+  auto frame = storage_->get_freeze_frame("PLC_TEMP_HIGH");
+  ASSERT_TRUE(frame.has_value());
+  auto parsed = nlohmann::json::parse(frame->data);
+  ASSERT_TRUE(parsed.contains("/plc/temperature"));
+  EXPECT_DOUBLE_EQ(parsed["/plc/temperature"]["data"].get<double>(), 91.5);
+
+  // The cache path also stores a per-topic snapshot.
+  auto snapshots = storage_->get_snapshots("PLC_TEMP_HIGH");
+  ASSERT_FALSE(snapshots.empty());
+  EXPECT_EQ(snapshots.back().topic, "/plc/temperature");
+  EXPECT_EQ(snapshots.back().message_type, "std_msgs/msg/Float64");
 }
 
 // @verifies REQ_INTEROP_088
