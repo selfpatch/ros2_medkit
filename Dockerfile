@@ -58,6 +58,7 @@ COPY src/ros2_medkit_cmake/ ${COLCON_WS}/src/ros2_medkit_cmake/
 # Copy core packages
 COPY src/ros2_medkit_msgs/ ${COLCON_WS}/src/ros2_medkit_msgs/
 COPY src/ros2_medkit_serialization/ ${COLCON_WS}/src/ros2_medkit_serialization/
+COPY src/ros2_medkit_fault_detection/ ${COLCON_WS}/src/ros2_medkit_fault_detection/
 COPY src/ros2_medkit_gateway/ ${COLCON_WS}/src/ros2_medkit_gateway/
 COPY src/ros2_medkit_fault_manager/ ${COLCON_WS}/src/ros2_medkit_fault_manager/
 COPY src/ros2_medkit_fault_reporter/ ${COLCON_WS}/src/ros2_medkit_fault_reporter/
