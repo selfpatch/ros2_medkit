@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 ///
 // expected - An implementation of std::expected with extensions
 // Written in 2017 by Sy Brand (tartanllama@gmail.com, @TartanLlama)
@@ -2473,3 +2475,4 @@ void swap(expected<T, E> &lhs,
 } // namespace tl
 
 #endif
+// NOLINTEND
