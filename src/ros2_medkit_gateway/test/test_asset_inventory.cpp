@@ -242,13 +242,22 @@ TEST(AssetEntryToComponentTest, FullMapping) {
   EXPECT_TRUE(comp.fqn.empty());
   EXPECT_TRUE(comp.namespace_path.empty());
   EXPECT_EQ(comp.name, "Siemens S7-1500");
-  EXPECT_EQ(comp.variant, "A2");
-  EXPECT_TRUE(has_tag(comp, "controller"));
-  // description carries the remaining identity fields + extras
-  EXPECT_NE(comp.description.find("SN123"), std::string::npos);
-  EXPECT_NE(comp.description.find("2.9.1"), std::string::npos);
-  EXPECT_NE(comp.description.find("opc.tcp://10.0.0.5:4840"), std::string::npos);
-  EXPECT_NE(comp.description.find("location cell-3"), std::string::npos);
+  // Every canonical column lands on the structured identity with per-field
+  // provenance "inventory" (not folded into description / variant / tags).
+  EXPECT_EQ(comp.identity.manufacturer, "Siemens");
+  EXPECT_EQ(comp.identity.model, "S7-1500");
+  EXPECT_EQ(comp.identity.serial_number, "SN123");
+  EXPECT_EQ(comp.identity.hardware_revision, "A2");
+  EXPECT_EQ(comp.identity.firmware_version, "2.9.1");
+  EXPECT_EQ(comp.identity.network_endpoint, "opc.tcp://10.0.0.5:4840");
+  EXPECT_EQ(comp.identity.role, "controller");
+  EXPECT_EQ(comp.identity.extra.at("location"), "cell-3");
+  EXPECT_EQ(comp.identity.provenance.at("manufacturer"), "inventory");
+  EXPECT_EQ(comp.identity.provenance.at("serial_number"), "inventory");
+  EXPECT_EQ(comp.identity.provenance.at("extra.location"), "inventory");
+  EXPECT_TRUE(comp.variant.empty());
+  EXPECT_TRUE(comp.tags.empty());
+  EXPECT_TRUE(comp.description.empty());
 }
 
 TEST(AssetEntryToComponentTest, MinimalEntryOnlyId) {
@@ -261,6 +270,7 @@ TEST(AssetEntryToComponentTest, MinimalEntryOnlyId) {
   EXPECT_TRUE(comp.description.empty());
   EXPECT_TRUE(comp.variant.empty());
   EXPECT_TRUE(comp.tags.empty());
+  EXPECT_TRUE(comp.identity.empty());
 }
 
 TEST(AssetEntryToComponentTest, NameFallsBackToManufacturerWhenNoModel) {
@@ -292,10 +302,14 @@ assets:
   ASSERT_NE(comp, nullptr);
   EXPECT_EQ(comp->source, "inventory");
   EXPECT_EQ(comp->name, "KUKA KR-6");
-  EXPECT_EQ(comp->variant, "R3");
-  EXPECT_TRUE(has_tag(*comp, "actuator"));
-  EXPECT_NE(comp->description.find("KS-77"), std::string::npos);
-  EXPECT_NE(comp->description.find("location line-B"), std::string::npos);
+  EXPECT_EQ(comp->identity.manufacturer, "KUKA");
+  EXPECT_EQ(comp->identity.model, "KR-6");
+  EXPECT_EQ(comp->identity.serial_number, "KS-77");
+  EXPECT_EQ(comp->identity.hardware_revision, "R3");
+  EXPECT_EQ(comp->identity.firmware_version, "8.6");
+  EXPECT_EQ(comp->identity.role, "actuator");
+  EXPECT_EQ(comp->identity.extra.at("location"), "line-B");
+  EXPECT_EQ(comp->identity.provenance.at("model"), "inventory");
 }
 
 TEST(ManifestAssetsTest, AreaAndExplicitOverrides) {
@@ -342,8 +356,9 @@ assets:
   const Component * comp = find_component(manifest.components, "drive_1");
   ASSERT_NE(comp, nullptr);
   EXPECT_EQ(comp->namespace_path, "/plant");
-  EXPECT_EQ(comp->fqn, "/plant/drive_1");  // operator-declared placement
-  EXPECT_EQ(comp->variant, "R2");          // explicit variant beats hardware_rev
+  EXPECT_EQ(comp->fqn, "/plant/drive_1");             // operator-declared placement
+  EXPECT_EQ(comp->variant, "R2");                     // explicit variant only
+  EXPECT_EQ(comp->identity.hardware_revision, "R1");  // hardware_rev lives on the identity
   EXPECT_EQ(comp->type, "actuator");
   EXPECT_EQ(comp->translation_id, "entity.drive");
   ASSERT_EQ(comp->depends_on.size(), 2u);
@@ -387,7 +402,7 @@ TEST_F(InventoryCsvManagerTest, LoadsAssetsFromCsvPath) {
   ASSERT_NE(comp, nullptr);
   EXPECT_EQ(comp->source, "inventory");
   EXPECT_EQ(comp->name, "Selfpatch DiagBox");
-  EXPECT_TRUE(has_tag(*comp, "gateway"));
+  EXPECT_EQ(comp->identity.role, "gateway");
   EXPECT_EQ(mgr.get_inventory_csv_path(), csv_path);
 }
 
@@ -411,7 +426,7 @@ TEST_F(InventoryCsvManagerTest, MissingCsvIsNotAnError) {
 // ── Acceptance: CSV asset merges with protocol-discovered structure ──────────
 
 TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
-  // Inventory (manifest-side) asset: identity, no live data.
+  // Inventory (manifest-side) asset: identity, no live data, no placement.
   auto result = parse_asset_csv(
       "id,manufacturer,model,serial,role\n"
       "drive_1,ABB,ACS880,SN-42,drive\n");
@@ -420,7 +435,10 @@ TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
   LayerOutput inventory_out;
   inventory_out.components.push_back(asset_entry_to_component(result.entries[0]));
 
-  // Protocol-discovered component with the SAME id, carrying live topics.
+  // Protocol-discovered component with the SAME id, carrying live topics and
+  // its own (lower-authority) identity guesses: a conflicting manufacturer that
+  // must lose to the hand-authored inventory, and a firmware version only the
+  // runtime knows, which must fill the gap.
   Component runtime_comp;
   runtime_comp.id = "drive_1";
   runtime_comp.name = "drive_1";
@@ -428,6 +446,8 @@ TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
   runtime_comp.namespace_path = "/plant";
   runtime_comp.fqn = "/plant/drive_1";
   runtime_comp.topics.publishes = {"/plant/drive_1/status"};
+  runtime_comp.identity.manufacturer = "guessed-vendor";
+  runtime_comp.identity.firmware_version = "fw-2.1.0";
 
   LayerOutput runtime_out;
   runtime_out.components.push_back(runtime_comp);
@@ -455,14 +475,24 @@ TEST(InventoryMergeTest, AssetMergesWithRuntimeComponentById) {
   ASSERT_EQ(merged.components.size(), 1u);
   const Component & c = merged.components[0];
   EXPECT_EQ(c.id, "drive_1");
-  EXPECT_EQ(c.source, "inventory");  // provenance preserved
-  EXPECT_EQ(c.name, "ABB ACS880");   // inventory identity wins
-  EXPECT_TRUE(has_tag(c, "drive"));  // inventory role tag survives
-  EXPECT_NE(c.description.find("SN-42"), std::string::npos);
+  EXPECT_EQ(c.source, "inventory");          // provenance preserved
+  EXPECT_EQ(c.name, "ABB ACS880");           // inventory identity wins
   ASSERT_EQ(c.topics.publishes.size(), 1u);  // live data from the protocol layer
   EXPECT_EQ(c.topics.publishes[0], "/plant/drive_1/status");
   // The bare inventory asset carries no placement, so the discovered node's real
   // path must survive the merge - it must NOT be blanked or forced to "/drive_1".
   EXPECT_EQ(c.namespace_path, "/plant");
   EXPECT_EQ(c.fqn, "/plant/drive_1");
+  // Identity merges per field with provenance: the hand-authored inventory
+  // ("inventory", above "node" in the default precedence) keeps the fields it
+  // declares; the runtime's conflicting manufacturer guess loses, while its
+  // runtime-only firmware version fills the gap and is attributed to "node".
+  EXPECT_EQ(c.identity.manufacturer, "ABB");
+  EXPECT_EQ(c.identity.model, "ACS880");
+  EXPECT_EQ(c.identity.serial_number, "SN-42");
+  EXPECT_EQ(c.identity.role, "drive");
+  EXPECT_EQ(c.identity.firmware_version, "fw-2.1.0");
+  EXPECT_EQ(c.identity.provenance.at("manufacturer"), "inventory");
+  EXPECT_EQ(c.identity.provenance.at("serial_number"), "inventory");
+  EXPECT_EQ(c.identity.provenance.at("firmware_version"), "node");
 }

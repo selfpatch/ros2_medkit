@@ -332,7 +332,7 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
   }
   const std::string variant = get_string(node, "variant");
   if (!variant.empty()) {
-    comp.variant = variant;  // explicit variant wins over the hardware_rev derivation
+    comp.variant = variant;  // hardware_rev stays on the identity; variant is explicit only
   }
   const std::string type_val = get_string(node, "type");
   if (!type_val.empty()) {

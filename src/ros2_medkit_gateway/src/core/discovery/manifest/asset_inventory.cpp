@@ -266,48 +266,30 @@ Component asset_entry_to_component(const AssetEntry & entry) {
 
   // name <- "<manufacturer> <model>" (left empty when neither is set so the
   // consumer falls back to the id).
-  std::string name = trim(entry.manufacturer + " " + entry.model);
-  comp.name = name;
+  comp.name = trim(entry.manufacturer + " " + entry.model);
 
-  // variant carries the hardware revision.
-  comp.variant = entry.hardware_rev;
-
-  // role becomes a tag for filtering.
-  if (!entry.role.empty()) {
-    comp.tags.push_back(entry.role);
-  }
-
-  // description: human-readable identity summary. base is the manufacturer/model
-  // line; details append the remaining identity fields and any extras.
-  std::vector<std::string> details;
-  if (!entry.serial.empty()) {
-    details.push_back("S/N " + entry.serial);
-  }
-  if (!entry.firmware.empty()) {
-    details.push_back("FW " + entry.firmware);
-  }
-  if (!entry.endpoint.empty()) {
-    details.push_back("endpoint " + entry.endpoint);
-  }
+  // Structured nameplate: every canonical column lands on the typed identity
+  // with per-field provenance "inventory", so the identity merge can rank a
+  // hand-authored value against manifest / live protocol reads per field.
+  auto set_field = [&comp](std::string AssetIdentity::*member, const std::string & value, const char * prov_key) {
+    if (!value.empty()) {
+      comp.identity.*member = value;
+      comp.identity.provenance[prov_key] = "inventory";
+    }
+  };
+  set_field(&AssetIdentity::manufacturer, entry.manufacturer, "manufacturer");
+  set_field(&AssetIdentity::model, entry.model, "model");
+  set_field(&AssetIdentity::serial_number, entry.serial, "serial_number");
+  set_field(&AssetIdentity::hardware_revision, entry.hardware_rev, "hardware_revision");
+  set_field(&AssetIdentity::firmware_version, entry.firmware, "firmware_version");
+  set_field(&AssetIdentity::network_endpoint, entry.endpoint, "network_endpoint");
+  set_field(&AssetIdentity::role, entry.role, "role");
   for (const auto & [key, value] : entry.extras) {
-    details.push_back(key + " " + value);
-  }
-
-  std::string description = name;
-  if (!details.empty()) {
-    std::string joined;
-    for (std::size_t i = 0; i < details.size(); ++i) {
-      if (i > 0) {
-        joined += ", ";
-      }
-      joined += details[i];
+    if (!value.empty()) {
+      comp.identity.extra[key] = value;
+      comp.identity.provenance["extra." + key] = "inventory";
     }
-    if (!description.empty()) {
-      description += " ";
-    }
-    description += "(" + joined + ")";
   }
-  comp.description = description;
 
   return comp;
 }

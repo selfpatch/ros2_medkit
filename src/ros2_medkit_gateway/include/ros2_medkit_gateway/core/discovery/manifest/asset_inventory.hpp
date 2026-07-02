@@ -31,12 +31,11 @@ namespace discovery {
  * canonical identity fields mirror the INV1 asset-identity model; anything not
  * covered by a canonical column is retained verbatim in @ref extras.
  *
- * @note INV1 dependency: once the structured `AssetIdentity` field lands on the
- *       Component entity, `asset_entry_to_component` should populate it directly
- *       (with per-field provenance) instead of folding identity into the
- *       existing description / variant / tag fields. This struct is the single
- *       place the two import paths (CSV and manifest `assets:` list) converge,
- *       so the migration is localized to `asset_entry_to_component`.
+ * @note `asset_entry_to_component` populates the Component's structured
+ *       `AssetIdentity` directly, with per-field provenance "inventory", so
+ *       identity merging ranks hand-authored values against other sources per
+ *       field. This struct is the single place the two import paths (CSV and
+ *       manifest `assets:` list) converge.
  */
 struct AssetEntry {
   std::string id;            ///< Stable asset id (required); merge key into the tree
