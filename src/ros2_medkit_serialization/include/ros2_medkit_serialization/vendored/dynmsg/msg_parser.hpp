@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 // Copyright 2020 Open Source Robotics Foundation, Inc.
 // Copyright 2021 Christophe Bedard
 //
@@ -86,3 +88,4 @@ void yaml_and_typeinfo_to_rosmsg(
 }  // namespace dynmsg
 
 #endif  // ROS2_MEDKIT_SERIALIZATION__VENDORED__DYNMSG__MSG_PARSER_HPP_
+// NOLINTEND
