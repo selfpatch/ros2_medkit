@@ -442,6 +442,19 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
 #endif
   }
 
+  // open62541 1.3 security policies store &config->logger, and the configs
+  // built above are moved into the client, leaving those pointers dangling
+  // (segfault on the first policy log line, e.g. SecureChannel creation).
+  // open62541pp re-points them only for <= 1.2; 1.4+ uses a heap logger.
+#if defined(UA_OPEN62541_VER_MAJOR) && UA_OPEN62541_VER_MAJOR == 1 && UA_OPEN62541_VER_MINOR == 3
+  {
+    UA_ClientConfig * final_config = client.config().handle();
+    for (size_t i = 0; i < final_config->securityPoliciesSize; ++i) {
+      final_config->securityPolicies[i].logger = &final_config->logger;
+    }
+  }
+#endif
+
   // User identity token (applied regardless of channel encryption).
   switch (cfg.user_auth_mode) {
     case UserAuthMode::Anonymous:
