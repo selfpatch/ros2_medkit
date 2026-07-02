@@ -50,6 +50,10 @@ bool DiscoveryManager::initialize(const DiscoveryConfig & config) {
       manifest_manager_->set_fragments_dir(config.manifest_fragments_dir);
       RCLCPP_INFO(node_->get_logger(), "Manifest fragments_dir: %s", config.manifest_fragments_dir.c_str());
     }
+    if (!config.inventory_csv_path.empty()) {
+      manifest_manager_->set_inventory_csv_path(config.inventory_csv_path);
+      RCLCPP_INFO(node_->get_logger(), "Inventory CSV: %s", config.inventory_csv_path.c_str());
+    }
 
     if (config.manifest_path.empty()) {
       if (config.mode == DiscoveryMode::HYBRID) {

@@ -61,6 +61,12 @@ struct DiscoveryConfig {
   /// manifest. See `ManifestManager::set_fragments_dir`.
   std::string manifest_fragments_dir;
 
+  /// CSV file describing manually inventoried assets. When non-empty, each row
+  /// becomes a Component (identity populated) appended to the manifest on every
+  /// load / reload and merged into the tree by id. Empty = disabled. See
+  /// `ManifestManager::set_inventory_csv_path`.
+  std::string inventory_csv_path;
+
   /**
    * @brief Runtime (heuristic) discovery options
    *

@@ -18,6 +18,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#include "ros2_medkit_gateway/core/discovery/manifest/asset_inventory.hpp"
 
 namespace ros2_medkit_gateway {
 namespace discovery {
@@ -42,6 +46,12 @@ bool ManifestManager::load_manifest(const std::string & file_path, bool strict) 
     if (!apply_fragments(loaded)) {
       // apply_fragments already recorded the errors; fall through to the
       // regular validation step so the full error set is reported.
+    }
+
+    // Append manually inventoried assets (CSV) on top of the manifest. Errors
+    // are recorded in validation_result_ and surface in the regular flow.
+    if (!apply_inventory_csv(loaded)) {
+      // apply_inventory_csv already recorded the error; fall through.
     }
 
     // Validate the merged manifest.
@@ -474,6 +484,74 @@ void ManifestManager::set_fragments_dir(const std::string & dir) {
 std::string ManifestManager::get_fragments_dir() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return fragments_dir_;
+}
+
+void ManifestManager::set_inventory_csv_path(const std::string & path) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  inventory_csv_path_ = path;
+}
+
+std::string ManifestManager::get_inventory_csv_path() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return inventory_csv_path_;
+}
+
+bool ManifestManager::apply_inventory_csv(Manifest & base) {
+  // Called with mutex_ held by the caller.
+  if (inventory_csv_path_.empty()) {
+    return true;
+  }
+
+  std::filesystem::path csv_path(inventory_csv_path_);
+  std::error_code ec;
+  if (!std::filesystem::exists(csv_path, ec)) {
+    // A missing file is "no inventory", not an error - mirrors fragments_dir.
+    log_warn("Inventory CSV not found (skipping): " + inventory_csv_path_);
+    return true;
+  }
+
+  // Cap file size before reading to bound worst-case allocation on a
+  // misconfigured path (e.g., a symlink to a huge log file).
+  auto size = std::filesystem::file_size(csv_path, ec);
+  if (ec) {
+    validation_result_.add_error("INVENTORY_CSV", "cannot stat inventory CSV: " + ec.message(), inventory_csv_path_);
+    log_error("Cannot stat inventory CSV '" + inventory_csv_path_ + "': " + ec.message());
+    return false;
+  }
+  if (size > ManifestParser::kMaxFragmentBytes) {
+    validation_result_.add_error("INVENTORY_CSV",
+                                 "inventory CSV exceeds " + std::to_string(ManifestParser::kMaxFragmentBytes) +
+                                     "-byte limit (size=" + std::to_string(size) + ")",
+                                 inventory_csv_path_);
+    log_error("Inventory CSV '" + inventory_csv_path_ + "' exceeds size limit");
+    return false;
+  }
+
+  std::ifstream file(csv_path);
+  if (!file.is_open()) {
+    validation_result_.add_error("INVENTORY_CSV", "cannot open inventory CSV", inventory_csv_path_);
+    log_error("Cannot open inventory CSV: " + inventory_csv_path_);
+    return false;
+  }
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+
+  try {
+    auto parsed = parse_asset_csv(buffer.str());
+    for (const auto & warn : parsed.warnings) {
+      log_warn("Inventory CSV: " + warn);
+    }
+    for (const auto & entry : parsed.entries) {
+      base.components.push_back(asset_entry_to_component(entry));
+    }
+    log_info("Inventory CSV loaded: " + std::to_string(parsed.entries.size()) + " assets from " + inventory_csv_path_);
+  } catch (const std::exception & e) {
+    validation_result_.add_error("INVENTORY_CSV", e.what(), inventory_csv_path_);
+    log_error("Failed to parse inventory CSV '" + inventory_csv_path_ + "': " + e.what());
+    return false;
+  }
+
+  return true;
 }
 
 bool ManifestManager::apply_fragments(Manifest & base) {

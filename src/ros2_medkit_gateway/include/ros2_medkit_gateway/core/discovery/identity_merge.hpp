@@ -30,26 +30,28 @@ namespace discovery {
  *
  * `source_precedence` ranks identity authority from highest to lowest. Entries are
  * matched against a source's canonical identifier - the contributing entity's
- * `Component.source` field ("manifest", "plugin", "runtime", "node", "heuristic",
- * "config", or a protocol-class tag a provider sets such as "opcua"/"s7"), NOT the
- * free-form discovery-layer / plugin name. A source not in the list ranks lowest: it
- * can still fill empty fields but never overrides a known source.
+ * `Component.source` field ("manifest", "inventory", "plugin", "runtime", "node",
+ * "heuristic", "config", or a protocol-class tag a provider sets such as
+ * "opcua"/"s7"), NOT the free-form discovery-layer / plugin name. A source not in
+ * the list ranks lowest: it can still fill empty fields but never overrides a known
+ * source.
  *
  * Identity authority is deliberately decoupled from the structural merge policy: a
  * manifest may be the authoritative *structure* source while a live protocol read is
  * the authoritative *identity* source.
  *
  * Default precedence (highest first): a live protocol device-info read (a `plugin`
- * source, or a protocol-specific source tag) beats the hand-authored `manifest`,
- * which beats whatever runtime discovery guessed. The protocol-specific tags lead the
- * list so that a provider which sets a concrete `Component.source` (e.g. "opcua") is
- * honoured; the generic "plugin" tag covers the common case where the plugin layer
- * stamps every plugin entity with source="plugin".
+ * source, or a protocol-specific source tag) beats the hand-authored `manifest` and
+ * `inventory` (CSV / manifest `assets:` list) declarations, which beat whatever
+ * runtime discovery guessed. The protocol-specific tags lead the list so that a
+ * provider which sets a concrete `Component.source` (e.g. "opcua") is honoured; the
+ * generic "plugin" tag covers the common case where the plugin layer stamps every
+ * plugin entity with source="plugin".
  */
 struct IdentityMergeConfig {
-  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus", "ads",
-                                             "profinet", "plugin", "manifest",    "config", "runtime",
-                                             "node",     "topic",  "heuristic"};
+  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus",    "ads",
+                                             "profinet", "plugin", "manifest",    "inventory", "config",
+                                             "runtime",  "node",   "topic",       "heuristic"};
 };
 
 /**

@@ -21,7 +21,9 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 
+#include "ros2_medkit_gateway/core/discovery/manifest/asset_inventory.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
@@ -141,6 +143,15 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
     }
   }
 
+  // Parse assets (manual inventory list). Each asset becomes a Component with
+  // identity populated, so it flows through the same merge-by-id path as any
+  // other component and combines with protocol-discovered structure.
+  if (root["assets"] && root["assets"].IsSequence()) {
+    for (const auto & node : root["assets"]) {
+      manifest.components.push_back(parse_asset(node));
+    }
+  }
+
   // Parse apps
   if (root["apps"] && root["apps"].IsSequence()) {
     for (const auto & node : root["apps"]) {
@@ -252,6 +263,90 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
     comp.fqn = comp.namespace_path + "/" + comp.id;
   } else {
     comp.fqn = "/" + comp.id;
+  }
+
+  return comp;
+}
+
+Component ManifestParser::parse_asset(const YAML::Node & node) const {
+  // Structural / identity keys handled explicitly; any other scalar key is
+  // retained verbatim as an extra so operator-specific columns are not lost.
+  static const std::unordered_set<std::string> reserved = {
+      "id",          "manufacturer", "model",   "serial", "hardware_rev",        "firmware",
+      "endpoint",    "role",         "area",    "tags",   "parent_component_id", "name",
+      "description", "namespace",    "variant", "type",   "translation_id",      "depends_on"};
+
+  AssetEntry entry;
+  entry.id = get_string(node, "id");
+  entry.manufacturer = get_string(node, "manufacturer");
+  entry.model = get_string(node, "model");
+  entry.serial = get_string(node, "serial");
+  entry.hardware_rev = get_string(node, "hardware_rev");
+  entry.firmware = get_string(node, "firmware");
+  entry.endpoint = get_string(node, "endpoint");
+  entry.role = get_string(node, "role");
+
+  if (node.IsMap()) {
+    for (const auto & it : node) {
+      if (!it.first.IsScalar() || !it.second.IsScalar()) {
+        continue;
+      }
+      const std::string key = it.first.as<std::string>();
+      if (reserved.count(key) != 0) {
+        continue;
+      }
+      const std::string value = it.second.as<std::string>();
+      if (!value.empty()) {
+        entry.extras.emplace_back(key, value);
+      }
+    }
+  }
+
+  Component comp = asset_entry_to_component(entry);
+
+  // Optional tree-placement and presentation overrides. Every key listed in
+  // `reserved` above must be consumed here; otherwise it is silently dropped.
+  const std::string ns = get_string(node, "namespace");
+  if (!ns.empty()) {
+    // Operator-declared placement: compute an authoritative fqn like a real
+    // component. Without a namespace, fqn stays empty so a merge with a
+    // discovered node keeps the node's real path instead of a synthetic "/id".
+    comp.namespace_path = ns;
+    comp.fqn = ns + "/" + comp.id;
+  }
+  const std::string area = get_string(node, "area");
+  if (!area.empty()) {
+    comp.area = area;
+  }
+  const std::string parent = get_string(node, "parent_component_id");
+  if (!parent.empty()) {
+    comp.parent_component_id = parent;
+  }
+  const std::string explicit_name = get_string(node, "name");
+  if (!explicit_name.empty()) {
+    comp.name = explicit_name;
+  }
+  const std::string explicit_description = get_string(node, "description");
+  if (!explicit_description.empty()) {
+    comp.description = explicit_description;
+  }
+  const std::string variant = get_string(node, "variant");
+  if (!variant.empty()) {
+    comp.variant = variant;  // hardware_rev stays on the identity; variant is explicit only
+  }
+  const std::string type_val = get_string(node, "type");
+  if (!type_val.empty()) {
+    comp.type = type_val;
+  }
+  const std::string translation_id = get_string(node, "translation_id");
+  if (!translation_id.empty()) {
+    comp.translation_id = translation_id;
+  }
+  for (const auto & dep : get_string_vector(node, "depends_on")) {
+    comp.depends_on.push_back(dep);
+  }
+  for (const auto & tag : get_string_vector(node, "tags")) {
+    comp.tags.push_back(tag);
   }
 
   return comp;
