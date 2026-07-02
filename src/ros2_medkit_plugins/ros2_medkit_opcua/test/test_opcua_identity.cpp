@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -259,9 +260,11 @@ bool fixture_available() {
 class OpcuaIdentityE2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
-    if (!fixture_available()) {
-      GTEST_SKIP() << "test_alarm_server fixture not built at " << fixture_binary();
-    }
+    // The fixture is built by this package's own CMake and is a declared
+    // dependency of this target; a missing binary means the build is broken,
+    // so fail hard instead of skipping (run_ctest.py does the same).
+    ASSERT_TRUE(fixture_available()) << "test_alarm_server fixture missing or not executable at '" << fixture_binary()
+                                     << "'";
     port_ = reserve_local_port();
     ASSERT_NE(port_, 0);
     ASSERT_TRUE(server_.start(fixture_binary(), port_)) << "test_alarm_server did not signal READY";
