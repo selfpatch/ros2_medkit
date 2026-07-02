@@ -139,7 +139,7 @@ if(BUILD_TESTING)
   # in the same CTest invocation and launch their own fault_manager_node subprocess.
   ament_add_gtest(test_fault_manager test/test_fault_manager.cpp)
   target_link_libraries(test_fault_manager fault_manager_lib)
-  medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs)
+  medkit_target_dependencies(test_fault_manager rclcpp ros2_medkit_msgs std_msgs)
   medkit_set_test_domain(test_fault_manager)
 
   # SQLite storage tests

@@ -25,6 +25,9 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+#include <std_msgs/msg/float64.hpp>
+
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
@@ -32,6 +35,7 @@
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
+#include "ros2_medkit_msgs/msg/snapshot.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
@@ -918,15 +922,21 @@ class FaultEventPublishingTest : public ::testing::Test {
  protected:
   static inline std::atomic<int> test_counter_{0};
 
+  /// Fault manager parameter overrides; subclasses extend to enable capture features.
+  virtual std::vector<rclcpp::Parameter> fault_manager_overrides() {
+    return {
+        rclcpp::Parameter("storage_type", "memory"),
+        rclcpp::Parameter("confirmation_threshold", -1),  // Immediate confirmation
+    };
+  }
+
   void SetUp() override {
     // Unique namespace per test iteration avoids DDS topic collisions
     std::string ns = "/test_events_" + std::to_string(test_counter_.fetch_add(1));
 
     // Create fault manager node with immediate confirmation
     rclcpp::NodeOptions fm_options;
-    fm_options.parameter_overrides({
-        {"storage_type", "memory"}, {"confirmation_threshold", -1},  // Immediate confirmation
-    });
+    fm_options.parameter_overrides(fault_manager_overrides());
     fm_options.arguments({"--ros-args", "-r", "__ns:=" + ns});
     fault_manager_ = std::make_shared<FaultManagerNode>(fm_options);
 
@@ -1319,6 +1329,57 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntityWithEmptyId) {
   ASSERT_TRUE(response.has_value());
   EXPECT_FALSE(response->success);
   EXPECT_FALSE(response->error_message.empty());
+}
+
+// Freeze-frame retention: after clear_fault deletes the per-topic snapshots, GetFault
+// must keep serving the retained freeze_frames row (the only surviving record).
+class FreezeFrameRetentionTest : public FaultEventPublishingTest {
+ protected:
+  std::vector<rclcpp::Parameter> fault_manager_overrides() override {
+    auto overrides = FaultEventPublishingTest::fault_manager_overrides();
+    overrides.emplace_back("snapshots.enabled", true);
+    overrides.emplace_back("snapshots.timeout_sec", 5.0);
+    overrides.emplace_back("snapshots.default_topics", std::vector<std::string>{"/ff_pressure"});
+    return overrides;
+  }
+};
+
+TEST_F(FreezeFrameRetentionTest, GetFaultServesRetainedFreezeFrameAfterClear) {
+  auto pub = test_node_->create_publisher<std_msgs::msg::Float64>("/ff_pressure", rclcpp::QoS(10));
+  auto timer = test_node_->create_wall_timer(std::chrono::milliseconds(20), [&pub]() {
+    std_msgs::msg::Float64 msg;
+    msg.data = 91.25;
+    pub->publish(msg);
+  });
+
+  // Wait until the fault manager can discover the publisher, then confirm the fault.
+  ASSERT_TRUE(spin_until([this]() {
+    return fault_manager_->count_publishers("/ff_pressure") > 0;
+  }));
+  ASSERT_TRUE(call_report_fault("FF_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
+
+  // Capture runs asynchronously on the pool; wait for a non-empty freeze-frame.
+  ASSERT_TRUE(spin_until(
+      [this]() {
+        auto frame = fault_manager_->get_storage().get_freeze_frame("FF_FAULT");
+        return frame.has_value() && frame->data != "{}";
+      },
+      std::chrono::milliseconds(10000)));
+
+  ASSERT_TRUE(call_clear_fault("FF_FAULT"));
+
+  auto response = call_get_fault("FF_FAULT");
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->success);
+
+  // Per-topic snapshots were deleted on clear; the retained frame is served instead.
+  ASSERT_EQ(response->environment_data.snapshots.size(), 1u);
+  const auto & snapshot = response->environment_data.snapshots[0];
+  EXPECT_EQ(snapshot.type, ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME);
+  EXPECT_EQ(snapshot.name, "freeze_frame");
+  auto parsed = nlohmann::json::parse(snapshot.data);
+  ASSERT_TRUE(parsed.contains("/ff_pressure"));
+  EXPECT_DOUBLE_EQ(parsed["/ff_pressure"]["data"].get<double>(), 91.25);
 }
 
 // matches_entity helper tests

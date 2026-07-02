@@ -988,6 +988,22 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     response->environment_data.snapshots.push_back(snapshot);
   }
 
+  // Per-topic snapshots are deleted on clear_fault, but the compact freeze-frame row is
+  // retained. When no snapshots remain, serve the retained frame so the confirmed-state
+  // record stays observable after acknowledgement.
+  if (stored_snapshots.empty()) {
+    auto frame = storage_->get_freeze_frame(request->fault_code);
+    if (frame) {
+      ros2_medkit_msgs::msg::Snapshot snapshot;
+      snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
+      snapshot.name = "freeze_frame";
+      snapshot.data = frame->data;
+      // topic/message_type left empty: the frame aggregates values from multiple topics
+      snapshot.captured_at_ns = frame->captured_at_ns;
+      response->environment_data.snapshots.push_back(snapshot);
+    }
+  }
+
   // Get rosbag info if available
   auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
   if (rosbag_info) {

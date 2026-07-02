@@ -204,6 +204,9 @@ class FaultStorage {
   /// Store the compact freeze-frame captured for a fault (JSON dict of topic values).
   /// Keyed by fault_code: a later capture for the same code replaces the frame. The frame
   /// is retained across clear_fault so the confirmed-state record survives acknowledgement.
+  /// Storage is bounded by the number of distinct fault codes (one row per code, replaced
+  /// in place); rows are never evicted. Faults themselves are never deleted (clear_fault
+  /// only flips status), so there is currently no delete hook to tie eviction to.
   /// @param frame The freeze-frame to store
   virtual void store_freeze_frame(const FreezeFrameData & frame) = 0;
 
