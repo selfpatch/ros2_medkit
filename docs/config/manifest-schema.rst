@@ -331,7 +331,10 @@ Fields
        for vendor-specific keys not modeled up front. Each populated field is
        recorded with provenance ``manifest``; protocol plugins (e.g. OPC UA
        device-info) fill in or override fields per the identity merge
-       precedence. Exposed over REST as ``x-medkit.identity``.
+       precedence. A live protocol read outranks the manifest only over an
+       authenticated session (e.g. an OPC UA secured channel with certificate
+       validation); an unauthenticated read only fills fields the manifest
+       left empty. Exposed over REST as ``x-medkit.identity``.
 
 Common Component Types
 ~~~~~~~~~~~~~~~~~~~~~~

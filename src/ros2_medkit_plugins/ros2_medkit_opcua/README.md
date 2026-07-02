@@ -56,6 +56,48 @@ Area: plc_systems
               Operations: set_valve_position
 ```
 
+## Asset identity (x-medkit.identity)
+
+The plugin auto-populates the PLC component's asset-identity nameplate from the
+live server and serves it as `x-medkit.identity` on the component (see
+`docs/api/rest.rst` for the JSON shape). Two sources are read, best-effort:
+
+- `Server/ServerStatus/BuildInfo` (present on every compliant server):
+  `ManufacturerName`, `ProductName`, `SoftwareVersion`, `BuildNumber` (carried
+  as the `extra.buildNumber` key).
+- The OPC UA DI companion nameplate (`http://opcfoundation.org/UA/DI/`, only
+  when the server exposes that namespace): `Manufacturer`, `Model`,
+  `SerialNumber`, `HardwareRevision`, `SoftwareRevision` from the first device
+  under `Objects/DeviceSet` that carries identification properties. DI values
+  are device-specific and win over the server-level BuildInfo per field.
+
+The read happens once per session - on the first introspect after a connect -
+and is refreshed after every reconnect: the cached nameplate is tied to the
+OPC UA session, so a PLC reboot, firmware update, or device swap is picked up
+on the next discovery refresh instead of latching the first read forever.
+
+**Trust-gated precedence.** How the live nameplate ranks against a
+hand-authored manifest `identity:` block depends on whether the session
+authenticates the server:
+
+- Secured channel (`security_mode: Sign`/`SignAndEncrypt`) **and**
+  `reject_untrusted: true`: the component is tagged with the protocol source
+  `opcua`, which outranks `manifest` in the identity merge - an authenticated
+  live read overrides stale manifest fields.
+- Anything else (`SecurityPolicy=None`, or `reject_untrusted: false` /
+  accept-any cert): the nameplate is spoofable by a rogue endpoint, so the
+  component keeps the generic `plugin` source, which ranks below `manifest` -
+  the read fills fields the operator left empty but never overrides them.
+
+Per-field `_provenance` records `opcua` in both cases, so consumers always see
+where a value was read even when it merged with low authority.
+
+Note: identity (model, serial number, firmware/software versions) is served
+unauthenticated on the default gateway configuration (`auth.enabled` defaults
+to `false`) like every other discovery resource - it is a device fingerprint,
+useful for reconnaissance. Enable gateway authentication (`auth.enabled: true`)
+or front the API with an authenticating proxy to gate access to it.
+
 ## REST API
 
 ### Vendor Endpoints

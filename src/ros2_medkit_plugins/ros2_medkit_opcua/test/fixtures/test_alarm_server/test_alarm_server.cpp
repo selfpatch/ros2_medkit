@@ -498,7 +498,9 @@ void set_build_info(UA_ServerConfig * config) {
 // INV2: expose a minimal OPC-UA DI nameplate (Objects/DeviceSet/TestDevice with
 // the standard identification properties) so the identity read exercises the DI
 // path (SerialNumber / HardwareRevision) that ServerStatus/BuildInfo lacks.
-void add_di_nameplate(UA_Server * server) {
+// ``serial`` is overridable (--serial) so a restarted fixture can present a
+// different nameplate, proving the client re-reads identity per session.
+void add_di_nameplate(UA_Server * server, const std::string & serial) {
   UA_UInt16 di_ns = UA_Server_addNamespace(server, "http://opcfoundation.org/UA/DI/");
 
   UA_NodeId device_set_id = UA_NODEID_NULL;
@@ -543,9 +545,9 @@ void add_di_nameplate(UA_Server * server) {
   UA_Variant_setScalar(&v_model, &model, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
   add_prop("Model", &UA_TYPES[UA_TYPES_LOCALIZEDTEXT], v_model);
 
-  UA_String serial = UA_STRING(const_cast<char *>("SN-0001-TEST"));
+  UA_String serial_value = UA_STRING(const_cast<char *>(serial.c_str()));
   UA_Variant v_serial;
-  UA_Variant_setScalar(&v_serial, &serial, &UA_TYPES[UA_TYPES_STRING]);
+  UA_Variant_setScalar(&v_serial, &serial_value, &UA_TYPES[UA_TYPES_STRING]);
   add_prop("SerialNumber", &UA_TYPES[UA_TYPES_STRING], v_serial);
 
   UA_String hardware = UA_STRING(const_cast<char *>("HW-A2"));
@@ -676,9 +678,18 @@ int main(int argc, char ** argv) {
   bool secure = false;
   std::string cert_path, key_path, trust_path, username = "medkit", password = "secret";
   std::string app_uri = "urn:test:alarms:server";
+  std::string di_serial = "SN-0001-TEST";
+  UA_UInt32 max_refs_per_node = 0;  // 0 = server default (unlimited)
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       port = static_cast<UA_UInt16>(std::atoi(argv[++i]));
+    } else if (std::strcmp(argv[i], "--serial") == 0 && i + 1 < argc) {
+      di_serial = argv[++i];
+    } else if (std::strcmp(argv[i], "--max-refs-per-node") == 0 && i + 1 < argc) {
+      // Caps references per Browse result so every larger browse pages via
+      // BrowseNext continuation points (regression fixture for the client's
+      // continuation-point handling).
+      max_refs_per_node = static_cast<UA_UInt32>(std::atoi(argv[++i]));
     } else if (std::strcmp(argv[i], "--secure") == 0) {
       secure = true;
     } else if (std::strcmp(argv[i], "--cert") == 0 && i + 1 < argc) {
@@ -723,7 +734,7 @@ int main(int argc, char ** argv) {
   }
 
   // INV2: standard device-info nameplate for the identity integration test.
-  add_di_nameplate(server);
+  add_di_nameplate(server, di_serial);
 
   Condition op, oh, sl;
   if (add_condition(server, "Overpressure", ns, op) != UA_STATUSCODE_GOOD ||
@@ -745,6 +756,13 @@ int main(int argc, char ** argv) {
     UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register detection variables");
     UA_Server_delete(server);
     return 1;
+  }
+
+  // Apply the browse cap only AFTER all nodes exist: open62541's own AddNode /
+  // createCondition machinery browses internally and fails with
+  // BadNoContinuationPoints when the cap is active during setup.
+  if (max_refs_per_node > 0) {
+    config->maxReferencesPerNode = max_refs_per_node;
   }
 
   std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;

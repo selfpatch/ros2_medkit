@@ -177,7 +177,7 @@ class AlarmServer {
     stop();
   }
 
-  bool start(const std::string & binary, int port) {
+  bool start(const std::string & binary, int port, const std::vector<std::string> & extra_args = {}) {
     int pipefd[2];
     if (pipe(pipefd) != 0) {
       return false;
@@ -194,7 +194,12 @@ class AlarmServer {
       close(pipefd[0]);
       close(pipefd[1]);
       std::string port_str = std::to_string(port);
-      execl(binary.c_str(), binary.c_str(), "--port", port_str.c_str(), static_cast<char *>(nullptr));
+      std::vector<const char *> argv_vec{binary.c_str(), "--port", port_str.c_str()};
+      for (const auto & arg : extra_args) {
+        argv_vec.push_back(arg.c_str());
+      }
+      argv_vec.push_back(nullptr);
+      execv(binary.c_str(), const_cast<char * const *>(argv_vec.data()));
       _exit(127);
     }
     close(pipefd[1]);
@@ -294,6 +299,17 @@ class OpcuaIdentityE2ETest : public ::testing::Test {
     return false;
   }
 
+  // Tear the fixture down and boot a fresh instance on the SAME port with
+  // different CLI args (e.g. a new --serial). Simulates a PLC reboot /
+  // device swap for the per-session identity refresh test.
+  bool restart_server(const std::vector<std::string> & extra_args) {
+    server_.stop();
+    if (!server_.start(fixture_binary(), port_, extra_args)) {
+      return false;
+    }
+    return wait_until_connectable();
+  }
+
   AlarmServer server_;
   int port_{0};
   std::string endpoint_;
@@ -353,14 +369,15 @@ TEST_F(OpcuaIdentityE2ETest, MappedIdentityFromLiveServer) {
   client.disconnect();
 }
 
-TEST_F(OpcuaIdentityE2ETest, PluginIntrospectPopulatesIdentity) {
-  // Minimal node map so introspect() can name the area / component. The single
-  // node points at a nonexistent address-space node; the poller's failed reads
-  // do not drop the connection (BadNodeIdUnknown != disconnect).
+namespace {
+
+// Minimal node map so introspect() can name the area / component. The single
+// node points at a nonexistent address-space node; the poller's failed reads
+// do not drop the connection (BadNodeIdUnknown != disconnect).
+std::string write_minimal_node_map() {
   const std::string yaml_path = "/tmp/test_opcua_identity_nodemap.yaml";
-  {
-    std::ofstream f(yaml_path);
-    f << R"(
+  std::ofstream f(yaml_path);
+  f << R"(
 area_id: test_plc
 area_name: Test PLC Area
 component_id: test_runtime
@@ -373,7 +390,13 @@ nodes:
     data_type: float
     writable: false
 )";
-  }
+  return yaml_path;
+}
+
+}  // namespace
+
+TEST_F(OpcuaIdentityE2ETest, PluginIntrospectPopulatesIdentity) {
+  const std::string yaml_path = write_minimal_node_map();
 
   ros2_medkit_gateway::OpcuaPlugin plugin;
   nlohmann::json config;
@@ -388,9 +411,11 @@ nodes:
   ASSERT_FALSE(result.new_entities.components.empty());
 
   const auto & comp = result.new_entities.components.front();
-  // The protocol tag survives the plugin layer (it only stamps empty sources)
-  // and gives the nameplate "opcua" precedence in the identity merge.
-  EXPECT_EQ(comp.source, "opcua");
+  // The fixture session is unsecured (SecurityPolicy=None), so the component
+  // gets the generic "plugin" tag: the spoofable nameplate may fill gaps in an
+  // operator manifest but never override it. Per-field provenance still says
+  // "opcua" so the read origin stays visible.
+  EXPECT_EQ(comp.source, "plugin");
   ASSERT_FALSE(comp.identity.empty()) << "identity should be filled from the OPC-UA device-info";
   EXPECT_EQ(comp.identity.manufacturer, "SelfPatch Devices");
   EXPECT_EQ(comp.identity.model, "SPX-1000");
@@ -405,6 +430,125 @@ nodes:
   EXPECT_EQ(j["x-medkit"]["identity"]["_provenance"]["manufacturer"], "opcua");
 
   std::remove(yaml_path.c_str());
+}
+
+TEST_F(OpcuaIdentityE2ETest, PluginSourceTagIsTrustGated) {
+  const std::string yaml_path = write_minimal_node_map();
+
+  // Secured + certificate-validated profile: the protocol tag "opcua" is
+  // stamped, giving the nameplate authority over the manifest. The cert paths
+  // do not exist, so the connect fails fast without contacting a server - the
+  // source tag is decided by configuration, not by connection state.
+  ros2_medkit_gateway::OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = endpoint_;
+  config["security_policy"] = "Basic256Sha256";
+  config["security_mode"] = "SignAndEncrypt";
+  config["client_cert_path"] = "/nonexistent/client_cert.der";
+  config["client_key_path"] = "/nonexistent/client_key.pem";
+  config["reject_untrusted"] = true;
+  plugin.configure(config);
+
+  FakePluginContext ctx;
+  plugin.set_context(ctx);
+
+  auto result = plugin.introspect(IntrospectionInput{});
+  ASSERT_FALSE(result.new_entities.components.empty());
+  EXPECT_EQ(result.new_entities.components.front().source, "opcua");
+
+  // Same secured profile but accept-any server cert: a rogue endpoint would be
+  // accepted, so the identity authority drops back to the generic "plugin" tag.
+  ros2_medkit_gateway::OpcuaPlugin accept_any_plugin;
+  config["reject_untrusted"] = false;
+  accept_any_plugin.configure(config);
+  FakePluginContext ctx2;
+  accept_any_plugin.set_context(ctx2);
+  auto accept_any_result = accept_any_plugin.introspect(IntrospectionInput{});
+  ASSERT_FALSE(accept_any_result.new_entities.components.empty());
+  EXPECT_EQ(accept_any_result.new_entities.components.front().source, "plugin");
+
+  std::remove(yaml_path.c_str());
+}
+
+TEST_F(OpcuaIdentityE2ETest, IdentityRefreshedAfterReconnect) {
+  const std::string yaml_path = write_minimal_node_map();
+
+  ros2_medkit_gateway::OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = endpoint_;
+  plugin.configure(config);
+
+  FakePluginContext ctx;
+  plugin.set_context(ctx);
+
+  auto result = plugin.introspect(IntrospectionInput{});
+  ASSERT_FALSE(result.new_entities.components.empty());
+  ASSERT_EQ(result.new_entities.components.front().identity.serial_number, "SN-0001-TEST");
+
+  // Reboot the "PLC" on the same port with a different nameplate. The plugin's
+  // poller detects the drop and reconnects in the background; the next
+  // introspect on the new session must re-read the device-info instead of
+  // serving the value latched from the first session.
+  ASSERT_TRUE(restart_server({"--serial", "SN-0002-RECONNECT"}));
+
+  std::string observed_serial;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto refreshed = plugin.introspect(IntrospectionInput{});
+    ASSERT_FALSE(refreshed.new_entities.components.empty());
+    observed_serial = refreshed.new_entities.components.front().identity.serial_number;
+    if (observed_serial == "SN-0002-RECONNECT") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  EXPECT_EQ(observed_serial, "SN-0002-RECONNECT") << "identity not refreshed after reconnect";
+
+  std::remove(yaml_path.c_str());
+}
+
+TEST_F(OpcuaIdentityE2ETest, ClientConnectionGenerationCountsSessions) {
+  OpcuaClient client;
+  OpcuaClientConfig config;
+  config.endpoint_url = endpoint_;
+  config.connect_timeout = std::chrono::milliseconds(5000);
+
+  EXPECT_EQ(client.connection_generation(), 0u);
+  ASSERT_TRUE(client.connect(config));
+  EXPECT_EQ(client.connection_generation(), 1u);
+  // Re-connect on an already-open session is not a new session.
+  ASSERT_TRUE(client.connect(config));
+  EXPECT_EQ(client.connection_generation(), 1u);
+
+  client.disconnect();
+  ASSERT_TRUE(client.connect(config));
+  EXPECT_EQ(client.connection_generation(), 2u);
+  client.disconnect();
+}
+
+TEST_F(OpcuaIdentityE2ETest, DiNameplateReadFollowsBrowseContinuationPoints) {
+  // Cap the server at 2 references per Browse result: every folder on the DI
+  // nameplate path (ObjectsFolder, DeviceSet, TestDevice) now pages through
+  // BrowseNext continuation points. Without continuation handling the
+  // DeviceSet lookup truncates after the first two ObjectsFolder children and
+  // the DI fields come back empty.
+  ASSERT_TRUE(restart_server({"--max-refs-per-node", "2"}));
+
+  OpcuaClient client;
+  OpcuaClientConfig config;
+  config.endpoint_url = endpoint_;
+  config.connect_timeout = std::chrono::milliseconds(5000);
+  ASSERT_TRUE(client.connect(config));
+
+  auto info = client.read_device_info();
+  EXPECT_EQ(info.di_manufacturer, "SelfPatch Devices");
+  EXPECT_EQ(info.di_model, "SPX-1000");
+  EXPECT_EQ(info.di_serial_number, "SN-0001-TEST");
+  EXPECT_EQ(info.di_hardware_revision, "HW-A2");
+  EXPECT_EQ(info.di_software_revision, "SW-3.4.5");
+  client.disconnect();
 }
 
 }  // namespace ros2_medkit_gateway

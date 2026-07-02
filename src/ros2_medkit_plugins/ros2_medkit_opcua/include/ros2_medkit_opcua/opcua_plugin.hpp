@@ -148,11 +148,14 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   std::unique_ptr<OpcuaClient> client_;
   NodeMap node_map_;
 
-  // INV2: asset-identity nameplate read once from the server's device-info
-  // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate) on the first
-  // connected introspect, then reused. Empty until a successful read.
+  // INV2: asset-identity nameplate read once per session from the server's
+  // device-info (ServerStatus/BuildInfo + optional OPC-UA DI nameplate) on the
+  // first connected introspect, then reused until the client reconnects.
+  // device_identity_generation_ stores the OpcuaClient::connection_generation
+  // the nameplate was read at (0 = never read), so a poller reconnect triggers
+  // a fresh read on the next introspect without hammering the server.
   AssetIdentity device_identity_;
-  bool device_identity_loaded_{false};
+  uint64_t device_identity_generation_{0};
 
   // ROS 2 service clients for fault reporting
   struct FaultClients;

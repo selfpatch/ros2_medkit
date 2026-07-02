@@ -33,4 +33,17 @@ namespace ros2_medkit_gateway {
 /// server exposes no device-info at all.
 AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url);
 
+/// Whether a live nameplate read over this connection may outrank the
+/// operator-authored manifest in the identity merge.
+///
+/// True only when the server's identity is actually authenticated: a secured
+/// SecureChannel (Sign / SignAndEncrypt) AND certificate validation against the
+/// trust list (``reject_untrusted``). An unsecured channel, or a secured one
+/// with ``reject_untrusted: false`` (accept-any cert), can be served by a rogue
+/// endpoint, so its nameplate must not override the manifest - the plugin then
+/// tags the component with the generic "plugin" source, which ranks below
+/// "manifest" (it fills gaps but never overrides). Per-field provenance stays
+/// "opcua" either way for transparency about where a value was read.
+bool opcua_identity_trusted(const OpcuaClientConfig & config);
+
 }  // namespace ros2_medkit_gateway

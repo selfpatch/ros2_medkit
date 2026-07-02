@@ -222,6 +222,12 @@ struct OpcuaClient::Impl {
   // late-arriving events from a defunct subscription cannot reach user code.
   std::atomic<uint64_t> generation{0};
 
+  // Successful-session counter: bumped once per fresh connect, never on the
+  // already-connected fast path. Exposed via connection_generation() so the
+  // plugin can detect a poller reconnect and refresh per-session state
+  // (device-info nameplate) without re-reading on every introspect.
+  std::atomic<uint64_t> connect_generation{0};
+
   // Heap-owned contexts for raw-C event monitored items. unique_ptr keeps
   // the ctx alive exactly as long as the entry sits in the map; we release
   // entries only after the server ACKs DeleteMonitoredItem (or when we tear
@@ -504,6 +510,7 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
     impl_->client.config().setTimeout(static_cast<uint32_t>(config.connect_timeout.count()));
     impl_->client.connect(config.endpoint_url);
     impl_->connected = true;
+    impl_->connect_generation.fetch_add(1, std::memory_order_release);
 
     try {
       opcua::Node node(impl_->client, opcua::NodeId(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
@@ -567,6 +574,10 @@ void OpcuaClient::disconnect() {
 
 bool OpcuaClient::is_connected() const {
   return impl_->connected.load();
+}
+
+uint64_t OpcuaClient::connection_generation() const {
+  return impl_->connect_generation.load(std::memory_order_acquire);
 }
 
 OpcuaClientConfig OpcuaClient::current_config() const {
@@ -1090,8 +1101,29 @@ void clear_child_refs(std::vector<ChildRef> & children) {
   }
 }
 
+// Append the references of one browse result to ``children`` and hand back its
+// continuation point (owned copy; UA_BYTESTRING_NULL when the result is done).
+UA_ByteString collect_browse_result(const UA_BrowseResult & result, std::vector<ChildRef> & children) {
+  for (size_t i = 0; i < result.referencesSize; ++i) {
+    const UA_ReferenceDescription & ref = result.references[i];
+    ChildRef child;
+    child.namespace_index = ref.browseName.namespaceIndex;
+    child.name.assign(reinterpret_cast<const char *>(ref.browseName.name.data), ref.browseName.name.length);
+    UA_NodeId_copy(&ref.nodeId.nodeId, &child.node_id);
+    children.push_back(std::move(child));
+  }
+  UA_ByteString continuation = UA_BYTESTRING_NULL;
+  if (result.continuationPoint.length > 0) {
+    UA_ByteString_copy(&result.continuationPoint, &continuation);
+  }
+  return continuation;
+}
+
 // Browse forward hierarchical children of ``parent``, returning their browse
 // names and NodeIds. Empty on failure. The caller must ``clear_child_refs``.
+// Follows BrowseNext continuation points so a server that caps references per
+// browse (OperationLimits.MaxReferencesPerNode) cannot silently truncate a
+// large folder (e.g. a DeviceSet with many devices).
 std::vector<ChildRef> browse_forward_children(UA_Client * client, const UA_NodeId & parent) {
   std::vector<ChildRef> children;
   UA_BrowseRequest request;
@@ -1108,20 +1140,45 @@ std::vector<ChildRef> browse_forward_children(UA_Client * client, const UA_NodeI
   request.nodesToBrowse[0].includeSubtypes = true;
   request.nodesToBrowse[0].resultMask = UA_BROWSERESULTMASK_BROWSENAME;
 
+  UA_ByteString continuation = UA_BYTESTRING_NULL;
   UA_BrowseResponse response = UA_Client_Service_browse(client, request);
   if (response.responseHeader.serviceResult == UA_STATUSCODE_GOOD && response.resultsSize == 1) {
-    const UA_BrowseResult & result = response.results[0];
-    for (size_t i = 0; i < result.referencesSize; ++i) {
-      const UA_ReferenceDescription & ref = result.references[i];
-      ChildRef child;
-      child.namespace_index = ref.browseName.namespaceIndex;
-      child.name.assign(reinterpret_cast<const char *>(ref.browseName.name.data), ref.browseName.name.length);
-      UA_NodeId_copy(&ref.nodeId.nodeId, &child.node_id);
-      children.push_back(std::move(child));
-    }
+    continuation = collect_browse_result(response.results[0], children);
   }
   UA_BrowseResponse_clear(&response);
   UA_BrowseRequest_clear(&request);
+
+  // Iteration cap guards against a misbehaving server that keeps returning a
+  // continuation point; the server releases the point itself when it returns
+  // the final (empty-continuation) batch.
+  for (int iteration = 0; continuation.length > 0 && iteration < 1000; ++iteration) {
+    UA_BrowseNextRequest next_request;
+    UA_BrowseNextRequest_init(&next_request);
+    next_request.releaseContinuationPoints = false;
+    next_request.continuationPoints = &continuation;  // borrowed; freed manually below
+    next_request.continuationPointsSize = 1;
+
+    UA_BrowseNextResponse next_response = UA_Client_Service_browseNext(client, next_request);
+    UA_ByteString next_continuation = UA_BYTESTRING_NULL;
+    if (next_response.responseHeader.serviceResult == UA_STATUSCODE_GOOD && next_response.resultsSize == 1) {
+      next_continuation = collect_browse_result(next_response.results[0], children);
+    }
+    UA_BrowseNextResponse_clear(&next_response);
+    UA_ByteString_clear(&continuation);
+    continuation = next_continuation;
+  }
+  if (continuation.length > 0) {
+    // Early exit (iteration cap): release the server-side continuation point
+    // instead of leaking it until session teardown. Best effort.
+    UA_BrowseNextRequest release_request;
+    UA_BrowseNextRequest_init(&release_request);
+    release_request.releaseContinuationPoints = true;
+    release_request.continuationPoints = &continuation;
+    release_request.continuationPointsSize = 1;
+    UA_BrowseNextResponse release_response = UA_Client_Service_browseNext(client, release_request);
+    UA_BrowseNextResponse_clear(&release_response);
+    UA_ByteString_clear(&continuation);
+  }
   return children;
 }
 

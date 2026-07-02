@@ -417,23 +417,32 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   comp.namespace_path = "/" + node_map_.area_id();
   comp.fqn = "/" + node_map_.area_id() + "/" + node_map_.component_id();
   comp.area = node_map_.area_id();
-  // Protocol tag, preserved by the plugin layer (it only stamps "plugin" on
-  // empty sources), so the identity merge ranks this component's nameplate at
-  // "opcua" precedence instead of the generic "plugin".
-  comp.source = "opcua";
+  // Identity authority is gated on channel trust: only an authenticated
+  // session (secured channel + certificate validation) gets the protocol tag
+  // "opcua", which outranks the operator manifest in the identity merge. An
+  // unauthenticated session (None channel or accept-any cert) could be a rogue
+  // server spoofing the nameplate, so it gets the generic "plugin" tag, which
+  // ranks below "manifest" (fills gaps, never overrides). Both tags survive
+  // the plugin layer (it only stamps "plugin" on empty sources); per-field
+  // provenance stays "opcua" for transparency in both cases.
+  comp.source = opcua_identity_trusted(client_config_) ? "opcua" : "plugin";
   comp.description = "PLC runtime connected at " + client_config_.endpoint_url;
 
   // INV2: fill the asset-identity nameplate from the live server's device-info
-  // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate). Read once on the
-  // first connected introspect and cached, since it is stable for a connection.
-  // Provenance is stamped "opcua" per field (in the mapping) so a live device
-  // read outranks a hand-authored manifest in the identity merge.
-  if (client_ && client_->is_connected() && !device_identity_loaded_) {
-    device_identity_ = opcua_device_info_to_identity(client_->read_device_info(), client_config_.endpoint_url);
-    device_identity_loaded_ = true;
-    if (!device_identity_.empty()) {
-      log_info("Populated asset identity from OPC-UA device-info (manufacturer='" + device_identity_.manufacturer +
-               "', model='" + device_identity_.model + "')");
+  // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate). Read once per
+  // session (it is stable for a connection) and refreshed after a reconnect:
+  // the poller reestablishes the session in the background, and a server that
+  // registers its DI namespace or fills BuildInfo lazily after boot would
+  // otherwise latch whatever the first read got.
+  if (client_ && client_->is_connected()) {
+    const uint64_t session_generation = client_->connection_generation();
+    if (session_generation != device_identity_generation_) {
+      device_identity_ = opcua_device_info_to_identity(client_->read_device_info(), client_config_.endpoint_url);
+      device_identity_generation_ = session_generation;
+      if (!device_identity_.empty()) {
+        log_info("Populated asset identity from OPC-UA device-info (manufacturer='" + device_identity_.manufacturer +
+                 "', model='" + device_identity_.model + "')");
+      }
     }
   }
   if (!device_identity_.empty()) {

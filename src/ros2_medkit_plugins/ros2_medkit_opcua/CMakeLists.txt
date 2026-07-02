@@ -245,10 +245,12 @@ if(BUILD_TESTING)
   )
   medkit_set_test_domain(test_alarm_state_machine)
 
-  # INV2: pure device-info -> AssetIdentity mapping tests (no server).
+  # INV2: device-info -> AssetIdentity mapping + identity trust-gate tests.
+  # No server; opcua_client.cpp is link-only (requires_secure_channel).
   ament_add_gtest(test_device_identity
     test/test_device_identity.cpp
     src/device_identity.cpp
+    src/opcua_client.cpp
   )
   target_include_directories(test_device_identity PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

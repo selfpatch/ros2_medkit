@@ -50,4 +50,8 @@ AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info
   return identity;
 }
 
+bool opcua_identity_trusted(const OpcuaClientConfig & config) {
+  return OpcuaClient::requires_secure_channel(config) && config.reject_untrusted;
+}
+
 }  // namespace ros2_medkit_gateway

@@ -107,4 +107,37 @@ TEST(DeviceIdentityMap, PartialDiFallsBackToBuildInfoPerField) {
   EXPECT_EQ(id.hardware_revision, "HW-1");  // DI
 }
 
+// Trust gate for identity authority: only a secured channel WITH certificate
+// validation lets the live nameplate outrank the operator manifest.
+TEST(DeviceIdentityTrust, DefaultUnsecuredConfigIsUntrusted) {
+  OpcuaClientConfig config;  // SecurityPolicy=None, MessageSecurityMode=None
+  EXPECT_FALSE(opcua_identity_trusted(config));
+}
+
+TEST(DeviceIdentityTrust, SecuredChannelWithCertValidationIsTrusted) {
+  OpcuaClientConfig config;
+  config.security_policy = SecurityPolicy::Basic256Sha256;
+  config.security_mode = SecurityMode::SignAndEncrypt;
+  config.reject_untrusted = true;
+  EXPECT_TRUE(opcua_identity_trusted(config));
+}
+
+TEST(DeviceIdentityTrust, AcceptAnyCertIsUntrustedEvenWhenEncrypted) {
+  // Encrypted but accept-any server certificate: a rogue endpoint is accepted
+  // on every connect, so the channel does not authenticate the server.
+  OpcuaClientConfig config;
+  config.security_policy = SecurityPolicy::Basic256Sha256;
+  config.security_mode = SecurityMode::SignAndEncrypt;
+  config.reject_untrusted = false;
+  EXPECT_FALSE(opcua_identity_trusted(config));
+}
+
+TEST(DeviceIdentityTrust, CertValidationWithoutSecureChannelIsUntrusted) {
+  // reject_untrusted alone means nothing on a None channel: no server
+  // certificate is exchanged, so there is nothing to validate.
+  OpcuaClientConfig config;
+  config.reject_untrusted = true;
+  EXPECT_FALSE(opcua_identity_trusted(config));
+}
+
 }  // namespace ros2_medkit_gateway

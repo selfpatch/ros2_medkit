@@ -123,6 +123,12 @@ class OpcuaClient {
   /// Check if currently connected
   bool is_connected() const;
 
+  /// Number of successfully established sessions so far (0 before the first
+  /// connect). Increments once per fresh connect, NOT on a connect() call that
+  /// finds the session already open. Lets callers detect a reconnect and
+  /// refresh per-session state (e.g. re-read the device-info nameplate).
+  uint64_t connection_generation() const;
+
   /// Get the endpoint URL (for status reporting)
   std::string endpoint_url() const;
 

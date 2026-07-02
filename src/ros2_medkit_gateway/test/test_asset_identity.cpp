@@ -273,6 +273,27 @@ TEST(MergeIdentity, UnknownSourceFillsGapsButDoesNotOverrideKnown) {
   EXPECT_EQ(merged.provenance.at("serial_number"), "some_unlisted_source");
 }
 
+TEST(MergeIdentity, GenericPluginSourceFillsGapsButDoesNotOverrideManifest) {
+  // Trust-gated authority rule: a provider stamps its protocol tag ("opcua")
+  // only for an authenticated session; identity read over an unauthenticated
+  // session merges under the generic "plugin" tag, which ranks BELOW manifest -
+  // it fills fields the operator left empty but never overrides them.
+  IdentityMergeConfig cfg;
+  AssetIdentity merged;
+  merged.manufacturer = "Siemens";
+  stamp_identity_provenance(merged, "manifest");
+
+  AssetIdentity untrusted_read;
+  untrusted_read.manufacturer = "Spoofed Vendor";  // must not beat the manifest
+  untrusted_read.serial_number = "SN-9";           // but fills an empty field
+  merge_identity(merged, untrusted_read, "plugin", cfg);
+
+  EXPECT_EQ(merged.manufacturer, "Siemens");
+  EXPECT_EQ(merged.provenance.at("manufacturer"), "manifest");
+  EXPECT_EQ(merged.serial_number, "SN-9");
+  EXPECT_EQ(merged.provenance.at("serial_number"), "plugin");
+}
+
 TEST(MergeIdentity, ConfigurablePrecedenceOrder) {
   // Flip the default so manifest outranks opcua.
   IdentityMergeConfig cfg;

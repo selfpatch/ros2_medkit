@@ -40,18 +40,27 @@ namespace discovery {
  * manifest may be the authoritative *structure* source while a live protocol read is
  * the authoritative *identity* source.
  *
- * Default precedence (highest first): a live protocol device-info read (a `plugin`
- * source, or a protocol-specific source tag) beats the hand-authored `manifest` and
- * `inventory` (CSV / manifest `assets:` list) declarations, which beat whatever
- * runtime discovery guessed. The protocol-specific tags lead the list so that a
- * provider which sets a concrete `Component.source` (e.g. "opcua") is honoured; the
- * generic "plugin" tag covers the common case where the plugin layer stamps every
- * plugin entity with source="plugin".
+ * Default precedence (highest first) encodes a trust-gated authority rule:
+ *
+ * - Protocol-class tags ("opcua", "s7", ...) lead the list and outrank the
+ *   hand-authored `manifest`. A provider may only stamp its protocol tag when the
+ *   session behind the read is authenticated (e.g. the OPC UA plugin requires a
+ *   secured channel with certificate validation); an authenticated live device read
+ *   is then more authoritative than a manifest that can go stale.
+ * - `manifest` outranks `inventory` (CSV / manifest `assets:` list), which outranks
+ *   `config`: operator-authored identity beats bulk-imported inventory declarations,
+ *   which beat config defaults.
+ * - The generic "plugin" tag (stamped by the plugin layer on entities without a
+ *   source, and used by providers for identity read over an UNauthenticated session)
+ *   ranks below `manifest`, `inventory` and `config`: it fills fields the operator
+ *   left empty but never overrides operator-authored identity, so a spoofable read
+ *   cannot displace the manifest.
+ * - Runtime discovery guesses rank last.
  */
 struct IdentityMergeConfig {
-  std::vector<std::string> source_precedence{"opcua",    "s7",     "ethernet_ip", "modbus",    "ads",
-                                             "profinet", "plugin", "manifest",    "inventory", "config",
-                                             "runtime",  "node",   "topic",       "heuristic"};
+  std::vector<std::string> source_precedence{"opcua",    "s7",       "ethernet_ip", "modbus",   "ads",
+                                             "profinet", "manifest", "inventory",   "config",   "plugin",
+                                             "runtime",  "node",     "topic",       "heuristic"};
 };
 
 /**
