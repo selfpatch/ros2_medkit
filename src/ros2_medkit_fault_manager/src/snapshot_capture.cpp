@@ -158,6 +158,17 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   // Only reached for faults with a configured capture set (unconfigured codes returned
   // early above and get no row). If nothing was publishing at confirmation time the row
   // holds an empty object, recording that a configured capture ran but sampled nothing.
+  // An empty capture must never clobber an existing non-empty frame: a re-confirm while
+  // the source publishers are down would otherwise replace the retained record with {}.
+  if (captured_count == 0) {
+    auto existing = storage_->get_freeze_frame(fault_code);
+    if (existing.has_value() && existing->data != "{}") {
+      RCLCPP_WARN(node_->get_logger(), "Nothing captured for fault '%s'; keeping previously retained freeze-frame",
+                  fault_code.c_str());
+      return;
+    }
+  }
+
   FreezeFrameData frame;
   frame.fault_code = fault_code;
   frame.data = freeze_frame.dump();
