@@ -28,6 +28,7 @@ A manifest file has the following top-level structure:
 
    areas: []              # Optional - area definitions
    components: []         # Optional - component definitions
+   assets: []             # Optional - manual asset inventory entries
    apps: []               # Optional - app definitions
    functions: []          # Optional - function definitions
    scripts: []             # Optional - pre-defined script entries
@@ -349,6 +350,101 @@ Example
        name: "IMU Sensor"
        type: "sensor"
        area: perception
+
+Assets
+------
+
+Assets declare manually inventoried equipment that no protocol layer can
+describe (or fully describe): unnetworked devices, third-party hardware, spare
+nameplate data. Each asset becomes a Component with ``source: "inventory"`` and
+a structured asset identity carrying per-field provenance ``"inventory"``, and
+merges into the entity tree by ``id`` alongside protocol-discovered structure.
+In the identity merge, ``inventory`` ranks below ``manifest`` and live protocol
+reads but above runtime guesses.
+
+Schema
+~~~~~~
+
+.. code-block:: yaml
+
+   assets:
+     - id: string                 # Required - stable asset id (merge key)
+       manufacturer: string       # Optional - vendor / OEM
+       model: string              # Optional - model / order code
+       serial: string             # Optional - serial number
+       hardware_rev: string       # Optional - hardware revision
+       firmware: string           # Optional - firmware / software version
+       endpoint: string           # Optional - network endpoint (URL / host:port)
+       role: string               # Optional - functional role
+       area: string               # Optional - Area id placing the asset in the tree
+       namespace: string          # Optional - operator-declared placement (sets fqn)
+       name: string               # Optional - display name (default: "<manufacturer> <model>")
+       description: string        # Optional - detailed description
+       variant: string            # Optional - hardware variant identifier
+       type: string               # Optional - component type
+       translation_id: string     # Optional - internationalization key
+       parent_component_id: string # Optional - parent component ID
+       depends_on: [string]       # Optional - component IDs this asset depends on
+       tags: [string]             # Optional - tags for filtering
+       any_other_key: string      # Kept verbatim as an identity extra
+
+Fields
+~~~~~~
+
+The identity keys accept the same aliases as the CSV import:
+``serial_number`` for ``serial``, ``hardware_revision`` / ``hw_rev`` for
+``hardware_rev``, and ``firmware_version`` / ``fw`` for ``firmware``. Aliased
+keys land on the typed identity fields, not in the extras. Any scalar key not
+listed above is preserved as an identity extra.
+
+Placement is optional: without ``area`` (and ``namespace``) the asset is
+reachable at ``/components/{id}`` and in the flat component list, but does not
+appear under any Area. An ``area`` must reference an area defined in the
+manifest, otherwise validation fails (rule R006).
+
+Example
+~~~~~~~
+
+.. code-block:: yaml
+
+   areas:
+     - id: cell-3
+       name: "Cell 3"
+
+   assets:
+     - id: hyd-pump-2
+       manufacturer: Grundfos
+       model: CR-5
+       serial_number: "GP-2214-0087"
+       area: cell-3
+       role: pump
+       rack: R2          # kept as identity extra "rack"
+
+CSV Inventory Import
+~~~~~~~~~~~~~~~~~~~~
+
+The same asset entries can be bulk-imported from a CSV file via the
+``discovery.inventory.csv_path`` gateway parameter (requires a manifest-backed
+discovery mode: ``manifest_only``, or ``hybrid`` with
+``discovery.manifest_path`` set; empty = disabled). The CSV is re-read on every
+manifest load / reload and appended to the merged manifest before validation.
+
+- **Columns**: the header row is matched case-insensitively after trimming.
+  Canonical columns are ``id`` (required), ``manufacturer``, ``model``,
+  ``serial``, ``hardware_rev``, ``firmware``, ``endpoint``, ``role`` and
+  ``area``, with the same aliases as the ``assets:`` list. Any other column is
+  kept as an identity extra keyed by its original header.
+- **Quoting**: RFC-4180-style; double-quoted fields may contain commas,
+  newlines and escaped quotes (``""``). Unquoted fields are whitespace-trimmed;
+  a UTF-8 BOM (Excel "CSV UTF-8" export) is stripped.
+- **Size cap**: the file is rejected before reading if it exceeds 1 MiB.
+- **Row policy**: rows without an ``id`` are skipped with a warning; for
+  duplicate ids within the CSV the first row wins. A row whose id is already a
+  manifest component keeps the manifest definition and folds the row's identity
+  in as gap-fill; a row whose id collides with any other manifest entity is
+  skipped, and an unknown ``area`` value is dropped (asset kept, placement-less).
+  None of these fail the load. A missing file is skipped with a warning; an
+  unreadable or malformed file (e.g. no ``id`` column) fails the load.
 
 Apps
 ----

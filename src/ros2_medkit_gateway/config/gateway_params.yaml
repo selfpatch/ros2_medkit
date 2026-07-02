@@ -249,6 +249,19 @@ ros2_medkit_gateway:
       # Strict manifest validation (reject invalid manifests)
       manifest_strict_validation: true
 
+      # Manual asset inventory CSV (requires a manifest-backed mode:
+      # manifest_only, or hybrid with manifest_path set). Each row becomes a
+      # Component with source "inventory", appended to the manifest on every
+      # load/reload and merged into the tree by id. Canonical columns:
+      # id (required), manufacturer, model, serial, hardware_rev, firmware,
+      # endpoint, role, area (aliases: serial_number, hardware_revision/hw_rev,
+      # firmware_version/fw); any other column is kept as an identity extra.
+      # RFC-4180 quoting, 1 MiB size cap. Malformed rows / id collisions are
+      # skipped with a warning (manifest wins); a missing file is skipped, an
+      # unreadable or malformed file fails the load. Empty = disabled (default).
+      inventory:
+        csv_path: ""
+
       # Configurable main layers (hybrid mode only)
       # Set false to disable a layer - useful when running manifest+plugin or runtime+plugin
       # without the other default layer.

@@ -269,43 +269,33 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
 }
 
 Component ManifestParser::parse_asset(const YAML::Node & node) const {
-  // Structural / identity keys handled explicitly; any other scalar key is
-  // retained verbatim as an extra so operator-specific columns are not lost.
-  static const std::unordered_set<std::string> reserved = {
-      "id",          "manufacturer", "model",   "serial", "hardware_rev",        "firmware",
-      "endpoint",    "role",         "area",    "tags",   "parent_component_id", "name",
-      "description", "namespace",    "variant", "type",   "translation_id",      "depends_on"};
+  // Structural / presentation keys handled explicitly below. Identity keys are
+  // routed through the shared asset_column alias table, so `assets:` accepts
+  // exactly the names the CSV import does (serial / serial_number, ...); any
+  // other scalar key is retained verbatim as an extra so operator-specific
+  // columns are not lost.
+  static const std::unordered_set<std::string> structural = {"tags",        "parent_component_id", "name",
+                                                             "description", "namespace",           "variant",
+                                                             "type",        "translation_id",      "depends_on"};
 
   AssetEntry entry;
-  entry.id = get_string(node, "id");
-  entry.manufacturer = get_string(node, "manufacturer");
-  entry.model = get_string(node, "model");
-  entry.serial = get_string(node, "serial");
-  entry.hardware_rev = get_string(node, "hardware_rev");
-  entry.firmware = get_string(node, "firmware");
-  entry.endpoint = get_string(node, "endpoint");
-  entry.role = get_string(node, "role");
-
   if (node.IsMap()) {
     for (const auto & it : node) {
       if (!it.first.IsScalar() || !it.second.IsScalar()) {
         continue;
       }
       const std::string key = it.first.as<std::string>();
-      if (reserved.count(key) != 0) {
+      if (structural.count(key) != 0) {
         continue;
       }
-      const std::string value = it.second.as<std::string>();
-      if (!value.empty()) {
-        entry.extras.emplace_back(key, value);
-      }
+      assign_asset_field(entry, asset_column(key), key, it.second.as<std::string>());
     }
   }
 
   Component comp = asset_entry_to_component(entry);
 
   // Optional tree-placement and presentation overrides. Every key listed in
-  // `reserved` above must be consumed here; otherwise it is silently dropped.
+  // `structural` above must be consumed here; otherwise it is silently dropped.
   const std::string ns = get_string(node, "namespace");
   if (!ns.empty()) {
     // Operator-declared placement: compute an authoritative fqn like a real
@@ -313,10 +303,6 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
     // discovered node keeps the node's real path instead of a synthetic "/id".
     comp.namespace_path = ns;
     comp.fqn = ns + "/" + comp.id;
-  }
-  const std::string area = get_string(node, "area");
-  if (!area.empty()) {
-    comp.area = area;
   }
   const std::string parent = get_string(node, "parent_component_id");
   if (!parent.empty()) {

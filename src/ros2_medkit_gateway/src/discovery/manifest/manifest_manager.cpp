@@ -20,7 +20,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
+#include "ros2_medkit_gateway/core/discovery/identity_merge.hpp"
 #include "ros2_medkit_gateway/core/discovery/manifest/asset_inventory.hpp"
 
 namespace ros2_medkit_gateway {
@@ -541,10 +543,57 @@ bool ManifestManager::apply_inventory_csv(Manifest & base) {
     for (const auto & warn : parsed.warnings) {
       log_warn("Inventory CSV: " + warn);
     }
-    for (const auto & entry : parsed.entries) {
-      base.components.push_back(asset_entry_to_component(entry));
+
+    // Collision policy: a CSV row never fails the load (the CSV is a bulk
+    // import; one bad line must not take the gateway down) and never beats the
+    // operator-authored manifest. Duplicate ids within the CSV were already
+    // reduced to the first row by parse_asset_csv. An id already defined as a
+    // manifest component keeps the manifest definition; the CSV identity is
+    // folded in as gap-fill ("inventory" ranks below "manifest"). An id
+    // colliding with any other entity kind, or an unknown `area`, is dropped
+    // with a warning so the merged manifest still passes R002-R012 / R006.
+    std::unordered_set<std::string> area_ids;
+    std::unordered_set<std::string> non_component_ids;
+    for (const auto & area : base.areas) {
+      area_ids.insert(area.id);
+      non_component_ids.insert(area.id);
     }
-    log_info("Inventory CSV loaded: " + std::to_string(parsed.entries.size()) + " assets from " + inventory_csv_path_);
+    for (const auto & app : base.apps) {
+      non_component_ids.insert(app.id);
+    }
+    for (const auto & func : base.functions) {
+      non_component_ids.insert(func.id);
+    }
+    for (const auto & script : base.scripts) {
+      non_component_ids.insert(script.id);
+    }
+
+    std::size_t added = 0;
+    for (const auto & entry : parsed.entries) {
+      Component comp = asset_entry_to_component(entry);
+      if (!comp.area.empty() && area_ids.count(comp.area) == 0) {
+        log_warn("Inventory CSV: asset '" + comp.id + "' references unknown area '" + comp.area +
+                 "' (placement dropped, asset kept)");
+        comp.area.clear();
+      }
+      auto existing = std::find_if(base.components.begin(), base.components.end(), [&](const Component & c) {
+        return c.id == comp.id;
+      });
+      if (existing != base.components.end()) {
+        stamp_identity_provenance(existing->identity, existing->source);
+        merge_identity(existing->identity, comp.identity, "inventory", IdentityMergeConfig{});
+        log_warn("Inventory CSV: id '" + comp.id +
+                 "' is already defined in the manifest; manifest wins, CSV identity folded as gap-fill");
+        continue;
+      }
+      if (non_component_ids.count(comp.id) != 0) {
+        log_warn("Inventory CSV: id '" + comp.id + "' collides with a non-component manifest entity (row skipped)");
+        continue;
+      }
+      base.components.push_back(std::move(comp));
+      ++added;
+    }
+    log_info("Inventory CSV loaded: " + std::to_string(added) + " assets from " + inventory_csv_path_);
   } catch (const std::exception & e) {
     validation_result_.add_error("INVENTORY_CSV", e.what(), inventory_csv_path_);
     log_error("Failed to parse inventory CSV '" + inventory_csv_path_ + "': " + e.what());

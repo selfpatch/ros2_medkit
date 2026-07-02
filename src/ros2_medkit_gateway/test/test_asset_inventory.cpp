@@ -220,6 +220,34 @@ TEST(AssetCsvParseTest, LeadingSpaceBeforeQuotedFieldOpensQuote) {
   EXPECT_EQ(result.entries[0].model, "Quoted, X");
 }
 
+TEST(AssetCsvParseTest, DuplicateIdRowsFirstWinsWithWarning) {
+  // Duplicates must be reduced here: appended as-is they would trip the
+  // validator's hard duplicate-id error and abort the whole manifest load.
+  const std::string csv =
+      "id,model\n"
+      "plc_1,First\n"
+      "plc_1,Second\n"
+      "other,Kept\n";
+  auto result = parse_asset_csv(csv);
+  ASSERT_EQ(result.entries.size(), 2u);
+  EXPECT_EQ(result.entries[0].id, "plc_1");
+  EXPECT_EQ(result.entries[0].model, "First");
+  EXPECT_EQ(result.entries[1].id, "other");
+  ASSERT_EQ(result.warnings.size(), 1u);
+  EXPECT_NE(result.warnings[0].find("duplicate id 'plc_1'"), std::string::npos);
+}
+
+TEST(AssetCsvParseTest, AreaColumnIsTypedNotExtra) {
+  const std::string csv =
+      "id,Area,rack\n"
+      "pump_1,cell-3,R2\n";
+  auto result = parse_asset_csv(csv);
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_EQ(result.entries[0].area, "cell-3");
+  ASSERT_EQ(result.entries[0].extras.size(), 1u);  // only 'rack' stays an extra
+  EXPECT_EQ(result.entries[0].extras[0].first, "rack");
+}
+
 // ── AssetEntry -> Component mapping ──────────────────────────────────────────
 
 TEST(AssetEntryToComponentTest, FullMapping) {
@@ -279,6 +307,15 @@ TEST(AssetEntryToComponentTest, NameFallsBackToManufacturerWhenNoModel) {
   e.manufacturer = "OnlyVendor";
   Component comp = asset_entry_to_component(e);
   EXPECT_EQ(comp.name, "OnlyVendor");
+}
+
+TEST(AssetEntryToComponentTest, AreaIsStructuralPlacementWithoutProvenance) {
+  AssetEntry e;
+  e.id = "pump_1";
+  e.area = "cell-3";
+  Component comp = asset_entry_to_component(e);
+  EXPECT_EQ(comp.area, "cell-3");
+  EXPECT_EQ(comp.identity.provenance.count("area"), 0u);  // not an identity field
 }
 
 // ── Manifest `assets:` list ──────────────────────────────────────────────────
@@ -366,6 +403,27 @@ assets:
   EXPECT_EQ(comp->depends_on[1], "bus_a");
 }
 
+TEST(ManifestAssetsTest, IdentityAliasesLandOnTypedFields) {
+  // The `assets:` list must accept the same aliases the CSV import does;
+  // aliased keys land on the typed identity fields, not in the extras.
+  const std::string yaml = R"(
+manifest_version: "1.0"
+assets:
+  - id: sensor_7
+    serial_number: SER-9
+    hardware_revision: C1
+    firmware_version: 1.4.0
+)";
+  ManifestParser parser;
+  Manifest manifest = parser.parse_string(yaml);
+  const Component * comp = find_component(manifest.components, "sensor_7");
+  ASSERT_NE(comp, nullptr);
+  EXPECT_EQ(comp->identity.serial_number, "SER-9");
+  EXPECT_EQ(comp->identity.hardware_revision, "C1");
+  EXPECT_EQ(comp->identity.firmware_version, "1.4.0");
+  EXPECT_TRUE(comp->identity.extra.empty());
+}
+
 // ── ManifestManager CSV import ───────────────────────────────────────────────
 
 class InventoryCsvManagerTest : public ::testing::Test {
@@ -421,6 +479,145 @@ TEST_F(InventoryCsvManagerTest, MissingCsvIsNotAnError) {
   ManifestManager mgr(nullptr);
   mgr.set_inventory_csv_path((temp_dir_ / "does_not_exist.csv").string());
   EXPECT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+}
+
+TEST_F(InventoryCsvManagerTest, DuplicateCsvIdsDoNotFailLoad) {
+  // One duplicated export line must not abort the whole manifest load with a
+  // hard R003 error: first row wins, the load stays green.
+  const std::string manifest_path = write_file("base.yaml", "manifest_version: \"1.0\"\n");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,model\n"
+                                          "plc_1,First\n"
+                                          "plc_1,Second\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  const Component * comp = find_component(comps, "plc_1");
+  ASSERT_NE(comp, nullptr);
+  EXPECT_EQ(comp->identity.model, "First");
+}
+
+TEST_F(InventoryCsvManagerTest, CsvIdCollidingWithManifestComponentGapFillsIdentity) {
+  // Manifest component wins the collision (operator-authored full definition
+  // beats a CSV inventory row); the row's identity is folded in as gap-fill
+  // and the load must succeed.
+  const std::string manifest_path = write_file("base.yaml",
+                                               R"(manifest_version: "1.0"
+components:
+  - id: plc_1
+    name: "Main PLC"
+    type: controller
+)");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,manufacturer,serial\n"
+                                          "plc_1,Siemens,SN-77\n"
+                                          "io_1,Beckhoff,\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  ASSERT_EQ(comps.size(), 2u);  // no duplicate plc_1 appended
+  const Component * plc = find_component(comps, "plc_1");
+  ASSERT_NE(plc, nullptr);
+  EXPECT_EQ(plc->source, "manifest");  // manifest definition kept
+  EXPECT_EQ(plc->name, "Main PLC");
+  EXPECT_EQ(plc->type, "controller");
+  // CSV identity folded in as gap-fill with provenance "inventory".
+  EXPECT_EQ(plc->identity.manufacturer, "Siemens");
+  EXPECT_EQ(plc->identity.serial_number, "SN-77");
+  EXPECT_EQ(plc->identity.provenance.at("serial_number"), "inventory");
+  // Non-colliding rows still land as inventory components.
+  const Component * io = find_component(comps, "io_1");
+  ASSERT_NE(io, nullptr);
+  EXPECT_EQ(io->source, "inventory");
+}
+
+TEST_F(InventoryCsvManagerTest, CsvNeverOverridesManifestAssetIdentity) {
+  // A manifest `assets:` entry is also operator-authored: on a conflict the
+  // manifest value stays, the CSV only fills fields the manifest left empty.
+  const std::string manifest_path = write_file("base.yaml",
+                                               R"(manifest_version: "1.0"
+assets:
+  - id: robot_1
+    manufacturer: KUKA
+)");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,manufacturer,serial\n"
+                                          "robot_1,Fanuc,SN-9\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  ASSERT_EQ(comps.size(), 1u);
+  EXPECT_EQ(comps[0].identity.manufacturer, "KUKA");   // conflict: manifest wins
+  EXPECT_EQ(comps[0].identity.serial_number, "SN-9");  // gap: CSV fills
+}
+
+TEST_F(InventoryCsvManagerTest, CsvIdCollidingWithNonComponentEntitySkipped) {
+  const std::string manifest_path = write_file("base.yaml",
+                                               R"(manifest_version: "1.0"
+areas:
+  - id: cell_3
+    name: "Cell 3"
+)");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,model\n"
+                                          "cell_3,NotAnAsset\n"
+                                          "pump_1,CR-5\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  EXPECT_EQ(find_component(comps, "cell_3"), nullptr);  // skipped, not a duplicate id
+  EXPECT_NE(find_component(comps, "pump_1"), nullptr);
+}
+
+TEST_F(InventoryCsvManagerTest, CsvAreaColumnPlacesAssetUnderArea) {
+  const std::string manifest_path = write_file("base.yaml",
+                                               R"(manifest_version: "1.0"
+areas:
+  - id: cell_3
+    name: "Cell 3"
+)");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,model,area\n"
+                                          "pump_1,CR-5,cell_3\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  const Component * pump = find_component(comps, "pump_1");
+  ASSERT_NE(pump, nullptr);
+  EXPECT_EQ(pump->area, "cell_3");
+}
+
+TEST_F(InventoryCsvManagerTest, CsvUnknownAreaDroppedAssetKept) {
+  // An unknown area would hard-fail validation (R006); the CSV path drops the
+  // placement with a warning and keeps the asset, so the load stays green.
+  const std::string manifest_path = write_file("base.yaml", "manifest_version: \"1.0\"\n");
+  const std::string csv_path = write_file("inventory.csv",
+                                          "id,model,area\n"
+                                          "pump_1,CR-5,nowhere\n");
+
+  ManifestManager mgr(nullptr);
+  mgr.set_inventory_csv_path(csv_path);
+  ASSERT_TRUE(mgr.load_manifest(manifest_path, /*strict=*/false));
+
+  auto comps = mgr.get_components();
+  const Component * pump = find_component(comps, "pump_1");
+  ASSERT_NE(pump, nullptr);
+  EXPECT_TRUE(pump->area.empty());
 }
 
 // ── Acceptance: CSV asset merges with protocol-discovered structure ──────────
