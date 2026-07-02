@@ -46,10 +46,46 @@ struct AssetEntry {
   std::string firmware;      ///< Firmware / software version
   std::string endpoint;      ///< Network endpoint (URL / host:port)
   std::string role;          ///< Functional role (controller, sensor, ...)
+  std::string area;          ///< Optional Area id placing the asset in the tree
 
   /// Non-canonical columns, kept in declared order (header -> value).
   std::vector<std::pair<std::string, std::string>> extras;
 };
+
+/**
+ * @brief Canonical destination of an inventory column / manifest asset key.
+ */
+enum class AssetColumn {
+  kIgnore,  ///< Empty header cell: drop the value
+  kExtra,   ///< Not a canonical name: keep as identity extra
+  kId,
+  kManufacturer,
+  kModel,
+  kSerial,
+  kHardwareRev,
+  kFirmware,
+  kEndpoint,
+  kRole,
+  kArea,
+};
+
+/**
+ * @brief Map a column / key name to its canonical destination.
+ *
+ * The single alias table shared by both import paths (CSV header cells and
+ * manifest `assets:` keys): names are trimmed and matched case-insensitively;
+ * `serial_number`, `hardware_revision` / `hw_rev` and `firmware_version` / `fw`
+ * map to their typed fields. Empty names yield kIgnore; unknown names kExtra.
+ */
+AssetColumn asset_column(const std::string & name);
+
+/**
+ * @brief Assign `value` to the @ref AssetEntry field selected by `column`.
+ *
+ * kExtra appends (`header`, `value`) to `entry.extras` (empty values are
+ * dropped); kIgnore is a no-op.
+ */
+void assign_asset_field(AssetEntry & entry, AssetColumn column, const std::string & header, const std::string & value);
 
 /**
  * @brief Result of parsing a CSV inventory document.
@@ -62,16 +98,17 @@ struct AssetCsvResult {
 /**
  * @brief Parse a CSV inventory document into asset entries.
  *
- * The first non-empty line is the header. Column names are matched
- * case-insensitively after trimming; recognized canonical names are
- * `id, manufacturer, model, serial, hardware_rev, firmware, endpoint, role`
- * (a small set of common aliases is also accepted). Any other column is
+ * The first non-empty line is the header. Column names are matched via
+ * ::asset_column; recognized canonical names are
+ * `id, manufacturer, model, serial, hardware_rev, firmware, endpoint, role,
+ * area` (a small set of common aliases is also accepted). Any other column is
  * preserved as an extra keyed by its original (trimmed) header name.
  *
  * RFC-4180-style quoting is honored: double-quoted fields may contain commas,
  * newlines, and escaped quotes (`""`). Unquoted fields are whitespace-trimmed.
  * Blank lines are skipped. Rows whose `id` is empty are skipped and reported in
- * @ref AssetCsvResult::warnings.
+ * @ref AssetCsvResult::warnings; so are rows repeating an earlier row's id
+ * (first row wins).
  *
  * @param csv_text Full CSV document.
  * @return Parsed entries plus any non-fatal warnings.
@@ -95,7 +132,10 @@ AssetCsvResult parse_asset_csv(const std::string & csv_text);
  *     `extra.<header>`
  *
  * `fqn` / `namespace_path` are left empty: a bare inventory asset carries no
- * placement, so a discovered node it merges with keeps its real path.
+ * placement, so a discovered node it merges with keeps its real path. An
+ * `area` on the entry lands on `Component::area` (structural placement, no
+ * provenance entry); without one the asset appears only in the flat component
+ * list, never under an Area.
  *
  * @param entry Asset entry (must have a non-empty id).
  * @return Component with `source = "inventory"` and structured identity

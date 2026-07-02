@@ -123,11 +123,17 @@ class ManifestManager {
    *
    * When set, every `load_manifest` / `reload_manifest` call parses the CSV
    * (columns `id, manufacturer, model, serial, hardware_rev, firmware,
-   * endpoint, role`, plus any extra columns) and appends one Component per row
-   * to the base manifest before validation. Each asset merges into the entity
-   * tree by id, combining with protocol-discovered structure the same way a
-   * manifest component does. A parse failure (or a missing `id` column) is
-   * recorded as a validation error and fails the load.
+   * endpoint, role, area`, plus any extra columns) and appends one Component
+   * per row to the base manifest before validation. Each asset merges into the
+   * entity tree by id, combining with protocol-discovered structure the same
+   * way a manifest component does. A parse failure (or a missing `id` column)
+   * is recorded as a validation error and fails the load.
+   *
+   * Id collisions never fail the load: within the CSV the first row wins;
+   * a row whose id matches a manifest component keeps the manifest definition
+   * and folds the row's identity in as gap-fill; a row whose id matches any
+   * other manifest entity, or that names an unknown `area`, is skipped
+   * (respectively has its placement dropped) with a warning.
    *
    * Call with an empty string to disable CSV import.
    *
@@ -294,6 +300,9 @@ class ManifestManager {
   /// success (or when no CSV is configured / the file is absent); false when
   /// the CSV cannot be read or parsed. Parse errors are appended to
   /// `validation_result_` so callers see them in the normal error flow.
+  /// Unlike fragments, id collisions are resolved HERE (manifest wins,
+  /// see set_inventory_csv_path) so a CSV row can never trip the validator's
+  /// hard duplicate-id errors and abort the load.
   bool apply_inventory_csv(Manifest & base);
 
   std::optional<Manifest> manifest_;

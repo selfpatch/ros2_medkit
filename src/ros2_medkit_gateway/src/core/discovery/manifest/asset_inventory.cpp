@@ -18,6 +18,7 @@
 #include <cctype>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -142,74 +143,81 @@ std::vector<std::vector<CsvField>> tokenize(const std::string & text) {
   return rows;
 }
 
-// Canonical destination for a header column.
-enum class Column { kIgnore, kExtra, kId, kManufacturer, kModel, kSerial, kHardwareRev, kFirmware, kEndpoint, kRole };
+}  // namespace
 
-Column canonical_column(const std::string & header_lower) {
+AssetColumn asset_column(const std::string & name) {
+  const std::string header_lower = to_lower(trim(name));
+  if (header_lower.empty()) {
+    return AssetColumn::kIgnore;
+  }
   if (header_lower == "id") {
-    return Column::kId;
+    return AssetColumn::kId;
   }
   if (header_lower == "manufacturer") {
-    return Column::kManufacturer;
+    return AssetColumn::kManufacturer;
   }
   if (header_lower == "model") {
-    return Column::kModel;
+    return AssetColumn::kModel;
   }
   if (header_lower == "serial" || header_lower == "serial_number") {
-    return Column::kSerial;
+    return AssetColumn::kSerial;
   }
   if (header_lower == "hardware_rev" || header_lower == "hardware_revision" || header_lower == "hw_rev") {
-    return Column::kHardwareRev;
+    return AssetColumn::kHardwareRev;
   }
   if (header_lower == "firmware" || header_lower == "firmware_version" || header_lower == "fw") {
-    return Column::kFirmware;
+    return AssetColumn::kFirmware;
   }
   if (header_lower == "endpoint") {
-    return Column::kEndpoint;
+    return AssetColumn::kEndpoint;
   }
   if (header_lower == "role") {
-    return Column::kRole;
+    return AssetColumn::kRole;
   }
-  return Column::kExtra;
+  if (header_lower == "area") {
+    return AssetColumn::kArea;
+  }
+  return AssetColumn::kExtra;
 }
 
-void assign(AssetEntry & entry, Column column, const std::string & header, const std::string & value) {
+void assign_asset_field(AssetEntry & entry, AssetColumn column, const std::string & header, const std::string & value) {
   switch (column) {
-    case Column::kId:
+    case AssetColumn::kId:
       entry.id = value;
       break;
-    case Column::kManufacturer:
+    case AssetColumn::kManufacturer:
       entry.manufacturer = value;
       break;
-    case Column::kModel:
+    case AssetColumn::kModel:
       entry.model = value;
       break;
-    case Column::kSerial:
+    case AssetColumn::kSerial:
       entry.serial = value;
       break;
-    case Column::kHardwareRev:
+    case AssetColumn::kHardwareRev:
       entry.hardware_rev = value;
       break;
-    case Column::kFirmware:
+    case AssetColumn::kFirmware:
       entry.firmware = value;
       break;
-    case Column::kEndpoint:
+    case AssetColumn::kEndpoint:
       entry.endpoint = value;
       break;
-    case Column::kRole:
+    case AssetColumn::kRole:
       entry.role = value;
       break;
-    case Column::kExtra:
+    case AssetColumn::kArea:
+      entry.area = value;
+      break;
+    case AssetColumn::kExtra:
       if (!value.empty()) {
         entry.extras.emplace_back(header, value);
       }
       break;
-    case Column::kIgnore:
+    case AssetColumn::kIgnore:
       break;
   }
 }
-
-}  // namespace
 
 AssetCsvResult parse_asset_csv(const std::string & csv_text) {
   AssetCsvResult result;
@@ -221,15 +229,15 @@ AssetCsvResult parse_asset_csv(const std::string & csv_text) {
 
   // Build the column map from the header row.
   const auto & header_row = rows.front();
-  std::vector<Column> columns;
+  std::vector<AssetColumn> columns;
   std::vector<std::string> header_names;
   columns.reserve(header_row.size());
   header_names.reserve(header_row.size());
   bool has_id = false;
   for (const auto & cell : header_row) {
     const std::string name = trim(cell.value);
-    Column col = name.empty() ? Column::kIgnore : canonical_column(to_lower(name));
-    if (col == Column::kId) {
+    AssetColumn col = asset_column(name);
+    if (col == AssetColumn::kId) {
       has_id = true;
     }
     columns.push_back(col);
@@ -239,14 +247,22 @@ AssetCsvResult parse_asset_csv(const std::string & csv_text) {
     throw std::runtime_error("asset CSV: missing required 'id' column");
   }
 
+  std::unordered_set<std::string> seen_ids;
   for (std::size_t r = 1; r < rows.size(); ++r) {
     const auto & data_row = rows[r];
     AssetEntry entry;
     for (std::size_t c = 0; c < columns.size() && c < data_row.size(); ++c) {
-      assign(entry, columns[c], header_names[c], data_row[c].value);
+      assign_asset_field(entry, columns[c], header_names[c], data_row[c].value);
     }
     if (entry.id.empty()) {
       result.warnings.push_back("asset CSV: row " + std::to_string(r + 1) + " skipped (empty id)");
+      continue;
+    }
+    // Dedup within the document: first row wins, later duplicates are dropped so
+    // one bad export line cannot fail the whole manifest load downstream.
+    if (!seen_ids.insert(entry.id).second) {
+      result.warnings.push_back("asset CSV: row " + std::to_string(r + 1) + " skipped (duplicate id '" + entry.id +
+                                "', first row wins)");
       continue;
     }
     result.entries.push_back(std::move(entry));
@@ -263,6 +279,8 @@ Component asset_entry_to_component(const AssetEntry & entry) {
   // carries no placement, so a synthetic "/id" must not override the real path
   // of a discovered node it merges with. Placement comes from the manifest
   // `namespace:` key (see parse_asset) when the operator declares it.
+  // `area` is structural placement, not identity: no provenance entry.
+  comp.area = entry.area;
 
   // name <- "<manufacturer> <model>" (left empty when neither is set so the
   // consumer falls back to the id).

@@ -1585,12 +1585,12 @@ records **per-field provenance** (which source set each field) under `_provenanc
   and is deliberately **decoupled from the structural `MergePolicy`**: a manifest can be the
   authoritative *structure* source while a live protocol read is the authoritative *identity*
   source. Authority is ranked on each contributing entity's canonical `Component.source` tag
-  ("manifest", "plugin", "runtime", "node", "config", or a protocol-class tag a provider sets
-  such as "opcua"), **not** the free-form discovery-layer name. Default order: protocol
-  device-info (`opcua`, `s7`, `ethernet_ip`, `modbus`, `ads`, `profinet`, and the generic
-  `plugin`) > `manifest` > `config` > runtime sources. A higher-authority source overrides a
-  field; lower-authority sources only fill gaps; unknown sources rank lowest. Empty values never
-  overwrite.
+  ("manifest", "inventory", "plugin", "runtime", "node", "config", or a protocol-class tag a
+  provider sets such as "opcua"), **not** the free-form discovery-layer name. Default order:
+  protocol device-info (`opcua`, `s7`, `ethernet_ip`, `modbus`, `ads`, `profinet`, and the
+  generic `plugin`) > `manifest` > `inventory` (CSV import / manifest `assets:` list) >
+  `config` > runtime sources. A higher-authority source overrides a field; lower-authority
+  sources only fill gaps; unknown sources rank lowest. Empty values never overwrite.
 
 Components are correlated for merging by `Component.id`; identity is merged whenever two
 sources contribute the same Component id (in the discovery pipeline, and gap-filled across
