@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 // Copyright 2020 Open Source Robotics Foundation, Inc.
 // Copyright 2021 Christophe Bedard
 //
@@ -161,3 +163,4 @@ void ros_message_destroy_with_allocator(RosMessage_Cpp * ros_msg, rcutils_alloca
 }  // namespace dynmsg
 
 #endif  // ROS2_MEDKIT_SERIALIZATION__VENDORED__DYNMSG__TYPESUPPORT_HPP_
+// NOLINTEND

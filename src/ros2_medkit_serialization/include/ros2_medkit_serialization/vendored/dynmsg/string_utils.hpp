@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 // Copyright 2020 Open Source Robotics Foundation, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,3 +29,4 @@ std::string u16string_to_string(const std::u16string & input);
 }  // extern "C"
 
 #endif  // ROS2_MEDKIT_SERIALIZATION__VENDORED__DYNMSG__STRING_UTILS_HPP_
+// NOLINTEND

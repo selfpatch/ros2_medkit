@@ -1,3 +1,5 @@
+// Vendored third-party header, excluded from clang-tidy lint (installed path matches the CI header filter).
+// NOLINTBEGIN
 // Copyright 2020 Open Source Robotics Foundation, Inc.
 // Copyright 2021 Christophe Bedard
 //
@@ -27,3 +29,4 @@ typedef rcutils_ret_t dynmsg_ret_t;
 #define DYNMSG_RET_ERROR RCUTILS_RET_ERROR
 
 #endif  // ROS2_MEDKIT_SERIALIZATION__VENDORED__DYNMSG__TYPES_H_
+// NOLINTEND
