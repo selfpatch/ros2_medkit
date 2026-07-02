@@ -52,6 +52,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
+- **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
 - **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
@@ -70,6 +71,8 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 ### Snapshot Parameters
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
+
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by fault code. It differs from per-topic snapshots in two ways: snapshots are deleted when the fault is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct fault codes (one row per code, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag is single-writer and records one fault at a time regardless of pool size.
 
