@@ -224,6 +224,44 @@ Components
 ``GET /api/v1/components/{component_id}``
    Get component capabilities including available resource collections.
 
+   .. note::
+
+      **ros2_medkit extension:** When a component carries an asset-identity
+      nameplate - from the manifest ``identity:`` block (see
+      :doc:`/config/manifest-schema`) or a protocol device-info read (e.g. the
+      OPC UA BuildInfo/DI nameplate) - both the list and detail responses
+      include it under ``x-medkit.identity``. Only populated fields are
+      emitted (camelCase), ``extra`` holds vendor-specific keys, and
+      ``_provenance`` records which source set each field (keys use the
+      snake_case field names; ``extra`` entries are prefixed with
+      ``extra.``).
+
+   .. code-block:: json
+
+      {
+        "id": "plc_runtime",
+        "name": "PLC Runtime",
+        "x-medkit": {
+          "source": "opcua",
+          "identity": {
+            "manufacturer": "SelfPatch Devices",
+            "model": "SPX-1000",
+            "serialNumber": "SN-0001-TEST",
+            "hardwareRevision": "HW-A2",
+            "softwareVersion": "SW-3.4.5",
+            "networkEndpoint": "opc.tcp://plc.local:4840",
+            "extra": {
+              "buildNumber": "build-4567"
+            },
+            "_provenance": {
+              "manufacturer": "opcua",
+              "serial_number": "opcua",
+              "extra.buildNumber": "opcua"
+            }
+          }
+        }
+      }
+
 ``GET /api/v1/components/{component_id}/hosts``
    List apps hosted on this component (SOVD 7.6.2.4).
 
