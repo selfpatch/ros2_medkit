@@ -149,6 +149,10 @@ class SnapshotCapture {
   SnapshotCapture & operator=(SnapshotCapture &&) = delete;
 
   /// Capture snapshots for a fault that was just confirmed
+  ///
+  /// If the fault code resolves to no capture set (not in fault_specific, no pattern
+  /// match, no default_topics), capture returns early: no freeze_frames row is written
+  /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
   /// @param fault_code The fault code that was confirmed
   void capture(const std::string & fault_code);
 

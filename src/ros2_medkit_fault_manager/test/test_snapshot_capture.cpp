@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -233,6 +234,26 @@ TEST_F(SnapshotCaptureTest, OnDemandCaptureHandlesNonExistentTopic) {
 
 // Freeze-frame end-to-end tests
 
+// Stops and joins a publisher thread on scope exit, so an assertion failure
+// mid-test never destroys a joinable std::thread (which would std::terminate).
+struct ScopedPublisherThread {
+  std::atomic<bool> stop{false};
+  std::thread thread;
+
+  explicit ScopedPublisherThread(std::function<void(std::atomic<bool> &)> body)
+    : thread([this, body = std::move(body)]() {
+      body(stop);
+    }) {
+  }
+
+  ~ScopedPublisherThread() {
+    stop.store(true);
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+};
+
 // @verifies REQ_INTEROP_088
 TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
   auto pub = node_->create_publisher<std_msgs::msg::Float64>("/plc/pressure", rclcpp::QoS(10));
@@ -245,8 +266,7 @@ TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
   SnapshotCapture capture(node_.get(), storage_.get(), config);
 
   // Publish continuously so the on-demand one-shot subscription catches a value.
-  std::atomic<bool> stop{false};
-  std::thread pub_thread([&]() {
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
     while (!stop.load()) {
       std_msgs::msg::Float64 msg;
       msg.data = 42.5;
@@ -264,9 +284,6 @@ TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
   ASSERT_GT(node_->count_publishers("/plc/pressure"), 0u);
 
   capture.capture("PLC_PRESSURE_HIGH");
-
-  stop.store(true);
-  pub_thread.join();
 
   auto frame = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
   ASSERT_TRUE(frame.has_value());

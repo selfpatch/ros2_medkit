@@ -124,8 +124,10 @@ void SnapshotCapture::capture(const std::string & fault_code) {
 
   auto topics = resolve_topics(fault_code);
   if (topics.empty()) {
-    // Unconfigured fault code: no capture set resolved, so no freeze-frame is written and
-    // no subscriptions are created (no overhead). get_freeze_frame() stays empty for it.
+    // Unconfigured fault code: resolve_topics() yielded nothing, so capture returns early.
+    // No freeze_frames row is written (we never persist an empty {} row) and no
+    // subscriptions are created. A freeze-frame lookup for such a fault returns not-found
+    // (get_freeze_frame() == nullopt); absence of a row means "no capture configured".
     RCLCPP_DEBUG(node_->get_logger(), "No topics configured for fault '%s'", fault_code.c_str());
     return;
   }
@@ -153,8 +155,9 @@ void SnapshotCapture::capture(const std::string & fault_code) {
               fault_code.c_str());
 
   // Persist the compact freeze-frame keyed by fault_code (retained across clear_fault).
-  // Written whenever the fault has a configured capture set, even if nothing was publishing
-  // at confirmation time (an empty object then records that capture ran).
+  // Only reached for faults with a configured capture set (unconfigured codes returned
+  // early above and get no row). If nothing was publishing at confirmation time the row
+  // holds an empty object, recording that a configured capture ran but sampled nothing.
   FreezeFrameData frame;
   frame.fault_code = fault_code;
   frame.data = freeze_frame.dump();

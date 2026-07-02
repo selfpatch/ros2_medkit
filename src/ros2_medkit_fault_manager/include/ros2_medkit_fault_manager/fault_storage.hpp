@@ -114,6 +114,8 @@ struct SnapshotData {
 /// each captured topic to its latest value at confirmation time. Unlike per-topic
 /// snapshots, a freeze-frame is keyed by fault_code (one row per code) and is RETAINED
 /// across clear_fault, so the confirmed-state record persists after acknowledgement.
+/// A row exists only for fault codes with a configured capture set; a fault code with
+/// no capture configured gets no row at all (lookup returns nullopt, never an empty {}).
 struct FreezeFrameData {
   std::string fault_code;
   std::string data;  ///< Compact JSON object: {"<topic>": <value>, ...}
@@ -207,7 +209,8 @@ class FaultStorage {
 
   /// Get the freeze-frame captured for a fault, if any.
   /// @param fault_code The fault code to look up
-  /// @return The freeze-frame if one was captured, nullopt otherwise
+  /// @return The freeze-frame if one was captured, nullopt otherwise (including fault
+  ///         codes with no capture configured, which never get a row)
   virtual std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const = 0;
 
   /// Store rosbag file metadata for a fault
