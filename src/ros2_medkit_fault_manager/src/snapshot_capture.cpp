@@ -124,6 +124,10 @@ void SnapshotCapture::capture(const std::string & fault_code) {
 
   auto topics = resolve_topics(fault_code);
   if (topics.empty()) {
+    // Unconfigured fault code: resolve_topics() yielded nothing, so capture returns early.
+    // No freeze_frames row is written (we never persist an empty {} row) and no
+    // subscriptions are created. A freeze-frame lookup for such a fault returns not-found
+    // (get_freeze_frame() == nullopt); absence of a row means "no capture configured".
     RCLCPP_DEBUG(node_->get_logger(), "No topics configured for fault '%s'", fault_code.c_str());
     return;
   }
@@ -131,13 +135,15 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(),
               topics.size());
 
+  // Accumulate a compact dict of captured topic values alongside the per-topic snapshots.
+  nlohmann::json freeze_frame = nlohmann::json::object();
   size_t captured_count = 0;
   for (const auto & topic : topics) {
     bool success = false;
     if (config_.background_capture) {
-      success = capture_topic_from_cache(fault_code, topic);
+      success = capture_topic_from_cache(fault_code, topic, freeze_frame);
     } else {
-      success = capture_topic_on_demand(fault_code, topic);
+      success = capture_topic_on_demand(fault_code, topic, freeze_frame);
     }
 
     if (success) {
@@ -147,6 +153,16 @@ void SnapshotCapture::capture(const std::string & fault_code) {
 
   RCLCPP_INFO(node_->get_logger(), "Captured %zu/%zu snapshots for fault '%s'", captured_count, topics.size(),
               fault_code.c_str());
+
+  // Persist the compact freeze-frame keyed by fault_code (retained across clear_fault).
+  // Only reached for faults with a configured capture set (unconfigured codes returned
+  // early above and get no row). If nothing was publishing at confirmation time the row
+  // holds an empty object, recording that a configured capture ran but sampled nothing.
+  FreezeFrameData frame;
+  frame.fault_code = fault_code;
+  frame.data = freeze_frame.dump();
+  frame.captured_at_ns = get_wall_clock_ns();
+  storage_->store_freeze_frame(frame);
 }
 
 std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fault_code) const {
@@ -174,7 +190,8 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
   return {};
 }
 
-bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, const std::string & topic) {
+bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, const std::string & topic,
+                                              nlohmann::json & freeze_frame) {
   // Get topic type
   std::string msg_type = get_topic_type(topic);
   if (msg_type.empty()) {
@@ -286,6 +303,9 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
 
     storage_->store_snapshot(snapshot);
 
+    // Record the value into the compact freeze-frame dict under the topic key.
+    freeze_frame[topic] = std::move(json_data);
+
     RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from '%s' for fault '%s'", topic.c_str(), fault_code.c_str());
     return true;
 
@@ -300,7 +320,8 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
   return false;
 }
 
-bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, const std::string & topic) {
+bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, const std::string & topic,
+                                               nlohmann::json & freeze_frame) {
   std::lock_guard<std::mutex> lock(cache_mutex_);
 
   auto it = message_cache_.find(topic);
@@ -320,6 +341,15 @@ bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, c
   snapshot.captured_at_ns = cached.timestamp_ns;
 
   storage_->store_snapshot(snapshot);
+
+  // Record the cached value into the compact freeze-frame dict. The cache holds a serialized
+  // JSON string; parse it back so the frame nests structured values (fall back to the raw
+  // string only if it somehow fails to parse).
+  try {
+    freeze_frame[topic] = nlohmann::json::parse(cached.data);
+  } catch (const nlohmann::json::parse_error &) {
+    freeze_frame[topic] = cached.data;
+  }
 
   RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from cache for '%s' (fault '%s')", topic.c_str(),
                fault_code.c_str());

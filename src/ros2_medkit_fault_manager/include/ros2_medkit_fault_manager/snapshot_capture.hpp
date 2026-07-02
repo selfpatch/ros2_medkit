@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
@@ -147,6 +149,10 @@ class SnapshotCapture {
   SnapshotCapture & operator=(SnapshotCapture &&) = delete;
 
   /// Capture snapshots for a fault that was just confirmed
+  ///
+  /// If the fault code resolves to no capture set (not in fault_specific, no pattern
+  /// match, no default_topics), capture returns early: no freeze_frames row is written
+  /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
   /// @param fault_code The fault code that was confirmed
   void capture(const std::string & fault_code);
 
@@ -166,12 +172,16 @@ class SnapshotCapture {
   std::vector<std::string> resolve_topics(const std::string & fault_code) const;
 
   /// Capture a single topic on-demand (creates temporary subscription)
+  /// On success also records the captured value into @p freeze_frame under the topic key.
   /// @return true if capture was successful
-  bool capture_topic_on_demand(const std::string & fault_code, const std::string & topic);
+  bool capture_topic_on_demand(const std::string & fault_code, const std::string & topic,
+                               nlohmann::json & freeze_frame);
 
   /// Capture a topic from background cache
+  /// On success also records the cached value into @p freeze_frame under the topic key.
   /// @return true if data was available in cache
-  bool capture_topic_from_cache(const std::string & fault_code, const std::string & topic);
+  bool capture_topic_from_cache(const std::string & fault_code, const std::string & topic,
+                                nlohmann::json & freeze_frame);
 
   /// Initialize background subscriptions for all configured topics
   void init_background_subscriptions();
