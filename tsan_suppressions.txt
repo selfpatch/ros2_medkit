@@ -27,6 +27,16 @@ race:rclcpp::signal_handler
 race:rcl_logging_*
 race:rcutils_logging_*
 
+# open62541 (vendored) UA_DateTime_localTimeUtcOffset calls glibc mktime(),
+# whose first-call tzset() lazily initialises the process-global timezone
+# cache without synchronisation. When the OPC UA poller thread and another
+# thread (a second client, or the in-process test server) issue their first
+# mktime() concurrently, TSan reports a write-write race on the libc tz
+# globals. Benign one-time lazy init in third-party code (same class as the
+# rcl/rcutils logging suppression above); the racing write is inside
+# open62541/glibc, not our code.
+race:UA_DateTime_localTimeUtcOffset
+
 # cpp-httplib: data race in Server::stop() and create_server_socket()
 # on internal socket fd between listen and stop threads.
 # System-packaged libcpp-httplib.so, not our code. The .so is shipped
