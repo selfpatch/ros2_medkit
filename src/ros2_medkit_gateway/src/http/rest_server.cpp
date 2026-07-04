@@ -1620,8 +1620,8 @@ void RESTServer::setup_routes() {
   for (const auto & et_lc :
        std::vector<std::pair<const char *, const char *>>{{"apps", "app"}, {"components", "component"}}) {
     const std::string base_lc = std::string("/") + et_lc.first + "/{" + et_lc.second + "_id}";
-    // e.g. "Apps" / "Components" for operation ID construction
-    const std::string entity_cap = capitalize(std::string(et_lc.first));
+    // e.g. "App" / "Component" for operation ID construction
+    const std::string entity_cap = capitalize(std::string(et_lc.second));
 
     for (const auto & action : {"start", "restart", "force-restart", "shutdown", "force-shutdown"}) {
       std::string action_str = action;
