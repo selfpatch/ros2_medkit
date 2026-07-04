@@ -359,6 +359,22 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   poller_config_.log_warn = [this](const std::string & msg) {
     log_warn(msg);
   };
+
+  // Wait for the fault sink to be discovered before the poller can emit its
+  // first alarm report. OPC-UA AlarmCondition notifications are one-shot: the
+  // bridge reports a fault exactly once on the inactive->active transition and
+  // suppresses re-reports of the same active state as NoOp. ReportFault is a
+  // fire-and-forget async request, so one sent before this client has matched
+  // fault_manager over DDS is dropped with no retry - the alarm then never
+  // surfaces until it re-transitions. Discovery lag is worst on a loaded host,
+  // which is exactly when an alarm may fire early, so ordering the match before
+  // start() removes that race deterministically. Bounded and best-effort: a
+  // deployment without a fault_manager still starts (degraded) after the wait.
+  if (fault_clients_->report && !fault_clients_->report->wait_for_service(std::chrono::seconds(10))) {
+    log_warn(
+        "fault_manager ReportFault service not discovered within 10s; alarm reports may be dropped until it appears");
+  }
+
   poller_->start(poller_config_);
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
            ")");
