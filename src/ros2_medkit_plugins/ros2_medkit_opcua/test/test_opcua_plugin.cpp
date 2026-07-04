@@ -502,4 +502,30 @@ TEST(ReadSnapshotClassify, ActiveButFlaggedUnreliableIsKeptNotFed) {
   EXPECT_EQ(d, OpcuaPoller::ReadReplayDisposition::KeepOnly);
 }
 
+// -- OpcuaPlugin::map_severity (event-alarm severity resolution) -------------
+
+TEST(MapSeverity, ConfiguredOverrideWinsOverLiveSeverity) {
+  // An explicit configured severity wins regardless of the live event Severity.
+  EXPECT_EQ(OpcuaPlugin::map_severity(1000, "INFO"), "INFO");
+  EXPECT_EQ(OpcuaPlugin::map_severity(1, "CRITICAL"), "CRITICAL");
+}
+
+TEST(MapSeverity, LowLiveSeverityMapsToInfo) {
+  // The Siemens trap: many servers emit Program_Alarm events at Severity 1, so
+  // with no configured override the fault lands as INFO. This is exactly why a
+  // silently dropped ``severity:`` key mattered.
+  EXPECT_EQ(OpcuaPlugin::map_severity(1, ""), "INFO");
+}
+
+TEST(MapSeverity, LiveSeverityBandBoundaries) {
+  // Band map: >=801 CRITICAL, >=501 ERROR, >=201 WARNING, else INFO.
+  EXPECT_EQ(OpcuaPlugin::map_severity(200, ""), "INFO");
+  EXPECT_EQ(OpcuaPlugin::map_severity(201, ""), "WARNING");
+  EXPECT_EQ(OpcuaPlugin::map_severity(500, ""), "WARNING");
+  EXPECT_EQ(OpcuaPlugin::map_severity(501, ""), "ERROR");
+  EXPECT_EQ(OpcuaPlugin::map_severity(800, ""), "ERROR");
+  EXPECT_EQ(OpcuaPlugin::map_severity(801, ""), "CRITICAL");
+  EXPECT_EQ(OpcuaPlugin::map_severity(1000, ""), "CRITICAL");
+}
+
 }  // namespace ros2_medkit_gateway

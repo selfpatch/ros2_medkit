@@ -584,6 +584,77 @@ event_alarms:
   EXPECT_TRUE(map.load(path));
 }
 
+TEST_F(NodeMapTest, EventAlarmSeverityAliasSetsOverride) {
+  // Regression: an ``event_alarms`` entry configured with ``severity:`` (the
+  // key the threshold ``alarm:`` block uses) must not be silently dropped. It
+  // is accepted as an alias for ``severity_override`` so the configured
+  // severity reaches the fault instead of falling back to the live event
+  // Severity band mapping.
+  std::string path = "/tmp/test_node_map_event_alarm_severity_alias.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=3;s=Program_Alarm"
+    entity_id: plc_program
+    fault_code: PLC_PROGRAM_ALARM
+    severity: ERROR
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].severity_override, "ERROR");
+}
+
+TEST_F(NodeMapTest, EventAlarmSeverityOverrideWinsOverAlias) {
+  // ``severity_override`` is the canonical key; when both are present it wins.
+  std::string path = "/tmp/test_node_map_event_alarm_severity_precedence.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=3;s=Program_Alarm"
+    entity_id: plc_program
+    fault_code: PLC_PROGRAM_ALARM
+    severity_override: CRITICAL
+    severity: WARNING
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].severity_override, "CRITICAL");
+}
+
+TEST_F(NodeMapTest, EventAlarmMappingSeverityAliasSetsOverride) {
+  // The alias also applies to per-condition ``mappings`` entries (issue #389).
+  std::string path = "/tmp/test_node_map_event_alarm_mapping_severity_alias.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=3;s=Program_Alarm"
+    entity_id: plc_program
+    mappings:
+      - condition_name: Overtemp
+        fault_code: PLC_OVERTEMP
+        severity: WARNING
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  ASSERT_EQ(map.event_alarms()[0].mappings.size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].mappings[0].severity_override, "WARNING");
+}
+
 TEST_F(NodeMapTest, RejectsAlarmSourceUnderNodes) {
   // Schema validation: ``alarm_source`` is only valid in the top-level
   // ``event_alarms:`` section. Used to be silently ignored when not paired

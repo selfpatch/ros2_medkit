@@ -19,6 +19,7 @@
 #include <cctype>
 #include <cstdint>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -569,6 +570,47 @@ bool NodeMap::load(const std::string & yaml_path) {
                      "event_alarms has %zu entries (max 10000) - refusing to load", event_alarms_node.size());
         return false;
       }
+      // Resolve the configured severity for an event_alarms entry / mapping.
+      // ``severity`` is accepted as an alias for ``severity_override`` because
+      // the threshold ``alarm:`` block uses ``severity:``; an operator who
+      // reuses that key here must not have it silently dropped. When both are
+      // present ``severity_override`` wins. An explicit value is validated like
+      // the threshold path; with neither key the result stays empty so the live
+      // event Severity band mapping applies (see OpcuaPlugin::map_severity).
+      auto read_severity_override = [&](const YAML::Node & node, const std::string & context) -> std::string {
+        const YAML::Node sev_node = node["severity_override"] ? node["severity_override"] : node["severity"];
+        if (!sev_node) {
+          return "";
+        }
+        const char * field = node["severity_override"] ? "severity_override" : "severity";
+        auto sev = parse_string(sev_node, field, context);
+        if (!sev || sev->empty()) {
+          return "";
+        }
+        return validate_severity(*sev, context);
+      };
+      // Warn on keys the event_alarms loader does not recognise so a future
+      // typo (e.g. ``severty:``) is surfaced instead of silently dropped.
+      auto warn_unknown_keys = [logger](const YAML::Node & node, const std::string & context,
+                                        std::initializer_list<const char *> known) {
+        if (!node.IsMap()) {
+          return;
+        }
+        for (const auto & kv : node) {
+          std::string key;
+          try {
+            key = kv.first.as<std::string>();
+          } catch (const YAML::Exception &) {
+            continue;
+          }
+          const bool recognised = std::any_of(known.begin(), known.end(), [&key](const char * k) {
+            return key == k;
+          });
+          if (!recognised) {
+            RCLCPP_WARN(logger, "%s: unknown key '%s' - ignored", context.c_str(), key.c_str());
+          }
+        }
+      };
       for (size_t i = 0; i < event_alarms_node.size(); ++i) {
         const auto & a = event_alarms_node[i];
         if (!a["alarm_source"] || !a["entity_id"]) {
@@ -596,12 +638,15 @@ bool NodeMap::load(const std::string & yaml_path) {
           }
           alarm_fault_code = *parsed_fault_code;
         }
+        warn_unknown_keys(a, alarm_label,
+                          {"alarm_source", "entity_id", "fault_code", "severity_override", "severity", "message",
+                           "mappings", "associated_values"});
         AlarmEventConfig cfg;
         cfg.source_node_id_str = *alarm_source;
         cfg.source_node_id = parse_node_id(cfg.source_node_id_str);
         cfg.entity_id = *alarm_entity_id;
         cfg.fault_code = alarm_fault_code;
-        cfg.severity_override = a["severity_override"].as<std::string>("");
+        cfg.severity_override = read_severity_override(a, alarm_label);
         cfg.message_override = a["message"].as<std::string>("");
 
         // Issue #389: per-condition-identity mappings (multi-alarm).
@@ -616,12 +661,16 @@ bool NodeMap::load(const std::string & yaml_path) {
             if (!mapping_fault_code) {
               continue;
             }
+            const std::string mapping_label = alarm_label + " mapping";
+            warn_unknown_keys(m, mapping_label,
+                              {"condition_name", "source_node", "event_type", "fault_code", "severity_override",
+                               "severity", "message"});
             AlarmMapping mapping;
             mapping.match_condition_name = m["condition_name"].as<std::string>("");
             mapping.match_source_node = m["source_node"].as<std::string>("");
             mapping.match_event_type = m["event_type"].as<std::string>("");
             mapping.fault_code = *mapping_fault_code;
-            mapping.severity_override = m["severity_override"].as<std::string>("");
+            mapping.severity_override = read_severity_override(m, mapping_label);
             mapping.message_override = m["message"].as<std::string>("");
             cfg.mappings.push_back(std::move(mapping));
           }

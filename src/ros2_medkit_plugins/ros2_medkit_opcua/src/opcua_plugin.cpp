@@ -692,30 +692,32 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
   }
 }
 
+std::string OpcuaPlugin::map_severity(uint16_t live_severity, const std::string & severity_override) {
+  // Map raw OPC-UA Severity (1-1000) to SOVD severity bucket.
+  // Selfpatch convention documented in design/index.rst; not from IEC 62682.
+  // The resolved severity_override (mapping- or source-level, issue #389)
+  // wins when set.
+  if (!severity_override.empty()) {
+    return severity_override;
+  }
+  if (live_severity >= 801) {
+    return std::string("CRITICAL");
+  }
+  if (live_severity >= 501) {
+    return std::string("ERROR");
+  }
+  if (live_severity >= 201) {
+    return std::string("WARNING");
+  }
+  return std::string("INFO");
+}
+
 void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
   if (shutdown_requested_.load()) {
     return;
   }
 
-  // Map raw OPC-UA Severity (1-1000) to SOVD severity bucket.
-  // Selfpatch convention documented in design/index.rst; not from IEC 62682.
-  // The resolved severity_override (mapping- or source-level, issue #389)
-  // wins when set.
-  auto severity_str = [&]() {
-    if (!delivery.severity_override.empty()) {
-      return delivery.severity_override;
-    }
-    if (delivery.severity >= 801) {
-      return std::string("CRITICAL");
-    }
-    if (delivery.severity >= 501) {
-      return std::string("ERROR");
-    }
-    if (delivery.severity >= 201) {
-      return std::string("WARNING");
-    }
-    return std::string("INFO");
-  }();
+  const std::string severity_str = map_severity(delivery.severity, delivery.severity_override);
 
   switch (delivery.action) {
     case AlarmAction::ReportConfirmed:

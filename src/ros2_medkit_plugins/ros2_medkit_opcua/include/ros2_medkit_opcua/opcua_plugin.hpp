@@ -29,6 +29,7 @@
 #include <ros2_medkit_gateway/plugins/ros_plugin_context.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -109,6 +110,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
                                                                          const std::string & fault_code) override;
   tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
                                                                           const std::string & fault_code) override;
+
+  // Resolve the SOVD severity bucket for an event alarm. An explicit configured
+  // override wins; with none configured the raw OPC-UA event Severity (1-1000)
+  // is mapped to a bucket by band (>=801 CRITICAL, >=501 ERROR, >=201 WARNING,
+  // else INFO). Pure + static so it is unit-testable without a live server.
+  static std::string map_severity(uint16_t live_severity, const std::string & severity_override);
 
  private:
   // Route handlers
