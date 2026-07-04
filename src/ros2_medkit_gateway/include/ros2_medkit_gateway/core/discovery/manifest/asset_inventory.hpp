@@ -40,7 +40,8 @@ namespace discovery {
 struct AssetEntry {
   std::string id;            ///< Stable asset id (required); merge key into the tree
   std::string manufacturer;  ///< Vendor / OEM
-  std::string model;         ///< Model / order code
+  std::string model;         ///< Product designation
+  std::string order_code;    ///< Manufacturer order code / MLFB (distinct from model)
   std::string serial;        ///< Serial number
   std::string hardware_rev;  ///< Hardware revision
   std::string firmware;      ///< Firmware / software version
@@ -61,6 +62,7 @@ enum class AssetColumn {
   kId,
   kManufacturer,
   kModel,
+  kOrderCode,
   kSerial,
   kHardwareRev,
   kFirmware,
@@ -74,8 +76,9 @@ enum class AssetColumn {
  *
  * The single alias table shared by both import paths (CSV header cells and
  * manifest `assets:` keys): names are trimmed and matched case-insensitively;
- * `serial_number`, `hardware_revision` / `hw_rev` and `firmware_version` / `fw`
- * map to their typed fields. Empty names yield kIgnore; unknown names kExtra.
+ * `serial_number`, `hardware_revision` / `hw_rev`, `firmware_version` / `fw`
+ * and `order_code` / `order_number` map to their typed fields. Empty names
+ * yield kIgnore; unknown names kExtra.
  */
 AssetColumn asset_column(const std::string & name);
 

@@ -79,10 +79,11 @@ inline size_t source_rank(const std::string & source, const IdentityMergeConfig 
 namespace detail {
 
 /// All typed identity fields as (provenance-key, member-pointer) pairs.
-inline const std::array<std::pair<const char *, std::string AssetIdentity::*>, 8> & identity_fields() {
-  static const std::array<std::pair<const char *, std::string AssetIdentity::*>, 8> fields{{
+inline const std::array<std::pair<const char *, std::string AssetIdentity::*>, 9> & identity_fields() {
+  static const std::array<std::pair<const char *, std::string AssetIdentity::*>, 9> fields{{
       {"manufacturer", &AssetIdentity::manufacturer},
       {"model", &AssetIdentity::model},
+      {"order_code", &AssetIdentity::order_code},
       {"serial_number", &AssetIdentity::serial_number},
       {"hardware_revision", &AssetIdentity::hardware_revision},
       {"firmware_version", &AssetIdentity::firmware_version},

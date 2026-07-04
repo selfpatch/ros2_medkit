@@ -378,6 +378,11 @@ class OpcuaClient {
     std::string di_serial_number;      ///< DeviceType.SerialNumber
     std::string di_hardware_revision;  ///< DeviceType.HardwareRevision
     std::string di_software_revision;  ///< DeviceType.SoftwareRevision
+    /// Manufacturer order code (AAS ManufacturerOrderCode). Vendor extension,
+    /// not a standard DI property: its BrowseName lives in the vendor namespace
+    /// (Siemens exposes it as ns=3;s=OrderNumber), so it is matched by
+    /// BrowseName only. Empty when the server does not expose it.
+    std::string di_order_number;
   };
 
   /// Read device identity (nameplate) from the connected server.

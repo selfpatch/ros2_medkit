@@ -349,6 +349,7 @@ AssetIdentity ManifestParser::parse_identity(const YAML::Node & node) const {
   const YAML::Node & id_node = node["identity"];
   identity.manufacturer = get_string(id_node, "manufacturer");
   identity.model = get_string(id_node, "model");
+  identity.order_code = get_string(id_node, "order_code");
   identity.serial_number = get_string(id_node, "serial_number");
   identity.hardware_revision = get_string(id_node, "hardware_revision");
   identity.firmware_version = get_string(id_node, "firmware_version");

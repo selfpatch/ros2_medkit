@@ -159,6 +159,9 @@ AssetColumn asset_column(const std::string & name) {
   if (header_lower == "model") {
     return AssetColumn::kModel;
   }
+  if (header_lower == "order_code" || header_lower == "order_number") {
+    return AssetColumn::kOrderCode;
+  }
   if (header_lower == "serial" || header_lower == "serial_number") {
     return AssetColumn::kSerial;
   }
@@ -190,6 +193,9 @@ void assign_asset_field(AssetEntry & entry, AssetColumn column, const std::strin
       break;
     case AssetColumn::kModel:
       entry.model = value;
+      break;
+    case AssetColumn::kOrderCode:
+      entry.order_code = value;
       break;
     case AssetColumn::kSerial:
       entry.serial = value;
@@ -297,6 +303,7 @@ Component asset_entry_to_component(const AssetEntry & entry) {
   };
   set_field(&AssetIdentity::manufacturer, entry.manufacturer, "manufacturer");
   set_field(&AssetIdentity::model, entry.model, "model");
+  set_field(&AssetIdentity::order_code, entry.order_code, "order_code");
   set_field(&AssetIdentity::serial_number, entry.serial, "serial_number");
   set_field(&AssetIdentity::hardware_revision, entry.hardware_rev, "hardware_revision");
   set_field(&AssetIdentity::firmware_version, entry.firmware, "firmware_version");

@@ -86,6 +86,26 @@ TEST(DeviceIdentityMap, DiNameplateWinsOverBuildInfo) {
   EXPECT_EQ(id.extra.at("buildNumber"), "build-4567");
 }
 
+TEST(DeviceIdentityMap, DiOrderNumberMapsToOrderCodeWithOpcuaProvenance) {
+  // The vendor OrderNumber (AAS ManufacturerOrderCode) lands on the distinct
+  // order_code field, NOT folded into model, with per-field "opcua" provenance.
+  OpcuaClient::DeviceInfo info = make_build_info();
+  info.di_model = "CPU 1505SP F";
+  info.di_order_number = "6ES7 672-5SC11-0YA0";
+
+  auto id = opcua_device_info_to_identity(info, "opc.tcp://plc:4840");
+  EXPECT_EQ(id.model, "CPU 1505SP F");
+  EXPECT_EQ(id.order_code, "6ES7 672-5SC11-0YA0");
+  EXPECT_EQ(id.provenance.at("order_code"), "opcua");
+}
+
+TEST(DeviceIdentityMap, AbsentOrderNumberLeavesOrderCodeEmpty) {
+  // A vendor that does not expose OrderNumber -> order_code stays empty, no provenance.
+  auto id = opcua_device_info_to_identity(make_build_info(), "opc.tcp://plc:4840");
+  EXPECT_TRUE(id.order_code.empty());
+  EXPECT_EQ(id.provenance.count("order_code"), 0u);
+}
+
 TEST(DeviceIdentityMap, EmptyEndpointSkipsNetworkEndpoint) {
   auto id = opcua_device_info_to_identity(make_build_info(), "");
   EXPECT_TRUE(id.network_endpoint.empty());

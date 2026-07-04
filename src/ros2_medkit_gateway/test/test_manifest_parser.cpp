@@ -166,6 +166,7 @@ components:
     identity:
       manufacturer: "Siemens"
       model: "S7-1500"
+      order_code: "6ES7 672-5SC11-0YA0"
       serial_number: "SN-42"
       hardware_revision: "HW-3"
       firmware_version: "2.9.4"
@@ -182,6 +183,7 @@ components:
 
   EXPECT_EQ(id.manufacturer, "Siemens");
   EXPECT_EQ(id.model, "S7-1500");
+  EXPECT_EQ(id.order_code, "6ES7 672-5SC11-0YA0");
   EXPECT_EQ(id.serial_number, "SN-42");
   EXPECT_EQ(id.hardware_revision, "HW-3");
   EXPECT_EQ(id.firmware_version, "2.9.4");

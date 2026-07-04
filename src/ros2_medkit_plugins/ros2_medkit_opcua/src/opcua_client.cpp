@@ -1088,6 +1088,18 @@ std::string read_string_attribute(UA_Client * client, const UA_NodeId & node_id)
   return out;
 }
 
+// Strip leading/trailing ASCII whitespace. Used for vendor identity fields
+// exposed in a fixed-width, space-padded form (Siemens pads the MLFB
+// OrderNumber to 20 chars) so the stored value is the bare order code.
+std::string trim_ascii_ws(std::string s) {
+  const char * ws = " \t\r\n";
+  const auto begin = s.find_first_not_of(ws);
+  if (begin == std::string::npos) {
+    return {};
+  }
+  return s.substr(begin, s.find_last_not_of(ws) - begin + 1);
+}
+
 // One forward hierarchical child: its browse name and target NodeId (owned).
 struct ChildRef {
   uint16_t namespace_index{0};
@@ -1232,20 +1244,34 @@ void read_di_nameplate(UA_Client * client, uint16_t di_ns, OpcuaClient::DeviceIn
       }
       return {};
     };
+    // OrderNumber is a vendor extension, NOT a standard DI property: its
+    // BrowseName lives in the vendor namespace (Siemens exposes it as
+    // ns=3;s=OrderNumber, BrowseName ns=3:OrderNumber), not the DI namespace,
+    // so match by BrowseName only. Empty for vendors that do not expose it.
+    auto read_prop_any_ns = [&](const char * name) -> std::string {
+      for (const auto & prop : props) {
+        if (prop.name == name) {
+          return read_string_attribute(client, prop.node_id);
+        }
+      }
+      return {};
+    };
     std::string manufacturer = read_prop("Manufacturer");
     std::string model = read_prop("Model");
     std::string serial = read_prop("SerialNumber");
     std::string hardware_revision = read_prop("HardwareRevision");
     std::string software_revision = read_prop("SoftwareRevision");
+    std::string order_number = trim_ascii_ws(read_prop_any_ns("OrderNumber"));
     clear_child_refs(props);
 
     if (!manufacturer.empty() || !model.empty() || !serial.empty() || !hardware_revision.empty() ||
-        !software_revision.empty()) {
+        !software_revision.empty() || !order_number.empty()) {
       info.di_manufacturer = std::move(manufacturer);
       info.di_model = std::move(model);
       info.di_serial_number = std::move(serial);
       info.di_hardware_revision = std::move(hardware_revision);
       info.di_software_revision = std::move(software_revision);
+      info.di_order_number = std::move(order_number);
       break;
     }
   }

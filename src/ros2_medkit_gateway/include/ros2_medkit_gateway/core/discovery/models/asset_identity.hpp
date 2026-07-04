@@ -43,7 +43,8 @@ using json = nlohmann::json;
  *   - the asset itself      <-> the AAS / Submodel "shell" (Component.id == localId)
  *   - this identity block    <-> Nameplate submodel (IDTA 02006)
  *       manufacturer         <-> ManufacturerName
- *       model                <-> ManufacturerProductDesignation (a.k.a. order code)
+ *       model                <-> ManufacturerProductDesignation
+ *       order_code           <-> ManufacturerOrderCode
  *       serial_number        <-> SerialNumber
  *       hardware_revision    <-> HardwareVersion
  *       firmware_version     <-> FirmwareVersion
@@ -55,7 +56,8 @@ using json = nlohmann::json;
  */
 struct AssetIdentity {
   std::string manufacturer;       ///< Manufacturer / vendor name (AAS ManufacturerName)
-  std::string model;              ///< Product designation / order code (AAS ManufacturerProductDesignation)
+  std::string model;              ///< Product designation (AAS ManufacturerProductDesignation)
+  std::string order_code;         ///< Manufacturer order code / MLFB, distinct from model (AAS ManufacturerOrderCode)
   std::string serial_number;      ///< Unit serial number (AAS SerialNumber)
   std::string hardware_revision;  ///< Hardware revision (AAS HardwareVersion)
   std::string firmware_version;   ///< Firmware version (AAS FirmwareVersion)
@@ -73,9 +75,9 @@ struct AssetIdentity {
   /// True when no identity information is present (typed fields + extras all empty).
   /// Provenance alone does not make an identity non-empty.
   bool empty() const {
-    return manufacturer.empty() && model.empty() && serial_number.empty() && hardware_revision.empty() &&
-           firmware_version.empty() && software_version.empty() && network_endpoint.empty() && role.empty() &&
-           extra.empty();
+    return manufacturer.empty() && model.empty() && order_code.empty() && serial_number.empty() &&
+           hardware_revision.empty() && firmware_version.empty() && software_version.empty() &&
+           network_endpoint.empty() && role.empty() && extra.empty();
   }
 
   /**
@@ -96,6 +98,9 @@ struct AssetIdentity {
     }
     if (!model.empty()) {
       j["model"] = model;
+    }
+    if (!order_code.empty()) {
+      j["orderCode"] = order_code;
     }
     if (!serial_number.empty()) {
       j["serialNumber"] = serial_number;
@@ -141,6 +146,7 @@ struct AssetIdentity {
     };
     get_str("manufacturer", id.manufacturer);
     get_str("model", id.model);
+    get_str("orderCode", id.order_code);
     get_str("serialNumber", id.serial_number);
     get_str("hardwareRevision", id.hardware_revision);
     get_str("firmwareVersion", id.firmware_version);
@@ -166,10 +172,11 @@ struct AssetIdentity {
 };
 
 inline bool operator==(const AssetIdentity & a, const AssetIdentity & b) {
-  return a.manufacturer == b.manufacturer && a.model == b.model && a.serial_number == b.serial_number &&
-         a.hardware_revision == b.hardware_revision && a.firmware_version == b.firmware_version &&
-         a.software_version == b.software_version && a.network_endpoint == b.network_endpoint && a.role == b.role &&
-         a.extra == b.extra && a.provenance == b.provenance;
+  return a.manufacturer == b.manufacturer && a.model == b.model && a.order_code == b.order_code &&
+         a.serial_number == b.serial_number && a.hardware_revision == b.hardware_revision &&
+         a.firmware_version == b.firmware_version && a.software_version == b.software_version &&
+         a.network_endpoint == b.network_endpoint && a.role == b.role && a.extra == b.extra &&
+         a.provenance == b.provenance;
 }
 inline bool operator!=(const AssetIdentity & a, const AssetIdentity & b) {
   return !(a == b);

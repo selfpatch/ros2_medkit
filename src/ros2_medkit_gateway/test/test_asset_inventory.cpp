@@ -175,6 +175,23 @@ TEST(AssetCsvParseTest, CaseInsensitiveHeadersAndAliases) {
   EXPECT_EQ(e.hardware_rev, "C1");
 }
 
+TEST(AssetCsvParseTest, OrderCodeColumnAndOrderNumberAlias) {
+  // Both `order_code` and the `order_number` alias map to the typed order_code
+  // field and land on the structured identity with provenance "inventory".
+  const std::string csv =
+      "id,model,order_number\n"
+      "plc,CPU 1505SP F,6ES7 672-5SC11-0YA0\n";
+  auto result = parse_asset_csv(csv);
+  ASSERT_EQ(result.entries.size(), 1u);
+  const auto & e = result.entries[0];
+  EXPECT_EQ(e.model, "CPU 1505SP F");
+  EXPECT_EQ(e.order_code, "6ES7 672-5SC11-0YA0");
+
+  Component comp = asset_entry_to_component(e);
+  EXPECT_EQ(comp.identity.order_code, "6ES7 672-5SC11-0YA0");
+  EXPECT_EQ(comp.identity.provenance.at("order_code"), "inventory");
+}
+
 TEST(AssetCsvParseTest, CrlfLineEndingsAndTrimming) {
   const std::string csv =
       "id, model \r\n"
@@ -255,6 +272,7 @@ TEST(AssetEntryToComponentTest, FullMapping) {
   e.id = "plc_1";
   e.manufacturer = "Siemens";
   e.model = "S7-1500";
+  e.order_code = "6ES7 672-5SC11-0YA0";
   e.serial = "SN123";
   e.hardware_rev = "A2";
   e.firmware = "2.9.1";
@@ -274,6 +292,7 @@ TEST(AssetEntryToComponentTest, FullMapping) {
   // provenance "inventory" (not folded into description / variant / tags).
   EXPECT_EQ(comp.identity.manufacturer, "Siemens");
   EXPECT_EQ(comp.identity.model, "S7-1500");
+  EXPECT_EQ(comp.identity.order_code, "6ES7 672-5SC11-0YA0");
   EXPECT_EQ(comp.identity.serial_number, "SN123");
   EXPECT_EQ(comp.identity.hardware_revision, "A2");
   EXPECT_EQ(comp.identity.firmware_version, "2.9.1");

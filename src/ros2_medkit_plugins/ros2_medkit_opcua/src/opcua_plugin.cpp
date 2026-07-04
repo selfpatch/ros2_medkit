@@ -441,7 +441,7 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
       device_identity_generation_ = session_generation;
       if (!device_identity_.empty()) {
         log_info("Populated asset identity from OPC-UA device-info (manufacturer='" + device_identity_.manufacturer +
-                 "', model='" + device_identity_.model + "')");
+                 "', model='" + device_identity_.model + "', orderCode='" + device_identity_.order_code + "')");
       }
     }
   }

@@ -100,10 +100,30 @@ TEST(AssetIdentityModel, ProvenanceKeysStaySnakeCaseWhileFieldKeysAreCamelCase) 
   EXPECT_EQ(parsed, id);
 }
 
+// order_code is a distinct typed field (AAS ManufacturerOrderCode), serialized
+// under camelCase "orderCode" while its provenance key stays snake_case.
+TEST(AssetIdentityModel, OrderCodeSerializesUnderCamelCaseAndRoundTrips) {
+  AssetIdentity id;
+  id.model = "CPU 1505SP F";
+  id.order_code = "6ES7 672-5SC11-0YA0";
+  id.provenance["order_code"] = "opcua";
+
+  auto j = id.to_json();
+  EXPECT_EQ(j["model"], "CPU 1505SP F");
+  EXPECT_EQ(j["orderCode"], "6ES7 672-5SC11-0YA0");
+  EXPECT_EQ(j["_provenance"]["order_code"], "opcua");
+  EXPECT_FALSE(j["_provenance"].contains("orderCode"));
+
+  AssetIdentity parsed = AssetIdentity::from_json(j);
+  EXPECT_EQ(parsed.order_code, "6ES7 672-5SC11-0YA0");
+  EXPECT_EQ(parsed, id);
+}
+
 TEST(AssetIdentityModel, JsonRoundTrip) {
   AssetIdentity id;
   id.manufacturer = "Siemens";
   id.model = "6ES7";
+  id.order_code = "6ES7 672-5SC11-0YA0";
   id.serial_number = "SN-42";
   id.hardware_revision = "A2";
   id.firmware_version = "2.9.4";
@@ -184,6 +204,25 @@ TEST(MergeIdentity, MergesTwoSourcesWithProvenancePerField) {
   EXPECT_EQ(merged.provenance.at("role"), "manifest");
   EXPECT_EQ(merged.provenance.at("serial_number"), "opcua");
   EXPECT_EQ(merged.provenance.at("firmware_version"), "opcua");
+}
+
+TEST(MergeIdentity, OrderCodeMergesAsTypedFieldWithProvenance) {
+  // order_code participates in the typed-field merge (identity_fields()), so an
+  // opcua read fills it with per-field provenance alongside model / serial_number.
+  IdentityMergeConfig cfg;
+
+  AssetIdentity merged;
+  merged.model = "CPU 1505SP F";
+  stamp_identity_provenance(merged, "manifest");
+
+  AssetIdentity opcua;
+  opcua.order_code = "6ES7 672-5SC11-0YA0";
+  merge_identity(merged, opcua, "opcua", cfg);
+
+  EXPECT_EQ(merged.model, "CPU 1505SP F");
+  EXPECT_EQ(merged.order_code, "6ES7 672-5SC11-0YA0");
+  EXPECT_EQ(merged.provenance.at("model"), "manifest");
+  EXPECT_EQ(merged.provenance.at("order_code"), "opcua");
 }
 
 TEST(MergeIdentity, HigherAuthoritySourceOverridesLowerForSameField) {

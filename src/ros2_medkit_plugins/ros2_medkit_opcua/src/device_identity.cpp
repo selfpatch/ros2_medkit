@@ -37,6 +37,7 @@ AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info
 
   set_field(&AssetIdentity::manufacturer, manufacturer, "manufacturer");
   set_field(&AssetIdentity::model, model, "model");
+  set_field(&AssetIdentity::order_code, info.di_order_number, "order_code");
   set_field(&AssetIdentity::serial_number, info.di_serial_number, "serial_number");
   set_field(&AssetIdentity::hardware_revision, info.di_hardware_revision, "hardware_revision");
   set_field(&AssetIdentity::software_version, software_version, "software_version");

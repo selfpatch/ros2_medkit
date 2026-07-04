@@ -559,6 +559,21 @@ void add_di_nameplate(UA_Server * server, const std::string & serial) {
   UA_Variant v_software;
   UA_Variant_setScalar(&v_software, &software, &UA_TYPES[UA_TYPES_STRING]);
   add_prop("SoftwareRevision", &UA_TYPES[UA_TYPES_STRING], v_software);
+
+  // Vendor extension: OrderNumber (AAS ManufacturerOrderCode) exposed under a
+  // vendor namespace (NOT the DI namespace) and space-padded to a fixed width,
+  // mirroring the Siemens S7-1500 (ns=3;s=OrderNumber, "6ES7 672-5SC11-0YA0 ").
+  // Exercises the match-by-BrowseName-across-namespaces + whitespace-trim path.
+  UA_UInt16 vendor_ns = UA_Server_addNamespace(server, "http://selfpatch.test/vendor");
+  UA_VariableAttributes va_order = UA_VariableAttributes_default;
+  va_order.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("OrderNumber"));
+  va_order.accessLevel = UA_ACCESSLEVELMASK_READ;
+  va_order.dataType = UA_TYPES[UA_TYPES_STRING].typeId;
+  UA_String order = UA_STRING(const_cast<char *>("6ES7-TEST-0YA0  "));
+  UA_Variant_setScalar(&va_order.value, &order, &UA_TYPES[UA_TYPES_STRING]);
+  UA_Server_addVariableNode(server, UA_NODEID_NULL, device_id, UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+                            UA_QUALIFIEDNAME(vendor_ns, const_cast<char *>("OrderNumber")),
+                            UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), va_order, nullptr, nullptr);
 }
 
 void cli_loop(UA_Server * server, UA_UInt16 ns) {
