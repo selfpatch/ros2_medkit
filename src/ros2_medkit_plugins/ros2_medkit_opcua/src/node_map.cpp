@@ -578,11 +578,20 @@ bool NodeMap::load(const std::string & yaml_path) {
       // the threshold path; with neither key the result stays empty so the live
       // event Severity band mapping applies (see OpcuaPlugin::map_severity).
       auto read_severity_override = [&](const YAML::Node & node, const std::string & context) -> std::string {
-        const YAML::Node sev_node = node["severity_override"] ? node["severity_override"] : node["severity"];
-        if (!sev_node) {
+        // yaml-cpp reports a present-but-null key (``severity_override:`` with
+        // no value / ``~``) as defined/truthy; gate on a real value so a null
+        // override neither shadows a valid ``severity:`` alias nor emits a
+        // misleading "non-string severity_override" warning.
+        auto has_value = [](const YAML::Node & n) {
+          return n.IsDefined() && !n.IsNull();
+        };
+        const YAML::Node override_node = node["severity_override"];
+        const bool use_override = has_value(override_node);
+        const YAML::Node sev_node = use_override ? override_node : node["severity"];
+        if (!has_value(sev_node)) {
           return "";
         }
-        const char * field = node["severity_override"] ? "severity_override" : "severity";
+        const char * field = use_override ? "severity_override" : "severity";
         auto sev = parse_string(sev_node, field, context);
         if (!sev || sev->empty()) {
           return "";
