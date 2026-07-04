@@ -647,6 +647,14 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
     }
     const auto entity_info = *entity_result;
 
+    // Fault codes may contain dots and underscores; validate basic constraints
+    // before any plugin or fault_manager delegation so the plugin path rejects
+    // empty/oversized codes the same as the non-plugin path.
+    if (fault_code.empty() || fault_code.length() > 256) {
+      return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid fault code",
+                                            json{{"details", "Fault code must be between 1 and 256 characters"}}));
+    }
+
     // Delegate to plugin FaultProvider if entity is plugin-owned
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
@@ -693,12 +701,6 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
         return tl::make_unexpected(
             make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
-    }
-
-    // Fault codes may contain dots and underscores, validate basic constraints
-    if (fault_code.empty() || fault_code.length() > 256) {
-      return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid fault code",
-                                            json{{"details", "Fault code must be between 1 and 256 characters"}}));
     }
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
@@ -776,6 +778,14 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
       return tl::make_unexpected(lock_err.error());
     }
 
+    // Fault codes may contain dots and underscores; validate basic constraints
+    // before any plugin or fault_manager delegation so the plugin path rejects
+    // empty/oversized codes the same as the non-plugin path.
+    if (fault_code.empty() || fault_code.length() > 256) {
+      return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid fault code",
+                                            json{{"details", "Fault code must be between 1 and 256 characters"}}));
+    }
+
     // Delegate to plugin FaultProvider if entity is plugin-owned. Plugin clear
     // succeeds with the plugin's acknowledgement payload at HTTP 200 (legacy
     // wire shape via `send_dto`); the typed alternates variant maps
@@ -804,12 +814,6 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         return tl::make_unexpected(
             make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
-    }
-
-    // Validate fault code
-    if (fault_code.empty() || fault_code.length() > 256) {
-      return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid fault code",
-                                            json{{"details", "Fault code must be between 1 and 256 characters"}}));
     }
 
     auto fault_mgr = ctx_.node()->get_fault_manager();
