@@ -1287,14 +1287,13 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
+  // PluginContext::list_entity_faults returns a bare JSON array of fault
+  // objects already scoped to this entity (see its contract). Project each into
+  // the plugin fault-list item shape.
   auto faults = ctx_->list_entity_faults(entity_id);
-  if (faults.is_null() || faults.empty()) {
-    return dto::FaultListResult{nlohmann::json{{"items", nlohmann::json::array()}}};
-  }
-
-  if (faults.contains("faults") && faults["faults"].is_array()) {
-    nlohmann::json items = nlohmann::json::array();
-    for (const auto & f : faults["faults"]) {
+  nlohmann::json items = nlohmann::json::array();
+  if (faults.is_array()) {
+    for (const auto & f : faults) {
       nlohmann::json item;
       item["code"] = f.value("fault_code", "");
       item["severity"] = f.value("severity", 0);
@@ -1303,10 +1302,8 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
       item["source_id"] = f.value("source_id", "");
       items.push_back(std::move(item));
     }
-    return dto::FaultListResult{nlohmann::json{{"items", items}}};
   }
-
-  return dto::FaultListResult{nlohmann::json{{"items", nlohmann::json::array()}}};
+  return dto::FaultListResult{nlohmann::json{{"items", std::move(items)}}};
 }
 
 tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fault(const std::string & entity_id,
@@ -1315,9 +1312,11 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
+  // list_entity_faults returns a bare JSON array of fault objects scoped to
+  // this entity (see PluginContext contract).
   auto faults = ctx_->list_entity_faults(entity_id);
-  if (faults.contains("faults") && faults["faults"].is_array()) {
-    for (const auto & f : faults["faults"]) {
+  if (faults.is_array()) {
+    for (const auto & f : faults) {
       if (f.value("fault_code", "") == fault_code) {
         return dto::FaultDetailResult{f};
       }

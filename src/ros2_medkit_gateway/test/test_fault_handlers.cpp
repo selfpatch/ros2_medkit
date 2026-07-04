@@ -503,6 +503,77 @@ TEST(FaultInSourceScopeTest, RootFqnEdgeCase) {
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"/something"}), {"/other"}));
 }
 
+// -----------------------------------------------------------------------------
+// External protocol-plugin entity ownership: bare-id scope sets.
+//
+// An external entity (e.g. a PLC over OPC UA) has no ROS FQN, so fault-scope
+// resolution grants it a scope set of exactly {its bare id}. These pins prove
+// the guard treats a bare id like any other scope token: it owns faults
+// reported under that id, and still blocks cross-entity disclosure (GET) and
+// cross-entity clear (DELETE), which both flow through this predicate.
+// -----------------------------------------------------------------------------
+
+TEST(FaultInSourceScopeTest, BareEntityIdScopeMatchesOwnFault) {
+  // The entity owns the fault it reported under its own id.
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(make_fault({"process"}), {"process"}));
+}
+
+TEST(FaultInSourceScopeTest, BareEntityIdScopeMatchesOwnSubPath) {
+  // A sub-node under the entity id (path boundary) is still the same owner.
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(make_fault({"process/sub"}), {"process"}));
+}
+
+TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsOtherEntityFault) {
+  // Cross-entity GET stays blocked: entity "process" must not see a fault that
+  // another external entity ("s7_status") reported under its own id.
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"s7_status"}), {"process"}));
+}
+
+TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsMixedSourceFault) {
+  // Cross-entity clear/disclosure stays blocked under the all-sources rule: a
+  // fault co-reported by "process" and another entity is out of scope for
+  // "process" alone.
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process", "s7_status"}), {"process"}));
+}
+
+TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {
+  // "process_2" shares the "process" prefix but is a distinct entity id; the
+  // path-boundary check must reject it (no bare-substring escalation).
+  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process_2"}), {"process"}));
+}
+
+// The per-entity detail for an external plugin entity must carry the
+// freeze-frame the fault_manager holds, mirroring the non-plugin detail path.
+// This pins the shape build_sovd_fault_response produces for the PLC case:
+// reporting_sources=[bare id] + a freeze-frame snapshot under a plugin entity
+// path.
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseExternalEntityFreezeFrame) {
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "PLC_LEVEL_HIGH";
+  fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
+  fault.status = "CONFIRMED";
+  fault.reporting_sources = {"process"};  // bare external entity id
+
+  ros2_medkit_msgs::msg::EnvironmentData env_data;
+  ros2_medkit_msgs::msg::Snapshot freeze_frame;
+  freeze_frame.type = "freeze_frame";
+  freeze_frame.name = "/plc/process/level";
+  freeze_frame.data = R"({"data": 150.0})";
+  freeze_frame.topic = "/plc/process/level";
+  freeze_frame.message_type = "std_msgs/msg/Float64";
+  freeze_frame.captured_at_ns = 1707044400000000000;
+  env_data.snapshots.push_back(freeze_frame);
+
+  auto response =
+      to_json(FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/process"));
+
+  auto & snap = response["environment_data"]["snapshots"][0];
+  EXPECT_EQ(snap["type"], "freeze_frame");
+  EXPECT_EQ(snap["name"], "/plc/process/level");
+  EXPECT_DOUBLE_EQ(snap["data"].get<double>(), 150.0);
+  EXPECT_EQ(response["x-medkit"]["reporting_sources"][0], "process");
+}
+
 // =============================================================================
 // FaultListItem schema <-> fault_to_json producer contract.
 //

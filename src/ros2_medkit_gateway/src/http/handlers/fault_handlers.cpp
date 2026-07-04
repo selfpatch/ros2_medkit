@@ -655,6 +655,27 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
         return tl::make_unexpected(
             make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
       }
+
+      // Prefer the fault_manager's environment-enriched record when this entity
+      // OWNS the fault (it was reported to the fault_manager under an app the
+      // entity owns, per the fault-scope resolution). This carries the
+      // freeze-frame/rosbag snapshots, consistent with the non-plugin detail
+      // path. Fall through to the plugin's own provider for faults the
+      // fault_manager does not hold (e.g. on-demand UDS DTCs).
+      if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+        auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
+        if (mgr_result.success) {
+          const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
+          const auto & cache = ctx_.node()->get_thread_safe_cache();
+          auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+          if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
+            const auto & env_data_json = mgr_result.data.value("environment_data", json::object());
+            auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
+            return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
+          }
+        }
+      }
+
       try {
         auto result = fault_prov->get_fault(entity_id, fault_code);
         if (!result) {
