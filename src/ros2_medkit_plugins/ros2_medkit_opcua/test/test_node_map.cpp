@@ -655,6 +655,53 @@ event_alarms:
   EXPECT_EQ(map.event_alarms()[0].mappings[0].severity_override, "WARNING");
 }
 
+TEST_F(NodeMapTest, EventAlarmNullSeverityOverrideFallsBackToAlias) {
+  // A present-but-null ``severity_override:`` is reported as defined by yaml-cpp
+  // but must not shadow a real ``severity:`` sibling (nor emit a spurious
+  // "non-string severity_override" warning): the alias still wins.
+  std::string path = "/tmp/test_node_map_event_alarm_null_override.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=3;s=Program_Alarm"
+    entity_id: plc_program
+    fault_code: PLC_PROGRAM_ALARM
+    severity_override:
+    severity: WARNING
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].severity_override, "WARNING");
+}
+
+TEST_F(NodeMapTest, EventAlarmSeverityAliasInvalidBucketDefaultsToError) {
+  // The alias is *validated* (validate_severity), not passed through raw: an
+  // unknown bucket is defaulted to ERROR so a typo cannot misroute the fault to
+  // a bogus severity. Pins the validation behaviour the alias path adds.
+  std::string path = "/tmp/test_node_map_event_alarm_severity_invalid.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: test
+event_alarms:
+  - alarm_source: "ns=3;s=Program_Alarm"
+    entity_id: plc_program
+    fault_code: PLC_PROGRAM_ALARM
+    severity: notabucket
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.event_alarms().size(), 1u);
+  EXPECT_EQ(map.event_alarms()[0].severity_override, "ERROR");
+}
+
 TEST_F(NodeMapTest, RejectsAlarmSourceUnderNodes) {
   // Schema validation: ``alarm_source`` is only valid in the top-level
   // ``event_alarms:`` section. Used to be silently ignored when not paired
