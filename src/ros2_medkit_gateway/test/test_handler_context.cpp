@@ -1446,6 +1446,17 @@ App make_owned_app(const std::string & app_id, const std::string & component_id,
   return a;
 }
 
+// An asset introspected by a protocol plugin (e.g. a PLC entity over OPC UA):
+// external=true, no ROS binding, so effective_fqn() is empty.
+App make_external_app(const std::string & app_id, const std::string & component_id) {
+  App a;
+  a.id = app_id;
+  a.name = app_id;
+  a.component_id = component_id;
+  a.external = true;
+  return a;
+}
+
 }  // namespace
 
 TEST(ResolveEntitySourceFqnsTest, AppReturnsItsOwnFqn) {
@@ -1626,6 +1637,66 @@ TEST(ResolveEntitySourceFqnsTest, FunctionWithUnboundHostsReturnsOnlyResolvedFqn
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "func-x"));
   EXPECT_EQ(fqns, std::set<std::string>{"/perception/nav/planner"});
+}
+
+// =============================================================================
+// External protocol-plugin entity ownership.
+//
+// An external app (e.g. a PLC introspected over OPC UA) has no ROS binding, so
+// effective_fqn() is empty. It reports faults to the fault_manager under its
+// own entity id, so fault-scope resolution must recognise that bare id as the
+// entity's sole owned source - otherwise the per-entity fault list is empty and
+// the detail 404s. The bare id is granted ONLY for external apps; an unbound
+// ROS app stays skipped so it cannot claim faults it never reported.
+// =============================================================================
+
+TEST(ResolveEntitySourceFqnsTest, ExternalAppOwnsFaultsUnderItsOwnId) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_external_app("process", "s7_1500")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "process"));
+  // Scope set is exactly {its id}: narrow, so it owns only faults reported
+  // under "process" (and sub-paths), never another entity's.
+  EXPECT_EQ(fqns, std::set<std::string>{"process"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, NonExternalUnboundAppStaysSkipped) {
+  // Security: an app that is NOT external and has no binding (a ROS app that
+  // failed to link) must NOT be granted its bare id - otherwise it would claim
+  // ownership of any fault reported under that id. This pins the `external`
+  // gate on the bare-id ownership grant.
+  ThreadSafeEntityCache cache;
+  App unbound;
+  unbound.id = "process";
+  unbound.name = "process";
+  unbound.component_id = "s7_1500";
+  unbound.external = false;
+  cache.update_apps({unbound});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "process"));
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveEntitySourceFqnsTest, BoundAppScopeUnaffectedByExternalFix) {
+  // Regression pin for security requirement (c): a ROS-bound entity's scope set
+  // is byte-identical to before the external-ownership change - it resolves to
+  // its FQN, never its bare id.
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "temp_sensor"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, ComponentHostingExternalAppOwnsItsFaults) {
+  // The PLC case: GET /components/s7_1500/faults. The component hosts the
+  // external app "process"; its scope must include "process" so faults the app
+  // reported (reporting_sources=["process"]) surface on the component route.
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_external_app("process", "s7_1500")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "s7_1500"));
+  EXPECT_EQ(fqns, std::set<std::string>{"process"});
 }
 
 int main(int argc, char ** argv) {

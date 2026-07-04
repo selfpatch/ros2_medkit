@@ -292,6 +292,39 @@ TEST(FaultManagerRoutingTest, GetFaultWithEnvReturnsTransportJsonShape) {
   EXPECT_FALSE(r.data["environment_data"]["snapshots"][0].contains("bulk_data_uri"));
 }
 
+TEST(FaultManagerRoutingTest, GetFaultWithEnvCarriesFreezeFrameForExternalEntity) {
+  // The per-entity detail route for an external plugin entity (e.g. a PLC over
+  // OPC UA) reads the fault_manager's enriched record: reporting_sources=[bare
+  // id] plus a freeze-frame snapshot. Pin that get_fault_with_env passes this
+  // shape through verbatim so the handler can build the SOVD detail with the
+  // freeze-frame.
+  auto mock = std::make_shared<MockFaultServiceTransport>();
+  mock->get_env_data_ = {{"fault",
+                          {{"fault_code", "PLC_LEVEL_HIGH"},
+                           {"severity", 2},
+                           {"severity_label", "ERROR"},
+                           {"status", "CONFIRMED"},
+                           {"reporting_sources", json::array({"process"})}}},
+                         {"environment_data",
+                          {{"snapshots", json::array({{{"type", "freeze_frame"},
+                                                       {"snapshot_type", "freeze_frame"},
+                                                       {"name", "/plc/process/level"},
+                                                       {"topic", "/plc/process/level"},
+                                                       {"message_type", "std_msgs/msg/Float64"},
+                                                       {"data", R"({"data": 150.0})"}}})}}}};
+  FaultManager mgr(mock);
+
+  auto r = mgr.get_fault_with_env("PLC_LEVEL_HIGH", "");
+
+  EXPECT_TRUE(r.success);
+  EXPECT_EQ(mock->last_get_env_code_, "PLC_LEVEL_HIGH");
+  ASSERT_TRUE(r.data.contains("fault"));
+  EXPECT_EQ(r.data["fault"]["reporting_sources"][0], "process");
+  ASSERT_TRUE(r.data["environment_data"]["snapshots"].is_array());
+  ASSERT_EQ(r.data["environment_data"]["snapshots"].size(), 1u);
+  EXPECT_EQ(r.data["environment_data"]["snapshots"][0]["type"], "freeze_frame");
+}
+
 TEST(FaultManagerRoutingTest, GetFaultWithEnvPropagatesErrorMessage) {
   auto mock = std::make_shared<MockFaultServiceTransport>();
   mock->get_env_success_ = false;

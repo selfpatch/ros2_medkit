@@ -100,7 +100,8 @@ class FakePluginContext : public RosPluginContext {
     return {};
   }
   nlohmann::json list_entity_faults(const std::string &) const override {
-    return nlohmann::json{{"faults", nlohmann::json::array()}};
+    // Contract: a bare JSON array of fault objects (empty for this fake).
+    return nlohmann::json::array();
   }
   std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest &, PluginResponse &,
                                                             const std::string & entity_id) const override {

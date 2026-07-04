@@ -87,12 +87,12 @@ class FakePluginContext : public RosPluginContext {
   }
 
   nlohmann::json list_entity_faults(const std::string & entity_id) const override {
-    nlohmann::json result;
-    result["faults"] = nlohmann::json::array();
+    // Contract: a bare JSON array of fault objects scoped to the entity.
+    nlohmann::json result = nlohmann::json::array();
     if (all_faults.contains("faults")) {
       for (const auto & f : all_faults["faults"]) {
         if (f.value("source_id", "") == entity_id) {
-          result["faults"].push_back(f);
+          result.push_back(f);
         }
       }
     }
@@ -293,6 +293,16 @@ TEST_F(OpcuaPluginTest, GetFaultNotFound) {
   auto result = plugin_.get_fault("tank", "NONEXISTENT");
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, FaultProviderError::FaultNotFound);
+}
+
+TEST_F(OpcuaPluginTest, GetFaultFound) {
+  // Regression pin for the shape contract: list_entity_faults yields a bare
+  // array of fault objects scoped to the entity, not a {"faults": [...]}
+  // object. get_fault must locate the matching fault in that bare array.
+  ctx_.all_faults = {{"faults", {{{"fault_code", "PLC_LOW_LEVEL"}, {"source_id", "tank"}, {"severity", 2}}}}};
+  auto result = plugin_.get_fault("tank", "PLC_LOW_LEVEL");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->content.value("fault_code", ""), "PLC_LOW_LEVEL");
 }
 
 // -- configure() validation (issue #481) --

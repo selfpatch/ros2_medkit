@@ -31,6 +31,15 @@ void collect_app_fqn(const ThreadSafeEntityCache & cache, const std::string & ap
   }
   auto fqn = app->effective_fqn();
   if (fqn.empty()) {
+    // External assets introspected by a protocol plugin (e.g. a PLC over OPC
+    // UA) have no ROS binding, so effective_fqn() is empty. They report faults
+    // to the fault_manager under their own entity id, so that id is their sole
+    // fault-scope owner. Non-external apps that merely failed to bind stay
+    // skipped: granting an unbound ROS app its bare id would let it claim
+    // ownership of faults it never reported.
+    if (app->external) {
+      out.insert(app_id);
+    }
     return;
   }
   out.insert(std::move(fqn));

@@ -235,6 +235,26 @@ TEST(PluginEntityRouting, FaultProviderResolvedForOwnedEntity) {
   EXPECT_EQ(result->content["items"][0]["code"], "DTC_001");
 }
 
+// The gateway get_fault handler prefers the fault_manager's environment-enriched
+// record when a plugin entity owns the fault, and falls back to the plugin's own
+// FaultProvider for faults the fault_manager does not hold (e.g. on-demand UDS
+// DTCs). This pins the plugin-served payload the handler forwards verbatim on
+// that fallback path.
+TEST(PluginEntityRouting, FaultProviderFallbackServesPluginOwnedPayload) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockFaultPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("fault_plugin", {"my_ecu"});
+
+  auto * fp = mgr.get_fault_provider_for_entity("my_ecu");
+  ASSERT_NE(fp, nullptr);
+
+  auto result = fp->get_fault("my_ecu", "DTC_042");
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->content["code"], "DTC_042");
+  EXPECT_EQ(result->content["status"], "pending");
+}
+
 TEST(PluginEntityRouting, BarePluginReturnsNullFaultProvider) {
   PluginManager mgr;
 
