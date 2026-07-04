@@ -345,9 +345,10 @@ TEST_F(OpcuaIdentityE2ETest, ClientReadsDiNameplate) {
   EXPECT_EQ(info.di_serial_number, "SN-0001-TEST");
   EXPECT_EQ(info.di_hardware_revision, "HW-A2");
   EXPECT_EQ(info.di_software_revision, "SW-3.4.5");
-  // OrderNumber lives in the vendor namespace (not DI) and is space-padded;
-  // it is matched by BrowseName across namespaces and trimmed.
-  EXPECT_EQ(info.di_order_number, "6ES7-TEST-0YA0");
+  // OrderNumber lives in the vendor namespace (not DI) with leading + trailing
+  // pad; it is matched by BrowseName across namespaces and edge-trimmed while the
+  // load-bearing internal space in the MLFB is preserved.
+  EXPECT_EQ(info.di_order_number, "6ES7 672-5SC11-0YA0");
   client.disconnect();
 }
 
@@ -362,7 +363,7 @@ TEST_F(OpcuaIdentityE2ETest, MappedIdentityFromLiveServer) {
   // DI nameplate wins over BuildInfo for manufacturer / model / software.
   EXPECT_EQ(id.manufacturer, "SelfPatch Devices");
   EXPECT_EQ(id.model, "SPX-1000");
-  EXPECT_EQ(id.order_code, "6ES7-TEST-0YA0");
+  EXPECT_EQ(id.order_code, "6ES7 672-5SC11-0YA0");
   EXPECT_EQ(id.serial_number, "SN-0001-TEST");
   EXPECT_EQ(id.hardware_revision, "HW-A2");
   EXPECT_EQ(id.software_version, "SW-3.4.5");
@@ -553,7 +554,7 @@ TEST_F(OpcuaIdentityE2ETest, DiNameplateReadFollowsBrowseContinuationPoints) {
   EXPECT_EQ(info.di_serial_number, "SN-0001-TEST");
   EXPECT_EQ(info.di_hardware_revision, "HW-A2");
   EXPECT_EQ(info.di_software_revision, "SW-3.4.5");
-  EXPECT_EQ(info.di_order_number, "6ES7-TEST-0YA0");
+  EXPECT_EQ(info.di_order_number, "6ES7 672-5SC11-0YA0");
   client.disconnect();
 }
 
