@@ -98,3 +98,14 @@ called_from_lib:libyaml-cpp.so.0.8
 race:dynmsg::cpp::impl::basic_value_to_yaml*
 race:dynmsg::cpp::impl::member_to_yaml*
 race:dynmsg::get_vector_size*
+# Same staging race on the response buffer's own lifetime rather than its
+# contents: the executor thread allocates the shared response inside
+# rclcpp::GenericClient::create_response(), and the caller thread releases
+# the last shared_ptr reference (control-block refcount decrement and the
+# subsequent operator delete) after future::get() returns. libstdc++
+# future synchronisation is invisible to TSan (see above), so it reports a
+# race between create_response()'s new and the caller's ~shared_ptr on the
+# same block. Match the rclcpp allocation frame, which is on every one of
+# these reports, so a genuine refcount race in our own shared_ptr use is
+# still surfaced.
+race:rclcpp::GenericClient::create_response*
