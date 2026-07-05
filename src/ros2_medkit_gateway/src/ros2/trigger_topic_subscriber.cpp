@@ -51,12 +51,8 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Idempotent: drop any prior registration for this handle so the new one
-  // takes over cleanly (both live and pending paths). Retire the prior live
-  // subscription rather than destroying it inline - see unsubscribe().
-  if (auto it = live_.find(handle_key); it != live_.end()) {
-    retire_locked(it->second);
-    live_.erase(it);
-  }
+  // takes over cleanly (both live and pending paths).
+  live_.erase(handle_key);
   pending_.erase(handle_key);
 
   std::string resolved_type = msg_type;
@@ -103,11 +99,6 @@ void TriggerTopicSubscriber::create_subscription_internal(const std::string & ha
       std::lock_guard<std::mutex> cb_lock(mutex_);
       auto it = live_.find(handle_key);
       if (it == live_.end()) {
-        // Unsubscribed or retired: stop delivering. A retired subscription's
-        // callback always returns here, before the deserialize section below;
-        // the subscription (and this closure) is kept alive in retired_ and is
-        // never destroyed while the executor spins, so nothing frees the
-        // captured strings/type support out from under an in-flight dispatch.
         return;
       }
       user_cb = it->second.callback;
@@ -169,18 +160,12 @@ void TriggerTopicSubscriber::unsubscribe(const std::string & handle_key) {
     return;
   }
 
-  // Stop delivering immediately by removing the entry from live_ (every future
-  // dispatch early-returns at the lookup in the callback), but do NOT destroy
-  // the GenericSubscription here. Under a MultiThreadedExecutor a callback for
-  // this handle may be running on another worker thread, mid deserialize, still
-  // reading the closure's captured strings and the dlopened type support.
-  // Worse, destroying the subscription while the executor spins hands the last
-  // reference to an executor worker (via its wait-result), which then frees the
-  // closure on its own thread with no happens-before to that in-flight read -
-  // the data race this class previously shipped. Retire the subscription to a
-  // graveyard instead; it is destroyed at shutdown(), after the executor has
-  // stopped. See retired_.
-  retire_locked(it->second);
+  // Reset the subscription before erasing the map entry: rclcpp guarantees
+  // that GenericSubscription destruction waits for in-flight callbacks to
+  // drain, so the captured handle_key cannot resolve to a stale entry after
+  // this returns.
+  it->second.subscription.reset();
+  it->second.callback = nullptr;
   live_.erase(it);
 
   RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: unsubscribed handle '%s'", handle_key.c_str());
@@ -196,36 +181,16 @@ void TriggerTopicSubscriber::shutdown() {
     retry_timer_.reset();
   }
 
-  std::vector<rclcpp::GenericSubscription::SharedPtr> doomed;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    pending_.clear();
-    // Retire every live subscription, then take ownership of the whole
-    // graveyard so it is destroyed below.
-    for (auto & [_, entry] : live_) {
-      retire_locked(entry);
-    }
-    live_.clear();
-    doomed.swap(retired_);
+  std::lock_guard<std::mutex> lock(mutex_);
+  pending_.clear();
+  // Reset every subscription explicitly so rclcpp drains in-flight callbacks
+  // before we tear down user callbacks (the subscription-destructor pattern).
+  for (auto & [_, entry] : live_) {
+    entry.subscription.reset();
+    entry.callback = nullptr;
   }
-
-  // Destroy every retired subscription here. shutdown() runs in the gateway's
-  // teardown path AFTER executor.spin() has returned and its worker threads
-  // have joined (see the gateway main teardown order), so no callback is in
-  // flight and no executor worker holds a wait-result reference - this is the
-  // one point where freeing the closures + unloading their type support cannot
-  // race a dispatch. Done outside mutex_ for clarity; there is no contender
-  // left at this stage.
-  doomed.clear();
-
+  live_.clear();
   RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: shutdown complete");
-}
-
-void TriggerTopicSubscriber::retire_locked(LiveEntry & entry) {
-  entry.callback = nullptr;
-  if (entry.subscription) {
-    retired_.push_back(std::move(entry.subscription));
-  }
 }
 
 void TriggerTopicSubscriber::set_retry_callback(RetryCallback cb) {
