@@ -77,6 +77,18 @@ class TestDocsEndpoint(GatewayTestCase):
             f'Root spec should include /apps path. Paths: {list(paths.keys())}'
         )
 
+        # Lifecycle status operationIds use the singular entity name
+        # (getAppStatus), not the plural collection name (getAppsStatus).
+        self.assertEqual(
+            paths['/apps/{app_id}/status']['get']['operationId'],
+            'getAppStatus')
+        self.assertEqual(
+            paths['/components/{component_id}/status']['get']['operationId'],
+            'getComponentStatus')
+        self.assertEqual(
+            paths['/apps/{app_id}/status/restart']['put']['operationId'],
+            'putAppStatusRestart')
+
     def test_apps_docs_returns_entity_collection_spec(self):
         """GET /apps/docs returns spec for apps collection.
 
