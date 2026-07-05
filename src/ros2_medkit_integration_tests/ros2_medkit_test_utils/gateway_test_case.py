@@ -845,6 +845,63 @@ class GatewayTestCase(unittest.TestCase):
             f'{entity_endpoint}/operations within {max_wait}s'
         )
 
+    def wait_for_operation_type_info(
+        self, entity_endpoint, operation_id, required_keys, *, max_wait=15.0
+    ):
+        """Wait until an operation exposes a resolved ``type_info`` schema.
+
+        An operation appears under ``/operations`` as soon as it is discovered
+        by name, but its ``x-medkit.type_info`` is only populated once the
+        gateway has resolved the underlying ROS interface type: while
+        ``ros2.type`` is still empty, or the type-introspection lookup has not
+        yet loaded the type, the handler omits ``type_info`` entirely. Polling
+        the operation-name endpoint alone (``wait_for_operation``) races that
+        second resolution step, so wait until ``type_info`` actually carries the
+        expected schema keys (``goal``/``result``/``feedback`` for an action,
+        ``request``/``response`` for a service) before asserting on it.
+
+        Parameters
+        ----------
+        entity_endpoint : str
+            Entity path relative to ``BASE_URL`` (e.g. ``'/apps/long_calibration'``).
+        operation_id : str
+            The operation ID (matched against each item's ``id`` or ``name``).
+        required_keys : iterable of str
+            Schema keys that must all be present in ``type_info``.
+        max_wait : float
+            Maximum time to wait in seconds.
+
+        Returns
+        -------
+        dict
+            The operation item whose ``type_info`` carries all *required_keys*.
+
+        Raises
+        ------
+        AssertionError
+            If no such operation is found within *max_wait*.
+
+        """
+        required = tuple(required_keys)
+
+        def _resolved(data):
+            for op in data.get('items', []):
+                if op.get('id') != operation_id and op.get('name') != operation_id:
+                    continue
+                type_info = op.get('x-medkit', {}).get('type_info')
+                if isinstance(type_info, dict) and all(
+                    key in type_info for key in required
+                ):
+                    return op
+            return None
+
+        return self.poll_endpoint_until(
+            f'{entity_endpoint}/operations',
+            _resolved,
+            timeout=max_wait,
+            interval=0.5,
+        )
+
     def wait_for_data_item(self, entity_endpoint, direction, *, timeout=10.0):
         """Poll entity data until an item with the given direction appears.
 

@@ -216,20 +216,18 @@ class TestScenarioActionLifecycle(GatewayTestCase):
         """GET operation details, verify type_info with goal/result/feedback schemas."""
         self._ensure_operation_ready()
 
-        ops_data = self.get_json(f'{self.ENTITY_ENDPOINT}/operations')
-        ops = ops_data['items']
+        # The operation appears by name before its interface type is resolved,
+        # so wait until type_info actually carries the action schema keys rather
+        # than reading the list once and racing type resolution.
+        action_op = self.wait_for_operation_type_info(
+            self.ENTITY_ENDPOINT, self.OPERATION_ID,
+            ('goal', 'result', 'feedback'),
+        )
 
-        # Find the long_calibration action operation
-        action_op = None
-        for op in ops:
-            if op['name'] == self.OPERATION_ID:
-                x_medkit = op.get('x-medkit', {})
-                ros2 = x_medkit.get('ros2', {})
-                if ros2.get('kind') == 'action':
-                    action_op = op
-                    break
-
-        self.assertIsNotNone(action_op, 'Long calibration action should be listed')
+        # Confirm it is the action operation (not a same-named service).
+        ros2 = action_op.get('x-medkit', {}).get('ros2', {})
+        self.assertEqual(ros2.get('kind'), 'action',
+                         'Long calibration action should be listed')
 
         # Verify type_info in x-medkit
         x_medkit = action_op['x-medkit']
