@@ -22,7 +22,6 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -42,23 +41,15 @@ namespace ros2_medkit_gateway {
  * entries time out after 60 seconds.
  *
  * Threading: subscribe()/unsubscribe()/shutdown() are mutex-guarded.
- * Per-handle callbacks are invoked from rclcpp executor threads.
+ * Per-handle callbacks are invoked from rclcpp executor threads. The
+ * subscription-destructor pattern (callbacks cannot fire on a partially
+ * destroyed subscriber) is enforced by the shutdown_flag_ guard followed by
+ * subscription map clearing inside shutdown().
  *
  * The lifetime of an individual subscription is tied to the corresponding
- * handle key: unsubscribe(handle_key) removes the entry from the live map
- * under mutex_, so any dispatch that has not yet passed the map lookup
- * short-circuits and stops delivering. Destroying the GenericSubscription
- * itself is deferred, never inline: under a MultiThreadedExecutor a callback
- * for this subscription can still be running on another worker thread mid
- * deserialize, and destroying the subscription while the executor spins hands
- * the last reference to an executor worker (via its wait-result), which frees
- * the closure's captured strings and unloads the dlopened type support on its
- * own thread with no happens-before to that read - a data race. Retired
- * subscriptions are therefore held in a graveyard (retired_) and destroyed
- * only in shutdown(), which runs after the executor has stopped and its worker
- * threads have joined. The graveyard grows with unsubscribe churn over a
- * session and is reclaimed in full at shutdown; trigger create/delete is a
- * low-rate operator action, so this residency is bounded in practice.
+ * handle key: unsubscribe(handle_key) atomically removes both the user
+ * callback and the underlying rclcpp::Subscription, so any in-flight
+ * dispatch sees the empty map and short-circuits.
  *
  * The retry callback (set via set_retry_callback) is fired on every retry
  * tick. The trigger manager wires this to retry_unresolved_triggers() so
@@ -148,21 +139,11 @@ class TriggerTopicSubscriber {
   /// Retry callback for pending subscriptions. Called by retry_timer_.
   void retry_pending_subscriptions();
 
-  /// Move a live entry's GenericSubscription into retired_ instead of
-  /// destroying it inline. Caller must hold mutex_. The entry's user callback
-  /// is cleared so the handle stops delivering immediately; the subscription is
-  /// destroyed later, in shutdown().
-  void retire_locked(LiveEntry & entry);
-
   rclcpp::Node * node_;
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
   std::mutex mutex_;
   std::unordered_map<std::string, LiveEntry> live_;
   std::unordered_map<std::string, PendingEntry> pending_;
-  /// Subscriptions removed from live_ (via unsubscribe/subscribe-replace) but
-  /// kept alive so the executor never frees an in-flight closure. Guarded by
-  /// mutex_; destroyed in shutdown() after the executor has stopped.
-  std::vector<rclcpp::GenericSubscription::SharedPtr> retired_;
   rclcpp::TimerBase::SharedPtr retry_timer_;
   RetryCallback retry_callback_;
   std::atomic<bool> shutdown_flag_{false};
