@@ -797,6 +797,34 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         return tl::make_unexpected(
             make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
       }
+
+      // Cross-entity clear guard: the plugin clear_fault forwards the code to
+      // the fault_manager with no scope check, so without this a
+      // DELETE /{A}/faults/{code} could clear a fault owned by entity B. When
+      // the fault_manager holds this fault, require it to be in this entity's
+      // source scope before delegating; reject out-of-scope. Faults the
+      // fault_manager does not hold (plugin-internal, e.g. on-demand UDS DTCs)
+      // fall through to the plugin provider unchanged. Mirrors the ownership
+      // check in the plugin get_fault branch and the non-plugin clear path.
+      if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+        auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
+        if (mgr_result.success) {
+          const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
+          const auto & cache = ctx_.node()->get_thread_safe_cache();
+          auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+          if (!FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
+            return tl::make_unexpected(
+                make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+                           json{{"details",
+                                 "Fault is not in scope for this entity: every reporting source must be one of the "
+                                 "entity's owned apps, and a mixed-source fault that includes any out-of-entity "
+                                 "reporter is rejected to prevent cross-entity clear"},
+                                {entity_info.id_field, entity_id},
+                                {"fault_code", fault_code}}));
+          }
+        }
+      }
+
       try {
         auto result = fault_prov->clear_fault(entity_id, fault_code);
         if (!result) {
