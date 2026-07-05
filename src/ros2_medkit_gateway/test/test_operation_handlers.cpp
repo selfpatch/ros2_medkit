@@ -245,14 +245,15 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     suite_server_port_ = reserve_local_port();
     ASSERT_NE(suite_server_port_, 0);
 
-    std::vector<std::string> args = {"test_operation_handlers",
-                                     "--ros-args",
-                                     "-p",
-                                     "server.port:=" + std::to_string(suite_server_port_),
-                                     "-p",
-                                     "refresh_interval_ms:=60000",
-                                     "-p",
-                                     "service_call_timeout_sec:=1"};
+    std::vector<std::string> args = {"test_operation_handlers", "--ros-args", "-p",
+                                     "server.port:=" + std::to_string(suite_server_port_), "-p",
+                                     "refresh_interval_ms:=60000", "-p",
+                                     // Pin the graph-event refresh debounce at its 60s maximum so the
+                                     // single startup refresh_cache() that reconciles the test nodes is
+                                     // the only one for the test's lifetime. Without this, a refresh
+                                     // fired by the goal's client/subscription graph churn could wipe the
+                                     // manually seeded component between the seed and list_executions.
+                                     "discovery.refresh_debounce_ms:=60000", "-p", "service_call_timeout_sec:=1"};
 
     std::vector<char *> argv;
     argv.reserve(args.size());
@@ -272,6 +273,12 @@ class OperationHandlersFixtureTest : public ::testing::Test {
   void SetUp() override {
     gateway_node_ = std::make_shared<GatewayNode>();
     ASSERT_NE(gateway_node_, nullptr);
+
+    // Cache generation right after construction: only the gateway's own graph is
+    // discovered at this point. The first graph-event-driven refresh_cache()
+    // after the test nodes join advances it, which is the signal we wait on
+    // before seeding.
+    const uint64_t base_generation = gateway_node_->get_thread_safe_cache().generation();
 
     service_node_ = std::make_shared<rclcpp::Node>("test_calibrate_service", "/powertrain/engine");
     trigger_service_ = service_node_->create_service<std_srvs::srv::Trigger>(
@@ -294,19 +301,20 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<OperationHandlers>(*ctx_);
 
-    // Wait for DDS discovery to complete: the executor must discover
-    // the action server, trigger service, and all internal action services
-    // (_cancel_goal, _get_result, _status). On slow CI runners under
-    // parallel load, 200ms was insufficient.
-    std::this_thread::sleep_for(1s);
-
-    // Seed the component cache AFTER discovery has settled. The gateway's
-    // graph-event-driven `refresh_cache()` fires whenever the executor
-    // observes a graph change (adding service_node_ / action_server_node_
-    // produces several such events), and each refresh pass calls
-    // `cache.update_all(...)` from the gateway's own discovery view -
-    // which would otherwise wipe a pre-spin seed. Seeding here guarantees
-    // the test's manually-injected entities are the latest write.
+    // Deterministic readiness, replacing a fixed discovery sleep. Two signals
+    // must hold before we seed and drive operations:
+    //   1. The action's send_goal service and the trigger service are visible
+    //      on the gateway participant, so create_execution's send_goal
+    //      (wait_for_service) resolves instead of racing DDS discovery.
+    //   2. The cache generation advanced past construction, proving the single
+    //      graph-event-driven refresh_cache() that reconciles these nodes has
+    //      already run. With discovery.refresh_debounce_ms pinned at 60s, that
+    //      first refresh is the only one for the test's lifetime, so seeding
+    //      afterwards is the final cache write and cannot be clobbered by a
+    //      concurrent refresh mid-test (the race that made ListExecutions flake
+    //      under load).
+    ASSERT_TRUE(wait_for_discovery_settled(base_generation))
+        << "action/service discovery did not settle before seeding";
     seed_component_cache();
   }
 
@@ -332,6 +340,33 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     action_server_node_.reset();
     service_node_.reset();
     gateway_node_.reset();
+  }
+
+  /// Block until DDS discovery has surfaced the action's send_goal service and
+  /// the trigger service on the gateway participant AND the gateway has run its
+  /// first post-startup refresh_cache() (cache generation advanced past
+  /// `base_generation`). Returns false if either signal is missing at the
+  /// deadline. This is a real readiness gate, not a fixed sleep.
+  bool wait_for_discovery_settled(uint64_t base_generation, std::chrono::seconds timeout = std::chrono::seconds(15)) {
+    const std::string send_goal_srv = "/powertrain/engine/long_calibration/_action/send_goal";
+    const std::string calibrate_srv = "/powertrain/engine/calibrate";
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool graph_ready = false;
+    bool refresh_ran = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (!graph_ready) {
+        const auto services = gateway_node_->get_service_names_and_types();
+        graph_ready = services.count(send_goal_srv) > 0 && services.count(calibrate_srv) > 0;
+      }
+      if (!refresh_ran) {
+        refresh_ran = gateway_node_->get_thread_safe_cache().generation() > base_generation;
+      }
+      if (graph_ready && refresh_ran) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
   }
 
   void seed_component_cache() {
@@ -373,8 +408,9 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     }
     EXPECT_FALSE(async_ptr->id.empty());
 
-    // Re-seed cache after the goal subscription perturbs discovery.
-    seed_component_cache();
+    // No re-seed needed: with the refresh debounce pinned at 60s, the goal's
+    // client/subscription graph churn cannot trigger a refresh that wipes the
+    // seed within the test's lifetime.
     return async_ptr->id;
   }
 
