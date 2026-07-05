@@ -386,6 +386,33 @@ TEST(ReconcileShouldClearCondition, SkipsClearWhenSourceScanFailed) {
                                                    modeled_sources));
 }
 
+// Issue #496: comms-lost debounce gate.
+TEST(CommsLostShouldRaise, RaisesAfterDebounceElapsed) {
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  const auto debounce = std::chrono::milliseconds(5000);
+  // Continuously down for the full window -> raise.
+  EXPECT_TRUE(OpcuaPoller::comms_lost_should_raise(/*enabled=*/true, /*already_raised=*/false, t0,
+                                                   t0 + std::chrono::milliseconds(5000), debounce));
+  EXPECT_TRUE(OpcuaPoller::comms_lost_should_raise(true, false, t0, t0 + std::chrono::seconds(9), debounce));
+}
+
+TEST(CommsLostShouldRaise, HoldsDuringDebounceWindow) {
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  const auto debounce = std::chrono::milliseconds(5000);
+  // A blip shorter than the window must not raise.
+  EXPECT_FALSE(OpcuaPoller::comms_lost_should_raise(true, false, t0, t0 + std::chrono::milliseconds(4999), debounce));
+}
+
+TEST(CommsLostShouldRaise, IdempotentAndDisabled) {
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  const auto debounce = std::chrono::milliseconds(5000);
+  const auto late = t0 + std::chrono::seconds(30);
+  // Already raised -> do not raise again (one-shot).
+  EXPECT_FALSE(OpcuaPoller::comms_lost_should_raise(true, /*already_raised=*/true, t0, late, debounce));
+  // Disabled -> never raise.
+  EXPECT_FALSE(OpcuaPoller::comms_lost_should_raise(/*enabled=*/false, false, t0, late, debounce));
+}
+
 // Issue #478 safety-gate: an empty scan from a source that has NEVER yielded a
 // condition instance node (EventNotifier-only server, e.g. S7-1500) must NOT
 // clear the still-active tracked fault. This is the single most important

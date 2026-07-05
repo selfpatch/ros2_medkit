@@ -232,6 +232,24 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     poller_config_.require_confirm_for_clear = !(v == "0" || v == "false" || v == "no" || v == "off");
   }
 
+  // Issue #496: comms-lost fault knobs.
+  if (config.contains("comms_lost_fault_enabled")) {
+    poller_config_.comms_lost_fault_enabled = config["comms_lost_fault_enabled"].get<bool>();
+  }
+  if (auto * env = std::getenv("OPCUA_COMMS_LOST_ENABLED")) {
+    const std::string v = env;
+    poller_config_.comms_lost_fault_enabled = !(v == "0" || v == "false" || v == "no" || v == "off");
+  }
+  if (config.contains("comms_lost_debounce_ms")) {
+    poller_config_.comms_lost_debounce = std::chrono::milliseconds(config["comms_lost_debounce_ms"].get<int>());
+  }
+  if (auto * env = std::getenv("OPCUA_COMMS_LOST_DEBOUNCE_MS")) {
+    poller_config_.comms_lost_debounce = std::chrono::milliseconds(std::atoi(env));
+  }
+  if (config.contains("comms_lost_severity")) {
+    poller_config_.comms_lost_severity = config["comms_lost_severity"].get<std::string>();
+  }
+
   // Environment variables override YAML config (for Docker)
   if (auto * env = std::getenv("OPCUA_ENDPOINT_URL")) {
     client_config_.endpoint_url = env;
