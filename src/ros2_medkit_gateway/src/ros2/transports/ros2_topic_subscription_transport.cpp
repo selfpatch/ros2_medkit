@@ -55,8 +55,8 @@ Ros2TopicSubscriptionTransport::Handle::Handle(TriggerTopicSubscriber * subscrib
 
 Ros2TopicSubscriptionTransport::Handle::~Handle() {
   // Subscriber outlives the handle by construction (GatewayNode tear-down
-  // order); calling unsubscribe() here drains in-flight rclcpp callbacks
-  // before the user callback is released.
+  // order). unsubscribe() stops delivery immediately and defers destroying
+  // the underlying subscription until the subscriber shuts down.
   subscriber_->unsubscribe(key_);
 }
 
