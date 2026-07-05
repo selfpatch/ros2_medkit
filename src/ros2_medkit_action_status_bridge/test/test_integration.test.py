@@ -144,8 +144,34 @@ class TestActionStatusBridgeIntegration(unittest.TestCase):
             time.sleep(0.5)
         return fault
 
+    def wait_for_bridge_watching(self, timeout=15.0):
+        """
+        Wait until the bridge subscribes to the status topic with a resolved name.
+
+        The bridge fixes a fault's source at first report: the status publisher's
+        node FQN if DDS discovery has resolved it, else the action-name fallback
+        (reporter_for). If the ABORTED status is published before the bridge has
+        resolved this node's name, the source freezes to the fallback and is never
+        re-attributed. Seeing the bridge's subscription here with a resolved node
+        name means discovery between the two participants has settled both ways, so
+        the first report resolves the server FQN instead of racing node-name
+        propagation.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            infos = self.node.get_subscriptions_info_by_topic(STATUS_TOPIC)
+            if any(info.node_name == 'action_status_bridge' for info in infos):
+                return True
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+        return False
+
     def test_01_aborted_goal_raises_fault(self):
         """An ABORTED goal on a discovered status topic raises a fault."""
+        # Synchronize on the bridge's subscription before publishing so the server
+        # FQN is resolved at first report rather than racing DDS node-name
+        # propagation (which freezes the source to the action-name fallback).
+        self.assertTrue(self.wait_for_bridge_watching(),
+                        'bridge did not subscribe to the status topic in time')
         self.status_pub.publish(_status_array(GoalStatus.STATUS_ABORTED, 1))
         # Poll through runtime discovery (rescan) + subscription + processing.
         fault = self.wait_for_fault(ABORTED_CODE)
