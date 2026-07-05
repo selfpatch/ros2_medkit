@@ -54,8 +54,11 @@ struct AssociatedValueRef {
 /// #389). A single OPC-UA source (e.g. the Server object as a catch-all, or a
 /// real owning Object) can emit many distinct conditions; each mapping routes
 /// a subset to its own SOVD fault. Match fields are AND-combined; an empty
-/// match field is a wildcard. The first mapping whose non-empty match fields
-/// all equal the observed event wins (declaration order = precedence).
+/// match field is a wildcard. ``match_condition_name`` / ``match_source_node``
+/// / ``match_event_type`` are equality matches; ``match_message`` is a
+/// case-sensitive substring match on the event Message. The first mapping whose
+/// non-empty match fields all match the observed event wins (declaration order
+/// = precedence).
 struct AlarmMapping {
   std::string match_condition_name;  // ConditionType.ConditionName (empty = any)
   std::string match_source_node;     // event SourceNode id string (empty = any)
