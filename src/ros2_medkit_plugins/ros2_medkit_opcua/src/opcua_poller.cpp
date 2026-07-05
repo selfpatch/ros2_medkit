@@ -841,6 +841,29 @@ void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue &
   evaluate_alarms();
 }
 
+bool OpcuaPoller::comms_lost_should_raise(bool enabled, bool already_raised,
+                                          std::chrono::steady_clock::time_point down_since,
+                                          std::chrono::steady_clock::time_point now,
+                                          std::chrono::milliseconds debounce) {
+  if (!enabled || already_raised) {
+    return false;
+  }
+  return (now - down_since) >= debounce;
+}
+
+void OpcuaPoller::emit_comms_lost(bool active) {
+  ros2_medkit::fault_detection::FaultSignal signal;
+  signal.fault_code = "PLC_COMMS_LOST";
+  signal.severity = config_.comms_lost_severity;
+  signal.message = active ? ("OPC-UA connection lost to " + client_.endpoint_url())
+                          : ("OPC-UA connection restored to " + client_.endpoint_url());
+  signal.active = active;
+  std::lock_guard<std::mutex> alarm_lock(alarm_mutex_);
+  if (alarm_callback_) {
+    alarm_callback_(node_map_.component_id(), signal);
+  }
+}
+
 void OpcuaPoller::poll_loop() {
   auto reconnect_wait = config_.reconnect_interval;
   constexpr auto max_reconnect_wait = std::chrono::milliseconds(60000);
@@ -853,9 +876,22 @@ void OpcuaPoller::poll_loop() {
         snapshot_.connected = false;
       }
 
+      // Issue #496: remember when the connection first went down so the
+      // comms-lost fault only fires after a continuous debounce window.
+      if (!comms_down_since_) {
+        comms_down_since_ = std::chrono::steady_clock::now();
+      }
+
       // Attempt reconnect with original config (preserves timeout, etc.)
       if (client_.connect(client_.current_config())) {
         reconnect_wait = config_.reconnect_interval;  // reset on success
+        // Issue #496: connection restored - clear the comms-lost fault if it
+        // was raised, then reset the debounce timer.
+        if (comms_lost_raised_) {
+          emit_comms_lost(/*active=*/false);
+          comms_lost_raised_ = false;
+        }
+        comms_down_since_.reset();
         if (config_.prefer_subscriptions) {
           setup_subscriptions();
         }
@@ -873,6 +909,13 @@ void OpcuaPoller::poll_loop() {
           setup_event_subscriptions();
         }
       } else {
+        // Issue #496: still down - raise the component-scoped comms-lost fault
+        // once the debounce window has elapsed (idempotent via the raised flag).
+        if (comms_lost_should_raise(config_.comms_lost_fault_enabled, comms_lost_raised_, *comms_down_since_,
+                                    std::chrono::steady_clock::now(), config_.comms_lost_debounce)) {
+          emit_comms_lost(/*active=*/true);
+          comms_lost_raised_ = true;
+        }
         // Exponential backoff capped at 60s. condition_variable so stop() wakes immediately.
         {
           std::unique_lock<std::mutex> lock(stop_mutex_);

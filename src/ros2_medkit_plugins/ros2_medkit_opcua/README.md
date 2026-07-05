@@ -367,6 +367,9 @@ ros2_medkit_gateway:
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
 | `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
+| `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down (issue #496) |
+| `comms_lost_debounce_ms` | `5000` | Continuous down time before `PLC_COMMS_LOST` is raised (debounces reconnect blips) |
+| `comms_lost_severity` | `ERROR` | SOVD severity bucket for the `PLC_COMMS_LOST` fault |
 
 ### OPC-UA client security (SecurityPolicy, certificates, user auth)
 

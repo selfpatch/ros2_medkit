@@ -114,6 +114,14 @@ struct PollerConfig {
   /// forever. Default true preserves the spec-strict behaviour. Issue #478;
   /// needs real-S7-1500 validation.
   bool require_confirm_for_clear{true};
+  /// Issue #496: raise a single component-scoped ``PLC_COMMS_LOST`` fault when
+  /// the OPC-UA connection stays down for ``comms_lost_debounce`` continuously
+  /// (so a brief blip during a normal reconnect does not flap a fault), and
+  /// clear it on the next successful reconnect. ``enabled`` default true;
+  /// ``severity`` is the SOVD severity bucket for the fault.
+  bool comms_lost_fault_enabled{true};
+  std::chrono::milliseconds comms_lost_debounce{5000};
+  std::string comms_lost_severity{"ERROR"};
   /// Optional warn-level log sink for operator-visible failures inside the
   /// poll thread. Set by the plugin owning the poller to its log_warn
   /// helper so events like ``ConditionRefresh failed`` reach the ROS 2 log
@@ -215,9 +223,22 @@ class OpcuaPoller {
   static bool should_clear_after_refresh(SovdAlarmStatus last_status, const std::string & condition_id,
                                          const std::set<std::string> & seen);
 
+  /// Decide whether the debounced comms-lost fault should be raised now
+  /// (issue #496). Raised only when the fault is enabled, is not already
+  /// raised, and the connection has been continuously down since
+  /// ``down_since`` for at least ``debounce``. Pure and static so the
+  /// debounce gate is unit-testable without a live connection.
+  static bool comms_lost_should_raise(bool enabled, bool already_raised,
+                                      std::chrono::steady_clock::time_point down_since,
+                                      std::chrono::steady_clock::time_point now, std::chrono::milliseconds debounce);
+
  private:
   void poll_loop();
   void do_poll();
+  /// Issue #496: emit the component-scoped comms-lost raise/clear edge through
+  /// the alarm callback (fault_code ``PLC_COMMS_LOST``, scoped to the node
+  /// map's root component).
+  void emit_comms_lost(bool active);
   void setup_subscriptions();
   void evaluate_alarms();
   void on_data_change(const std::string & node_id, const OpcuaValue & value);
@@ -336,6 +357,13 @@ class OpcuaPoller {
   // so a transient server error (BadMethodInvalid on cold-start, recovers
   // later) gets one log per connect, not one per re-subscribe attempt.
   bool condition_refresh_warned_{false};
+
+  // Issue #496: comms-lost debounce state, touched only on the poll thread.
+  // ``comms_down_since_`` is set the first poll iteration the connection is
+  // observed down and cleared on reconnect; ``comms_lost_raised_`` guards the
+  // one-shot raise / matching clear so the fault is idempotent.
+  std::optional<std::chrono::steady_clock::time_point> comms_down_since_;
+  bool comms_lost_raised_{false};
 
   // Thread safety: must be set via set_poll_callback() before start().
   // Not modified after start(), so safe to read from the poll thread without a mutex.
