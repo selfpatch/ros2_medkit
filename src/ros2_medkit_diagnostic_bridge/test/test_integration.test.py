@@ -89,8 +89,29 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         assert cls.list_faults_client.wait_for_service(timeout_sec=10.0), \
             'ListFaults service not available'
 
-        # Wait for bridge to connect
-        time.sleep(1.0)
+        # Wait for the bridge's /diagnostics subscription to match this
+        # publisher before any test publishes. The bridge subscribes with
+        # volatile QoS, so a sample published before the match is silently
+        # dropped and never becomes a fault - a fixed sleep here raced that
+        # match under load.
+        assert cls._wait_for_bridge_subscription(timeout_sec=15.0), \
+            'diagnostic_bridge did not subscribe to /diagnostics'
+
+    @classmethod
+    def _wait_for_bridge_subscription(cls, *, timeout_sec=15.0):
+        """Wait until the bridge's /diagnostics subscription matches our publisher.
+
+        Polls the publisher's matched-subscription count (spinning so DDS
+        discovery can progress) instead of sleeping a fixed interval, so
+        published diagnostics are guaranteed to be delivered rather than
+        dropped by the volatile QoS during the discovery window.
+        """
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if cls.diag_pub.get_subscription_count() >= 1:
+                return True
+            rclpy.spin_once(cls.node, timeout_sec=0.1)
+        return False
 
     @classmethod
     def tearDownClass(cls):
@@ -99,14 +120,15 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         rclpy.shutdown()
 
     def list_faults(self, statuses=None):
-        """Get faults from FaultManager."""
+        """Get faults from FaultManager (empty list if the call times out)."""
         request = ListFaults.Request()
         request.filter_by_severity = False
         request.statuses = statuses or []
 
         future = self.list_faults_client.call_async(request)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
-        return future.result().faults
+        result = future.result()
+        return result.faults if result is not None else []
 
     def publish_diagnostic(self, name, level, message='Test message'):
         """Publish a single diagnostic message."""
@@ -121,65 +143,91 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         self.diag_pub.publish(msg)
 
         # Give time for message to be processed
-        time.sleep(0.5)
+        time.sleep(0.3)
+
+    def publish_until(self, name, level, expected_code, *, predicate=None,
+                      message='Test message', statuses=None, timeout=25.0):
+        """Republish a diagnostic until a matching fault satisfies *predicate*.
+
+        Two discovery hops gate the first fault: the bridge's /diagnostics
+        subscription must match this publisher (handled in setUpClass) and the
+        bridge's ReportFault client must have discovered fault_manager, else
+        ``send_report`` drops the fire-and-forget request. That client readiness
+        is not observable from here and the report is one-shot, so re-emit the
+        stimulus and poll rather than publishing once and racing the hop.
+        Re-emission also drives WARN/PASSED past their occurrence threshold
+        within the filter window deterministically.
+
+        Returns the matching fault once *predicate* holds; fails at the
+        deadline.
+        """
+        if predicate is None:
+            def predicate(_fault):
+                return True
+        deadline = time.monotonic() + timeout
+        last = None
+        while time.monotonic() < deadline:
+            self.publish_diagnostic(name, level, message)
+            fault = next(
+                (f for f in self.list_faults(statuses=statuses)
+                 if f.fault_code == expected_code),
+                None,
+            )
+            if fault is not None:
+                last = fault
+                if predicate(fault):
+                    return fault
+        self.fail(
+            f'Fault {expected_code} not satisfied within {timeout}s '
+            f'(last seen: {last})'
+        )
 
     def test_01_error_diagnostic_creates_fault(self):
         """Test that ERROR diagnostic creates a fault in FaultManager."""
-        self.publish_diagnostic('test_sensor', DiagnosticStatus.ERROR, 'Sensor failure')
-
-        faults = self.list_faults()
-        fault_codes = [f.fault_code for f in faults]
-
-        self.assertIn('TEST_SENSOR', fault_codes)
-        fault = next(f for f in faults if f.fault_code == 'TEST_SENSOR')
+        fault = self.publish_until(
+            'test_sensor', DiagnosticStatus.ERROR, 'TEST_SENSOR',
+            message='Sensor failure',
+        )
         self.assertEqual(fault.severity, Fault.SEVERITY_ERROR)
 
     def test_02_warn_diagnostic_creates_fault(self):
-        """Test that WARN diagnostic creates a fault."""
-        # Send multiple times to bypass FaultReporter's local filtering (default threshold=3)
-        for _ in range(3):
-            self.publish_diagnostic('warning_component', DiagnosticStatus.WARN, 'Low battery')
+        """Test that WARN diagnostic creates a fault.
 
-        faults = self.list_faults()
-        fault_codes = [f.fault_code for f in faults]
-
-        self.assertIn('WARNING_COMPONENT', fault_codes)
-        fault = next(f for f in faults if f.fault_code == 'WARNING_COMPONENT')
+        WARN does not bypass the reporter's local filter (threshold=3), so
+        publish_until re-emits until the occurrence threshold is met and the
+        report reaches fault_manager.
+        """
+        fault = self.publish_until(
+            'warning_component', DiagnosticStatus.WARN, 'WARNING_COMPONENT',
+            message='Low battery',
+        )
         self.assertEqual(fault.severity, Fault.SEVERITY_WARN)
 
     def test_03_stale_diagnostic_creates_critical_fault(self):
         """Test that STALE diagnostic creates a CRITICAL fault."""
-        self.publish_diagnostic('stale_sensor', DiagnosticStatus.STALE, 'No data')
-
-        faults = self.list_faults()
-        fault_codes = [f.fault_code for f in faults]
-
-        self.assertIn('STALE_SENSOR', fault_codes)
-        fault = next(f for f in faults if f.fault_code == 'STALE_SENSOR')
+        fault = self.publish_until(
+            'stale_sensor', DiagnosticStatus.STALE, 'STALE_SENSOR',
+            message='No data',
+        )
         self.assertEqual(fault.severity, Fault.SEVERITY_CRITICAL)
 
     def test_04_ok_diagnostic_heals_fault(self):
         """Test that OK diagnostic sends PASSED and heals fault."""
-        # First create a fault
-        self.publish_diagnostic('healing_test', DiagnosticStatus.ERROR, 'Error')
+        # First create a fault.
+        self.publish_until(
+            'healing_test', DiagnosticStatus.ERROR, 'HEALING_TEST',
+            message='Error',
+        )
 
-        faults = self.list_faults()
-        self.assertIn('HEALING_TEST', [f.fault_code for f in faults])
-
-        # Send OK multiple times to bypass FaultReporter's local PASSED filtering
-        # (default threshold=3, same as FAILED events). Extra iterations ensure
-        # the async service call has time to reach FaultManager.
-        for _ in range(4):
-            self.publish_diagnostic('healing_test', DiagnosticStatus.OK)
-
-        # Allow time for the async PASSED service call to be processed
-        time.sleep(1.0)
-
-        # Check fault is healed (query all statuses to find it)
-        faults = self.list_faults(statuses=[Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED])
-        fault = next((f for f in faults if f.fault_code == 'HEALING_TEST'), None)
-        self.assertIsNotNone(fault, 'HEALING_TEST fault not found')
-        # After PASSED events with healing_threshold=1, fault should be HEALED
+        # Send OK until the fault heals. PASSED events share the reporter's
+        # local threshold (3) and the healing service call is async, so
+        # re-emit and poll until the fault reaches HEALED instead of publishing
+        # a fixed number of times and racing propagation.
+        fault = self.publish_until(
+            'healing_test', DiagnosticStatus.OK, 'HEALING_TEST',
+            predicate=lambda f: f.status == Fault.STATUS_HEALED,
+            statuses=[Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED],
+        )
         self.assertEqual(fault.status, Fault.STATUS_HEALED)
 
     def test_05_fault_code_generation(self):
@@ -191,13 +239,9 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         ]
 
         for diag_name, expected_code in test_cases:
-            self.publish_diagnostic(diag_name, DiagnosticStatus.ERROR)
-
-            faults = self.list_faults()
-            fault_codes = [f.fault_code for f in faults]
-
-            self.assertIn(expected_code, fault_codes,
-                          f'Expected {expected_code} from diagnostic "{diag_name}"')
+            self.publish_until(
+                diag_name, DiagnosticStatus.ERROR, expected_code,
+            )
 
 
 @launch_testing.post_shutdown_test()
