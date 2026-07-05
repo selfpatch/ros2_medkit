@@ -152,7 +152,7 @@ plantuml_output_format = "svg"
 # -- Options for linkcheck ---------------------------------------------------
 # Retry transient external failures (e.g. docs.ros.org read timeouts) instead of
 # failing the whole build on a single network blip.
-linkcheck_retries = 3
+linkcheck_retries = 5
 linkcheck_timeout = 30
 linkcheck_ignore = [
     r"http://localhost:\d+",  # Ignore localhost URLs
@@ -163,4 +163,8 @@ linkcheck_ignore = [
     r"https://github\.com/selfpatch/ros2_medkit/blob/.+#L\d+",
     # GitHub issue links may 404 in linkcheck without auth token
     r"https://github\.com/selfpatch/ros2_medkit/issues/\d+",
+    # ros.org/reps REP pages (e.g. rep-0149) intermittently exceed the read
+    # timeout in CI; the canonical REP host is slow, not broken. Skip rather
+    # than fail the docs build on a transient external read timeout.
+    r"https://ros\.org/reps/",
 ]
