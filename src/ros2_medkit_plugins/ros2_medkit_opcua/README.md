@@ -491,6 +491,8 @@ Write operations use the `set_` prefix convention:
 | `OPCUA_USER_CERT` | X.509 user-token cert (DER) |
 | `OPCUA_CONDITION_REPLAY` | `method` / `read` / `auto` / `off` |
 | `OPCUA_REQUIRE_CONFIRM_FOR_CLEAR` | `0`/`false`/`no`/`off` to clear native alarms on Acknowledge alone (Confirm-less servers) |
+| `OPCUA_COMMS_LOST_ENABLED` | `0`/`false`/`no`/`off` to disable the `PLC_COMMS_LOST` fault |
+| `OPCUA_COMMS_LOST_DEBOUNCE_MS` | Continuous down time (ms) before `PLC_COMMS_LOST` is raised |
 
 ## Hardware Deployment
 

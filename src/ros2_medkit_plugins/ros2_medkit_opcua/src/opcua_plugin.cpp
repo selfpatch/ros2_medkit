@@ -241,13 +241,33 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     poller_config_.comms_lost_fault_enabled = !(v == "0" || v == "false" || v == "no" || v == "off");
   }
   if (config.contains("comms_lost_debounce_ms")) {
-    poller_config_.comms_lost_debounce = std::chrono::milliseconds(config["comms_lost_debounce_ms"].get<int>());
+    const int ms = config["comms_lost_debounce_ms"].get<int>();
+    poller_config_.comms_lost_debounce = std::chrono::milliseconds(ms < 0 ? 0 : ms);
   }
   if (auto * env = std::getenv("OPCUA_COMMS_LOST_DEBOUNCE_MS")) {
-    poller_config_.comms_lost_debounce = std::chrono::milliseconds(std::atoi(env));
+    // Keep the existing value on a non-numeric / negative override so a typo
+    // does not silently disable the debounce (atoi would parse it as 0).
+    char * end = nullptr;
+    const long ms = std::strtol(env, &end, 10);
+    if (end != env && *end == '\0' && ms >= 0) {
+      poller_config_.comms_lost_debounce = std::chrono::milliseconds(ms);
+    } else {
+      log_warn(std::string("Ignoring invalid OPCUA_COMMS_LOST_DEBOUNCE_MS='") + env +
+               "' (want a non-negative integer)");
+    }
   }
   if (config.contains("comms_lost_severity")) {
     poller_config_.comms_lost_severity = config["comms_lost_severity"].get<std::string>();
+  }
+  {
+    // Validate against the SOVD severity buckets and default to ERROR on a typo,
+    // so the comms-lost fault is not silently downgraded to INFO by the severity
+    // map (same guard as the node-map severity validation).
+    const std::string & s = poller_config_.comms_lost_severity;
+    if (s != "INFO" && s != "WARNING" && s != "ERROR" && s != "CRITICAL") {
+      log_warn("Unknown comms_lost_severity '" + s + "' - defaulting to ERROR");
+      poller_config_.comms_lost_severity = "ERROR";
+    }
   }
 
   // Environment variables override YAML config (for Docker)
