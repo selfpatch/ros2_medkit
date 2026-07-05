@@ -620,6 +620,7 @@ bool NodeMap::load(const std::string & yaml_path) {
             mapping.match_condition_name = m["condition_name"].as<std::string>("");
             mapping.match_source_node = m["source_node"].as<std::string>("");
             mapping.match_event_type = m["event_type"].as<std::string>("");
+            mapping.match_message = m["match_message"].as<std::string>("");
             mapping.fault_code = *mapping_fault_code;
             mapping.severity_override = m["severity_override"].as<std::string>("");
             mapping.message_override = m["message"].as<std::string>("");
@@ -794,10 +795,15 @@ const AlarmEventConfig * NodeMap::find_event_alarm(const std::string & entity_id
 }
 
 ResolvedAlarm NodeMap::resolve_alarm(const AlarmEventConfig & cfg, const std::string & condition_name,
-                                     const std::string & source_node, const std::string & event_type) {
+                                     const std::string & source_node, const std::string & event_type,
+                                     const std::string & message) {
   ResolvedAlarm out;
-  // First mapping whose non-empty match fields all equal the observed event
-  // wins (declaration order = precedence).
+  // First mapping whose non-empty match fields all match the observed event
+  // wins (declaration order = precedence). condition_name/source_node/event_type
+  // are equality matches; match_message is a case-sensitive substring match on
+  // the event Message - the practical discriminator for PLCs (e.g. Siemens
+  // S7-1500) that emit many Program_Alarms sharing one EventType and SourceNode
+  // and differ only by alarm text.
   for (const auto & m : cfg.mappings) {
     if (!m.match_condition_name.empty() && m.match_condition_name != condition_name) {
       continue;
@@ -806,6 +812,9 @@ ResolvedAlarm NodeMap::resolve_alarm(const AlarmEventConfig & cfg, const std::st
       continue;
     }
     if (!m.match_event_type.empty() && m.match_event_type != event_type) {
+      continue;
+    }
+    if (!m.match_message.empty() && message.find(m.match_message) == std::string::npos) {
       continue;
     }
     out.fault_code = m.fault_code;

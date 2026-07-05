@@ -1470,12 +1470,15 @@ nodes:
 // Issue #389: multi-alarm mapping + associated values.
 // ---------------------------------------------------------------------------
 
+// AlarmMapping brace-init order:
+// {match_condition_name, match_source_node, match_event_type, match_message,
+//  fault_code, severity_override, message_override}
 TEST(ResolveAlarmTest, FallsBackToSourceFaultCode) {
   AlarmEventConfig cfg;
   cfg.entity_id = "tank";
   cfg.fault_code = "PLC_GENERIC";
   cfg.severity_override = "WARNING";
-  auto r = NodeMap::resolve_alarm(cfg, "AnyName", "ns=2;s=Src", "ns=0;i=2915");
+  auto r = NodeMap::resolve_alarm(cfg, "AnyName", "ns=2;s=Src", "ns=0;i=2915", "any msg");
   EXPECT_TRUE(r.matched);
   EXPECT_EQ(r.fault_code, "PLC_GENERIC");
   EXPECT_EQ(r.severity_override, "WARNING");
@@ -1484,7 +1487,7 @@ TEST(ResolveAlarmTest, FallsBackToSourceFaultCode) {
 TEST(ResolveAlarmTest, NoMappingNoFallbackIsUnmatched) {
   AlarmEventConfig cfg;
   cfg.entity_id = "tank";  // no fault_code, no mappings
-  auto r = NodeMap::resolve_alarm(cfg, "X", "Y", "Z");
+  auto r = NodeMap::resolve_alarm(cfg, "X", "Y", "Z", "msg");
   EXPECT_FALSE(r.matched);
 }
 
@@ -1492,20 +1495,20 @@ TEST(ResolveAlarmTest, FirstMatchingMappingWinsByConditionName) {
   AlarmEventConfig cfg;
   cfg.entity_id = "tank";
   cfg.fault_code = "PLC_CATCHALL";
-  cfg.mappings.push_back({/*cond*/ "Overpressure", "", "", "PLC_OVERPRESSURE", "ERROR", "Overpressure!"});
-  cfg.mappings.push_back({/*cond*/ "LowLevel", "", "", "PLC_LOW_LEVEL", "WARNING", "Low level"});
+  cfg.mappings.push_back({/*cond*/ "Overpressure", "", "", "", "PLC_OVERPRESSURE", "ERROR", "Overpressure!"});
+  cfg.mappings.push_back({/*cond*/ "LowLevel", "", "", "", "PLC_LOW_LEVEL", "WARNING", "Low level"});
 
-  auto r1 = NodeMap::resolve_alarm(cfg, "Overpressure", "ns=2;s=Tank", "ns=0;i=2915");
+  auto r1 = NodeMap::resolve_alarm(cfg, "Overpressure", "ns=2;s=Tank", "ns=0;i=2915", "");
   EXPECT_TRUE(r1.matched);
   EXPECT_EQ(r1.fault_code, "PLC_OVERPRESSURE");
   EXPECT_EQ(r1.severity_override, "ERROR");
   EXPECT_EQ(r1.message_override, "Overpressure!");
 
-  auto r2 = NodeMap::resolve_alarm(cfg, "LowLevel", "ns=2;s=Tank", "ns=0;i=2915");
+  auto r2 = NodeMap::resolve_alarm(cfg, "LowLevel", "ns=2;s=Tank", "ns=0;i=2915", "");
   EXPECT_EQ(r2.fault_code, "PLC_LOW_LEVEL");
 
   // Unmatched condition name -> source-level catch-all.
-  auto r3 = NodeMap::resolve_alarm(cfg, "Unknown", "ns=2;s=Tank", "ns=0;i=2915");
+  auto r3 = NodeMap::resolve_alarm(cfg, "Unknown", "ns=2;s=Tank", "ns=0;i=2915", "");
   EXPECT_TRUE(r3.matched);
   EXPECT_EQ(r3.fault_code, "PLC_CATCHALL");
 }
@@ -1513,11 +1516,11 @@ TEST(ResolveAlarmTest, FirstMatchingMappingWinsByConditionName) {
 TEST(ResolveAlarmTest, MatchBySourceNodeAndEventType) {
   AlarmEventConfig cfg;
   cfg.entity_id = "tank";
-  cfg.mappings.push_back({"", "ns=2;s=PumpA", "ns=0;i=2915", "PLC_PUMP_A", "", ""});
+  cfg.mappings.push_back({"", "ns=2;s=PumpA", "ns=0;i=2915", "", "PLC_PUMP_A", "", ""});
   // SourceNode mismatch -> unmatched (no fallback fault_code).
-  EXPECT_FALSE(NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpB", "ns=0;i=2915").matched);
+  EXPECT_FALSE(NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpB", "ns=0;i=2915", "").matched);
   // Both match.
-  auto r = NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpA", "ns=0;i=2915");
+  auto r = NodeMap::resolve_alarm(cfg, "X", "ns=2;s=PumpA", "ns=0;i=2915", "");
   EXPECT_TRUE(r.matched);
   EXPECT_EQ(r.fault_code, "PLC_PUMP_A");
 }
@@ -1527,10 +1530,40 @@ TEST(ResolveAlarmTest, MappingInheritsSourceLevelOverridesWhenUnset) {
   cfg.entity_id = "tank";
   cfg.severity_override = "CRITICAL";
   cfg.message_override = "src-msg";
-  cfg.mappings.push_back({"Cond", "", "", "PLC_X", "", ""});  // no per-mapping overrides
-  auto r = NodeMap::resolve_alarm(cfg, "Cond", "s", "e");
+  cfg.mappings.push_back({"Cond", "", "", "", "PLC_X", "", ""});  // no per-mapping overrides
+  auto r = NodeMap::resolve_alarm(cfg, "Cond", "s", "e", "");
   EXPECT_EQ(r.severity_override, "CRITICAL");
   EXPECT_EQ(r.message_override, "src-msg");
+}
+
+TEST(ResolveAlarmTest, MatchByMessageSubstring) {
+  // A PLC (e.g. Siemens S7-1500) emits many Program_Alarms sharing one
+  // EventType and SourceNode, differing only by alarm text; a case-sensitive
+  // Message substring match splits them into distinct SOVD faults.
+  AlarmEventConfig cfg;
+  cfg.entity_id = "cpu";
+  cfg.fault_code = "PLC_PROGRAM_ALARM";  // source-level catch-all
+  cfg.mappings.push_back({"", "", "", "trigger active", "PLC_ALARM_TRIGGER", "ERROR", ""});
+  cfg.mappings.push_back({"", "", "", "Second alarm", "PLC_ALARM_SECOND", "WARNING", ""});
+
+  // Same EventType + SourceNode for both; only the message differs.
+  auto r1 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "Test Program Alert - trigger active");
+  EXPECT_TRUE(r1.matched);
+  EXPECT_EQ(r1.fault_code, "PLC_ALARM_TRIGGER");
+  EXPECT_EQ(r1.severity_override, "ERROR");
+
+  auto r2 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "Second alarm fired");
+  EXPECT_TRUE(r2.matched);
+  EXPECT_EQ(r2.fault_code, "PLC_ALARM_SECOND");
+
+  // No substring match -> source-level catch-all.
+  auto r3 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "Unrelated text");
+  EXPECT_TRUE(r3.matched);
+  EXPECT_EQ(r3.fault_code, "PLC_PROGRAM_ALARM");
+
+  // Empty event message never matches a non-empty match_message -> catch-all.
+  auto r4 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "");
+  EXPECT_EQ(r4.fault_code, "PLC_PROGRAM_ALARM");
 }
 
 TEST_F(NodeMapTest, LoadsMappingsAndAssociatedValues) {

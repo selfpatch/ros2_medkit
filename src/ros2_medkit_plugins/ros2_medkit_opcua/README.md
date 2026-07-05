@@ -313,6 +313,11 @@ event_alarms:
       - source_node: "ns=3;s=PumpA"      # or match by event SourceNode
         event_type: "ns=0;i=2915"        # and/or EventType (AND-combined)
         fault_code: PLC_PUMP_A_FAULT
+      - match_message: "Overtemperature"  # or match a Message substring - the
+        fault_code: PLC_OVERTEMP          # practical discriminator for PLCs (e.g.
+        severity_override: ERROR          # Siemens S7-1500) whose Program_Alarms
+                                          # share one EventType + SourceNode and
+                                          # differ only by alarm text
     # Append vendor associated values (Siemens Program_Alarm SD_1..SD_n) to the
     # fault description as "label=value".
     associated_values:
@@ -322,7 +327,9 @@ event_alarms:
 ```
 
 Mapping precedence: a mapping with more (non-empty) match fields is matched
-only when all of them equal the observed event; declaration order breaks ties.
+only when all of them match the observed event; declaration order breaks ties.
+`condition_name` / `source_node` / `event_type` are equality matches;
+`match_message` is a case-sensitive substring match on the event Message.
 An event matching no mapping uses the source-level `fault_code`; if that is also
 empty the event is ignored. A mapping-level `severity_override` / `message`
 overrides the source-level one; otherwise the source-level value is inherited.

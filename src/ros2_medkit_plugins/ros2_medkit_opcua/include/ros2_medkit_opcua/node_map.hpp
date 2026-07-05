@@ -60,6 +60,7 @@ struct AlarmMapping {
   std::string match_condition_name;  // ConditionType.ConditionName (empty = any)
   std::string match_source_node;     // event SourceNode id string (empty = any)
   std::string match_event_type;      // event EventType id string (empty = any)
+  std::string match_message;         // Message substring (empty = any); case-sensitive contains
 
   std::string fault_code;
   std::string severity_override;
@@ -201,7 +202,8 @@ class NodeMap {
   /// First matching mapping wins; falls back to the source-level fault_code.
   /// Pure / static so the precedence rules are unit-testable without a server.
   static ResolvedAlarm resolve_alarm(const AlarmEventConfig & cfg, const std::string & condition_name,
-                                     const std::string & source_node, const std::string & event_type);
+                                     const std::string & source_node, const std::string & event_type,
+                                     const std::string & message);
 
   /// Get derived SOVD entity definitions
   const std::vector<PlcEntityDef> & entity_defs() const {

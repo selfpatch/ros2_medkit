@@ -520,9 +520,9 @@ void OpcuaPoller::read_fallback_replay() {
 
       // Resolve identity to a specific fault. EventType is not available from
       // a state read, so event_type-only mappings will not match here; routing
-      // by condition_name / source_node still works.
+      // by condition_name / source_node / message still works.
       ResolvedAlarm resolved =
-          NodeMap::resolve_alarm(cfg, snap.condition_name, cfg.source_node_id_str, /*event_type=*/"");
+          NodeMap::resolve_alarm(cfg, snap.condition_name, cfg.source_node_id_str, /*event_type=*/"", snap.message);
       if (!resolved.matched) {
         continue;
       }
@@ -720,7 +720,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   if (values.size() > kFieldConditionName) {
     condition_name = variant_to_string_scalar(values[kFieldConditionName]);
   }
-  ResolvedAlarm resolved = NodeMap::resolve_alarm(cfg, condition_name, source_node.toString(), event_type.toString());
+  ResolvedAlarm resolved =
+      NodeMap::resolve_alarm(cfg, condition_name, source_node.toString(), event_type.toString(), message);
   if (!resolved.matched) {
     // No mapping and no source-level fault_code applies to this condition.
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
