@@ -259,21 +259,17 @@ class TestOperationsApi(GatewayTestCase):
 
     def test_service_operation_has_type_info_schema(self):
         """Service operations include type_info with request/response schemas."""
-        ops_data = self.get_json('/apps/calibration/operations')
-        self.assertIn('items', ops_data, 'Operations endpoint should return items')
-        ops = ops_data['items']
+        # The operation is listed by name before its service type is resolved,
+        # so wait until type_info carries the request/response schema keys
+        # rather than reading the list once and racing type resolution.
+        calibrate_op = self.wait_for_operation_type_info(
+            '/apps/calibration', 'calibrate', ('request', 'response'),
+        )
 
-        # Find the calibrate service operation
-        calibrate_op = None
-        for op in ops:
-            if op['name'] == 'calibrate':
-                x_medkit = op.get('x-medkit', {})
-                ros2 = x_medkit.get('ros2', {})
-                if ros2.get('kind') == 'service':
-                    calibrate_op = op
-                    break
-
-        self.assertIsNotNone(calibrate_op, 'Calibrate service should be listed')
+        # Confirm it is the service operation.
+        ros2 = calibrate_op.get('x-medkit', {}).get('ros2', {})
+        self.assertEqual(ros2.get('kind'), 'service',
+                         'Calibrate service should be listed')
 
         # Verify type_info is present in x-medkit with request/response schemas
         x_medkit = calibrate_op['x-medkit']
