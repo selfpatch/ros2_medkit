@@ -109,3 +109,21 @@ race:dynmsg::get_vector_size*
 # these reports, so a genuine refcount race in our own shared_ptr use is
 # still surfaced.
 race:rclcpp::GenericClient::create_response*
+# Same benign GenericClient response-staging race as create_response above,
+# matched on our own frame instead of the rclcpp one. In test_operation_handlers
+# under load, TSan reports the executor thread staging the response
+# (rclcpp::GenericClient::create_response + the response std::string copies)
+# racing the caller thread that consumes/frees it after future::get(). All the
+# racing WRITES live in rclcpp/libstdc++ (create_response, std::string mutate);
+# our OperationManager::call_service frame is only the consumer of a value the
+# std::future contract hands us once the promise is satisfied - the
+# happens-before that rclcpp establishes via pthread_once is invisible to TSan.
+# We must match on this frame because the adjacent librclcpp create_response
+# frame is frequently UNSYMBOLIZED (<null> at librclcpp.so+0x14xxxx), so the
+# create_response symbol line above does not catch those reports. This is a
+# deliberate, documented exception to the "never suppress our code" rule: the
+# race is entirely a library one, we only appear on the stack because we call
+# the client, and no other reliably-symbolized frame exists to match. Scoped to
+# the service-call path only, so it does not mask the trigger-subscriber
+# use-after-free (a genuine our-code bug, fixed at root, not suppressed).
+race:ros2_medkit_gateway::OperationManager::call_service*
