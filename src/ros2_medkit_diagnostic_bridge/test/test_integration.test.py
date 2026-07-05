@@ -99,7 +99,8 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
 
     @classmethod
     def _wait_for_bridge_subscription(cls, *, timeout_sec=15.0):
-        """Wait until the bridge's /diagnostics subscription matches our publisher.
+        """
+        Wait until the bridge's /diagnostics subscription matches our publisher.
 
         Polls the publisher's matched-subscription count (spinning so DDS
         discovery can progress) instead of sleeping a fixed interval, so
@@ -147,7 +148,8 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
 
     def publish_until(self, name, level, expected_code, *, predicate=None,
                       message='Test message', statuses=None, timeout=25.0):
-        """Republish a diagnostic until a matching fault satisfies *predicate*.
+        """
+        Republish a diagnostic until a matching fault satisfies *predicate*.
 
         Two discovery hops gate the first fault: the bridge's /diagnostics
         subscription must match this publisher (handled in setUpClass) and the
@@ -191,7 +193,8 @@ class TestDiagnosticBridgeIntegration(unittest.TestCase):
         self.assertEqual(fault.severity, Fault.SEVERITY_ERROR)
 
     def test_02_warn_diagnostic_creates_fault(self):
-        """Test that WARN diagnostic creates a fault.
+        """
+        Test that WARN diagnostic creates a fault.
 
         WARN does not bypass the reporter's local filter (threshold=3), so
         publish_until re-emits until the occurrence threshold is met and the
