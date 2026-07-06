@@ -295,13 +295,14 @@ event_alarms:
   # Simple form: one source -> one fault.
   - alarm_source: "ns=4;s=Alarms.Overpressure"
     entity_id: tank_process
-    fault_code: PLC_OVERPRESSURE
+    fault_code: PLC_TANK_OVERPRESSURE
 
   # Multi-alarm form (issue #389): one source emits many conditions (e.g. the
   # Server object as a catch-all, or one Object owning several Program_Alarms)
   # routed to distinct faults by condition identity. `mappings` are evaluated
-  # in order; the first whose non-empty match fields all equal the observed
-  # event wins, falling back to the source-level `fault_code` (if set).
+  # in order; the first whose non-empty match fields all match the observed
+  # event wins (`match_message` is a substring match, the rest equality),
+  # falling back to the source-level `fault_code` (if set).
   - alarm_source: "ns=0;i=2253"          # Server object (system-wide)
     entity_id: line_1
     fault_code: PLC_GENERIC_ALARM        # catch-all fallback (optional)
