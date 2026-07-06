@@ -1564,6 +1564,15 @@ TEST(ResolveAlarmTest, MatchByMessageSubstring) {
   // Empty event message never matches a non-empty match_message -> catch-all.
   auto r4 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "");
   EXPECT_EQ(r4.fault_code, "PLC_PROGRAM_ALARM");
+
+  // Case sensitivity: the substring match is case-sensitive, so a case-mismatched
+  // event must NOT match and falls to the catch-all, while the exact case routes
+  // to the distinct fault. A future case-insensitive find regresses r5 red.
+  cfg.mappings.push_back({"", "", "", "Overtemp", "PLC_ALARM_OVERTEMP", "ERROR", ""});
+  auto r5 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "overtemp fault");
+  EXPECT_EQ(r5.fault_code, "PLC_PROGRAM_ALARM");  // wrong case -> catch-all
+  auto r6 = NodeMap::resolve_alarm(cfg, "", "ns=3;i=1845", "ns=3;i=1805", "Overtemp fault");
+  EXPECT_EQ(r6.fault_code, "PLC_ALARM_OVERTEMP");  // exact case -> distinct fault
 }
 
 TEST_F(NodeMapTest, LoadsMappingsAndAssociatedValues) {
