@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -240,20 +241,37 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     const std::string v = env;
     poller_config_.comms_lost_fault_enabled = !(v == "0" || v == "false" || v == "no" || v == "off");
   }
+  // Clamp the comms-lost debounce to [0, 1h], shared by the YAML and env paths.
+  // Without an upper bound an overflowing or huge value pushes the gate so far
+  // out it never fires, silently disabling the fault; 0 keeps the immediate
+  // report behaviour.
+  constexpr long kMaxCommsLostDebounceMs = 3600000;  // 1 hour
+  const auto clamp_debounce_ms = [](long long ms) -> long {
+    if (ms < 0) {
+      return 0;
+    }
+    if (ms > kMaxCommsLostDebounceMs) {
+      return kMaxCommsLostDebounceMs;
+    }
+    return static_cast<long>(ms);
+  };
   if (config.contains("comms_lost_debounce_ms")) {
-    const int ms = config["comms_lost_debounce_ms"].get<int>();
-    poller_config_.comms_lost_debounce = std::chrono::milliseconds(ms < 0 ? 0 : ms);
+    const long long ms = config["comms_lost_debounce_ms"].get<long long>();
+    poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamp_debounce_ms(ms));
   }
   if (auto * env = std::getenv("OPCUA_COMMS_LOST_DEBOUNCE_MS")) {
-    // Keep the existing value on a non-numeric / negative override so a typo
-    // does not silently disable the debounce (atoi would parse it as 0).
+    // Keep the existing value on a non-numeric / out-of-range / negative
+    // override so a typo does not silently disable the debounce (atoi would
+    // parse it as 0). errno + ERANGE rejects an overflowing run of digits that
+    // strtol would otherwise saturate to LONG_MAX and slip past the >= 0 guard.
+    errno = 0;
     char * end = nullptr;
     const long ms = std::strtol(env, &end, 10);
-    if (end != env && *end == '\0' && ms >= 0) {
-      poller_config_.comms_lost_debounce = std::chrono::milliseconds(ms);
+    if (end != env && *end == '\0' && errno != ERANGE && ms >= 0) {
+      poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamp_debounce_ms(ms));
     } else {
       log_warn(std::string("Ignoring invalid OPCUA_COMMS_LOST_DEBOUNCE_MS='") + env +
-               "' (want a non-negative integer)");
+               "' (want a non-negative integer <= 3600000 ms)");
     }
   }
   if (config.contains("comms_lost_severity")) {
