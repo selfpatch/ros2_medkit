@@ -128,7 +128,8 @@ class TestActionStatusBridgeIntegration(unittest.TestCase):
         request.statuses = statuses or []
         future = self.list_faults_client.call_async(request)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
-        return future.result().faults
+        result = future.result()
+        return result.faults if result is not None else []
 
     def find(self, faults, code):
         return next((f for f in faults if f.fault_code == code), None)
