@@ -360,22 +360,13 @@ void OpcuaPlugin::set_context(PluginContext & context) {
     log_warn(msg);
   };
 
-  // Wait for the fault sink to be discovered before the poller can emit its
-  // first alarm report. OPC-UA AlarmCondition notifications are one-shot: the
-  // bridge reports a fault exactly once on the inactive->active transition and
-  // suppresses re-reports of the same active state as NoOp. ReportFault is a
-  // fire-and-forget async request, so one sent before this client has matched
-  // fault_manager over DDS is dropped with no retry - the alarm then never
-  // surfaces until it re-transitions. Discovery lag is worst on a loaded host,
-  // which is exactly when an alarm may fire early, so ordering the match before
-  // start() removes that race deterministically. Bounded and best-effort: a
-  // deployment without a fault_manager still starts (degraded) after the wait.
-  constexpr auto kServiceDiscoveryTimeout = std::chrono::seconds(10);
-  if (fault_clients_->report && !fault_clients_->report->wait_for_service(kServiceDiscoveryTimeout)) {
-    log_warn("fault_manager ReportFault service not discovered within " +
-             std::to_string(kServiceDiscoveryTimeout.count()) + "s; alarm reports may be dropped until it appears");
-  }
-
+  // Do not block startup on the fault sink. OPC-UA AlarmCondition notifications
+  // are one-shot (reported once on the inactive->active transition) and
+  // ReportFault is fire-and-forget, so a report raised before fault_manager is
+  // DDS-matched would be lost. send_report_fault/send_clear_fault buffer the
+  // dispatch and flush_pending_reports (run on every poll) drains it once the
+  // service appears, so a late sink still receives the alarm - without stalling
+  // startup or capping recovery at a fixed timeout.
   poller_->start(poller_config_);
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
            ")");
@@ -802,7 +793,9 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
     request->severity = ros2_medkit_msgs::msg::Fault::SEVERITY_INFO;
   }
 
-  fault_clients_->report->async_send_request(request);
+  send_or_buffer([this, request]() {
+    fault_clients_->report->async_send_request(request);
+  });
 }
 
 void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
@@ -814,13 +807,41 @@ void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
 
-  fault_clients_->clear->async_send_request(request);
+  send_or_buffer([this, request]() {
+    fault_clients_->clear->async_send_request(request);
+  });
+}
+
+void OpcuaPlugin::send_or_buffer(std::function<void()> dispatch) {
+  // Bound the buffer so a deployment with no fault_manager cannot grow it
+  // without limit; drop the oldest (least relevant) pending dispatch.
+  constexpr size_t kMaxPendingReports = 256;
+  if (pending_reports_.size() >= kMaxPendingReports) {
+    pending_reports_.erase(pending_reports_.begin());
+    log_warn("pending fault report buffer full (" + std::to_string(kMaxPendingReports) + "), dropping oldest");
+  }
+  pending_reports_.push_back(std::move(dispatch));
+  // Drains immediately (in order) if the sink is already matched.
+  flush_pending_reports();
+}
+
+void OpcuaPlugin::flush_pending_reports() {
+  if (pending_reports_.empty() || !fault_clients_->report || !fault_clients_->report->service_is_ready()) {
+    return;
+  }
+  for (auto & dispatch : pending_reports_) {
+    dispatch();
+  }
+  pending_reports_.clear();
 }
 
 void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
   if (shutdown_requested_.load()) {
     return;
   }
+  // Poll-thread hook: drain any fault reports buffered before fault_manager was
+  // discovered, so a late sink still receives them.
+  flush_pending_reports();
   for (const auto & [node_id, value] : snap.values) {
     auto pub_it = publishers_.find(node_id);
     if (pub_it == publishers_.end()) {
