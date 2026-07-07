@@ -120,10 +120,12 @@ race:rclcpp::GenericClient::create_response*
 # happens-before that rclcpp establishes via pthread_once is invisible to TSan.
 # We must match on this frame because the adjacent librclcpp create_response
 # frame is frequently UNSYMBOLIZED (<null> at librclcpp.so+0x14xxxx), so the
-# create_response symbol line above does not catch those reports. This is a
-# deliberate, documented exception to the "never suppress our code" rule: the
-# race is entirely a library one, we only appear on the stack because we call
-# the client, and no other reliably-symbolized frame exists to match. Scoped to
-# the service-call path only, so it does not mask the trigger-subscriber
-# use-after-free (a genuine our-code bug, fixed at root, not suppressed).
+# create_response symbol line above does not catch those reports. A library
+# scope (called_from_lib:librclcpp.so) does NOT catch them either: TSan reports
+# this race with our call_service stack as the primary, where librclcpp is not a
+# caller, so the library filter misses it and the race resurfaces - verified, it
+# fails sanitizer-tsan with the child exiting 66. Matching our own frame is the
+# only reliable option: a deliberate, narrow exception to the "never suppress
+# our code" rule, scoped to the service-call path only. The race itself is
+# entirely a library one; we are on the stack only as the caller of the client.
 race:ros2_medkit_gateway::OperationManager::call_service*
