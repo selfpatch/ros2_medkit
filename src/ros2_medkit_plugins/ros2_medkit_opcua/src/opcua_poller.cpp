@@ -913,8 +913,15 @@ void OpcuaPoller::poll_loop() {
         // once the debounce window has elapsed (idempotent via the raised flag).
         if (comms_lost_should_raise(config_.comms_lost_fault_enabled, comms_lost_raised_, *comms_down_since_,
                                     std::chrono::steady_clock::now(), config_.comms_lost_debounce)) {
-          emit_comms_lost(/*active=*/true);
-          comms_lost_raised_ = true;
+          // Issue #496: only latch once the fault sink can actually receive the
+          // report. ReportFault is fire-and-forget, so a report sent before the
+          // service is matched is dropped; latching regardless would then
+          // suppress every retry and lose the fault. Leaving it unlatched re-runs
+          // this arm on the next poll until the sink is discovered.
+          if (!config_.report_sink_ready || config_.report_sink_ready()) {
+            emit_comms_lost(/*active=*/true);
+            comms_lost_raised_ = true;
+          }
         }
         // Exponential backoff capped at 60s. condition_variable so stop() wakes immediately.
         {

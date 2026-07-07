@@ -423,6 +423,11 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   // dispatch and flush_pending_reports (run on every poll) drains it once the
   // service appears, so a late sink still receives the alarm - without stalling
   // startup or capping recovery at a fixed timeout.
+  // Issue #496: on top of that, gate the comms-lost latch on the fault sink
+  // being discovered, so the raised flag is not set before the report can land.
+  poller_config_.report_sink_ready = [this]() {
+    return fault_clients_->report && fault_clients_->report->service_is_ready();
+  };
   poller_->start(poller_config_);
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
            ")");

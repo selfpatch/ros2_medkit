@@ -128,6 +128,11 @@ struct PollerConfig {
   /// instead of stderr only. Empty by default - the poller falls back to
   /// stderr in that case.
   std::function<void(const std::string &)> log_warn;
+  /// Optional readiness probe for the fault sink (ReportFault service). The poll
+  /// thread only latches the comms-lost fault once this returns true, so a
+  /// fire-and-forget report is never dropped-and-forgotten while the sink is
+  /// unmatched - it retries on the next poll instead. Empty => assume ready.
+  std::function<bool()> report_sink_ready;
 };
 
 /// Manages OPC-UA data collection via subscriptions (preferred) or polling
