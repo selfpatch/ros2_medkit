@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -136,6 +137,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
                          const std::string & severity_str, const std::string & message);
   void send_clear_fault(const std::string & fault_code);
 
+  // Dispatch now if the fault_manager service is matched, else buffer the
+  // dispatch (bounded, order-preserving) to be flushed once it appears.
+  void send_or_buffer(std::function<void()> dispatch);
+  // Flush buffered fault dispatches when the fault_manager service is ready.
+  void flush_pending_reports();
+
   // Publish PLC values to ROS 2 topics (called after each poll)
   void publish_values(const PollSnapshot & snap);
 
@@ -167,6 +174,14 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // ROS 2 service clients for fault reporting
   struct FaultClients;
   std::unique_ptr<FaultClients> fault_clients_;
+
+  // Ordered buffer of pending fault report/clear dispatches. ReportFault /
+  // ClearFault are fire-and-forget, so a report sent before the fault_manager
+  // service is DDS-matched is dropped. Instead of blocking startup for the sink,
+  // buffer the dispatch (preserving report-then-clear order) and flush it on the
+  // next poll once the service is ready. Poll-thread only (send_report_fault /
+  // send_clear_fault via on_alarm_change, flush via the poll callback), no lock.
+  std::vector<std::function<void()>> pending_reports_;
 
   // Tracks which non-numeric nodes have already been warned about (avoids log spam).
   // Instance member instead of static to survive plugin reload (dlclose/dlopen).
