@@ -7,7 +7,9 @@ Follows the same plugin pattern as `ros2_medkit_graph_provider`: implements `Gat
 ## What it does
 
 - Connects to any OPC-UA capable PLC server over `opc.tcp`
-- Emits SOVD entities (area, component, apps) from a YAML-driven node map
+- Emits SOVD entities (area, component, apps) from a YAML-driven node map, or
+  discovers them automatically by browsing the live address space
+  (`auto_browse`, see below) - zero node-map config required
 - Exposes PLC values as the `x-plc-data` vendor collection
 - Allows writing setpoints via `x-plc-operations` with type-aware coercion and range validation
 - Reports the connection state and poll metrics via `x-plc-status`
@@ -346,6 +348,76 @@ curl -X POST http://localhost:8080/api/v1/apps/tank_process/operations/acknowled
 
 See `design/index.rst` for the full state machine table and vendor matrix.
 
+### auto_browse (zero-config discovery)
+
+Instead of (or on top of) a hand-written `nodes:` list, the plugin can build
+the SOVD entity tree itself by recursively browsing the connected server's
+address space. This is what makes a discovered endpoint (see the discovery
+plugin) usable with no PLC-specific config at all: `endpoint_url` +
+`auto_browse: true` is enough.
+
+The walk starts at the standard `Objects` folder (`i=85`, which is where the
+OPC-UA DI companion namespace also hangs `DeviceSet`) and recurses forward
+along hierarchical references:
+
+- **Object** nodes become a path segment; an Object becomes its own SOVD App
+  only once it (directly) owns at least one supported Variable - a pure
+  folder Object with only child Objects is walked through but never shows up
+  as an entity of its own. Hierarchy is preserved in the generated
+  `entity_id`/name as a path (e.g. `plc_1_db_test` / `PLC_1 / DB_Test`), not
+  as a separate parent-entity field - the plugin's SOVD model stays the flat
+  Area -> Component -> App tree it already produces from a hand-written node
+  map.
+- **Variable** nodes become data points. Their DataType is read and mapped to
+  a medkit `data_type` (`Boolean`->`bool`; `SByte`/`Byte`/`Int16`/`UInt16`/
+  `Int32`/`UInt32`/`Int64`/`UInt64`->`int`; `Float`/`Double`->`float`;
+  `String`/`DateTime`->`string`); anything else (structured/enumerated/vendor
+  types) is skipped, not guessed at.
+- Noise filtering: ns=0 (the standard/infrastructure namespace - the `Server`
+  object, `ServerCapabilities`, `Types`, `Views`, ...) is denied by default so
+  it never enters the tree, while the DI/vendor namespaces underneath
+  `Objects` are walked normally. A depth limit and a total-node budget bound
+  the walk against a pathological or very large address space; hitting either
+  logs an operator warning that the resulting tree may be incomplete.
+- **Read-only.** auto_browse never writes to the server, and every
+  auto-discovered data point loads with `writable: false` - promoting a
+  specific point to writable is a deliberate, reviewed decision made via an
+  explicit `nodes:` entry.
+- **Explicit config always wins.** An auto-browsed entry for a NodeId that
+  already has a hand-written `nodes:` entry is dropped; auto_browse only fills
+  in what the node map does not already cover (or the whole tree, when there
+  is no node map at all).
+
+Enable it either in the node-map YAML:
+
+```yaml
+auto_browse: true   # all-default knobs (root=Objects folder, depth 8, 5000 nodes, deny ns=0)
+
+# or with explicit knobs:
+auto_browse:
+  enabled: true
+  root_nodes: ["i=85"]        # default: Objects folder. Point elsewhere (e.g. a
+                               # specific DeviceSet/Object) to scope the walk.
+  max_depth: 8                # recursion depth cap from a root (1..64)
+  max_nodes: 5000              # total node budget for the walk (1..200000)
+  namespace_allow: []          # non-empty = only these namespaces are eligible
+  namespace_deny: [0]          # ignored when namespace_allow is set
+  read_initial_values: true    # read each candidate Variable once; drop it if
+                                # the read fails (reachability check)
+```
+
+or purely via the plugin's ROS param / JSON config, which is what lets a
+discovered endpoint go straight to a populated tree with no node-map file:
+
+```yaml
+plugins.opcua.endpoint_url: "opc.tcp://192.168.1.10:4840"
+plugins.opcua.auto_browse: true   # or the same map form as above
+```
+
+The JSON/ROS-param form takes precedence over whatever the node-map YAML's
+`auto_browse:` block set, mirroring how environment variables override the
+rest of the plugin's YAML config.
+
 ### Gateway Parameters
 
 ```yaml
@@ -356,12 +428,14 @@ ros2_medkit_gateway:
     plugins.opcua.node_map_path: "/path/to/nodes.yaml"
     plugins.opcua.poll_interval_ms: 1000
     plugins.opcua.prefer_subscriptions: false
+    plugins.opcua.auto_browse: true
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `endpoint_url` | `opc.tcp://localhost:4840` | OPC-UA server endpoint |
-| `node_map_path` | (none) | Path to node map YAML (required) |
+| `node_map_path` | (none) | Path to node map YAML (optional when `auto_browse` is enabled - see above) |
+| `auto_browse` | `false` | Boolean or object; recursively discover the SOVD tree from the live address space instead of (or in addition to) `node_map_path` - see above |
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |

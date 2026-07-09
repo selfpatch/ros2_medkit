@@ -101,6 +101,7 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
+  src/address_space_browser.cpp
 )
 
 target_include_directories(ros2_medkit_opcua_plugin PRIVATE
@@ -174,6 +175,7 @@ if(BUILD_TESTING)
     src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    src/address_space_browser.cpp
     TIMEOUT 240
   )
   target_include_directories(test_opcua_plugin PRIVATE
@@ -264,6 +266,35 @@ if(BUILD_TESTING)
     nlohmann_json::nlohmann_json
   )
   medkit_set_test_domain(test_device_identity)
+
+  # auto_browse: recursive address-space walker tests, against an injected
+  # fake AutoBrowseSource - no network, no server. node_map.cpp is link-only
+  # (NodeMapEntry / NodeMap::parse_node_id). opcua_client.cpp is link-only too:
+  # OpcuaClientBrowseSource (address_space_browser.hpp) is a polymorphic type
+  # with every override defined inline, so its vtable is emitted in any TU
+  # that uses it (Itanium ABI key-function rule) and needs OpcuaClient's
+  # symbols to resolve, even though the tests exercise AutoBrowser only
+  # through the injected fake and never construct an OpcuaClientBrowseSource.
+  ament_add_gtest(test_address_space_browser
+    test/test_address_space_browser.cpp
+    src/address_space_browser.cpp
+    src/node_map.cpp
+    src/opcua_client.cpp
+  )
+  target_include_directories(test_address_space_browser PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_address_space_browser
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_address_space_browser
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+  medkit_set_test_domain(test_address_space_browser)
 
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
@@ -395,6 +426,7 @@ if(BUILD_TESTING)
       src/device_identity.cpp
       src/node_map.cpp
       src/opcua_poller.cpp
+      src/address_space_browser.cpp
       TIMEOUT 120
     )
     add_dependencies(test_opcua_identity test_alarm_server)

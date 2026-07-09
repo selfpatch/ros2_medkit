@@ -174,10 +174,6 @@ bool NodeMap::load(const std::string & yaml_path) {
     if (root["component_name"]) {
       component_name_ = root["component_name"].as<std::string>();
     }
-    if (root["auto_browse"]) {
-      auto_browse_ = root["auto_browse"].as<bool>();
-    }
-
     // Node entries. The ``nodes:`` section is optional: a config may declare
     // only ``event_alarms:`` (native AlarmCondition subscriptions with no
     // scalar data points to poll). The final emptiness check below rejects a
@@ -286,6 +282,114 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
       return s;
     };
+    // Warn on keys a block-style loader does not recognise so a future typo
+    // (e.g. ``severty:``) is surfaced instead of silently dropped. Shared by
+    // the ``auto_browse:`` map form below and the ``event_alarms:`` loader.
+    auto warn_unknown_keys = [logger](const YAML::Node & node, const std::string & context,
+                                      std::initializer_list<const char *> known) {
+      if (!node.IsMap()) {
+        return;
+      }
+      for (const auto & kv : node) {
+        std::string key;
+        try {
+          key = kv.first.as<std::string>();
+        } catch (const YAML::Exception &) {
+          continue;
+        }
+        const bool recognised = std::any_of(known.begin(), known.end(), [&key](const char * k) {
+          return key == k;
+        });
+        if (!recognised) {
+          RCLCPP_WARN(logger, "%s: unknown key '%s' - ignored", context.c_str(), key.c_str());
+        }
+      }
+    };
+
+    // ``auto_browse:`` - either a plain bool (back-compat: enable/disable with
+    // all-default knobs) or a map with the full AutoBrowseConfig schema. Only
+    // overwrite defaults for keys that are actually present, so a partial map
+    // (e.g. just ``max_depth:``) does not silently reset the rest.
+    if (root["auto_browse"]) {
+      const auto ab = root["auto_browse"];
+      if (ab.IsMap()) {
+        auto_browse_config_.enabled = parse_bool(ab["enabled"], true, "auto_browse.enabled", "auto_browse");
+        if (ab["root_nodes"]) {
+          if (ab["root_nodes"].IsSequence()) {
+            auto_browse_config_.root_node_ids.clear();
+            for (const auto & r : ab["root_nodes"]) {
+              try {
+                auto_browse_config_.root_node_ids.push_back(r.as<std::string>());
+              } catch (const YAML::Exception &) {
+                RCLCPP_WARN(logger, "auto_browse.root_nodes: non-string entry - skipping");
+              }
+            }
+          } else {
+            RCLCPP_WARN(logger, "auto_browse.root_nodes: must be a sequence - ignoring");
+          }
+        }
+        if (ab["max_depth"]) {
+          const auto d =
+              parse_int64(ab["max_depth"], auto_browse_config_.max_depth, "auto_browse.max_depth", "auto_browse");
+          if (d >= 1 && d <= 64) {
+            auto_browse_config_.max_depth = static_cast<int>(d);
+          } else {
+            RCLCPP_WARN(logger, "auto_browse.max_depth=%lld out of range [1,64] - keeping default %d",
+                        static_cast<long long>(d), auto_browse_config_.max_depth);
+          }
+        }
+        if (ab["max_nodes"]) {
+          const auto n = parse_int64(ab["max_nodes"], static_cast<std::int64_t>(auto_browse_config_.max_nodes),
+                                     "auto_browse.max_nodes", "auto_browse");
+          if (n >= 1 && n <= 200000) {
+            auto_browse_config_.max_nodes = static_cast<std::size_t>(n);
+          } else {
+            RCLCPP_WARN(logger, "auto_browse.max_nodes=%lld out of range [1,200000] - keeping default %zu",
+                        static_cast<long long>(n), auto_browse_config_.max_nodes);
+          }
+        }
+        auto parse_ns_list = [logger](const YAML::Node & seq, const char * field) -> std::vector<uint16_t> {
+          std::vector<uint16_t> out;
+          if (!seq || !seq.IsSequence()) {
+            if (seq) {
+              RCLCPP_WARN(logger, "auto_browse.%s: must be a sequence - ignoring", field);
+            }
+            return out;
+          }
+          for (const auto & v : seq) {
+            try {
+              const auto n = v.as<int>();
+              if (n < 0 || n > 65535) {
+                RCLCPP_WARN(logger, "auto_browse.%s: namespace index %d out of range [0,65535] - skipping", field, n);
+                continue;
+              }
+              out.push_back(static_cast<uint16_t>(n));
+            } catch (const YAML::Exception &) {
+              RCLCPP_WARN(logger, "auto_browse.%s: non-integer namespace index - skipping", field);
+            }
+          }
+          return out;
+        };
+        if (ab["namespace_allow"]) {
+          auto_browse_config_.namespace_allow = parse_ns_list(ab["namespace_allow"], "namespace_allow");
+        }
+        if (ab["namespace_deny"]) {
+          auto_browse_config_.namespace_deny = parse_ns_list(ab["namespace_deny"], "namespace_deny");
+        }
+        auto_browse_config_.read_initial_values =
+            parse_bool(ab["read_initial_values"], auto_browse_config_.read_initial_values,
+                       "auto_browse.read_initial_values", "auto_browse");
+        warn_unknown_keys(ab, "auto_browse",
+                          {"enabled", "root_nodes", "max_depth", "max_nodes", "namespace_allow", "namespace_deny",
+                           "read_initial_values"});
+      } else {
+        try {
+          auto_browse_config_.enabled = ab.as<bool>();
+        } catch (const YAML::Exception &) {
+          RCLCPP_WARN(logger, "auto_browse: must be a boolean or a map - ignoring");
+        }
+      }
+    }
 
     for (size_t i = 0; has_nodes && i < nodes.size(); ++i) {
       const auto & n = nodes[i];
@@ -598,28 +702,8 @@ bool NodeMap::load(const std::string & yaml_path) {
         }
         return validate_severity(*sev, context);
       };
-      // Warn on keys the event_alarms loader does not recognise so a future
-      // typo (e.g. ``severty:``) is surfaced instead of silently dropped.
-      auto warn_unknown_keys = [logger](const YAML::Node & node, const std::string & context,
-                                        std::initializer_list<const char *> known) {
-        if (!node.IsMap()) {
-          return;
-        }
-        for (const auto & kv : node) {
-          std::string key;
-          try {
-            key = kv.first.as<std::string>();
-          } catch (const YAML::Exception &) {
-            continue;
-          }
-          const bool recognised = std::any_of(known.begin(), known.end(), [&key](const char * k) {
-            return key == k;
-          });
-          if (!recognised) {
-            RCLCPP_WARN(logger, "%s: unknown key '%s' - ignored", context.c_str(), key.c_str());
-          }
-        }
-      };
+      // warn_unknown_keys is defined earlier in this function (shared with
+      // the auto_browse: map loader above).
       for (size_t i = 0; i < event_alarms_node.size(); ++i) {
         const auto & a = event_alarms_node[i];
         if (!a["alarm_source"] || !a["entity_id"]) {
@@ -815,12 +899,14 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // A config that declares neither a 'nodes:' section nor any event alarms
-    // carries no mappings and is almost always a mistake (wrong file / typo).
-    // A present-but-empty 'nodes:' section is still a valid config.
-    if (!has_nodes && event_alarms_.empty()) {
+    // A config that declares neither a 'nodes:' section, any event alarms, nor
+    // auto_browse carries no mappings and is almost always a mistake (wrong
+    // file / typo). A present-but-empty 'nodes:' section is still valid, and
+    // an auto_browse-only file (zero-config discovery: the whole tree is
+    // filled by the live address-space walk) is valid too.
+    if (!has_nodes && event_alarms_.empty() && !auto_browse_config_.enabled) {
       RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                   "Node map has neither 'nodes:' nor 'event_alarms:' entries - nothing to map");
+                   "Node map has neither 'nodes:', 'event_alarms:' nor 'auto_browse:' entries - nothing to map");
       entity_defs_.clear();
       return false;
     }
@@ -934,6 +1020,27 @@ const NodeMapEntry * NodeMap::find_by_node_id(const std::string & node_id_str) c
     return &entries_[it->second];
   }
   return nullptr;
+}
+
+std::size_t NodeMap::merge_auto_browsed_entries(std::vector<NodeMapEntry> entries) {
+  std::size_t added = 0;
+  for (auto & entry : entries) {
+    // Explicit (YAML ``nodes:``) mappings always win: an auto-browsed entry
+    // for a node_id that is already mapped is silently dropped rather than
+    // overwriting the hand-authored entity_id/data_name/alarm config.
+    if (node_id_index_.count(entry.node_id_str) > 0) {
+      continue;
+    }
+    const std::size_t idx = entries_.size();
+    node_id_index_[entry.node_id_str] = idx;
+    entity_index_[entry.entity_id].push_back(idx);
+    entries_.push_back(std::move(entry));
+    ++added;
+  }
+  if (added > 0) {
+    build_entity_defs();
+  }
+  return added;
 }
 
 // Test / back-compat only: the live fault-evaluation path is

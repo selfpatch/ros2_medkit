@@ -25,10 +25,12 @@
 #include <ros2_medkit_gateway/core/http/error_codes.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -137,6 +139,31 @@ bool is_valid_path_segment(const std::string & s) {
   return std::all_of(s.begin(), s.end(), [](unsigned char c) {
     return std::isalnum(c) || c == '_' || c == '-';
   });
+}
+
+// Parse a JSON array of namespace indices for auto_browse's
+// namespace_allow/namespace_deny knobs. Out-of-range or non-integer entries
+// are skipped with a warning rather than aborting the whole config.
+std::vector<uint16_t> parse_json_ns_list(const nlohmann::json & arr, const char * field,
+                                         const std::function<void(const std::string &)> & warn) {
+  std::vector<uint16_t> out;
+  if (!arr.is_array()) {
+    warn(std::string("plugins.opcua.auto_browse.") + field + " must be an array - ignoring");
+    return out;
+  }
+  for (const auto & v : arr) {
+    if (!v.is_number_integer()) {
+      warn(std::string("plugins.opcua.auto_browse.") + field + ": non-integer namespace index - skipping");
+      continue;
+    }
+    const auto n = v.get<int64_t>();
+    if (n < 0 || n > 65535) {
+      warn(std::string("plugins.opcua.auto_browse.") + field + ": namespace index out of range [0,65535] - skipping");
+      continue;
+    }
+    out.push_back(static_cast<uint16_t>(n));
+  }
+  return out;
 }
 }  // namespace
 
@@ -362,6 +389,79 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     }
     log_info("Loaded node map with " + std::to_string(node_map_.entries().size()) + " entries from: " + node_map_path_);
   }
+
+  // plugins.opcua.auto_browse (ROS param / JSON config). Overlays on top of
+  // whatever the node-map YAML's `auto_browse:` block set (or the all-default
+  // AutoBrowseConfig when there is no node map at all) - the same
+  // "JSON/env wins over file" precedence the rest of this function uses.
+  // This is what makes zero-config discovery possible: no node_map_path,
+  // just `endpoint_url` (from discovery, PR #509) + `auto_browse: true`.
+  if (config.contains("auto_browse")) {
+    auto warn = [this](const std::string & msg) {
+      log_warn(msg);
+    };
+    auto & ab_cfg = node_map_.mutable_auto_browse_config();
+    const auto & ab = config["auto_browse"];
+    if (ab.is_boolean()) {
+      ab_cfg.enabled = ab.get<bool>();
+    } else if (ab.is_object()) {
+      ab_cfg.enabled = ab.value("enabled", true);
+      if (ab.contains("root_nodes")) {
+        if (ab["root_nodes"].is_array()) {
+          ab_cfg.root_node_ids.clear();
+          for (const auto & r : ab["root_nodes"]) {
+            if (r.is_string()) {
+              ab_cfg.root_node_ids.push_back(r.get<std::string>());
+            } else {
+              warn("plugins.opcua.auto_browse.root_nodes: non-string entry - skipping");
+            }
+          }
+        } else {
+          warn("plugins.opcua.auto_browse.root_nodes must be an array - ignoring");
+        }
+      }
+      if (ab.contains("max_depth")) {
+        const auto d = ab["max_depth"].get<int64_t>();
+        if (d >= 1 && d <= 64) {
+          ab_cfg.max_depth = static_cast<int>(d);
+        } else {
+          warn("plugins.opcua.auto_browse.max_depth out of range [1,64] - keeping current value");
+        }
+      }
+      if (ab.contains("max_nodes")) {
+        const auto n = ab["max_nodes"].get<int64_t>();
+        if (n >= 1 && n <= 200000) {
+          ab_cfg.max_nodes = static_cast<size_t>(n);
+        } else {
+          warn("plugins.opcua.auto_browse.max_nodes out of range [1,200000] - keeping current value");
+        }
+      }
+      if (ab.contains("namespace_allow")) {
+        ab_cfg.namespace_allow = parse_json_ns_list(ab["namespace_allow"], "namespace_allow", warn);
+      }
+      if (ab.contains("namespace_deny")) {
+        ab_cfg.namespace_deny = parse_json_ns_list(ab["namespace_deny"], "namespace_deny", warn);
+      }
+      if (ab.contains("read_initial_values")) {
+        ab_cfg.read_initial_values = ab["read_initial_values"].get<bool>();
+      }
+      static const std::array<const char *, 6> kKnownKeys{"enabled",   "root_nodes",      "max_depth",
+                                                          "max_nodes", "namespace_allow", "namespace_deny"};
+      for (const auto & [key, value] : ab.items()) {
+        (void)value;
+        if (key == "read_initial_values") {
+          continue;
+        }
+        if (std::find_if(kKnownKeys.begin(), kKnownKeys.end(), [&key](const char * k) {
+              return key == k;
+            }) == kKnownKeys.end()) {
+          warn("plugins.opcua.auto_browse: unknown key '" + key + "' - ignored");
+        }
+      }
+    } else {
+      log_warn("plugins.opcua.auto_browse must be a boolean or an object - ignoring");
+    }
+  }
 }
 
 void OpcuaPlugin::set_context(PluginContext & context) {
@@ -377,26 +477,25 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   if (node) {
     fault_clients_->report = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
     fault_clients_->clear = node->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
-
-    // Create ROS 2 publishers for numeric PLC values only (skip string-typed entries)
-    for (const auto & entry : node_map_.entries()) {
-      if (entry.data_type == "string") {
-        log_info("PLC bridge: skipping non-numeric " + entry.node_id_str + " (data_type=" + entry.data_type + ")");
-        continue;
-      }
-      publishers_[entry.node_id_str] =
-          node->create_publisher<std_msgs::msg::Float32>(entry.ros2_topic, rclcpp::SensorDataQoS());
-      log_info("PLC bridge: " + entry.node_id_str + " -> " + entry.ros2_topic + " (Float32)");
-    }
   }
 
   log_security_profile();
 
   if (client_->connect(client_config_)) {
     log_info("Connected to OPC-UA server: " + client_config_.endpoint_url);
+    // auto_browse needs a live session to walk the address space, so it can
+    // only run here - after connect(), before the node map is consumed to
+    // build publishers/poller below.
+    if (node_map_.auto_browse_config().enabled) {
+      run_auto_browse();
+    }
   } else {
     log_warn("Failed to connect to OPC-UA server: " + client_config_.endpoint_url);
   }
+
+  // Publisher creation moved here (was originally before connect()) so that
+  // any entries auto_browse just merged into node_map_ also get a publisher.
+  create_value_publishers();
 
   poller_ = std::make_unique<OpcuaPoller>(*client_, node_map_);
   poller_->set_alarm_callback(
@@ -894,6 +993,37 @@ void OpcuaPlugin::flush_pending_reports() {
     dispatch();
   }
   pending_reports_.clear();
+}
+
+void OpcuaPlugin::create_value_publishers() {
+  auto * node = ctx_ ? ctx_->node() : nullptr;
+  if (!node) {
+    return;
+  }
+  // Create ROS 2 publishers for numeric PLC values only (skip string-typed entries)
+  for (const auto & entry : node_map_.entries()) {
+    if (publishers_.count(entry.node_id_str) > 0) {
+      continue;  // already created (e.g. a previous call before a reconnect)
+    }
+    if (entry.data_type == "string") {
+      log_info("PLC bridge: skipping non-numeric " + entry.node_id_str + " (data_type=" + entry.data_type + ")");
+      continue;
+    }
+    publishers_[entry.node_id_str] =
+        node->create_publisher<std_msgs::msg::Float32>(entry.ros2_topic, rclcpp::SensorDataQoS());
+    log_info("PLC bridge: " + entry.node_id_str + " -> " + entry.ros2_topic + " (Float32)");
+  }
+}
+
+void OpcuaPlugin::run_auto_browse() {
+  OpcuaClientBrowseSource source(*client_);
+  AutoBrowser browser(source, node_map_.auto_browse_config());
+  AutoBrowseResult result = browser.browse();
+  const size_t added = node_map_.merge_auto_browsed_entries(std::move(result.entries));
+  log_info("auto_browse: walked " + std::to_string(result.nodes_visited) + " address-space nodes, added " +
+           std::to_string(added) + " data points (" + std::to_string(node_map_.entity_defs().size()) +
+           " entities total)" + (result.node_cap_hit ? " [node cap reached - tree may be incomplete]" : "") +
+           (result.depth_cap_hit ? " [depth cap reached on at least one branch]" : ""));
 }
 
 void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
