@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_opcua/network_discovery.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
 #include "ros2_medkit_opcua/opcua_poller.hpp"
@@ -150,6 +151,15 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // startup; warns when running unsecured.
   void log_security_profile() const;
 
+  // Read-only active-scan discovery. When discovery is enabled and no endpoint
+  // was explicitly configured, run one pass, log a summary, and (if a suitable
+  // None/Anonymous OPC-UA data server is found) set client_config_.endpoint_url
+  // to the discovered ip:port so the existing connect + introspect path adopts
+  // it. Injected scan/identify default to the real POSIX + open62541pp
+  // implementations; tests override them. No-op when discovery is disabled or
+  // an endpoint is already configured.
+  void run_startup_discovery();
+
   // Build JSON response for data endpoint
   nlohmann::json build_data_response(const std::string & entity_id) const;
 
@@ -158,6 +168,18 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   OpcuaClientConfig client_config_;
   PollerConfig poller_config_;
   std::string node_map_path_;
+
+  // Read-only PLC/OPC-UA network discovery (opt-in, default disabled).
+  DiscoveryConfig discovery_config_;
+  // True when the operator pinned endpoint_url via config or OPCUA_ENDPOINT_URL.
+  // Discovery only auto-selects an endpoint when this is false, so it never
+  // overrides an explicit target or opens a second session on a polled PLC.
+  bool endpoint_configured_{false};
+  // Injected discovery I/O; default to the real POSIX / open62541pp probes.
+  // Tests substitute in-memory fakes to exercise the auto-endpoint path without
+  // a network. Set in configure(), consumed in run_startup_discovery().
+  PortScanFn discovery_scan_fn_;
+  IdentifyFn discovery_identify_fn_;
 
   std::unique_ptr<OpcuaClient> client_;
   NodeMap node_map_;
