@@ -161,7 +161,12 @@ OpcuaValue variant_to_value(const opcua::Variant & var) {
     const auto tp = var.getScalarCopy<opcua::DateTime>().toTimePoint<std::chrono::system_clock>();
     const std::time_t tt = std::chrono::system_clock::to_time_t(tp);
     std::tm tm_utc{};
-    gmtime_r(&tt, &tm_utc);
+    if (gmtime_r(&tt, &tm_utc) == nullptr) {
+      // Out-of-range timestamp (e.g. a corrupt/garbage DateTime value from
+      // the server) - surface as unsupported rather than formatting an
+      // uninitialized std::tm.
+      return std::string("<invalid DateTime>");
+    }
     char buf[32];
     const size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
     return std::string(buf, n);

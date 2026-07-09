@@ -83,9 +83,9 @@ struct AutoBrowseResult {
   /// (``NodeMap::merge_auto_browsed_entries``).
   std::vector<NodeMapEntry> entries;
 
-  /// Total address-space nodes considered (root(s) + every child seen during
-  /// the walk, whether or not it passed the namespace filter or ended up
-  /// mapped).
+  /// Total children considered across the walk (the configured root(s)
+  /// themselves are not counted, only their descendants), whether or not a
+  /// child passed the namespace filter or ended up mapped.
   std::size_t nodes_visited{0};
 
   /// True when ``AutoBrowseConfig::max_nodes`` was reached before the walk
@@ -143,9 +143,8 @@ class AutoBrowser {
   static std::string join_display_name(const std::vector<std::string> & segments);
 
  private:
-  void visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids,
-                    const std::vector<std::string> & path_names, int depth, AutoBrowseResult & result,
-                    std::unordered_set<std::string> & seen_entity_ids);
+  void visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids, int depth,
+                    AutoBrowseResult & result, std::unordered_set<std::string> & seen_entity_ids);
 
   AutoBrowseSource & source_;
   AutoBrowseConfig config_;
