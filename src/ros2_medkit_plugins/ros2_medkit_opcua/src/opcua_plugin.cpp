@@ -421,19 +421,27 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
         }
       }
       if (ab.contains("max_depth")) {
-        const auto d = ab["max_depth"].get<int64_t>();
-        if (d >= 1 && d <= 64) {
-          ab_cfg.max_depth = static_cast<int>(d);
+        if (!ab["max_depth"].is_number_integer()) {
+          warn("plugins.opcua.auto_browse.max_depth must be an integer - keeping current value");
         } else {
-          warn("plugins.opcua.auto_browse.max_depth out of range [1,64] - keeping current value");
+          const auto d = ab["max_depth"].get<int64_t>();
+          if (d >= 1 && d <= 64) {
+            ab_cfg.max_depth = static_cast<int>(d);
+          } else {
+            warn("plugins.opcua.auto_browse.max_depth out of range [1,64] - keeping current value");
+          }
         }
       }
       if (ab.contains("max_nodes")) {
-        const auto n = ab["max_nodes"].get<int64_t>();
-        if (n >= 1 && n <= 200000) {
-          ab_cfg.max_nodes = static_cast<size_t>(n);
+        if (!ab["max_nodes"].is_number_integer()) {
+          warn("plugins.opcua.auto_browse.max_nodes must be an integer - keeping current value");
         } else {
-          warn("plugins.opcua.auto_browse.max_nodes out of range [1,200000] - keeping current value");
+          const auto n = ab["max_nodes"].get<int64_t>();
+          if (n >= 1 && n <= 200000) {
+            ab_cfg.max_nodes = static_cast<size_t>(n);
+          } else {
+            warn("plugins.opcua.auto_browse.max_nodes out of range [1,200000] - keeping current value");
+          }
         }
       }
       if (ab.contains("namespace_allow")) {
@@ -443,7 +451,11 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
         ab_cfg.namespace_deny = parse_json_ns_list(ab["namespace_deny"], "namespace_deny", warn);
       }
       if (ab.contains("read_initial_values")) {
-        ab_cfg.read_initial_values = ab["read_initial_values"].get<bool>();
+        if (ab["read_initial_values"].is_boolean()) {
+          ab_cfg.read_initial_values = ab["read_initial_values"].get<bool>();
+        } else {
+          warn("plugins.opcua.auto_browse.read_initial_values must be a boolean - keeping current value");
+        }
       }
       static const std::array<const char *, 6> kKnownKeys{"enabled",   "root_nodes",      "max_depth",
                                                           "max_nodes", "namespace_allow", "namespace_deny"};
