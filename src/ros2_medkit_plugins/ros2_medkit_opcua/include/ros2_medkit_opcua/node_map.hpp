@@ -144,6 +144,53 @@ struct NodeMapEntry {
   }
 };
 
+/// Configuration for the recursive OPC-UA address-space walker (auto_browse).
+/// Populated either from the node-map YAML's ``auto_browse:`` block (bool or
+/// map) or overlaid from the plugin's ``plugins.opcua.auto_browse`` JSON/ROS
+/// param - see ``OpcuaPlugin::configure``. Consumed by ``AutoBrowser``
+/// (address_space_browser.hpp) once the client has a live session.
+struct AutoBrowseConfig {
+  bool enabled{false};
+
+  /// Node IDs to start the walk from, in NodeMap::parse_node_id string form.
+  /// Default is the standard Objects folder (``i=85``); every well-formed
+  /// server organizes its instance tree underneath it, including the OPC-UA
+  /// DI ``DeviceSet`` folder used to reach a PLC's nameplate + process data.
+  std::vector<std::string> root_node_ids{"i=85"};
+
+  /// Recursion depth cap measured from a root node (root's direct children
+  /// are depth 1). Guards against a pathological / cyclic address space.
+  int max_depth{8};
+
+  /// Total node budget for one browse() call (root nodes + every child
+  /// considered, whether or not it is namespace-filtered). Once reached the
+  /// walk stops descending further and the caller is warned that the tree may
+  /// be incomplete.
+  std::size_t max_nodes{5000};
+
+  /// Namespace allow-list. When non-empty, only these namespace indices are
+  /// eligible to become entities/data points (and to be recursed into);
+  /// ``namespace_deny`` is ignored. Empty (default) means "allow all except
+  /// denied".
+  std::vector<uint16_t> namespace_allow;
+
+  /// Namespace deny-list, applied only when ``namespace_allow`` is empty.
+  /// Defaults to ``{0}``: ns=0 is the standard/infrastructure namespace
+  /// (Server object, ServerCapabilities, Types, Views, ...) which is pure
+  /// noise for entity discovery. Root nodes passed explicitly in
+  /// ``root_node_ids`` are never filtered, even if their namespace is denied.
+  std::vector<uint16_t> namespace_deny{0};
+
+  /// When true, each candidate Variable is read once during the walk and
+  /// dropped from the result if the read fails (Bad status) - a
+  /// reachability/access check that filters out nodes whose DataType
+  /// resolves but whose Value is not actually gettable (write-only nodes,
+  /// permission-denied, etc). When false, the extra round-trip is skipped and
+  /// every type-matched Variable is kept, which is faster to start up on very
+  /// large trees.
+  bool read_initial_values{true};
+};
+
 /// SOVD entity definition derived from the node map
 struct PlcEntityDef {
   std::string id;
@@ -231,8 +278,29 @@ class NodeMap {
 
   /// Whether auto-browse mode is enabled
   bool auto_browse() const {
-    return auto_browse_;
+    return auto_browse_config_.enabled;
   }
+
+  /// Full auto_browse configuration (root nodes, depth/node caps, namespace
+  /// filter, ...), loaded from the node-map YAML's ``auto_browse:`` block.
+  const AutoBrowseConfig & auto_browse_config() const {
+    return auto_browse_config_;
+  }
+
+  /// Mutable access so ``OpcuaPlugin::configure`` can overlay the plugin's
+  /// ``plugins.opcua.auto_browse`` JSON/ROS param on top of whatever the
+  /// node-map YAML declared (JSON wins - same precedence the env-var
+  /// overrides use for the rest of the plugin config).
+  AutoBrowseConfig & mutable_auto_browse_config() {
+    return auto_browse_config_;
+  }
+
+  /// Merge entries discovered by a live ``AutoBrowser`` walk into the map.
+  /// An auto-browsed entry whose ``node_id_str`` already has an explicit
+  /// (YAML ``nodes:``) mapping is dropped - explicit config always wins.
+  /// Rebuilds ``entity_defs_`` when at least one entry was added.
+  /// @return number of entries actually added.
+  std::size_t merge_auto_browsed_entries(std::vector<NodeMapEntry> entries);
 
   /// Parse an OPC-UA node ID string into an `opcua::NodeId`.
   ///
@@ -270,7 +338,7 @@ class NodeMap {
   std::string area_name_ = "PLC Systems";
   std::string component_id_ = "openplc_runtime";
   std::string component_name_ = "OpenPLC Runtime";
-  bool auto_browse_{false};
+  AutoBrowseConfig auto_browse_config_;
 };
 
 }  // namespace ros2_medkit_gateway
