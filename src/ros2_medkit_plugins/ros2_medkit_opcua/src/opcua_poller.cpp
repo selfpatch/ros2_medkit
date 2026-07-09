@@ -63,10 +63,14 @@ constexpr size_t kFieldConfirmedState = 6;
 constexpr size_t kFieldShelvingState = 7;
 constexpr size_t kFieldBranchId = 8;
 constexpr size_t kFieldConditionName = 9;  // issue #389 (multi-alarm identity)
-constexpr size_t kAlarmFieldCount = 9;     // count of fixed alarm-state fields (indices 0-8)
-// ConditionName is always appended at index kFieldConditionName; configured
-// associated values follow at index kFieldConditionName + 1 onward.
-constexpr size_t kFirstAssociatedValueField = kFieldConditionName + 1;
+// SourceName: BaseEventType human-readable event source, used as the tier-2
+// auto_alarms fault_code fallback when ConditionName is empty (zero-config
+// native A&C - see NodeMap::derive_auto_fault_code).
+constexpr size_t kFieldSourceName = 10;
+constexpr size_t kAlarmFieldCount = 9;  // count of fixed alarm-state fields (indices 0-8)
+// ConditionName / SourceName are always appended at their fixed indices;
+// configured associated values follow from kFieldSourceName + 1 onward.
+constexpr size_t kFirstAssociatedValueField = kFieldSourceName + 1;
 
 // Standard NodeIds for the types that *directly* define each field (open62541
 // servers reject SAOs whose BrowsePath is inherited rather than direct).
@@ -94,6 +98,8 @@ std::vector<OpcuaClient::EventFieldSpec> build_alarm_event_select_specs(const Al
       // Issue #389: ConditionName, used to route distinct conditions from one
       // source to distinct faults.
       {opcua::NodeId(0, kConditionType), {{0, "ConditionName"}}, UA_ATTRIBUTEID_VALUE},
+      // auto_alarms tier-2 fault_code fallback (see kFieldSourceName above).
+      {opcua::NodeId(0, kBaseEventType), {{0, "SourceName"}}, UA_ATTRIBUTEID_VALUE},
   };
   // Issue #389: configured associated values (e.g. Siemens SD_1..SD_n) as
   // BaseEventType properties.
@@ -196,8 +202,9 @@ void OpcuaPoller::start(const PollerConfig & config) {
   }
 
   // Issue #386: subscribe to native AlarmConditionType events. Independent
-  // of data-change subscriptions; runs whenever event_alarms are configured.
-  if (!node_map_.event_alarms().empty()) {
+  // of data-change subscriptions; runs whenever event_alarms and/or
+  // auto_alarms are configured.
+  if (has_alarm_sources()) {
     setup_event_subscriptions();
   }
 
@@ -286,6 +293,38 @@ void OpcuaPoller::setup_subscriptions() {
   }
 }
 
+std::vector<AlarmEventConfig>
+OpcuaPoller::effective_alarm_sources(const std::vector<AlarmEventConfig> & explicit_sources,
+                                     const AutoAlarmsConfig & auto_cfg) {
+  std::vector<AlarmEventConfig> sources = explicit_sources;
+  if (!auto_cfg.enabled) {
+    return sources;
+  }
+  const bool already_covered = std::any_of(sources.begin(), sources.end(), [&](const AlarmEventConfig & c) {
+    return c.source_node_id_str == auto_cfg.source_node_id_str;
+  });
+  if (already_covered) {
+    // An explicit event_alarms entry already targets this source; on_event()
+    // falls through to auto-derivation for whatever that entry's own
+    // mappings/fault_code do not match, so a second monitored item on the
+    // same source would be redundant (and would double-fire).
+    return sources;
+  }
+  AlarmEventConfig synth;
+  synth.source_node_id_str = auto_cfg.source_node_id_str;
+  synth.source_node_id = auto_cfg.source_node_id;
+  synth.entity_id = auto_cfg.entity_id;
+  // fault_code/mappings intentionally left empty: NodeMap::resolve_alarm()
+  // then always reports this source unmatched, which routes every event on
+  // it through on_event()'s auto-derivation branch.
+  sources.push_back(std::move(synth));
+  return sources;
+}
+
+bool OpcuaPoller::is_condition_event(const opcua::NodeId & condition_id) {
+  return !condition_id.isNull();
+}
+
 void OpcuaPoller::setup_event_subscriptions() {
   // Issue #386: one dedicated subscription for AlarmCondition events; uses
   // a default no-op data callback because we wire MIs of EVENTNOTIFIER
@@ -301,7 +340,7 @@ void OpcuaPoller::setup_event_subscriptions() {
 
   event_monitored_item_ids_.clear();
 
-  for (const auto & cfg : node_map_.event_alarms()) {
+  for (const auto & cfg : effective_alarm_sources(node_map_.event_alarms(), node_map_.auto_alarms())) {
     // Per-source select specs so each source can carry its own associated
     // values (issue #389) in addition to the fixed alarm-state fields.
     const auto select_specs = build_alarm_event_select_specs(cfg);
@@ -453,7 +492,8 @@ void OpcuaPoller::read_fallback_replay() {
   // before this path can be relied on there (use ConditionRefresh on Siemens).
   std::set<std::string> seen;
   std::set<std::string> failed_sources;
-  for (const auto & cfg : node_map_.event_alarms()) {
+  const auto & auto_cfg = node_map_.auto_alarms();
+  for (const auto & cfg : effective_alarm_sources(node_map_.event_alarms(), node_map_.auto_alarms())) {
     bool scan_ok = false;
     auto conditions = client_.read_source_conditions(cfg.source_node_id, &scan_ok);
     if (!scan_ok) {
@@ -523,15 +563,49 @@ void OpcuaPoller::read_fallback_replay() {
       // by condition_name / source_node / message still works.
       ResolvedAlarm resolved =
           NodeMap::resolve_alarm(cfg, snap.condition_name, cfg.source_node_id_str, /*event_type=*/"", snap.message);
-      if (!resolved.matched) {
-        continue;
-      }
       AlarmEventConfig eff = cfg;
-      eff.fault_code = resolved.fault_code;
-      eff.severity_override = resolved.severity_override;
-      eff.message_override = resolved.message_override;
+      bool require_confirm = config_.require_confirm_for_clear;
+      if (resolved.matched) {
+        eff.fault_code = resolved.fault_code;
+        eff.severity_override = resolved.severity_override;
+        eff.message_override = resolved.message_override;
+      } else {
+        // auto_alarms fallback (zero-config native A&C): only applies when
+        // this source is the one auto_alarms covers (see
+        // effective_alarm_sources()). A read-scan snapshot has no
+        // SourceName/SourceNode-per-condition of its own (it is implicitly
+        // the source we just browsed), so the derivation uses cfg's source id.
+        if (!auto_cfg.enabled || cfg.source_node_id_str != auto_cfg.source_node_id_str) {
+          continue;
+        }
+        if (!NodeMap::auto_alarm_passes_filters(snap.condition_name, /*source_name=*/"", snap.message,
+                                                auto_cfg.include_patterns, auto_cfg.exclude_patterns)) {
+          continue;
+        }
+        eff.fault_code = NodeMap::derive_auto_fault_code(snap.condition_name, /*source_name=*/"",
+                                                         cfg.source_node_id_str, /*event_type_str=*/"", snap.message);
+        const auto * known_entry = node_map_.find_by_node_id(cfg.source_node_id_str);
+        eff.entity_id = known_entry != nullptr ? known_entry->entity_id : auto_cfg.entity_id;
+        eff.severity_override = NodeMap::map_auto_severity(snap.severity, auto_cfg.severity_bands);
+        eff.message_override.clear();
+        if (auto_cfg.auto_clear) {
+          // AlarmStateMachine's clear rule is `acked && (confirmed ||
+          // !require_confirm_for_clear)` - require_confirm_for_clear=false
+          // alone only drops the CONFIRMED half; ACKED is still required, and
+          // a zero-config alarm has no operator (or SOVD acknowledge_fault
+          // operation - that is only auto-registered for entities with an
+          // event_alarms entry) to ever set it. Without also forcing acked
+          // here, auto_clear alarms would latch in HEALED forever, defeating
+          // the "just works" zero-config promise. Force both gates open.
+          input.acked_state = true;
+          require_confirm = false;
+        } else {
+          require_confirm = config_.require_confirm_for_clear;
+        }
+      }
 
-      apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr);
+      apply_condition_state(eff, snap.condition_id, input, snap.severity, snap.message, /*event_id=*/nullptr,
+                            require_confirm);
     }
   }
   reconcile_after_read(seen, failed_sources, read_modeled_sources_);
@@ -720,13 +794,79 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   if (values.size() > kFieldConditionName) {
     condition_name = variant_to_string_scalar(values[kFieldConditionName]);
   }
+  std::string source_name;
+  if (values.size() > kFieldSourceName) {
+    source_name = variant_to_string_scalar(values[kFieldSourceName]);
+  }
   ResolvedAlarm resolved =
       NodeMap::resolve_alarm(cfg, condition_name, source_node.toString(), event_type.toString(), message);
-  if (!resolved.matched) {
-    // No mapping and no source-level fault_code applies to this condition.
-    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                        "on_event: no fault mapping for condition_name='" << condition_name << "' - ignoring");
-    return;
+
+  AlarmEventConfig eff = cfg;
+  bool require_confirm = config_.require_confirm_for_clear;
+  const auto & auto_cfg = node_map_.auto_alarms();
+  if (resolved.matched) {
+    // Build the effective config for this specific event (resolved
+    // fault_code + overrides) so apply_condition_state tracks the right
+    // fault_code / entity. Explicit event_alarms mappings always win over
+    // auto_alarms (precedence, see effective_alarm_sources()).
+    eff.fault_code = resolved.fault_code;
+    eff.severity_override = resolved.severity_override;
+    eff.message_override = resolved.message_override;
+  } else {
+    // Zero-config native A&C (auto_alarms). Only covers events on the
+    // source auto_alarms actually subscribed (either this cfg's own source,
+    // when explicit event_alarms shares it, or the synthetic source
+    // effective_alarm_sources() adds); an unmatched event on any other
+    // explicit event_alarms source is ignored exactly as before.
+    if (!auto_cfg.enabled || cfg.source_node_id_str != auto_cfg.source_node_id_str) {
+      RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                          "on_event: no fault mapping for condition_name='" << condition_name << "' - ignoring");
+      return;
+    }
+    // System-message filter (validated on a real Siemens S7-1500): the
+    // Server object's EventNotifier (i=2253) also emits plain BaseEvent /
+    // SystemEvent notifications (e.g. "CPU not in RUN") that are NOT
+    // AlarmConditionType instances. Per Part 9 §5.5.2.13 only a real
+    // Condition carries a ConditionId; a system message resolves it to
+    // NodeId.Null, so reject those here rather than auto-deriving a
+    // fault for a message that never raises/clears.
+    if (!is_condition_event(condition_id)) {
+      RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                          "on_event: dropping non-condition event (null ConditionId, likely a system "
+                          "message) message='"
+                              << message << "'");
+      return;
+    }
+    if (!NodeMap::auto_alarm_passes_filters(condition_name, source_name, message, auto_cfg.include_patterns,
+                                            auto_cfg.exclude_patterns)) {
+      return;
+    }
+    eff.fault_code = NodeMap::derive_auto_fault_code(condition_name, source_name, source_node.toString(),
+                                                     event_type.toString(), message);
+    // Host the fault on a known node-map entity when SourceNode resolves to
+    // one; otherwise fall back to auto_alarms.entity_id (default: the PLC
+    // root component).
+    const auto * known_entry = node_map_.find_by_node_id(source_node.toString());
+    eff.entity_id = known_entry != nullptr ? known_entry->entity_id : auto_cfg.entity_id;
+    eff.severity_override = NodeMap::map_auto_severity(severity, auto_cfg.severity_bands);
+    eff.message_override.clear();  // description = the raw event Message, verbatim
+    if (auto_cfg.auto_clear) {
+      // AlarmStateMachine's clear rule is `acked && (confirmed ||
+      // !require_confirm_for_clear)` - require_confirm_for_clear=false alone
+      // only drops the CONFIRMED half; ACKED is still required, and a
+      // zero-config alarm has no operator (or SOVD acknowledge_fault
+      // operation - that is only auto-registered for entities with an
+      // event_alarms entry) to ever set it. Without also forcing acked here,
+      // auto_clear alarms would latch in HEALED forever, defeating the "just
+      // works" zero-config promise (found via real-HW E2E: a Siemens
+      // Program_Alarm going inactive stayed latched until this fix). Force
+      // both gates open.
+      input.acked_state = true;
+      require_confirm = false;
+    } else {
+      // Explicit event_alarms keep the poller-wide setting.
+      require_confirm = config_.require_confirm_for_clear;
+    }
   }
 
   // Append configured associated values (e.g. SD_1..SD_n) to the description.
@@ -745,13 +885,6 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     message += cfg.associated_values[i].label + "=" + rendered;
   }
 
-  // Build the effective config for this specific event (resolved fault_code +
-  // overrides) so apply_condition_state tracks the right fault_code / entity.
-  AlarmEventConfig eff = cfg;
-  eff.fault_code = resolved.fault_code;
-  eff.severity_override = resolved.severity_override;
-  eff.message_override = resolved.message_override;
-
   // Capture the live EventId for spec-compliant Acknowledge / Confirm.
   opcua::ByteString event_id;
   bool have_event_id = false;
@@ -760,12 +893,13 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     have_event_id = true;
   }
 
-  apply_condition_state(eff, condition_id, input, severity, message, have_event_id ? &event_id : nullptr);
+  apply_condition_state(eff, condition_id, input, severity, message, have_event_id ? &event_id : nullptr,
+                        require_confirm);
 }
 
 void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
                                         const AlarmEventInput & input, uint16_t severity, const std::string & message,
-                                        const opcua::ByteString * event_id) {
+                                        const opcua::ByteString * event_id, bool require_confirm_for_clear) {
   // Key the runtime map on the ConditionId string form so distinct condition
   // instances within the same event source remain separate (Part 9
   // §5.5.2.13). Shared by the live event path and the read-based replay.
@@ -791,7 +925,7 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
       it->second.latest_event_id = *event_id;
     }
 
-    auto outcome = AlarmStateMachine::compute(prev_status, input, config_.require_confirm_for_clear);
+    auto outcome = AlarmStateMachine::compute(prev_status, input, require_confirm_for_clear);
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
                         "state machine: enabled="
                             << input.enabled_state << " active=" << input.active_state << " acked=" << input.acked_state
@@ -905,7 +1039,7 @@ void OpcuaPoller::poll_loop() {
         // contexts.
         event_subscription_id_ = 0;
         event_monitored_item_ids_.clear();
-        if (!node_map_.event_alarms().empty()) {
+        if (has_alarm_sources()) {
           setup_event_subscriptions();
         }
       } else {

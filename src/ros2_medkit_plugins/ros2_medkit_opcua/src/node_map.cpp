@@ -284,7 +284,8 @@ bool NodeMap::load(const std::string & yaml_path) {
     };
     // Warn on keys a block-style loader does not recognise so a future typo
     // (e.g. ``severty:``) is surfaced instead of silently dropped. Shared by
-    // the ``auto_browse:`` map form below and the ``event_alarms:`` loader.
+    // the ``auto_browse:`` map form below and the ``event_alarms:`` and
+    // ``auto_alarms:`` loaders.
     auto warn_unknown_keys = [logger](const YAML::Node & node, const std::string & context,
                                       std::initializer_list<const char *> known) {
       if (!node.IsMap()) {
@@ -800,6 +801,106 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
+    // Zero-config native A&C (completes #509 discovery -> #510 auto_browse ->
+    // native faults with no per-alarm event_alarms mapping). ``auto_alarms:``
+    // accepts either a bare boolean or a map of overrides.
+    auto_alarms_ = AutoAlarmsConfig{};
+    auto auto_alarms_node = root["auto_alarms"];
+    if (auto_alarms_node && !auto_alarms_node.IsNull()) {
+      if (auto_alarms_node.IsScalar()) {
+        try {
+          auto_alarms_.enabled = auto_alarms_node.as<bool>();
+        } catch (const YAML::Exception &) {
+          RCLCPP_WARN(logger, "auto_alarms: non-boolean scalar - ignoring (expected true/false or a map)");
+        }
+      } else if (auto_alarms_node.IsMap()) {
+        auto_alarms_.enabled = parse_bool(auto_alarms_node["enabled"], true, "auto_alarms.enabled", "auto_alarms");
+        if (auto_alarms_node["source_node_id"]) {
+          auto v = parse_string(auto_alarms_node["source_node_id"], "source_node_id", "auto_alarms");
+          if (v && !v->empty()) {
+            auto_alarms_.source_node_id_str = *v;
+          }
+        }
+        if (auto_alarms_node["entity_id"]) {
+          auto v = parse_string(auto_alarms_node["entity_id"], "entity_id", "auto_alarms");
+          if (v && !v->empty()) {
+            auto_alarms_.entity_id = *v;
+          }
+        }
+        auto_alarms_.auto_clear =
+            parse_bool(auto_alarms_node["auto_clear"], true, "auto_alarms.auto_clear", "auto_alarms");
+
+        if (auto_alarms_node["severity_bands"]) {
+          const auto & bands_node = auto_alarms_node["severity_bands"];
+          if (!bands_node.IsMap()) {
+            RCLCPP_WARN(logger, "auto_alarms.severity_bands: expected a map - ignoring");
+          } else {
+            auto read_band = [&](const char * key, uint16_t def) -> uint16_t {
+              const auto raw = parse_int64(bands_node[key], def, key, "auto_alarms.severity_bands");
+              if (raw < 0 || raw > 1000) {
+                RCLCPP_WARN(logger, "auto_alarms.severity_bands.%s=%lld out of range (0..1000) - using default", key,
+                            static_cast<long long>(raw));
+                return def;
+              }
+              return static_cast<uint16_t>(raw);
+            };
+            auto_alarms_.severity_bands.critical_min = read_band("critical", auto_alarms_.severity_bands.critical_min);
+            auto_alarms_.severity_bands.error_min = read_band("error", auto_alarms_.severity_bands.error_min);
+            auto_alarms_.severity_bands.warning_min = read_band("warning", auto_alarms_.severity_bands.warning_min);
+            warn_unknown_keys(bands_node, "auto_alarms.severity_bands", {"critical", "error", "warning"});
+          }
+          if (!(auto_alarms_.severity_bands.critical_min >= auto_alarms_.severity_bands.error_min &&
+                auto_alarms_.severity_bands.error_min >= auto_alarms_.severity_bands.warning_min)) {
+            RCLCPP_WARN(logger,
+                        "auto_alarms.severity_bands must satisfy critical >= error >= warning - "
+                        "resetting to the default bands (801/501/201)");
+            auto_alarms_.severity_bands = AutoAlarmsSeverityBands{};
+          }
+        }
+
+        auto read_pattern_list = [&](const char * key) -> std::vector<std::string> {
+          std::vector<std::string> out;
+          const auto & list_node = auto_alarms_node[key];
+          if (list_node && list_node.IsSequence()) {
+            for (const auto & p : list_node) {
+              try {
+                out.push_back(p.as<std::string>());
+              } catch (const YAML::Exception &) {
+                RCLCPP_WARN(logger, "auto_alarms.%s: non-string entry - skipping", key);
+              }
+            }
+          } else if (list_node && !list_node.IsNull()) {
+            RCLCPP_WARN(logger, "auto_alarms.%s: expected a sequence of strings - ignoring", key);
+          }
+          return out;
+        };
+        auto_alarms_.include_patterns = read_pattern_list("include");
+        auto_alarms_.exclude_patterns = read_pattern_list("exclude");
+
+        warn_unknown_keys(
+            auto_alarms_node, "auto_alarms",
+            {"enabled", "source_node_id", "entity_id", "auto_clear", "severity_bands", "include", "exclude"});
+      } else {
+        RCLCPP_WARN(logger, "auto_alarms: expected a boolean or a map - ignoring");
+      }
+    }
+    if (auto_alarms_.entity_id.empty()) {
+      // Default to a "<component_id>_alarms" App so a bare ``auto_alarms:
+      // true`` still has somewhere to host faults whose SourceNode does not
+      // match a known node-map entry. Deliberately NOT the bare
+      // ``component_id_``: the PLC runtime already registers a Component
+      // entity under that exact id, and a second (App) entity_defs_ entry
+      // with the same id collides in the SOVD merge pipeline ("ID collision:
+      // '<id>' used by both Component and App") - reproduced against a real
+      // Siemens S7-1500 during development.
+      auto_alarms_.entity_id = component_id_ + "_alarms";
+    }
+    auto_alarms_.source_node_id = parse_node_id(auto_alarms_.source_node_id_str);
+    if (auto_alarms_.enabled && auto_alarms_.source_node_id_str.empty()) {
+      RCLCPP_ERROR(logger, "auto_alarms.source_node_id is empty - refusing to load");
+      return false;
+    }
+
     // Schema validation under ``nodes:``: ``alarm_source`` belongs in the
     // top-level ``event_alarms:`` section, never under ``nodes:``. Silently
     // ignoring a misplaced ``alarm_source`` (the previous behavior unless
@@ -899,14 +1000,16 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // A config that declares neither a 'nodes:' section, any event alarms, nor
-    // auto_browse carries no mappings and is almost always a mistake (wrong
-    // file / typo). A present-but-empty 'nodes:' section is still valid, and
-    // an auto_browse-only file (zero-config discovery: the whole tree is
-    // filled by the live address-space walk) is valid too.
-    if (!has_nodes && event_alarms_.empty() && !auto_browse_config_.enabled) {
-      RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
-                   "Node map has neither 'nodes:', 'event_alarms:' nor 'auto_browse:' entries - nothing to map");
+    // A config that declares neither a 'nodes:' section, any event alarms,
+    // auto_browse, nor auto_alarms carries no mappings and is almost always a
+    // mistake (wrong file / typo). A present-but-empty 'nodes:' section is
+    // still valid, and an auto_browse-only file (zero-config discovery: the
+    // whole tree is filled by the live address-space walk) or an
+    // auto_alarms-only file is valid too.
+    if (!has_nodes && event_alarms_.empty() && !auto_browse_config_.enabled && !auto_alarms_.enabled) {
+      RCLCPP_ERROR(
+          rclcpp::get_logger("opcua.node_map"),
+          "Node map has neither 'nodes:', 'event_alarms:', 'auto_browse:' nor 'auto_alarms:' entries - nothing to map");
       entity_defs_.clear();
       return false;
     }
@@ -976,6 +1079,110 @@ ResolvedAlarm NodeMap::resolve_alarm(const AlarmEventConfig & cfg, const std::st
     out.matched = true;
   }
   return out;
+}
+
+namespace {
+
+// Uppercase-alnum slug with underscore separators, matching the convention
+// every hand-written fault_code in this codebase already uses (e.g.
+// PLC_OVERPRESSURE, PLC_COMMS_LOST). Collapses runs of non-alnum characters
+// to a single '_' and trims leading/trailing '_' so "Tank.Overpressure!!"
+// becomes "TANK_OVERPRESSURE" rather than "TANK_OVERPRESSURE__".
+std::string slugify(const std::string & s) {
+  std::string out;
+  out.reserve(s.size());
+  bool last_was_underscore = false;
+  for (unsigned char c : s) {
+    if (std::isalnum(c) != 0) {
+      out += static_cast<char>(std::toupper(c));
+      last_was_underscore = false;
+    } else if (!out.empty() && !last_was_underscore) {
+      out += '_';
+      last_was_underscore = true;
+    }
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out;
+}
+
+// FNV-1a 32-bit, rendered as 8 uppercase hex digits. Not cryptographic -
+// only needs to be a stable, low-collision fallback identity for alarms that
+// carry neither a ConditionName nor a SourceName.
+std::string short_hash_hex(const std::string & s) {
+  uint32_t h = 2166136261u;
+  for (unsigned char c : s) {
+    h ^= c;
+    h *= 16777619u;
+  }
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string out(8, '0');
+  for (int i = 7; i >= 0; --i) {
+    out[static_cast<size_t>(i)] = kHex[h & 0xF];
+    h >>= 4;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string NodeMap::derive_auto_fault_code(const std::string & condition_name, const std::string & source_name,
+                                            const std::string & source_node_str, const std::string & event_type_str,
+                                            const std::string & message) {
+  if (!condition_name.empty()) {
+    const std::string slug = slugify(condition_name);
+    if (!slug.empty()) {
+      return "PLC_ALARM_" + slug;
+    }
+  }
+  if (!source_name.empty()) {
+    const std::string slug = slugify(source_name);
+    if (!slug.empty()) {
+      return "PLC_ALARM_" + slug;
+    }
+  }
+  // Neither identity field is usable. A real Siemens S7-1500 reports every
+  // Program_Alarm of one FB through a single SourceNode (e.g. i=1845) with
+  // no ConditionName/SourceName - Message is the ONLY thing that tells "pa"
+  // and "pa2" apart - so it must be part of the fallback hash, not just
+  // SourceNode+EventType, or distinct alarms collapse onto one fault_code.
+  return "PLC_ALARM_" + short_hash_hex(source_node_str + "|" + event_type_str + "|" + message);
+}
+
+bool NodeMap::auto_alarm_passes_filters(const std::string & condition_name, const std::string & source_name,
+                                        const std::string & message, const std::vector<std::string> & include_patterns,
+                                        const std::vector<std::string> & exclude_patterns) {
+  auto matches_any = [&](const std::vector<std::string> & patterns) {
+    return std::any_of(patterns.begin(), patterns.end(), [&](const std::string & p) {
+      if (p.empty()) {
+        return false;
+      }
+      return (!condition_name.empty() && condition_name.find(p) != std::string::npos) ||
+             (!source_name.empty() && source_name.find(p) != std::string::npos) ||
+             (!message.empty() && message.find(p) != std::string::npos);
+    });
+  };
+  if (!exclude_patterns.empty() && matches_any(exclude_patterns)) {
+    return false;
+  }
+  if (!include_patterns.empty() && !matches_any(include_patterns)) {
+    return false;
+  }
+  return true;
+}
+
+std::string NodeMap::map_auto_severity(uint16_t severity, const AutoAlarmsSeverityBands & bands) {
+  if (severity >= bands.critical_min) {
+    return "CRITICAL";
+  }
+  if (severity >= bands.error_min) {
+    return "ERROR";
+  }
+  if (severity >= bands.warning_min) {
+    return "WARNING";
+  }
+  return "INFO";
 }
 
 std::vector<const NodeMapEntry *> NodeMap::entries_for_entity(const std::string & entity_id) const {
@@ -1100,6 +1307,19 @@ void NodeMap::build_entity_defs() {
     auto & def = defs[cfg.entity_id];
     if (def.id.empty()) {
       def.id = cfg.entity_id;
+      def.component_id = component_id_;
+    }
+    def.has_faults = true;
+  }
+
+  // Zero-config native A&C: register the fallback entity so discovery shows
+  // it as fault-bearing even before any alarm has fired. Auto-derived
+  // faults whose SourceNode matches a node-map entry instead surface on
+  // that entry's (already-registered) entity - this is only the fallback.
+  if (auto_alarms_.enabled) {
+    auto & def = defs[auto_alarms_.entity_id];
+    if (def.id.empty()) {
+      def.id = auto_alarms_.entity_id;
       def.component_id = component_id_;
     }
     def.has_faults = true;
