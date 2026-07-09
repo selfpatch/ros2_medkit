@@ -329,9 +329,11 @@ class OpcuaPoller {
   /// to the tracked condition map + state machine, dispatching the resulting
   /// fault action. ``event_id`` is the live EventId for ack/confirm (null for
   /// read-based observations). ``require_confirm_for_clear`` overrides
-  /// ``config_.require_confirm_for_clear`` for this one observation -
-  /// auto-derived alarms pass ``!auto_alarms.auto_clear`` complemented
-  /// (see on_event) instead of the poller-wide setting.
+  /// ``config_.require_confirm_for_clear`` for this one observation - for an
+  /// auto-derived alarm (see on_event), the caller passes ``false`` when
+  /// ``auto_alarms.auto_clear`` is true (both Acked and Confirmed forced
+  /// open so a zero-config alarm can clear without an operator), otherwise
+  /// it passes the poller-wide ``config_.require_confirm_for_clear`` as-is.
   void apply_condition_state(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
                              const AlarmEventInput & input, uint16_t severity, const std::string & message,
                              const opcua::ByteString * event_id, bool require_confirm_for_clear);
