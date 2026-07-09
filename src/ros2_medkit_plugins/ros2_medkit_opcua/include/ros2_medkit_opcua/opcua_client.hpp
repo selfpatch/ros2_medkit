@@ -139,6 +139,35 @@ class OpcuaClient {
   /// @return Vector of child node ID strings (e.g., "ns=1;s=TankLevel")
   std::vector<std::string> browse(const opcua::NodeId & parent_node);
 
+  /// One forward-hierarchical child returned by ``browse_detailed`` - the
+  /// address-space walker (auto_browse, address_space_browser.hpp) needs the
+  /// BrowseName, DisplayName and NodeClass to build the SOVD entity tree, not
+  /// just the NodeId that plain ``browse()`` returns.
+  struct BrowseChild {
+    opcua::NodeId node_id;
+    uint16_t browse_name_ns{0};
+    std::string browse_name;
+    std::string display_name;
+    opcua::NodeClass node_class{opcua::NodeClass::Unspecified};
+  };
+
+  /// Browse forward hierarchical (Object/Variable only) children of
+  /// ``parent_node``, server-side filtered to those two node classes and
+  /// following BrowseNext continuation points automatically. Only local
+  /// nodes are returned (cross-server references are dropped - there is
+  /// nothing on this session to read their attributes from). Empty vector on
+  /// failure or when not connected.
+  std::vector<BrowseChild> browse_detailed(const opcua::NodeId & parent_node);
+
+  /// Read the DataType attribute of a Variable node and resolve it to the
+  /// OPC-UA builtin scalar type name ("Boolean", "SByte", "Byte", "Int16",
+  /// "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float", "Double",
+  /// "String", "DateTime") when the DataType is a ns=0 builtin identified
+  /// numerically. Returns an empty string for structured / enumerated /
+  /// vendor-defined types (auto_browse treats those as unsupported and skips
+  /// the variable) and when not connected or the read fails.
+  std::string read_variable_type_name(const opcua::NodeId & variable_node);
+
   /// Read a single value
   ReadResult read_value(const opcua::NodeId & node_id);
 

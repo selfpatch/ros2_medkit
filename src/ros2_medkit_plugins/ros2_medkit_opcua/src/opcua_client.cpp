@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <set>
@@ -150,6 +152,19 @@ OpcuaValue variant_to_value(const opcua::Variant & var) {
   }
   if (var.isType<opcua::String>()) {
     return std::string(var.getScalarCopy<opcua::String>());
+  }
+  if (var.isType<opcua::DateTime>()) {
+    // Surfaced as an ISO-8601 UTC string (medkit has no native timestamp
+    // OpcuaValue slot). Exercised by auto_browse's DateTime->"string"
+    // mapping (e.g. a "TIMESTAMP" field on an alarm DB) and by any
+    // hand-written node_map entry that points at a DateTime node.
+    const auto tp = var.getScalarCopy<opcua::DateTime>().toTimePoint<std::chrono::system_clock>();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm_utc{};
+    gmtime_r(&tt, &tm_utc);
+    char buf[32];
+    const size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    return std::string(buf, n);
   }
   return std::string("<unsupported type>");
 }
@@ -608,6 +623,99 @@ std::vector<std::string> OpcuaClient::browse(const opcua::NodeId & parent_node) 
   }
 
   return result;
+}
+
+namespace {
+
+// Resolve a ns=0 numeric DataType identifier to its OPC-UA builtin scalar
+// type name. Only the types the plugin's four medkit data types
+// (bool/int/float/string) can represent are named here; every other
+// identifier (structured/enumerated/vendor types, or anything not in this
+// table) returns empty so auto_browse skips the variable as unsupported.
+//
+// A lookup table (not a switch on opcua::DataTypeId) deliberately: that enum
+// has hundreds of generated members (every OPC-UA Part 6 DataType, most
+// irrelevant to a scalar PLC point) and this project's ROS2MedkitWarnings
+// promotes -Wswitch-enum to an error, which would force listing all of them.
+std::string builtin_data_type_name(uint32_t numeric_id) {
+  static const std::unordered_map<uint32_t, std::string> kBuiltinNames = {
+      {static_cast<uint32_t>(opcua::DataTypeId::Boolean), "Boolean"},
+      {static_cast<uint32_t>(opcua::DataTypeId::SByte), "SByte"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Byte), "Byte"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Int16), "Int16"},
+      {static_cast<uint32_t>(opcua::DataTypeId::UInt16), "UInt16"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Int32), "Int32"},
+      {static_cast<uint32_t>(opcua::DataTypeId::UInt32), "UInt32"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Int64), "Int64"},
+      {static_cast<uint32_t>(opcua::DataTypeId::UInt64), "UInt64"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Float), "Float"},
+      {static_cast<uint32_t>(opcua::DataTypeId::Double), "Double"},
+      {static_cast<uint32_t>(opcua::DataTypeId::String), "String"},
+      {static_cast<uint32_t>(opcua::DataTypeId::DateTime), "DateTime"},
+  };
+  const auto it = kBuiltinNames.find(numeric_id);
+  return it == kBuiltinNames.end() ? std::string{} : it->second;
+}
+
+}  // namespace
+
+std::vector<OpcuaClient::BrowseChild> OpcuaClient::browse_detailed(const opcua::NodeId & parent_node) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  std::vector<BrowseChild> result;
+
+  if (!impl_->connected) {
+    return result;
+  }
+
+  try {
+    opcua::Node node(impl_->client, parent_node);
+    // Server-side node-class filter: only Object/Variable references come
+    // back, so Methods (ConditionRefresh, Acknowledge, ...), ReferenceTypes,
+    // DataTypes etc. never enter the walk. BrowseResultMask::All returns
+    // BrowseName + DisplayName + NodeClass in the same round trip as the
+    // NodeId, so the caller never needs a follow-up read per child.
+    auto refs = node.browseReferences(opcua::BrowseDirection::Forward, opcua::ReferenceTypeId::HierarchicalReferences,
+                                      true, opcua::NodeClass::Object | opcua::NodeClass::Variable);
+    result.reserve(refs.size());
+    for (auto & ref : refs) {
+      const auto & expanded = ref.getNodeId();
+      if (!expanded.isLocal()) {
+        continue;  // reference to another server - nothing to read here
+      }
+      BrowseChild child;
+      child.node_id = expanded.getNodeId();
+      const auto bn = ref.getBrowseName();
+      child.browse_name_ns = bn.getNamespaceIndex();
+      child.browse_name = std::string(bn.getName());
+      child.display_name = std::string(ref.getDisplayName().getText());
+      child.node_class = ref.getNodeClass();
+      result.push_back(std::move(child));
+    }
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+  }
+
+  return result;
+}
+
+std::string OpcuaClient::read_variable_type_name(const opcua::NodeId & variable_node) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+
+  if (!impl_->connected) {
+    return {};
+  }
+
+  try {
+    opcua::Node node(impl_->client, variable_node);
+    const auto data_type = node.readDataType();
+    if (data_type.getNamespaceIndex() != 0 || data_type.getIdentifierType() != opcua::NodeIdType::Numeric) {
+      return {};  // vendor/custom/enum type - not a scalar builtin
+    }
+    return builtin_data_type_name(data_type.getIdentifierAs<uint32_t>());
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    return {};
+  }
 }
 
 ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
