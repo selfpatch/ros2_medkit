@@ -418,6 +418,76 @@ The JSON/ROS-param form takes precedence over whatever the node-map YAML's
 `auto_browse:` block set, mirroring how environment variables override the
 rest of the plugin's YAML config.
 
+### Zero-config native A&C (`auto_alarms`)
+
+`event_alarms:` above requires a hand-written mapping per alarm. `auto_alarms`
+needs none: enable it and every AlarmConditionType event on the subscribed
+source (default the Server object, `i=2253` - the same system-wide catch-all
+used in the `event_alarms` examples) becomes a fault automatically, with no
+`condition_name` / `source_node` / `fault_code` mapping to write.
+
+```yaml
+# Bare boolean - all defaults.
+auto_alarms: true
+```
+
+```yaml
+# Map form - every key optional.
+auto_alarms:
+  enabled: true
+  source_node_id: "i=2253"       # EventNotifier to subscribe (default: Server object)
+  entity_id: "plc_alarms"        # fallback SOVD entity (default: "<component_id>_alarms")
+  auto_clear: true               # clear immediately on ActiveState=false, bypassing
+                                  # Acknowledge/Confirm (see below)
+  severity_bands:                # OPC-UA Severity (1-1000) -> SOVD bucket
+    critical: 801
+    error: 501
+    warning: 201
+  include: []                    # substring allow-list on ConditionName/SourceName/Message
+  exclude: ["CPU not in RUN"]    # substring deny-list, checked first
+```
+
+Default `off`. Unknown keys are warned and ignored, not silently dropped.
+
+**Fault derivation** (no config, per observed event):
+- `fault_code`: `PLC_ALARM_<slug>` from `ConditionName` when present, else from
+  `SourceName`, else `PLC_ALARM_<hash>` of SourceNode + EventType + Message.
+  The hash tier folds in the Message deliberately - a real Siemens S7-1500
+  multiplexes every `Program_Alarm` of one FB through a single SourceNode
+  (e.g. `i=1845`) with no ConditionName/SourceName, distinguished only by
+  Message text ("pa" vs "pa2"); without the Message in the hash those two
+  alarms would collapse onto one fault_code.
+- `entity`: the node-map entity that owns the event's SourceNode when it
+  matches a `nodes:` entry, else `auto_alarms.entity_id`.
+- `severity`: the event's raw `Severity` (1-1000) mapped through
+  `severity_bands`.
+- `description`: the event's `Message`, verbatim.
+
+**System messages:** some servers deliver non-alarm notifications on the same
+EventNotifier as real alarms - a Siemens Server object also emits SIMATIC
+system messages (e.g. `"CPU not in RUN"`) over `i=2253`. Per OPC-UA Part 9
+§5.5.2.13 only a true Condition instance carries a ConditionId; a system
+message resolves it to `NodeId.Null`, and `auto_alarms` drops those events
+before deriving a fault. Use `exclude` for anything that still needs
+filtering by text (e.g. a server that does set a ConditionId on system
+events).
+
+**Precedence:** explicit `event_alarms` mappings are tried first; `auto_alarms`
+covers whatever they do not match. On the same source (e.g. both configured
+on `i=2253`) no duplicate subscription is created - unmatched events on an
+`event_alarms` source simply fall through to auto-derivation when
+`auto_alarms` is enabled for that source.
+
+**Acknowledge/Confirm:** `auto_clear` (default `true`) clears an auto-derived
+alarm as soon as it goes inactive, bypassing the Acknowledge/Confirm workflow
+entirely - there is no `acknowledge_fault` SOVD operation for a zero-config
+alarm to receive an Ack through, so without this it would latch forever on a
+server that requires one (as most do). Set `auto_clear: false` to require the
+poller's normal Acknowledge/Confirm gating before it clears - since a
+zero-config alarm has no SOVD `acknowledge_fault` operation of its own,
+Acked/Confirmed must come from the OPC-UA server side instead (an HMI/SCADA
+system or another OPC-UA client acknowledging the condition directly).
+
 ### Gateway Parameters
 
 ```yaml
