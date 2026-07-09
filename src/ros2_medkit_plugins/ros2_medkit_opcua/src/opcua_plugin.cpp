@@ -1230,8 +1230,9 @@ void OpcuaPlugin::run_startup_discovery() {
     if (!ep.anonymous_none_available) {
       ++secured_only;
     }
-    log_info("OPC-UA discovery: found data server " + ep.endpoint_url + " (uri='" + ep.application_uri + "', product='" +
-             ep.product_uri + "', None/Anonymous=" + (ep.anonymous_none_available ? "yes" : "no") + ")");
+    log_info("OPC-UA discovery: found data server " + ep.endpoint_url + " (uri='" + ep.application_uri +
+             "', product='" + ep.product_uri + "', None/Anonymous=" + (ep.anonymous_none_available ? "yes" : "no") +
+             ")");
   }
   log_info("OPC-UA discovery summary: " + std::to_string(data_servers) + " data server(s), " +
            std::to_string(discovery_servers) + " discovery server(s)/LDS, " + std::to_string(secured_only) +
