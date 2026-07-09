@@ -149,10 +149,13 @@ struct AutoAlarmsConfig {
   opcua::NodeId source_node_id;
 
   /// SOVD entity that hosts an auto-derived fault when its SourceNode is not
-  /// a known node-map entry. Defaults to the node map's ``component_id`` at
-  /// load time (see ``NodeMap::load``). When the event's SourceNode matches
-  /// an existing ``nodes:`` entry, the fault is hosted on THAT entry's
-  /// entity instead (a more specific home than this fallback).
+  /// a known node-map entry. Defaults to ``"<component_id>_alarms"`` at load
+  /// time (see ``NodeMap::load``) - deliberately not the bare
+  /// ``component_id``, which the PLC runtime already registers as a
+  /// Component entity (a second App entity with the same id collides in the
+  /// SOVD merge pipeline). When the event's SourceNode matches an existing
+  /// ``nodes:`` entry, the fault is hosted on THAT entry's entity instead (a
+  /// more specific home than this fallback).
   std::string entity_id;
 
   /// When true (default), an auto-derived alarm clears as soon as

@@ -410,8 +410,11 @@ on `i=2253`) no duplicate subscription is created - unmatched events on an
 alarm as soon as it goes inactive, bypassing the Acknowledge/Confirm workflow
 entirely - there is no `acknowledge_fault` SOVD operation for a zero-config
 alarm to receive an Ack through, so without this it would latch forever on a
-server that requires one (as most do). Set `auto_clear: false` to require
-Acknowledge (via the `event_alarms` mapping path) before it clears.
+server that requires one (as most do). Set `auto_clear: false` to require the
+poller's normal Acknowledge/Confirm gating before it clears - since a
+zero-config alarm has no SOVD `acknowledge_fault` operation of its own,
+Acked/Confirmed must come from the OPC-UA server side instead (an HMI/SCADA
+system or another OPC-UA client acknowledging the condition directly).
 
 ### Gateway Parameters
 
