@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_opcua/network_discovery.hpp"
+#include "ros2_medkit_opcua/address_space_browser.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
 #include "ros2_medkit_opcua/opcua_poller.hpp"
@@ -146,6 +147,20 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // Publish PLC values to ROS 2 topics (called after each poll)
   void publish_values(const PollSnapshot & snap);
+
+  // Create the per-entry ROS 2 Float32 publishers for numeric node map
+  // entries. Called from set_context() AFTER connect()+run_auto_browse() so
+  // that auto-discovered entries also get a publisher (moved out of its
+  // original inline position, which ran before the node map could contain
+  // anything auto_browse added).
+  void create_value_publishers();
+
+  // Run the recursive OPC-UA address-space walk (auto_browse) against the
+  // now-connected client and merge the discovered entries into node_map_.
+  // Requires a live session; called once from set_context() right after a
+  // successful connect(), before the poller/publishers are built from
+  // node_map_. No-op (never called) when auto_browse is disabled.
+  void run_auto_browse();
 
   // Log the effective OPC-UA security profile (policy / mode / user auth) at
   // startup; warns when running unsecured.
