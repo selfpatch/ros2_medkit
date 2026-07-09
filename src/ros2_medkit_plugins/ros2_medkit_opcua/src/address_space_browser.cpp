@@ -125,9 +125,8 @@ std::string unique_entity_id(const std::string & candidate, std::unordered_set<s
 
 }  // namespace
 
-void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids,
-                               const std::vector<std::string> & path_names, int depth, AutoBrowseResult & result,
-                               std::unordered_set<std::string> & seen_entity_ids) {
+void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids, int depth,
+                               AutoBrowseResult & result, std::unordered_set<std::string> & seen_entity_ids) {
   if (depth > config_.max_depth) {
     result.depth_cap_hit = true;
     return;
@@ -158,9 +157,7 @@ void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std
     if (child.node_class == opcua::NodeClass::Object) {
       std::vector<std::string> next_ids = path_ids;
       next_ids.push_back(child.browse_name.empty() ? display : child.browse_name);
-      std::vector<std::string> next_names = path_names;
-      next_names.push_back(display);
-      visit_object(child.node_id, next_ids, next_names, depth + 1, result, seen_entity_ids);
+      visit_object(child.node_id, next_ids, depth + 1, result, seen_entity_ids);
     } else if (child.node_class == opcua::NodeClass::Variable) {
       const std::string opcua_type = source_.read_type_name(child.node_id);
       const std::string medkit_type = map_opcua_type(opcua_type);
@@ -218,7 +215,7 @@ AutoBrowseResult AutoBrowser::browse() {
 
   for (const auto & root_str : config_.root_node_ids) {
     const opcua::NodeId root = NodeMap::parse_node_id(root_str);
-    visit_object(root, {}, {}, 0, result, seen_entity_ids);
+    visit_object(root, {}, 0, result, seen_entity_ids);
   }
 
   if (result.node_cap_hit) {

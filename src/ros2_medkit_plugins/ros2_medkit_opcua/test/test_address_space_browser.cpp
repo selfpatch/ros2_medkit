@@ -22,6 +22,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -29,9 +32,39 @@
 #include <unordered_set>
 #include <vector>
 
+#include <unistd.h>
+
 namespace ros2_medkit_gateway {
 
 namespace {
+
+// RAII-scoped YAML fixture written to a unique path under the system temp
+// dir (PID + per-process counter, so two test binaries - or two tests in the
+// same binary - never collide on the same file), removed on scope exit.
+class TempYamlFile {
+ public:
+  explicit TempYamlFile(const std::string & contents) {
+    static std::atomic<int> counter{0};
+    path_ = (std::filesystem::temp_directory_path() / ("ros2_medkit_opcua_test_" + std::to_string(::getpid()) + "_" +
+                                                       std::to_string(counter.fetch_add(1)) + ".yaml"))
+                .string();
+    std::ofstream f(path_);
+    f << contents;
+  }
+  ~TempYamlFile() {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+  }
+  TempYamlFile(const TempYamlFile &) = delete;
+  TempYamlFile & operator=(const TempYamlFile &) = delete;
+
+  const std::string & path() const {
+    return path_;
+  }
+
+ private:
+  std::string path_;
+};
 
 OpcuaClient::BrowseChild make_child(const std::string & node_id_str, uint16_t bn_ns, const std::string & browse_name,
                                     const std::string & display_name, opcua::NodeClass node_class) {
@@ -404,10 +437,7 @@ TEST(AutoBrowserTest, MultipleRootsAreAllWalked) {
 
 TEST(NodeMapAutoBrowseMergeTest, ExplicitNodeMapEntryTakesPrecedenceOverAutoBrowsed) {
   NodeMap node_map;
-  const std::string yaml_path = "/tmp/test_auto_browse_precedence.yaml";
-  {
-    std::ofstream f(yaml_path);
-    f << R"(
+  const TempYamlFile yaml_file(R"(
 component_id: test_plc
 auto_browse: true
 nodes:
@@ -416,9 +446,8 @@ nodes:
     data_name: hand_authored_name
     data_type: float
     writable: true
-)";
-  }
-  ASSERT_TRUE(node_map.load(yaml_path));
+)");
+  ASSERT_TRUE(node_map.load(yaml_file.path()));
   EXPECT_TRUE(node_map.auto_browse());
   ASSERT_EQ(node_map.entries().size(), 1u);
 
@@ -456,19 +485,15 @@ nodes:
 
 TEST(NodeMapAutoBrowseMergeTest, AutoBrowseOnlyConfigWithNoNodesSectionIsValid) {
   NodeMap node_map;
-  const std::string yaml_path = "/tmp/test_auto_browse_only.yaml";
-  {
-    std::ofstream f(yaml_path);
-    f << R"(
+  const TempYamlFile yaml_file(R"(
 component_id: test_plc
 auto_browse:
   max_depth: 5
   max_nodes: 1000
   namespace_deny: [0]
   read_initial_values: false
-)";
-  }
-  ASSERT_TRUE(node_map.load(yaml_path));
+)");
+  ASSERT_TRUE(node_map.load(yaml_file.path()));
   EXPECT_TRUE(node_map.auto_browse());
   EXPECT_EQ(node_map.auto_browse_config().max_depth, 5);
   EXPECT_EQ(node_map.auto_browse_config().max_nodes, 1000u);
