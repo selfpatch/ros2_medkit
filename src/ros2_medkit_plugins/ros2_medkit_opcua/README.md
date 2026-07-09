@@ -370,6 +370,7 @@ ros2_medkit_gateway:
 | `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down (issue #496) |
 | `comms_lost_debounce_ms` | `5000` | Continuous down time before `PLC_COMMS_LOST` is raised (debounces reconnect blips; clamped to [0, 3600000] ms) |
 | `comms_lost_severity` | `ERROR` | SOVD severity bucket for the `PLC_COMMS_LOST` fault |
+| `discovery.enabled` | `false` | Opt-in read-only PLC network discovery (auto endpoint). See below |
 
 ### OPC-UA client security (SecurityPolicy, certificates, user auth)
 
@@ -405,6 +406,62 @@ Notes:
   `reject_untrusted: false`.
 - The encryption backend (OpenSSL) is compiled in; a build without it logs an
   error and refuses any secured profile.
+
+### Read-only PLC network discovery (auto endpoint)
+
+A diag-box plugged into a plant LAN can auto-find an OPC-UA PLC instead of
+requiring a hand-configured `endpoint_url`. Discovery is **opt-in and disabled
+by default**; enabling it runs a bounded, read-only active scan and hands the
+best OPC-UA data server to the normal connect + introspect path.
+
+```yaml
+plugins.opcua.discovery:
+  enabled: false               # master switch (default false)
+  mode: "active"               # active | passive | both (only active implemented)
+  subnets: ["192.168.1.0/24"]  # CIDR list; empty => derive the host's local /24
+  ports: [4840]                # TCP ports probed (4840 = OPC-UA; others = leads)
+  connect_timeout_ms: 600      # per-port TCP connect timeout
+  scan_concurrency: 100        # bounded, polite concurrent connect count
+  identify_timeout_ms: 6000    # per GetEndpoints identify
+  interval_s: 0                # 0 = one-shot at startup (periodic re-scan: TODO)
+  anonymous_none_only: true    # only auto-connect None/Anonymous servers
+```
+
+Environment overrides (Docker / appliance): `OPCUA_DISCOVERY_ENABLED`,
+`OPCUA_DISCOVERY_SUBNETS` (comma-separated CIDRs), `OPCUA_DISCOVERY_INTERVAL_S`.
+
+How it works:
+1. Bounded concurrent TCP connect sweep of the configured ports across the
+   subnet (nothing beyond a connect - no payload sent to non-OPC-UA ports).
+2. For each open `:4840`, a read-only OPC-UA `GetEndpoints` identify extracts
+   the endpoint URL, ApplicationUri, ProductUri, security policies, and whether
+   a None/Anonymous endpoint is offered.
+3. Results are deduplicated by ApplicationUri (fallback ip:port) and classified:
+   OPC-UA **data server** (ApplicationType 0/2, browseable) vs **discovery
+   server / LDS** (type 3, never browsed) vs **non-OPC-UA lead** (e.g. an open
+   `:102` S7comm port, recorded but not identified).
+4. When discovery is on **and no `endpoint_url` is configured**, the plugin
+   auto-selects the best None/Anonymous data server (deterministic, lowest
+   ip:port) and connects to the **scanned ip:port** - not the advertised
+   EndpointUrl, which a server may report as a non-resolvable hostname.
+
+Safety / OT posture:
+- Everything is read-only: TCP connect + `GetEndpoints` only. No writes, no
+  subscriptions, no second long-lived session.
+- An explicitly configured `endpoint_url` (or `OPCUA_ENDPOINT_URL`) always wins;
+  discovery then does nothing, so it never opens a second session on a PLC the
+  plugin already polls.
+- Secured-only servers (no None/Anonymous endpoint) are surfaced in the startup
+  log as leads requiring operator credentials - never auto-connected or probed.
+- The scan is bounded (short connect timeout, capped concurrency) and CIDRs
+  wider than /16 are rejected to prevent an accidental broad sweep.
+
+Note on passive discovery: a stock Siemens S7-1500 neither multicast-announces
+(mDNS `_opcua-tcp._tcp`) nor registers with an OPC-UA LDS, so passive sources
+find nothing there; the active scan is what discovers it. Passive mDNS / LDS
+`FindServers` sources (useful on Kepware / Prosys / GDS estates) and periodic
+re-scan + multi-endpoint registration are planned follow-ups; this iteration
+delivers the active-scan core and single "auto endpoint" mode.
 
 ### Active-condition replay on reconnect (issue #389/#478)
 

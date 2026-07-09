@@ -156,6 +156,7 @@ OpcuaPlugin::~OpcuaPlugin() {
 void OpcuaPlugin::configure(const nlohmann::json & config) {
   if (config.contains("endpoint_url")) {
     client_config_.endpoint_url = config["endpoint_url"].get<std::string>();
+    endpoint_configured_ = true;
   }
 
   // OPC-UA SecureChannel security + user identity. All opt-in; defaults keep
@@ -291,6 +292,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   // Environment variables override YAML config (for Docker)
   if (auto * env = std::getenv("OPCUA_ENDPOINT_URL")) {
     client_config_.endpoint_url = env;
+    endpoint_configured_ = true;
   }
   if (auto * env = std::getenv("OPCUA_NODE_MAP_PATH")) {
     node_map_path_ = env;
@@ -348,6 +350,54 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     client_config_.user_cert_path = env;
   }
 
+  // Read-only PLC/OPC-UA network discovery (opt-in). Parsed + validated with
+  // unknown-key warnings; env overrides follow for Docker/appliance deploys.
+  if (config.contains("discovery")) {
+    discovery_config_ = parse_discovery_config(config["discovery"], [this](const std::string & m) {
+      log_warn(m);
+    });
+  }
+  if (auto * env = std::getenv("OPCUA_DISCOVERY_ENABLED")) {
+    const std::string v = env;
+    discovery_config_.enabled = !(v == "0" || v == "false" || v == "no" || v == "off");
+  }
+  if (auto * env = std::getenv("OPCUA_DISCOVERY_SUBNETS")) {
+    // Comma-separated CIDR list.
+    discovery_config_.subnets.clear();
+    std::string list = env;
+    size_t start = 0;
+    while (start <= list.size()) {
+      const size_t sep = list.find(',', start);
+      std::string cidr = list.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+      if (!cidr.empty()) {
+        discovery_config_.subnets.push_back(cidr);
+      }
+      if (sep == std::string::npos) {
+        break;
+      }
+      start = sep + 1;
+    }
+  }
+  if (auto * env = std::getenv("OPCUA_DISCOVERY_INTERVAL_S")) {
+    errno = 0;
+    char * end = nullptr;
+    const long v = std::strtol(env, &end, 10);
+    if (end != env && *end == '\0' && errno != ERANGE && v >= 0) {
+      discovery_config_.interval_s = static_cast<int>(v);
+    } else {
+      log_warn(std::string("Ignoring invalid OPCUA_DISCOVERY_INTERVAL_S='") + env + "' (want a non-negative integer)");
+    }
+  }
+
+  // Default the discovery I/O to the real probes; test builds override these
+  // before set_context() to exercise the auto-endpoint path offline.
+  if (!discovery_scan_fn_) {
+    discovery_scan_fn_ = &tcp_connect_probe;
+  }
+  if (!discovery_identify_fn_) {
+    discovery_identify_fn_ = &opcua_getendpoints_identify;
+  }
+
   if (!node_map_path_.empty()) {
     if (!node_map_.load(node_map_path_)) {
       // FATAL: a node map that fails to load or validate (duplicate/colliding
@@ -389,6 +439,8 @@ void OpcuaPlugin::set_context(PluginContext & context) {
       log_info("PLC bridge: " + entry.node_id_str + " -> " + entry.ros2_topic + " (Float32)");
     }
   }
+
+  run_startup_discovery();
 
   log_security_profile();
 
@@ -992,6 +1044,81 @@ void OpcuaPlugin::log_security_profile() const {
   } else {
     log_info(profile);
   }
+}
+
+void OpcuaPlugin::run_startup_discovery() {
+  if (!discovery_config_.enabled) {
+    return;
+  }
+  // Never override an explicitly configured endpoint: discovery must not open a
+  // second session on a PLC the operator already targets (and already polls).
+  if (endpoint_configured_) {
+    log_info("OPC-UA discovery enabled but endpoint_url is explicitly configured (" + client_config_.endpoint_url +
+             "); skipping auto-discovery to avoid a second session.");
+    return;
+  }
+  if (discovery_config_.interval_s > 0) {
+    log_warn("OPC-UA discovery interval_s=" + std::to_string(discovery_config_.interval_s) +
+             " set, but periodic re-scan is not implemented yet; running a one-shot scan at startup.");
+  }
+
+  NetworkDiscovery discovery(discovery_config_, discovery_scan_fn_, discovery_identify_fn_);
+
+  const auto subnets = discovery.resolve_subnets();
+  if (subnets.empty()) {
+    log_warn("OPC-UA discovery: no subnet configured and could not derive a local /24; nothing to scan.");
+    return;
+  }
+  std::string subnet_list;
+  for (const auto & s : subnets) {
+    subnet_list += (subnet_list.empty() ? "" : ", ") + s;
+  }
+  log_info("OPC-UA discovery: read-only active scan of [" + subnet_list + "] on " +
+           std::to_string(discovery_config_.ports.size()) + " port(s)...");
+
+  const std::vector<DiscoveredEndpoint> found = discovery.run();
+
+  // Summarize what was found and what was skipped (leads, LDS, secured-only).
+  size_t data_servers = 0;
+  size_t discovery_servers = 0;
+  size_t secured_only = 0;
+  size_t leads = 0;
+  for (const auto & ep : found) {
+    if (ep.protocol != "opcua") {
+      ++leads;
+      continue;
+    }
+    if (!ep.identify_error.empty()) {
+      ++leads;
+      continue;
+    }
+    if (!ep.is_data_server()) {
+      ++discovery_servers;
+      continue;
+    }
+    ++data_servers;
+    if (!ep.anonymous_none_available) {
+      ++secured_only;
+    }
+    log_info("OPC-UA discovery: found data server " + ep.endpoint_url + " (uri='" + ep.application_uri + "', product='" +
+             ep.product_uri + "', None/Anonymous=" + (ep.anonymous_none_available ? "yes" : "no") + ")");
+  }
+  log_info("OPC-UA discovery summary: " + std::to_string(data_servers) + " data server(s), " +
+           std::to_string(discovery_servers) + " discovery server(s)/LDS, " + std::to_string(secured_only) +
+           " secured-only (need credentials), " + std::to_string(leads) + " non-OPC-UA/unidentified lead(s).");
+
+  const DiscoveredEndpoint * chosen =
+      NetworkDiscovery::select_auto_endpoint(found, discovery_config_.anonymous_none_only);
+  if (chosen == nullptr) {
+    log_warn(
+        "OPC-UA discovery: no auto-connectable None/Anonymous data server found; leaving endpoint at default. "
+        "Secured-only servers require operator credentials.");
+    return;
+  }
+
+  client_config_.endpoint_url = chosen->endpoint_url;
+  log_info("OPC-UA discovery: auto-selected endpoint " + chosen->endpoint_url + " (uri='" + chosen->application_uri +
+           "') - handing to the connect + introspect path.");
 }
 
 nlohmann::json OpcuaPlugin::build_data_response(const std::string & entity_id) const {

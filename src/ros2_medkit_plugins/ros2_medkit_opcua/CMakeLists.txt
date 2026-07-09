@@ -101,6 +101,8 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
+  src/network_discovery.cpp
+  src/network_discovery_io.cpp
 )
 
 target_include_directories(ros2_medkit_opcua_plugin PRIVATE
@@ -174,6 +176,8 @@ if(BUILD_TESTING)
     src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    src/network_discovery.cpp
+    src/network_discovery_io.cpp
     TIMEOUT 240
   )
   target_include_directories(test_opcua_plugin PRIVATE
@@ -264,6 +268,22 @@ if(BUILD_TESTING)
     nlohmann_json::nlohmann_json
   )
   medkit_set_test_domain(test_device_identity)
+
+  # Read-only PLC/OPC-UA network discovery: CIDR expansion, config parse +
+  # validation, dedup / URL-preference / classification, and auto-endpoint
+  # selection. Links only the pure orchestrator (network_discovery.cpp) with
+  # injected fake scan/identify - no network, no open62541, no I/O source.
+  ament_add_gtest(test_network_discovery
+    test/test_network_discovery.cpp
+    src/network_discovery.cpp
+  )
+  target_include_directories(test_network_discovery PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  target_link_libraries(test_network_discovery
+    nlohmann_json::nlohmann_json
+  )
+  medkit_set_test_domain(test_network_discovery)
 
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
@@ -395,6 +415,8 @@ if(BUILD_TESTING)
       src/device_identity.cpp
       src/node_map.cpp
       src/opcua_poller.cpp
+      src/network_discovery.cpp
+      src/network_discovery_io.cpp
       TIMEOUT 120
     )
     add_dependencies(test_opcua_identity test_alarm_server)
