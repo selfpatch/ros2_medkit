@@ -234,6 +234,30 @@ if(BUILD_TESTING)
   )
   medkit_set_test_domain(test_opcua_client)
 
+  # Zero-config native A&C (auto_alarms): pure-function coverage of the
+  # subscription-source precedence rule (effective_alarm_sources) and the
+  # system-message filter (is_condition_event) - no live server needed.
+  ament_add_gtest(test_opcua_poller
+    test/test_opcua_poller.cpp
+    src/opcua_poller.cpp
+    src/opcua_client.cpp
+    src/node_map.cpp
+  )
+  target_include_directories(test_opcua_poller PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_opcua_poller
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_opcua_poller
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+  medkit_set_test_domain(test_opcua_poller)
+
   # Issue #386: pure-function state machine tests. Header-only target -
   # no opcua dependency at link time so it runs fast and is sanitizer
   # clean independent of the open62541pp build flavour.
