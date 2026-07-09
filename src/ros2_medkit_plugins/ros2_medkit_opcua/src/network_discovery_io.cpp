@@ -42,9 +42,15 @@ bool tcp_connect_probe(const std::string & ip, uint16_t port, int timeout_ms) {
   }
 
   // Non-blocking connect + select so a filtered / silent host times out at
-  // ``timeout_ms`` instead of the kernel default (tens of seconds).
+  // ``timeout_ms`` instead of the kernel default (tens of seconds). Bail out
+  // on either fcntl() failing: leaving the socket blocking would let a single
+  // filtered host stall the probe for the kernel's default connect timeout,
+  // defeating the bounded-concurrency scan.
   const int flags = ::fcntl(fd, F_GETFL, 0);
-  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (flags == -1 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    ::close(fd);
+    return false;
+  }
 
   struct sockaddr_in addr {};
   addr.sin_family = AF_INET;

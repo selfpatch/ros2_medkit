@@ -53,6 +53,20 @@ std::string ipv4_to_string(uint32_t host_order) {
   return std::string(buf);
 }
 
+// Numeric IPv4 compare (e.g. "192.168.1.2" < "192.168.1.10") - a plain string
+// compare gets this wrong lexicographically. Falls back to string compare
+// only when a side fails to parse (should not happen: ip always comes from
+// expand_cidr_hosts / a scanned socket address) so a malformed value still
+// sorts deterministically instead of silently mis-ranking.
+bool ipv4_less(const std::string & a, const std::string & b) {
+  uint32_t a_ip = 0;
+  uint32_t b_ip = 0;
+  if (parse_ipv4(a, &a_ip) && parse_ipv4(b, &b_ip)) {
+    return a_ip < b_ip;
+  }
+  return a < b;
+}
+
 }  // namespace
 
 std::vector<std::string> expand_cidr_hosts(const std::string & cidr, bool * ok) {
@@ -184,9 +198,14 @@ DiscoveryConfig parse_discovery_config(const nlohmann::json & j,
     const std::string mode = j["mode"].get<std::string>();
     if (mode == "active" || mode == "passive" || mode == "both") {
       cfg.mode = mode;
-      if (mode != "active") {
-        warn_fn("discovery: mode '" + mode +
-                "' - passive sources (mDNS / LDS) are not implemented yet; only active scan runs");
+      if (mode == "passive") {
+        warn_fn(
+            "discovery: mode 'passive' - passive sources (mDNS / LDS) are not implemented yet; "
+            "discovery will not run");
+      } else if (mode == "both") {
+        warn_fn(
+            "discovery: mode 'both' - passive sources (mDNS / LDS) are not implemented yet; "
+            "only the active scan runs");
       }
     } else {
       warn_fn("discovery: unknown mode '" + mode + "' - defaulting to 'active'");
@@ -275,6 +294,14 @@ std::vector<std::string> NetworkDiscovery::resolve_subnets() const {
 }
 
 std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
+  // "passive" has no active scan implementation yet (mDNS / LDS FindServers
+  // are a documented follow-up) - a no-op stub rather than silently running
+  // the active scan mode wasn't asked for. parse_discovery_config() already
+  // warns about this at parse time.
+  if (cfg_.mode == "passive") {
+    return {};
+  }
+
   // 1. Build the (ip, port) task list from every resolved subnet.
   struct Target {
     std::string ip;
@@ -324,10 +351,10 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
     }
   }
 
-  // Deterministic identify order (lowest ip:port first).
+  // Deterministic identify order (numerically lowest ip:port first).
   std::sort(open_hits.begin(), open_hits.end(), [](const Target & a, const Target & b) {
     if (a.ip != b.ip) {
-      return a.ip < b.ip;
+      return ipv4_less(a.ip, b.ip);
     }
     return a.port < b.port;
   });
@@ -389,7 +416,7 @@ const DiscoveredEndpoint * NetworkDiscovery::select_auto_endpoint(const std::vec
     if (anonymous_none_only && !ep.anonymous_none_available) {
       continue;  // secured-only: surfaced as a lead, never auto-connected
     }
-    if (best == nullptr || ep.ip < best->ip || (ep.ip == best->ip && ep.port < best->port)) {
+    if (best == nullptr || ipv4_less(ep.ip, best->ip) || (ep.ip == best->ip && ep.port < best->port)) {
       best = &ep;
     }
   }
