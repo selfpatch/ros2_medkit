@@ -1860,4 +1860,251 @@ event_alarms:
   EXPECT_FALSE(map.load(path));
 }
 
+// ---- Zero-config native A&C (auto_alarms) --------------------------------
+
+TEST(DeriveAutoFaultCodeTest, UsesConditionNameWhenPresent) {
+  EXPECT_EQ(NodeMap::derive_auto_fault_code("Overpressure", "SourceX", "ns=2;s=Tank", "ns=0;i=2915", "msg"),
+            "PLC_ALARM_OVERPRESSURE");
+}
+
+TEST(DeriveAutoFaultCodeTest, ConditionNameSlugified) {
+  // Dots, spaces and punctuation collapse to single underscores; case folds
+  // to upper, matching every hand-written fault_code in this codebase
+  // (PLC_OVERPRESSURE, PLC_COMMS_LOST, ...).
+  EXPECT_EQ(NodeMap::derive_auto_fault_code("Tank.Overpressure!!", "", "ns=2;s=Tank", "ns=0;i=2915", ""),
+            "PLC_ALARM_TANK_OVERPRESSURE");
+}
+
+TEST(DeriveAutoFaultCodeTest, FallsBackToSourceNameWhenConditionNameEmpty) {
+  EXPECT_EQ(NodeMap::derive_auto_fault_code("", "Pump A Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg"),
+            "PLC_ALARM_PUMP_A_FAULT");
+}
+
+TEST(DeriveAutoFaultCodeTest, HashFallbackWhenBothNamesEmpty) {
+  const std::string code = NodeMap::derive_auto_fault_code("", "", "ns=3;i=1845", "ns=0;i=2915", "pa");
+  EXPECT_EQ(code.rfind("PLC_ALARM_", 0), 0u);
+  EXPECT_GT(code.size(), std::string("PLC_ALARM_").size());
+  // Deterministic: same inputs -> same code.
+  EXPECT_EQ(code, NodeMap::derive_auto_fault_code("", "", "ns=3;i=1845", "ns=0;i=2915", "pa"));
+}
+
+TEST(DeriveAutoFaultCodeTest, SharedSourceNodeDisambiguatedByMessage) {
+  // Real Siemens S7-1500 quirk: every Program_Alarm of one FB shares a single
+  // SourceNode (e.g. i=1845) with no ConditionName/SourceName, differing
+  // only by Message ("pa" vs "pa2"). Without folding Message into the hash
+  // fallback, both would collapse onto the same fault_code.
+  const std::string pa = NodeMap::derive_auto_fault_code("", "", "ns=3;i=1845", "ns=0;i=2915", "pa");
+  const std::string pa2 = NodeMap::derive_auto_fault_code("", "", "ns=3;i=1845", "ns=0;i=2915", "pa2");
+  EXPECT_NE(pa, pa2);
+}
+
+TEST(DeriveAutoFaultCodeTest, EmptyConditionNameSlugFallsThroughToSourceName) {
+  // A ConditionName that slugifies to nothing (pure punctuation) must not
+  // stick with an empty-but-nonempty-input tier - it falls through exactly
+  // like an absent ConditionName.
+  EXPECT_EQ(NodeMap::derive_auto_fault_code("!!!", "PumpA", "ns=2;s=PumpA", "ns=0;i=2915", ""), "PLC_ALARM_PUMPA");
+}
+
+TEST(AutoAlarmPassesFiltersTest, NoPatternsAdmitsEverything) {
+  EXPECT_TRUE(NodeMap::auto_alarm_passes_filters("Overpressure", "Tank", "msg", {}, {}));
+}
+
+TEST(AutoAlarmPassesFiltersTest, ExcludeDropsMatchingSystemMessage) {
+  EXPECT_FALSE(NodeMap::auto_alarm_passes_filters("", "Server", "CPU not in RUN", {}, {"CPU not in RUN"}));
+}
+
+TEST(AutoAlarmPassesFiltersTest, ExcludeWinsOverInclude) {
+  EXPECT_FALSE(NodeMap::auto_alarm_passes_filters("Overpressure", "", "msg", {"Overpressure"}, {"Overpressure"}));
+}
+
+TEST(AutoAlarmPassesFiltersTest, NonEmptyIncludeRequiresAMatch) {
+  EXPECT_FALSE(NodeMap::auto_alarm_passes_filters("Underpressure", "", "msg", {"Overpressure"}, {}));
+  EXPECT_TRUE(NodeMap::auto_alarm_passes_filters("Overpressure", "", "msg", {"Overpressure"}, {}));
+}
+
+TEST(AutoAlarmPassesFiltersTest, IncludeMatchesAnyOfConditionNameSourceNameMessage) {
+  EXPECT_TRUE(NodeMap::auto_alarm_passes_filters("", "", "contains PumpA text", {"PumpA"}, {}));
+}
+
+TEST(MapAutoSeverityTest, DefaultBandsMatchOpcuaPluginConvention) {
+  AutoAlarmsSeverityBands bands;
+  EXPECT_EQ(NodeMap::map_auto_severity(1000, bands), "CRITICAL");
+  EXPECT_EQ(NodeMap::map_auto_severity(801, bands), "CRITICAL");
+  EXPECT_EQ(NodeMap::map_auto_severity(800, bands), "ERROR");
+  EXPECT_EQ(NodeMap::map_auto_severity(501, bands), "ERROR");
+  EXPECT_EQ(NodeMap::map_auto_severity(500, bands), "WARNING");
+  EXPECT_EQ(NodeMap::map_auto_severity(201, bands), "WARNING");
+  EXPECT_EQ(NodeMap::map_auto_severity(200, bands), "INFO");
+  EXPECT_EQ(NodeMap::map_auto_severity(1, bands), "INFO");
+}
+
+TEST(MapAutoSeverityTest, CustomBandsOverrideThresholds) {
+  AutoAlarmsSeverityBands bands;
+  bands.critical_min = 900;
+  bands.error_min = 700;
+  bands.warning_min = 400;
+  EXPECT_EQ(NodeMap::map_auto_severity(850, bands), "ERROR");  // below the raised critical bar
+  EXPECT_EQ(NodeMap::map_auto_severity(900, bands), "CRITICAL");
+  EXPECT_EQ(NodeMap::map_auto_severity(399, bands), "INFO");
+}
+
+TEST_F(NodeMapTest, AutoAlarmsDefaultsOff) {
+  NodeMap map;
+  ASSERT_TRUE(map.load(yaml_path_));
+  EXPECT_FALSE(map.auto_alarms().enabled);
+}
+
+TEST_F(NodeMapTest, AutoAlarmsBareBooleanEnablesWithDefaults) {
+  std::string path = "/tmp/test_node_map_auto_alarms_bool.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+nodes:
+  - node_id: "ns=1;s=TankLevel"
+    entity_id: tank_process
+    data_name: tank_level
+auto_alarms: true
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  const auto & cfg = map.auto_alarms();
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.source_node_id_str, "i=2253");
+  // Defaults to "<component_id>_alarms" when not overridden - NOT the bare
+  // component_id, which already names the PLC runtime's own Component entity
+  // and would collide with it in the SOVD merge pipeline (reproduced against
+  // a real Siemens S7-1500 during development).
+  EXPECT_EQ(cfg.entity_id, "plc_runtime_alarms");
+  EXPECT_TRUE(cfg.auto_clear);
+  EXPECT_EQ(cfg.severity_bands.critical_min, 801);
+  EXPECT_EQ(cfg.severity_bands.error_min, 501);
+  EXPECT_EQ(cfg.severity_bands.warning_min, 201);
+  EXPECT_TRUE(cfg.include_patterns.empty());
+  EXPECT_TRUE(cfg.exclude_patterns.empty());
+  // A file with only auto_alarms (no event_alarms) still gets its fallback
+  // entity registered as fault-bearing for SOVD discovery.
+  bool found = false;
+  for (const auto & def : map.entity_defs()) {
+    if (def.id == "plc_runtime_alarms") {
+      found = true;
+      EXPECT_TRUE(def.has_faults);
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+TEST_F(NodeMapTest, AutoAlarmsOnlyNoNodesOrEventAlarmsIsValid) {
+  // A config that declares ONLY auto_alarms (the true zero-config case) must
+  // load successfully - the emptiness guard must not reject it.
+  std::string path = "/tmp/test_node_map_auto_alarms_only.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+auto_alarms: true
+)";
+  f.close();
+
+  NodeMap map;
+  EXPECT_TRUE(map.load(path));
+}
+
+TEST_F(NodeMapTest, AutoAlarmsMapFormOverridesEverything) {
+  std::string path = "/tmp/test_node_map_auto_alarms_map.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+auto_alarms:
+  enabled: true
+  source_node_id: "ns=3;i=1000"
+  entity_id: alarms_catchall
+  auto_clear: false
+  severity_bands:
+    critical: 900
+    error: 700
+    warning: 400
+  include: ["Program_Alarm"]
+  exclude: ["CPU not in RUN"]
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  const auto & cfg = map.auto_alarms();
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.source_node_id_str, "ns=3;i=1000");
+  EXPECT_EQ(cfg.entity_id, "alarms_catchall");
+  EXPECT_FALSE(cfg.auto_clear);
+  EXPECT_EQ(cfg.severity_bands.critical_min, 900);
+  EXPECT_EQ(cfg.severity_bands.error_min, 700);
+  EXPECT_EQ(cfg.severity_bands.warning_min, 400);
+  ASSERT_EQ(cfg.include_patterns.size(), 1u);
+  EXPECT_EQ(cfg.include_patterns[0], "Program_Alarm");
+  ASSERT_EQ(cfg.exclude_patterns.size(), 1u);
+  EXPECT_EQ(cfg.exclude_patterns[0], "CPU not in RUN");
+}
+
+TEST_F(NodeMapTest, AutoAlarmsEnabledDefaultsTrueInMapForm) {
+  // ``enabled:`` may be omitted inside the map form - presence of the map
+  // itself implies intent to turn it on (matches the bare-boolean form).
+  std::string path = "/tmp/test_node_map_auto_alarms_map_no_enabled.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+auto_alarms:
+  entity_id: alarms_catchall
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  EXPECT_TRUE(map.auto_alarms().enabled);
+}
+
+TEST_F(NodeMapTest, AutoAlarmsInvalidSeverityBandOrderResetsToDefaults) {
+  std::string path = "/tmp/test_node_map_auto_alarms_bad_bands.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+auto_alarms:
+  severity_bands:
+    critical: 300
+    error: 500
+    warning: 700
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  const auto & bands = map.auto_alarms().severity_bands;
+  EXPECT_EQ(bands.critical_min, 801);
+  EXPECT_EQ(bands.error_min, 501);
+  EXPECT_EQ(bands.warning_min, 201);
+}
+
+TEST_F(NodeMapTest, AutoAlarmsFalseStaysDisabled) {
+  std::string path = "/tmp/test_node_map_auto_alarms_false.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+nodes:
+  - node_id: "ns=1;s=TankLevel"
+    entity_id: tank_process
+    data_name: tank_level
+auto_alarms: false
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  EXPECT_FALSE(map.auto_alarms().enabled);
+}
+
 }  // namespace ros2_medkit_gateway

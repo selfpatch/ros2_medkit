@@ -118,6 +118,69 @@ struct ResolvedAlarm {
   bool matched{false};
 };
 
+/// OPC-UA Severity (1-1000) -> SOVD severity bucket thresholds for
+/// ``auto_alarms`` (zero-config native A&C). Mirrors the fixed bands
+/// ``OpcuaPlugin::map_severity`` uses for explicit ``event_alarms``
+/// (>=801 CRITICAL, >=501 ERROR, >=201 WARNING, else INFO) but is
+/// per-deployment overridable via ``auto_alarms.severity_bands`` since a PLC
+/// vendor's own severity convention need not match ours.
+struct AutoAlarmsSeverityBands {
+  uint16_t critical_min{801};
+  uint16_t error_min{501};
+  uint16_t warning_min{201};
+};
+
+/// Zero-config native OPC-UA Alarms & Conditions (completes the #509
+/// discovery -> #510 auto_browse -> native faults story with no per-alarm
+/// ``event_alarms`` mapping). When enabled, the plugin subscribes to
+/// ``source_node_id`` (default the Server object, ``i=2253``) for
+/// AlarmConditionType events and derives a fault for every condition it does
+/// not already know from an explicit ``event_alarms`` mapping (issue #389
+/// mappings always take precedence - see ``NodeMap::resolve_alarm``).
+struct AutoAlarmsConfig {
+  bool enabled{false};
+
+  /// EventNotifier source to subscribe. Default is the Server object
+  /// (``i=2253``, "system-wide" catch-all): the natural zero-config choice
+  /// since Program_Alarm / ProDiag style conditions on Siemens, Beckhoff and
+  /// CodeSys controllers surface there without the operator having to find
+  /// the owning Object first.
+  std::string source_node_id_str = "i=2253";
+  opcua::NodeId source_node_id;
+
+  /// SOVD entity that hosts an auto-derived fault when its SourceNode is not
+  /// a known node-map entry. Defaults to the node map's ``component_id`` at
+  /// load time (see ``NodeMap::load``). When the event's SourceNode matches
+  /// an existing ``nodes:`` entry, the fault is hosted on THAT entry's
+  /// entity instead (a more specific home than this fallback).
+  std::string entity_id;
+
+  /// When true (default), an auto-derived alarm clears as soon as
+  /// ActiveState becomes false, bypassing BOTH halves of the
+  /// Acknowledge/Confirm gate that otherwise applies to native alarms
+  /// (``AlarmStateMachine``'s clear rule is ``acked && (confirmed ||
+  /// !require_confirm_for_clear)`` - dropping only the Confirm half is not
+  /// enough, since a zero-config alarm has no SOVD ``acknowledge_fault``
+  /// operation registered to ever set Acked either). Zero-config is meant to
+  /// "just work" without an operator workflow, and several PLCs (e.g.
+  /// Siemens S7-1500) do not implement the optional Confirm transition at
+  /// all - without this, such an alarm would latch forever. Set false to
+  /// inherit the poller's normal ``require_confirm_for_clear`` gating
+  /// (Acknowledge still required) for auto-derived alarms too.
+  bool auto_clear{true};
+
+  AutoAlarmsSeverityBands severity_bands;
+
+  /// Case-sensitive substring filters against ConditionName / SourceName /
+  /// Message. ``exclude`` is checked first: any match drops the event
+  /// entirely (used to filter Siemens Server-object system messages such as
+  /// "CPU not in RUN" that are not real alarms). ``include`` is then checked
+  /// only if non-empty: the event is dropped unless at least one pattern
+  /// matches. Both empty (the default) admits every event.
+  std::vector<std::string> include_patterns;
+  std::vector<std::string> exclude_patterns;
+};
+
 /// Mapping entry: OPC-UA NodeId -> SOVD entity data point
 struct NodeMapEntry {
   std::string node_id_str;          // OPC-UA node ID string (e.g., "ns=1;s=TankLevel")
@@ -255,6 +318,42 @@ class NodeMap {
                                      const std::string & source_node, const std::string & event_type,
                                      const std::string & message);
 
+  /// Get the zero-config native A&C configuration. ``enabled`` is false
+  /// unless the node map YAML declares a truthy ``auto_alarms:``.
+  const AutoAlarmsConfig & auto_alarms() const {
+    return auto_alarms_;
+  }
+
+  /// Derive a stable SOVD fault_code for an auto-derived alarm with NO
+  /// per-alarm mapping. Tiered, in order:
+  ///   1. slug(ConditionName)  - the OPC-UA condition identity, when present.
+  ///   2. slug(SourceName)     - the human-readable event source, when
+  ///      ConditionName is empty.
+  ///   3. a hash of SourceNode + EventType + Message, when neither name is
+  ///      available.
+  /// Tier 3 folds in ``message`` deliberately: a real Siemens S7-1500
+  /// multiplexes every Program_Alarm of one FB through a single SourceNode
+  /// (e.g. ``i=1845``) with no ConditionName/SourceName, distinguished only
+  /// by Message text ("pa" vs "pa2"). Without the message in the hash, every
+  /// alarm on that FB would collapse onto one fault_code. Pure / static so
+  /// it is unit-testable without a server.
+  static std::string derive_auto_fault_code(const std::string & condition_name, const std::string & source_name,
+                                            const std::string & source_node_str, const std::string & event_type_str,
+                                            const std::string & message);
+
+  /// Apply ``auto_alarms.include``/``exclude`` substring filters to an
+  /// observed event's identity fields. ``exclude`` wins first (drops the
+  /// event on any match); a non-empty ``include`` then requires at least one
+  /// match. Pure / static so it is unit-testable without a server.
+  static bool auto_alarm_passes_filters(const std::string & condition_name, const std::string & source_name,
+                                        const std::string & message, const std::vector<std::string> & include_patterns,
+                                        const std::vector<std::string> & exclude_patterns);
+
+  /// Map a raw OPC-UA event Severity (1-1000) to a SOVD severity bucket using
+  /// ``bands`` (``auto_alarms.severity_bands``, overridable per deployment).
+  /// Pure / static so it is unit-testable without a server.
+  static std::string map_auto_severity(uint16_t severity, const AutoAlarmsSeverityBands & bands);
+
   /// Get derived SOVD entity definitions
   const std::vector<PlcEntityDef> & entity_defs() const {
     return entity_defs_;
@@ -333,6 +432,12 @@ class NodeMap {
   // poll; their entity definitions are merged into ``entity_defs_`` via
   // build_entity_defs() so SOVD discovery is unaffected.
   std::vector<AlarmEventConfig> event_alarms_;
+
+  // Zero-config native A&C (issue #(auto-alarms)), loaded from top-level
+  // ``auto_alarms:``. Unlike ``event_alarms_`` this carries no per-condition
+  // mappings; the poller derives a fault_code/entity/severity per observed
+  // event at runtime (see NodeMap::derive_auto_fault_code / map_auto_severity).
+  AutoAlarmsConfig auto_alarms_;
 
   std::string area_id_ = "plc_systems";
   std::string area_name_ = "PLC Systems";

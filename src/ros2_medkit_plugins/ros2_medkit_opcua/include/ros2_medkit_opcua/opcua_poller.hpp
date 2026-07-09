@@ -237,6 +237,30 @@ class OpcuaPoller {
                                       std::chrono::steady_clock::time_point down_since,
                                       std::chrono::steady_clock::time_point now, std::chrono::milliseconds debounce);
 
+  /// Zero-config native A&C (``auto_alarms``): the alarm sources that should
+  /// actually be subscribed / replayed, i.e. every explicit ``event_alarms``
+  /// entry plus (when ``auto_cfg.enabled`` and no explicit entry already
+  /// targets the same source) one synthetic, mapping-less
+  /// ``AlarmEventConfig`` for ``auto_cfg.source_node_id``. Because the
+  /// synthetic entry carries no ``fault_code``/``mappings``,
+  /// ``NodeMap::resolve_alarm`` always reports it unmatched, which is
+  /// exactly what routes every event on that source through the
+  /// auto-derivation branch in ``on_event`` / ``read_fallback_replay``
+  /// (explicit mappings on a shared source are tried first and still win -
+  /// precedence). Pure and static so subscription-source selection and the
+  /// precedence rule are unit-testable without a server.
+  static std::vector<AlarmEventConfig> effective_alarm_sources(const std::vector<AlarmEventConfig> & explicit_sources,
+                                                               const AutoAlarmsConfig & auto_cfg);
+
+  /// True only for a real OPC-UA Condition event. Per Part 9 §5.5.2.13 the
+  /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
+  /// (and subtype) instances; a plain BaseEvent / SystemEvent notification -
+  /// e.g. a Siemens Server-object "CPU not in RUN" system message delivered on
+  /// the same EventNotifier (i=2253) auto_alarms subscribes to - carries no
+  /// ConditionId and must not be auto-derived into a fault. Pure and static so
+  /// the system-message filter is unit-testable without a server.
+  static bool is_condition_event(const opcua::NodeId & condition_id);
+
  private:
   void poll_loop();
   void do_poll();
@@ -253,6 +277,13 @@ class OpcuaPoller {
   void on_event(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
                 const opcua::NodeId & source_node, const opcua::NodeId & event_type,
                 const opcua::NodeId & condition_id);
+
+  /// True when native alarm events (explicit ``event_alarms`` or
+  /// ``auto_alarms``) are configured at all - gates whether the poller
+  /// bothers subscribing / re-subscribing on (re)connect.
+  bool has_alarm_sources() const {
+    return !node_map_.event_alarms().empty() || node_map_.auto_alarms().enabled;
+  }
 
   /// Run the configured active-condition replay (issue #389). Dispatches to
   /// ConditionRefresh and/or the read-based fallback per
@@ -297,10 +328,13 @@ class OpcuaPoller {
   /// Apply one condition state observation (from a live event or a read scan)
   /// to the tracked condition map + state machine, dispatching the resulting
   /// fault action. ``event_id`` is the live EventId for ack/confirm (null for
-  /// read-based observations).
+  /// read-based observations). ``require_confirm_for_clear`` overrides
+  /// ``config_.require_confirm_for_clear`` for this one observation -
+  /// auto-derived alarms pass ``!auto_alarms.auto_clear`` complemented
+  /// (see on_event) instead of the poller-wide setting.
   void apply_condition_state(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
                              const AlarmEventInput & input, uint16_t severity, const std::string & message,
-                             const opcua::ByteString * event_id);
+                             const opcua::ByteString * event_id, bool require_confirm_for_clear);
 
   OpcuaClient & client_;
   const NodeMap & node_map_;
