@@ -449,6 +449,23 @@ auto_alarms:
 
 Default `off`. Unknown keys are warned and ignored, not silently dropped.
 
+Instead of (or on top of) the node-map YAML, `auto_alarms` can be set purely
+via the plugin's ROS param / JSON config, which is what lets a discovered
+endpoint go straight to native faults with no node-map file at all:
+
+```yaml
+plugins.opcua.endpoint_url: "opc.tcp://192.168.1.10:4840"
+plugins.opcua.auto_alarms: true   # or the same map form as above
+```
+
+The JSON/ROS-param form takes precedence over whatever the node-map YAML's
+`auto_alarms:` block set (same precedence env vars use for the rest of the
+plugin config). Explicit `event_alarms:` mappings still win over
+auto-derivation at the poller regardless of how `auto_alarms` was enabled.
+This completes the zero-config chain: discovery (endpoint) ->
+`auto_browse` (SOVD tree) -> `auto_alarms` (native faults), each param-driven,
+no node-map file required.
+
 **Fault derivation** (no config, per observed event):
 - `fault_code`: `PLC_ALARM_<slug>` from `ConditionName` when present, else from
   `SourceName`, else `PLC_ALARM_<hash>` of SourceNode + EventType + Message.
@@ -499,13 +516,15 @@ ros2_medkit_gateway:
     plugins.opcua.poll_interval_ms: 1000
     plugins.opcua.prefer_subscriptions: false
     plugins.opcua.auto_browse: true
+    plugins.opcua.auto_alarms: true
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `endpoint_url` | `opc.tcp://localhost:4840` | OPC-UA server endpoint |
-| `node_map_path` | (none) | Path to node map YAML (optional when `auto_browse` is enabled - see above) |
+| `node_map_path` | (none) | Path to node map YAML (optional when `auto_browse` or `auto_alarms` is enabled - see above) |
 | `auto_browse` | `false` | Boolean or object; recursively discover the SOVD tree from the live address space instead of (or in addition to) `node_map_path` - see above |
+| `auto_alarms` | `false` | Boolean or object; subscribe a server EventNotifier and auto-derive a fault per AlarmCondition with no per-alarm `event_alarms` mapping - the zero-config native A&C surface (see above) |
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |

@@ -122,6 +122,19 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // else INFO). Pure + static so it is unit-testable without a live server.
   static std::string map_severity(uint16_t live_severity, const std::string & severity_override);
 
+  // Overlay a ``plugins.opcua.auto_alarms`` JSON/ROS param onto ``cfg``. Accepts
+  // the bare-boolean shorthand or the full map form (same fields as the node-map
+  // YAML ``auto_alarms:`` loader: source_node_id, entity_id, auto_clear,
+  // severity_bands, include/exclude). Only keys actually present overwrite
+  // ``cfg``, so this composes on top of whatever the YAML block set - the JSON
+  // param wins, mirroring how ``plugins.opcua.auto_browse`` overlays its config
+  // and how env vars override the rest of the plugin config. Unknown keys warn.
+  // Callers run ``NodeMap::finalize_auto_alarms_overlay`` afterwards to re-derive
+  // the default entity and parsed source NodeId. Static + injected ``warn`` so
+  // the parse is unit-testable without a plugin instance.
+  static void apply_auto_alarms_param(const nlohmann::json & value, AutoAlarmsConfig & cfg,
+                                      const std::function<void(const std::string &)> & warn);
+
  private:
   // Route handlers
   void handle_plc_data(const ros2_medkit_gateway::PluginRequest & req, ros2_medkit_gateway::PluginResponse & res);

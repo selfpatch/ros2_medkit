@@ -529,6 +529,30 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
       log_warn("plugins.opcua.auto_browse must be a boolean or an object - ignoring");
     }
   }
+
+  // plugins.opcua.auto_alarms (ROS param / JSON config). Overlays on top of
+  // whatever the node-map YAML's ``auto_alarms:`` block set (or the default
+  // AutoAlarmsConfig when there is no node map at all) - the same "JSON/env
+  // wins over file" precedence the rest of this function uses. This is what
+  // makes zero-config native A&C possible with no node_map_path: just an
+  // ``endpoint_url`` (from discovery) + ``auto_alarms: true``. Explicit
+  // ``event_alarms:`` mappings still take precedence over auto-derivation at
+  // the poller (see OpcuaPoller::effective_alarm_sources) regardless.
+  if (config.contains("auto_alarms")) {
+    apply_auto_alarms_param(config["auto_alarms"], node_map_.mutable_auto_alarms(), [this](const std::string & msg) {
+      log_warn(msg);
+    });
+    // Re-derive the fields load() fills in (default entity, parsed source
+    // NodeId) and rebuild entity_defs so a param-only deployment still
+    // surfaces the alarms App over SOVD. Non-fatal on an invalid overlay:
+    // finalize_auto_alarms_overlay disables auto_alarms and logs rather than
+    // taking the whole plugin down over one bad param.
+    node_map_.finalize_auto_alarms_overlay();
+    if (node_map_.auto_alarms().enabled) {
+      log_info("auto_alarms enabled via plugins.opcua.auto_alarms param (source " +
+               node_map_.auto_alarms().source_node_id_str + ", entity " + node_map_.auto_alarms().entity_id + ")");
+    }
+  }
 }
 
 void OpcuaPlugin::set_context(PluginContext & context) {
@@ -958,6 +982,123 @@ std::string OpcuaPlugin::map_severity(uint16_t live_severity, const std::string 
     return std::string("WARNING");
   }
   return std::string("INFO");
+}
+
+void OpcuaPlugin::apply_auto_alarms_param(const nlohmann::json & value, AutoAlarmsConfig & cfg,
+                                          const std::function<void(const std::string &)> & warn) {
+  // Field-for-field mirror of node_map.cpp's YAML ``auto_alarms:`` loader,
+  // reading nlohmann::json instead of YAML::Node. Only keys actually present
+  // overwrite ``cfg`` so a partial param overlays cleanly on top of whatever
+  // the node-map YAML declared (the JSON param wins on collision).
+  if (value.is_boolean()) {
+    cfg.enabled = value.get<bool>();
+    return;
+  }
+  if (!value.is_object()) {
+    warn("plugins.opcua.auto_alarms must be a boolean or an object - ignoring");
+    return;
+  }
+
+  // Presence of the map itself implies intent to enable (matches the bare
+  // boolean and the YAML map form); ``enabled: false`` still turns it off.
+  cfg.enabled = value.value("enabled", true);
+
+  if (value.contains("source_node_id")) {
+    if (value["source_node_id"].is_string() && !value["source_node_id"].get<std::string>().empty()) {
+      cfg.source_node_id_str = value["source_node_id"].get<std::string>();
+    } else {
+      warn("plugins.opcua.auto_alarms.source_node_id must be a non-empty string - keeping current value");
+    }
+  }
+  if (value.contains("entity_id")) {
+    if (value["entity_id"].is_string() && !value["entity_id"].get<std::string>().empty()) {
+      cfg.entity_id = value["entity_id"].get<std::string>();
+    } else {
+      warn("plugins.opcua.auto_alarms.entity_id must be a non-empty string - keeping current value");
+    }
+  }
+  if (value.contains("auto_clear")) {
+    if (value["auto_clear"].is_boolean()) {
+      cfg.auto_clear = value["auto_clear"].get<bool>();
+    } else {
+      warn("plugins.opcua.auto_alarms.auto_clear must be a boolean - keeping current value");
+    }
+  }
+
+  if (value.contains("severity_bands")) {
+    const auto & bands = value["severity_bands"];
+    if (!bands.is_object()) {
+      warn("plugins.opcua.auto_alarms.severity_bands must be an object - ignoring");
+    } else {
+      auto read_band = [&](const char * key, uint16_t def) -> uint16_t {
+        if (!bands.contains(key)) {
+          return def;
+        }
+        if (!bands[key].is_number_integer()) {
+          warn(std::string("plugins.opcua.auto_alarms.severity_bands.") + key + " must be an integer - using default");
+          return def;
+        }
+        const auto raw = bands[key].get<int64_t>();
+        if (raw < 0 || raw > 1000) {
+          warn(std::string("plugins.opcua.auto_alarms.severity_bands.") + key +
+               " out of range (0..1000) - using default");
+          return def;
+        }
+        return static_cast<uint16_t>(raw);
+      };
+      cfg.severity_bands.critical_min = read_band("critical", cfg.severity_bands.critical_min);
+      cfg.severity_bands.error_min = read_band("error", cfg.severity_bands.error_min);
+      cfg.severity_bands.warning_min = read_band("warning", cfg.severity_bands.warning_min);
+      for (const auto & [key, band_val] : bands.items()) {
+        (void)band_val;
+        if (key != "critical" && key != "error" && key != "warning") {
+          warn("plugins.opcua.auto_alarms.severity_bands: unknown key '" + key + "' - ignored");
+        }
+      }
+      if (!(cfg.severity_bands.critical_min >= cfg.severity_bands.error_min &&
+            cfg.severity_bands.error_min >= cfg.severity_bands.warning_min)) {
+        warn(
+            "plugins.opcua.auto_alarms.severity_bands must satisfy critical >= error >= warning - "
+            "resetting to the default bands (801/501/201)");
+        cfg.severity_bands = AutoAlarmsSeverityBands{};
+      }
+    }
+  }
+
+  auto read_pattern_list = [&](const char * key) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    if (!value.contains(key)) {
+      return out;
+    }
+    if (!value[key].is_array()) {
+      warn(std::string("plugins.opcua.auto_alarms.") + key + " must be an array of strings - ignoring");
+      return out;
+    }
+    for (const auto & p : value[key]) {
+      if (p.is_string()) {
+        out.push_back(p.get<std::string>());
+      } else {
+        warn(std::string("plugins.opcua.auto_alarms.") + key + ": non-string entry - skipping");
+      }
+    }
+    return out;
+  };
+  // Only replace the pattern lists when the param actually carries them, so a
+  // param that omits include/exclude does not wipe a YAML-declared list.
+  if (value.contains("include")) {
+    cfg.include_patterns = read_pattern_list("include");
+  }
+  if (value.contains("exclude")) {
+    cfg.exclude_patterns = read_pattern_list("exclude");
+  }
+
+  for (const auto & [key, item] : value.items()) {
+    (void)item;
+    if (key != "enabled" && key != "source_node_id" && key != "entity_id" && key != "auto_clear" &&
+        key != "severity_bands" && key != "include" && key != "exclude") {
+      warn("plugins.opcua.auto_alarms: unknown key '" + key + "' - ignored");
+    }
+  }
 }
 
 void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {

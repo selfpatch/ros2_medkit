@@ -2107,4 +2107,61 @@ auto_alarms: false
   EXPECT_FALSE(map.auto_alarms().enabled);
 }
 
+// ---- Param-only zero-config overlay (finalize_auto_alarms_overlay) --------
+// The true zero-config path: no node-map YAML is ever loaded; the plugin sets
+// the AutoAlarmsConfig straight from the plugins.opcua.auto_alarms param via
+// mutable_auto_alarms() and then finalize_auto_alarms_overlay() re-derives the
+// fields load() normally fills in and rebuilds entity_defs.
+
+TEST(AutoAlarmsFinalizeOverlayTest, ParamOnlyNoNodeMapProducesActiveConfigAndEntity) {
+  NodeMap map;  // never loaded - no YAML at all
+  ASSERT_FALSE(map.auto_alarms().enabled);
+
+  auto & cfg = map.mutable_auto_alarms();
+  cfg.enabled = true;  // as the plugin would set from `auto_alarms: true`
+
+  ASSERT_TRUE(map.finalize_auto_alarms_overlay());
+
+  const auto & finalized = map.auto_alarms();
+  EXPECT_TRUE(finalized.enabled);
+  // Default source parsed to a real NodeId (not the null default) so the
+  // poller subscribes to the right EventNotifier in the no-node_map path.
+  EXPECT_EQ(finalized.source_node_id_str, "i=2253");
+  EXPECT_EQ(finalized.source_node_id.toString(), NodeMap::parse_node_id("i=2253").toString());
+  // Entity defaulted from the (default) component_id, and registered as
+  // fault-bearing so SOVD discovery surfaces the alarms App with no node map.
+  EXPECT_EQ(finalized.entity_id, "openplc_runtime_alarms");
+  bool found = false;
+  for (const auto & def : map.entity_defs()) {
+    if (def.id == "openplc_runtime_alarms") {
+      found = true;
+      EXPECT_TRUE(def.has_faults);
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+TEST(AutoAlarmsFinalizeOverlayTest, ParamOnlyRespectsOverriddenSourceAndEntity) {
+  NodeMap map;
+  auto & cfg = map.mutable_auto_alarms();
+  cfg.enabled = true;
+  cfg.source_node_id_str = "ns=3;i=1000";
+  cfg.entity_id = "custom_alarms";
+
+  ASSERT_TRUE(map.finalize_auto_alarms_overlay());
+
+  EXPECT_EQ(map.auto_alarms().source_node_id.toString(), NodeMap::parse_node_id("ns=3;i=1000").toString());
+  EXPECT_EQ(map.auto_alarms().entity_id, "custom_alarms");
+}
+
+TEST(AutoAlarmsFinalizeOverlayTest, EmptySourceNodeDisablesRatherThanCrashing) {
+  NodeMap map;
+  auto & cfg = map.mutable_auto_alarms();
+  cfg.enabled = true;
+  cfg.source_node_id_str = "";  // invalid
+
+  EXPECT_FALSE(map.finalize_auto_alarms_overlay());
+  EXPECT_FALSE(map.auto_alarms().enabled);
+}
+
 }  // namespace ros2_medkit_gateway

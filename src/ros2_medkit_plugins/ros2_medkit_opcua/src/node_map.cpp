@@ -1274,6 +1274,29 @@ std::vector<const NodeMapEntry *> NodeMap::detection_entries() const {
   return result;
 }
 
+bool NodeMap::finalize_auto_alarms_overlay() {
+  // Mirror the tail of load() (see the ``auto_alarms:`` block there) so a
+  // config overlaid purely from the plugin param - with no node-map YAML ever
+  // parsed - ends up in the same derived state a loaded map would: a default
+  // fallback entity, a parsed source NodeId, and an entity_defs entry that
+  // makes the alarms App discoverable over SOVD.
+  if (auto_alarms_.entity_id.empty()) {
+    // Default to "<component_id>_alarms" (not the bare component_id, which the
+    // PLC runtime already registers as a Component and would collide with in
+    // the SOVD merge pipeline - see load()).
+    auto_alarms_.entity_id = component_id_ + "_alarms";
+  }
+  auto_alarms_.source_node_id = parse_node_id(auto_alarms_.source_node_id_str);
+  if (auto_alarms_.enabled && auto_alarms_.source_node_id_str.empty()) {
+    RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"), "auto_alarms.source_node_id is empty - disabling auto_alarms");
+    auto_alarms_.enabled = false;
+    build_entity_defs();
+    return false;
+  }
+  build_entity_defs();
+  return true;
+}
+
 void NodeMap::build_entity_defs() {
   entity_defs_.clear();
 

@@ -22,6 +22,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -563,6 +564,147 @@ TEST(MapSeverity, LiveSeverityBandBoundaries) {
   EXPECT_EQ(OpcuaPlugin::map_severity(800, ""), "ERROR");
   EXPECT_EQ(OpcuaPlugin::map_severity(801, ""), "CRITICAL");
   EXPECT_EQ(OpcuaPlugin::map_severity(1000, ""), "CRITICAL");
+}
+
+// -- OpcuaPlugin::apply_auto_alarms_param (plugins.opcua.auto_alarms param) ---
+// The zero-config native A&C param surface: mirrors the node-map YAML
+// ``auto_alarms:`` loader field-for-field but reads the plugin's JSON/ROS
+// param, overlaying on top of (or standing in for) a node map.
+
+TEST(ApplyAutoAlarmsParam, BareBooleanTrueEnablesWithDefaults) {
+  AutoAlarmsConfig cfg;
+  int warns = 0;
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json(true), cfg, [&](const std::string &) {
+    ++warns;
+  });
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.source_node_id_str, "i=2253");  // untouched default
+  EXPECT_TRUE(cfg.auto_clear);
+  EXPECT_EQ(cfg.severity_bands.critical_min, 801);
+  EXPECT_EQ(warns, 0);
+}
+
+TEST(ApplyAutoAlarmsParam, BareBooleanFalseStaysDisabled) {
+  AutoAlarmsConfig cfg;
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json(false), cfg, [](const std::string &) {});
+  EXPECT_FALSE(cfg.enabled);
+}
+
+TEST(ApplyAutoAlarmsParam, MapFormOverridesEveryField) {
+  AutoAlarmsConfig cfg;
+  const nlohmann::json param = {
+      {"enabled", true},
+      {"source_node_id", "ns=3;i=1000"},
+      {"entity_id", "alarms_catchall"},
+      {"auto_clear", false},
+      {"severity_bands", {{"critical", 900}, {"error", 700}, {"warning", 400}}},
+      {"include", {"Program_Alarm"}},
+      {"exclude", {"CPU not in RUN"}},
+  };
+  int warns = 0;
+  OpcuaPlugin::apply_auto_alarms_param(param, cfg, [&](const std::string &) {
+    ++warns;
+  });
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.source_node_id_str, "ns=3;i=1000");
+  EXPECT_EQ(cfg.entity_id, "alarms_catchall");
+  EXPECT_FALSE(cfg.auto_clear);
+  EXPECT_EQ(cfg.severity_bands.critical_min, 900);
+  EXPECT_EQ(cfg.severity_bands.error_min, 700);
+  EXPECT_EQ(cfg.severity_bands.warning_min, 400);
+  ASSERT_EQ(cfg.include_patterns.size(), 1u);
+  EXPECT_EQ(cfg.include_patterns[0], "Program_Alarm");
+  ASSERT_EQ(cfg.exclude_patterns.size(), 1u);
+  EXPECT_EQ(cfg.exclude_patterns[0], "CPU not in RUN");
+  EXPECT_EQ(warns, 0);
+}
+
+TEST(ApplyAutoAlarmsParam, MapPresenceImpliesEnabledWhenEnabledKeyOmitted) {
+  AutoAlarmsConfig cfg;
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json{{"entity_id", "alarms_catchall"}}, cfg,
+                                       [](const std::string &) {});
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.entity_id, "alarms_catchall");
+}
+
+TEST(ApplyAutoAlarmsParam, PartialMapKeepsUnsetFields) {
+  // A param that only sets max-ish knobs must not wipe the rest (mirrors the
+  // "only overwrite keys actually present" contract of the YAML loader).
+  AutoAlarmsConfig cfg;
+  cfg.include_patterns = {"kept"};
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json{{"auto_clear", false}}, cfg, [](const std::string &) {});
+  EXPECT_FALSE(cfg.auto_clear);
+  EXPECT_EQ(cfg.source_node_id_str, "i=2253");
+  ASSERT_EQ(cfg.include_patterns.size(), 1u);
+  EXPECT_EQ(cfg.include_patterns[0], "kept");  // include omitted -> untouched
+}
+
+TEST(ApplyAutoAlarmsParam, InvalidSeverityBandOrderResetsToDefaults) {
+  AutoAlarmsConfig cfg;
+  int warns = 0;
+  OpcuaPlugin::apply_auto_alarms_param(
+      nlohmann::json{{"severity_bands", {{"critical", 300}, {"error", 500}, {"warning", 700}}}}, cfg,
+      [&](const std::string &) {
+        ++warns;
+      });
+  EXPECT_EQ(cfg.severity_bands.critical_min, 801);
+  EXPECT_EQ(cfg.severity_bands.error_min, 501);
+  EXPECT_EQ(cfg.severity_bands.warning_min, 201);
+  EXPECT_GE(warns, 1);
+}
+
+TEST(ApplyAutoAlarmsParam, UnknownKeyWarns) {
+  AutoAlarmsConfig cfg;
+  int warns = 0;
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json{{"severty", 900}}, cfg, [&](const std::string &) {
+    ++warns;
+  });
+  EXPECT_EQ(warns, 1);
+}
+
+TEST(ApplyAutoAlarmsParam, NonBooleanNonObjectIsIgnoredWithWarning) {
+  AutoAlarmsConfig cfg;
+  int warns = 0;
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json("nonsense"), cfg, [&](const std::string &) {
+    ++warns;
+  });
+  EXPECT_FALSE(cfg.enabled);
+  EXPECT_EQ(warns, 1);
+}
+
+TEST(ApplyAutoAlarmsParam, JsonParamWinsOverNodeMapYamlConfigBlock) {
+  // Precedence: the JSON/ROS param overlays and WINS over the node-map YAML
+  // ``auto_alarms:`` block, identical to how plugins.opcua.auto_browse
+  // overlays its config. (The node map still wins at the ENTRY level -
+  // explicit ``event_alarms:`` mappings beat auto-derivation - but that is the
+  // poller's effective_alarm_sources precedence, tested separately.)
+  const std::string path = "/tmp/test_opcua_plugin_auto_alarms_overlay.yaml";
+  std::ofstream f(path);
+  f << R"(
+area_id: test
+component_id: plc_runtime
+auto_alarms:
+  enabled: true
+  source_node_id: "ns=1;i=100"
+  entity_id: yaml_entity
+  auto_clear: true
+)";
+  f.close();
+
+  NodeMap map;
+  ASSERT_TRUE(map.load(path));
+  ASSERT_EQ(map.auto_alarms().source_node_id_str, "ns=1;i=100");
+
+  OpcuaPlugin::apply_auto_alarms_param(nlohmann::json{{"source_node_id", "ns=2;i=200"}, {"auto_clear", false}},
+                                       map.mutable_auto_alarms(), [](const std::string &) {});
+  ASSERT_TRUE(map.finalize_auto_alarms_overlay());
+
+  const auto & cfg = map.auto_alarms();
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.source_node_id_str, "ns=2;i=200");  // param won
+  EXPECT_FALSE(cfg.auto_clear);                     // param won
+  EXPECT_EQ(cfg.entity_id, "yaml_entity");          // untouched by param -> YAML value survives
+  std::remove(path.c_str());
 }
 
 }  // namespace ros2_medkit_gateway

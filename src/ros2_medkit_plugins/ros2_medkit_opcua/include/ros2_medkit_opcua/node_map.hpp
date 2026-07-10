@@ -323,10 +323,31 @@ class NodeMap {
                                      const std::string & message);
 
   /// Get the zero-config native A&C configuration. ``enabled`` is false
-  /// unless the node map YAML declares a truthy ``auto_alarms:``.
+  /// unless the node map YAML declares a truthy ``auto_alarms:`` or the
+  /// plugin overlays a truthy ``plugins.opcua.auto_alarms`` param.
   const AutoAlarmsConfig & auto_alarms() const {
     return auto_alarms_;
   }
+
+  /// Mutable access so ``OpcuaPlugin::configure`` can overlay the plugin's
+  /// ``plugins.opcua.auto_alarms`` JSON/ROS param on top of whatever the
+  /// node-map YAML declared (JSON wins - same precedence the env-var
+  /// overrides use for the rest of the plugin config). Call
+  /// ``finalize_auto_alarms_overlay`` afterwards to re-derive the fields
+  /// ``load`` normally fills in and rebuild the entity defs.
+  AutoAlarmsConfig & mutable_auto_alarms() {
+    return auto_alarms_;
+  }
+
+  /// Re-derive the ``auto_alarms`` fields ``load`` normally computes after the
+  /// plugin overlays a ``plugins.opcua.auto_alarms`` param (default
+  /// ``entity_id`` from ``component_id``, parsed ``source_node_id``) and
+  /// rebuild ``entity_defs_`` so a param-only zero-config deployment (no
+  /// node-map file, so ``load`` never ran) still surfaces the alarms App in
+  /// SOVD discovery. Idempotent - safe to call whether or not ``load`` ran.
+  /// @return false when the overlaid config is invalid (enabled with an empty
+  /// ``source_node_id``); the caller disables auto_alarms in that case.
+  bool finalize_auto_alarms_overlay();
 
   /// Derive a stable SOVD fault_code for an auto-derived alarm with NO
   /// per-alarm mapping. Tiered, in order:
