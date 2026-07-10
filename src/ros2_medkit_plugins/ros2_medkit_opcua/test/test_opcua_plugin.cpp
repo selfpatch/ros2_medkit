@@ -22,11 +22,14 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -705,6 +708,89 @@ auto_alarms:
   EXPECT_FALSE(cfg.auto_clear);                     // param won
   EXPECT_EQ(cfg.entity_id, "yaml_entity");          // untouched by param -> YAML value survives
   std::remove(path.c_str());
+}
+
+// -- Thread-safety regression: pending_reports_ ------------------------------
+
+// A PluginContext that hands the plugin a real rclcpp::Node so set_context()
+// creates the ReportFault / ClearFault service clients. With a null node (the
+// default FakePluginContext) send_clear_fault() short-circuits before touching
+// the pending-reports buffer, so the race below can only be reproduced with a
+// live node.
+class RealNodePluginContext : public FakePluginContext {
+ public:
+  explicit RealNodePluginContext(rclcpp::Node * node) : node_(node) {
+  }
+  rclcpp::Node * node() const override {
+    return node_;
+  }
+
+ private:
+  rclcpp::Node * node_;
+};
+
+// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
+// which buffers a dispatch into pending_reports_ - the SAME vector the poll
+// thread drains in publish_values()/flush_pending_reports(). Before the fix the
+// buffer had no lock, so concurrent clear_fault() calls (REST worker threads)
+// reallocating the vector while another thread iterated it corrupted the heap
+// (the crash observed in libros2_medkit_opcua_plugin.so under UI load). This
+// test drives that exact path from several threads; it must complete without a
+// crash and is clean under ThreadSanitizer.
+TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto node = std::make_shared<rclcpp::Node>("opcua_pending_reports_regression");
+
+  const std::string yaml_path = "/tmp/test_opcua_race_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: race_plc
+component_id: race_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  // Nothing listening: connect fails fast (ECONNREFUSED) and the poll thread
+  // keeps retrying in the background while it drains the buffer each cycle.
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/race_plc", "/race_plc/race_runtime/tank"};
+  plugin.set_context(ctx);
+
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < 6; ++t) {
+    threads.emplace_back([&plugin, &stop, t] {
+      int i = 0;
+      while (!stop.load(std::memory_order_relaxed)) {
+        // No fault_manager is running, so service_is_ready() stays false and the
+        // dispatches accumulate/evict in pending_reports_ - maximising buffer churn.
+        plugin.clear_fault("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f));
+      }
+    });
+  }
+
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  stop.store(true, std::memory_order_relaxed);
+  for (auto & th : threads) {
+    th.join();
+  }
+
+  plugin.shutdown();
+  SUCCEED();
 }
 
 }  // namespace ros2_medkit_gateway

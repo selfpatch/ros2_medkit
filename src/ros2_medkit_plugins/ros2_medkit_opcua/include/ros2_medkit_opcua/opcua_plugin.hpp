@@ -256,8 +256,17 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // ClearFault are fire-and-forget, so a report sent before the fault_manager
   // service is DDS-matched is dropped. Instead of blocking startup for the sink,
   // buffer the dispatch (preserving report-then-clear order) and flush it on the
-  // next poll once the service is ready. Poll-thread only (send_report_fault /
-  // send_clear_fault via on_alarm_change, flush via the poll callback), no lock.
+  // next poll once the service is ready.
+  //
+  // Accessed from TWO threads: the poll thread (on_alarm_change / on_event_alarm
+  // -> send_*_fault -> send_or_buffer, and publish_values -> flush_pending_reports)
+  // AND the REST thread (the FaultProvider::clear_fault route override ->
+  // send_clear_fault -> send_or_buffer). A push_back that reallocates the vector
+  // while the other thread iterates/reads it is a use-after-free that corrupts the
+  // heap, so every access is serialised by pending_reports_mutex_. The mutex is
+  // never held across the actual dispatch (async_send_request) to keep ROS I/O out
+  // of the critical section.
+  std::mutex pending_reports_mutex_;
   std::vector<std::function<void()>> pending_reports_;
 
   // Tracks which non-numeric nodes have already been warned about (avoids log spam).
