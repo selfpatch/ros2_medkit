@@ -1196,24 +1196,46 @@ void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
 void OpcuaPlugin::send_or_buffer(std::function<void()> dispatch) {
   // Bound the buffer so a deployment with no fault_manager cannot grow it
   // without limit; drop the oldest (least relevant) pending dispatch.
+  // Runs on both the poll thread and the REST clear_fault thread, so the vector
+  // mutation is serialised by pending_reports_mutex_.
   constexpr size_t kMaxPendingReports = 256;
-  if (pending_reports_.size() >= kMaxPendingReports) {
-    pending_reports_.erase(pending_reports_.begin());
+  bool dropped_oldest = false;
+  {
+    std::lock_guard<std::mutex> lock(pending_reports_mutex_);
+    if (pending_reports_.size() >= kMaxPendingReports) {
+      pending_reports_.erase(pending_reports_.begin());
+      dropped_oldest = true;
+    }
+    pending_reports_.push_back(std::move(dispatch));
+  }
+  if (dropped_oldest) {
     log_warn("pending fault report buffer full (" + std::to_string(kMaxPendingReports) + "), dropping oldest");
   }
-  pending_reports_.push_back(std::move(dispatch));
   // Drains immediately (in order) if the sink is already matched.
   flush_pending_reports();
 }
 
 void OpcuaPlugin::flush_pending_reports() {
-  if (pending_reports_.empty() || !fault_clients_->report || !fault_clients_->report->service_is_ready()) {
+  // Keep the reports buffered until the sink is discoverable (checked outside the
+  // lock; rclcpp client state is thread-safe).
+  if (!fault_clients_->report || !fault_clients_->report->service_is_ready()) {
     return;
   }
-  for (auto & dispatch : pending_reports_) {
+  // Move the ready batch out under the lock, then dispatch it OUTSIDE the lock so
+  // the vector is never being reallocated by a concurrent send_or_buffer while it
+  // is iterated here (the use-after-free that corrupted the heap), and so the ROS
+  // service call never runs under the mutex.
+  std::vector<std::function<void()>> batch;
+  {
+    std::lock_guard<std::mutex> lock(pending_reports_mutex_);
+    if (pending_reports_.empty()) {
+      return;
+    }
+    batch.swap(pending_reports_);
+  }
+  for (auto & dispatch : batch) {
     dispatch();
   }
-  pending_reports_.clear();
 }
 
 void OpcuaPlugin::create_value_publishers() {
