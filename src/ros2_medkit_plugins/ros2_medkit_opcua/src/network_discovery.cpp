@@ -67,6 +67,36 @@ bool ipv4_less(const std::string & a, const std::string & b) {
   return a < b;
 }
 
+// Bounded fan-out: run ``body(i)`` for every i in [0, count) across at most
+// ``max_workers`` threads (never more than ``count``) that pull indices off a
+// shared atomic cursor. The single primitive backs both the connect sweep and
+// the GetEndpoints identify so they share the same concurrency bound.
+template <typename Body>
+void parallel_for(size_t count, int max_workers, Body && body) {
+  if (count == 0) {
+    return;
+  }
+  const int worker_count = std::max(1, std::min<int>(max_workers, static_cast<int>(count)));
+  std::atomic<size_t> next{0};
+  const auto worker = [&]() {
+    for (;;) {
+      const size_t i = next.fetch_add(1);
+      if (i >= count) {
+        return;
+      }
+      body(i);
+    }
+  };
+  std::vector<std::thread> pool;
+  pool.reserve(static_cast<size_t>(worker_count));
+  for (int w = 0; w < worker_count; ++w) {
+    pool.emplace_back(worker);
+  }
+  for (auto & th : pool) {
+    th.join();
+  }
+}
+
 }  // namespace
 
 std::vector<std::string> expand_cidr_hosts(const std::string & cidr, bool * ok) {
@@ -263,6 +293,16 @@ DiscoveryConfig parse_discovery_config(const nlohmann::json & j,
   read_positive_int("scan_concurrency", cfg.scan_concurrency);
   read_positive_int("identify_timeout_ms", cfg.identify_timeout_ms);
 
+  // Clamp scan_concurrency: every worker is a live thread holding one open
+  // socket, so an unbounded value would exhaust the fd / thread limits on a
+  // wide subnet. kMaxScanConcurrency stays well under a typical 1024 fd ulimit.
+  constexpr int kMaxScanConcurrency = 512;
+  if (cfg.scan_concurrency > kMaxScanConcurrency) {
+    warn_fn("discovery: scan_concurrency " + std::to_string(cfg.scan_concurrency) + " exceeds maximum " +
+            std::to_string(kMaxScanConcurrency) + " - clamping");
+    cfg.scan_concurrency = kMaxScanConcurrency;
+  }
+
   if (j.contains("interval_s") && j["interval_s"].is_number_integer()) {
     const int v = j["interval_s"].get<int>();
     if (v >= 0) {
@@ -325,31 +365,13 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
   // only the polite fan-out lives here.
   std::vector<Target> open_hits;
   std::mutex hits_mu;
-  std::atomic<size_t> next{0};
-  const int worker_count = std::max(1, std::min<int>(cfg_.scan_concurrency, static_cast<int>(targets.size())));
-  const auto worker = [&]() {
-    for (;;) {
-      const size_t i = next.fetch_add(1);
-      if (i >= targets.size()) {
-        return;
-      }
-      const Target & t = targets[i];
-      if (scan_(t.ip, t.port, cfg_.connect_timeout_ms)) {
-        std::lock_guard<std::mutex> lk(hits_mu);
-        open_hits.push_back(t);
-      }
+  parallel_for(targets.size(), cfg_.scan_concurrency, [&](size_t i) {
+    const Target & t = targets[i];
+    if (scan_(t.ip, t.port, cfg_.connect_timeout_ms)) {
+      std::lock_guard<std::mutex> lk(hits_mu);
+      open_hits.push_back(t);
     }
-  };
-  {
-    std::vector<std::thread> pool;
-    pool.reserve(static_cast<size_t>(worker_count));
-    for (int w = 0; w < worker_count; ++w) {
-      pool.emplace_back(worker);
-    }
-    for (auto & th : pool) {
-      th.join();
-    }
-  }
+  });
 
   // Deterministic identify order (numerically lowest ip:port first).
   std::sort(open_hits.begin(), open_hits.end(), [](const Target & a, const Target & b) {
@@ -359,11 +381,15 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
     return a.port < b.port;
   });
 
-  // 3. Identify OPC-UA hits; dedup by ApplicationUri (fallback ip:port).
-  std::vector<DiscoveredEndpoint> ordered;
-  std::unordered_map<std::string, size_t> by_key;  // dedup key -> index in ordered
-
-  for (const auto & t : open_hits) {
+  // 3. Identify OPC-UA hits. Each GetEndpoints call blocks up to
+  // identify_timeout_ms, so a sequential loop would take N * timeout on a
+  // subnet where several hosts accept TCP on 4840 but never complete the
+  // handshake. Fan the identify out over the same bounded pool as the connect
+  // sweep, writing each result by index so the deterministic ip:port order
+  // (open_hits was sorted above) survives regardless of completion order.
+  std::vector<DiscoveredEndpoint> built(open_hits.size());
+  parallel_for(open_hits.size(), cfg_.scan_concurrency, [&](size_t i) {
+    const Target & t = open_hits[i];
     DiscoveredEndpoint ep;
     ep.ip = t.ip;
     ep.port = t.port;
@@ -386,13 +412,19 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
       // Non-OPC-UA OT port: recorded as a lead, no identify.
       ep.protocol = "unknown";
     }
+    built[i] = std::move(ep);
+  });
 
+  // 4. Dedup by ApplicationUri (fallback ip:port), sequentially over the
+  // deterministic order so the lowest ip:port always wins.
+  std::vector<DiscoveredEndpoint> ordered;
+  std::unordered_map<std::string, size_t> by_key;  // dedup key -> index in ordered
+  for (auto & ep : built) {
     // Dedup: prefer a stable ApplicationUri; a scan on two IPs of the same PLC
     // then collapses to one entry. Fall back to ip:port when the URI is empty
     // (identify failed or non-OPC-UA lead) so distinct hosts stay distinct.
     const std::string key = !ep.application_uri.empty() ? ("uri:" + ep.application_uri) : ("addr:" + ep.endpoint_url);
-    const auto it = by_key.find(key);
-    if (it == by_key.end()) {
+    if (by_key.find(key) == by_key.end()) {
       by_key.emplace(key, ordered.size());
       ordered.push_back(std::move(ep));
     }

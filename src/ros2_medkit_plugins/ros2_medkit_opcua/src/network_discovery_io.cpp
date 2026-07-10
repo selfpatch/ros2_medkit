@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -41,7 +42,7 @@ bool tcp_connect_probe(const std::string & ip, uint16_t port, int timeout_ms) {
     return false;
   }
 
-  // Non-blocking connect + select so a filtered / silent host times out at
+  // Non-blocking connect + poll so a filtered / silent host times out at
   // ``timeout_ms`` instead of the kernel default (tens of seconds). Bail out
   // on either fcntl() failing: leaving the socket blocking would let a single
   // filtered host stall the probe for the kernel's default connect timeout,
@@ -65,13 +66,15 @@ bool tcp_connect_probe(const std::string & ip, uint16_t port, int timeout_ms) {
   if (rc == 0) {
     connected = true;
   } else if (errno == EINPROGRESS) {
-    fd_set wset;
-    FD_ZERO(&wset);
-    FD_SET(fd, &wset);
-    struct timeval tv {};
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    if (::select(fd + 1, nullptr, &wset, nullptr, &tv) > 0) {
+    // poll() rather than select(): select()'s fd_set is capped at FD_SETSIZE
+    // (1024) and FD_SET() on a higher fd is POSIX undefined behaviour (writes
+    // past the stack fd_set, a hard abort under _FORTIFY_SOURCE). A long-running
+    // gateway running many concurrent probes can allocate fds past 1024; poll()
+    // has no such limit.
+    struct pollfd pfd {};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    if (::poll(&pfd, 1, timeout_ms) > 0) {
       int so_error = 0;
       socklen_t len = sizeof(so_error);
       if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == 0 && so_error == 0) {
@@ -102,8 +105,18 @@ IdentifyResult opcua_getendpoints_identify(const std::string & url, int timeout_
       const std::string policy_name = hash == std::string::npos ? policy_uri : policy_uri.substr(hash + 1);
       const int mode = static_cast<int>(ep.getSecurityMode());  // 1=None 2=Sign 3=SignAndEncrypt
       out.security_policies.push_back({policy_name, mode});
+      // Channel security (None/None) and user authentication are independent in
+      // OPC-UA: a None/None endpoint can still accept only Username/Certificate
+      // tokens. Only mark it anonymous-usable when it also advertises an
+      // Anonymous UserIdentityToken policy; otherwise the anonymous connect
+      // fails at session activation (BadIdentityTokenRejected).
       if (policy_name == "None" && mode == 1 /* UA_MESSAGESECURITYMODE_NONE */) {
-        out.anonymous_none_available = true;
+        for (const auto & token : ep.getUserIdentityTokens()) {
+          if (token.getTokenType() == opcua::UserTokenType::Anonymous) {
+            out.anonymous_none_available = true;
+            break;
+          }
+        }
       }
     }
 
