@@ -187,6 +187,17 @@ TEST(ParseDiscoveryConfig, NegativeConcurrencyKeepsDefault) {
   ASSERT_FALSE(warnings.empty());
 }
 
+TEST(ParseDiscoveryConfig, ClampsExcessiveConcurrency) {
+  const nlohmann::json j = {{"scan_concurrency", 100000}};
+  std::vector<std::string> warnings;
+  const auto cfg = parse_discovery_config(j, [&](const std::string & m) {
+    warnings.push_back(m);
+  });
+  EXPECT_EQ(cfg.scan_concurrency, 512);  // clamped to the sane maximum
+  ASSERT_FALSE(warnings.empty());
+  EXPECT_NE(warnings[0].find("clamping"), std::string::npos);
+}
+
 // --------------------------------------------------------------------------- //
 // NetworkDiscovery::run - reproduces the validated live-network scenario
 // (192.168.1.9 LDS, .10 Siemens S7-1500, .11 S7comm-only) with injected fakes.
@@ -316,6 +327,38 @@ TEST(NetworkDiscoveryRun, DedupsByApplicationUri) {
   ASSERT_EQ(eps.size(), 1u);
   // Lowest ip:port wins (deterministic).
   EXPECT_EQ(eps[0].ip, "192.168.1.10");
+}
+
+TEST(NetworkDiscoveryRun, ParallelIdentifyKeepsDeterministicOrder) {
+  // Many concurrent hits, each with a distinct ApplicationUri. The identify
+  // runs on the bounded pool, but results are written by index so the output
+  // must stay strictly sorted by ip regardless of completion order.
+  std::set<std::string> open;
+  std::map<std::string, IdentifyResult> table;
+  for (int host = 1; host <= 60; ++host) {
+    const std::string ip = "192.168.1." + std::to_string(host);
+    open.insert(ip + ":4840");
+    IdentifyResult r = siemens_identity();
+    r.application_uri = "urn:server-" + std::to_string(host);  // distinct => no dedup
+    r.advertised_url = "opc.tcp://" + ip + ":4840";
+    table.emplace("opc.tcp://" + ip + ":4840", r);
+  }
+  DiscoveryConfig cfg;
+  cfg.enabled = true;
+  cfg.subnets = {"192.168.1.0/24"};
+  cfg.ports = {4840};
+  cfg.scan_concurrency = 32;
+  NetworkDiscovery disc(cfg, make_scan(open), make_identify(table));
+  const auto eps = disc.run();
+
+  ASSERT_EQ(eps.size(), 60u);
+  for (size_t i = 0; i + 1 < eps.size(); ++i) {
+    EXPECT_LT(std::stoi(eps[i].ip.substr(eps[i].ip.rfind('.') + 1)),
+              std::stoi(eps[i + 1].ip.substr(eps[i + 1].ip.rfind('.') + 1)))
+        << "endpoints must stay ip-ordered after the parallel identify";
+  }
+  EXPECT_EQ(eps.front().ip, "192.168.1.1");
+  EXPECT_EQ(eps.back().ip, "192.168.1.60");
 }
 
 TEST(NetworkDiscoveryRun, IdentifyFailureRecordedAsLead) {
