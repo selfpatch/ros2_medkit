@@ -1078,6 +1078,10 @@ void NodeMap::build_entity_defs() {
     if (def.id.empty()) {
       def.id = entry.entity_id;
       def.component_id = component_id_;
+      // auto_browse supplies the raw DisplayName path ("PLC_1 / DB_Test") as the
+      // human-readable name; hand-written entries leave it empty and fall back to
+      // the title-cased slug below.
+      def.name = entry.entity_display_name;
     }
     def.data_names.push_back(entry.data_name);
     if (entry.writable) {
@@ -1101,23 +1105,26 @@ void NodeMap::build_entity_defs() {
     def.has_faults = true;
   }
 
-  // Build human-readable names from IDs
+  // Build human-readable names from IDs for entries without an explicit
+  // (auto_browse) DisplayName path.
   for (auto & [id, def] : defs) {
-    // Convert snake_case to Title Case
-    std::string name;
-    bool capitalize = true;
-    for (char c : id) {
-      if (c == '_') {
-        name += ' ';
-        capitalize = true;
-      } else if (capitalize) {
-        name += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        capitalize = false;
-      } else {
-        name += c;
+    if (def.name.empty()) {
+      // Convert snake_case to Title Case
+      std::string name;
+      bool capitalize = true;
+      for (char c : id) {
+        if (c == '_') {
+          name += ' ';
+          capitalize = true;
+        } else if (capitalize) {
+          name += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+          capitalize = false;
+        } else {
+          name += c;
+        }
       }
+      def.name = name;
     }
-    def.name = name;
     entity_defs_.push_back(std::move(def));
   }
 

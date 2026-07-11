@@ -33,6 +33,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
 
@@ -638,6 +640,9 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   log_info("introspect() called - generating PLC entities");
   IntrospectionResult result;
 
+  // Serialize against an auto_browse re-walk (poll thread) rebuilding node_map_.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+
   Area area;
   area.id = node_map_.area_id();
   area.name = node_map_.area_name();
@@ -731,6 +736,8 @@ void OpcuaPlugin::handle_plc_data(const PluginRequest & req, PluginResponse & re
     return;
   }
 
+  // Held across build_data_response too (it reads node_map_ without locking).
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto entries = node_map_.entries_for_entity(entity_id);
   if (entries.empty()) {
     res.send_error(404, ERR_RESOURCE_NOT_FOUND, "No PLC data mapped for entity: " + entity_id);
@@ -758,6 +765,8 @@ void OpcuaPlugin::handle_plc_data_single(const PluginRequest & req, PluginRespon
     return;
   }
 
+  // Held for as long as ``entry`` (a pointer into node_map_) is dereferenced.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto * entry = node_map_.find_by_data_name(entity_id, data_name);
   if (!entry) {
     res.send_error(404, ERR_RESOURCE_NOT_FOUND, "Data point not found: " + data_name + " in entity: " + entity_id);
@@ -819,6 +828,9 @@ void OpcuaPlugin::handle_plc_operations(const PluginRequest & req, PluginRespons
     data_name = op_name;
   }
 
+  // Held for as long as ``entry`` (a pointer into node_map_) is dereferenced,
+  // including across the OPC-UA write below.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto * entry = node_map_.find_by_data_name(entity_id, data_name);
   if (!entry) {
     res.send_error(404, ERR_RESOURCE_NOT_FOUND, "Operation not found: " + op_name + " in entity: " + entity_id);
@@ -883,6 +895,7 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
     return;
   }
 
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto snap = poller_->snapshot();
 
   nlohmann::json j;
@@ -1085,12 +1098,40 @@ void OpcuaPlugin::create_value_publishers() {
 void OpcuaPlugin::run_auto_browse() {
   OpcuaClientBrowseSource source(*client_);
   AutoBrowser browser(source, node_map_.auto_browse_config());
+  // The address-space walk is a series of blocking OPC-UA round-trips - do it
+  // without the lock so it never stalls the REST read handlers.
   AutoBrowseResult result = browser.browse();
-  const size_t added = node_map_.merge_auto_browsed_entries(std::move(result.entries));
+
+  size_t added = 0;
+  size_t entity_count = 0;
+  {
+    // Serialize the mutation (entries / indices / entity_defs rebuild) against
+    // the HTTP read handlers, which take the shared lock.
+    std::unique_lock<std::shared_mutex> lock(node_map_mutex_);
+    added = node_map_.merge_auto_browsed_entries(std::move(result.entries));
+    entity_count = node_map_.entity_defs().size();
+  }
+  // Publishers for any newly merged entries (idempotent via publishers_.count).
+  // Safe without the node_map_ lock: the poll thread is the sole writer and we
+  // are on it (or in single-threaded set_context startup).
+  create_value_publishers();
+  auto_browse_generation_ = client_->connection_generation();
+
   log_info("auto_browse: walked " + std::to_string(result.nodes_visited) + " address-space nodes, added " +
-           std::to_string(added) + " data points (" + std::to_string(node_map_.entity_defs().size()) +
-           " entities total)" + (result.node_cap_hit ? " [node cap reached - tree may be incomplete]" : "") +
+           std::to_string(added) + " data points (" + std::to_string(entity_count) + " entities total)" +
+           (result.node_cap_hit ? " [node cap reached - tree may be incomplete]" : "") +
            (result.depth_cap_hit ? " [depth cap reached on at least one branch]" : ""));
+}
+
+void OpcuaPlugin::maybe_rebrowse_on_reconnect() {
+  if (!node_map_.auto_browse_config().enabled || !client_ || !client_->is_connected()) {
+    return;
+  }
+  const uint64_t generation = client_->connection_generation();
+  if (generation == auto_browse_generation_) {
+    return;  // already walked this session
+  }
+  run_auto_browse();
 }
 
 void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
@@ -1100,6 +1141,9 @@ void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
   // Poll-thread hook: drain any fault reports buffered before fault_manager was
   // discovered, so a late sink still receives them.
   flush_pending_reports();
+  // Poll-thread hook: (re)run auto_browse after a fresh session so a PLC that
+  // came up (or restarted) after the initial connect still gets walked.
+  maybe_rebrowse_on_reconnect();
   for (const auto & [node_id, value] : snap.values) {
     auto pub_it = publishers_.find(node_id);
     if (pub_it == publishers_.end()) {
@@ -1317,6 +1361,8 @@ tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
   }
 
+  // Held while the returned pointers into node_map_ are dereferenced below.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto entries = node_map_.entries_for_entity(entity_id);
   if (entries.empty()) {
     return tl::make_unexpected(
@@ -1360,6 +1406,8 @@ tl::expected<dto::DataValue, DataProviderErrorInfo> OpcuaPlugin::read_data(const
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
   }
 
+  // Held while ``entry`` (a pointer into node_map_) is dereferenced below.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto * entry = node_map_.find_by_data_name(entity_id, resource_name);
   if (!entry) {
     return tl::make_unexpected(DataProviderErrorInfo{
@@ -1403,6 +1451,9 @@ tl::expected<dto::DataWriteResult, DataProviderErrorInfo> OpcuaPlugin::write_dat
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "plugin not initialized", 503});
   }
 
+  // Held for as long as ``entry`` (a pointer into node_map_) is dereferenced,
+  // including across the OPC-UA write below.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto * entry = node_map_.find_by_data_name(entity_id, resource_name);
   if (!entry) {
     return tl::make_unexpected(DataProviderErrorInfo{
@@ -1454,6 +1505,8 @@ tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
 OpcuaPlugin::list_operations(const std::string & entity_id) {
   dto::Collection<dto::OperationItem> collection;
 
+  // Held while iterating node_map_ defs / entries (auto_browse may rebuild them).
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   for (const auto & def : node_map_.entity_defs()) {
     if (def.id != entity_id) {
       continue;
@@ -1605,6 +1658,9 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     data_name = operation_name;
   }
 
+  // Held for as long as ``entry`` (a pointer into node_map_) is dereferenced,
+  // including across the OPC-UA write below.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
   auto * entry = node_map_.find_by_data_name(entity_id, data_name);
   if (!entry) {
     return tl::make_unexpected(OperationProviderErrorInfo{OperationProviderError::OperationNotFound,

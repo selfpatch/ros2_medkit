@@ -411,6 +411,83 @@ TEST(AutoBrowserTest, CollidingSanitizedEntityIdsGetDeterministicSuffix) {
   EXPECT_EQ(entity_ids.size(), 2u) << "colliding sanitized entity ids must be disambiguated, not merged";
 }
 
+// -- ROS 2 topic safety (hyphens) --------------------------------------
+
+TEST(AutoBrowserTest, HyphenatedNamesYieldValidRos2TopicButKeepSovdHyphen) {
+  // '-' is valid in a SOVD id but illegal in a ROS 2 topic token. Common PLC
+  // tags like "Line-A" / "Flow-Rate" must still produce a valid /plc topic.
+  FakeAutoBrowseSource source;
+  const auto root = NodeMap::parse_node_id("i=85");
+  const auto line = NodeMap::parse_node_id("ns=2;s=Line-A");
+  const auto flow = NodeMap::parse_node_id("ns=2;s=Line-A.Flow-Rate");
+  source.add_child(root, make_child("ns=2;s=Line-A", 2, "Line-A", "Line-A", opcua::NodeClass::Object));
+  source.add_child(line,
+                   make_child("ns=2;s=Line-A.Flow-Rate", 2, "Flow-Rate", "Flow-Rate", opcua::NodeClass::Variable));
+  source.set_type(flow, "Float");
+
+  AutoBrowseConfig cfg;
+  AutoBrowser browser(source, cfg);
+  auto result = browser.browse();
+
+  ASSERT_EQ(result.entries.size(), 1u);
+  const auto & e = result.entries[0];
+  // SOVD id / data_name keep the hyphen ...
+  EXPECT_EQ(e.entity_id, "line-a");
+  EXPECT_EQ(e.data_name, "flow-rate");
+  // ... but the ROS 2 topic must be a valid name (no '-').
+  EXPECT_EQ(e.ros2_topic, "/plc/line_a/flow_rate");
+}
+
+// -- Cyclic / shared subtree guard (visited-NodeId set) -----------------
+
+TEST(AutoBrowserTest, CyclicHierarchyIsWalkedOnceAndTerminates) {
+  // root -> A (Object, owns a Variable) -> B (Object) -> back to A (cycle via a
+  // HierarchicalReference). Without a visited set the walk would re-descend A
+  // until the node cap trips; with it, each Object is entered exactly once.
+  FakeAutoBrowseSource source;
+  const auto root = NodeMap::parse_node_id("i=85");
+  const auto a = NodeMap::parse_node_id("ns=2;s=A");
+  const auto b = NodeMap::parse_node_id("ns=2;s=B");
+  const auto var = NodeMap::parse_node_id("ns=2;s=A.V");
+  source.add_child(root, make_child("ns=2;s=A", 2, "A", "A", opcua::NodeClass::Object));
+  source.add_child(a, make_child("ns=2;s=A.V", 2, "V", "V", opcua::NodeClass::Variable));
+  source.add_child(a, make_child("ns=2;s=B", 2, "B", "B", opcua::NodeClass::Object));
+  source.add_child(b, make_child("ns=2;s=A", 2, "A", "A", opcua::NodeClass::Object));  // B -> A back-edge
+  source.set_type(var, "Int32");
+
+  AutoBrowseConfig cfg;
+  AutoBrowser browser(source, cfg);
+  auto result = browser.browse();
+
+  EXPECT_FALSE(result.node_cap_hit);
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_EQ(result.entries[0].entity_id, "a");
+  // browse_children entered once each for root, A, B - never A twice.
+  EXPECT_EQ(source.browse_calls, 3);
+}
+
+// -- Human-readable entity display name (join_display_name in the walk) --
+
+TEST(AutoBrowserTest, AttachesHumanReadableEntityDisplayNamePath) {
+  FakeAutoBrowseSource source;
+  const auto root = NodeMap::parse_node_id("i=85");
+  const auto plc1 = NodeMap::parse_node_id("ns=2;s=PLC_1");
+  const auto db_test = NodeMap::parse_node_id("ns=2;s=DB_Test");
+  const auto level = NodeMap::parse_node_id("ns=2;s=DB_Test.Level");
+  source.add_child(root, make_child("ns=2;s=PLC_1", 2, "PLC_1", "PLC_1", opcua::NodeClass::Object));
+  source.add_child(plc1, make_child("ns=2;s=DB_Test", 2, "DB_Test", "DB_Test", opcua::NodeClass::Object));
+  source.add_child(db_test, make_child("ns=2;s=DB_Test.Level", 2, "Level", "Level", opcua::NodeClass::Variable));
+  source.set_type(level, "Float");
+
+  AutoBrowseConfig cfg;
+  AutoBrowser browser(source, cfg);
+  auto result = browser.browse();
+
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_EQ(result.entries[0].entity_id, "plc_1_db_test");
+  EXPECT_EQ(result.entries[0].entity_display_name, "PLC_1 / DB_Test");
+}
+
 // -- Multiple configured roots ----------------------------------------
 
 TEST(AutoBrowserTest, MultipleRootsAreAllWalked) {
@@ -499,6 +576,26 @@ auto_browse:
   EXPECT_EQ(node_map.auto_browse_config().max_nodes, 1000u);
   EXPECT_FALSE(node_map.auto_browse_config().read_initial_values);
   EXPECT_TRUE(node_map.entries().empty());
+}
+
+TEST(NodeMapAutoBrowseMergeTest, EntityDefNameUsesAutoBrowsedDisplayNamePath) {
+  // An auto-browsed entry carries the raw DisplayName path; build_entity_defs
+  // must surface it as the entity name instead of title-casing the slug.
+  NodeMap node_map;
+  std::vector<NodeMapEntry> auto_entries;
+  NodeMapEntry entry;
+  entry.node_id_str = "ns=2;s=DB_Test.Level";
+  entry.node_id = NodeMap::parse_node_id(entry.node_id_str);
+  entry.entity_id = "plc_1_db_test";
+  entry.entity_display_name = "PLC_1 / DB_Test";
+  entry.data_name = "level";
+  entry.data_type = "float";
+  auto_entries.push_back(entry);
+
+  ASSERT_EQ(node_map.merge_auto_browsed_entries(std::move(auto_entries)), 1u);
+  ASSERT_EQ(node_map.entity_defs().size(), 1u);
+  EXPECT_EQ(node_map.entity_defs()[0].id, "plc_1_db_test");
+  EXPECT_EQ(node_map.entity_defs()[0].name, "PLC_1 / DB_Test");
 }
 
 }  // namespace ros2_medkit_gateway
