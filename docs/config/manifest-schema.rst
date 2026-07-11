@@ -553,6 +553,8 @@ Fields
      - True if not a ROS node (default: false). In hybrid mode the flag merges
        monotonically: omitting it does not clear an ``external`` classification
        contributed by another discovery layer (e.g. a protocol plugin).
+       Combining ``external: true`` with a ``ros_binding`` is contradictory and
+       raises validation warning R013 (the binding is ignored for linking).
 
 ros_binding Fields
 ~~~~~~~~~~~~~~~~~~

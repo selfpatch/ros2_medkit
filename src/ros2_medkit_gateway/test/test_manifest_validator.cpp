@@ -16,7 +16,7 @@
  * @file test_manifest_validator.cpp
  * @brief Unit tests for manifest validator
  *
- * @verifies REQ_DISCOVERY_003 Manifest validation rules R001-R012
+ * @verifies REQ_DISCOVERY_003 Manifest validation rules R001-R013
  */
 
 #include <gtest/gtest.h>
@@ -451,6 +451,52 @@ apps:
 
   // Wildcard bindings are allowed to overlap
   EXPECT_TRUE(result.is_valid);
+}
+
+// =============================================================================
+// R013: External App With ROS Binding
+// =============================================================================
+
+TEST_F(ManifestValidatorTest, R013_ExternalAppWithRosBindingWarns) {
+  // external: true means "not a ROS node": the linker skips the binding and,
+  // in hybrid mode, a plugin's external classification cannot be cleared by
+  // other layers. Declaring both is contradictory, so surface it instead of
+  // silently ignoring one of the two.
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "plc_process"
+    external: true
+    ros_binding:
+      node_name: "plc_node"
+      namespace: "/plant"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  auto result = validator_.validate(manifest);
+
+  EXPECT_TRUE(result.is_valid);
+  ASSERT_TRUE(result.has_warnings());
+  EXPECT_EQ(result.warnings[0].rule_id, "R013");
+}
+
+TEST_F(ManifestValidatorTest, R013_ExternalAppWithoutBindingNoWarning) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "plc_process"
+    external: true
+  - id: "ros_app"
+    ros_binding:
+      node_name: "node1"
+      namespace: "/ns"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  auto result = validator_.validate(manifest);
+
+  EXPECT_TRUE(result.is_valid);
+  EXPECT_FALSE(result.has_warnings());
 }
 
 // =============================================================================

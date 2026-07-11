@@ -186,6 +186,17 @@ void ManifestValidator::validate_ros_bindings(const Manifest & manifest, Validat
 
   for (const auto & app : manifest.apps) {
     if (app.ros_binding.has_value() && !app.ros_binding->is_empty()) {
+      // external means "not a ROS node": the runtime linker skips the binding
+      // and the hybrid merge keeps the external classification. Declaring both
+      // is contradictory - warn instead of silently ignoring one of the two.
+      if (app.external) {
+        result.add_warning("R013",
+                           "App '" + app.id +
+                               "' declares external: true together with a ros_binding; "
+                               "the binding is ignored for linking",
+                           "apps/" + app.id + "/ros_binding");
+      }
+
       std::string binding_key = app.ros_binding->node_name + "@" + app.ros_binding->namespace_pattern;
 
       // For topic namespace bindings
