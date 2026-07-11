@@ -1108,8 +1108,9 @@ std::string slugify(const std::string & s) {
 }
 
 // FNV-1a 32-bit, rendered as 8 uppercase hex digits. Not cryptographic -
-// only needs to be a stable, low-collision fallback identity for alarms that
-// carry neither a ConditionName nor a SourceName.
+// only needs to be a stable, low-collision way to fold the SourceNode (and,
+// in the fallback tier, EventType + Message) into an alarm's fault_code so
+// distinct conditions never share one.
 std::string short_hash_hex(const std::string & s) {
   uint32_t h = 2166136261u;
   for (unsigned char c : s) {
@@ -1125,21 +1126,43 @@ std::string short_hash_hex(const std::string & s) {
   return out;
 }
 
+// Canonicalize an OPC-UA NodeId string so equivalent spellings (e.g. the
+// default numeric ``i=2253`` and an explicit ``ns=0;i=2253``) fold to one
+// hash. An unparseable spelling has no canonical form, so it is used verbatim
+// (distinct raw strings stay distinct).
+std::string canonical_node_id(const std::string & s) {
+  const opcua::NodeId id = NodeMap::parse_node_id(s);
+  if (id.isNull()) {
+    return s;
+  }
+  return id.toString();
+}
+
 }  // namespace
 
 std::string NodeMap::derive_auto_fault_code(const std::string & condition_name, const std::string & source_name,
                                             const std::string & source_node_str, const std::string & event_type_str,
                                             const std::string & message) {
+  // Fold the SourceNode into EVERY tier. Two distinct conditions (different
+  // ConditionId, different SourceNode) that share a ConditionName/SourceName -
+  // e.g. two identical FB instances each raising "Overpressure" - must not
+  // collapse onto one fault_code: fault_manager keys and clears by code alone,
+  // so a collision would let one condition's clear wipe the other's still-active
+  // fault (or flap them). The SourceNode is stable across a single condition's
+  // whole lifecycle, so this stays consistent between raise and clear. Note
+  // Message is deliberately NOT part of tiers 1/2, so a condition whose Message
+  // differs between its active and inactive notifications still maps to one code.
+  const std::string source_key = canonical_node_id(source_node_str);
   if (!condition_name.empty()) {
     const std::string slug = slugify(condition_name);
     if (!slug.empty()) {
-      return "PLC_ALARM_" + slug;
+      return "PLC_ALARM_" + slug + "_" + short_hash_hex(source_key);
     }
   }
   if (!source_name.empty()) {
     const std::string slug = slugify(source_name);
     if (!slug.empty()) {
-      return "PLC_ALARM_" + slug;
+      return "PLC_ALARM_" + slug + "_" + short_hash_hex(source_key);
     }
   }
   // Neither identity field is usable. A real Siemens S7-1500 reports every
@@ -1147,7 +1170,7 @@ std::string NodeMap::derive_auto_fault_code(const std::string & condition_name, 
   // no ConditionName/SourceName - Message is the ONLY thing that tells "pa"
   // and "pa2" apart - so it must be part of the fallback hash, not just
   // SourceNode+EventType, or distinct alarms collapse onto one fault_code.
-  return "PLC_ALARM_" + short_hash_hex(source_node_str + "|" + event_type_str + "|" + message);
+  return "PLC_ALARM_" + short_hash_hex(source_key + "|" + event_type_str + "|" + message);
 }
 
 bool NodeMap::auto_alarm_passes_filters(const std::string & condition_name, const std::string & source_name,

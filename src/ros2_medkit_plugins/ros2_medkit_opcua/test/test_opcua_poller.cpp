@@ -103,6 +103,53 @@ TEST(EffectiveAlarmSourcesTest, MultipleExplicitSourcesPreservedAlongsideSynthet
   EXPECT_EQ(result[2].source_node_id_str, "i=2253");
 }
 
+TEST(EffectiveAlarmSourcesTest, EquivalentSpellingOfAutoSourceIsRecognizedAsCovered) {
+  // An explicit event_alarms source spelled ``ns=0;i=2253`` targets the same
+  // physical node as the auto default ``i=2253``. A raw string compare would
+  // miss the overlap and add a second monitored item on one node, so every
+  // event would double-fire (one mapped fault + one auto fault). Canonical
+  // comparison must recognize them as the same source (no synthetic added).
+  std::vector<AlarmEventConfig> explicit_sources(1);
+  explicit_sources[0].source_node_id_str = "ns=0;i=2253";
+  explicit_sources[0].entity_id = "line";
+  explicit_sources[0].fault_code = "PLC_GENERIC_ALARM";
+
+  AutoAlarmsConfig auto_cfg;
+  auto_cfg.enabled = true;
+  auto_cfg.source_node_id_str = "i=2253";
+  auto_cfg.entity_id = "plc_runtime";
+
+  auto result = OpcuaPoller::effective_alarm_sources(explicit_sources, auto_cfg);
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].source_node_id_str, "ns=0;i=2253");
+}
+
+TEST(NodeIdsEquivalentTest, IdenticalStringsAreEquivalent) {
+  EXPECT_TRUE(OpcuaPoller::node_ids_equivalent("ns=2;s=Tank.Pressure", "ns=2;s=Tank.Pressure"));
+}
+
+TEST(NodeIdsEquivalentTest, DefaultAndExplicitNamespaceZeroNumericAreEquivalent) {
+  // The default numeric Server object and its explicit ns=0 spelling denote
+  // one physical node.
+  EXPECT_TRUE(OpcuaPoller::node_ids_equivalent("i=2253", "ns=0;i=2253"));
+  EXPECT_TRUE(OpcuaPoller::node_ids_equivalent("ns=0;i=2253", "i=2253"));
+}
+
+TEST(NodeIdsEquivalentTest, DifferentNumericIdsAreNotEquivalent) {
+  EXPECT_FALSE(OpcuaPoller::node_ids_equivalent("i=2253", "i=2254"));
+}
+
+TEST(NodeIdsEquivalentTest, DifferentNamespacesAreNotEquivalent) {
+  EXPECT_FALSE(OpcuaPoller::node_ids_equivalent("ns=1;s=Pump", "ns=2;s=Pump"));
+}
+
+TEST(NodeIdsEquivalentTest, UnparseableSpellingsFallBackToRawEquality) {
+  // Two distinct unparseable strings have no canonical form and must stay
+  // distinct; an identical unparseable string still matches itself.
+  EXPECT_FALSE(OpcuaPoller::node_ids_equivalent("not-a-node-id", "also-bad"));
+  EXPECT_TRUE(OpcuaPoller::node_ids_equivalent("not-a-node-id", "not-a-node-id"));
+}
+
 TEST(IsConditionEventTest, NullConditionIdIsRejected) {
   // Part 9 §5.5.2.13: a non-condition event (e.g. a Siemens Server-object
   // system message such as "CPU not in RUN") resolves the ConditionId SAO

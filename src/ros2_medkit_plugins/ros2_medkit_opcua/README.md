@@ -467,13 +467,22 @@ This completes the zero-config chain: discovery (endpoint) ->
 no node-map file required.
 
 **Fault derivation** (no config, per observed event):
-- `fault_code`: `PLC_ALARM_<slug>` from `ConditionName` when present, else from
-  `SourceName`, else `PLC_ALARM_<hash>` of SourceNode + EventType + Message.
-  The hash tier folds in the Message deliberately - a real Siemens S7-1500
-  multiplexes every `Program_Alarm` of one FB through a single SourceNode
-  (e.g. `i=1845`) with no ConditionName/SourceName, distinguished only by
-  Message text ("pa" vs "pa2"); without the Message in the hash those two
-  alarms would collapse onto one fault_code.
+- `fault_code`: `PLC_ALARM_<slug>_<hash(SourceNode)>` from `ConditionName` when
+  present, else from `SourceName`, else `PLC_ALARM_<hash>` of
+  SourceNode + EventType + Message. The SourceNode is folded into every tier so
+  two distinct conditions sharing a ConditionName/SourceName but sitting on
+  different sources (e.g. two identical FB instances each raising
+  "Overpressure") never collapse onto one code - the fault manager keys/clears
+  by code alone, so a collision would let one condition's clear wipe the
+  other's still-active fault. Message is NOT folded into the slug tiers, so a
+  condition whose Message differs between its active and inactive notifications
+  still maps to one code. The hash tier additionally folds in the Message
+  deliberately - a real Siemens S7-1500 multiplexes every `Program_Alarm` of
+  one FB through a single SourceNode (e.g. `i=1845`) with no
+  ConditionName/SourceName, distinguished only by Message text ("pa" vs "pa2");
+  without the Message in the hash those two alarms would collapse onto one
+  fault_code. A given condition derives its code once (at first observation)
+  and keeps it for its whole lifecycle, so its raise and clear always agree.
 - `entity`: the node-map entity that owns the event's SourceNode when it
   matches a `nodes:` entry, else `auto_alarms.entity_id`.
 - `severity`: the event's raw `Severity` (1-1000) mapped through

@@ -1863,21 +1863,26 @@ event_alarms:
 // ---- Zero-config native A&C (auto_alarms) --------------------------------
 
 TEST(DeriveAutoFaultCodeTest, UsesConditionNameWhenPresent) {
-  EXPECT_EQ(NodeMap::derive_auto_fault_code("Overpressure", "SourceX", "ns=2;s=Tank", "ns=0;i=2915", "msg"),
-            "PLC_ALARM_OVERPRESSURE");
+  // Tier 1 = slug(ConditionName) + a canonical-SourceNode hash suffix (the
+  // suffix keeps same-named conditions on different sources distinct).
+  const std::string code =
+      NodeMap::derive_auto_fault_code("Overpressure", "SourceX", "ns=2;s=Tank", "ns=0;i=2915", "msg");
+  EXPECT_EQ(code.rfind("PLC_ALARM_OVERPRESSURE_", 0), 0u);
 }
 
 TEST(DeriveAutoFaultCodeTest, ConditionNameSlugified) {
   // Dots, spaces and punctuation collapse to single underscores; case folds
   // to upper, matching every hand-written fault_code in this codebase
   // (PLC_OVERPRESSURE, PLC_COMMS_LOST, ...).
-  EXPECT_EQ(NodeMap::derive_auto_fault_code("Tank.Overpressure!!", "", "ns=2;s=Tank", "ns=0;i=2915", ""),
-            "PLC_ALARM_TANK_OVERPRESSURE");
+  const std::string code =
+      NodeMap::derive_auto_fault_code("Tank.Overpressure!!", "", "ns=2;s=Tank", "ns=0;i=2915", "");
+  EXPECT_EQ(code.rfind("PLC_ALARM_TANK_OVERPRESSURE_", 0), 0u);
 }
 
 TEST(DeriveAutoFaultCodeTest, FallsBackToSourceNameWhenConditionNameEmpty) {
-  EXPECT_EQ(NodeMap::derive_auto_fault_code("", "Pump A Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg"),
-            "PLC_ALARM_PUMP_A_FAULT");
+  const std::string code =
+      NodeMap::derive_auto_fault_code("", "Pump A Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg");
+  EXPECT_EQ(code.rfind("PLC_ALARM_PUMP_A_FAULT_", 0), 0u);
 }
 
 TEST(DeriveAutoFaultCodeTest, HashFallbackWhenBothNamesEmpty) {
@@ -1902,7 +1907,50 @@ TEST(DeriveAutoFaultCodeTest, EmptyConditionNameSlugFallsThroughToSourceName) {
   // A ConditionName that slugifies to nothing (pure punctuation) must not
   // stick with an empty-but-nonempty-input tier - it falls through exactly
   // like an absent ConditionName.
-  EXPECT_EQ(NodeMap::derive_auto_fault_code("!!!", "PumpA", "ns=2;s=PumpA", "ns=0;i=2915", ""), "PLC_ALARM_PUMPA");
+  const std::string code = NodeMap::derive_auto_fault_code("!!!", "PumpA", "ns=2;s=PumpA", "ns=0;i=2915", "");
+  EXPECT_EQ(code.rfind("PLC_ALARM_PUMPA_", 0), 0u);
+}
+
+TEST(DeriveAutoFaultCodeTest, SameConditionNameDifferentSourcesGetDistinctCodes) {
+  // Two identical FB instances each raising "Overpressure" from a DIFFERENT
+  // SourceNode must not collapse onto one code: fault_manager keys/clears by
+  // code alone, so a collision would let one condition's clear wipe the
+  // other's still-active fault. This is the whole point of folding the
+  // SourceNode into tiers 1/2.
+  const std::string a = NodeMap::derive_auto_fault_code("Overpressure", "", "ns=2;s=PumpA", "ns=0;i=2915", "msg");
+  const std::string b = NodeMap::derive_auto_fault_code("Overpressure", "", "ns=2;s=PumpB", "ns=0;i=2915", "msg");
+  EXPECT_EQ(a.rfind("PLC_ALARM_OVERPRESSURE_", 0), 0u);
+  EXPECT_EQ(b.rfind("PLC_ALARM_OVERPRESSURE_", 0), 0u);
+  EXPECT_NE(a, b);
+}
+
+TEST(DeriveAutoFaultCodeTest, SameSourceNameDifferentSourcesGetDistinctCodes) {
+  // Tier 2 (SourceName fallback) mirrors tier 1: distinct sources sharing a
+  // SourceName stay distinct.
+  const std::string a = NodeMap::derive_auto_fault_code("", "Pump Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg");
+  const std::string b = NodeMap::derive_auto_fault_code("", "Pump Fault", "ns=2;s=PumpB", "ns=0;i=2915", "msg");
+  EXPECT_NE(a, b);
+}
+
+TEST(DeriveAutoFaultCodeTest, StableAcrossMessageDriftForSameCondition) {
+  // Tiers 1/2 must NOT fold Message: OPC-UA lets a condition's Message differ
+  // between its active and inactive notifications, and the code must stay the
+  // same so the clear matches the raise (fault_manager keys by code).
+  const std::string active =
+      NodeMap::derive_auto_fault_code("Overpressure", "", "ns=2;s=PumpA", "ns=0;i=2915", "active text");
+  const std::string cleared =
+      NodeMap::derive_auto_fault_code("Overpressure", "", "ns=2;s=PumpA", "ns=0;i=2915", "cleared text");
+  EXPECT_EQ(active, cleared);
+}
+
+TEST(DeriveAutoFaultCodeTest, EquivalentSourceSpellingsProduceSameCode) {
+  // The SourceNode is canonicalized before hashing, so the default numeric
+  // Server object and its explicit namespaced spelling map to one code.
+  const std::string numeric =
+      NodeMap::derive_auto_fault_code("Overpressure", "", "i=2253", "ns=0;i=2915", "msg");
+  const std::string namespaced =
+      NodeMap::derive_auto_fault_code("Overpressure", "", "ns=0;i=2253", "ns=0;i=2915", "msg");
+  EXPECT_EQ(numeric, namespaced);
 }
 
 TEST(AutoAlarmPassesFiltersTest, NoPatternsAdmitsEverything) {

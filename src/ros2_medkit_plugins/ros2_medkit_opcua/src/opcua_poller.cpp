@@ -293,6 +293,20 @@ void OpcuaPoller::setup_subscriptions() {
   }
 }
 
+bool OpcuaPoller::node_ids_equivalent(const std::string & a, const std::string & b) {
+  if (a == b) {
+    return true;
+  }
+  const opcua::NodeId na = NodeMap::parse_node_id(a);
+  const opcua::NodeId nb = NodeMap::parse_node_id(b);
+  // An unparseable spelling has no canonical form; only the raw match above
+  // can equate it, so two distinct raw strings stay distinct.
+  if (na.isNull() || nb.isNull()) {
+    return false;
+  }
+  return na.toString() == nb.toString();
+}
+
 std::vector<AlarmEventConfig>
 OpcuaPoller::effective_alarm_sources(const std::vector<AlarmEventConfig> & explicit_sources,
                                      const AutoAlarmsConfig & auto_cfg) {
@@ -300,8 +314,13 @@ OpcuaPoller::effective_alarm_sources(const std::vector<AlarmEventConfig> & expli
   if (!auto_cfg.enabled) {
     return sources;
   }
+  // Compare CANONICAL node ids: an explicit event_alarms source spelled
+  // ``ns=0;i=2253`` targets the same physical node as the auto default
+  // ``i=2253``, so a raw string compare would miss the overlap and add a
+  // second monitored item on one node - every event would then fire twice
+  // (one mapped fault + one auto fault).
   const bool already_covered = std::any_of(sources.begin(), sources.end(), [&](const AlarmEventConfig & c) {
-    return c.source_node_id_str == auto_cfg.source_node_id_str;
+    return node_ids_equivalent(c.source_node_id_str, auto_cfg.source_node_id_str);
   });
   if (already_covered) {
     // An explicit event_alarms entry already targets this source; on_event()
@@ -575,7 +594,7 @@ void OpcuaPoller::read_fallback_replay() {
         // effective_alarm_sources()). A read-scan snapshot has no
         // SourceName/SourceNode-per-condition of its own (it is implicitly
         // the source we just browsed), so the derivation uses cfg's source id.
-        if (!auto_cfg.enabled || cfg.source_node_id_str != auto_cfg.source_node_id_str) {
+        if (!auto_cfg.enabled || !node_ids_equivalent(cfg.source_node_id_str, auto_cfg.source_node_id_str)) {
           continue;
         }
         if (!NodeMap::auto_alarm_passes_filters(snap.condition_name, /*source_name=*/"", snap.message,
@@ -818,10 +837,31 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // when explicit event_alarms shares it, or the synthetic source
     // effective_alarm_sources() adds); an unmatched event on any other
     // explicit event_alarms source is ignored exactly as before.
-    if (!auto_cfg.enabled || cfg.source_node_id_str != auto_cfg.source_node_id_str) {
+    if (!auto_cfg.enabled || !node_ids_equivalent(cfg.source_node_id_str, auto_cfg.source_node_id_str)) {
       RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
                           "on_event: no fault mapping for condition_name='" << condition_name << "' - ignoring");
       return;
+    }
+    // Notifier hierarchy: the auto source can be a root notifier (e.g. the
+    // Server object i=2253) that ALSO receives events whose real SourceNode has
+    // its own explicit event_alarms subscription. That explicit monitored item
+    // already delivered - and mapped - this event, so auto-deriving it here
+    // would double-fire (explicit fault + auto fault) and defeat the documented
+    // "explicit event_alarms take precedence". Drop the event when its real
+    // SourceNode matches an explicit event_alarms source OTHER than this
+    // monitored item's own (the shared-source fall-through, where cfg IS that
+    // explicit source, must still auto-derive its own unmatched events).
+    const std::string source_node_str = source_node.toString();
+    for (const auto & explicit_cfg : node_map_.event_alarms()) {
+      if (node_ids_equivalent(explicit_cfg.source_node_id_str, cfg.source_node_id_str)) {
+        continue;  // this monitored item's own source (shared-source case)
+      }
+      if (node_ids_equivalent(explicit_cfg.source_node_id_str, source_node_str)) {
+        RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                            "on_event: dropping auto event already handled by explicit event_alarms source '"
+                                << explicit_cfg.source_node_id_str << "'");
+        return;
+      }
     }
     // System-message filter (validated on a real Siemens S7-1500): the
     // Server object's EventNotifier (i=2253) also emits plain BaseEvent /
@@ -841,13 +881,13 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
                                             auto_cfg.exclude_patterns)) {
       return;
     }
-    eff.fault_code = NodeMap::derive_auto_fault_code(condition_name, source_name, source_node.toString(),
+    eff.fault_code = NodeMap::derive_auto_fault_code(condition_name, source_name, source_node_str,
                                                      event_type.toString(), message);
     // Host the fault on a known node-map entity when SourceNode resolves to
     // one; otherwise fall back to auto_alarms.entity_id (default:
     // "<component_id>_alarms" - a separate App, not the PLC root Component;
     // see AutoAlarmsConfig::entity_id).
-    const auto * known_entry = node_map_.find_by_node_id(source_node.toString());
+    const auto * known_entry = node_map_.find_by_node_id(source_node_str);
     eff.entity_id = known_entry != nullptr ? known_entry->entity_id : auto_cfg.entity_id;
     eff.severity_override = NodeMap::map_auto_severity(severity, auto_cfg.severity_bands);
     eff.message_override.clear();  // description = the raw event Message, verbatim
@@ -920,6 +960,17 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
       fresh.last_status = SovdAlarmStatus::Suppressed;
       it = conditions_.emplace(condition_id_str, std::move(fresh)).first;
     }
+    // Pin the fault_code / entity_id derived at the FIRST observation of this
+    // ConditionId and reuse them for every subsequent event. The per-event
+    // ``cfg`` re-derives the auto fault_code (opcua_poller.cpp on_event, and
+    // the read-replay path with different SourceName/EventType inputs), so a
+    // raise and the matching clear of one condition could otherwise carry
+    // different codes - e.g. a Siemens Program_Alarm whose Message changes
+    // between the active and inactive notifications, or a condition replayed
+    // on connect and then cleared live. Because fault_manager keys/clears by
+    // code alone, that divergence would latch the original fault forever. The
+    // reconcile clears already deliver the stored code (runtime.fault_code);
+    // this makes the live delivery agree with them.
     const SovdAlarmStatus prev_status = it->second.last_status;
 
     if (event_id != nullptr) {
@@ -941,8 +992,8 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
       return;
     }
 
-    delivery.fault_code = cfg.fault_code;
-    delivery.entity_id = cfg.entity_id;
+    delivery.fault_code = it->second.fault_code;
+    delivery.entity_id = it->second.entity_id;
     delivery.next_status = outcome.next_status;
     delivery.action = outcome.action;
     delivery.severity = severity;

@@ -252,6 +252,16 @@ class OpcuaPoller {
   static std::vector<AlarmEventConfig> effective_alarm_sources(const std::vector<AlarmEventConfig> & explicit_sources,
                                                                const AutoAlarmsConfig & auto_cfg);
 
+  /// True when two OPC-UA NodeId strings denote the same node once parsed to
+  /// canonical form, so equivalent spellings are recognized as one node:
+  /// ``i=2253`` (the default numeric Server object) matches an explicit
+  /// ``ns=0;i=2253``, and a default vs explicit namespace agree. Used to
+  /// dedupe alarm subscriptions and to route the notifier hierarchy so a given
+  /// physical node is not subscribed / auto-derived twice. Falls back to raw
+  /// string equality when a spelling is unparseable (distinct raw strings stay
+  /// distinct). Pure and static so it is unit-testable without a server.
+  static bool node_ids_equivalent(const std::string & a, const std::string & b);
+
   /// True only for a real OPC-UA Condition event. Per Part 9 §5.5.2.13 the
   /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
   /// (and subtype) instances; a plain BaseEvent / SystemEvent notification -

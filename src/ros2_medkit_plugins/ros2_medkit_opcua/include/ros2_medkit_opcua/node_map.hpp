@@ -351,17 +351,25 @@ class NodeMap {
 
   /// Derive a stable SOVD fault_code for an auto-derived alarm with NO
   /// per-alarm mapping. Tiered, in order:
-  ///   1. slug(ConditionName)  - the OPC-UA condition identity, when present.
-  ///   2. slug(SourceName)     - the human-readable event source, when
-  ///      ConditionName is empty.
+  ///   1. slug(ConditionName) + hash(SourceNode) - the OPC-UA condition
+  ///      identity, when present.
+  ///   2. slug(SourceName) + hash(SourceNode)    - the human-readable event
+  ///      source, when ConditionName is empty.
   ///   3. a hash of SourceNode + EventType + Message, when neither name is
   ///      available.
-  /// Tier 3 folds in ``message`` deliberately: a real Siemens S7-1500
-  /// multiplexes every Program_Alarm of one FB through a single SourceNode
-  /// (e.g. ``i=1845``) with no ConditionName/SourceName, distinguished only
-  /// by Message text ("pa" vs "pa2"). Without the message in the hash, every
-  /// alarm on that FB would collapse onto one fault_code. Pure / static so
-  /// it is unit-testable without a server.
+  /// The SourceNode is folded into EVERY tier so two distinct conditions that
+  /// share a ConditionName/SourceName but sit on different sources (e.g. two
+  /// identical FB instances each raising "Overpressure") never collapse onto
+  /// one fault_code - fault_manager keys/clears by code alone, so a collision
+  /// would let one condition's clear wipe the other's still-active fault. The
+  /// SourceNode is canonicalized first, so ``i=2253`` and ``ns=0;i=2253`` fold
+  /// to one code. Tier 3 additionally folds in ``message`` deliberately: a
+  /// real Siemens S7-1500 multiplexes every Program_Alarm of one FB through a
+  /// single SourceNode (e.g. ``i=1845``) with no ConditionName/SourceName,
+  /// distinguished only by Message text ("pa" vs "pa2"). Message is NOT in
+  /// tiers 1/2, so a condition whose Message differs between its active and
+  /// inactive notifications still maps to one code. Pure / static so it is
+  /// unit-testable without a server.
   static std::string derive_auto_fault_code(const std::string & condition_name, const std::string & source_name,
                                             const std::string & source_node_str, const std::string & event_type_str,
                                             const std::string & message);
