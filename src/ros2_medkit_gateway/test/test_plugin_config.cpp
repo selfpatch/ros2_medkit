@@ -59,6 +59,24 @@ class ScopedYamlFile {
   std::string path_;
 };
 
+/// RAII guard that guarantees rclcpp::shutdown() runs when it leaves scope,
+/// including during stack unwinding after an ASSERT_* abort. Without it an
+/// aborted test would return early, leave rclcpp initialized, and corrupt
+/// later tests in the same process.
+class ScopedRclcpp {
+ public:
+  explicit ScopedRclcpp(int argc = 0, char ** argv = nullptr) {
+    rclcpp::init(argc, argv);
+  }
+  ~ScopedRclcpp() {
+    rclcpp::shutdown();
+  }
+  ScopedRclcpp(const ScopedRclcpp &) = delete;
+  ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
+  ScopedRclcpp(ScopedRclcpp &&) = delete;
+  ScopedRclcpp & operator=(ScopedRclcpp &&) = delete;
+};
+
 }  // namespace
 
 /// Proves the bug and validates the fix using a lightweight rclcpp::Node.
@@ -82,7 +100,7 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
 
   // Init rclcpp with --params-file (simulates: ros2 run ... --ros-args --params-file ...)
   const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
-  rclcpp::init(4, const_cast<char **>(args));
+  ScopedRclcpp rclcpp_ctx(4, const_cast<char **>(args));
 
   // Create a lightweight node (no HTTP server, no DDS subscriptions)
   auto node = std::make_shared<rclcpp::Node>("test_plugin_config_node");
@@ -120,9 +138,6 @@ TEST(PluginConfig, YamlPluginParamsReachGateway) {
   auto result_with_dot = node->list_parameters({"plugins.my_plugin."}, 10);
   EXPECT_EQ(result_with_dot.names.size(), 0u) << "list_parameters with trailing dot returns nothing - "
                                               << "extract_plugin_config must use prefix without trailing dot";
-
-  node.reset();
-  rclcpp::shutdown();
 }
 
 /// Verifies that YAML array params (string, bool, int, double) survive the
@@ -140,7 +155,7 @@ TEST(PluginConfig, YamlPluginArrayParamsReachGateway) {
                       "    plugins.arr_plugin.thresholds: [0.5, 1.5, 2.5]\n");
 
   const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
-  rclcpp::init(4, const_cast<char **>(args));
+  ScopedRclcpp rclcpp_ctx(4, const_cast<char **>(args));
 
   auto node = std::make_shared<rclcpp::Node>("test_plugin_config_arrays_node");
   ros2_medkit_gateway::declare_plugin_params_from_yaml(node.get(), "plugins.arr_plugin.");
@@ -182,9 +197,6 @@ TEST(PluginConfig, YamlPluginArrayParamsReachGateway) {
   EXPECT_DOUBLE_EQ(thresholds[0], 0.5);
   EXPECT_DOUBLE_EQ(thresholds[1], 1.5);
   EXPECT_DOUBLE_EQ(thresholds[2], 2.5);
-
-  node.reset();
-  rclcpp::shutdown();
 }
 
 /// Prefix scoping + dotted-key flattening.
@@ -211,7 +223,7 @@ TEST(PluginConfig, YamlPluginPrefixScopingAndDottedKeys) {
                       "    plugins.bar_plugin.outside_prefix: \"nope\"\n");
 
   const char * args[] = {"test", "--ros-args", "--params-file", yaml.path().c_str()};
-  rclcpp::init(4, const_cast<char **>(args));
+  ScopedRclcpp rclcpp_ctx(4, const_cast<char **>(args));
 
   auto node = std::make_shared<rclcpp::Node>("test_plugin_config_scoping_node");
   ros2_medkit_gateway::declare_plugin_params_from_yaml(node.get(), "plugins.foo_plugin.");
@@ -225,9 +237,6 @@ TEST(PluginConfig, YamlPluginPrefixScopingAndDottedKeys) {
 
   // Out-of-prefix params must be skipped by the prefix filter.
   EXPECT_FALSE(node->has_parameter("plugins.bar_plugin.outside_prefix"));
-
-  node.reset();
-  rclcpp::shutdown();
 }
 
 /// Locks the nested-reconstruction contract of extract_plugin_config().
@@ -243,7 +252,7 @@ TEST(PluginConfig, YamlPluginPrefixScopingAndDottedKeys) {
 /// the flat code never creates the nested objects and instead leaves the dotted
 /// keys as top-level strings.
 TEST(PluginConfig, ExtractPluginConfigReconstructsNested) {
-  rclcpp::init(0, nullptr);
+  ScopedRclcpp rclcpp_ctx;
 
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
@@ -300,16 +309,13 @@ TEST(PluginConfig, ExtractPluginConfigReconstructsNested) {
   EXPECT_FALSE(config.contains("native_alarms.enabled"));
   EXPECT_FALSE(config.contains("native_alarms.severity_bands.warning"));
   EXPECT_FALSE(config.contains("discovery.enabled"));
-
-  node.reset();
-  rclcpp::shutdown();
 }
 
 /// A key used as both a leaf and an intermediate must not crash and must
 /// resolve to the nested object deterministically, regardless of the order the
 /// two overrides are seen in.
 TEST(PluginConfig, ExtractPluginConfigLeafIntermediateCollision) {
-  rclcpp::init(0, nullptr);
+  ScopedRclcpp rclcpp_ctx;
 
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
@@ -325,9 +331,6 @@ TEST(PluginConfig, ExtractPluginConfigLeafIntermediateCollision) {
   ASSERT_TRUE(config.contains("discovery"));
   ASSERT_TRUE(config["discovery"].is_object()) << "nested group must win the leaf/intermediate collision";
   EXPECT_TRUE(config["discovery"]["enabled"].get<bool>());
-
-  node.reset();
-  rclcpp::shutdown();
 }
 
 int main(int argc, char ** argv) {
