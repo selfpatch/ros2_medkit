@@ -881,8 +881,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
                                             auto_cfg.exclude_patterns)) {
       return;
     }
-    eff.fault_code = NodeMap::derive_auto_fault_code(condition_name, source_name, source_node_str,
-                                                     event_type.toString(), message);
+    eff.fault_code =
+        NodeMap::derive_auto_fault_code(condition_name, source_name, source_node_str, event_type.toString(), message);
     // Host the fault on a known node-map entity when SourceNode resolves to
     // one; otherwise fall back to auto_alarms.entity_id (default:
     // "<component_id>_alarms" - a separate App, not the PLC root Component;

@@ -1874,14 +1874,12 @@ TEST(DeriveAutoFaultCodeTest, ConditionNameSlugified) {
   // Dots, spaces and punctuation collapse to single underscores; case folds
   // to upper, matching every hand-written fault_code in this codebase
   // (PLC_OVERPRESSURE, PLC_COMMS_LOST, ...).
-  const std::string code =
-      NodeMap::derive_auto_fault_code("Tank.Overpressure!!", "", "ns=2;s=Tank", "ns=0;i=2915", "");
+  const std::string code = NodeMap::derive_auto_fault_code("Tank.Overpressure!!", "", "ns=2;s=Tank", "ns=0;i=2915", "");
   EXPECT_EQ(code.rfind("PLC_ALARM_TANK_OVERPRESSURE_", 0), 0u);
 }
 
 TEST(DeriveAutoFaultCodeTest, FallsBackToSourceNameWhenConditionNameEmpty) {
-  const std::string code =
-      NodeMap::derive_auto_fault_code("", "Pump A Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg");
+  const std::string code = NodeMap::derive_auto_fault_code("", "Pump A Fault", "ns=2;s=PumpA", "ns=0;i=2915", "msg");
   EXPECT_EQ(code.rfind("PLC_ALARM_PUMP_A_FAULT_", 0), 0u);
 }
 
@@ -1946,8 +1944,7 @@ TEST(DeriveAutoFaultCodeTest, StableAcrossMessageDriftForSameCondition) {
 TEST(DeriveAutoFaultCodeTest, EquivalentSourceSpellingsProduceSameCode) {
   // The SourceNode is canonicalized before hashing, so the default numeric
   // Server object and its explicit namespaced spelling map to one code.
-  const std::string numeric =
-      NodeMap::derive_auto_fault_code("Overpressure", "", "i=2253", "ns=0;i=2915", "msg");
+  const std::string numeric = NodeMap::derive_auto_fault_code("Overpressure", "", "i=2253", "ns=0;i=2915", "msg");
   const std::string namespaced =
       NodeMap::derive_auto_fault_code("Overpressure", "", "ns=0;i=2253", "ns=0;i=2915", "msg");
   EXPECT_EQ(numeric, namespaced);
