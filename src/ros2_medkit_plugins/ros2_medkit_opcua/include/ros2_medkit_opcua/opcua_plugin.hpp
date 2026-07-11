@@ -34,6 +34,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -156,11 +158,21 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   void create_value_publishers();
 
   // Run the recursive OPC-UA address-space walk (auto_browse) against the
-  // now-connected client and merge the discovered entries into node_map_.
-  // Requires a live session; called once from set_context() right after a
-  // successful connect(), before the poller/publishers are built from
-  // node_map_. No-op (never called) when auto_browse is disabled.
+  // now-connected client and merge the discovered entries into node_map_, then
+  // (re)create value publishers for any new entries. Requires a live session.
+  // Called from set_context() right after the initial connect(), and again from
+  // the poll thread on every reconnect via maybe_rebrowse_on_reconnect(). The
+  // merge into node_map_ is serialized against the REST read paths by
+  // node_map_mutex_. No-op (never called) when auto_browse is disabled.
   void run_auto_browse();
+
+  // Poll-thread hook (from publish_values): re-run auto_browse when the client
+  // has established a new session since the last walk. Covers the field case
+  // where the gateway starts before the PLC is reachable (initial connect
+  // fails, so the initial walk is skipped) and the PLC only comes up later, as
+  // well as a PLC restart. Idempotent: merge drops already-mapped node ids and
+  // create_value_publishers() skips existing topics.
+  void maybe_rebrowse_on_reconnect();
 
   // Log the effective OPC-UA security profile (policy / mode / user auth) at
   // startup; warns when running unsecured.
@@ -198,6 +210,21 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   std::unique_ptr<OpcuaClient> client_;
   NodeMap node_map_;
+
+  // Guards the mutable parts of node_map_ (entries / indices / entity_defs)
+  // that auto_browse rewrites on reconnect against the REST read paths. The
+  // re-walk runs on the poll thread and takes the unique lock only for the
+  // merge; the poller's own node_map_ reads share that thread, so they need no
+  // lock. Read handlers on the HTTP thread take a shared lock for as long as
+  // they hold pointers/refs into node_map_.
+  mutable std::shared_mutex node_map_mutex_;
+
+  // OpcuaClient::connection_generation the last auto_browse walk ran against (0
+  // = never walked). The poll thread re-walks when the live generation differs,
+  // mirroring device_identity_generation_. Written on the set_context thread
+  // (initial walk, happens-before the poller starts) then only on the poll
+  // thread, so no atomic is needed.
+  uint64_t auto_browse_generation_{0};
 
   // INV2: asset-identity nameplate read once per session from the server's
   // device-info (ServerStatus/BuildInfo + optional OPC-UA DI nameplate) on the

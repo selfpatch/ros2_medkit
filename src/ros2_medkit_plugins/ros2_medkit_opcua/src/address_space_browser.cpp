@@ -107,6 +107,28 @@ std::string AutoBrowser::join_display_name(const std::vector<std::string> & segm
 
 namespace {
 
+// A sanitized SOVD segment keeps '-' (valid in a SOVD id), but '-' is illegal
+// in a ROS 2 topic token, which must match [A-Za-z_][A-Za-z0-9_]*. Map every
+// char that is not alnum or '_' (including '-' and '.') to '_' so the
+// auto-generated /plc topic is always a valid ROS 2 name. Mirrors the
+// hand-written path's sanitize_topic_segment in node_map.cpp; the SOVD
+// entity_id / data_name keep their '-'.
+std::string to_topic_segment(const std::string & s) {
+  if (s.empty()) {
+    return "_unnamed";
+  }
+  std::string out = s;
+  for (char & c : out) {
+    if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '_') {
+      c = '_';
+    }
+  }
+  if (std::isdigit(static_cast<unsigned char>(out[0])) != 0) {
+    out.insert(out.begin(), '_');
+  }
+  return out;
+}
+
 // entity_id must stay unique across the whole walk (it doubles as a SOVD
 // path segment / ROS 2 topic segment); a collision after sanitization (two
 // differently-named branches folding to the same slug) gets a numeric
@@ -125,8 +147,18 @@ std::string unique_entity_id(const std::string & candidate, std::unordered_set<s
 
 }  // namespace
 
-void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids, int depth,
-                               AutoBrowseResult & result, std::unordered_set<std::string> & seen_entity_ids) {
+void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids,
+                               const std::vector<std::string> & path_display, int depth, AutoBrowseResult & result,
+                               std::unordered_set<std::string> & seen_entity_ids,
+                               std::unordered_set<std::string> & visited_nodes) {
+  // HierarchicalReferences (Organizes included, includeSubtypes=true) can form
+  // shared subtrees or cycles: a node reachable from two parents, or one
+  // referencing an ancestor. Without a visited set the walk would re-descend
+  // the same subtree, inflating nodes_visited until the node cap trips and
+  // silently truncates unrelated branches. Skip a node already walked.
+  if (!visited_nodes.insert(node.toString()).second) {
+    return;
+  }
   if (depth > config_.max_depth) {
     result.depth_cap_hit = true;
     return;
@@ -157,7 +189,11 @@ void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std
     if (child.node_class == opcua::NodeClass::Object) {
       std::vector<std::string> next_ids = path_ids;
       next_ids.push_back(child.browse_name.empty() ? display : child.browse_name);
-      visit_object(child.node_id, next_ids, depth + 1, result, seen_entity_ids);
+      // Parallel raw-DisplayName path, kept unsanitized for the human-readable
+      // entity name ("PLC_1 / DB_Test").
+      std::vector<std::string> next_display = path_display;
+      next_display.push_back(display);
+      visit_object(child.node_id, next_ids, next_display, depth + 1, result, seen_entity_ids, visited_nodes);
     } else if (child.node_class == opcua::NodeClass::Variable) {
       const std::string opcua_type = source_.read_type_name(child.node_id);
       const std::string medkit_type = map_opcua_type(opcua_type);
@@ -201,9 +237,15 @@ void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std
 
   if (!local_entries.empty()) {
     const std::string entity_id = unique_entity_id(join_entity_id(path_ids), seen_entity_ids);
+    // Human-readable entity name = the raw DisplayName path ("PLC_1 / DB_Test").
+    // Without this, discovery falls back to title-casing the slug in
+    // build_entity_defs, discarding the server's real DisplayNames.
+    const std::string entity_display = join_display_name(path_display);
     for (auto & entry : local_entries) {
       entry.entity_id = entity_id;
-      entry.ros2_topic = "/plc/" + entity_id + "/" + entry.data_name;
+      entry.entity_display_name = entity_display;
+      // The SOVD entity_id / data_name may contain '-'; the ROS 2 topic must not.
+      entry.ros2_topic = "/plc/" + to_topic_segment(entity_id) + "/" + to_topic_segment(entry.data_name);
       result.entries.push_back(std::move(entry));
     }
   }
@@ -212,10 +254,13 @@ void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std
 AutoBrowseResult AutoBrowser::browse() {
   AutoBrowseResult result;
   std::unordered_set<std::string> seen_entity_ids;
+  // Shared across all roots so a node reachable from more than one configured
+  // root is still walked only once.
+  std::unordered_set<std::string> visited_nodes;
 
   for (const auto & root_str : config_.root_node_ids) {
     const opcua::NodeId root = NodeMap::parse_node_id(root_str);
-    visit_object(root, {}, 0, result, seen_entity_ids);
+    visit_object(root, {}, {}, 0, result, seen_entity_ids, visited_nodes);
   }
 
   if (result.node_cap_hit) {

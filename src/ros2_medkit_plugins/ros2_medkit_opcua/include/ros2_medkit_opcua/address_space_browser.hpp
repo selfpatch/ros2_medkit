@@ -143,8 +143,9 @@ class AutoBrowser {
   static std::string join_display_name(const std::vector<std::string> & segments);
 
  private:
-  void visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids, int depth,
-                    AutoBrowseResult & result, std::unordered_set<std::string> & seen_entity_ids);
+  void visit_object(const opcua::NodeId & node, const std::vector<std::string> & path_ids,
+                    const std::vector<std::string> & path_display, int depth, AutoBrowseResult & result,
+                    std::unordered_set<std::string> & seen_entity_ids, std::unordered_set<std::string> & visited_nodes);
 
   AutoBrowseSource & source_;
   AutoBrowseConfig config_;

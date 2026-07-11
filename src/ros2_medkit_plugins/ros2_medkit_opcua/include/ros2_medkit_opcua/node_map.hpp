@@ -123,6 +123,7 @@ struct NodeMapEntry {
   std::string node_id_str;          // OPC-UA node ID string (e.g., "ns=1;s=TankLevel")
   opcua::NodeId node_id;            // Parsed NodeId
   std::string entity_id;            // SOVD entity this belongs to (e.g., "tank_process")
+  std::string entity_display_name;  // Human-readable entity name (auto_browse path); "" for hand-written
   std::string data_name;            // Data point name (e.g., "tank_level")
   std::string display_name;         // Human-readable name
   std::string unit;                 // Unit of measurement (e.g., "mm", "C", "bar")
