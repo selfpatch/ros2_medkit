@@ -729,6 +729,25 @@ class RealNodePluginContext : public FakePluginContext {
   rclcpp::Node * node_;
 };
 
+// RAII: pair rclcpp init with a shutdown so global ROS state never leaks into
+// the rest of the process, even if an assertion returns from the test early.
+// Only tears down the init this guard performed.
+struct ScopedRclcpp {
+  const bool owned_;
+  ScopedRclcpp() : owned_(!rclcpp::ok()) {
+    if (owned_) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+  ~ScopedRclcpp() {
+    if (owned_ && rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+  ScopedRclcpp(const ScopedRclcpp &) = delete;
+  ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
+};
+
 // The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
 // which buffers a dispatch into pending_reports_ - the SAME vector the poll
 // thread drains in publish_values()/flush_pending_reports(). Before the fix the
@@ -738,9 +757,7 @@ class RealNodePluginContext : public FakePluginContext {
 // test drives that exact path from several threads; it must complete without a
 // crash and is clean under ThreadSanitizer.
 TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
-  }
+  ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_pending_reports_regression");
 
   const std::string yaml_path = "/tmp/test_opcua_race_nodemap.yaml";
