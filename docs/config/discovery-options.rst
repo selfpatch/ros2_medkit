@@ -175,6 +175,15 @@ Each layer declares a policy per field-group:
 - Manifest: ``authoritative`` for identity/hierarchy/metadata, ``enrichment`` for live_data, ``fallback`` for status
 - Runtime: ``authoritative`` for live_data/status, ``enrichment`` for metadata, ``fallback`` for identity/hierarchy
 
+.. note::
+
+   The app ``external`` flag is an exception to the policy table: it merges
+   monotonically. Once any layer classifies an app as external (e.g. a
+   protocol plugin introspecting a PLC), the classification is kept even if a
+   higher-priority layer carries the default ``false`` - a manifest entry that
+   omits ``external:`` cannot clear it. This keeps external apps owning their
+   faults (bare-id fault scope) in hybrid mode.
+
 Override per-layer policies in ``gateway_params.yaml``. Empty string means
 "use layer default". Policy values are **case-sensitive** and must be lowercase
 (``authoritative``, ``enrichment``, ``fallback``):

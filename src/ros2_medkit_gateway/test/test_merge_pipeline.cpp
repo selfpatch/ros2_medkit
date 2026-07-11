@@ -993,6 +993,47 @@ TEST_F(MergePipelineTest, ThreeLayerMerge_PerFieldGroupOwnerTracking) {
   EXPECT_EQ(result.apps[0].bound_fqn, "/nav/controller");
 }
 
+// --- App METADATA merge: external classification ---
+
+// A protocol plugin introspects an external asset (e.g. a PLC over OPC UA) and
+// emits its App with external=true and no ROS binding. In hybrid mode the
+// manifest may declare the same App id as a bare stub (so a Function's
+// hosted_by can reference it) without an `external:` key, which parses to the
+// bool default false. `external` has no unset state, so the manifest's
+// AUTHORITATIVE METADATA must not let that default erase the plugin's
+// classification - collect_app_fqn() grants an empty-fqn App its bare-id fault
+// scope only when external is true, so dropping the flag silently empties the
+// App's fault rollup on every route that aggregates it.
+TEST_F(MergePipelineTest, PluginExternalClassificationSurvivesManifestMetadataMerge) {
+  // Manifest stub: declares the App id, no external key -> default false.
+  App manifest_app = make_app("plc_process", "s7_1500");
+  manifest_app.source = "manifest";
+
+  // Plugin introspection: same id, classified external, no ROS binding.
+  App plugin_app = make_app("plc_process", "s7_1500");
+  plugin_app.external = true;
+  plugin_app.source = "opcua";
+
+  LayerOutput manifest_out, plugin_out;
+  manifest_out.apps.push_back(manifest_app);
+  plugin_out.apps.push_back(plugin_app);
+
+  // Policies mirror the real layer defaults: ManifestLayer METADATA=AUTHORITATIVE,
+  // PluginLayer METADATA=ENRICHMENT.
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  EXPECT_TRUE(result.apps[0].external) << "hybrid merge dropped the plugin's external classification";
+  // The manifest stays the entity's structural owner.
+  EXPECT_EQ(result.apps[0].source, "manifest");
+}
+
 // --- GapFillConfig namespace filtering ---
 // These tests verify the namespace matching semantics used by RuntimeLayer.
 // Since filter_by_namespace is internal to runtime_layer.cpp, we replicate the
@@ -1414,30 +1455,31 @@ TEST_F(MergePipelineTest, RuntimeComponentInUncoveredNamespaceNotSuppressed) {
   EXPECT_TRUE(found_motor) << "Runtime component in uncovered namespace should not be suppressed";
 }
 
-TEST_F(MergePipelineTest, AppExternalField_ManifestAuthoritativeWinsOverRuntime) {
-  // Manifest layer: METADATA=AUTHORITATIVE, sets external=false (internal node)
-  App manifest_app = make_app("lidar_proc", "sensor_comp");
-  manifest_app.external = false;
+TEST_F(MergePipelineTest, AppExternalField_HigherPrioritySourceDefaultFalseCannotClear) {
+  // SOURCE-winner branch of the external merge: the base entity comes from a
+  // plugin (ENRICHMENT) that classified the app external; a later layer wins
+  // METADATA with AUTHORITATIVE but carries only the bool default false.
+  // `external` is monotone (#517): a layer that does not know the
+  // classification cannot clear it, regardless of its merge priority.
+  App plugin_app = make_app("plc_process", "s7_1500");
+  plugin_app.external = true;
 
-  // Runtime layer: METADATA=ENRICHMENT, claims external=true (heuristic)
-  App runtime_app = make_app("lidar_proc", "sensor_comp");
-  runtime_app.external = true;
+  App manifest_app = make_app("plc_process", "s7_1500");
 
-  LayerOutput manifest_out, runtime_out;
+  LayerOutput plugin_out, manifest_out;
+  plugin_out.apps.push_back(plugin_app);
   manifest_out.apps.push_back(manifest_app);
-  runtime_out.apps.push_back(runtime_app);
 
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
   pipeline_.add_layer(std::make_unique<TestLayer>(
       "manifest", manifest_out,
       std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
-  pipeline_.add_layer(std::make_unique<TestLayer>(
-      "runtime", runtime_out,
-      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.apps.size(), 1u);
-  // Manifest AUTHORITATIVE METADATA wins: external must be false
-  EXPECT_FALSE(result.apps[0].external);
+  EXPECT_TRUE(result.apps[0].external);
 }
 
 // --- Area field group merge tests ---
@@ -1630,12 +1672,15 @@ TEST_F(MergePipelineTest, RuntimeLayerProducesNoAreasOrComponents) {
   EXPECT_EQ(result.apps[0].id, "sensor_node");
 }
 
-// --- Regression for #260c: external field OR bug ---
+// --- External classification is monotone across layers (#517) ---
 
-// Regression for #260c: external with ENRICHMENT-vs-ENRICHMENT should NOT use OR.
-// Both layers METADATA=ENRICHMENT. First layer sets external=false, second sets external=true.
-// In the old bug (OR semantics) result would be true. Now first layer wins (value already set).
-TEST_F(MergePipelineTest, AppExternalField_EnrichmentDoesNotStickyTrue) {
+// BOTH-winner branch (ENRICHMENT vs ENRICHMENT): a later layer's external=true
+// classification is adopted even though the first layer already carried the
+// bool default false. This deliberately supersedes the earlier first-set-wins
+// pin (#260c): with a plain bool, false is indistinguishable from "not
+// declared", and first-set-wins let a stub entry erase a real classification,
+// silently dropping the app from every fault rollup (#517).
+TEST_F(MergePipelineTest, AppExternalField_EnrichmentClassificationIsSticky) {
   App layer1_app = make_app("controller", "nav_comp");
   layer1_app.external = false;
 
@@ -1653,8 +1698,8 @@ TEST_F(MergePipelineTest, AppExternalField_EnrichmentDoesNotStickyTrue) {
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.apps.size(), 1u);
-  // First layer's value must win for ENRICHMENT (first-set-wins, not OR).
-  EXPECT_FALSE(result.apps[0].external);
+  // Once any layer classifies the app as external, the classification stays.
+  EXPECT_TRUE(result.apps[0].external);
 }
 
 TEST_F(MergePipelineTest, SuppressDoesNotAffectEmptyNamespaceEntities) {

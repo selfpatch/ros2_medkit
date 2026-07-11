@@ -550,7 +550,9 @@ Fields
    * - ``external``
      - boolean
      - No
-     - True if not a ROS node (default: false)
+     - True if not a ROS node (default: false). In hybrid mode the flag merges
+       monotonically: omitting it does not clear an ``external`` classification
+       contributed by another discovery layer (e.g. a protocol plugin).
 
 ros_binding Fields
 ~~~~~~~~~~~~~~~~~~

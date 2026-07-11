@@ -1699,6 +1699,25 @@ TEST(ResolveEntitySourceFqnsTest, ComponentHostingExternalAppOwnsItsFaults) {
   EXPECT_EQ(fqns, std::set<std::string>{"process"});
 }
 
+TEST(ResolveEntitySourceFqnsTest, FunctionHostingExternalAppOwnsItsFaults) {
+  // GET /functions/<id>/faults where the manifest Function's hosted_by lists an
+  // external app directly (App-host, not Component-host). The Function's scope
+  // must include the app's bare id alongside the FQNs of its ROS-bound hosts,
+  // otherwise faults the external app reported vanish from the Function rollup.
+  ThreadSafeEntityCache cache;
+  cache.update_apps(
+      {make_external_app("process", "s7_1500"), make_owned_app("planner", "nav_comp", "planner", "/perception/nav")});
+  Function f;
+  f.id = "level_control";
+  f.hosts = {"process", "planner"};
+  cache.update_functions({f});
+
+  auto fqns =
+      HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "level_control"));
+  std::set<std::string> expected{"process", "/perception/nav/planner"};
+  EXPECT_EQ(fqns, expected);
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

@@ -278,11 +278,12 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         merge_optional(target.ros_binding, source.ros_binding, res.scalar);
-        // Use scalar semantics (not OR) - external is a classification, not a status flag
-        if (res.scalar == MergeWinner::SOURCE) {
-          target.external = source.external;
-        }
-        // TARGET and BOTH: keep target value (no OR semantics)
+        // `external` is a classification a layer either knows (true) or cannot
+        // express (bool default false == unset). No layer can un-classify, so
+        // once any layer marks the app external it stays - a manifest stub's
+        // default false must not erase a plugin's introspected classification,
+        // or the app silently drops out of every fault rollup (#517).
+        target.external = target.external || source.external;
         break;
     }
   } else if constexpr (std::is_same_v<Entity, Function>) {
