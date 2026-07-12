@@ -34,24 +34,28 @@ class DiagnosticBridgeTest : public ::testing::Test {
 };
 
 namespace {
-  diagnostic_msgs::msg::DiagnosticStatus diagnostic_status(
-    const std::string & name,
-    uint8_t level = 0,
-    const std::string & message = "",
-    std::vector<std::pair<std::string, std::string>> values = {}) {
-    diagnostic_msgs::msg::DiagnosticStatus status;
-    status.name = name;
-    status.level = level;
-    status.message = message;
-    for (const auto & [key, value] : values) {
-      diagnostic_msgs::msg::KeyValue kv;
-      kv.key = key;
-      kv.value = value;
-      status.values.push_back(kv);
-    }
-    return status;
+diagnostic_msgs::msg::DiagnosticStatus diagnostic_status(const std::string & name, uint8_t level = 0,
+                                                         const std::string & message = "",
+                                                         std::vector<std::pair<std::string, std::string>> values = {}) {
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = name;
+  status.level = level;
+  status.message = message;
+  for (const auto & [key, value] : values) {
+    diagnostic_msgs::msg::KeyValue kv;
+    kv.key = key;
+    kv.value = value;
+    status.values.push_back(kv);
   }
+  return status;
 }
+
+std::shared_ptr<DiagnosticBridgeNode> make_node_with_attribute_codes(std::vector<std::string> attribute_codes) {
+  rclcpp::NodeOptions options;
+  options.append_parameter_override("attribute_codes", attribute_codes);
+  return std::make_shared<DiagnosticBridgeNode>(options);
+}
+}  // namespace
 
 // Test severity mapping
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Warn) {
@@ -133,12 +137,11 @@ TEST_F(DiagnosticBridgeTest, MapToFaultCode_LeadingTrailing) {
 }
 
 TEST_F(DiagnosticBridgeTest, MapToFaultCode_FromAttribute) {
-  auto node = std::make_shared<DiagnosticBridgeNode>();
+  auto node = make_node_with_attribute_codes({"code"});
 
-  // Leading/trailing separators are removed
+  // Configured attribute key should take precedence over auto-generated codes.
   EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/motor", 1, "", {{"code", "MOTOR_FAULT"}})), "MOTOR_FAULT");
 }
-
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
