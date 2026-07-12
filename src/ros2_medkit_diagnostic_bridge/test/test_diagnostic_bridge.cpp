@@ -50,9 +50,9 @@ diagnostic_msgs::msg::DiagnosticStatus diagnostic_status(const std::string & nam
   return status;
 }
 
-std::shared_ptr<DiagnosticBridgeNode> make_node_with_attribute_codes(std::vector<std::string> attribute_codes) {
+std::shared_ptr<DiagnosticBridgeNode> make_node_with_keyvalue_codes(std::vector<std::string> keyvalue_codes) {
   rclcpp::NodeOptions options;
-  options.append_parameter_override("attribute_codes", attribute_codes);
+  options.append_parameter_override("keyvalue_codes", keyvalue_codes);
   return std::make_shared<DiagnosticBridgeNode>(options);
 }
 }  // namespace
@@ -137,7 +137,7 @@ TEST_F(DiagnosticBridgeTest, MapToFaultCode_LeadingTrailing) {
 }
 
 TEST_F(DiagnosticBridgeTest, MapToFaultCode_FromAttribute) {
-  auto node = make_node_with_attribute_codes({"code"});
+  auto node = make_node_with_keyvalue_codes({"code"});
 
   // Configured attribute key should take precedence over auto-generated codes.
   EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/motor", 1, "", {{"code", "MOTOR_FAULT"}})), "MOTOR_FAULT");
