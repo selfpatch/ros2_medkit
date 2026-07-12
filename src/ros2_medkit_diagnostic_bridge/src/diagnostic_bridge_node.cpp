@@ -38,7 +38,8 @@ void DiagnosticBridgeNode::load_parameters() {
   diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
   auto_generate_codes_ = declare_parameter<bool>("auto_generate_codes", true);
 
-  std::vector<std::string> attribute_codes = declare_parameter<std::vector<std::string>>("attribute_codes", std::vector<std::string>());
+  std::vector<std::string> attribute_codes =
+      declare_parameter<std::vector<std::string>>("attribute_codes", std::vector<std::string>());
   attribute_codes_.insert(attribute_codes.begin(), attribute_codes.end());
 
   // Load custom name_to_code mappings from parameter overrides
