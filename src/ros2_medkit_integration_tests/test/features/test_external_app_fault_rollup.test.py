@@ -105,6 +105,17 @@ class TestExternalAppFaultRollup(GatewayTestCase):
     def _report_fault(self, times=4):
         """Report the external app's fault under its bare entity id.
 
+        Fire-and-forget, exactly like the production ``fault_reporter`` client
+        (``async_send_request`` with the reply discarded). We deliberately do
+        NOT wait on or assert the service reply: ``wait_for_service`` only
+        confirms the *request* path (client->server) is discovery-matched, not
+        the *reply* path (server->client), so an early round-trip can lose its
+        response even though the fault_manager already recorded the fault
+        ("failed to send response ... client will not receive response").
+        Asserting on that reply made this test flaky under the sanitizer builds'
+        slower discovery. The behavioural assertion is the HTTP rollup poll in
+        the test body, which retries for up to 30s and absorbs that timing.
+
         Reported several times so the negative ``confirmation_threshold``
         latches the fault to CONFIRMED regardless of debounce timing.
         """
@@ -115,16 +126,11 @@ class TestExternalAppFaultRollup(GatewayTestCase):
             req.severity = Fault.SEVERITY_ERROR
             req.description = 'PLC tank level exceeded high limit'
             req.source_id = EXTERNAL_APP
-            future = self._report_client.call_async(req)
-            rclpy.spin_until_future_complete(
-                self._reporter, future, timeout_sec=5.0
-            )
-            self.assertIsNotNone(
-                future.result(), 'report_fault call timed out'
-            )
-            self.assertTrue(
-                future.result().accepted, 'fault_manager rejected the report'
-            )
+            # Fire-and-forget: the request is sent synchronously by call_async;
+            # spin briefly to flush and pace the reports for the debounce, and
+            # intentionally drop the reply future (see docstring).
+            self._report_client.call_async(req)
+            rclpy.spin_once(self._reporter, timeout_sec=0.1)
 
     def test_external_app_fault_appears_on_every_rollup(self):
         """The external app's fault surfaces on app, component, function, area.
