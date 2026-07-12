@@ -85,7 +85,7 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   std::string diagnostics_topic_;
   bool auto_generate_codes_;
   std::map<std::string, std::string> name_to_code_;
-  std::set<std::string> attribute_codes_;
+  std::set<std::string> keyvalue_codes_;
 };
 
 }  // namespace ros2_medkit_diagnostic_bridge
