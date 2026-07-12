@@ -91,7 +91,11 @@ struct App {
   // === Runtime state (populated after linking) ===
   std::optional<std::string> bound_fqn;  ///< Bound ROS node FQN
   bool is_online{false};                 ///< Whether the bound node is running
-  bool external{false};                  ///< True if not a ROS node
+  /// Tri-state classification: nullopt = no layer classified this app,
+  /// true = not a ROS node (external asset), false = explicitly a ROS node.
+  /// A plain bool cannot distinguish "omitted" from "declared false", which let
+  /// a manifest stub erase a plugin's introspected classification (#517).
+  std::optional<bool> external;
 
   /// Get effective FQN: bound_fqn if available, otherwise derived from ros_binding.
   /// Returns empty string if neither is available. Used by handlers and samplers

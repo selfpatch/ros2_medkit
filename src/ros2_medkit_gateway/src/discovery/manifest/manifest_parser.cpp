@@ -378,7 +378,12 @@ App ManifestParser::parse_app(const YAML::Node & node) const {
   app.component_id = get_string(node, "is_located_on");
   app.depends_on = get_string_vector(node, "depends_on");
   app.tags = get_string_vector(node, "tags");
-  app.external = node["external"] ? node["external"].as<bool>() : false;
+  // Preserve the omitted-vs-explicit distinction: an absent `external:` key
+  // leaves nullopt (the manifest does not classify), so the hybrid merge cannot
+  // let a stub's default erase a plugin's introspected classification (#517).
+  if (node["external"]) {
+    app.external = node["external"].as<bool>();
+  }
   app.source = "manifest";
 
   // Parse ros_binding

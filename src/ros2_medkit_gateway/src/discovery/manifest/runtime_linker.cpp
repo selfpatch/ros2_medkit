@@ -83,7 +83,7 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
     linked_app.is_online = false;
 
     // External apps don't need ROS binding
-    if (manifest_app.external) {
+    if (manifest_app.external.value_or(false)) {
       result.linked_apps.push_back(linked_app);
       continue;
     }

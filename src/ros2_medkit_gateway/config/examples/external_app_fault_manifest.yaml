@@ -1,0 +1,63 @@
+# SOVD System Manifest: External-app fault-rollup fixture (#517)
+# ==============================================================
+# Minimal hybrid-mode manifest that models a non-ROS asset (a PLC bridged into
+# SOVD by a protocol plugin) as an external App. The App has external: true and
+# reports faults to the fault_manager under its own entity id rather than a ROS
+# FQN. Fault-scope resolution must recognise that bare id on the App route and
+# on every aggregate route that rolls it up (component, function, area) - #517
+# was the fault scope pointing at a live FQN instead of the bare id, which
+# silently emptied those rollups.
+#
+# The App deliberately also carries a ros_binding (the #517 "neighbor" case): a
+# manifest may declare a binding while a protocol plugin classifies the asset
+# external. effective_fqn() then derives a live FQN "/plc/plc_process", so a
+# fault scope that used the FQN would drop the app's faults (reported under the
+# bare id). The external classification must win - the app is scoped by its
+# entity id. This also raises validation warning R013 (external + ros_binding).
+#
+# Used by: test/features/test_external_app_fault_rollup.test.py
+
+manifest_version: "1.0"
+
+metadata:
+  name: "external-app-fault-rollup"
+  version: "1.0.0"
+  description: "External (non-ROS) app fault-rollup regression fixture (#517)"
+
+config:
+  unmanifested_nodes: warn
+  inherit_runtime_resources: true
+
+areas:
+  - id: plc-cell
+    name: "PLC Cell"
+    namespace: /plc_cell
+    description: "Industrial cell hosting a PLC bridged into SOVD"
+
+components:
+  - id: s7-plc
+    name: "Siemens S7 PLC"
+    type: "controller"
+    area: plc-cell
+    description: "Non-ROS PLC introspected by a protocol plugin"
+
+apps:
+  - id: plc-process
+    name: "PLC Process"
+    external: true
+    is_located_on: s7-plc
+    description: "Non-ROS process bridged into SOVD; reports faults under its entity id"
+    # Stray binding (#517 neighbor case): effective_fqn() would derive
+    # "/plc/plc_process", but the external classification must win so fault
+    # scope stays the bare id "plc-process".
+    ros_binding:
+      node_name: plc_process
+      namespace: /plc
+
+functions:
+  - id: level-control
+    name: "Level Control"
+    category: "control"
+    description: "Level control capability hosted by the PLC process"
+    hosted_by:
+      - plc-process

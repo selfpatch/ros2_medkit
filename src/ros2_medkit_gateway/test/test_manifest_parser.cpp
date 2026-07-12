@@ -256,7 +256,43 @@ apps:
   auto manifest = parser_.parse_string(yaml);
 
   ASSERT_EQ(manifest.apps.size(), 1);
-  EXPECT_TRUE(manifest.apps[0].external);
+  ASSERT_TRUE(manifest.apps[0].external.has_value());
+  EXPECT_TRUE(manifest.apps[0].external.value());
+}
+
+TEST_F(ManifestParserTest, ParseAppExternalOmittedStaysUnset) {
+  // Tri-state: an absent `external:` key must leave the classification unset
+  // (nullopt), not collapse to false - otherwise a manifest stub would erase a
+  // plugin's introspected classification in the hybrid merge (#517).
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "ros_node"
+    name: "ROS Node"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+
+  ASSERT_EQ(manifest.apps.size(), 1);
+  EXPECT_FALSE(manifest.apps[0].external.has_value());
+}
+
+TEST_F(ManifestParserTest, ParseAppExternalExplicitFalseIsPreserved) {
+  // An explicit `external: false` is authoritative and must be distinguishable
+  // from omission, so the merge can let it override a wrong plugin `true`.
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "ros_node"
+    name: "ROS Node"
+    external: false
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+
+  ASSERT_EQ(manifest.apps.size(), 1);
+  ASSERT_TRUE(manifest.apps[0].external.has_value());
+  EXPECT_FALSE(manifest.apps[0].external.value());
 }
 
 TEST_F(ManifestParserTest, ParseFunctions) {

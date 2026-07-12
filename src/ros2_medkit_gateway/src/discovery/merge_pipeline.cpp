@@ -169,6 +169,30 @@ void merge_optional(std::optional<T> & target, const std::optional<T> & source, 
   }
 }
 
+// Merge the tri-state `external` classification. Mirrors merge_scalar's
+// gap-filling policy (nullopt == "empty"): a higher-priority layer that does not
+// classify (nullopt) must never shadow a lower-priority layer's classification,
+// so once any layer sets it the value survives (a manifest stub cannot hide a
+// plugin's introspected external=true, #517). An explicit value from a strictly
+// higher-priority layer (SOURCE) still wins, so an authoritative manifest
+// `external: false` corrects a wrong plugin `true`. This is NOT merge_optional:
+// merge_optional's TARGET branch is a no-op and would drop the plugin's value.
+void merge_external(std::optional<bool> & target, const std::optional<bool> & source, MergeWinner winner) {
+  switch (winner) {
+    case MergeWinner::SOURCE:
+      if (source.has_value()) {
+        target = source;
+      }
+      break;
+    case MergeWinner::BOTH:
+    case MergeWinner::TARGET:
+      if (!target.has_value() && source.has_value()) {
+        target = source;
+      }
+      break;
+  }
+}
+
 void merge_topics(ComponentTopics & target, const ComponentTopics & source, MergeWinner winner) {
   merge_collection(target.publishes, source.publishes, winner);
   merge_collection(target.subscribes, source.subscribes, winner);
@@ -278,12 +302,7 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         merge_optional(target.ros_binding, source.ros_binding, res.scalar);
-        // `external` is a classification a layer either knows (true) or cannot
-        // express (bool default false == unset). No layer can un-classify, so
-        // once any layer marks the app external it stays - a manifest stub's
-        // default false must not erase a plugin's introspected classification,
-        // or the app silently drops out of every fault rollup (#517).
-        target.external = target.external || source.external;
+        merge_external(target.external, source.external, res.scalar);
         break;
     }
   } else if constexpr (std::is_same_v<Entity, Function>) {

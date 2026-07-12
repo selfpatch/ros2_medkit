@@ -458,10 +458,9 @@ apps:
 // =============================================================================
 
 TEST_F(ManifestValidatorTest, R013_ExternalAppWithRosBindingWarns) {
-  // external: true means "not a ROS node": the linker skips the binding and,
-  // in hybrid mode, a plugin's external classification cannot be cleared by
-  // other layers. Declaring both is contradictory, so surface it instead of
-  // silently ignoring one of the two.
+  // external: true means "not a ROS node": the linker skips the binding and
+  // fault scoping uses the app's entity id, so the binding is inert. Declaring
+  // both is contradictory, so surface it instead of silently ignoring one.
   const std::string yaml = R"(
 manifest_version: "1.0"
 apps:
@@ -497,6 +496,41 @@ apps:
 
   EXPECT_TRUE(result.is_valid);
   EXPECT_FALSE(result.has_warnings());
+}
+
+TEST_F(ManifestValidatorTest, R013_ExternalAppBindingDoesNotReserveNodeName) {
+  // An external app's ros_binding is inert (ignored for linking and fault
+  // scoping), so it must NOT enter the R010 duplicate-binding bookkeeping.
+  // Otherwise a real ROS app that legitimately binds the same node name later
+  // trips a phantom R010 hard error over a binding that is never used.
+  const std::string yaml = R"(
+manifest_version: "1.0"
+apps:
+  - id: "plc_process"
+    external: true
+    ros_binding:
+      node_name: "shared_node"
+      namespace: "/plant"
+  - id: "real_ros_app"
+    ros_binding:
+      node_name: "shared_node"
+      namespace: "/plant"
+)";
+
+  auto manifest = parser_.parse_string(yaml);
+  auto result = validator_.validate(manifest);
+
+  // R013 warns about the external app, but there is NO R010 error: the external
+  // app's binding is inert, so the real app's binding is unique among linkable
+  // apps.
+  EXPECT_TRUE(result.is_valid);
+  bool has_r010 = false;
+  for (const auto & e : result.errors) {
+    if (e.rule_id == "R010") {
+      has_r010 = true;
+    }
+  }
+  EXPECT_FALSE(has_r010) << "external app's inert binding must not trigger a phantom R010";
 }
 
 // =============================================================================

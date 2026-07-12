@@ -1718,6 +1718,46 @@ TEST(ResolveEntitySourceFqnsTest, FunctionHostingExternalAppOwnsItsFaults) {
   EXPECT_EQ(fqns, expected);
 }
 
+TEST(ResolveEntitySourceFqnsTest, AreaHostingExternalAppOwnsItsFaults) {
+  // GET /areas/<area>/faults. The area's component hosts an external app (a PLC
+  // over OPC UA - the opcua plugin sets comp.area). The area walks the same gate
+  // as the component/function routes (collect_area_app_fqns -> collect_app_fqn),
+  // so its scope must include the external app's bare id or the app's faults
+  // vanish from the area rollup.
+  ThreadSafeEntityCache cache;
+  Component plc;
+  plc.id = "s7_1500";
+  plc.area = "cell_a";
+  cache.update_components({plc});
+  cache.update_apps({make_external_app("process", "s7_1500")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "cell_a"));
+  EXPECT_EQ(fqns, std::set<std::string>{"process"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, ExternalAppWithStrayRosBindingOwnsFaultsByBareId) {
+  // The #517 "neighbor" case: a manifest declares the app with a real
+  // ros_binding (so effective_fqn() derives a live FQN) and a plugin classifies
+  // it external. If fault scope used the derived FQN, the app's faults (reported
+  // under its bare id) would vanish - the exact #517 symptom. The external
+  // classification must win: the scope is the bare id, never the FQN.
+  ThreadSafeEntityCache cache;
+  App a;
+  a.id = "process";
+  a.name = "process";
+  a.component_id = "s7_1500";
+  a.external = true;
+  App::RosBinding binding;
+  binding.node_name = "process";
+  binding.namespace_pattern = "/plc";
+  a.ros_binding = binding;  // stray binding: effective_fqn() would be "/plc/process"
+  cache.update_apps({a});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "process"));
+  // Bare id owns the faults; the derived FQN "/plc/process" must NOT appear.
+  EXPECT_EQ(fqns, std::set<std::string>{"process"});
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

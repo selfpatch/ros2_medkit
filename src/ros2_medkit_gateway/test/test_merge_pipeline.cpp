@@ -998,14 +998,15 @@ TEST_F(MergePipelineTest, ThreeLayerMerge_PerFieldGroupOwnerTracking) {
 // A protocol plugin introspects an external asset (e.g. a PLC over OPC UA) and
 // emits its App with external=true and no ROS binding. In hybrid mode the
 // manifest may declare the same App id as a bare stub (so a Function's
-// hosted_by can reference it) without an `external:` key, which parses to the
-// bool default false. `external` has no unset state, so the manifest's
-// AUTHORITATIVE METADATA must not let that default erase the plugin's
-// classification - collect_app_fqn() grants an empty-fqn App its bare-id fault
-// scope only when external is true, so dropping the flag silently empties the
-// App's fault rollup on every route that aggregates it.
+// hosted_by can reference it) without an `external:` key, which leaves the
+// tri-state classification unset (nullopt). The manifest's AUTHORITATIVE
+// METADATA is the base, but a layer that does not classify must not shadow the
+// plugin's classification - merge_external gap-fills it. collect_app_fqn()
+// grants an empty-fqn App its bare-id fault scope only when external is true,
+// so dropping the flag would silently empty the App's fault rollup on every
+// route that aggregates it (#517).
 TEST_F(MergePipelineTest, PluginExternalClassificationSurvivesManifestMetadataMerge) {
-  // Manifest stub: declares the App id, no external key -> default false.
+  // Manifest stub: declares the App id, no external key -> stays unset (nullopt).
   App manifest_app = make_app("plc_process", "s7_1500");
   manifest_app.source = "manifest";
 
@@ -1029,7 +1030,7 @@ TEST_F(MergePipelineTest, PluginExternalClassificationSurvivesManifestMetadataMe
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.apps.size(), 1u);
-  EXPECT_TRUE(result.apps[0].external) << "hybrid merge dropped the plugin's external classification";
+  EXPECT_TRUE(result.apps[0].external.value_or(false)) << "hybrid merge dropped the plugin's external classification";
   // The manifest stays the entity's structural owner.
   EXPECT_EQ(result.apps[0].source, "manifest");
 }
@@ -1455,16 +1456,16 @@ TEST_F(MergePipelineTest, RuntimeComponentInUncoveredNamespaceNotSuppressed) {
   EXPECT_TRUE(found_motor) << "Runtime component in uncovered namespace should not be suppressed";
 }
 
-TEST_F(MergePipelineTest, AppExternalField_HigherPrioritySourceDefaultFalseCannotClear) {
-  // SOURCE-winner branch of the external merge: the base entity comes from a
-  // plugin (ENRICHMENT) that classified the app external; a later layer wins
-  // METADATA with AUTHORITATIVE but carries only the bool default false.
-  // `external` is monotone (#517): a layer that does not know the
-  // classification cannot clear it, regardless of its merge priority.
+TEST_F(MergePipelineTest, AppExternalField_AuthoritativeOmittedCannotClearEnrichmentTrue) {
+  // SOURCE-winner branch of merge_external: the base entity comes from a plugin
+  // (ENRICHMENT) that classified the app external; a later AUTHORITATIVE layer
+  // wins METADATA but OMITS the classification (nullopt). Omission is a no-op -
+  // a layer that does not classify cannot clear one another layer expressed, so
+  // the plugin's external=true survives (#517).
   App plugin_app = make_app("plc_process", "s7_1500");
   plugin_app.external = true;
 
-  App manifest_app = make_app("plc_process", "s7_1500");
+  App manifest_app = make_app("plc_process", "s7_1500");  // external omitted -> nullopt
 
   LayerOutput plugin_out, manifest_out;
   plugin_out.apps.push_back(plugin_app);
@@ -1479,7 +1480,37 @@ TEST_F(MergePipelineTest, AppExternalField_HigherPrioritySourceDefaultFalseCanno
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.apps.size(), 1u);
-  EXPECT_TRUE(result.apps[0].external);
+  EXPECT_TRUE(result.apps[0].external.value_or(false));
+}
+
+TEST_F(MergePipelineTest, AppExternalField_AuthoritativeExplicitFalseOverridesPluginTrue) {
+  // The durable-fix capability a plain bool could not express: an explicit
+  // AUTHORITATIVE manifest `external: false` corrects a wrong plugin `external:
+  // true`. Production layer order - manifest is the base (AUTHORITATIVE), the
+  // plugin enters as ENRICHMENT source; TARGET wins and keeps the explicit
+  // false. This is the branch omission must NOT reach (that would resurrect the
+  // OR behavior).
+  App manifest_app = make_app("plc_process", "s7_1500");
+  manifest_app.external = false;  // explicit, authoritative: this IS a ROS node
+
+  App plugin_app = make_app("plc_process", "s7_1500");
+  plugin_app.external = true;  // plugin misclassified it
+
+  LayerOutput manifest_out, plugin_out;
+  manifest_out.apps.push_back(manifest_app);
+  plugin_out.apps.push_back(plugin_app);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.apps.size(), 1u);
+  ASSERT_TRUE(result.apps[0].external.has_value());
+  EXPECT_FALSE(result.apps[0].external.value()) << "authoritative external: false must override plugin true";
 }
 
 // --- Area field group merge tests ---
@@ -1672,17 +1703,16 @@ TEST_F(MergePipelineTest, RuntimeLayerProducesNoAreasOrComponents) {
   EXPECT_EQ(result.apps[0].id, "sensor_node");
 }
 
-// --- External classification is monotone across layers (#517) ---
+// --- External classification gap-fills across same-priority layers (#517) ---
 
-// BOTH-winner branch (ENRICHMENT vs ENRICHMENT): a later layer's external=true
-// classification is adopted even though the first layer already carried the
-// bool default false. This deliberately supersedes the earlier first-set-wins
-// pin (#260c): with a plain bool, false is indistinguishable from "not
-// declared", and first-set-wins let a stub entry erase a real classification,
-// silently dropping the app from every fault rollup (#517).
-TEST_F(MergePipelineTest, AppExternalField_EnrichmentClassificationIsSticky) {
-  App layer1_app = make_app("controller", "nav_comp");
-  layer1_app.external = false;
+// BOTH-winner branch (ENRICHMENT vs ENRICHMENT): the base layer does not
+// classify (nullopt), so a later same-priority layer's external=true gap-fills
+// the classification. Omission never blocks a later classification. (An
+// explicit false in the base would instead be kept - ties resolve to the base -
+// which is the AuthoritativeExplicitFalseOverridesPluginTrue case; a plain bool
+// could not tell the two apart, which is what regressed as #517.)
+TEST_F(MergePipelineTest, AppExternalField_EnrichmentClassificationGapFills) {
+  App layer1_app = make_app("controller", "nav_comp");  // external omitted -> nullopt
 
   App layer2_app = make_app("controller", "nav_comp");
   layer2_app.external = true;
@@ -1698,8 +1728,8 @@ TEST_F(MergePipelineTest, AppExternalField_EnrichmentClassificationIsSticky) {
 
   auto result = pipeline_.execute();
   ASSERT_EQ(result.apps.size(), 1u);
-  // Once any layer classifies the app as external, the classification stays.
-  EXPECT_TRUE(result.apps[0].external);
+  // A later layer's classification fills the base layer's gap.
+  EXPECT_TRUE(result.apps[0].external.value_or(false));
 }
 
 TEST_F(MergePipelineTest, SuppressDoesNotAffectEmptyNamespaceEntities) {

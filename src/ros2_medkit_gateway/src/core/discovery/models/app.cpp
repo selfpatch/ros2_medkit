@@ -48,8 +48,10 @@ json App::to_json() const {
     x_medkit["boundFqn"] = bound_fqn.value();
   }
   x_medkit["isOnline"] = is_online;
-  if (external) {
-    x_medkit["external"] = external;
+  // Emit only when effectively external; omitted and explicit-false both leave
+  // the field absent, keeping the wire shape stable (absence == not external).
+  if (external.value_or(false)) {
+    x_medkit["external"] = true;
   }
   if (!original_id.empty()) {
     x_medkit["original_id"] = original_id;
@@ -116,7 +118,7 @@ json App::to_capabilities(const std::string & base_url) const {
     j["operations"] = app_base + "/operations";
   }
   // Always include configurations (parameters) for non-external apps
-  if (!external) {
+  if (!external.value_or(false)) {
     j["configurations"] = app_base + "/configurations";
   }
   // Always include faults

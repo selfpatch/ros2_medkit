@@ -187,14 +187,18 @@ void ManifestValidator::validate_ros_bindings(const Manifest & manifest, Validat
   for (const auto & app : manifest.apps) {
     if (app.ros_binding.has_value() && !app.ros_binding->is_empty()) {
       // external means "not a ROS node": the runtime linker skips the binding
-      // and the hybrid merge keeps the external classification. Declaring both
-      // is contradictory - warn instead of silently ignoring one of the two.
-      if (app.external) {
+      // and fault scoping uses the app's entity id, so the binding is inert.
+      // Declaring both is contradictory - warn, and skip the R010 bookkeeping
+      // entirely: an inert binding must not reserve a node name and trip a
+      // phantom duplicate error on a real ROS app that later reuses it.
+      if (app.external.value_or(false)) {
         result.add_warning("R013",
                            "App '" + app.id +
-                               "' declares external: true together with a ros_binding; "
-                               "the binding is ignored for linking",
+                               "' declares external: true together with a ros_binding; the binding "
+                               "is ignored for linking and fault scoping (the app is scoped by its "
+                               "entity id)",
                            "apps/" + app.id + "/ros_binding");
+        continue;
       }
 
       std::string binding_key = app.ros_binding->node_name + "@" + app.ros_binding->namespace_pattern;

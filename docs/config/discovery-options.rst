@@ -177,12 +177,16 @@ Each layer declares a policy per field-group:
 
 .. note::
 
-   The app ``external`` flag is an exception to the policy table: it merges
-   monotonically. Once any layer classifies an app as external (e.g. a
-   protocol plugin introspecting a PLC), the classification is kept even if a
-   higher-priority layer carries the default ``false`` - a manifest entry that
-   omits ``external:`` cannot clear it. This keeps external apps owning their
-   faults (bare-id fault scope) in hybrid mode.
+   The app ``external`` classification is tri-state (unset / ``true`` /
+   ``false``), so it follows the policy table with one refinement: a layer that
+   does not classify the app (a manifest entry that omits ``external:``) never
+   clears or shadows a classification another layer contributed. A manifest stub
+   that omits ``external:`` therefore keeps a protocol plugin's introspected
+   ``external: true`` (so the app still owns its faults via bare-id fault scope
+   in hybrid mode). An *explicit* value is authoritative and resolves by normal
+   layer priority: an authoritative manifest ``external: false`` overrides a
+   plugin's ``external: true``. Only omission is a no-op; an explicit value is
+   never silently discarded.
 
 Override per-layer policies in ``gateway_params.yaml``. Empty string means
 "use layer default". Policy values are **case-sensitive** and must be lowercase

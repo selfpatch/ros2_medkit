@@ -550,11 +550,16 @@ Fields
    * - ``external``
      - boolean
      - No
-     - True if not a ROS node (default: false). In hybrid mode the flag merges
-       monotonically: omitting it does not clear an ``external`` classification
-       contributed by another discovery layer (e.g. a protocol plugin).
+     - True if not a ROS node (treated as not external when omitted). The
+       classification is tri-state internally: **omitting** ``external:`` leaves
+       it unset, so in hybrid mode it does not clear an ``external``
+       classification contributed by another discovery layer (e.g. a protocol
+       plugin) - the app keeps its bare-id fault scope. An **explicit** value is
+       authoritative and resolves by normal layer priority, so an authoritative
+       manifest ``external: false`` overrides a plugin's ``external: true``.
        Combining ``external: true`` with a ``ros_binding`` is contradictory and
-       raises validation warning R013 (the binding is ignored for linking).
+       raises validation warning R013 (the binding is ignored for linking and
+       fault scoping - the app is scoped by its entity id).
 
 ros_binding Fields
 ~~~~~~~~~~~~~~~~~~
