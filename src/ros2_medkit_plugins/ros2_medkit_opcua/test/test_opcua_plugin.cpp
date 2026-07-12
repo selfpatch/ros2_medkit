@@ -33,6 +33,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <rclcpp/rclcpp.hpp>
+#include <ros2_medkit_msgs/srv/clear_fault.hpp>
+#include <ros2_medkit_msgs/srv/report_fault.hpp>
+
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
@@ -748,17 +752,72 @@ struct ScopedRclcpp {
   ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
 };
 
+// RAII: owns the executor and its spin thread so cleanup cannot be skipped by an
+// early ASSERT return. stop() is called explicitly before the plugin/nodes are
+// torn down so no entity is destroyed while the executor is still spinning it.
+struct ScopedExecutorSpin {
+  rclcpp::executors::MultiThreadedExecutor executor;
+  std::thread thread;
+  explicit ScopedExecutorSpin(const std::vector<rclcpp::Node::SharedPtr> & nodes) {
+    for (const auto & node : nodes) {
+      executor.add_node(node);
+    }
+    thread = std::thread([this] {
+      executor.spin();
+    });
+  }
+  void stop() {
+    executor.cancel();
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+  ~ScopedExecutorSpin() {
+    stop();
+  }
+  ScopedExecutorSpin(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
+};
+
 // The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
 // which buffers a dispatch into pending_reports_ - the SAME vector the poll
 // thread drains in publish_values()/flush_pending_reports(). Before the fix the
-// buffer had no lock, so concurrent clear_fault() calls (REST worker threads)
-// reallocating the vector while another thread iterated it corrupted the heap
-// (the crash observed in libros2_medkit_opcua_plugin.so under UI load). This
-// test drives that exact path from several threads; it must complete without a
-// crash and is clean under ThreadSanitizer.
+// buffer had no lock, so a push_back that reallocated the vector while another
+// thread iterated/swapped it corrupted the heap (the crash observed in
+// libros2_medkit_opcua_plugin.so under UI load).
+//
+// The buffer has two locked paths that must BOTH be raced: the push_back/erase
+// in send_or_buffer() and the batch.swap(pending_reports_) drain in
+// flush_pending_reports(). The drain only runs once report->service_is_ready()
+// is true, so the test stands up a real ReportFault/ClearFault server (a stub
+// fault_manager) to open that gate; only then does every clear_fault() both push
+// into the buffer AND swap it out under concurrent pushes from the other worker
+// threads. It must complete without heap corruption and is clean under
+// ThreadSanitizer - the DDS/rclcpp machinery it drives is covered by
+// tsan_suppressions.txt, the same paths the gateway service tests exercise.
 TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_pending_reports_regression");
+
+  // Stub fault_manager on a second node. ReportFault existing is what flips the
+  // plugin's report client to ready so flush_pending_reports() gets past its
+  // early return; ClearFault counts the flushed dispatches so the test can prove
+  // the drain (swap) path actually ran - a guard against the sink silently never
+  // matching, which would drop coverage back to push-only.
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_pending_reports_faultmgr");
+  std::atomic<int> cleared_received{0};
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
+                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+        res->accepted = true;
+      });
+  auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
+      "/fault_manager/clear_fault",
+      [&cleared_received](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request>,
+                          std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+        cleared_received.fetch_add(1, std::memory_order_relaxed);
+        res->success = true;
+      });
 
   const std::string yaml_path = "/tmp/test_opcua_race_nodemap.yaml";
   {
@@ -777,8 +836,9 @@ nodes:
   OpcuaPlugin plugin;
   nlohmann::json config;
   config["node_map_path"] = yaml_path;
-  // Nothing listening: connect fails fast (ECONNREFUSED) and the poll thread
-  // keeps retrying in the background while it drains the buffer each cycle.
+  // Nothing listening on the OPC-UA side: connect fails fast (ECONNREFUSED) and
+  // the poll thread keeps retrying in the background. The fault sink above, not
+  // the (dead) endpoint, is what drives the drain path.
   config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
   config["poll_interval_ms"] = 100;
   plugin.configure(config);
@@ -787,14 +847,31 @@ nodes:
   ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/race_plc", "/race_plc/race_runtime/tank"};
   plugin.set_context(ctx);
 
+  // Executor spins the plugin node and the stub fault_manager so requests flow
+  // and the sink is discoverable; added after set_context() so it picks up the
+  // clients the plugin just created.
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  // Wait until the stub server is discoverable. A probe client on the SAME node
+  // stands in for the plugin's (private) report client; service_is_ready() reads
+  // the RMW graph directly, so it flips without racing the spinning executor's
+  // wait set.
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
   std::atomic<bool> stop{false};
   std::vector<std::thread> threads;
   for (int t = 0; t < 6; ++t) {
     threads.emplace_back([&plugin, &stop, t] {
       int i = 0;
       while (!stop.load(std::memory_order_relaxed)) {
-        // No fault_manager is running, so service_is_ready() stays false and the
-        // dispatches accumulate/evict in pending_reports_ - maximising buffer churn.
+        // Sink is ready, so each call pushes into pending_reports_ AND drains it
+        // via flush_pending_reports() -> batch.swap(): worker threads race
+        // push_back against swap on the shared buffer.
         plugin.clear_fault("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f));
       }
     });
@@ -806,8 +883,15 @@ nodes:
     th.join();
   }
 
+  // Stop the executor before any node/client is destroyed to avoid a teardown
+  // race between the spin thread and entity destruction.
+  spinner.stop();
   plugin.shutdown();
-  SUCCEED();
+
+  // Proves the drain path was actually exercised (not silently skipped by an
+  // unmatched sink): the buffer was swapped out and dispatched to the server.
+  EXPECT_GT(cleared_received.load(std::memory_order_relaxed), 0)
+      << "flush_pending_reports never dispatched - swap-vs-push path not covered";
 }
 
 }  // namespace ros2_medkit_gateway
