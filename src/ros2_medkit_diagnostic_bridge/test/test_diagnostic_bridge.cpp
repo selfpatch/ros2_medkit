@@ -33,6 +33,26 @@ class DiagnosticBridgeTest : public ::testing::Test {
   }
 };
 
+namespace {
+  diagnostic_msgs::msg::DiagnosticStatus diagnostic_status(
+    const std::string & name,
+    uint8_t level = 0,
+    const std::string & message = "",
+    std::vector<std::pair<std::string, std::string>> values = {}) {
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = name;
+    status.level = level;
+    status.message = message;
+    for (const auto & [key, value] : values) {
+      diagnostic_msgs::msg::KeyValue kv;
+      kv.key = key;
+      kv.value = value;
+      status.values.push_back(kv);
+    }
+    return status;
+  }
+}
+
 // Test severity mapping
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Warn) {
   auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::WARN);
@@ -88,29 +108,37 @@ TEST_F(DiagnosticBridgeTest, MapToFaultCode_AutoGenerate) {
   auto node = std::make_shared<DiagnosticBridgeNode>();
 
   // Auto-generated codes
-  EXPECT_EQ(node->map_to_fault_code("motor temp"), "MOTOR_TEMP");
-  EXPECT_EQ(node->map_to_fault_code("motor_temperature"), "MOTOR_TEMPERATURE");
-  EXPECT_EQ(node->map_to_fault_code("motor: Status"), "MOTOR_STATUS");
-  EXPECT_EQ(node->map_to_fault_code("/robot/sensor"), "ROBOT_SENSOR");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor temp")), "MOTOR_TEMP");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor_temperature")), "MOTOR_TEMPERATURE");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor: Status")), "MOTOR_STATUS");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/robot/sensor")), "ROBOT_SENSOR");
 }
 
 TEST_F(DiagnosticBridgeTest, MapToFaultCode_SpecialCharacters) {
   auto node = std::make_shared<DiagnosticBridgeNode>();
 
   // Multiple separators collapse to single underscore
-  EXPECT_EQ(node->map_to_fault_code("motor::temp"), "MOTOR_TEMP");
-  EXPECT_EQ(node->map_to_fault_code("motor  temp"), "MOTOR_TEMP");
-  EXPECT_EQ(node->map_to_fault_code("motor - temp"), "MOTOR_TEMP");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor::temp")), "MOTOR_TEMP");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor  temp")), "MOTOR_TEMP");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor - temp")), "MOTOR_TEMP");
 }
 
 TEST_F(DiagnosticBridgeTest, MapToFaultCode_LeadingTrailing) {
   auto node = std::make_shared<DiagnosticBridgeNode>();
 
   // Leading/trailing separators are removed
-  EXPECT_EQ(node->map_to_fault_code("/motor"), "MOTOR");
-  EXPECT_EQ(node->map_to_fault_code("motor/"), "MOTOR");
-  EXPECT_EQ(node->map_to_fault_code("  motor  "), "MOTOR");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/motor")), "MOTOR");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("motor/")), "MOTOR");
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("  motor  ")), "MOTOR");
 }
+
+TEST_F(DiagnosticBridgeTest, MapToFaultCode_FromAttribute) {
+  auto node = std::make_shared<DiagnosticBridgeNode>();
+
+  // Leading/trailing separators are removed
+  EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/motor", 1, "", {{"code", "MOTOR_FAULT"}})), "MOTOR_FAULT");
+}
+
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);

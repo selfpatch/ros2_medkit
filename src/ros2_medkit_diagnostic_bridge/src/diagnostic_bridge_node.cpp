@@ -38,6 +38,9 @@ void DiagnosticBridgeNode::load_parameters() {
   diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/diagnostics");
   auto_generate_codes_ = declare_parameter<bool>("auto_generate_codes", true);
 
+  std::vector<std::string> attribute_codes = declare_parameter<std::vector<std::string>>("attribute_codes", std::vector<std::string>());
+  attribute_codes_.insert(attribute_codes.begin(), attribute_codes.end());
+
   // Load custom name_to_code mappings from parameter overrides
   // Format: name_to_code.<diagnostic_name> = <fault_code>
   // Example: --ros-args -p "name_to_code.motor_temp:=MOTOR_OVERHEAT"
@@ -65,7 +68,7 @@ void DiagnosticBridgeNode::diagnostics_callback(const diagnostic_msgs::msg::Diag
 }
 
 void DiagnosticBridgeNode::process_diagnostic(const diagnostic_msgs::msg::DiagnosticStatus & status) {
-  std::string fault_code = map_to_fault_code(status.name);
+  const std::string fault_code = map_to_fault_code(status);
 
   // Skip if no mapping and auto-generate disabled
   if (fault_code.empty()) {
@@ -86,11 +89,21 @@ void DiagnosticBridgeNode::process_diagnostic(const diagnostic_msgs::msg::Diagno
   }
 }
 
-std::string DiagnosticBridgeNode::map_to_fault_code(const std::string & diagnostic_name) const {
+std::string DiagnosticBridgeNode::map_to_fault_code(const diagnostic_msgs::msg::DiagnosticStatus & status) const {
+  const std::string & diagnostic_name = status.name;
   // Check custom mappings first
-  auto it = name_to_code_.find(diagnostic_name);
+  const auto it = name_to_code_.find(diagnostic_name);
   if (it != name_to_code_.end()) {
     return it->second;
+  }
+
+  // Check if the diagnostic contains any attributes that contain a code
+  if (!attribute_codes_.empty()) {
+    for (const auto & key_value : status.values) {
+      if (attribute_codes_.count(key_value.key) > 0) {
+        return key_value.value;
+      }
+    }
   }
 
   // Auto-generate if enabled

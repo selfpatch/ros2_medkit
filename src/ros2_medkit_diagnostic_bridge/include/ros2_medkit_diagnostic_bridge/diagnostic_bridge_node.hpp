@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
@@ -50,9 +51,9 @@ class DiagnosticBridgeNode : public rclcpp::Node {
  public:
   explicit DiagnosticBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
-  /// Map diagnostic name to fault code
+  /// Map diagnostic status to fault code
   /// Uses custom mapping if available, otherwise auto-generates from name
-  std::string map_to_fault_code(const std::string & diagnostic_name) const;
+  std::string map_to_fault_code(const diagnostic_msgs::msg::DiagnosticStatus & status) const;
 
   /// Map DiagnosticStatus level to Fault severity
   /// Returns std::nullopt if level is OK (should send PASSED instead)
@@ -84,6 +85,7 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   std::string diagnostics_topic_;
   bool auto_generate_codes_;
   std::map<std::string, std::string> name_to_code_;
+  std::set<std::string> attribute_codes_;
 };
 
 }  // namespace ros2_medkit_diagnostic_bridge
