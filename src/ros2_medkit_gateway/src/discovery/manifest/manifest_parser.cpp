@@ -284,9 +284,9 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
   // exactly the names the CSV import does (serial / serial_number, ...); any
   // other scalar key is retained verbatim as an extra so operator-specific
   // columns are not lost.
-  static const std::unordered_set<std::string> structural = {"tags",        "parent_component_id", "name",
-                                                             "description", "namespace",           "variant",
-                                                             "type",        "translation_id",      "depends_on"};
+  static const std::unordered_set<std::string> structural = {
+      "tags", "parent_component_id", "name",       "description", "namespace", "variant",
+      "type", "translation_id",      "depends_on", "external"};
 
   AssetEntry entry;
   if (node.IsMap()) {
@@ -343,6 +343,14 @@ Component ManifestParser::parse_asset(const YAML::Node & node) const {
   }
   for (const auto & tag : get_string_vector(node, "tags")) {
     comp.tags.push_back(tag);
+  }
+
+  // An `assets:` entry may classify the device as a non-ROS external asset,
+  // mirroring `parse_component`. Tri-state: an absent key stays nullopt.
+  // `external` is in the `structural` set above so it is not swallowed as an
+  // identity extra (#516).
+  if (node["external"]) {
+    comp.external = node["external"].as<bool>();
   }
 
   return comp;

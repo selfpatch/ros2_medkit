@@ -429,6 +429,7 @@ Schema
        parent_component_id: string # Optional - parent component ID
        depends_on: [string]       # Optional - component IDs this asset depends on
        tags: [string]             # Optional - tags for filtering
+       external: boolean          # Optional - non-ROS external asset (default: false)
        any_other_key: string      # Kept verbatim as an identity extra
 
 Fields
@@ -439,6 +440,11 @@ The identity keys accept the same aliases as the CSV import:
 ``hardware_rev``, and ``firmware_version`` / ``fw`` for ``firmware``. Aliased
 keys land on the typed identity fields, not in the extras. Any scalar key not
 listed above is preserved as an identity extra.
+
+``external`` classifies the asset as a non-ROS device, the same tri-state field
+as on a ``components:`` entry. An external asset with no bound child apps owns
+its fault scope by its own entity id. It is a recognized key, so it classifies
+the Component instead of being kept as an identity extra.
 
 Placement is optional: without ``area`` (and ``namespace``) the asset is
 reachable at ``/components/{id}`` and in the flat component list, but does not

@@ -100,7 +100,8 @@ inline constexpr std::string_view dto_name<XMedkitArea> = "XMedkitArea";
 //   description       <- comp.description       (via ext.add())
 //   contributors      <- comp.contributors
 //   capabilities      <- capabilities JSON array (via ext.add())
-//   external          <- comp.external, non-ROS external asset classification; detail + list routes only (#516)
+//   external          <- comp.external, non-ROS external asset classification; emitted true-only on every
+//                        route that carries the component x-medkit, so "absence == not external" holds (#516)
 //
 // Also used in sub-collection responses (depends-on, subcomponents, hosts, contains, etc.):
 //   missing           <- true when component reference cannot be resolved
@@ -149,7 +150,8 @@ inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent
 //   ros2.node     <- app.bound_fqn
 //   component_id  <- app.component_id
 //   contributors  <- app.contributors  (detail only)
-//   external      <- app.external, non-ROS external asset classification; detail + list routes only (#516/#517)
+//   external      <- app.external, non-ROS external asset classification; emitted true-only on every route
+//                    that carries the app x-medkit, so "absence == not external" holds (#516/#517)
 //
 // Also used in sub-collection responses (depends-on, hosts, function-hosts):
 //   missing       <- true when app reference cannot be resolved

@@ -368,6 +368,45 @@ assets:
   EXPECT_EQ(comp->identity.provenance.at("model"), "inventory");
 }
 
+TEST(ManifestAssetsTest, ExternalKeyClassifiesAssetComponent) {
+  // An `assets:` entry is the inventory path for non-ROS hardware (#516), so an
+  // explicit `external:` must classify the derived Component instead of being
+  // swallowed as an identity extra. Tri-state is preserved (mirrors parse_component).
+  const std::string yaml = R"(
+manifest_version: "1.0"
+assets:
+  - id: plc_ext
+    manufacturer: Siemens
+    model: S7-1500
+    external: true
+  - id: drive_ros
+    manufacturer: ABB
+    model: ACS880
+    external: false
+  - id: sensor_unset
+    manufacturer: Bosch
+    model: BMI-088
+)";
+  ManifestParser parser;
+  Manifest manifest = parser.parse_string(yaml);
+
+  const Component * plc = find_component(manifest.components, "plc_ext");
+  ASSERT_NE(plc, nullptr);
+  ASSERT_TRUE(plc->external.has_value());
+  EXPECT_TRUE(plc->external.value());
+  // The `external` key must classify, not fall through to identity extras.
+  EXPECT_EQ(plc->identity.extra.count("external"), 0u);
+
+  const Component * drive = find_component(manifest.components, "drive_ros");
+  ASSERT_NE(drive, nullptr);
+  ASSERT_TRUE(drive->external.has_value());
+  EXPECT_FALSE(drive->external.value());
+
+  const Component * sensor = find_component(manifest.components, "sensor_unset");
+  ASSERT_NE(sensor, nullptr);
+  EXPECT_FALSE(sensor->external.has_value());
+}
+
 TEST(ManifestAssetsTest, AreaAndExplicitOverrides) {
   const std::string yaml = R"(
 manifest_version: "1.0"
