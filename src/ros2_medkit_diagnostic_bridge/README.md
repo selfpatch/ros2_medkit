@@ -36,6 +36,7 @@ ros2 run ros2_medkit_diagnostic_bridge diagnostic_bridge_node
 | `diagnostics_topic` | string | `/diagnostics` | Topic to subscribe to |
 | `auto_generate_codes` | bool | `true` | Auto-generate fault codes from diagnostic names |
 | `name_to_code.<name>` | string | - | Custom mapping from diagnostic name to fault code |
+| `keyvalue_codes` | string[] | - | List of keys used to search the diagnostic values for the fault code |
 
 ### Example Configuration
 

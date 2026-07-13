@@ -61,7 +61,7 @@ The following diagram shows the data flow and component relationships.
    package "ros2_medkit_diagnostic_bridge" {
 
        class DiagnosticBridgeNode {
-           +map_to_fault_code(name): string
+           +map_to_fault_code(status): string
            +map_to_severity(level): optional<uint8>
            +is_ok_level(level): bool
            --
@@ -185,6 +185,9 @@ Example Launch Configuration
        # Custom mappings override auto-generation
        "name_to_code.motor_controller: Status": "MOTOR_001"
        "name_to_code.battery_monitor": "BATTERY_LOW"
+       # Code from key values
+       "keyvalue_codes":
+         - "fault_code"
 
 Design Decisions
 ----------------
