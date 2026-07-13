@@ -188,6 +188,12 @@ Each layer declares a policy per field-group:
    plugin's ``external: true``. Only omission is a no-op; an explicit value is
    never silently discarded.
 
+   The same tri-state field and merge priority apply to Components: an
+   external Component with no bound child Apps owns its fault-scope by entity
+   id, so an Area or Function hosting it rolls up its faults without a
+   synthetic child App. Components have no ``ros_binding``, so there is no
+   equivalent to the App's R013 contradiction check.
+
 Override per-layer policies in ``gateway_params.yaml``. Empty string means
 "use layer default". Policy values are **case-sensitive** and must be lowercase
 (``authoritative``, ``enrichment``, ``fallback``):

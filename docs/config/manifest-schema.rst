@@ -236,6 +236,7 @@ Schema
        parent_component_id: string  # Optional - parent component
        depends_on: [string]    # Optional - component IDs this depends on
        subcomponents: []       # Optional - nested definitions
+       external: boolean       # Optional - non-ROS external asset (default: false)
 
        identity:               # Optional - asset-identity nameplate
          manufacturer: string        # Vendor / manufacturer name
@@ -321,6 +322,17 @@ Fields
      - [Component]
      - No
      - Nested component definitions
+   * - ``external``
+     - boolean
+     - No
+     - True if the component is a non-ROS external asset (PLC, fieldbus device,
+       any asset a protocol plugin bridges into SOVD). Tri-state: **omitting**
+       ``external:`` leaves it unset, so in hybrid mode it does not clear an
+       ``external`` classification contributed by another discovery layer (e.g. a
+       protocol plugin). An **explicit** value is authoritative and resolves by
+       normal layer priority. An external component with no bound child apps owns
+       its fault_manager faults under its own entity id, so a Function or Area
+       hosting it rolls up its faults without a synthetic child app (#516).
    * - ``identity``
      - object
      - No
@@ -376,6 +388,11 @@ Example
        name: "IMU Sensor"
        type: "sensor"
        area: perception
+
+     # External device component (not a ROS node); owns its faults by entity id
+     - id: line-plc
+       name: "Line PLC"
+       external: true
 
 Assets
 ------
