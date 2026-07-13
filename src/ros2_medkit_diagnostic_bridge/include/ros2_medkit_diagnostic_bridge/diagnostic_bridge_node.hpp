@@ -18,8 +18,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
@@ -52,7 +52,11 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   explicit DiagnosticBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   /// Map diagnostic status to fault code
-  /// Uses custom mapping if available, otherwise auto-generates from name
+  /// Mapping order:
+  /// 1. Custom name_to_code mapping (parameter overrides)
+  /// 2. Check if diagnostic contains any key-value pairs with keys in keyvalue_codes
+  /// 3. Auto-generate from diagnostic name (if auto_generate_codes is true)
+  /// 4. Return empty string if no mapping found
   std::string map_to_fault_code(const diagnostic_msgs::msg::DiagnosticStatus & status) const;
 
   /// Map DiagnosticStatus level to Fault severity
@@ -85,7 +89,7 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   std::string diagnostics_topic_;
   bool auto_generate_codes_;
   std::map<std::string, std::string> name_to_code_;
-  std::set<std::string> keyvalue_codes_;
+  std::vector<std::string> keyvalue_codes_;
 };
 
 }  // namespace ros2_medkit_diagnostic_bridge

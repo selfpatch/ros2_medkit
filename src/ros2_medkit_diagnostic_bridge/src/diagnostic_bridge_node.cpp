@@ -40,7 +40,10 @@ void DiagnosticBridgeNode::load_parameters() {
 
   std::vector<std::string> keyvalue_codes =
       declare_parameter<std::vector<std::string>>("keyvalue_codes", std::vector<std::string>());
-  keyvalue_codes_.insert(keyvalue_codes.begin(), keyvalue_codes.end());
+  std::copy_if(keyvalue_codes.begin(), keyvalue_codes.end(), std::back_inserter(keyvalue_codes_),
+               [](const std::string & s) {
+                 return !s.empty();
+               });
 
   // Load custom name_to_code mappings from parameter overrides
   // Format: name_to_code.<diagnostic_name> = <fault_code>
@@ -100,9 +103,11 @@ std::string DiagnosticBridgeNode::map_to_fault_code(const diagnostic_msgs::msg::
 
   // Check if the diagnostic contains any attributes that contain a code
   if (!keyvalue_codes_.empty()) {
-    for (const auto & key_value : status.values) {
-      if (keyvalue_codes_.count(key_value.key) > 0) {
-        return key_value.value;
+    for (const auto & configured_key : keyvalue_codes_) {
+      for (const auto & kv : status.values) {
+        if (kv.key == configured_key) {
+          return kv.value;
+        }
       }
     }
   }
