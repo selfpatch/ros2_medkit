@@ -76,6 +76,10 @@ medkit_target_dependencies(demo_param_beacon_node rclcpp)
 add_executable(managed_lifecycle demo_nodes/managed_lifecycle_node.cpp)
 medkit_target_dependencies(managed_lifecycle rclcpp rclcpp_lifecycle)
 
+add_executable(demo_unresponsive_param_node demo_nodes/unresponsive_param_node.cpp)
+target_include_directories(demo_unresponsive_param_node PRIVATE ${_demo_include_dir})
+medkit_target_dependencies(demo_unresponsive_param_node rclcpp rcl_interfaces)
+
 install(TARGETS
   demo_engine_temp_sensor
   demo_rpm_sensor
@@ -89,6 +93,7 @@ install(TARGETS
   demo_beacon_publisher
   demo_param_beacon_node
   managed_lifecycle
+  demo_unresponsive_param_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

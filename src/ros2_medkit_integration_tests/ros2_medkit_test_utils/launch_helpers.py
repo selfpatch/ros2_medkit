@@ -59,6 +59,9 @@ DEMO_NODE_REGISTRY = {
     # the "active" lifecycle state (-> status "ready"). Distinct node name so it
     # can run alongside the unconfigured 'managed_lifecycle' in the same test.
     'managed_lifecycle_active': ('managed_lifecycle', 'managed_lifecycle_active', ''),
+    # Regression fixture (#531): parameter services are discoverable
+    # (wait_for_service succeeds) but list_parameters never replies.
+    'unresponsive_param': ('demo_unresponsive_param_node', 'unresponsive_param', ''),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.
