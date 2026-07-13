@@ -103,6 +103,7 @@ inline constexpr std::string_view dto_name<XMedkitArea> = "XMedkitArea";
 //
 // Also used in sub-collection responses (depends-on, subcomponents, hosts, contains, etc.):
 //   missing           <- true when component reference cannot be resolved
+//   external          <- comp.external, non-ROS external asset classification (#516)
 //
 // Note: "parentComponentId" uses camelCase on the wire per discovery_handlers.cpp.
 // "dependsOn" uses camelCase on the wire per discovery_handlers.cpp.
@@ -122,7 +123,8 @@ struct XMedkitComponent {
   // "_provenance"). Free-form JSON so the DTO layer reuses the exact
   // serialization emitted by Component::to_json and consumed by peer parsing.
   std::optional<nlohmann::json> identity;
-  std::optional<bool> missing;  // broken reference sentinel
+  std::optional<bool> missing;   // broken reference sentinel
+  std::optional<bool> external;  // non-ROS external asset classification (#516)
 };
 
 template <>
@@ -132,7 +134,8 @@ inline constexpr auto dto_fields<XMedkitComponent> = std::make_tuple(
     field("dependsOn", &XMedkitComponent::depends_on), field("area", &XMedkitComponent::area),
     field("variant", &XMedkitComponent::variant), field("description", &XMedkitComponent::description),
     field("contributors", &XMedkitComponent::contributors), field("capabilities", &XMedkitComponent::capabilities),
-    field("identity", &XMedkitComponent::identity), field("missing", &XMedkitComponent::missing));
+    field("identity", &XMedkitComponent::identity), field("missing", &XMedkitComponent::missing),
+    field("external", &XMedkitComponent::external));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent";
@@ -149,6 +152,7 @@ inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent
 //
 // Also used in sub-collection responses (depends-on, hosts, function-hosts):
 //   missing       <- true when app reference cannot be resolved
+//   external      <- app.external, non-ROS external asset classification (#516/#517)
 // ---------------------------------------------------------------------------
 struct XMedkitApp {
   std::optional<XMedkitRos2> ros2;
@@ -156,14 +160,16 @@ struct XMedkitApp {
   std::optional<bool> is_online;
   std::optional<std::string> component_id;
   std::optional<std::vector<std::string>> contributors;
-  std::optional<bool> missing;  // broken reference sentinel
+  std::optional<bool> missing;   // broken reference sentinel
+  std::optional<bool> external;  // non-ROS external asset classification (#516/#517)
 };
 
 template <>
 inline constexpr auto dto_fields<XMedkitApp> =
     std::make_tuple(field("ros2", &XMedkitApp::ros2), field("source", &XMedkitApp::source),
                     field("is_online", &XMedkitApp::is_online), field("component_id", &XMedkitApp::component_id),
-                    field("contributors", &XMedkitApp::contributors), field("missing", &XMedkitApp::missing));
+                    field("contributors", &XMedkitApp::contributors), field("missing", &XMedkitApp::missing),
+                    field("external", &XMedkitApp::external));
 
 template <>
 inline constexpr std::string_view dto_name<XMedkitApp> = "XMedkitApp";
