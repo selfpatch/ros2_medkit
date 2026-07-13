@@ -1,0 +1,215 @@
+// Copyright 2026 bburda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Regression coverage for #531: a discoverable-but-unresponsive node's
+// parameter service must not be able to hang Ros2ParameterTransport forever.
+// Before the fix, client->list_parameters(...)/get_parameters(...)/etc. were
+// called with no timeout, so rclcpp defaulted to waiting forever once
+// wait_for_service() had already succeeded (i.e. the service exists in the
+// ROS graph but its callback never replies in time). That held spin_mutex_
+// and an HTTP worker forever, eventually exhausting the whole gateway thread
+// pool.
+
+#include <gtest/gtest.h>
+#include <rcl_interfaces/srv/describe_parameters.hpp>
+#include <rcl_interfaces/srv/get_parameter_types.hpp>
+#include <rcl_interfaces/srv/get_parameters.hpp>
+#include <rcl_interfaces/srv/list_parameters.hpp>
+#include <rcl_interfaces/srv/set_parameters.hpp>
+#include <rcl_interfaces/srv/set_parameters_atomically.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <rclcpp/rclcpp.hpp>
+#include <thread>
+
+#include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
+
+using namespace ros2_medkit_gateway;
+
+namespace {
+
+constexpr const char * kUnresponsiveNodeName = "unresponsive_param_node";
+
+}  // namespace
+
+class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
+
+  static void TearDownTestSuite() {
+    rclcpp::shutdown();
+  }
+
+  void SetUp() override {
+    // The node under test: parameter services are NOT auto-started by
+    // rclcpp::Node (start_parameter_services(false)); instead we hand-roll a
+    // ListParameters service whose callback blocks well past the transport's
+    // service timeout, simulating a node that IS discoverable (the service
+    // exists in the ROS graph, so wait_for_service() succeeds immediately)
+    // but never actually answers a request in time.
+    //
+    // The callback blocks on release_blocking_callback_ rather than a fixed
+    // sleep: it never completes on its own during the assertions below
+    // (proving the client-side call is bounded purely by
+    // Ros2ParameterTransport's own timeout, not by how long the server takes
+    // to reply), while still letting TearDown release it immediately so the
+    // test suite doesn't pay a long fixed delay every run.
+    rclcpp::NodeOptions unresponsive_options;
+    unresponsive_options.start_parameter_services(false);
+    unresponsive_node_ = std::make_shared<rclcpp::Node>(kUnresponsiveNodeName, unresponsive_options);
+
+    list_parameters_service_ = unresponsive_node_->create_service<rcl_interfaces::srv::ListParameters>(
+        "~/list_parameters", [this](const std::shared_ptr<rcl_interfaces::srv::ListParameters::Request> /*request*/,
+                                    std::shared_ptr<rcl_interfaces::srv::ListParameters::Response> /*response*/) {
+          while (!release_blocking_callback_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          }
+        });
+
+    // The remaining parameter services just need to exist in the ROS graph
+    // so that wait_for_service() (which only probes service discovery, not
+    // responsiveness) succeeds regardless of which underlying client it
+    // checks. They are not expected to be invoked by the scenarios below
+    // since list_parameters is the first remote call in the round trip and
+    // it never returns within the bounded timeout.
+    get_parameters_service_ = unresponsive_node_->create_service<rcl_interfaces::srv::GetParameters>(
+        "~/get_parameters", [](const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> /*request*/,
+                               std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> /*response*/) {});
+    set_parameters_service_ = unresponsive_node_->create_service<rcl_interfaces::srv::SetParameters>(
+        "~/set_parameters", [](const std::shared_ptr<rcl_interfaces::srv::SetParameters::Request> /*request*/,
+                               std::shared_ptr<rcl_interfaces::srv::SetParameters::Response> /*response*/) {});
+    describe_parameters_service_ = unresponsive_node_->create_service<rcl_interfaces::srv::DescribeParameters>(
+        "~/describe_parameters",
+        [](const std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Request> /*request*/,
+           std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Response> /*response*/) {});
+    get_parameter_types_service_ = unresponsive_node_->create_service<rcl_interfaces::srv::GetParameterTypes>(
+        "~/get_parameter_types", [](const std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Request> /*request*/,
+                                    std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Response> /*response*/) {});
+    set_parameters_atomically_service_ =
+        unresponsive_node_->create_service<rcl_interfaces::srv::SetParametersAtomically>(
+            "~/set_parameters_atomically",
+            [](const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Request> /*request*/,
+               std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> /*response*/) {});
+
+    // Client-side node handed to the transport (used only for logging / the
+    // self-node FQN short-circuit). Ros2ParameterTransport creates and owns
+    // its own internal node for the actual SyncParametersClient IPC, so this
+    // node does not need to be spun for parameter round trips to proceed.
+    client_node_ = std::make_shared<rclcpp::Node>("test_param_transport_client_node");
+
+    // Small service_timeout_sec so the test proves boundedness quickly.
+    // Generous negative_cache_ttl_sec so the negative-cache scenario below
+    // is guaranteed to hit the cache rather than re-attempting IPC.
+    transport_ = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, 60.0);
+
+    // Spin the unresponsive node so its service callback can be dispatched
+    // when a request arrives.
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(unresponsive_node_);
+    spin_thread_running_ = true;
+    spin_thread_ = std::thread([this]() {
+      while (spin_thread_running_) {
+        executor_->spin_some(std::chrono::milliseconds(10));
+      }
+    });
+
+    // Give the service time to register in the ROS graph before the test
+    // starts issuing requests (avoids a flaky wait_for_service failure that
+    // would mask the scenario under test).
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+
+  void TearDown() override {
+    // Release any in-flight blocking service callback first so the spin
+    // thread can drain and exit promptly.
+    release_blocking_callback_ = true;
+    spin_thread_running_ = false;
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    executor_->cancel();
+    executor_->remove_node(unresponsive_node_);
+    transport_.reset();
+    executor_.reset();
+    list_parameters_service_.reset();
+    get_parameters_service_.reset();
+    set_parameters_service_.reset();
+    describe_parameters_service_.reset();
+    get_parameter_types_service_.reset();
+    set_parameters_atomically_service_.reset();
+    unresponsive_node_.reset();
+    client_node_.reset();
+  }
+
+  std::shared_ptr<rclcpp::Node> unresponsive_node_;
+  rclcpp::Service<rcl_interfaces::srv::ListParameters>::SharedPtr list_parameters_service_;
+  rclcpp::Service<rcl_interfaces::srv::GetParameters>::SharedPtr get_parameters_service_;
+  rclcpp::Service<rcl_interfaces::srv::SetParameters>::SharedPtr set_parameters_service_;
+  rclcpp::Service<rcl_interfaces::srv::DescribeParameters>::SharedPtr describe_parameters_service_;
+  rclcpp::Service<rcl_interfaces::srv::GetParameterTypes>::SharedPtr get_parameter_types_service_;
+  rclcpp::Service<rcl_interfaces::srv::SetParametersAtomically>::SharedPtr set_parameters_atomically_service_;
+  std::atomic<bool> release_blocking_callback_{false};
+
+  std::shared_ptr<rclcpp::Node> client_node_;
+  std::shared_ptr<ros2::Ros2ParameterTransport> transport_;
+
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::atomic<bool> spin_thread_running_{false};
+};
+
+// GREEN (post-fix) behavior: a request against a discoverable-but-never-
+// responding node's parameter service returns a bounded-time error instead
+// of hanging forever.
+//
+// RED (pre-fix) would have been: this call blocks until the service replies,
+// which in this fixture is only released by TearDown - i.e. it would not
+// return during the test body at all. That cannot be safely exercised in a
+// test that must terminate on its own (the point of #531 is precisely that
+// nothing bounds it), so instead this asserts the call completes well within
+// a small multiple of service_timeout_sec (0.5s) - which is only possible
+// because get_service_timeout() is now threaded through every
+// SyncParametersClient call in the round trip.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersReturnsBoundedErrorInsteadOfHanging) {
+  auto start = std::chrono::steady_clock::now();
+  auto result = transport_->list_parameters(kUnresponsiveNodeName);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(result.success);
+  EXPECT_LT(elapsed, std::chrono::seconds(5))
+      << "list_parameters() against an unresponsive-but-discoverable node must be bounded by "
+         "service_timeout_sec, not block until the server replies (or forever, pre-fix)";
+}
+
+// A second, immediate call against the same node must short-circuit via the
+// negative cache (mark_node_unavailable() populated it on the first call's
+// round-trip failure) rather than paying the timeout again.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, SecondCallShortCircuitsViaNegativeCache) {
+  auto first_result = transport_->list_parameters(kUnresponsiveNodeName);
+  ASSERT_FALSE(first_result.success);
+  ASSERT_FALSE(transport_->is_node_available(kUnresponsiveNodeName))
+      << "first round-trip failure must negative-cache the node (#531)";
+
+  auto start = std::chrono::steady_clock::now();
+  auto second_result = transport_->list_parameters(kUnresponsiveNodeName);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(second_result.success);
+  EXPECT_LT(elapsed, std::chrono::milliseconds(100))
+      << "second call must hit the negative cache and fail fast, not re-attempt the 0.5s IPC timeout";
+}

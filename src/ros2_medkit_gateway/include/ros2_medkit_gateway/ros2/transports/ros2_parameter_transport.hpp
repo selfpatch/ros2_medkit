@@ -78,7 +78,6 @@ class Ros2ParameterTransport : public ParameterTransport {
   ParameterResult list_defaults(const std::string & node_name) override;
 
   bool is_node_available(const std::string & node_name) const override;
-  void invalidate(const std::string & node_name) override;
   void shutdown() override;
 
  private:

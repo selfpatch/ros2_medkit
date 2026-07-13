@@ -159,10 +159,6 @@ class MockParameterTransport : public ParameterTransport {
     return true;
   }
 
-  void invalidate(const std::string & node_name) override {
-    invalidated_.push_back(node_name);
-  }
-
   void shutdown() override {
     ++shutdown_calls_;
   }
@@ -201,7 +197,6 @@ class MockParameterTransport : public ParameterTransport {
   std::string last_get_default_node_, last_get_default_name_;
   std::string last_list_defaults_node_;
   std::vector<SetCall> set_history_;
-  std::vector<std::string> invalidated_;
 
   int list_calls_ = 0;
   int get_calls_ = 0;
