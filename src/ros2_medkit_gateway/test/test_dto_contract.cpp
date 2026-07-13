@@ -500,3 +500,35 @@ void check_all(std::index_sequence<I...> /*seq*/) {
 TEST(DtoRegistry, EveryRegisteredDtoRoundTrips) {
   check_all<dto::AllDtos>(std::make_index_sequence<std::tuple_size_v<dto::AllDtos>>{});
 }
+
+// =============================================================================
+// external field contract (#516)
+// =============================================================================
+
+TEST(XMedkitExternalContract, ComponentEmitsExternalWhenSet) {
+  dto::XMedkitComponent c;
+  c.external = true;
+  auto j = dto::JsonWriter<dto::XMedkitComponent>::write(c);
+  ASSERT_TRUE(j.contains("external"));
+  EXPECT_EQ(j["external"], true);
+}
+
+TEST(XMedkitExternalContract, ComponentOmitsExternalWhenUnset) {
+  dto::XMedkitComponent c;  // external nullopt
+  auto j = dto::JsonWriter<dto::XMedkitComponent>::write(c);
+  EXPECT_FALSE(j.contains("external"));
+}
+
+TEST(XMedkitExternalContract, AppEmitsExternalWhenSet) {
+  dto::XMedkitApp a;
+  a.external = true;
+  auto j = dto::JsonWriter<dto::XMedkitApp>::write(a);
+  ASSERT_TRUE(j.contains("external"));
+  EXPECT_EQ(j["external"], true);
+}
+
+TEST(XMedkitExternalContract, AppOmitsExternalWhenUnset) {
+  dto::XMedkitApp a;  // external nullopt
+  auto j = dto::JsonWriter<dto::XMedkitApp>::write(a);
+  EXPECT_FALSE(j.contains("external"));
+}
