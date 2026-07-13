@@ -140,6 +140,16 @@ class TestParamServiceHang(GatewayTestCase):
             start = time.monotonic()
             response = requests.get(f'{self.BASE_URL}/health', timeout=30)
             elapsed = time.monotonic() - start
+        except threading.BrokenBarrierError:
+            # release_barrier.wait(timeout=10) tripped its own timeout (or the
+            # barrier was otherwise broken): not all hammer threads reached the
+            # rendezvous. Turn this into a clear failure instead of an opaque
+            # BrokenBarrierError traceback that would ERROR the test.
+            self.fail(
+                f'hammer threads did not reach the barrier within 10s '
+                f'(expected {CONCURRENT_STUCK_REQUESTS} + 1 parties) - could '
+                'not stress the HTTP worker pool as intended'
+            )
         except requests.exceptions.RequestException as e:
             self.fail(
                 f'/health did not respond within 30s while '

@@ -226,3 +226,23 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, SecondCallShortCircuitsViaNeg
   EXPECT_LT(elapsed, std::chrono::milliseconds(100))
       << "second call must hit the negative cache and fail fast, not re-attempt the 0.5s IPC timeout";
 }
+
+// A round-trip timeout against an unresponsive node must map to a
+// node-unavailable error code (TIMEOUT / SERVICE_UNAVAILABLE -> HTTP 503), NOT
+// INTERNAL_ERROR (-> HTTP 500). Before the fix the inner round-trip catch
+// rethrew into the operation's outer catch, which set INTERNAL_ERROR and thus
+// wrongly surfaced a 500 for what is really "the node isn't answering" (#531).
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, GetParameterTimeoutMapsTo503NotInternalError) {
+  auto start = std::chrono::steady_clock::now();
+  auto result = transport_->get_parameter(kUnresponsiveNodeName, "some_param");
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(result.success);
+  EXPECT_LT(elapsed, std::chrono::seconds(5)) << "get_parameter() must be bounded by service_timeout_sec";
+  EXPECT_NE(result.error_code, ParameterErrorCode::INTERNAL_ERROR)
+      << "a node round-trip timeout must not be reported as INTERNAL_ERROR (would map to HTTP 500)";
+  EXPECT_TRUE(result.error_code == ParameterErrorCode::TIMEOUT ||
+              result.error_code == ParameterErrorCode::SERVICE_UNAVAILABLE)
+      << "an unresponsive node must map to a 503 (node-unavailable) error code, got "
+      << static_cast<int>(result.error_code);
+}
