@@ -1758,6 +1758,80 @@ TEST(ResolveEntitySourceFqnsTest, ExternalAppWithStrayRosBindingOwnsFaultsByBare
   EXPECT_EQ(fqns, std::set<std::string>{"process"});
 }
 
+TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithNoAppsOwnsFaultsUnderItsOwnId) {
+  // The #516 case: a PLC modeled as an external Component with no child App.
+  // It reports faults under its own component id; the scope must be exactly
+  // {its id} so GET /components/<id>/faults is non-empty.
+  ThreadSafeEntityCache cache;
+  Component plc;
+  plc.id = "s7_1500";
+  plc.external = true;
+  cache.update_components({plc});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "s7_1500"));
+  EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, NonExternalComponentWithNoAppsStaysEmpty) {
+  // Security guardrail: a non-external Component with no apps must NOT claim its
+  // bare id - an unbound ROS component must not own faults it never reported.
+  ThreadSafeEntityCache cache;
+  Component comp;
+  comp.id = "nav_comp";
+  comp.external = false;
+  cache.update_components({comp});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "nav_comp"));
+  EXPECT_TRUE(fqns.empty());
+}
+
+TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithContributingAppKeepsAppScope) {
+  // An external Component that DOES host a ROS-bound app resolves to the app's
+  // FQN; the component id is NOT added (fallback dormant when apps contribute).
+  ThreadSafeEntityCache cache;
+  Component plc;
+  plc.id = "s7_1500";
+  plc.external = true;
+  cache.update_components({plc});
+  cache.update_apps({make_owned_app("planner", "s7_1500", "planner", "/perception/nav")});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "s7_1500"));
+  EXPECT_EQ(fqns, std::set<std::string>{"/perception/nav/planner"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, FunctionHostingExternalComponentOwnsItsFaults) {
+  // Function.hosted_by lists the device Component directly (Component-host).
+  // The Function rollup must include the external Component's bare id (#516:
+  // no synthetic App needed).
+  ThreadSafeEntityCache cache;
+  Component plc;
+  plc.id = "s7_1500";
+  plc.external = true;
+  cache.update_components({plc});
+  Function f;
+  f.id = "material_flow";
+  f.hosts = {"s7_1500"};
+  cache.update_functions({f});
+
+  auto fqns =
+      HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "material_flow"));
+  EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
+}
+
+TEST(ResolveEntitySourceFqnsTest, AreaHostingExternalComponentOwnsItsFaults) {
+  // Area rollup walks the same component gate; an external device Component in
+  // the area owns its faults on the area route.
+  ThreadSafeEntityCache cache;
+  Component plc;
+  plc.id = "s7_1500";
+  plc.area = "cell_a";
+  plc.external = true;
+  cache.update_components({plc});
+
+  auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "cell_a"));
+  EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
