@@ -92,6 +92,12 @@ components:
     parent_component_id: "main_ecu"
     description: "Lidar aggregation"
     tags: ["sensor"]
+  - id: ext_plc
+    name: "External PLC"
+    external: true
+    identity:
+      manufacturer: "Siemens"
+      serial_number: "SN-1"
 apps:
   - id: "planner"
     name: "Planner"
@@ -104,6 +110,10 @@ apps:
   - id: "standalone"
     name: "Standalone"
     description: "Standalone app without a hosting component"
+  - id: ext_app
+    name: "External App"
+    external: true
+    is_located_on: ext_plc
 functions:
   - id: "navigation"
     name: "Navigation"
@@ -258,7 +268,7 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
     auto apps = suite_node_->get_discovery_manager()->discover_apps();
     auto functions = suite_node_->get_discovery_manager()->discover_functions();
 
-    ASSERT_EQ(apps.size(), 3u);
+    ASSERT_EQ(apps.size(), 4u);
     apps[0].is_online = true;
     apps[0].bound_fqn = "/vehicle/main_ecu/planner";
     apps[1].bound_fqn = "/sensors/lidar_unit/mapper";
@@ -436,7 +446,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
   auto result = handlers_->get_components(typed_req);
   auto body = body_json(result);
   // lidar_unit has parent_component_id, so it's filtered from top-level list
-  ASSERT_EQ(body["items"].size(), 1u);
+  ASSERT_EQ(body["items"].size(), 2u);
   EXPECT_EQ(body["items"][0]["id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
   EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
@@ -452,7 +462,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsIncludesManifestIdentity) {
 
   auto result = handlers_->get_components(typed_req);
   auto body = body_json(result);
-  ASSERT_EQ(body["items"].size(), 1u);
+  ASSERT_EQ(body["items"].size(), 2u);
   const auto & identity = body["items"][0]["x-medkit"]["identity"];
   // Typed fields serialize camelCase (AssetIdentity::to_json).
   EXPECT_EQ(identity["manufacturer"], "Acme Robotics");
@@ -489,6 +499,30 @@ TEST_F(DiscoveryHandlersFixtureTest, GetComponentWithoutIdentityOmitsField) {
   auto result = handlers_->get_component(typed_req);
   auto body = body_json(result);
   EXPECT_FALSE(body["x-medkit"].contains("identity"));
+}
+
+// @verifies REQ_INTEROP_003
+// A manifest component explicitly marked `external: true` surfaces
+// x-medkit.external on the wire (#516).
+TEST_F(DiscoveryHandlersFixtureTest, GetComponentEmitsExternalOnWire) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/ext_plc", R"(/api/v1/components/([^/]+))");
+
+  auto result = handlers_->get_component(typed_req);
+  auto body = body_json(result);
+  EXPECT_EQ(body["x-medkit"]["external"], true);
+}
+
+// @verifies REQ_INTEROP_003
+// A ROS-native manifest component omits x-medkit.external entirely (absence
+// means "not external", never emitted as an explicit `false`) (#516).
+TEST_F(DiscoveryHandlersFixtureTest, GetComponentOmitsExternalForRosComponent) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu", R"(/api/v1/components/([^/]+))");
+
+  auto result = handlers_->get_component(typed_req);
+  auto body = body_json(result);
+  EXPECT_FALSE(body["x-medkit"].contains("external"));
 }
 
 // @verifies REQ_INTEROP_003
@@ -636,7 +670,7 @@ TEST_F(DiscoveryHandlersFixtureTest, ListAppsReturnsSeededMetadata) {
 
   auto result = handlers_->get_apps(typed_req);
   auto body = body_json(result);
-  ASSERT_EQ(body["items"].size(), 3u);
+  ASSERT_EQ(body["items"].size(), 4u);
   EXPECT_EQ(body["items"][0]["id"], "planner");
   EXPECT_EQ(body["items"][0]["x-medkit"]["component_id"], "main_ecu");
   EXPECT_EQ(body["items"][0]["x-medkit"]["is_online"], true);
@@ -651,6 +685,18 @@ TEST_F(DiscoveryHandlersFixtureTest, GetAppUnknownIdReturns404) {
   auto result = handlers_->get_app(typed_req);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().http_status, 404);
+}
+
+// @verifies REQ_INTEROP_003
+// A manifest app explicitly marked `external: true` surfaces
+// x-medkit.external on the wire (#516).
+TEST_F(DiscoveryHandlersFixtureTest, GetAppEmitsExternalOnWire) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/apps/ext_app", R"(/api/v1/apps/([^/]+))");
+
+  auto result = handlers_->get_app(typed_req);
+  auto body = body_json(result);
+  EXPECT_EQ(body["x-medkit"]["external"], true);
 }
 
 // @verifies REQ_INTEROP_003

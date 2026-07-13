@@ -561,6 +561,9 @@ DiscoveryHandlers::get_components(const http::TypedRequest & req) {
       if (!component.identity.empty()) {
         x_medkit_comp.identity = component.identity.to_json();
       }
+      if (component.external.value_or(false)) {
+        x_medkit_comp.external = true;
+      }
       item.x_medkit = x_medkit_comp;
 
       response.items.push_back(std::move(item));
@@ -690,6 +693,9 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     }
     if (!comp.identity.empty()) {
       x_medkit_comp.identity = comp.identity.to_json();
+    }
+    if (comp.external.value_or(false)) {
+      x_medkit_comp.external = true;
     }
 
     using Cap = CapabilityBuilder::Capability;
@@ -975,6 +981,9 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_apps(cons
         ros2.node = *app.bound_fqn;
         x_medkit_app.ros2 = ros2;
       }
+      if (app.external.value_or(false)) {
+        x_medkit_app.external = true;
+      }
       item.x_medkit = x_medkit_app;
 
       response.items.push_back(std::move(item));
@@ -1112,6 +1121,9 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     }
     if (!app.contributors.empty()) {
       x_medkit_app.contributors = sorted_contributors(app.contributors);
+    }
+    if (app.external.value_or(false)) {
+      x_medkit_app.external = true;
     }
     detail.x_medkit = x_medkit_app;
 
