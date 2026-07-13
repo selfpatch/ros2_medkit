@@ -135,14 +135,18 @@ class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
   }
 
   void TearDown() override {
-    // Release any in-flight blocking service callback first so the spin
-    // thread can drain and exit promptly.
+    // Release any in-flight blocking service callback first so the spin loop
+    // (spin_some, not a blocking spin()) can drain and the spin thread exit.
     release_blocking_callback_ = true;
+    // Documented MultiThreadedExecutor teardown order: cancel -> join spin
+    // thread -> reset executor -> reset nodes. cancel() before join is safe
+    // here because the loop is a spin_some poll gated on spin_thread_running_,
+    // so it exits regardless; cancel() also unblocks any in-flight spin_some.
+    executor_->cancel();
     spin_thread_running_ = false;
     if (spin_thread_.joinable()) {
       spin_thread_.join();
     }
-    executor_->cancel();
     executor_->remove_node(unresponsive_node_);
     transport_.reset();
     executor_.reset();
@@ -185,6 +189,12 @@ class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
 // a small multiple of service_timeout_sec (0.5s) - which is only possible
 // because get_service_timeout() is now threaded through every
 // SyncParametersClient call in the round trip.
+//
+// list_parameters() also short-circuits after its internal
+// cache_default_values() round-trip marks the node unavailable, so the whole
+// call is bounded by ~1x service_timeout_sec (one round-trip), not ~2x (#531).
+// The tighter 2s assertion documents that single-round-trip cap; the 5s bound
+// is the documented outer safety limit.
 TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersReturnsBoundedErrorInsteadOfHanging) {
   auto start = std::chrono::steady_clock::now();
   auto result = transport_->list_parameters(kUnresponsiveNodeName);
@@ -194,6 +204,9 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersReturnsBoundedE
   EXPECT_LT(elapsed, std::chrono::seconds(5))
       << "list_parameters() against an unresponsive-but-discoverable node must be bounded by "
          "service_timeout_sec, not block until the server replies (or forever, pre-fix)";
+  EXPECT_LT(elapsed, std::chrono::seconds(2))
+      << "list_parameters() must cap the spin_mutex_ hold at ~1x service_timeout_sec (single "
+         "round-trip) by short-circuiting once cache_default_values marks the node unavailable";
 }
 
 // A second, immediate call against the same node must short-circuit via the
