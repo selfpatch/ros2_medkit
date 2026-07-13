@@ -98,6 +98,12 @@ components:
     identity:
       manufacturer: "Siemens"
       serial_number: "SN-1"
+  - id: ext_sensor
+    name: "External Sensor"
+    parent_component_id: "main_ecu"
+    external: true
+    identity:
+      manufacturer: "Bosch"
 apps:
   - id: "planner"
     name: "Planner"
@@ -577,8 +583,60 @@ TEST_F(DiscoveryHandlersFixtureTest, GetSubcomponentsReturnsChildren) {
 
   auto result = handlers_->get_subcomponents(typed_req);
   auto body = body_json(result);
+  // main_ecu has two subcomponents: lidar_unit (ROS) and ext_sensor (external).
+  ASSERT_EQ(body["items"].size(), 2u);
+  bool has_lidar = false;
+  bool has_ext_sensor = false;
+  for (const auto & item : body["items"]) {
+    if (item["id"] == "lidar_unit") {
+      has_lidar = true;
+    }
+    if (item["id"] == "ext_sensor") {
+      has_ext_sensor = true;
+    }
+  }
+  EXPECT_TRUE(has_lidar);
+  EXPECT_TRUE(has_ext_sensor);
+}
+
+// A device Component browsed via a relationship/sub-collection route must still
+// read as external (the "absence == not external" invariant), so the external
+// subcomponent carries x-medkit.external while the plain ROS one does not.
+TEST_F(DiscoveryHandlersFixtureTest, SubcomponentsEmitExternalForExternalChild) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/main_ecu/subcomponents",
+                                      R"(/api/v1/components/([^/]+)/subcomponents)");
+
+  auto result = handlers_->get_subcomponents(typed_req);
+  auto body = body_json(result);
+  const auto & items = body["items"];
+  size_t ext_idx = items.size();
+  size_t lidar_idx = items.size();
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (items[i]["id"] == "ext_sensor") {
+      ext_idx = i;
+    }
+    if (items[i]["id"] == "lidar_unit") {
+      lidar_idx = i;
+    }
+  }
+  ASSERT_LT(ext_idx, items.size()) << "ext_sensor not found in subcomponents";
+  ASSERT_LT(lidar_idx, items.size()) << "lidar_unit not found in subcomponents";
+  EXPECT_EQ(items[ext_idx]["x-medkit"]["external"], true);
+  EXPECT_FALSE(items[lidar_idx]["x-medkit"].contains("external"));
+}
+
+// The hosts (App) projection must also carry x-medkit.external: ext_plc hosts
+// the external app ext_app, so a consumer browsing hosts sees the classification.
+TEST_F(DiscoveryHandlersFixtureTest, ComponentHostsEmitExternalForExternalApp) {
+  httplib::Request req;
+  auto typed_req = make_typed_request(req, "/api/v1/components/ext_plc/hosts", R"(/api/v1/components/([^/]+)/hosts)");
+
+  auto result = handlers_->get_component_hosts(typed_req);
+  auto body = body_json(result);
   ASSERT_EQ(body["items"].size(), 1u);
-  EXPECT_EQ(body["items"][0]["id"], "lidar_unit");
+  EXPECT_EQ(body["items"][0]["id"], "ext_app");
+  EXPECT_EQ(body["items"][0]["x-medkit"]["external"], true);
 }
 
 // @verifies REQ_INTEROP_005

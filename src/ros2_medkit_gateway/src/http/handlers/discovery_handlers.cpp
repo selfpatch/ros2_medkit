@@ -34,6 +34,22 @@ namespace handlers {
 
 namespace {
 
+/// Emit the x-medkit `external` flag only when the entity is effectively
+/// external (tri-state true). Explicit false and unset both leave the field
+/// absent, so the "absence == not external" wire contract holds. Centralised
+/// here so no call site can leak `external: false` by assigning the raw
+/// optional; every route that carries a Component/App x-medkit calls this (#516).
+void set_x_medkit_external(dto::XMedkitComponent & x_medkit, const std::optional<bool> & external) {
+  if (external.value_or(false)) {
+    x_medkit.external = true;
+  }
+}
+void set_x_medkit_external(dto::XMedkitApp & x_medkit, const std::optional<bool> & external) {
+  if (external.value_or(false)) {
+    x_medkit.external = true;
+  }
+}
+
 /// Check if a capability name is already present in the capabilities array
 bool has_capability(const json & capabilities, const std::string & name) {
   for (const auto & cap : capabilities) {
@@ -336,6 +352,7 @@ DiscoveryHandlers::get_area_components(const http::TypedRequest & req) {
           ros2.ns = component.namespace_path;
           x_medkit_comp.ros2 = ros2;
         }
+        set_x_medkit_external(x_medkit_comp, component.external);
         item.x_medkit = x_medkit_comp;
 
         response.items.push_back(std::move(item));
@@ -490,6 +507,7 @@ DiscoveryHandlers::get_area_contains(const http::TypedRequest & req) {
         ros2.ns = comp.namespace_path;
         x_medkit_comp.ros2 = ros2;
       }
+      set_x_medkit_external(x_medkit_comp, comp.external);
       item.x_medkit = x_medkit_comp;
 
       response.items.push_back(std::move(item));
@@ -561,9 +579,7 @@ DiscoveryHandlers::get_components(const http::TypedRequest & req) {
       if (!component.identity.empty()) {
         x_medkit_comp.identity = component.identity.to_json();
       }
-      if (component.external.value_or(false)) {
-        x_medkit_comp.external = true;
-      }
+      set_x_medkit_external(x_medkit_comp, component.external);
       item.x_medkit = x_medkit_comp;
 
       response.items.push_back(std::move(item));
@@ -694,9 +710,7 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     if (!comp.identity.empty()) {
       x_medkit_comp.identity = comp.identity.to_json();
     }
-    if (comp.external.value_or(false)) {
-      x_medkit_comp.external = true;
-    }
+    set_x_medkit_external(x_medkit_comp, comp.external);
 
     using Cap = CapabilityBuilder::Capability;
     std::vector<Cap> caps = {
@@ -776,6 +790,7 @@ DiscoveryHandlers::get_subcomponents(const http::TypedRequest & req) {
         ros2.ns = sub.namespace_path;
         x_medkit_comp.ros2 = ros2;
       }
+      set_x_medkit_external(x_medkit_comp, sub.external);
       item.x_medkit = x_medkit_comp;
 
       response.items.push_back(std::move(item));
@@ -850,6 +865,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_component
         ros2.node = *app.bound_fqn;
         x_medkit_app.ros2 = ros2;
       }
+      set_x_medkit_external(x_medkit_app, app.external);
       item.x_medkit = x_medkit_app;
 
       response.items.push_back(std::move(item));
@@ -914,6 +930,7 @@ DiscoveryHandlers::get_component_depends_on(const http::TypedRequest & req) {
         if (!dep_opt->source.empty()) {
           x_medkit_comp.source = dep_opt->source;
         }
+        set_x_medkit_external(x_medkit_comp, dep_opt->external);
         item.x_medkit = x_medkit_comp;
       } else {
         item.name = dep_id;
@@ -981,9 +998,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_apps(cons
         ros2.node = *app.bound_fqn;
         x_medkit_app.ros2 = ros2;
       }
-      if (app.external.value_or(false)) {
-        x_medkit_app.external = true;
-      }
+      set_x_medkit_external(x_medkit_app, app.external);
       item.x_medkit = x_medkit_app;
 
       response.items.push_back(std::move(item));
@@ -1122,9 +1137,7 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     if (!app.contributors.empty()) {
       x_medkit_app.contributors = sorted_contributors(app.contributors);
     }
-    if (app.external.value_or(false)) {
-      x_medkit_app.external = true;
-    }
+    set_x_medkit_external(x_medkit_app, app.external);
     detail.x_medkit = x_medkit_app;
 
     return detail;
@@ -1184,6 +1197,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_app_depen
           x_medkit_app.source = dep_opt->source;
         }
         x_medkit_app.is_online = dep_opt->is_online;
+        set_x_medkit_external(x_medkit_app, dep_opt->external);
         item.x_medkit = x_medkit_app;
       } else {
         item.name = dep_id;
@@ -1571,6 +1585,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_function_
           ros2.node = *app_opt->bound_fqn;
           x_medkit_app.ros2 = ros2;
         }
+        set_x_medkit_external(x_medkit_app, app_opt->external);
         item.x_medkit = x_medkit_app;
 
         response.items.push_back(std::move(item));
