@@ -26,6 +26,7 @@
 
 #include "ros2_medkit_gateway/core/discovery/manifest/manifest_parser.hpp"
 
+using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::discovery::ManifestConfig;
 using ros2_medkit_gateway::discovery::ManifestParser;
 
@@ -293,6 +294,35 @@ apps:
   ASSERT_EQ(manifest.apps.size(), 1);
   ASSERT_TRUE(manifest.apps[0].external.has_value());
   EXPECT_FALSE(manifest.apps[0].external.value());
+}
+
+TEST_F(ManifestParserTest, ParseComponent_ExternalKeyTriState) {
+  const std::string yaml = R"(
+manifest_version: "1.0"
+metadata: { name: t, version: "1.0.0" }
+components:
+  - id: plc
+    external: true
+  - id: ros_node
+    external: false
+  - id: unclassified
+)";
+  auto manifest = parser_.parse_string(yaml);
+  ASSERT_EQ(manifest.components.size(), 3u);
+  auto by_id = [&](const std::string & id) -> const Component & {
+    for (const auto & c : manifest.components) {
+      if (c.id == id) {
+        return c;
+      }
+    }
+    ADD_FAILURE() << "component not found: " << id;
+    static Component none;
+    return none;
+  };
+  EXPECT_TRUE(by_id("plc").external.value_or(false));
+  ASSERT_TRUE(by_id("ros_node").external.has_value());
+  EXPECT_FALSE(by_id("ros_node").external.value());
+  EXPECT_FALSE(by_id("unclassified").external.has_value());
 }
 
 TEST_F(ManifestParserTest, ParseFunctions) {
