@@ -445,11 +445,21 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsReturnsMetadata) {
 
   auto result = handlers_->get_components(typed_req);
   auto body = body_json(result);
-  // lidar_unit has parent_component_id, so it's filtered from top-level list
+  // lidar_unit has parent_component_id, so it's filtered from top-level list.
   ASSERT_EQ(body["items"].size(), 2u);
-  EXPECT_EQ(body["items"][0]["id"], "main_ecu");
-  EXPECT_EQ(body["items"][0]["description"], "Vehicle control unit");
-  EXPECT_EQ(body["items"][0]["x-medkit"]["source"], "manifest");
+  // get_components() does not sort; find main_ecu by id rather than assuming order.
+  const auto & items = body["items"];
+  size_t main_ecu_idx = items.size();
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (items[i]["id"] == "main_ecu") {
+      main_ecu_idx = i;
+      break;
+    }
+  }
+  ASSERT_LT(main_ecu_idx, items.size()) << "main_ecu not found in /components list";
+  const auto & main_ecu = items[main_ecu_idx];
+  EXPECT_EQ(main_ecu["description"], "Vehicle control unit");
+  EXPECT_EQ(main_ecu["x-medkit"]["source"], "manifest");
 }
 
 // @verifies REQ_INTEROP_003
@@ -463,7 +473,17 @@ TEST_F(DiscoveryHandlersFixtureTest, ListComponentsIncludesManifestIdentity) {
   auto result = handlers_->get_components(typed_req);
   auto body = body_json(result);
   ASSERT_EQ(body["items"].size(), 2u);
-  const auto & identity = body["items"][0]["x-medkit"]["identity"];
+  // get_components() does not sort; find main_ecu by id rather than assuming order.
+  const auto & items = body["items"];
+  size_t main_ecu_idx = items.size();
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (items[i]["id"] == "main_ecu") {
+      main_ecu_idx = i;
+      break;
+    }
+  }
+  ASSERT_LT(main_ecu_idx, items.size()) << "main_ecu not found in /components list";
+  const auto & identity = items[main_ecu_idx]["x-medkit"]["identity"];
   // Typed fields serialize camelCase (AssetIdentity::to_json).
   EXPECT_EQ(identity["manufacturer"], "Acme Robotics");
   EXPECT_EQ(identity["model"], "ECU-9000");
