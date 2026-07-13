@@ -1,0 +1,71 @@
+# Copyright 2026 bburda
+#
+# SOVD manifest fixture for #516: an external Component (a PLC bridged into SOVD
+# by a protocol plugin) owns its fault_manager faults with NO child App located
+# on it. Mirrors the #517 external-App fixture but at the Component level. Also
+# carries AAS-Nameplate identity to confirm identity is orthogonal to the
+# external classification, and an internal (ROS) Component as the guardrail.
+#
+# `plc-diag` is a separate external App used only to pin App external wire
+# parity (test_external_flag_and_identity_on_the_wire) - it is deliberately NOT
+# `is_located_on: s7-plc`. Locating it on the Component would give
+# `s7-plc` a contributing child app, and per the fault-scope rule
+# (ResolveEntitySourceFqnsTest.ExternalComponentWithContributingAppKeepsAppScope)
+# the component's fault scope would then resolve to the app's id/FQN instead of
+# falling back to the component's own bare id
+# (ResolveEntitySourceFqnsTest.ExternalComponentWithNoAppsOwnsFaultsUnderItsOwnId),
+# which would silently break the component/function/area rollup this fixture
+# exists to pin.
+#
+# Used by: test/features/test_external_component_fault_rollup.test.py
+manifest_version: "1.0"
+
+metadata:
+  name: "external-component-fault-rollup"
+  version: "1.0.0"
+  description: "External (non-ROS) Component fault-rollup fixture (#516)"
+
+config:
+  unmanifested_nodes: warn
+  inherit_runtime_resources: true
+
+areas:
+  - id: plc-cell
+    name: "PLC Cell"
+    namespace: /plc_cell
+    description: "Industrial cell hosting a PLC bridged into SOVD"
+
+components:
+  - id: s7-plc
+    name: "Siemens S7 PLC"
+    type: "controller"
+    area: plc-cell
+    external: true
+    description: "Non-ROS PLC introspected by a protocol plugin; owns its faults"
+    identity:
+      manufacturer: "Siemens"
+      model: "S7-1500"
+      order_code: "6ES7515-2AM02-0AB0"
+      serial_number: "SN-PLC-0001"
+      role: "plc"
+  - id: nav-controller
+    name: "Nav Controller"
+    type: "controller"
+    area: plc-cell
+    description: "Internal ROS component (guardrail: must NOT own bare-id faults)"
+    identity:
+      manufacturer: "Acme"
+      model: "NavCtl-1"
+
+apps:
+  - id: plc-diag
+    name: "PLC Diagnostics"
+    external: true
+    description: "External diagnostic app (guards App external wire parity); not located on s7-plc on purpose (see header)"
+
+functions:
+  - id: material_flow
+    name: "Material Flow"
+    category: "process"
+    hosted_by:
+      - s7-plc
