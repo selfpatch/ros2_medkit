@@ -550,6 +550,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_configuration_manager gateway_ros2)
   medkit_set_test_domain(test_configuration_manager)
 
+  # Ros2ParameterTransport round-trip timeout coverage (#531): a
+  # discoverable-but-unresponsive node's parameter service must not hang the
+  # transport forever.
+  ament_add_gtest(test_ros2_parameter_transport test/test_ros2_parameter_transport.cpp)
+  target_link_libraries(test_ros2_parameter_transport gateway_ros2)
+  medkit_set_test_domain(test_ros2_parameter_transport)
+
   find_package(std_msgs REQUIRED)
 
   # Add DiscoveryManager tests
@@ -1034,6 +1041,7 @@ if(BUILD_TESTING)
       test_generic_client_compat
       test_operation_manager
       test_configuration_manager
+      test_ros2_parameter_transport
       test_discovery_manager
       test_runtime_discovery
       test_tls_config

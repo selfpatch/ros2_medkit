@@ -79,10 +79,6 @@ class ParameterTransport {
   /// Service availability check (same semantics as today's negative cache).
   virtual bool is_node_available(const std::string & node_name) const = 0;
 
-  /// Drop client/cached state for a given node (called by the manager when
-  /// reset / refresh is requested).
-  virtual void invalidate(const std::string & node_name) = 0;
-
   /// Tear down all cached clients before rclcpp::shutdown(). Idempotent.
   virtual void shutdown() = 0;
 };

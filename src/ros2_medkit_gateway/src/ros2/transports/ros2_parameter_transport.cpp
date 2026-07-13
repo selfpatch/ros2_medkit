@@ -71,21 +71,6 @@ bool Ros2ParameterTransport::is_node_available(const std::string & node_name) co
   return !is_node_unavailable(node_name);
 }
 
-void Ros2ParameterTransport::invalidate(const std::string & node_name) {
-  {
-    std::unique_lock<std::shared_mutex> lock(negative_cache_mutex_);
-    unavailable_nodes_.erase(node_name);
-  }
-  {
-    std::lock_guard<std::mutex> lock(defaults_mutex_);
-    default_values_.erase(node_name);
-  }
-  {
-    std::lock_guard<std::mutex> lock(clients_mutex_);
-    param_clients_.erase(node_name);
-  }
-}
-
 std::optional<std::unique_lock<std::timed_mutex>>
 Ros2ParameterTransport::try_acquire_spin_lock(ParameterResult & result) {
   auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -271,13 +256,22 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
         return result;
       }
 
-      auto param_names = client->list_parameters({}, 0);
-      parameters = client->get_parameters(param_names.names);
+      std::vector<std::string> param_names;
+      try {
+        auto list_result = client->list_parameters({}, 0, get_service_timeout());
+        param_names = list_result.names;
+        parameters = client->get_parameters(param_names, get_service_timeout());
+      } catch (const std::exception &) {
+        // Discoverable-but-unresponsive node: negative-cache so the next
+        // request fails fast instead of waiting the full timeout again (#531).
+        mark_node_unavailable(node_name);
+        throw;
+      }
 
-      if (parameters.empty() && !param_names.names.empty()) {
-        for (const auto & name : param_names.names) {
+      if (parameters.empty() && !param_names.empty()) {
+        for (const auto & name : param_names) {
           try {
-            auto single_params = client->get_parameters({name});
+            auto single_params = client->get_parameters({name}, get_service_timeout());
             if (!single_params.empty()) {
               parameters.push_back(single_params[0]);
             }
@@ -353,7 +347,23 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
         return result;
       }
 
-      auto param_names = client->list_parameters({param_name}, 1);
+      rcl_interfaces::msg::ListParametersResult param_names;
+      std::vector<rclcpp::Parameter> parameters;
+      try {
+        param_names = client->list_parameters({param_name}, 1, get_service_timeout());
+        if (!param_names.names.empty()) {
+          parameters = client->get_parameters({param_name}, get_service_timeout());
+          if (!parameters.empty()) {
+            descriptors = client->describe_parameters({param_name}, get_service_timeout());
+          }
+        }
+      } catch (const std::exception &) {
+        // Discoverable-but-unresponsive node: negative-cache so the next
+        // request fails fast instead of waiting the full timeout again (#531).
+        mark_node_unavailable(node_name);
+        throw;
+      }
+
       if (param_names.names.empty()) {
         result.success = false;
         result.error_message = "Parameter not found: " + param_name;
@@ -361,7 +371,6 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
         return result;
       }
 
-      auto parameters = client->get_parameters({param_name});
       if (parameters.empty()) {
         result.success = false;
         result.error_message = "Failed to get parameter: " + param_name;
@@ -370,7 +379,6 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
       }
 
       param = parameters[0];
-      descriptors = client->describe_parameters({param_name});
     }  // spin_mutex_ released.
 
     json param_obj;
@@ -465,16 +473,34 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
       return result;
     }
 
-    auto current_params = client->get_parameters({param_name});
+    std::vector<rclcpp::Parameter> current_params;
+    try {
+      current_params = client->get_parameters({param_name}, get_service_timeout());
+    } catch (const std::exception &) {
+      // Discoverable-but-unresponsive node: negative-cache so the next
+      // request fails fast instead of waiting the full timeout again (#531).
+      mark_node_unavailable(node_name);
+      throw;
+    }
     rclcpp::ParameterType hint_type = rclcpp::ParameterType::PARAMETER_NOT_SET;
     if (!current_params.empty()) {
       hint_type = current_params[0].get_type();
     }
 
+    // json_to_parameter_value throws on bad CLIENT input (e.g. malformed
+    // value for the parameter's type) - deliberately NOT wrapped by the
+    // node-round-trip try/catch above/below so a bad client value never
+    // negative-caches a healthy node (#531).
     rclcpp::ParameterValue param_value = json_to_parameter_value(value, hint_type);
     rclcpp::Parameter param(param_name, param_value);
 
-    auto results = client->set_parameters({param});
+    std::vector<rcl_interfaces::msg::SetParametersResult> results;
+    try {
+      results = client->set_parameters({param}, get_service_timeout());
+    } catch (const std::exception &) {
+      mark_node_unavailable(node_name);
+      throw;
+    }
     if (results.empty() || !results[0].successful) {
       result.success = false;
       result.error_message = results.empty() ? "Failed to set parameter" : results[0].reason;
@@ -828,15 +854,23 @@ void Ros2ParameterTransport::cache_default_values(const std::string & node_name)
       return;
     }
 
-    auto param_names = client->list_parameters({}, 0);
-
+    std::vector<std::string> param_names;
     std::vector<rclcpp::Parameter> parameters;
-    parameters = client->get_parameters(param_names.names);
+    try {
+      auto list_result = client->list_parameters({}, 0, get_service_timeout());
+      param_names = list_result.names;
+      parameters = client->get_parameters(param_names, get_service_timeout());
+    } catch (const std::exception &) {
+      // Discoverable-but-unresponsive node: negative-cache so the next
+      // request fails fast instead of waiting the full timeout again (#531).
+      mark_node_unavailable(node_name);
+      throw;
+    }
 
-    if (parameters.empty() && !param_names.names.empty()) {
-      for (const auto & name : param_names.names) {
+    if (parameters.empty() && !param_names.empty()) {
+      for (const auto & name : param_names) {
         try {
-          auto single_params = client->get_parameters({name});
+          auto single_params = client->get_parameters({name}, get_service_timeout());
           if (!single_params.empty()) {
             parameters.push_back(single_params[0]);
           }
