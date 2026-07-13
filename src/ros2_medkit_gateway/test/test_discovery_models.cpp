@@ -174,6 +174,29 @@ TEST_F(ComponentModelTest, ToCapabilities_ContainsConfigurationsForNodes) {
   EXPECT_EQ(j["configurations"], "http://localhost:8080/api/v1/components/motor_controller/configurations");
 }
 
+TEST_F(ComponentModelTest, ToJson_OmitsExternalWhenUnsetOrFalse) {
+  // Default: external unset -> field absent (stable wire shape).
+  json j = comp_.to_json();
+  EXPECT_FALSE(j["x-medkit"].contains("external"));
+
+  comp_.external = false;  // explicit ROS component -> still absent
+  json j2 = comp_.to_json();
+  EXPECT_FALSE(j2["x-medkit"].contains("external"));
+}
+
+TEST_F(ComponentModelTest, ToJson_ExternalWhenTrue) {
+  comp_.external = true;
+  json j = comp_.to_json();
+  EXPECT_EQ(j["x-medkit"]["external"], true);
+}
+
+TEST_F(ComponentModelTest, Equality_DistinguishesExternal) {
+  Component other = comp_;
+  ASSERT_EQ(comp_, other);
+  other.external = true;
+  EXPECT_NE(comp_, other);
+}
+
 // =============================================================================
 // App Model Tests
 // =============================================================================

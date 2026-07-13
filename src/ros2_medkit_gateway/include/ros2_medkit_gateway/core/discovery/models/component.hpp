@@ -53,6 +53,12 @@ struct Component {
   std::optional<json> host_metadata;      ///< Host system metadata (for runtime default component)
   AssetIdentity identity;                 ///< Asset-identity nameplate (merged across sources, per-field provenance)
 
+  /// Tri-state: nullopt = no layer classified this component, true = non-ROS
+  /// external asset (PLC/fieldbus/device), false = explicitly a ROS component.
+  /// Mirrors App::external so a device Component owns its fault_manager faults
+  /// without a synthetic child App (#516).
+  std::optional<bool> external;
+
   /**
    * @brief Convert to JSON representation
    * @return JSON object with component data
@@ -98,6 +104,11 @@ struct Component {
     }
     if (!identity.empty()) {
       x_medkit["identity"] = identity.to_json();
+    }
+    // Emit only when effectively external; omitted and explicit-false both leave
+    // the field absent, keeping the wire shape stable (absence == not external).
+    if (external.value_or(false)) {
+      x_medkit["external"] = true;
     }
     j["x-medkit"] = x_medkit;
 
@@ -183,7 +194,8 @@ inline bool operator==(const Component & a, const Component & b) {
          a.description == b.description && a.variant == b.variant && a.tags == b.tags &&
          a.parent_component_id == b.parent_component_id && a.depends_on == b.depends_on &&
          a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
-         a.topics == b.topics && a.host_metadata == b.host_metadata && a.identity == b.identity;
+         a.topics == b.topics && a.host_metadata == b.host_metadata && a.identity == b.identity &&
+         a.external == b.external;
 }
 inline bool operator!=(const Component & a, const Component & b) {
   return !(a == b);
