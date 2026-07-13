@@ -255,6 +255,13 @@ Component ManifestParser::parse_component(const YAML::Node & node) const {
   comp.source = "manifest";
   comp.identity = parse_identity(node);
 
+  // Preserve the omitted-vs-explicit distinction: an absent `external:` key
+  // leaves nullopt so the hybrid merge cannot let a stub's default erase a
+  // plugin's introspected classification (#516, mirrors the App rule #517).
+  if (node["external"]) {
+    comp.external = node["external"].as<bool>();
+  }
+
   // Parse type if provided (e.g., "controller", "sensor", "actuator")
   std::string type_val = get_string(node, "type");
   if (!type_val.empty()) {
