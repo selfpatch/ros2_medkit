@@ -1,6 +1,6 @@
-# Copyright 2026 bburda
-#
-# SOVD manifest fixture for #516: an external Component (a PLC bridged into SOVD
+# SOVD System Manifest: External-component fault-rollup fixture (#516)
+# ====================================================================
+# An external Component (a PLC bridged into SOVD
 # by a protocol plugin) owns its fault_manager faults with NO child App located
 # on it. Mirrors the #517 external-App fixture but at the Component level. Also
 # carries AAS-Nameplate identity to confirm identity is orthogonal to the
