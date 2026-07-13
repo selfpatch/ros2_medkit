@@ -100,10 +100,10 @@ inline constexpr std::string_view dto_name<XMedkitArea> = "XMedkitArea";
 //   description       <- comp.description       (via ext.add())
 //   contributors      <- comp.contributors
 //   capabilities      <- capabilities JSON array (via ext.add())
+//   external          <- comp.external, non-ROS external asset classification; detail + list routes only (#516)
 //
 // Also used in sub-collection responses (depends-on, subcomponents, hosts, contains, etc.):
 //   missing           <- true when component reference cannot be resolved
-//   external          <- comp.external, non-ROS external asset classification (#516)
 //
 // Note: "parentComponentId" uses camelCase on the wire per discovery_handlers.cpp.
 // "dependsOn" uses camelCase on the wire per discovery_handlers.cpp.
@@ -149,10 +149,10 @@ inline constexpr std::string_view dto_name<XMedkitComponent> = "XMedkitComponent
 //   ros2.node     <- app.bound_fqn
 //   component_id  <- app.component_id
 //   contributors  <- app.contributors  (detail only)
+//   external      <- app.external, non-ROS external asset classification; detail + list routes only (#516/#517)
 //
 // Also used in sub-collection responses (depends-on, hosts, function-hosts):
 //   missing       <- true when app reference cannot be resolved
-//   external      <- app.external, non-ROS external asset classification (#516/#517)
 // ---------------------------------------------------------------------------
 struct XMedkitApp {
   std::optional<XMedkitRos2> ros2;
