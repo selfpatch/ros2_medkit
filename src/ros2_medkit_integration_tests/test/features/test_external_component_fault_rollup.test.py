@@ -39,7 +39,7 @@ The fixture's second Component (``nav-controller``) is internal (no
 unbound ROS component must not claim faults it never reported.
 
 The merge-level preservation is unit-covered
-(``MergePipelineTest.PluginExternalClassificationSurvivesManifestMetadataMerge``)
+(``MergePipelineTest.PluginExternalClassificationSurvivesManifestComponentMetadataMerge``)
 and the per-route scope resolution is unit-covered
 (``ResolveEntitySourceFqnsTest.*``). This test pins the full HTTP-stack
 behaviour those two disjoint unit layers never exercise together: report a
