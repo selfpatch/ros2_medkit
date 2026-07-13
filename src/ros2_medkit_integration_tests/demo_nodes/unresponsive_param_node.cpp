@@ -139,12 +139,14 @@ int main(int argc, char ** argv) {
   {
     auto node = std::make_shared<UnresponsiveParamNode>();
 
-    // MultiThreadedExecutor (not the SingleThreadedExecutor other demo nodes
-    // use): several test HTTP workers can each trigger a concurrent
-    // list_parameters round trip against this node, and each must get its
-    // own blocked worker thread here rather than queuing behind a single
-    // stuck one - matching the "several requests genuinely in flight at
-    // once" scenario the /health-stays-responsive test exercises.
+    // MultiThreadedExecutor is not strictly required: the gateway's
+    // Ros2ParameterTransport serializes all parameter round trips behind a
+    // single process-wide spin_mutex_, so only one ~/list_parameters RPC is
+    // ever in flight at this node at a time and a SingleThreadedExecutor
+    // would behave identically. The concurrency the /health test stresses
+    // lives in the gateway (std::async fan-out contending on that
+    // spin_mutex_), not in ROS-service dispatch here. Kept multi-threaded
+    // only as harmless future-proofing.
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);
 
