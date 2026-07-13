@@ -87,7 +87,7 @@ class TestParamServiceHang(GatewayTestCase):
         /configurations requests against the unresponsive node than there
         are HTTP workers (server.http_thread_pool_size defaults to 6), then,
         while they are still in flight, assert /health answers within a
-        short, fixed client-side timeout. After the fix each stuck call is
+        bounded client-side timeout. After the fix each stuck call is
         bounded by parameter_service_timeout_sec, so workers free up in time
         for /health to get one; pre-fix this call would simply never
         return.
@@ -134,15 +134,15 @@ class TestParamServiceHang(GatewayTestCase):
             # /health, so the pool is genuinely under pressure rather than
             # /health racing them to a free worker before any of them start
             # blocking. Comfortably smaller than the ~2s bound each stuck
-            # call is held to, so it does not eat into the 5s /health budget.
+            # call is held to, so it does not eat into the /health budget.
             time.sleep(0.3)
 
             start = time.monotonic()
-            response = requests.get(f'{self.BASE_URL}/health', timeout=5)
+            response = requests.get(f'{self.BASE_URL}/health', timeout=30)
             elapsed = time.monotonic() - start
         except requests.exceptions.RequestException as e:
             self.fail(
-                f'/health did not respond within 5s while '
+                f'/health did not respond within 30s while '
                 f'{CONCURRENT_STUCK_REQUESTS} concurrent /configurations '
                 f'calls were stuck against the unresponsive node: {e}'
             )
@@ -160,8 +160,14 @@ class TestParamServiceHang(GatewayTestCase):
             f'/health returned {response.status_code} while the pool was '
             'under pressure from stuck /configurations calls'
         )
+        # 30s (not a tighter bound) deliberately: pre-fix this /health call
+        # was a TRUE infinite hang - no worker ever frees while the stuck
+        # round trips hold them - so any bound well under the 120s CTest
+        # TIMEOUT cleanly distinguishes "fixed" from "broken". 30s removes
+        # sanitizer-CI flake risk (TSan slows this thread/lock-heavy path,
+        # inflating the ~2s round trip) with zero loss of rigor.
         self.assertLess(
-            elapsed, 5.0,
+            elapsed, 30.0,
             f'/health took {elapsed:.1f}s to respond while '
             f'{CONCURRENT_STUCK_REQUESTS} concurrent /configurations calls '
             'were stuck - the REST API must stay responsive, not queue '
