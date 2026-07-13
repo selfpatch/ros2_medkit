@@ -1513,6 +1513,60 @@ TEST_F(MergePipelineTest, AppExternalField_AuthoritativeExplicitFalseOverridesPl
   EXPECT_FALSE(result.apps[0].external.value()) << "authoritative external: false must override plugin true";
 }
 
+TEST_F(MergePipelineTest, PluginExternalClassificationSurvivesManifestComponentMetadataMerge) {
+  // Manifest stub: declares the component id, no external key -> nullopt.
+  Component manifest_comp = make_component("s7_1500");
+  manifest_comp.source = "manifest";
+
+  // Plugin introspection: same id, classified external.
+  Component plugin_comp = make_component("s7_1500");
+  plugin_comp.external = true;
+  plugin_comp.source = "opcua";
+
+  LayerOutput manifest_out, plugin_out;
+  manifest_out.components.push_back(manifest_comp);
+  plugin_out.components.push_back(plugin_comp);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  EXPECT_TRUE(result.components[0].external.value_or(false))
+      << "hybrid merge dropped the plugin's external classification";
+  EXPECT_EQ(result.components[0].source, "manifest");
+}
+
+TEST_F(MergePipelineTest, AuthoritativeManifestExternalFalseCorrectsPluginComponent) {
+  Component manifest_comp = make_component("s7_1500");
+  manifest_comp.external = false;  // explicit, authoritative: this IS a ROS node
+  manifest_comp.source = "manifest";
+
+  Component plugin_comp = make_component("s7_1500");
+  plugin_comp.external = true;  // plugin misclassified it
+  plugin_comp.source = "opcua";
+
+  LayerOutput manifest_out, plugin_out;
+  manifest_out.components.push_back(manifest_comp);
+  plugin_out.components.push_back(plugin_comp);
+
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "manifest", manifest_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::AUTHORITATIVE}}));
+  pipeline_.add_layer(std::make_unique<TestLayer>(
+      "plugin", plugin_out,
+      std::unordered_map<FieldGroup, MergePolicy>{{FieldGroup::METADATA, MergePolicy::ENRICHMENT}}));
+
+  auto result = pipeline_.execute();
+  ASSERT_EQ(result.components.size(), 1u);
+  ASSERT_TRUE(result.components[0].external.has_value());
+  EXPECT_FALSE(result.components[0].external.value()) << "authoritative external: false must override plugin true";
+}
+
 // --- Area field group merge tests ---
 
 TEST_F(MergePipelineTest, AreaIdentityMerge_ManifestAuthoritativeWinsName) {

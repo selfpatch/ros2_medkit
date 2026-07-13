@@ -263,6 +263,7 @@ void apply_field_group_merge(Entity & target, const Entity & source, FieldGroup 
       case FieldGroup::METADATA:
         merge_scalar(target.source, source.source, res.scalar);
         merge_scalar(target.variant, source.variant, res.scalar);
+        merge_external(target.external, source.external, res.scalar);
         break;
       case FieldGroup::STATUS:
       default:
