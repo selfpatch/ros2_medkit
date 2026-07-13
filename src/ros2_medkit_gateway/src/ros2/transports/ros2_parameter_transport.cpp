@@ -242,7 +242,19 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
       }
 
       // Cache default values first (gives node extra time for DDS service discovery).
+      // This is itself a bounded round-trip that marks the node unavailable on
+      // timeout. Short-circuit here if it just did so, rather than spending a
+      // SECOND up-to-service_timeout_sec_ round-trip below: holding spin_mutex_
+      // across both would exceed the acquisition margin granted by
+      // try_acquire_spin_lock() and spuriously TIMEOUT a concurrent request to a
+      // different, healthy node (#531).
       cache_default_values(node_name);
+      if (is_node_unavailable(node_name)) {
+        result.success = false;
+        result.error_message = "Parameter service not available for node: " + node_name;
+        result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
+        return result;
+      }
 
       if (!client->wait_for_service(get_service_timeout())) {
         result.success = false;
