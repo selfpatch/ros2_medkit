@@ -274,10 +274,14 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
         param_names = list_result.names;
         parameters = client->get_parameters(param_names, get_service_timeout());
       } catch (const std::exception &) {
-        // Discoverable-but-unresponsive node: negative-cache so the next
-        // request fails fast instead of waiting the full timeout again (#531).
+        // Discoverable-but-unresponsive node: the bounded round-trip timed out.
+        // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
+        // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
         mark_node_unavailable(node_name);
-        throw;
+        result.success = false;
+        result.error_message = "Parameter service did not respond for node: " + node_name;
+        result.error_code = ParameterErrorCode::TIMEOUT;
+        return result;
       }
 
       if (parameters.empty() && !param_names.empty()) {
@@ -370,10 +374,14 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
           }
         }
       } catch (const std::exception &) {
-        // Discoverable-but-unresponsive node: negative-cache so the next
-        // request fails fast instead of waiting the full timeout again (#531).
+        // Discoverable-but-unresponsive node: the bounded round-trip timed out.
+        // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
+        // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
         mark_node_unavailable(node_name);
-        throw;
+        result.success = false;
+        result.error_message = "Parameter service did not respond for node: " + node_name;
+        result.error_code = ParameterErrorCode::TIMEOUT;
+        return result;
       }
 
       if (param_names.names.empty()) {
@@ -489,10 +497,14 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
     try {
       current_params = client->get_parameters({param_name}, get_service_timeout());
     } catch (const std::exception &) {
-      // Discoverable-but-unresponsive node: negative-cache so the next
-      // request fails fast instead of waiting the full timeout again (#531).
+      // Discoverable-but-unresponsive node: the bounded round-trip timed out.
+      // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
+      // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
       mark_node_unavailable(node_name);
-      throw;
+      result.success = false;
+      result.error_message = "Parameter service did not respond for node: " + node_name;
+      result.error_code = ParameterErrorCode::TIMEOUT;
+      return result;
     }
     rclcpp::ParameterType hint_type = rclcpp::ParameterType::PARAMETER_NOT_SET;
     if (!current_params.empty()) {
@@ -510,8 +522,14 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
     try {
       results = client->set_parameters({param}, get_service_timeout());
     } catch (const std::exception &) {
+      // Discoverable-but-unresponsive node: the bounded round-trip timed out.
+      // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
+      // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
       mark_node_unavailable(node_name);
-      throw;
+      result.success = false;
+      result.error_message = "Parameter service did not respond for node: " + node_name;
+      result.error_code = ParameterErrorCode::TIMEOUT;
+      return result;
     }
     if (results.empty() || !results[0].successful) {
       result.success = false;

@@ -159,8 +159,17 @@ int main(int argc, char ** argv) {
         }
         // EINTR can theoretically fire; retry.
       }
-      // Flip rclcpp::ok() to false first so the blocking list_parameters
-      // callback notices and returns; only then ask the executor to stop.
+      // DELIBERATE ORDER - shutdown() BEFORE cancel(), the reverse of the
+      // standard demo-node teardown (cancel -> join -> reset). The
+      // ~/list_parameters callback above blocks its executor worker in
+      // `while (rclcpp::ok())`, so the usual cancel()-first pattern would
+      // deadlock here: cancel() does not interrupt a callback that is already
+      // running, ok() would still be true, the callback would never return,
+      // and spin()/cancel()/join would all hang (forcing a SIGKILL
+      // escalation). Calling rclcpp::shutdown() first flips ok() to false,
+      // which unblocks the callback so it returns; only then is it safe to
+      // cancel() the (now idle) executor. This is why the post-shutdown e2e
+      // check sees clean exit codes instead of a SIGKILL.
       rclcpp::shutdown();
       executor.cancel();
     });
