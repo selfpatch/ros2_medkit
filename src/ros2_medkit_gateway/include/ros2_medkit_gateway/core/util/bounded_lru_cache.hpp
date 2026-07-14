@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <utility>
@@ -48,10 +49,19 @@ namespace ros2_medkit_gateway {
 template <typename Key, typename Value>
 class BoundedLruCache {
  public:
+  /// Invoked with the (key, value) of an entry about to be evicted, just before
+  /// it is erased. Lets a caller observe evictions (for example to log a warning
+  /// when a cached default value is dropped). Runs while the caller's mutex is
+  /// held, so it must be cheap and must not call back into the cache.
+  using EvictCallback = std::function<void(const Key &, const Value &)>;
+
   /// @param max_size Maximum number of entries retained. Values below 1 are
   ///                 clamped to 1 (a zero-capacity LRU cache is meaningless and
   ///                 would evict the entry it just inserted).
-  explicit BoundedLruCache(std::size_t max_size) : max_size_(max_size == 0 ? 1 : max_size) {
+  /// @param on_evict Optional callback run for each least-recently-used entry
+  ///                 evicted on overflow. Empty by default (no observation).
+  explicit BoundedLruCache(std::size_t max_size, EvictCallback on_evict = {})
+    : max_size_(max_size == 0 ? 1 : max_size), on_evict_(std::move(on_evict)) {
   }
 
   /// Look up @p key, marking it most-recently-used on a hit.
@@ -118,11 +128,15 @@ class BoundedLruCache {
         victim = it;
       }
     }
+    if (on_evict_) {
+      on_evict_(victim->first, victim->second.value);
+    }
     entries_.erase(victim);
   }
 
   std::size_t max_size_;
   std::uint64_t counter_{0};
+  EvictCallback on_evict_;
   std::map<Key, Entry> entries_;
 };
 

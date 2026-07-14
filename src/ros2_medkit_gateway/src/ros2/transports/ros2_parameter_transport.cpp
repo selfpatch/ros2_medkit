@@ -24,12 +24,20 @@ using namespace std::chrono_literals;
 namespace ros2_medkit_gateway::ros2 {
 
 Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec,
-                                               double negative_cache_ttl_sec, std::size_t param_node_cache_size)
+                                               double negative_cache_ttl_sec, std::size_t client_cache_size,
+                                               std::size_t defaults_cache_size)
   : node_(node)
   , service_timeout_sec_(service_timeout_sec)
   , negative_cache_ttl_sec_(negative_cache_ttl_sec)
-  , default_values_(param_node_cache_size)
-  , param_clients_(param_node_cache_size) {
+  , default_values_(defaults_cache_size,
+                    [this](const std::string & node_name, const std::map<std::string, rclcpp::Parameter> &) {
+                      warn_defaults_evicted(node_name);
+                    })
+  , pre_write_values_(defaults_cache_size,
+                      [this](const std::string & node_name, const std::map<std::string, rclcpp::Parameter> &) {
+                        warn_defaults_evicted(node_name);
+                      })
+  , param_clients_(client_cache_size) {
   // Create internal node for parameter client operations early.
   // Must be in DDS graph before any parameter queries for fast service discovery.
   rclcpp::NodeOptions options;
@@ -53,14 +61,23 @@ void Ros2ParameterTransport::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;  // Already shut down
   }
-  // Hold lock through cleanup to prevent race with in-flight requests.
+  // Destroying the cached clients and param_node_ frees rcl entities on
+  // param_node_. spin_for() reads that entity set under spin_mutex_, so the
+  // teardown must also hold spin_mutex_ or it could free an entity mid-spin
+  // (use-after-free). Each spin is bounded by the service timeout, so the lock
+  // is always released shortly. If the initial timed wait lapses we BLOCK for it
+  // rather than tear down under a live spinner: a spin cannot outlive its bounded
+  // duration, so this cannot hang in practice, and a bounded hang would be safer
+  // than freeing an entity a live spin still references.
   std::unique_lock<std::timed_mutex> spin_lock(spin_mutex_, std::defer_lock);
   if (!spin_lock.try_lock_for(kShutdownTimeout)) {
     if (node_) {
       RCLCPP_WARN(node_->get_logger(),
-                  "Ros2ParameterTransport shutdown: spin_mutex_ not released within timeout, "
-                  "proceeding with cleanup");
+                  "Ros2ParameterTransport shutdown: spin_mutex_ still held after %llds; waiting for the "
+                  "in-flight parameter operation to finish before tearing down clients",
+                  static_cast<long long>(kShutdownTimeout.count()));
     }
+    spin_lock.lock();  // block until the bounded spin releases; never tear down under a live spinner
   }
   std::lock_guard<std::mutex> lock(clients_mutex_);
   param_clients_.clear();
@@ -151,6 +168,22 @@ std::shared_ptr<rclcpp::AsyncParametersClient> Ros2ParameterTransport::get_param
 std::size_t Ros2ParameterTransport::param_client_cache_size() const {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   return param_clients_.size();
+}
+
+std::size_t Ros2ParameterTransport::default_values_cache_size() const {
+  std::lock_guard<std::mutex> lock(defaults_mutex_);
+  return default_values_.size();
+}
+
+void Ros2ParameterTransport::warn_defaults_evicted(const std::string & node_name) const {
+  if (!node_) {
+    return;
+  }
+  RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 60000,
+                       "Default-value cache over capacity; evicted cached defaults for node '%s'. A later "
+                       "reset-to-default for a parameter on this node may restore its current value instead of "
+                       "its original one. Increase the defaults cache size if this recurs.",
+                       node_name.c_str());
 }
 
 template <typename FutureT>
@@ -678,6 +711,23 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
       return result;
     }
 
+    // The write succeeded. Record what the value was BEFORE this write (from the
+    // pre-read above) so reset-to-default can later restore the pre-write value -
+    // even if the first-seen default snapshot was captured after a write, or was
+    // evicted and re-seeded from the current (post-write) value. emplace records
+    // only the FIRST write per (node, param) - the original value - and only when
+    // the pre-read actually returned a value, so this reuses that read and adds no
+    // round trip.
+    if (!current_params.empty()) {
+      std::lock_guard<std::mutex> lock(defaults_mutex_);
+      auto * node_pre_write = pre_write_values_.find(node_name);
+      if (node_pre_write == nullptr) {
+        pre_write_values_.put(node_name, {{param_name, current_params[0]}});
+      } else {
+        node_pre_write->emplace(param_name, current_params[0]);  // no-op if already recorded
+      }
+    }
+
     json param_obj;
     param_obj["name"] = param_name;
     param_obj["value"] = parameter_value_to_json(param_value);
@@ -697,6 +747,24 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
 ParameterResult Ros2ParameterTransport::get_default(const std::string & node_name, const std::string & param_name) {
   if (shutdown_requested_.load()) {
     return {false, {}, "Ros2ParameterTransport is shut down", ParameterErrorCode::SHUT_DOWN};
+  }
+
+  // Prefer the pre-write record: if the gateway overwrote this parameter, the
+  // authoritative default for reset is the value it had before that write, not
+  // the first-seen snapshot (which could have been captured after the write, or
+  // evicted and re-seeded from the current value). This also short-circuits the
+  // defaults round trip below when a pre-write value is on record.
+  {
+    std::lock_guard<std::mutex> lock(defaults_mutex_);
+    if (auto * node_pre_write = pre_write_values_.find(node_name)) {
+      auto pre_it = node_pre_write->find(param_name);
+      if (pre_it != node_pre_write->end()) {
+        ParameterResult pre_result;
+        pre_result.success = true;
+        pre_result.data = parameter_value_to_json(pre_it->second.get_parameter_value());
+        return pre_result;
+      }
+    }
   }
 
   // For self-node, populate the defaults cache lazily from the live node
@@ -802,15 +870,29 @@ ParameterResult Ros2ParameterTransport::list_defaults(const std::string & node_n
   ParameterResult result;
   std::lock_guard<std::mutex> lock(defaults_mutex_);
   auto * node_defaults = default_values_.find(node_name);
-  if (node_defaults == nullptr) {
+  auto * node_pre_write = pre_write_values_.find(node_name);
+  if (node_defaults == nullptr && node_pre_write == nullptr) {
     result.success = false;
     result.error_message = "No default values cached for node: " + node_name;
     result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
     return result;
   }
 
+  // Merge the first-seen snapshot with the pre-write record, pre-write taking
+  // precedence - the same preference get_default applies - so the listing reports
+  // the same defaults reset would restore.
+  std::map<std::string, rclcpp::Parameter> merged;
+  if (node_defaults != nullptr) {
+    merged = *node_defaults;
+  }
+  if (node_pre_write != nullptr) {
+    for (const auto & [name, param] : *node_pre_write) {
+      merged[name] = param;
+    }
+  }
+
   json defaults_array = json::array();
-  for (const auto & [name, param] : *node_defaults) {
+  for (const auto & [name, param] : merged) {
     json entry;
     entry["name"] = name;
     entry["value"] = parameter_value_to_json(param.get_parameter_value());
