@@ -557,6 +557,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_ros2_parameter_transport gateway_ros2)
   medkit_set_test_domain(test_ros2_parameter_transport)
 
+  # BoundedLruCache: pure-C++ header, no ROS - bounds the parameter transport's
+  # per-node caches. No test domain (creates no ROS nodes).
+  ament_add_gtest(test_bounded_lru_cache test/test_bounded_lru_cache.cpp)
+
   find_package(std_msgs REQUIRED)
 
   # Add DiscoveryManager tests

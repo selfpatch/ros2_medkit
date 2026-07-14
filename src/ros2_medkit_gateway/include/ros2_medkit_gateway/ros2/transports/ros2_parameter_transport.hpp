@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/configuration/parameter_types.hpp"
 #include "ros2_medkit_gateway/core/transports/parameter_transport.hpp"
+#include "ros2_medkit_gateway/core/util/bounded_lru_cache.hpp"
 
 namespace ros2_medkit_gateway::ros2 {
 
@@ -38,6 +40,11 @@ namespace ros2_medkit_gateway::ros2 {
  * cache, the negative-cache for unreachable nodes, the spin_mutex serialising
  * parameter-client spins, and the JSON <-> rclcpp::ParameterValue conversion
  * helpers that previously lived inside ConfigurationManager.
+ *
+ * The client cache and the defaults cache are keyed by node name and bounded by
+ * LRU eviction (BoundedLruCache, capacity kMaxParamNodeCacheSize). Both would
+ * otherwise gain one permanent entry per distinct node name ever queried and
+ * leak memory on a long-lived gateway facing a churning graph.
  *
  * Uses AsyncParametersClient + explicit spin_until_future_complete (not the
  * SyncParametersClient) so a service TIMEOUT is distinguished from a
@@ -59,8 +66,14 @@ class Ros2ParameterTransport : public ParameterTransport {
    * @param negative_cache_ttl_sec How long an unavailable node remains in the
    *                               negative cache before another IPC attempt.
    *                               Set to 0 to disable.
+   * @param param_node_cache_size Capacity of each per-node cache (the
+   *                              AsyncParametersClient cache and the
+   *                              default-value cache) before least-recently-used
+   *                              eviction. Defaults to kMaxParamNodeCacheSize;
+   *                              overridable mainly for tests.
    */
-  Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec, double negative_cache_ttl_sec);
+  Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec, double negative_cache_ttl_sec,
+                         std::size_t param_node_cache_size = kMaxParamNodeCacheSize);
 
   ~Ros2ParameterTransport() override;
 
@@ -86,6 +99,11 @@ class Ros2ParameterTransport : public ParameterTransport {
 
   bool is_node_available(const std::string & node_name) const override;
   void shutdown() override;
+
+  /// Number of entries currently held in the per-node AsyncParametersClient
+  /// cache. Thread-safe. Exposed for diagnostics and to let tests assert the
+  /// cache stays bounded under many distinct node names.
+  std::size_t param_client_cache_size() const;
 
  private:
   /// Get or create a cached AsyncParametersClient for the given node.
@@ -151,10 +169,10 @@ class Ros2ParameterTransport : public ParameterTransport {
   mutable std::shared_mutex negative_cache_mutex_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> unavailable_nodes_;
 
-  /// Cache of default parameter values per node.
+  /// Cache of default parameter values per node, bounded by LRU eviction.
   /// Key: node_name, Value: map of param_name -> Parameter.
   mutable std::mutex defaults_mutex_;
-  std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
+  BoundedLruCache<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
   /// Mutex to serialize spin operations on param_node_.
   /// spin_for() drives spin_until_future_complete on param_node_, which is NOT
@@ -166,12 +184,20 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// Created once in constructor - must be in DDS graph early for fast service discovery.
   std::shared_ptr<rclcpp::Node> param_node_;
 
-  /// Cached AsyncParametersClient per target node.
+  /// Cached AsyncParametersClient per target node, bounded by LRU eviction.
   mutable std::mutex clients_mutex_;
-  std::map<std::string, std::shared_ptr<rclcpp::AsyncParametersClient>> param_clients_;
+  BoundedLruCache<std::string, std::shared_ptr<rclcpp::AsyncParametersClient>> param_clients_;
 
   /// Maximum entries in negative cache before hard eviction.
   static constexpr size_t kMaxNegativeCacheSize = 500;
+
+  /// Maximum entries in each per-node cache (the AsyncParametersClient cache and
+  /// the default-value cache) before least-recently-used eviction. A safety-net
+  /// bound against unbounded growth on a long-lived gateway facing a churning
+  /// graph. Tighter than kMaxNegativeCacheSize because each entry here is heavy
+  /// (an AsyncParametersClient owns several DDS service clients) while a
+  /// negative-cache entry is a single timestamp.
+  static constexpr std::size_t kMaxParamNodeCacheSize = 256;
 
   /// Margin added to service_timeout_sec_ for spin_mutex acquisition timeout.
   /// Must exceed service_timeout_sec_ to avoid spurious TIMEOUT errors.

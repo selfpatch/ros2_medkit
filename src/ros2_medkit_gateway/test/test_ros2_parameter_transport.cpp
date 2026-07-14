@@ -36,6 +36,7 @@
 #include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
+#include <string>
 #include <thread>
 
 #include "ros2_medkit_gateway/ros2/transports/ros2_parameter_transport.hpp"
@@ -278,6 +279,35 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersCapHoldsWithNeg
       << "with the negative cache disabled the cache_default_values short-circuit must still fire "
          "(SERVICE_UNAVAILABLE); TIMEOUT would mean the cap was defeated and a second round-trip ran";
   EXPECT_LT(elapsed, std::chrono::seconds(5)) << "sanity: still bounded";
+}
+
+// The per-node AsyncParametersClient cache is bounded by LRU eviction, so a
+// gateway that queries an ever-growing set of distinct node names cannot leak
+// one client per node for its whole lifetime (the pre-fix behaviour). A
+// transport built with a small cache cap and pointed at many distinct,
+// nonexistent node names must keep its client cache at the cap. get_param_client
+// runs (and inserts) before the failing wait_for_service, so every distinct
+// query would add an entry without the bound. A short service timeout is used
+// because every query hits a nonexistent service; the assertion is on the cache
+// size, not on timing.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, ClientCacheStaysBoundedAcrossManyNodes) {
+  constexpr std::size_t kCacheCap = 4;
+  constexpr double kShortTimeoutSec = 0.1;
+  constexpr double kNegativeCacheDisabled = 0.0;
+  auto bounded_transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), kShortTimeoutSec,
+                                                                          kNegativeCacheDisabled, kCacheCap);
+
+  constexpr std::size_t kDistinctNodes = kCacheCap * 3;
+  for (std::size_t i = 0; i < kDistinctNodes; ++i) {
+    const std::string node_name = "/nonexistent_param_node_" + std::to_string(i);
+    auto result = bounded_transport->get_parameter(node_name, "some_param");
+    EXPECT_FALSE(result.success) << "a nonexistent node must not resolve a parameter";
+  }
+
+  EXPECT_LE(bounded_transport->param_client_cache_size(), kCacheCap)
+      << "the per-node client cache must never grow past its capacity";
+  EXPECT_EQ(bounded_transport->param_client_cache_size(), kCacheCap)
+      << "after " << kDistinctNodes << " distinct nodes the bounded cache should be full at the cap";
 }
 
 // ---------------------------------------------------------------------------

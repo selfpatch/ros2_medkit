@@ -24,8 +24,12 @@ using namespace std::chrono_literals;
 namespace ros2_medkit_gateway::ros2 {
 
 Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec,
-                                               double negative_cache_ttl_sec)
-  : node_(node), service_timeout_sec_(service_timeout_sec), negative_cache_ttl_sec_(negative_cache_ttl_sec) {
+                                               double negative_cache_ttl_sec, std::size_t param_node_cache_size)
+  : node_(node)
+  , service_timeout_sec_(service_timeout_sec)
+  , negative_cache_ttl_sec_(negative_cache_ttl_sec)
+  , default_values_(param_node_cache_size)
+  , param_clients_(param_node_cache_size) {
   // Create internal node for parameter client operations early.
   // Must be in DDS graph before any parameter queries for fast service discovery.
   rclcpp::NodeOptions options;
@@ -134,16 +138,19 @@ void Ros2ParameterTransport::mark_node_unavailable(const std::string & node_name
 
 std::shared_ptr<rclcpp::AsyncParametersClient> Ros2ParameterTransport::get_param_client(const std::string & node_name) {
   std::lock_guard<std::mutex> lock(clients_mutex_);
-  auto it = param_clients_.find(node_name);
-  if (it != param_clients_.end()) {
-    return it->second;
+  if (auto * cached = param_clients_.find(node_name)) {
+    return *cached;
   }
   if (!param_node_) {
     return nullptr;
   }
   auto client = std::make_shared<rclcpp::AsyncParametersClient>(param_node_, node_name);
-  param_clients_[node_name] = client;
-  return client;
+  return param_clients_.put(node_name, client);
+}
+
+std::size_t Ros2ParameterTransport::param_client_cache_size() const {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  return param_clients_.size();
 }
 
 template <typename FutureT>
@@ -181,12 +188,12 @@ ParameterResult Ros2ParameterTransport::list_own_parameters() {
     // Cache defaults for reset operations (same as IPC path).
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
-      if (default_values_.find(own_node_fqn_) == default_values_.end()) {
+      if (!default_values_.contains(own_node_fqn_)) {
         std::map<std::string, rclcpp::Parameter> node_defaults;
         for (const auto & param : params) {
           node_defaults[param.get_name()] = param;
         }
-        default_values_[own_node_fqn_] = std::move(node_defaults);
+        default_values_.put(own_node_fqn_, std::move(node_defaults));
       }
     }
 
@@ -253,18 +260,25 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
   ParameterResult result;
 
   try {
-    auto client = get_param_client(node_name);
-    if (!client) {
-      result.success = false;
-      result.error_message = "Parameter client unavailable (transport shut down)";
-      result.error_code = ParameterErrorCode::SHUT_DOWN;
-      return result;
-    }
-
     std::vector<rclcpp::Parameter> parameters;
     {
       auto spin_lock = try_acquire_spin_lock(result);
       if (!spin_lock) {
+        return result;
+      }
+
+      // Get (or create) the client INSIDE the spin lock, exactly as get_parameter
+      // and set_parameter do. Creating or LRU-evicting an AsyncParametersClient
+      // mutates param_node_'s entity set, and spin_for() reads that set under
+      // spin_mutex_. Doing it outside the lock would race a concurrent spin on
+      // param_node_: an evicted client's rcl entities could be destroyed mid-spin
+      // (use-after-free), reachable once the cache is at capacity and two parameter
+      // requests run at once - the exact multi-node fan-out this transport serves.
+      auto client = get_param_client(node_name);
+      if (!client) {
+        result.success = false;
+        result.error_message = "Parameter client unavailable (transport shut down)";
+        result.error_code = ParameterErrorCode::SHUT_DOWN;
         return result;
       }
 
@@ -690,14 +704,14 @@ ParameterResult Ros2ParameterTransport::get_default(const std::string & node_nam
   // assembly side-effect) in case the manager calls reset before list.
   if (is_self_node(node_name)) {
     std::lock_guard<std::mutex> lock(defaults_mutex_);
-    if (default_values_.find(node_name) == default_values_.end()) {
+    if (!default_values_.contains(node_name)) {
       try {
         auto params = node_->get_parameters(node_->list_parameters({}, 0).names);
         std::map<std::string, rclcpp::Parameter> node_defaults;
         for (const auto & param : params) {
           node_defaults[param.get_name()] = param;
         }
-        default_values_[node_name] = std::move(node_defaults);
+        default_values_.put(node_name, std::move(node_defaults));
       } catch (const std::exception & e) {
         ParameterResult result;
         result.success = false;
@@ -709,18 +723,10 @@ ParameterResult Ros2ParameterTransport::get_default(const std::string & node_nam
   } else {
     // Non-self: ensure defaults are cached. cache_default_values requires
     // spin_mutex_ to be held.
-    {
-      std::lock_guard<std::mutex> lock(defaults_mutex_);
-      if (default_values_.find(node_name) != default_values_.end()) {
-        // already cached, no need to spin
-      } else {
-        // Drop the lock before spinning - cache_default_values reacquires it.
-      }
-    }
     bool needs_cache = false;
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
-      needs_cache = (default_values_.find(node_name) == default_values_.end());
+      needs_cache = !default_values_.contains(node_name);
     }
     if (needs_cache) {
       ParameterResult tmp;
@@ -734,15 +740,15 @@ ParameterResult Ros2ParameterTransport::get_default(const std::string & node_nam
 
   ParameterResult result;
   std::lock_guard<std::mutex> lock(defaults_mutex_);
-  auto node_it = default_values_.find(node_name);
-  if (node_it == default_values_.end()) {
+  auto * node_defaults = default_values_.find(node_name);
+  if (node_defaults == nullptr) {
     result.success = false;
     result.error_message = "No default values cached for node: " + node_name;
     result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
     return result;
   }
-  auto param_it = node_it->second.find(param_name);
-  if (param_it == node_it->second.end()) {
+  auto param_it = node_defaults->find(param_name);
+  if (param_it == node_defaults->end()) {
     result.success = false;
     result.error_message = "No default value for parameter: " + param_name;
     result.error_code = ParameterErrorCode::NOT_FOUND;
@@ -761,14 +767,14 @@ ParameterResult Ros2ParameterTransport::list_defaults(const std::string & node_n
   // Mirror the get_default cache-population logic.
   if (is_self_node(node_name)) {
     std::lock_guard<std::mutex> lock(defaults_mutex_);
-    if (default_values_.find(node_name) == default_values_.end()) {
+    if (!default_values_.contains(node_name)) {
       try {
         auto params = node_->get_parameters(node_->list_parameters({}, 0).names);
         std::map<std::string, rclcpp::Parameter> node_defaults;
         for (const auto & param : params) {
           node_defaults[param.get_name()] = param;
         }
-        default_values_[node_name] = std::move(node_defaults);
+        default_values_.put(node_name, std::move(node_defaults));
       } catch (const std::exception & e) {
         ParameterResult result;
         result.success = false;
@@ -781,7 +787,7 @@ ParameterResult Ros2ParameterTransport::list_defaults(const std::string & node_n
     bool needs_cache = false;
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
-      needs_cache = (default_values_.find(node_name) == default_values_.end());
+      needs_cache = !default_values_.contains(node_name);
     }
     if (needs_cache) {
       ParameterResult tmp;
@@ -795,8 +801,8 @@ ParameterResult Ros2ParameterTransport::list_defaults(const std::string & node_n
 
   ParameterResult result;
   std::lock_guard<std::mutex> lock(defaults_mutex_);
-  auto node_it = default_values_.find(node_name);
-  if (node_it == default_values_.end()) {
+  auto * node_defaults = default_values_.find(node_name);
+  if (node_defaults == nullptr) {
     result.success = false;
     result.error_message = "No default values cached for node: " + node_name;
     result.error_code = ParameterErrorCode::NO_DEFAULTS_CACHED;
@@ -804,7 +810,7 @@ ParameterResult Ros2ParameterTransport::list_defaults(const std::string & node_n
   }
 
   json defaults_array = json::array();
-  for (const auto & [name, param] : node_it->second) {
+  for (const auto & [name, param] : *node_defaults) {
     json entry;
     entry["name"] = name;
     entry["value"] = parameter_value_to_json(param.get_parameter_value());
@@ -974,7 +980,7 @@ rclcpp::ParameterValue Ros2ParameterTransport::json_to_parameter_value(const jso
 bool Ros2ParameterTransport::cache_default_values(const std::string & node_name) {
   {
     std::lock_guard<std::mutex> lock(defaults_mutex_);
-    if (default_values_.find(node_name) != default_values_.end()) {
+    if (default_values_.contains(node_name)) {
       return false;  // already cached from a prior successful round-trip
     }
   }
@@ -1004,9 +1010,10 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
       auto rc = spin_for(list_future);
       if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
         // Node did not answer: negative-cache and short-circuit. Crucially, do NOT
-        // cache anything - caching an empty map on a timeout would permanently poison
-        // default_values_ (never invalidated) so get_default/reset return NOT_FOUND
-        // forever even after the node recovers (#531).
+        // cache anything - caching an empty map on a timeout would poison
+        // default_values_ (entries are only evicted under LRU cache pressure, never
+        // invalidated on recovery) so get_default/reset return NOT_FOUND until the
+        // entry ages out even after the node recovers (#531).
         mark_node_unavailable(node_name);
         return true;
       }
@@ -1023,8 +1030,8 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
       // do not re-round-trip under spin_mutex_ forever. Only a TIMEOUT must avoid caching
       // (poison-avoidance); a SUCCESS-empty is safe to cache (#531).
       std::lock_guard<std::mutex> lock(defaults_mutex_);
-      if (default_values_.find(node_name) == default_values_.end()) {
-        default_values_[node_name] = {};
+      if (!default_values_.contains(node_name)) {
+        default_values_.put(node_name, {});
       }
       return false;
     }
@@ -1054,8 +1061,8 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
 
     {
       std::lock_guard<std::mutex> lock(defaults_mutex_);
-      if (default_values_.find(node_name) == default_values_.end()) {
-        default_values_[node_name] = std::move(node_defaults);
+      if (!default_values_.contains(node_name)) {
+        default_values_.put(node_name, std::move(node_defaults));
       }
     }
   } catch (const std::exception & e) {
