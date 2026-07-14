@@ -76,17 +76,17 @@ class BoundedLruCache {
   ///
   /// The just-stored entry always carries the largest stamp, so it is never the
   /// eviction victim; erasing a different entry from the underlying std::map
-  /// does not invalidate the reference returned here.
+  /// does not invalidate the iterator (and returned reference) kept here.
+  /// insert_or_assign is used (not operator[]) so Value need not be
+  /// default-constructible.
   ///
   /// @return reference to the stored value (valid until the next mutating call).
   Value & put(const Key & key, Value value) {
-    auto & entry = entries_[key];
-    entry.value = std::move(value);
-    entry.stamp = ++counter_;
+    auto it = entries_.insert_or_assign(key, Entry{std::move(value), ++counter_}).first;
     if (entries_.size() > max_size_) {
-      evict_lru();
+      evict_lru();  // never evicts `it`: it carries the largest stamp
     }
-    return entry.value;
+    return it->second.value;
   }
 
   /// Remove all entries. The access counter is intentionally not reset - stamps
