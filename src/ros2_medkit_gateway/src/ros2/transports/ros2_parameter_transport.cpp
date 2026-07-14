@@ -148,16 +148,29 @@ std::shared_ptr<rclcpp::AsyncParametersClient> Ros2ParameterTransport::get_param
 
 template <typename FutureT>
 rclcpp::FutureReturnCode Ros2ParameterTransport::spin_for(const FutureT & future) {
+  // Copy the node shared_ptr ONCE under clients_mutex_ and spin the local copy.
+  // spin_mutex_ (held by the caller) serialises spins in the normal case, but
+  // shutdown() has a degraded path: if it cannot acquire spin_mutex_ within
+  // kShutdownTimeout it resets param_node_ anyway. Reading the member directly here
+  // would then race that reset (concurrent access to the same shared_ptr instance =
+  // UB). shutdown() clears param_clients_ and resets param_node_ under clients_mutex_,
+  // so taking clients_mutex_ synchronises the read; the local copy also keeps the node
+  // alive for the whole spin even if shutdown resets the member mid-call (#531).
+  std::shared_ptr<rclcpp::Node> node;
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex_);
+    node = param_node_;
+  }
   // Guard against spinning a torn-down node (shutdown races with an in-flight op).
-  if (shutdown_requested_.load() || !param_node_) {
+  if (shutdown_requested_.load() || !node) {
     return rclcpp::FutureReturnCode::INTERRUPTED;
   }
-  // Free-function overload spins a fresh SingleThreadedExecutor over param_node_
+  // Free-function overload spins a fresh SingleThreadedExecutor over the node
   // (collecting all current entities, including a just-created client) for up to
   // service_timeout_sec, then tears it down - no persistent executor to reconcile
   // with param_node_'s teardown. Serialised by spin_mutex_ (held by the caller),
-  // so only one spin runs on param_node_ at a time.
-  return rclcpp::spin_until_future_complete(param_node_, future, get_service_timeout());
+  // so only one spin runs on the node at a time.
+  return rclcpp::spin_until_future_complete(node, future, get_service_timeout());
 }
 
 ParameterResult Ros2ParameterTransport::list_own_parameters() {
@@ -1004,8 +1017,15 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
     }
 
     if (param_names.empty()) {
-      // Genuine zero-parameter node (responsive, SUCCESS with empty names). Nothing to
-      // cache; leave uncached and do NOT mark.
+      // Genuine zero-parameter node (responsive, SUCCESS with empty names). This is a
+      // STABLE, authoritative fact, so memoize an EMPTY defaults map: get_default then
+      // returns NOT_FOUND (not NO_DEFAULTS_CACHED) and subsequent list/get/reset calls
+      // do not re-round-trip under spin_mutex_ forever. Only a TIMEOUT must avoid caching
+      // (poison-avoidance); a SUCCESS-empty is safe to cache (#531).
+      std::lock_guard<std::mutex> lock(defaults_mutex_);
+      if (default_values_.find(node_name) == default_values_.end()) {
+        default_values_[node_name] = {};
+      }
       return false;
     }
 
@@ -1023,13 +1043,10 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
       parameters = get_future.get();
     }
 
-    if (parameters.empty()) {
-      // Responsive node but no values came back (unset / undeclared / raced). Do NOT
-      // cache an empty map and do NOT mark - leave uncached so a later call retries
-      // once the values exist (#531).
-      return false;
-    }
-
+    // SUCCESS with values (or a responsive node that returned an empty set - unset /
+    // undeclared / raced): both are authoritative, so cache the resulting map. An empty
+    // map here is a genuine SUCCESS-empty and is SAFE to memoize (unlike the TIMEOUT
+    // branches above, which must not cache to avoid permanent poison) (#531).
     std::map<std::string, rclcpp::Parameter> node_defaults;
     for (const auto & param : parameters) {
       node_defaults[param.get_name()] = param;

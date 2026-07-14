@@ -557,3 +557,36 @@ TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, ListParametersResponsi
   EXPECT_TRUE(result.data.empty()) << "no gettable values -> empty parameter list";
   EXPECT_TRUE(transport->is_node_available(kNodeName)) << "a responsive-but-empty get must NOT negative-cache the node";
 }
+
+// A genuine SUCCESS-empty (responsive node, empty defaults) is a STABLE, authoritative
+// fact and must be MEMOIZED, so:
+//   - get_default returns NOT_FOUND (empty map cached), NOT NO_DEFAULTS_CACHED, and
+//   - the second call answers from the cache WITHOUT another round trip.
+// Only a TIMEOUT must avoid caching (poison-avoidance). This is the polish that restores
+// memoization the async refactor had over-broadly dropped (#531).
+TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, ResponsiveEmptyMemoizesEmptyDefaults) {
+  get_returns_empty_ = true;  // responsive node whose get returns an empty value set
+  auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, 60.0);
+
+  auto listed = transport->list_parameters(kNodeName);
+  ASSERT_TRUE(listed.success);
+  ASSERT_TRUE(transport->is_node_available(kNodeName));
+
+  // The empty defaults map was cached, so get_default is NOT_FOUND (not NO_DEFAULTS_CACHED).
+  auto def = transport->get_default(kNodeName, kParamName);
+  EXPECT_FALSE(def.success);
+  EXPECT_EQ(def.error_code, ParameterErrorCode::NOT_FOUND)
+      << "a genuine SUCCESS-empty must memoize an empty defaults map (NOT_FOUND), not leave it "
+         "uncached (NO_DEFAULTS_CACHED); got "
+      << static_cast<int>(def.error_code);
+
+  // Block the node: a cached map means get_default must NOT re-round-trip (which would now
+  // time out) - it answers from the cache, so still NOT_FOUND and the node stays available.
+  block_get_ = true;
+  auto def_cached = transport->get_default(kNodeName, kParamName);
+  EXPECT_FALSE(def_cached.success);
+  EXPECT_EQ(def_cached.error_code, ParameterErrorCode::NOT_FOUND)
+      << "get_default must answer from the cached empty map, not re-round-trip; got "
+      << static_cast<int>(def_cached.error_code);
+  EXPECT_TRUE(transport->is_node_available(kNodeName)) << "no re-round-trip means the node is never marked";
+}
