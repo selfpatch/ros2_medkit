@@ -111,7 +111,7 @@ class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
 
     // Client-side node handed to the transport (used only for logging / the
     // self-node FQN short-circuit). Ros2ParameterTransport creates and owns
-    // its own internal node for the actual SyncParametersClient IPC, so this
+    // its own internal node for the actual AsyncParametersClient IPC, so this
     // node does not need to be spun for parameter round trips to proceed.
     client_node_ = std::make_shared<rclcpp::Node>("test_param_transport_client_node");
 
@@ -190,8 +190,8 @@ class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
 // test that must terminate on its own (the point of #531 is precisely that
 // nothing bounds it), so instead this asserts the call completes well within
 // a small multiple of service_timeout_sec (0.5s) - which is only possible
-// because get_service_timeout() is now threaded through every
-// SyncParametersClient call in the round trip.
+// because get_service_timeout() bounds each spin_until_future_complete round
+// trip.
 //
 // list_parameters() also short-circuits after its internal
 // cache_default_values() round-trip marks the node unavailable, so the whole
@@ -281,15 +281,18 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersCapHoldsWithNeg
 }
 
 // ---------------------------------------------------------------------------
-// list_parameters RESPONDS, get_parameters / set_parameters BLOCK.
+// list_parameters RESPONDS, get_parameters / set_parameters BLOCK (or answer
+// empty).
 //
-// This is the coverage the fully-unresponsive fixture above CANNOT provide:
-// SyncParametersClient::get_parameters and set_parameters do NOT throw on
-// timeout - they return an EMPTY vector (only list_parameters throws). So the
-// mark-on-timeout catch blocks never fire for get/set; the timeout has to be
-// detected via "empty response when names were requested". A node that answers
-// list_parameters (so the transport gets past the first call) but stalls on the
-// value read/write is exactly what exercises those empty-result paths (#531).
+// This is the coverage the fully-unresponsive fixture above CANNOT provide.
+// The transport uses AsyncParametersClient + spin_until_future_complete, so a
+// get/set that times out yields FutureReturnCode::TIMEOUT while a get/set that
+// answers with an empty result yields SUCCESS - two distinct outcomes the
+// (removed) SyncParametersClient collapsed into the same empty vector. A node
+// that answers list (so the transport gets past the first call) but blocks the
+// value read/write exercises the TIMEOUT path; the same node answering the get
+// with an EMPTY value (get_returns_empty_) exercises the SUCCESS-empty path -
+// which must NOT be mistaken for a timeout (#531).
 // ---------------------------------------------------------------------------
 class TestRos2ParameterTransportListRespondsGetSetStuck : public ::testing::Test {
  protected:
@@ -316,16 +319,19 @@ class TestRos2ParameterTransportListRespondsGetSetStuck : public ::testing::Test
           response->result.names.push_back(kParamName);
         });
 
-    // get_parameters: blocks while block_get_ is set (client times out -> empty),
-    // otherwise returns one INTEGER value per requested name (responsive).
+    // get_parameters: blocks while block_get_ is set (client times out -> empty).
+    // When get_returns_empty_ is set it RESPONDS immediately with an EMPTY values
+    // vector (responsive, but no value) - the crucial discriminator between a genuine
+    // "not currently gettable" and a timeout. Otherwise returns one INTEGER value per
+    // requested name (responsive).
     get_parameters_service_ = node_->create_service<rcl_interfaces::srv::GetParameters>(
         "~/get_parameters", [this](const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> request,
                                    std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> response) {
           while (block_get_.load() && !release_all_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
           }
-          if (release_all_.load()) {
-            return;
+          if (release_all_.load() || get_returns_empty_.load()) {
+            return;  // respond with an empty values vector (fast, responsive)
           }
           for (size_t i = 0; i < request->names.size(); ++i) {
             rcl_interfaces::msg::ParameterValue value;
@@ -410,6 +416,7 @@ class TestRos2ParameterTransportListRespondsGetSetStuck : public ::testing::Test
 
   std::atomic<bool> block_get_{false};
   std::atomic<bool> block_set_{false};
+  std::atomic<bool> get_returns_empty_{false};
   std::atomic<bool> release_all_{false};
 
   std::shared_ptr<rclcpp::Node> client_node_;
@@ -418,10 +425,10 @@ class TestRos2ParameterTransportListRespondsGetSetStuck : public ::testing::Test
   std::atomic<bool> spin_thread_running_{false};
 };
 
-// (a) get_parameter: list responds (param exists) but get_parameters returns
-// empty (timeout). Must map to a 503-class code (TIMEOUT), NOT INTERNAL_ERROR
-// (500), and negative-cache the node. Before this fix the empty-get branch was
-// INTERNAL_ERROR because get_parameters never throws on timeout (#531).
+// (a) get_parameter: list responds (param exists) but get_parameters never
+// answers (blocked). spin_for returns FutureReturnCode::TIMEOUT, which must map
+// to a 503-class code (TIMEOUT), NOT INTERNAL_ERROR (500), and negative-cache
+// the node (#531).
 TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, GetParameterEmptyGetAfterFoundNameIsTimeout) {
   block_get_ = true;
   auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, 60.0);
@@ -430,15 +437,16 @@ TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, GetParameterEmptyGetAf
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.error_code, ParameterErrorCode::TIMEOUT)
-      << "empty get_parameters after a found name is a value-read timeout, got " << static_cast<int>(result.error_code);
+      << "a blocked get_parameters after a found name is a value-read timeout, got "
+      << static_cast<int>(result.error_code);
   EXPECT_NE(result.error_code, ParameterErrorCode::INTERNAL_ERROR);
   EXPECT_FALSE(transport->is_node_available(kNodeName)) << "the get timeout must negative-cache the node";
 }
 
 // (b) set_parameter: pre-read responds (fast type hint), but set_parameters
-// returns empty (timeout). Must map to TIMEOUT (503) + negative-cache, NOT
-// INTERNAL_ERROR (500). This is the #531-fully-live-on-writes path: pre-fix a
-// fully-unresponsive node's set returned 500 with no negative cache.
+// never answers (blocked). spin_for TIMEOUT must map to TIMEOUT (503) +
+// negative-cache, NOT INTERNAL_ERROR (500). This is the #531-fully-live-on-writes
+// path: pre-fix a fully-unresponsive node's set returned 500 with no negative cache.
 TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, SetParameterEmptyResultsIsTimeoutNotInternalError) {
   block_get_ = false;  // pre-read (type hint) responds quickly
   block_set_ = true;   // the actual write stalls
@@ -448,14 +456,14 @@ TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, SetParameterEmptyResul
 
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.error_code, ParameterErrorCode::TIMEOUT)
-      << "empty set_parameters results is a write timeout, got " << static_cast<int>(result.error_code);
+      << "a blocked set_parameters is a write timeout, got " << static_cast<int>(result.error_code);
   EXPECT_NE(result.error_code, ParameterErrorCode::INTERNAL_ERROR);
   EXPECT_FALSE(transport->is_node_available(kNodeName)) << "the set timeout must negative-cache the node";
 }
 
 // (c) list_parameters op: defaults already cached (so cache_default_values does
-// not short-circuit), then get_parameters stalls on the MAIN round-trip. The
-// all-empty-after-names result must be reported as TIMEOUT, not a misleading
+// not short-circuit), then get_parameters stalls on the MAIN round-trip
+// (spin_for TIMEOUT). Must be reported as TIMEOUT (503), not a misleading
 // success=[] (#531). Asserting TIMEOUT (not SERVICE_UNAVAILABLE) pins the main
 // round-trip path specifically, distinct from the cache_default_values gate.
 TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, ListParametersEmptyGetAfterNamesIsTimeoutNotEmptySuccess) {
@@ -470,7 +478,7 @@ TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, ListParametersEmptyGet
 
   EXPECT_FALSE(second.success);
   EXPECT_EQ(second.error_code, ParameterErrorCode::TIMEOUT)
-      << "list returned names but all gets came back empty: must be TIMEOUT (main round-trip), got "
+      << "list returned names but the value read timed out: must be TIMEOUT (main round-trip), got "
       << static_cast<int>(second.error_code);
 }
 
@@ -500,4 +508,52 @@ TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, MarkedNodeRecoversAfte
   // so after recovery the real default is retrievable (not NOT_FOUND forever).
   auto def = transport->get_default(kNodeName, kParamName);
   EXPECT_TRUE(def.success) << "get_default must return the real default after recovery, not a poisoned empty cache";
+}
+
+// ---------------------------------------------------------------------------
+// THE discriminating test (the async refactor's reason to exist).
+//
+// A node whose get_parameters service RESPONDS but returns an EMPTY values
+// vector (responsive, NOT blocked - e.g. the param was undeclared/raced between
+// list and get) must be treated as "not found", NOT as a timeout. The node is
+// HEALTHY and must stay available (never negative-cached / 503'd).
+//
+// The pre-async (SyncParametersClient) code CANNOT tell this responsive-empty
+// apart from a timeout - both collapse to the same empty vector - so it wrongly
+// marks the node and returns TIMEOUT/503. This test FAILS against that code
+// (base=RED) and PASSES with the AsyncParametersClient + FutureReturnCode
+// refactor, where SUCCESS-with-empty is distinct from TIMEOUT (#531).
+// ---------------------------------------------------------------------------
+TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, GetParameterResponsiveEmptyIsNotFoundNotMarked) {
+  block_get_ = false;         // do NOT block: the node answers promptly...
+  get_returns_empty_ = true;  // ...but with an empty values vector (responsive)
+  auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, 60.0);
+
+  auto result = transport->get_parameter(kNodeName, kParamName);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_EQ(result.error_code, ParameterErrorCode::NOT_FOUND)
+      << "a responsive node that answers get with an empty value is NOT_FOUND, not a timeout; got "
+      << static_cast<int>(result.error_code);
+  EXPECT_NE(result.error_code, ParameterErrorCode::TIMEOUT);
+  EXPECT_TRUE(transport->is_node_available(kNodeName))
+      << "a responsive-but-empty get must NOT negative-cache the healthy node (the pre-async "
+         "code wrongly marks it here)";
+}
+
+// The list op form of the same discriminator: a responsive node that answers get
+// with an empty values vector must yield success=[] with the node still available,
+// NOT a 503 / negative-cache. Pre-async this responsive-empty was marked + 503'd.
+TEST_F(TestRos2ParameterTransportListRespondsGetSetStuck, ListParametersResponsiveEmptyGetIsEmptySuccessNotMarked) {
+  block_get_ = false;
+  get_returns_empty_ = true;
+  auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, 60.0);
+
+  auto result = transport->list_parameters(kNodeName);
+
+  EXPECT_TRUE(result.success) << "responsive node (empty get) must return success, not a 503; error_code="
+                              << static_cast<int>(result.error_code);
+  EXPECT_TRUE(result.data.is_array());
+  EXPECT_TRUE(result.data.empty()) << "no gettable values -> empty parameter list";
+  EXPECT_TRUE(transport->is_node_available(kNodeName)) << "a responsive-but-empty get must NOT negative-cache the node";
 }

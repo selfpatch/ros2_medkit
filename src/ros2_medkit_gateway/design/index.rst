@@ -561,7 +561,7 @@ Each entry below is tagged with the static library it compiles into:
    - Runs on configurable host and port with CORS support
 
 5. **ConfigurationManager** ``[gateway_core]`` - Routes SOVD configuration CRUD through ``ParameterTransport``
-   - Manager body is middleware-neutral; ``Ros2ParameterTransport`` adapter performs the ``rclcpp::SyncParametersClient`` calls
+   - Manager body is middleware-neutral; ``Ros2ParameterTransport`` adapter performs the ``rclcpp::AsyncParametersClient`` calls (explicit ``spin_until_future_complete`` so a service TIMEOUT is distinguished from a successful-but-empty response)
    - Lists / gets / sets individual parameter values with type conversion
    - Provides parameter descriptors (description, constraints, read-only flag)
    - The transport caches parameter clients per node for efficiency

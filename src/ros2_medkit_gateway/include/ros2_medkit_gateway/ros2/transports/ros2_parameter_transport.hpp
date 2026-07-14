@@ -34,10 +34,17 @@ namespace ros2_medkit_gateway::ros2 {
 /**
  * @brief rclcpp adapter implementing ParameterTransport.
  *
- * Owns the rclcpp::SyncParametersClient cache, the rclcpp::Parameter defaults
+ * Owns the rclcpp::AsyncParametersClient cache, the rclcpp::Parameter defaults
  * cache, the negative-cache for unreachable nodes, the spin_mutex serialising
  * parameter-client spins, and the JSON <-> rclcpp::ParameterValue conversion
  * helpers that previously lived inside ConfigurationManager.
+ *
+ * Uses AsyncParametersClient + explicit spin_until_future_complete (not the
+ * SyncParametersClient) so a service TIMEOUT is distinguished from a
+ * successful-but-EMPTY response via rclcpp::FutureReturnCode. The sync client
+ * collapses SUCCESS-with-empty-result and TIMEOUT into the same empty vector,
+ * which caused a false-positive that negative-cached a HEALTHY node on a legit
+ * empty get (e.g. a param undeclared between list and get) - see #531.
  *
  * The adapter exposes only the neutral ParameterTransport surface to the
  * manager; all rclcpp types stay confined to this translation unit.
@@ -47,8 +54,8 @@ class Ros2ParameterTransport : public ParameterTransport {
   /**
    * @param node Non-owning ROS node used to declare parameters and to derive
    *             the gateway's own FQN for the self-node short circuit.
-   * @param service_timeout_sec Timeout for SyncParametersClient::wait_for_service
-   *                            and underlying parameter-service calls.
+   * @param service_timeout_sec Timeout for AsyncParametersClient::wait_for_service
+   *                            and each spin_until_future_complete round trip.
    * @param negative_cache_ttl_sec How long an unavailable node remains in the
    *                               negative cache before another IPC attempt.
    *                               Set to 0 to disable.
@@ -81,8 +88,18 @@ class Ros2ParameterTransport : public ParameterTransport {
   void shutdown() override;
 
  private:
-  /// Get or create a cached SyncParametersClient for the given node.
-  std::shared_ptr<rclcpp::SyncParametersClient> get_param_client(const std::string & node_name);
+  /// Get or create a cached AsyncParametersClient for the given node.
+  std::shared_ptr<rclcpp::AsyncParametersClient> get_param_client(const std::string & node_name);
+
+  /// Spin param_node_ until `future` resolves or the service timeout elapses.
+  /// The ONLY place a parameter round trip blocks; makes TIMEOUT explicit.
+  /// @pre spin_mutex_ must be held by the caller (single spin on param_node_).
+  /// @return TIMEOUT   - the node did not answer within service_timeout_sec;
+  ///         SUCCESS   - future.get() is valid (its result may legitimately be
+  ///                     an EMPTY vector: not-found / unset / raced);
+  ///         INTERRUPTED - transport shutting down (or param_node_ gone).
+  template <typename FutureT>
+  rclcpp::FutureReturnCode spin_for(const FutureT & future);
 
   /// Cache default values for a node (called on first access).
   /// @pre spin_mutex_ must be held by the caller.
@@ -140,8 +157,8 @@ class Ros2ParameterTransport : public ParameterTransport {
   std::map<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
 
   /// Mutex to serialize spin operations on param_node_.
-  /// SyncParametersClient::wait_for_service/get_parameters/etc spin param_node_
-  /// internally via spin_node_until_future_complete which is NOT thread-safe.
+  /// spin_for() drives spin_until_future_complete on param_node_, which is NOT
+  /// thread-safe against a concurrent spin on the same node.
   /// Declared BEFORE param_node_ so it outlives the node during destruction.
   mutable std::timed_mutex spin_mutex_;
 
@@ -149,9 +166,9 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// Created once in constructor - must be in DDS graph early for fast service discovery.
   std::shared_ptr<rclcpp::Node> param_node_;
 
-  /// Cached SyncParametersClient per target node.
+  /// Cached AsyncParametersClient per target node.
   mutable std::mutex clients_mutex_;
-  std::map<std::string, std::shared_ptr<rclcpp::SyncParametersClient>> param_clients_;
+  std::map<std::string, std::shared_ptr<rclcpp::AsyncParametersClient>> param_clients_;
 
   /// Maximum entries in negative cache before hard eviction.
   static constexpr size_t kMaxNegativeCacheSize = 500;

@@ -132,7 +132,7 @@ void Ros2ParameterTransport::mark_node_unavailable(const std::string & node_name
   }
 }
 
-std::shared_ptr<rclcpp::SyncParametersClient> Ros2ParameterTransport::get_param_client(const std::string & node_name) {
+std::shared_ptr<rclcpp::AsyncParametersClient> Ros2ParameterTransport::get_param_client(const std::string & node_name) {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   auto it = param_clients_.find(node_name);
   if (it != param_clients_.end()) {
@@ -141,9 +141,23 @@ std::shared_ptr<rclcpp::SyncParametersClient> Ros2ParameterTransport::get_param_
   if (!param_node_) {
     return nullptr;
   }
-  auto client = std::make_shared<rclcpp::SyncParametersClient>(param_node_, node_name);
+  auto client = std::make_shared<rclcpp::AsyncParametersClient>(param_node_, node_name);
   param_clients_[node_name] = client;
   return client;
+}
+
+template <typename FutureT>
+rclcpp::FutureReturnCode Ros2ParameterTransport::spin_for(const FutureT & future) {
+  // Guard against spinning a torn-down node (shutdown races with an in-flight op).
+  if (shutdown_requested_.load() || !param_node_) {
+    return rclcpp::FutureReturnCode::INTERRUPTED;
+  }
+  // Free-function overload spins a fresh SingleThreadedExecutor over param_node_
+  // (collecting all current entities, including a just-created client) for up to
+  // service_timeout_sec, then tears it down - no persistent executor to reconcile
+  // with param_node_'s teardown. Serialised by spin_mutex_ (held by the caller),
+  // so only one spin runs on param_node_ at a time.
+  return rclcpp::spin_until_future_complete(param_node_, future, get_service_timeout());
 }
 
 ParameterResult Ros2ParameterTransport::list_own_parameters() {
@@ -272,61 +286,52 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
       }
 
       std::vector<std::string> param_names;
-      try {
-        auto list_result = client->list_parameters({}, 0, get_service_timeout());
-        param_names = list_result.names;
-        parameters = client->get_parameters(param_names, get_service_timeout());
-      } catch (const std::exception &) {
-        // Discoverable-but-unresponsive node: the bounded round-trip timed out.
-        // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
-        // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
-        mark_node_unavailable(node_name);
-        result.success = false;
-        result.error_message = "Parameter service did not respond for node: " + node_name;
-        result.error_code = ParameterErrorCode::TIMEOUT;
-        return result;
-      }
-
-      if (parameters.empty() && !param_names.empty()) {
-        // get_parameters came back empty even though list_parameters gave us names.
-        // Retry per-name (works around batch quirks), but under ONE shared deadline:
-        // each get_parameters({name}) burns a full timeout on a stuck node, so an
-        // unbounded loop would hold spin_mutex_ N x timeout and starve concurrent
-        // healthy-node callers. Cap the whole fallback at ~1x service_timeout_sec (#531).
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::duration_cast<std::chrono::steady_clock::duration>(get_service_timeout());
-        for (const auto & name : param_names) {
-          // duration<double> (seconds), not steady_clock::duration: the latter is
-          // std::chrono::nanoseconds, which binds the PROTECTED get_parameters overload.
-          const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
-          if (remaining <= std::chrono::duration<double>::zero()) {
-            break;
-          }
-          try {
-            auto single_params = client->get_parameters({name}, remaining);
-            if (!single_params.empty()) {
-              parameters.push_back(single_params[0]);
-            }
-          } catch (const std::exception & e) {
-            if (node_) {
-              RCLCPP_DEBUG(node_->get_logger(), "Failed to get param '%s': %s", name.c_str(), e.what());
-            }
-          }
+      {
+        auto list_future = client->list_parameters({}, 0);
+        auto rc = spin_for(list_future);
+        if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+          // The node did not answer the list request in time (explicit TIMEOUT, not
+          // an ambiguous empty vector). Negative-cache it and report 503 (#531).
+          mark_node_unavailable(node_name);
+          result.success = false;
+          result.error_message = "Parameter service did not respond for node: " + node_name;
+          result.error_code = ParameterErrorCode::TIMEOUT;
+          return result;
         }
+        if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+          // INTERRUPTED: transport is shutting down. Do NOT mark (node is fine).
+          result.success = false;
+          result.error_message = "Parameter query interrupted for node: " + node_name;
+          result.error_code = ParameterErrorCode::SHUT_DOWN;
+          return result;
+        }
+        param_names = list_future.get().names;
       }
 
-      if (parameters.empty() && !param_names.empty()) {
-        // list_parameters returned names but every get_parameters came back empty.
-        // get_parameters (unlike list_parameters) does NOT throw on timeout - it
-        // returns an empty vector - so all-empty after non-empty names is a value-read
-        // timeout, not an empty node. Report it as such (503) instead of a misleading
-        // success=[] (#531). A genuinely zero-parameter node returns empty param_names
-        // and never reaches here.
-        mark_node_unavailable(node_name);
-        result.success = false;
-        result.error_message = "Parameter service did not respond for node: " + node_name;
-        result.error_code = ParameterErrorCode::TIMEOUT;
-        return result;
+      // Empty names on SUCCESS = a genuine zero-parameter node -> success=[], no mark.
+      if (!param_names.empty()) {
+        auto get_future = client->get_parameters(param_names);
+        auto rc = spin_for(get_future);
+        if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+          mark_node_unavailable(node_name);
+          result.success = false;
+          result.error_message = "Parameter service did not respond for node: " + node_name;
+          result.error_code = ParameterErrorCode::TIMEOUT;
+          return result;
+        }
+        if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+          result.success = false;
+          result.error_message = "Parameter query interrupted for node: " + node_name;
+          result.error_code = ParameterErrorCode::SHUT_DOWN;
+          return result;
+        }
+        // SUCCESS: the batch result is authoritative. It may hold fewer entries than
+        // param_names (params raced/undeclared between list and get) or even be empty
+        // ("listed but not currently gettable") - that is a LEGIT response from a
+        // responsive node, returned as-is, NOT a timeout. No mark. The Sync-era
+        // per-name fallback (which existed only to disambiguate a timeout-induced
+        // empty batch) is gone: TIMEOUT is now explicit above (#531).
+        parameters = get_future.get();
       }
     }  // spin_mutex_ released - JSON building is lock-free.
 
@@ -393,60 +398,84 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
         return result;
       }
 
-      rcl_interfaces::msg::ListParametersResult param_names;
-      std::vector<rclcpp::Parameter> parameters;
-      try {
-        param_names = client->list_parameters({param_name}, 1, get_service_timeout());
-        if (!param_names.names.empty()) {
-          parameters = client->get_parameters({param_name}, get_service_timeout());
+      // Confirm the parameter exists via list. TIMEOUT -> node unreachable (503);
+      // SUCCESS with empty names -> the parameter genuinely does not exist (NOT_FOUND,
+      // node is responsive so NO mark).
+      std::vector<std::string> found_names;
+      {
+        auto list_future = client->list_parameters({param_name}, 1);
+        auto rc = spin_for(list_future);
+        if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+          mark_node_unavailable(node_name);
+          result.success = false;
+          result.error_message = "Parameter service did not respond for node: " + node_name;
+          result.error_code = ParameterErrorCode::TIMEOUT;
+          return result;
         }
-      } catch (const std::exception &) {
-        // Discoverable-but-unresponsive node: the bounded round-trip timed out.
-        // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
-        // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
-        mark_node_unavailable(node_name);
-        result.success = false;
-        result.error_message = "Parameter service did not respond for node: " + node_name;
-        result.error_code = ParameterErrorCode::TIMEOUT;
-        return result;
+        if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+          result.success = false;
+          result.error_message = "Parameter query interrupted for node: " + node_name;
+          result.error_code = ParameterErrorCode::SHUT_DOWN;
+          return result;
+        }
+        found_names = list_future.get().names;
       }
 
-      if (param_names.names.empty()) {
+      if (found_names.empty()) {
         result.success = false;
         result.error_message = "Parameter not found: " + param_name;
         result.error_code = ParameterErrorCode::NOT_FOUND;
         return result;
       }
 
+      // Read the value. TIMEOUT -> node unreachable (503) + mark. SUCCESS with an
+      // EMPTY result -> the node answered but has no value for this name (unset /
+      // raced / undeclared between list and get): that is NOT a timeout, so treat it
+      // as NOT_FOUND and DO NOT mark the (responsive) node. Distinguishing these two
+      // is the whole point of the async client - the sync client returned the same
+      // empty vector for both and wrongly 503'd the healthy node (#531).
+      std::vector<rclcpp::Parameter> parameters;
+      {
+        auto get_future = client->get_parameters({param_name});
+        auto rc = spin_for(get_future);
+        if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+          mark_node_unavailable(node_name);
+          result.success = false;
+          result.error_message = "Parameter service did not respond for node: " + node_name;
+          result.error_code = ParameterErrorCode::TIMEOUT;
+          return result;
+        }
+        if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+          result.success = false;
+          result.error_message = "Parameter query interrupted for node: " + node_name;
+          result.error_code = ParameterErrorCode::SHUT_DOWN;
+          return result;
+        }
+        parameters = get_future.get();
+      }
+
       if (parameters.empty()) {
-        // list_parameters returned the name (so the parameter exists) but
-        // get_parameters came back empty. get_parameters does NOT throw on timeout -
-        // it returns an empty vector - and a responsive node returns one entry per
-        // requested name (even for an unset param), so empty-after-found means the
-        // node timed out on the value read. Report TIMEOUT (503) + negative-cache,
-        // not INTERNAL_ERROR (500) (#531).
-        mark_node_unavailable(node_name);
         result.success = false;
-        result.error_message = "Parameter service did not respond for node: " + node_name;
-        result.error_code = ParameterErrorCode::TIMEOUT;
+        result.error_message = "Parameter not currently set: " + param_name;
+        result.error_code = ParameterErrorCode::NOT_FOUND;
         return result;
       }
 
       param = parameters[0];
 
-      // describe_parameters is NON-ESSENTIAL: it only feeds the optional
-      // description / read_only descriptor fields. The value above is the
-      // essential result and is already in hand, so a timeout HERE must degrade
-      // gracefully (keep the value, skip the descriptor) rather than discard a
-      // good read and negative-cache an otherwise-live node. Deliberately its
-      // own try/catch, OUTSIDE the mark-on-timeout block above (#531).
-      try {
-        descriptors = client->describe_parameters({param_name}, get_service_timeout());
-      } catch (const std::exception & e) {
-        if (node_) {
-          RCLCPP_WARN(node_->get_logger(),
-                      "describe_parameters timed out for '%s' on node '%s'; returning value without descriptor: %s",
-                      param_name.c_str(), node_name.c_str(), e.what());
+      // describe_parameters is NON-ESSENTIAL (only feeds the optional description /
+      // read_only fields). Best-effort: only use it if the round trip SUCCEEDs;
+      // a TIMEOUT or interruption here just skips the descriptor - never mark, never
+      // fail, keep the value we already have (#531).
+      {
+        auto desc_future = client->describe_parameters({param_name});
+        if (spin_for(desc_future) == rclcpp::FutureReturnCode::SUCCESS) {
+          descriptors = desc_future.get();
+        } else if (node_) {
+          RCLCPP_DEBUG(node_->get_logger(),
+                       "describe_parameters did not complete for '%s' on node '%s'; "
+                       "returning value without descriptor",
+                       param_name.c_str(), node_name.c_str());
         }
       }
     }  // spin_mutex_ released.
@@ -543,18 +572,18 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
       return result;
     }
 
+    // Pre-read the current value purely to derive a type hint. Best-effort: a TIMEOUT
+    // or empty result here just leaves hint_type NOT_SET (json_to_parameter_value then
+    // infers from the JSON). Do NOT mark on the pre-read - it is not the authoritative
+    // write-timeout signal (the set below is) (#531).
     std::vector<rclcpp::Parameter> current_params;
-    try {
-      current_params = client->get_parameters({param_name}, get_service_timeout());
-    } catch (const std::exception & e) {
-      // Best-effort type-hint read only. get_parameters returns empty (does NOT throw)
-      // on timeout, and an empty result here is AMBIGUOUS - the param may simply not
-      // exist yet, OR the read timed out - so it is NOT the write-timeout discriminator
-      // (the set_parameters results below are). On the rare throw, log and continue
-      // with no type hint rather than failing the write (#531).
-      if (node_) {
-        RCLCPP_DEBUG(node_->get_logger(), "Pre-read of '%s' on node '%s' failed (continuing without type hint): %s",
-                     param_name.c_str(), node_name.c_str(), e.what());
+    {
+      auto get_future = client->get_parameters({param_name});
+      if (spin_for(get_future) == rclcpp::FutureReturnCode::SUCCESS) {
+        current_params = get_future.get();
+      } else if (node_) {
+        RCLCPP_DEBUG(node_->get_logger(), "Pre-read of '%s' on node '%s' did not complete (continuing without hint)",
+                     param_name.c_str(), node_name.c_str());
       }
     }
     rclcpp::ParameterType hint_type = rclcpp::ParameterType::PARAMETER_NOT_SET;
@@ -562,44 +591,46 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
       hint_type = current_params[0].get_type();
     }
 
-    // json_to_parameter_value throws on bad CLIENT input (e.g. malformed
-    // value for the parameter's type) - deliberately NOT wrapped by the
-    // node-round-trip try/catch above/below so a bad client value never
-    // negative-caches a healthy node (#531).
+    // json_to_parameter_value can throw on bad CLIENT input (e.g. malformed value for
+    // the parameter's type). It runs OUTSIDE any mark scope so a bad client value never
+    // negative-caches a healthy node; the outer catch maps a throw to INTERNAL_ERROR.
     rclcpp::ParameterValue param_value = json_to_parameter_value(value, hint_type);
     rclcpp::Parameter param(param_name, param_value);
 
     std::vector<rcl_interfaces::msg::SetParametersResult> results;
-    try {
-      results = client->set_parameters({param}, get_service_timeout());
-    } catch (const std::exception &) {
-      // Rare: set_parameters usually returns an empty results vector (handled below)
-      // rather than throwing on timeout. If it does throw, treat it the same -
-      // negative-cache and report TIMEOUT (503), not 500 (#531).
-      mark_node_unavailable(node_name);
-      result.success = false;
-      result.error_message = "Parameter service did not respond for node: " + node_name;
-      result.error_code = ParameterErrorCode::TIMEOUT;
-      return result;
+    {
+      auto set_future = client->set_parameters({param});
+      auto rc = spin_for(set_future);
+      if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+        // The node did not answer the write in time (explicit TIMEOUT). Negative-cache
+        // and report 503, not 500 (#531).
+        //
+        // At-least-once ambiguity: a TIMEOUT/503 here does NOT guarantee the set did NOT
+        // apply on the node - the request may have been delivered and executed with only
+        // the response lost. Callers must re-read the parameter to confirm the effective
+        // value rather than assuming the write was rejected.
+        mark_node_unavailable(node_name);
+        result.success = false;
+        result.error_message = "Parameter service did not respond for node: " + node_name;
+        result.error_code = ParameterErrorCode::TIMEOUT;
+        return result;
+      }
+      if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+        result.success = false;
+        result.error_message = "Parameter set interrupted for node: " + node_name;
+        result.error_code = ParameterErrorCode::SHUT_DOWN;
+        return result;
+      }
+      results = set_future.get();
     }
 
     if (results.empty()) {
-      // set_parameters returned an empty results vector. Like get_parameters it does
-      // NOT throw on timeout - a responsive node returns one SetParametersResult per
-      // param - so empty results = the write round-trip timed out. This is the ONLY
-      // reliable write-timeout discriminator (the pre-read above is best-effort and its
-      // empty is ambiguous). Report TIMEOUT (503) + negative-cache, not INTERNAL_ERROR
-      // (500) - pre-fix a fully-unresponsive node returned 500 with no negative cache,
-      // leaving #531 fully live on writes (#531).
-      //
-      // At-least-once ambiguity: a TIMEOUT/503 here does NOT guarantee the set did NOT
-      // apply on the node - the request may have been delivered and executed with only
-      // the response lost. Callers must re-read the parameter to confirm the effective
-      // value rather than assuming the write was rejected.
-      mark_node_unavailable(node_name);
+      // SUCCESS but no result: a responsive node returns one SetParametersResult per
+      // param, so an empty results vector on SUCCESS is a node-side anomaly, NOT a
+      // timeout. Report INTERNAL_ERROR and do NOT mark the (responsive) node (#531).
       result.success = false;
-      result.error_message = "Parameter service did not respond for node: " + node_name;
-      result.error_code = ParameterErrorCode::TIMEOUT;
+      result.error_message = "Set parameter returned no result for: " + param_name;
+      result.error_code = ParameterErrorCode::INTERNAL_ERROR;
       return result;
     }
 
@@ -955,58 +986,48 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
     }
 
     std::vector<std::string> param_names;
-    std::vector<rclcpp::Parameter> parameters;
-    try {
-      auto list_result = client->list_parameters({}, 0, get_service_timeout());
-      param_names = list_result.names;
-      parameters = client->get_parameters(param_names, get_service_timeout());
-    } catch (const std::exception &) {
-      // Discoverable-but-unresponsive node: negative-cache so the next
-      // request fails fast instead of waiting the full timeout again (#531).
-      mark_node_unavailable(node_name);
-      throw;
-    }
-
-    if (parameters.empty() && !param_names.empty()) {
-      // Bounded per-name fallback under ONE shared deadline: each get_parameters({name})
-      // burns a full timeout on a stuck node, so an unbounded loop would hold spin_mutex_
-      // N x timeout. Cap the whole fallback at ~1x service_timeout_sec (#531).
-      const auto deadline = std::chrono::steady_clock::now() +
-                            std::chrono::duration_cast<std::chrono::steady_clock::duration>(get_service_timeout());
-      for (const auto & name : param_names) {
-        // duration<double> (seconds), not steady_clock::duration: the latter is
-        // std::chrono::nanoseconds, which binds the PROTECTED get_parameters overload.
-        const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
-        if (remaining <= std::chrono::duration<double>::zero()) {
-          break;
-        }
-        try {
-          auto single_params = client->get_parameters({name}, remaining);
-          if (!single_params.empty()) {
-            parameters.push_back(single_params[0]);
-          }
-        } catch (const std::exception & e) {
-          // Log the per-parameter fetch failure rather than dropping it
-          // silently. A silent drop here surfaces later as
-          // NO_DEFAULTS_CACHED with no diagnostic for the operator.
-          if (node_) {
-            RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
-                                 "Failed to fetch default value for parameter '%s' on node '%s': %s", name.c_str(),
-                                 node_name.c_str(), e.what());
-          }
-        }
+    {
+      auto list_future = client->list_parameters({}, 0);
+      auto rc = spin_for(list_future);
+      if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+        // Node did not answer: negative-cache and short-circuit. Crucially, do NOT
+        // cache anything - caching an empty map on a timeout would permanently poison
+        // default_values_ (never invalidated) so get_default/reset return NOT_FOUND
+        // forever even after the node recovers (#531).
+        mark_node_unavailable(node_name);
+        return true;
       }
+      if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+        return true;  // INTERRUPTED (shutting down): short-circuit, no mark, no cache
+      }
+      param_names = list_future.get().names;
     }
 
-    if (parameters.empty() && !param_names.empty()) {
-      // list_parameters returned names but every get_parameters came back empty
-      // (get_parameters returns empty on timeout, it does not throw). Do NOT cache an
-      // empty defaults map: default_values_ is never invalidated, so an empty map would
-      // permanently poison this node - get_default / reset would return NOT_FOUND
-      // forever even after it recovers. Leave it uncached and negative-cache so a later
-      // (post-TTL) request retries (#531).
-      mark_node_unavailable(node_name);
-      return true;
+    if (param_names.empty()) {
+      // Genuine zero-parameter node (responsive, SUCCESS with empty names). Nothing to
+      // cache; leave uncached and do NOT mark.
+      return false;
+    }
+
+    std::vector<rclcpp::Parameter> parameters;
+    {
+      auto get_future = client->get_parameters(param_names);
+      auto rc = spin_for(get_future);
+      if (rc == rclcpp::FutureReturnCode::TIMEOUT) {
+        mark_node_unavailable(node_name);
+        return true;  // timed out on the value read: do NOT cache (no empty-map poison)
+      }
+      if (rc != rclcpp::FutureReturnCode::SUCCESS) {
+        return true;
+      }
+      parameters = get_future.get();
+    }
+
+    if (parameters.empty()) {
+      // Responsive node but no values came back (unset / undeclared / raced). Do NOT
+      // cache an empty map and do NOT mark - leave uncached so a later call retries
+      // once the values exist (#531).
+      return false;
     }
 
     std::map<std::string, rclcpp::Parameter> node_defaults;
@@ -1021,10 +1042,15 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
       }
     }
   } catch (const std::exception & e) {
+    // Defensive: no parameter round trip is expected to throw now (TIMEOUT/INTERRUPTED
+    // are explicit FutureReturnCodes and future.get() on SUCCESS does not throw). Any
+    // unexpected throw short-circuits without caching; do NOT mark (not proven a node
+    // timeout).
     if (node_) {
-      RCLCPP_ERROR(node_->get_logger(), "Failed to cache defaults for node '%s': %s", node_name.c_str(), e.what());
+      RCLCPP_ERROR(node_->get_logger(), "Unexpected error caching defaults for node '%s': %s", node_name.c_str(),
+                   e.what());
     }
-    return true;  // round-trip threw (timeout / unreachable): caller short-circuits
+    return true;
   }
   return false;  // defaults cached successfully
 }
