@@ -452,8 +452,8 @@ TEST_F(TestConfigurationManager, test_concurrent_parameter_access) {
 TEST_F(TestConfigurationManager, test_concurrent_parameter_operations_no_executor_error) {
   // Regression test: concurrent parameter operations must not cause
   // "Node has already been added to an executor" error.
-  // SyncParametersClient internally spins param_node_ - without proper
-  // serialization, concurrent calls would cause executor conflicts.
+  // spin_for() spins param_node_ (via spin_until_future_complete) - without
+  // proper serialization, concurrent calls would cause executor conflicts.
 
   node_->declare_parameter("concurrent_test_int", 0);
   node_->declare_parameter("concurrent_test_str", std::string("init"));

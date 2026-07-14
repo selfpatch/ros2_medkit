@@ -30,7 +30,7 @@ using json = nlohmann::json;
  * @brief Application service for ROS 2 node parameters.
  *
  * Pure C++; ROS-side I/O is performed by the injected ParameterTransport
- * adapter (typically Ros2ParameterTransport). All rclcpp::SyncParametersClient
+ * adapter (typically Ros2ParameterTransport). All rclcpp::AsyncParametersClient
  * usage, the rclcpp::Parameter defaults cache, the negative-cache for
  * unreachable nodes, the spin_mutex serialising parameter-client spins, and
  * the JSON <-> rclcpp::ParameterValue conversion helpers live in the adapter.
