@@ -246,3 +246,32 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, GetParameterTimeoutMapsTo503N
       << "an unresponsive node must map to a 503 (node-unavailable) error code, got "
       << static_cast<int>(result.error_code);
 }
+
+// The list_parameters single-round-trip cap must hold even with the negative
+// cache DISABLED (negative_cache_ttl_sec == 0, a documented in-range value).
+// is_node_unavailable() is always false when the TTL is 0, so gating the cap on
+// it would silently let list_parameters do a SECOND round-trip and hold
+// spin_mutex_ ~2x service_timeout_sec. The cap is instead driven by
+// cache_default_values' own return value, which is TTL-independent (#531).
+//
+// Uses a dedicated transport with a 1.0s timeout so the 1x (~1s) vs 2x (~2s)
+// hold is cleanly separable: the < 1.8s assertion passes only if the second
+// round-trip is skipped. Shares the fixture's already-spinning unresponsive
+// node and client node.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, ListParametersCapHoldsWithNegativeCacheDisabled) {
+  constexpr double kServiceTimeoutSec = 1.0;
+  constexpr double kNegativeCacheDisabled = 0.0;
+  auto ttl0_transport =
+      std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), kServiceTimeoutSec, kNegativeCacheDisabled);
+
+  auto start = std::chrono::steady_clock::now();
+  auto result = ttl0_transport->list_parameters(kUnresponsiveNodeName);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(result.success);
+  EXPECT_LT(elapsed, std::chrono::milliseconds(1800))
+      << "with the negative cache disabled the spin_mutex_ hold must still be capped at ~1x "
+         "service_timeout_sec (single round-trip, ~1s), not ~2x (~2s) - elapsed(ms)="
+      << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  EXPECT_NE(result.error_code, ParameterErrorCode::INTERNAL_ERROR);
+}

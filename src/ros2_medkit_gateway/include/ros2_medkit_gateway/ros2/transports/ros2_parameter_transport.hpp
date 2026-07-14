@@ -86,7 +86,12 @@ class Ros2ParameterTransport : public ParameterTransport {
 
   /// Cache default values for a node (called on first access).
   /// @pre spin_mutex_ must be held by the caller.
-  void cache_default_values(const std::string & node_name);
+  /// @return true if the node's own round-trip failed/timed out (service not
+  ///         discoverable, or list/get IPC threw) so the caller can short-circuit
+  ///         WITHOUT depending on the negative-cache TTL (which is a no-op when
+  ///         negative_cache_ttl_sec_ == 0). false if defaults were cached, were
+  ///         already cached, or the transport is shutting down.
+  bool cache_default_values(const std::string & node_name);
 
   /// Check if a node is in the negative cache (recently unavailable).
   bool is_node_unavailable(const std::string & node_name) const;
