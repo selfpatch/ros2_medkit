@@ -15,6 +15,8 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/util/bounded_lru_cache.hpp"
 
@@ -128,6 +130,34 @@ TEST(BoundedLruCacheTest, ZeroCapacityClampsToOne) {
   EXPECT_EQ(cache.size(), 1u);
   EXPECT_EQ(cache.find(1), nullptr);
   EXPECT_NE(cache.find(2), nullptr);
+}
+
+TEST(BoundedLruCacheTest, PutOnExistingKeyRefreshesRecency) {
+  BoundedLruCache<int, std::string> cache(2);
+  cache.put(1, "one");
+  cache.put(2, "two");
+  cache.put(1, "updated");  // replace must re-stamp key 1 as most-recently-used
+  cache.put(3, "three");    // over cap -> evict the LRU, which is now key 2, not key 1
+  EXPECT_EQ(cache.size(), 2u);
+  auto * one = cache.find(1);
+  ASSERT_NE(one, nullptr);
+  EXPECT_EQ(*one, "updated");
+  EXPECT_EQ(cache.find(2), nullptr);  // least-recently-used after the replace, evicted
+  EXPECT_NE(cache.find(3), nullptr);
+}
+
+TEST(BoundedLruCacheTest, OnEvictCallbackFiresWithEvictedEntry) {
+  std::vector<std::pair<int, std::string>> evicted;
+  BoundedLruCache<int, std::string> cache(2, [&evicted](const int & key, const std::string & value) {
+    evicted.emplace_back(key, value);
+  });
+  cache.put(1, "one");
+  cache.put(2, "two");
+  EXPECT_TRUE(evicted.empty());  // still at capacity, nothing evicted yet
+  cache.put(3, "three");         // over cap -> evict the least-recently-used (key 1)
+  ASSERT_EQ(evicted.size(), 1u);
+  EXPECT_EQ(evicted[0].first, 1);
+  EXPECT_EQ(evicted[0].second, "one");
 }
 
 }  // namespace

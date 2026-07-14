@@ -47,6 +47,15 @@ namespace {
 
 constexpr const char * kUnresponsiveNodeName = "unresponsive_param_node";
 
+// A fully responsive node with one declared integer parameter, used to exercise
+// cache eviction against a node that actually answers parameter requests.
+std::shared_ptr<rclcpp::Node> make_responsive_param_node(const std::string & node_name, const std::string & param_name,
+                                                         int64_t value) {
+  auto node = std::make_shared<rclcpp::Node>(node_name);
+  node->declare_parameter(param_name, value);
+  return node;
+}
+
 }  // namespace
 
 class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
@@ -308,6 +317,106 @@ TEST_F(TestRos2ParameterTransportUnresponsiveNode, ClientCacheStaysBoundedAcross
       << "the per-node client cache must never grow past its capacity";
   EXPECT_EQ(bounded_transport->param_client_cache_size(), kCacheCap)
       << "after " << kDistinctNodes << " distinct nodes the bounded cache should be full at the cap";
+}
+
+// Evicting a live node's AsyncParametersClient must be transparent: the next
+// query rebuilds the client (on param_node_) and still succeeds. This is the
+// contract the client-cache bound must preserve - eviction destroys rcl entities
+// on param_node_, so a broken rebuild would otherwise be invisible.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, EvictedLiveClientIsTransparentlyRebuilt) {
+  auto responsive_node = make_responsive_param_node("client_evict_responsive_node", "answer", 42);
+  executor_->add_node(responsive_node);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const std::string responsive_fqn = responsive_node->get_fully_qualified_name();
+
+  constexpr std::size_t kClientCap = 2;
+  constexpr double kNegativeCacheDisabled = 0.0;
+  auto transport =
+      std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, kNegativeCacheDisabled, kClientCap);
+
+  auto first = transport->get_parameter(responsive_fqn, "answer");
+  ASSERT_TRUE(first.success) << first.error_message;
+  EXPECT_EQ(first.data["value"].get<int64_t>(), 42);
+
+  // Push the responsive node's client out of the LRU cache with distinct,
+  // nonexistent nodes (each inserts a client before its wait_for_service fails).
+  for (std::size_t i = 0; i <= kClientCap; ++i) {
+    transport->get_parameter("/client_evict_filler_" + std::to_string(i), "x");
+  }
+  EXPECT_LE(transport->param_client_cache_size(), kClientCap);
+
+  // Re-query the evicted live node: the client is rebuilt and the query succeeds.
+  auto again = transport->get_parameter(responsive_fqn, "answer");
+  ASSERT_TRUE(again.success) << "evicting a live node's client must be transparent; got: " << again.error_message;
+  EXPECT_EQ(again.data["value"].get<int64_t>(), 42);
+
+  executor_->remove_node(responsive_node);
+}
+
+// When a live node's cached defaults are evicted, get_default must RE-FETCH them
+// rather than report NO_DEFAULTS_CACHED. Uses a defaults cap of 1 and two
+// responsive nodes so caching the second evicts the first.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, EvictedDefaultsAreRefetchedNotReportedMissing) {
+  auto node_a = make_responsive_param_node("defaults_evict_node_a", "p", 7);
+  auto node_b = make_responsive_param_node("defaults_evict_node_b", "p", 8);
+  executor_->add_node(node_a);
+  executor_->add_node(node_b);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const std::string fqn_a = node_a->get_fully_qualified_name();
+  const std::string fqn_b = node_b->get_fully_qualified_name();
+
+  constexpr std::size_t kClientCap = 16;   // large: leave clients cached
+  constexpr std::size_t kDefaultsCap = 1;  // tiny: force defaults eviction
+  constexpr double kNegativeCacheDisabled = 0.0;
+  auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, kNegativeCacheDisabled,
+                                                                  kClientCap, kDefaultsCap);
+
+  auto def_a1 = transport->get_default(fqn_a, "p");
+  ASSERT_TRUE(def_a1.success) << def_a1.error_message;
+  EXPECT_EQ(def_a1.data.get<int64_t>(), 7);
+  EXPECT_EQ(transport->default_values_cache_size(), 1u);
+
+  // Caching B's defaults evicts A's (defaults cap is 1).
+  auto def_b = transport->get_default(fqn_b, "p");
+  ASSERT_TRUE(def_b.success) << def_b.error_message;
+  EXPECT_EQ(transport->default_values_cache_size(), 1u);
+
+  // A's defaults were evicted; get_default must re-fetch, not report them missing.
+  auto def_a2 = transport->get_default(fqn_a, "p");
+  ASSERT_TRUE(def_a2.success) << "evicted defaults must be re-fetched, not NO_DEFAULTS_CACHED; got error_code "
+                              << static_cast<int>(def_a2.error_code);
+  EXPECT_EQ(def_a2.data.get<int64_t>(), 7);
+
+  executor_->remove_node(node_a);
+  executor_->remove_node(node_b);
+}
+
+// After the gateway overwrites a parameter, reset-to-default must restore the
+// PRE-write value, not the current (post-write) one - even though the default
+// caches only ever see current values. set_parameter records the pre-write value
+// (from its existing pre-read) and get_default prefers it.
+TEST_F(TestRos2ParameterTransportUnresponsiveNode, GetDefaultReturnsPreWriteValueAfterSet) {
+  auto responsive_node = make_responsive_param_node("prewrite_responsive_node", "p", 100);
+  executor_->add_node(responsive_node);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const std::string fqn = responsive_node->get_fully_qualified_name();
+
+  constexpr double kNegativeCacheDisabled = 0.0;
+  auto transport = std::make_shared<ros2::Ros2ParameterTransport>(client_node_.get(), 0.5, kNegativeCacheDisabled);
+
+  auto set_res = transport->set_parameter(fqn, "p", nlohmann::json(200));
+  ASSERT_TRUE(set_res.success) << set_res.error_message;
+
+  auto def = transport->get_default(fqn, "p");
+  ASSERT_TRUE(def.success) << def.error_message;
+  EXPECT_EQ(def.data.get<int64_t>(), 100) << "get_default must return the pre-write value the gateway recorded";
+
+  // Sanity: the live value really is 200 now (the write took effect).
+  auto got = transport->get_parameter(fqn, "p");
+  ASSERT_TRUE(got.success) << got.error_message;
+  EXPECT_EQ(got.data["value"].get<int64_t>(), 200);
+
+  executor_->remove_node(responsive_node);
 }
 
 // ---------------------------------------------------------------------------

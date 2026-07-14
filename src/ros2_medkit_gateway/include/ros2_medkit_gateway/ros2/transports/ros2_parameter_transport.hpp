@@ -41,10 +41,16 @@ namespace ros2_medkit_gateway::ros2 {
  * parameter-client spins, and the JSON <-> rclcpp::ParameterValue conversion
  * helpers that previously lived inside ConfigurationManager.
  *
- * The client cache and the defaults cache are keyed by node name and bounded by
- * LRU eviction (BoundedLruCache, capacity kMaxParamNodeCacheSize). Both would
- * otherwise gain one permanent entry per distinct node name ever queried and
- * leak memory on a long-lived gateway facing a churning graph.
+ * The client cache and the default-value caches are keyed by node name and
+ * bounded by LRU eviction (BoundedLruCache). Each would otherwise gain one
+ * permanent entry per distinct node name ever queried and leak memory on a
+ * long-lived gateway facing a churning graph. The client cache uses a moderate
+ * cap (kMaxParamClientCacheSize) because each entry is heavy; the default-value
+ * caches use a much larger cap (kMaxDefaultsCacheSize) because their entries are
+ * light AND because evicting a default can rebase what "default" means. To keep
+ * reset-to-default correct, set_parameter records a parameter's pre-write value
+ * in pre_write_values_, which get_default / list_defaults prefer over the
+ * first-seen snapshot.
  *
  * Uses AsyncParametersClient + explicit spin_until_future_complete (not the
  * SyncParametersClient) so a service TIMEOUT is distinguished from a
@@ -66,14 +72,21 @@ class Ros2ParameterTransport : public ParameterTransport {
    * @param negative_cache_ttl_sec How long an unavailable node remains in the
    *                               negative cache before another IPC attempt.
    *                               Set to 0 to disable.
-   * @param param_node_cache_size Capacity of each per-node cache (the
-   *                              AsyncParametersClient cache and the
-   *                              default-value cache) before least-recently-used
-   *                              eviction. Defaults to kMaxParamNodeCacheSize;
-   *                              overridable mainly for tests.
+   * @param client_cache_size Capacity of the per-node AsyncParametersClient cache
+   *                          before least-recently-used eviction. Defaults to
+   *                          kMaxParamClientCacheSize; overridable mainly for
+   *                          tests.
+   * @param defaults_cache_size Capacity of each per-node default-value cache (the
+   *                            first-seen snapshot and the pre-write record) before
+   *                            least-recently-used eviction. Defaults to
+   *                            kMaxDefaultsCacheSize; larger than the client cache
+   *                            because a parameter map is far lighter than an
+   *                            AsyncParametersClient, so evicting a default (which
+   *                            can rebase "default" to a current value) stays rare.
    */
   Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec, double negative_cache_ttl_sec,
-                         std::size_t param_node_cache_size = kMaxParamNodeCacheSize);
+                         std::size_t client_cache_size = kMaxParamClientCacheSize,
+                         std::size_t defaults_cache_size = kMaxDefaultsCacheSize);
 
   ~Ros2ParameterTransport() override;
 
@@ -104,6 +117,10 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// cache. Thread-safe. Exposed for diagnostics and to let tests assert the
   /// cache stays bounded under many distinct node names.
   std::size_t param_client_cache_size() const;
+
+  /// Number of entries currently held in the per-node first-seen default-value
+  /// cache. Thread-safe. Exposed for diagnostics and eviction tests.
+  std::size_t default_values_cache_size() const;
 
  private:
   /// Get or create a cached AsyncParametersClient for the given node.
@@ -150,6 +167,10 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// Returns unique_lock on success, nullopt on timeout (result populated with error).
   std::optional<std::unique_lock<std::timed_mutex>> try_acquire_spin_lock(ParameterResult & result);
 
+  /// Throttled WARN emitted when a default-value cache evicts an entry, so the
+  /// rare case where a re-seed could rebase "default" is at least observable.
+  void warn_defaults_evicted(const std::string & node_name) const;
+
   rclcpp::Node * node_;
 
   /// Timeout for waiting for parameter services.
@@ -169,10 +190,19 @@ class Ros2ParameterTransport : public ParameterTransport {
   mutable std::shared_mutex negative_cache_mutex_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> unavailable_nodes_;
 
-  /// Cache of default parameter values per node, bounded by LRU eviction.
-  /// Key: node_name, Value: map of param_name -> Parameter.
+  /// Default-value caches, both guarded by defaults_mutex_ and bounded by LRU
+  /// eviction. Key: node_name, Value: map of param_name -> Parameter.
+  ///
+  /// default_values_ is the first-seen snapshot: the values a node reported the
+  /// first time it was queried. pre_write_values_ records the value of a
+  /// parameter as it was JUST BEFORE the gateway first overwrote it via
+  /// set_parameter. get_default / list_defaults prefer pre_write_values_ so that
+  /// "reset to default" restores what the value was before the gateway changed
+  /// it, even if the first-seen snapshot was captured after that write or was
+  /// evicted and re-seeded from the current (post-write) value.
   mutable std::mutex defaults_mutex_;
   BoundedLruCache<std::string, std::map<std::string, rclcpp::Parameter>> default_values_;
+  BoundedLruCache<std::string, std::map<std::string, rclcpp::Parameter>> pre_write_values_;
 
   /// Mutex to serialize spin operations on param_node_.
   /// spin_for() drives spin_until_future_complete on param_node_, which is NOT
@@ -191,13 +221,19 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// Maximum entries in negative cache before hard eviction.
   static constexpr size_t kMaxNegativeCacheSize = 500;
 
-  /// Maximum entries in each per-node cache (the AsyncParametersClient cache and
-  /// the default-value cache) before least-recently-used eviction. A safety-net
-  /// bound against unbounded growth on a long-lived gateway facing a churning
-  /// graph. Tighter than kMaxNegativeCacheSize because each entry here is heavy
-  /// (an AsyncParametersClient owns several DDS service clients) while a
-  /// negative-cache entry is a single timestamp.
-  static constexpr std::size_t kMaxParamNodeCacheSize = 256;
+  /// Maximum entries in the per-node AsyncParametersClient cache before
+  /// least-recently-used eviction. Kept moderate because each entry is heavy: an
+  /// AsyncParametersClient owns several DDS service clients on param_node_.
+  /// Evicting one is transparent - the next query rebuilds the client.
+  static constexpr std::size_t kMaxParamClientCacheSize = 256;
+
+  /// Maximum entries in each per-node default-value cache before
+  /// least-recently-used eviction. Much larger than the client cache because a
+  /// parameter map is orders of magnitude lighter than an AsyncParametersClient,
+  /// AND because evicting a default is NOT transparent: a re-seed can rebase what
+  /// "default" means. A large cap keeps defaults eviction exceptional on any
+  /// realistic graph while still bounding memory.
+  static constexpr std::size_t kMaxDefaultsCacheSize = 8192;
 
   /// Margin added to service_timeout_sec_ for spin_mutex acquisition timeout.
   /// Must exceed service_timeout_sec_ to avoid spurious TIMEOUT errors.
