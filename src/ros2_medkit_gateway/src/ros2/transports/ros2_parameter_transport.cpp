@@ -242,14 +242,17 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
       }
 
       // Cache default values first (gives node extra time for DDS service discovery).
-      // This is itself a bounded round-trip that marks the node unavailable on
-      // timeout. Short-circuit here if it just did so, rather than spending a
-      // SECOND up-to-service_timeout_sec_ round-trip below: holding spin_mutex_
-      // across both would exceed the acquisition margin granted by
+      // This is itself a bounded round-trip. If it just failed/timed out, short-circuit
+      // rather than spending a SECOND up-to-service_timeout_sec_ round-trip below:
+      // holding spin_mutex_ across both would exceed the acquisition margin granted by
       // try_acquire_spin_lock() and spuriously TIMEOUT a concurrent request to a
       // different, healthy node (#531).
-      cache_default_values(node_name);
-      if (is_node_unavailable(node_name)) {
+      //
+      // Gate on cache_default_values' own return value, NOT is_node_unavailable():
+      // the negative cache is a no-op when negative_cache_ttl_sec_ == 0 (a documented,
+      // in-range "disabled" value), so is_node_unavailable() would always be false there
+      // and the cap would silently break, reintroducing the ~2x-timeout hold.
+      if (cache_default_values(node_name)) {
         result.success = false;
         result.error_message = "Parameter service not available for node: " + node_name;
         result.error_code = ParameterErrorCode::SERVICE_UNAVAILABLE;
@@ -369,9 +372,6 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
         param_names = client->list_parameters({param_name}, 1, get_service_timeout());
         if (!param_names.names.empty()) {
           parameters = client->get_parameters({param_name}, get_service_timeout());
-          if (!parameters.empty()) {
-            descriptors = client->describe_parameters({param_name}, get_service_timeout());
-          }
         }
       } catch (const std::exception &) {
         // Discoverable-but-unresponsive node: the bounded round-trip timed out.
@@ -399,6 +399,22 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
       }
 
       param = parameters[0];
+
+      // describe_parameters is NON-ESSENTIAL: it only feeds the optional
+      // description / read_only descriptor fields. The value above is the
+      // essential result and is already in hand, so a timeout HERE must degrade
+      // gracefully (keep the value, skip the descriptor) rather than discard a
+      // good read and negative-cache an otherwise-live node. Deliberately its
+      // own try/catch, OUTSIDE the mark-on-timeout block above (#531).
+      try {
+        descriptors = client->describe_parameters({param_name}, get_service_timeout());
+      } catch (const std::exception & e) {
+        if (node_) {
+          RCLCPP_WARN(node_->get_logger(),
+                      "describe_parameters timed out for '%s' on node '%s'; returning value without descriptor: %s",
+                      param_name.c_str(), node_name.c_str(), e.what());
+        }
+      }
     }  // spin_mutex_ released.
 
     json param_obj;
@@ -525,6 +541,11 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
       // Discoverable-but-unresponsive node: the bounded round-trip timed out.
       // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
       // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
+      //
+      // At-least-once ambiguity: a TIMEOUT/503 here does NOT guarantee the set did
+      // NOT apply on the node - the request may have been delivered and executed
+      // with only the response lost. Callers must re-read the parameter to confirm
+      // the effective value rather than assuming the write was rejected.
       mark_node_unavailable(node_name);
       result.success = false;
       result.error_message = "Parameter service did not respond for node: " + node_name;
@@ -857,22 +878,22 @@ rclcpp::ParameterValue Ros2ParameterTransport::json_to_parameter_value(const jso
   return rclcpp::ParameterValue(value.dump());
 }
 
-void Ros2ParameterTransport::cache_default_values(const std::string & node_name) {
+bool Ros2ParameterTransport::cache_default_values(const std::string & node_name) {
   {
     std::lock_guard<std::mutex> lock(defaults_mutex_);
     if (default_values_.find(node_name) != default_values_.end()) {
-      return;
+      return false;  // already cached from a prior successful round-trip
     }
   }
 
   if (is_node_unavailable(node_name)) {
-    return;
+    return true;  // already negative-cached: caller should short-circuit
   }
 
   try {
     auto client = get_param_client(node_name);
     if (!client) {
-      return;
+      return false;  // transport shutting down, not a node-availability signal
     }
 
     if (!client->wait_for_service(get_service_timeout())) {
@@ -881,7 +902,7 @@ void Ros2ParameterTransport::cache_default_values(const std::string & node_name)
                     node_name.c_str());
       }
       mark_node_unavailable(node_name);
-      return;
+      return true;  // service not discoverable: the round-trip cannot proceed
     }
 
     std::vector<std::string> param_names;
@@ -932,7 +953,9 @@ void Ros2ParameterTransport::cache_default_values(const std::string & node_name)
     if (node_) {
       RCLCPP_ERROR(node_->get_logger(), "Failed to cache defaults for node '%s': %s", node_name.c_str(), e.what());
     }
+    return true;  // round-trip threw (timeout / unreachable): caller short-circuits
   }
+  return false;  // defaults cached successfully
 }
 
 }  // namespace ros2_medkit_gateway::ros2
