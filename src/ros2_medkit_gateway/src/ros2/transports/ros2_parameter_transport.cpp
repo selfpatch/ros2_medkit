@@ -288,9 +288,22 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
       }
 
       if (parameters.empty() && !param_names.empty()) {
+        // get_parameters came back empty even though list_parameters gave us names.
+        // Retry per-name (works around batch quirks), but under ONE shared deadline:
+        // each get_parameters({name}) burns a full timeout on a stuck node, so an
+        // unbounded loop would hold spin_mutex_ N x timeout and starve concurrent
+        // healthy-node callers. Cap the whole fallback at ~1x service_timeout_sec (#531).
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::duration_cast<std::chrono::steady_clock::duration>(get_service_timeout());
         for (const auto & name : param_names) {
+          // duration<double> (seconds), not steady_clock::duration: the latter is
+          // std::chrono::nanoseconds, which binds the PROTECTED get_parameters overload.
+          const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
+          if (remaining <= std::chrono::duration<double>::zero()) {
+            break;
+          }
           try {
-            auto single_params = client->get_parameters({name}, get_service_timeout());
+            auto single_params = client->get_parameters({name}, remaining);
             if (!single_params.empty()) {
               parameters.push_back(single_params[0]);
             }
@@ -300,6 +313,20 @@ ParameterResult Ros2ParameterTransport::list_parameters(const std::string & node
             }
           }
         }
+      }
+
+      if (parameters.empty() && !param_names.empty()) {
+        // list_parameters returned names but every get_parameters came back empty.
+        // get_parameters (unlike list_parameters) does NOT throw on timeout - it
+        // returns an empty vector - so all-empty after non-empty names is a value-read
+        // timeout, not an empty node. Report it as such (503) instead of a misleading
+        // success=[] (#531). A genuinely zero-parameter node returns empty param_names
+        // and never reaches here.
+        mark_node_unavailable(node_name);
+        result.success = false;
+        result.error_message = "Parameter service did not respond for node: " + node_name;
+        result.error_code = ParameterErrorCode::TIMEOUT;
+        return result;
       }
     }  // spin_mutex_ released - JSON building is lock-free.
 
@@ -392,9 +419,16 @@ ParameterResult Ros2ParameterTransport::get_parameter(const std::string & node_n
       }
 
       if (parameters.empty()) {
+        // list_parameters returned the name (so the parameter exists) but
+        // get_parameters came back empty. get_parameters does NOT throw on timeout -
+        // it returns an empty vector - and a responsive node returns one entry per
+        // requested name (even for an unset param), so empty-after-found means the
+        // node timed out on the value read. Report TIMEOUT (503) + negative-cache,
+        // not INTERNAL_ERROR (500) (#531).
+        mark_node_unavailable(node_name);
         result.success = false;
-        result.error_message = "Failed to get parameter: " + param_name;
-        result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+        result.error_message = "Parameter service did not respond for node: " + node_name;
+        result.error_code = ParameterErrorCode::TIMEOUT;
         return result;
       }
 
@@ -512,15 +546,16 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
     std::vector<rclcpp::Parameter> current_params;
     try {
       current_params = client->get_parameters({param_name}, get_service_timeout());
-    } catch (const std::exception &) {
-      // Discoverable-but-unresponsive node: the bounded round-trip timed out.
-      // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
-      // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
-      mark_node_unavailable(node_name);
-      result.success = false;
-      result.error_message = "Parameter service did not respond for node: " + node_name;
-      result.error_code = ParameterErrorCode::TIMEOUT;
-      return result;
+    } catch (const std::exception & e) {
+      // Best-effort type-hint read only. get_parameters returns empty (does NOT throw)
+      // on timeout, and an empty result here is AMBIGUOUS - the param may simply not
+      // exist yet, OR the read timed out - so it is NOT the write-timeout discriminator
+      // (the set_parameters results below are). On the rare throw, log and continue
+      // with no type hint rather than failing the write (#531).
+      if (node_) {
+        RCLCPP_DEBUG(node_->get_logger(), "Pre-read of '%s' on node '%s' failed (continuing without type hint): %s",
+                     param_name.c_str(), node_name.c_str(), e.what());
+      }
     }
     rclcpp::ParameterType hint_type = rclcpp::ParameterType::PARAMETER_NOT_SET;
     if (!current_params.empty()) {
@@ -538,35 +573,49 @@ ParameterResult Ros2ParameterTransport::set_parameter(const std::string & node_n
     try {
       results = client->set_parameters({param}, get_service_timeout());
     } catch (const std::exception &) {
-      // Discoverable-but-unresponsive node: the bounded round-trip timed out.
-      // Negative-cache it (next request fails fast) and report TIMEOUT so the REST
-      // layer returns 503 (node unavailable), not 500 INTERNAL_ERROR (#531).
-      //
-      // At-least-once ambiguity: a TIMEOUT/503 here does NOT guarantee the set did
-      // NOT apply on the node - the request may have been delivered and executed
-      // with only the response lost. Callers must re-read the parameter to confirm
-      // the effective value rather than assuming the write was rejected.
+      // Rare: set_parameters usually returns an empty results vector (handled below)
+      // rather than throwing on timeout. If it does throw, treat it the same -
+      // negative-cache and report TIMEOUT (503), not 500 (#531).
       mark_node_unavailable(node_name);
       result.success = false;
       result.error_message = "Parameter service did not respond for node: " + node_name;
       result.error_code = ParameterErrorCode::TIMEOUT;
       return result;
     }
-    if (results.empty() || !results[0].successful) {
+
+    if (results.empty()) {
+      // set_parameters returned an empty results vector. Like get_parameters it does
+      // NOT throw on timeout - a responsive node returns one SetParametersResult per
+      // param - so empty results = the write round-trip timed out. This is the ONLY
+      // reliable write-timeout discriminator (the pre-read above is best-effort and its
+      // empty is ambiguous). Report TIMEOUT (503) + negative-cache, not INTERNAL_ERROR
+      // (500) - pre-fix a fully-unresponsive node returned 500 with no negative cache,
+      // leaving #531 fully live on writes (#531).
+      //
+      // At-least-once ambiguity: a TIMEOUT/503 here does NOT guarantee the set did NOT
+      // apply on the node - the request may have been delivered and executed with only
+      // the response lost. Callers must re-read the parameter to confirm the effective
+      // value rather than assuming the write was rejected.
+      mark_node_unavailable(node_name);
       result.success = false;
-      result.error_message = results.empty() ? "Failed to set parameter" : results[0].reason;
-      if (!results.empty()) {
-        const auto & reason = results[0].reason;
-        if (reason.find("read-only") != std::string::npos || reason.find("read only") != std::string::npos ||
-            reason.find("is read_only") != std::string::npos) {
-          result.error_code = ParameterErrorCode::READ_ONLY;
-        } else if (reason.find("type") != std::string::npos) {
-          result.error_code = ParameterErrorCode::TYPE_MISMATCH;
-        } else {
-          result.error_code = ParameterErrorCode::INVALID_VALUE;
-        }
+      result.error_message = "Parameter service did not respond for node: " + node_name;
+      result.error_code = ParameterErrorCode::TIMEOUT;
+      return result;
+    }
+
+    if (!results[0].successful) {
+      // Legitimate rejection by a RESPONSIVE node (read-only / type / invalid value):
+      // classify by reason, NOT a timeout.
+      result.success = false;
+      result.error_message = results[0].reason;
+      const auto & reason = results[0].reason;
+      if (reason.find("read-only") != std::string::npos || reason.find("read only") != std::string::npos ||
+          reason.find("is read_only") != std::string::npos) {
+        result.error_code = ParameterErrorCode::READ_ONLY;
+      } else if (reason.find("type") != std::string::npos) {
+        result.error_code = ParameterErrorCode::TYPE_MISMATCH;
       } else {
-        result.error_code = ParameterErrorCode::INTERNAL_ERROR;
+        result.error_code = ParameterErrorCode::INVALID_VALUE;
       }
       return result;
     }
@@ -919,9 +968,20 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
     }
 
     if (parameters.empty() && !param_names.empty()) {
+      // Bounded per-name fallback under ONE shared deadline: each get_parameters({name})
+      // burns a full timeout on a stuck node, so an unbounded loop would hold spin_mutex_
+      // N x timeout. Cap the whole fallback at ~1x service_timeout_sec (#531).
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::duration_cast<std::chrono::steady_clock::duration>(get_service_timeout());
       for (const auto & name : param_names) {
+        // duration<double> (seconds), not steady_clock::duration: the latter is
+        // std::chrono::nanoseconds, which binds the PROTECTED get_parameters overload.
+        const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::duration<double>::zero()) {
+          break;
+        }
         try {
-          auto single_params = client->get_parameters({name}, get_service_timeout());
+          auto single_params = client->get_parameters({name}, remaining);
           if (!single_params.empty()) {
             parameters.push_back(single_params[0]);
           }
@@ -936,6 +996,17 @@ bool Ros2ParameterTransport::cache_default_values(const std::string & node_name)
           }
         }
       }
+    }
+
+    if (parameters.empty() && !param_names.empty()) {
+      // list_parameters returned names but every get_parameters came back empty
+      // (get_parameters returns empty on timeout, it does not throw). Do NOT cache an
+      // empty defaults map: default_values_ is never invalidated, so an empty map would
+      // permanently poison this node - get_default / reset would return NOT_FOUND
+      // forever even after it recovers. Leave it uncached and negative-cache so a later
+      // (post-TTL) request retries (#531).
+      mark_node_unavailable(node_name);
+      return true;
     }
 
     std::map<std::string, rclcpp::Parameter> node_defaults;
