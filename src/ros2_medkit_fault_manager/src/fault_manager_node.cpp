@@ -16,6 +16,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cinttypes>
 #include <filesystem>
@@ -1061,9 +1062,17 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   }
   config.max_message_size = static_cast<size_t>(max_message_size_param);
 
-  // Default topics (catch-all)
+  // Default topics (catch-all). Empty entries are dropped: launch files cannot
+  // express an empty string array, so [''] is the conventional "no defaults"
+  // and must not shadow the entity-default fallback below.
   config.default_topics =
       declare_parameter<std::vector<std::string>>("snapshots.default_topics", std::vector<std::string>{});
+  config.default_topics.erase(std::remove(config.default_topics.begin(), config.default_topics.end(), std::string{}),
+                              config.default_topics.end());
+
+  // Zero-config fallback: capture the reporting node's own published topics
+  // when no explicit config matches the fault code (opt-out).
+  config.entity_default = declare_parameter<bool>("snapshots.entity_default", true);
 
   // Load fault_specific and patterns from YAML config file if provided
   auto config_file = declare_parameter<std::string>("snapshots.config_file", "");

@@ -6,7 +6,10 @@
 # Topic resolution priority:
 #   1. fault_specific - exact fault code match (highest priority)
 #   2. patterns - regex pattern match on fault code
-#   3. default_topics - fallback for all other faults (lowest priority)
+#   3. default_topics - fallback for all other faults
+#   4. entity-default - zero-config fallback when nothing above matches:
+#      the reporting source node's own published topics are captured
+#      (parameter snapshots.entity_default, on by default)
 #
 # Usage:
 #   ros2 run ros2_medkit_fault_manager fault_manager_node \

@@ -193,7 +193,12 @@ Basic Snapshot Settings
      - Maximum message size to capture (bytes). Larger messages are truncated.
    * - ``snapshots.default_topics``
      - ``[]``
-     - List of topics to capture for all faults.
+     - List of topics to capture for all faults. Empty entries are ignored.
+   * - ``snapshots.entity_default``
+     - ``true``
+     - Zero-config fallback: when no explicit config matches a fault code,
+       capture the reporting source node's own published topics. Set to
+       ``false`` to opt out.
    * - ``snapshots.config_file``
      - ``""``
      - Path to YAML file with fault-specific snapshot configurations.

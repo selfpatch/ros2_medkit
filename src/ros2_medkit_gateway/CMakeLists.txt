@@ -171,6 +171,7 @@ add_library(gateway_ros2 STATIC
   src/discovery/manifest/manifest_parser.cpp
   src/discovery/manifest/runtime_linker.cpp
   src/discovery/merge_pipeline.cpp
+  src/entity_freeze_frame_capture.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/fan_out_helpers.cpp
@@ -787,6 +788,12 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_sse_fault_handler rclcpp ros2_medkit_msgs)
   medkit_set_test_domain(test_sse_fault_handler)
 
+  # Zero-config entity freeze-frame capture tests
+  ament_add_gtest(test_entity_freeze_frame_capture test/test_entity_freeze_frame_capture.cpp)
+  target_link_libraries(test_entity_freeze_frame_capture gateway_ros2)
+  medkit_target_dependencies(test_entity_freeze_frame_capture rclcpp ros2_medkit_msgs)
+  medkit_set_test_domain(test_entity_freeze_frame_capture)
+
   # Add update manager tests
   ament_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_ros2)
@@ -874,6 +881,19 @@ if(BUILD_TESTING)
     target_link_libraries(${_plugin} nlohmann_json::nlohmann_json)
     install(TARGETS ${_plugin} LIBRARY DESTINATION lib/${PROJECT_NAME})
   endforeach()
+
+  # Demo PLC-like plugin: IntrospectionProvider + DataProvider + FaultProvider
+  # (.so for the zero-config entity freeze-frame integration test)
+  add_library(test_data_provider_plugin MODULE test/demo_nodes/test_data_provider_plugin.cpp)
+  target_include_directories(test_data_provider_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_data_provider_plugin
+    nlohmann_json::nlohmann_json
+    tl::expected
+    cpp_httplib_target
+    OpenSSL::SSL
+    OpenSSL::Crypto
+  )
+  install(TARGETS test_data_provider_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
 
   # Minimal plugin with no provider query functions (only required exports)
   add_library(test_minimal_plugin MODULE test/demo_nodes/test_minimal_plugin.cpp)
@@ -1081,6 +1101,7 @@ if(BUILD_TESTING)
       test_cyclic_subscription_handlers
       test_sse_transport_provider
       test_sse_fault_handler
+      test_entity_freeze_frame_capture
       test_update_manager
       test_script_manager
       test_default_script_provider

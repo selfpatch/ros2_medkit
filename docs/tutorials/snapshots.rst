@@ -11,9 +11,9 @@ preserve topic data when faults are confirmed, enabling post-mortem debugging.
 Overview
 --------
 
-When a fault transitions to CONFIRMED status, the system can automatically
-capture data from configured ROS 2 topics. This snapshot preserves the
-system state at the moment of fault occurrence, similar to:
+When a fault transitions to CONFIRMED status, the system automatically
+captures data from ROS 2 topics. This snapshot preserves the system state
+at the moment of fault occurrence, similar to:
 
 - **AUTOSAR DEM freeze frames** - diagnostic data captured at fault detection
 - **SOVD environment data** - system context for fault analysis
@@ -23,6 +23,11 @@ Snapshots are useful for:
 - Debugging intermittent faults that are hard to reproduce
 - Understanding system state when a fault occurred
 - Post-mortem analysis without real-time access to the robot
+
+Capture works out of the box with **zero configuration**: when no explicit
+snapshot config matches a fault code, the faulting entity's own data is
+captured by default (see :ref:`entity-default-freeze-frames`). Explicit
+configuration always overrides the zero-config fallback when present.
 
 .. note::
 
@@ -69,7 +74,12 @@ Configure snapshot capture via fault manager parameters:
      - Enable/disable snapshot capture
    * - ``snapshots.default_topics``
      - ``[]``
-     - Topics to capture for all faults
+     - Topics to capture for all faults (empty entries are ignored)
+   * - ``snapshots.entity_default``
+     - ``true``
+     - Zero-config fallback: when no explicit config matches a fault code,
+       capture the reporting source node's own published topics. Set to
+       ``false`` to opt out (unconfigured faults then get no freeze-frame).
    * - ``snapshots.config_file``
      - ``""``
      - Path to YAML config for fault-specific topics
@@ -130,6 +140,8 @@ For fault-specific topic capture, create a YAML configuration file:
 1. ``fault_specific`` - Exact match for fault code
 2. ``patterns`` - Regex pattern match (first matching pattern wins)
 3. ``default_topics`` - Fallback for all faults
+4. Entity-default - zero-config fallback when nothing above matches
+   (``snapshots.entity_default``, on by default)
 
 **Launch with config file:**
 
@@ -139,6 +151,58 @@ For fault-specific topic capture, create a YAML configuration file:
      -p snapshots.enabled:=true \
      -p snapshots.config_file:=/path/to/snapshots.yaml \
      -p snapshots.default_topics:="['/diagnostics']"
+
+.. _entity-default-freeze-frames:
+
+Zero-Config Entity Freeze-Frames
+--------------------------------
+
+With no snapshot configuration at all, every confirmed fault still carries
+at-fault-time context: the faulting entity's own current data. Two paths
+cover the two kinds of entities, both on by default with an opt-out flag,
+and explicit config (``fault_specific`` / ``patterns`` / ``default_topics``)
+always wins when it matches.
+
+**ROS-backed entities** (``snapshots.entity_default``, fault manager): when
+no explicit config matches the fault code, the fault manager captures the
+topics *published by the fault's reporting source node(s)* (resolved from
+``source_id``), excluding per-node noise (``/rosout``,
+``/parameter_events``) and capped at 16 topics. These captures always sample
+on demand, even when ``snapshots.background_capture`` is enabled, because
+the topics are not known until the fault confirms. If the source is not a
+live node (e.g. a plugin entity id) or publishes nothing, no freeze-frame
+row is written.
+
+**Plugin-backed entities** (``entity_freeze_frame.enabled``, gateway): PLC
+apps bridged by protocol plugins report faults under their bare SOVD entity
+id and their live values are not ROS topics, so the fault manager cannot
+capture them. Instead, the gateway snapshots the entity's current data
+values (from the owning plugin's ``DataProvider``, i.e. the latest polled
+values) when the fault confirms, and merges them into the fault detail's
+``environment_data.snapshots`` as a standard ``freeze_frame`` entry named
+after the entity - unless the fault manager already captured a freeze-frame
+for that fault (explicit config wins). Disable with:
+
+.. code-block:: bash
+
+   ros2 run ros2_medkit_gateway gateway_node --ros-args \
+     -p entity_freeze_frame.enabled:=false
+
+Example plugin-entity freeze-frame in the fault response:
+
+.. code-block:: json
+
+   {
+     "type": "freeze_frame",
+     "name": "beckhoff_plc_app",
+     "data": {"tank_level": 87.5, "pump_running": true},
+     "x-medkit": {
+       "topic": "",
+       "message_type": "",
+       "full_data": {"tank_level": 87.5, "pump_running": true},
+       "captured_at": "2026-07-14T12:00:00.000Z"
+     }
+   }
 
 Querying Snapshots
 ------------------
