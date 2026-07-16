@@ -173,8 +173,10 @@ class TestEntityFreezeFrame(GatewayTestCase):
         self.assertIn('captured_at', x_medkit)
 
     def test_route_only_plugin_fault_carries_entity_values(self):
-        """A commercial-bridge-shaped plugin (no DataProvider) still carries
-        its entity's own values, captured via in-process x-plc-data dispatch.
+        """A commercial-bridge-shaped plugin (no DataProvider, no
+        FaultProvider) still carries its entity's own values, captured via
+        in-process x-plc-data dispatch and served through the fault_manager
+        fall-through.
 
         @verifies REQ_INTEROP_088
         """
@@ -196,6 +198,21 @@ class TestEntityFreezeFrame(GatewayTestCase):
         x_medkit = frame.get('x-medkit', {})
         self.assertIn('full_data', x_medkit)
         self.assertIn('captured_at', x_medkit)
+
+        # The plugin has no FaultProvider: the entity fault list and clear
+        # must be served by the fault_manager fall-through, not 404.
+        list_resp = requests.get(
+            f'{self.BASE_URL}/apps/{ROUTE_PLUGIN_APP}/faults', timeout=5)
+        self.assertEqual(list_resp.status_code, 200)
+        codes = [i.get('fault_code', i.get('code'))
+                 for i in list_resp.json().get('items', [])]
+        self.assertIn(ROUTE_PLUGIN_FAULT_CODE, codes)
+
+        clear_resp = requests.delete(
+            f'{self.BASE_URL}/apps/{ROUTE_PLUGIN_APP}/faults/'
+            f'{ROUTE_PLUGIN_FAULT_CODE}',
+            timeout=5)
+        self.assertIn(clear_resp.status_code, (200, 204))
 
     def test_ros_entity_fault_carries_own_topic_data(self):
         """A ROS-node fault carries the node's own published topic data.
