@@ -592,6 +592,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_error_info test/test_error_info.cpp)
   target_link_libraries(test_error_info gateway_ros2)
 
+  # Parameter error precedence tests (multi-node GET aggregation)
+  ament_add_gtest(test_parameter_error_precedence test/test_parameter_error_precedence.cpp)
+  target_link_libraries(test_parameter_error_precedence gateway_ros2)
+
   # Add ROS 2 subscription executor tests
   ament_add_gtest(test_ros2_subscription_executor test/test_ros2_subscription_executor.cpp)
   target_link_libraries(test_ros2_subscription_executor gateway_ros2)
@@ -1051,6 +1055,7 @@ if(BUILD_TESTING)
       test_tls_config
       test_fault_manager
       test_error_info
+      test_parameter_error_precedence
       test_lifecycle_status_helpers
       test_ros2_lifecycle_state_reader
       test_ros2_subscription_executor

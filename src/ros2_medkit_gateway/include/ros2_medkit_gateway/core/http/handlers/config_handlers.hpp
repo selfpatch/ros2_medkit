@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <string>
 #include <variant>
 
+#include "ros2_medkit_gateway/core/configuration/parameter_types.hpp"
 #include "ros2_medkit_gateway/dto/config.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
@@ -23,6 +25,42 @@
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+/// HTTP status + SOVD error code for a failed parameter operation.
+struct ParameterErrorClassification {
+  int status_code = 500;
+  std::string error_code;
+};
+
+/// Folds per-node parameter lookup failures so the error surfaced when no
+/// node succeeds does not depend on node iteration order: a non-404 failure
+/// (node unavailable, timeout, ...) always wins over NOT_FOUND, and a 404
+/// never replaces a held non-404.
+class ParameterErrorAccumulator {
+ public:
+  /// Fold one failed ParameterResult.
+  void add(const ParameterResult & result);
+
+  /// True when every folded failure classified as 404.
+  bool all_not_found() const {
+    return all_not_found_;
+  }
+
+  /// The failure to surface: the latest non-404 folded, else the latest 404.
+  const ParameterResult & worst() const {
+    return worst_;
+  }
+
+  /// Classification of worst().
+  const ParameterErrorClassification & classification() const {
+    return classification_;
+  }
+
+ private:
+  ParameterResult worst_;
+  ParameterErrorClassification classification_;
+  bool all_not_found_ = true;
+};
 
 /**
  * @brief Handlers for configuration (parameter) REST API endpoints.

@@ -114,16 +114,10 @@ const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo> & nod
   return nullptr;
 }
 
-/// Error classification result for parameter operations.
-struct ErrorClassification {
-  int status_code;
-  std::string error_code;
-};
-
 /// Map a structured `ParameterErrorCode` to an HTTP status + SOVD error code.
 /// Identical mapping to the legacy `classify_error_code` helper.
-ErrorClassification classify_error_code(ParameterErrorCode error_code) {
-  ErrorClassification result;
+ParameterErrorClassification classify_error_code(ParameterErrorCode error_code) {
+  ParameterErrorClassification result;
 
   switch (error_code) {
     case ParameterErrorCode::NOT_FOUND:
@@ -165,14 +159,14 @@ ErrorClassification classify_error_code(ParameterErrorCode error_code) {
 /// Classify a ParameterResult into HTTP status + error code. Prefers the
 /// structured `error_code` field and falls back to string-matching the legacy
 /// error messages for backward compatibility with older transports.
-ErrorClassification classify_parameter_error(const ParameterResult & result) {
+ParameterErrorClassification classify_parameter_error(const ParameterResult & result) {
   // Prefer structured error code
   if (result.error_code != ParameterErrorCode::NONE) {
     return classify_error_code(result.error_code);
   }
 
   // Fallback to string parsing for backward compatibility
-  ErrorClassification classification;
+  ParameterErrorClassification classification;
   const auto & error_message = result.error_message;
 
   if (error_message.find("not found") != std::string::npos ||
@@ -313,6 +307,19 @@ void apply_fan_out_observability(dto::ConfigListXMedkit & xm,
 }
 
 }  // namespace
+
+void ParameterErrorAccumulator::add(const ParameterResult & result) {
+  auto err = classify_parameter_error(result);
+  const bool not_found = err.status_code == 404;
+  // Non-404 failures win; a 404 never replaces a held non-404.
+  if (!not_found || all_not_found_) {
+    worst_ = result;
+    classification_ = std::move(err);
+  }
+  if (!not_found) {
+    all_not_found_ = false;
+  }
+}
 
 // ===========================================================================
 // GET /{entity-path}/configurations
@@ -476,10 +483,10 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
 
   // For non-aggregated entities (or aggregated entities without a prefix) we
   // probe every backing node for the parameter and return the first success.
-  // Track errors so a non-404 from any node (e.g. unavailable) wins over a
-  // pure "not found" verdict in the no-success branch.
-  ParameterResult last_result;
-  bool all_not_found = true;
+  // Failures fold through ParameterErrorAccumulator so a non-404 from any
+  // node (e.g. unavailable) wins over a pure "not found" verdict regardless
+  // of node iteration order.
+  ParameterErrorAccumulator errors;
 
   for (const auto & node_info : agg_configs.nodes) {
     auto result = config_mgr->get_parameter(node_info.node_fqn, parsed.param_name);
@@ -491,23 +498,19 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
       return make_read_value(entity_id, node_info.node_fqn, parsed.param_name, source_app, result.data);
     }
 
-    last_result = result;
-    auto err = classify_parameter_error(result);
-    if (err.status_code != 404) {
-      all_not_found = false;
-    }
+    errors.add(result);
   }
 
-  if (all_not_found) {
+  if (errors.all_not_found()) {
     return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Parameter not found",
                                      json{{"entity_id", entity_id}, {"id", param_id}}));
   }
 
   // Some node reported a non-404 (e.g. unavailable); surface that.
-  auto err = classify_parameter_error(last_result);
+  const auto & err = errors.classification();
   return tl::unexpected(
       make_error(err.status_code, err.error_code, "Failed to get parameter from any node",
-                 json{{"details", last_result.error_message}, {"entity_id", entity_id}, {"id", param_id}}));
+                 json{{"details", errors.worst().error_message}, {"entity_id", entity_id}, {"id", param_id}}));
 }
 
 // ===========================================================================
