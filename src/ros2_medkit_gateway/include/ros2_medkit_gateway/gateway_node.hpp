@@ -182,6 +182,13 @@ class GatewayNode : public rclcpp::Node {
   PluginManager * get_plugin_manager() const;
 
   /**
+   * @brief Wire the zero-config entity freeze-frame capture onto the shared
+   *        subscription executor. Call once after the executor is built and
+   *        plugins are loaded (main.cpp). No-op when disabled or no plugins.
+   */
+  void init_entity_freeze_frame_capture(ros2_common::Ros2SubscriptionExecutor & exec);
+
+  /**
    * @brief Get the zero-config entity freeze-frame capture
    * @return Raw pointer, or nullptr when disabled / no plugins loaded
    */

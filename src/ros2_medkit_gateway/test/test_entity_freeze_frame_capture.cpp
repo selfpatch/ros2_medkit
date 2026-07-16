@@ -24,6 +24,7 @@
 
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 using json = nlohmann::json;
@@ -33,6 +34,7 @@ using ros2_medkit_gateway::DataProviderError;
 using ros2_medkit_gateway::DataProviderErrorInfo;
 using ros2_medkit_gateway::EntityFreezeFrameCapture;
 using ros2_medkit_gateway::handlers::FaultHandlers;
+using ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 
@@ -84,17 +86,43 @@ class EntityFreezeFrameCaptureTest : public ::testing::Test {
  protected:
   void SetUp() override {
     node_ = std::make_shared<rclcpp::Node>("entity_freeze_frame_test_node");
-    publisher_ = node_->create_publisher<FaultEvent>("/fault_manager/events", rclcpp::QoS(100).reliable());
+    // Publisher lives on a node the main executor never spins (see
+    // Ros2SubscriptionSlotTest): publishers mutate their node's rcutils_hash_map
+    // under the hood, which TSan otherwise flags against the spun node.
+    publisher_node_ = std::make_shared<rclcpp::Node>("entity_freeze_frame_test_publisher");
+    publisher_ = publisher_node_->create_publisher<FaultEvent>("/fault_manager/events", rclcpp::QoS(100).reliable());
     provider_ = std::make_unique<FakePlcDataProvider>("plc_app");
+
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(node_);
+    spin_thread_ = std::thread([this] {
+      executor_->spin();
+    });
+    // The capture creates its fault-events subscription on this executor's
+    // dedicated _sub node, off the main node (issue #375).
+    sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_);
   }
 
-  /// Publish an event and spin until the capture holds frames (or timeout).
-  bool publish_and_wait(EntityFreezeFrameCapture & capture, const FaultEvent & event) {
-    publisher_->publish(event);
+  void TearDown() override {
+    if (executor_) {
+      executor_->cancel();
+    }
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    sub_exec_.reset();
+    executor_.reset();
+    publisher_.reset();
+    publisher_node_.reset();
+    node_.reset();
+  }
+
+  /// Block until the capture's subscription has matched our publisher, so a
+  /// reliable-QoS publish is not dropped by a late-joining subscriber.
+  bool wait_for_match() {
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (std::chrono::steady_clock::now() < deadline) {
-      rclcpp::spin_some(node_);
-      if (!capture.frames_for(event.fault.fault_code).empty()) {
+      if (publisher_->get_subscription_count() > 0) {
         return true;
       }
       std::this_thread::sleep_for(10ms);
@@ -102,8 +130,29 @@ class EntityFreezeFrameCaptureTest : public ::testing::Test {
     return false;
   }
 
+  /// Publish an event repeatedly until the capture holds frames (or timeout).
+  /// The callback runs on the subscription executor worker, not this thread.
+  bool publish_and_wait(EntityFreezeFrameCapture & capture, const FaultEvent & event) {
+    if (!wait_for_match()) {
+      return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      publisher_->publish(event);
+      if (!capture.frames_for(event.fault.fault_code).empty()) {
+        return true;
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+    return false;
+  }
+
   std::shared_ptr<rclcpp::Node> node_;
+  std::shared_ptr<rclcpp::Node> publisher_node_;
   rclcpp::Publisher<FaultEvent>::SharedPtr publisher_;
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::unique_ptr<Ros2SubscriptionExecutor> sub_exec_;
   std::unique_ptr<FakePlcDataProvider> provider_;
 };
 
@@ -111,7 +160,7 @@ class EntityFreezeFrameCaptureTest : public ::testing::Test {
 
 /// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, ConfirmedPluginFaultCapturesEntityValues) {
-  EntityFreezeFrameCapture capture(node_.get(), [this](const std::string & entity_id) -> DataProvider * {
+  EntityFreezeFrameCapture capture(node_.get(), *sub_exec_, [this](const std::string & entity_id) -> DataProvider * {
     return entity_id == "plc_app" ? provider_.get() : nullptr;
   });
 
@@ -127,15 +176,15 @@ TEST_F(EntityFreezeFrameCaptureTest, ConfirmedPluginFaultCapturesEntityValues) {
 
 /// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, NonPluginSourceCapturesNothing) {
-  EntityFreezeFrameCapture capture(node_.get(), [](const std::string &) -> DataProvider * {
+  EntityFreezeFrameCapture capture(node_.get(), *sub_exec_, [](const std::string &) -> DataProvider * {
     return nullptr;  // ROS FQN sources are never plugin-owned
   });
 
+  ASSERT_TRUE(wait_for_match());
   auto event = make_confirmed_event("ROS_FAULT", {"/powertrain/engine/temp_sensor"});
-  publisher_->publish(event);
-  // Give the callback a chance to run, then assert nothing was captured.
-  for (int i = 0; i < 20; ++i) {
-    rclcpp::spin_some(node_);
+  // Deliver repeatedly so the callback demonstrably ran and filtered it.
+  for (int i = 0; i < 25; ++i) {
+    publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
   EXPECT_TRUE(capture.frames_for("ROS_FAULT").empty());
@@ -143,15 +192,15 @@ TEST_F(EntityFreezeFrameCaptureTest, NonPluginSourceCapturesNothing) {
 
 /// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, NonConfirmedEventsAreIgnored) {
-  EntityFreezeFrameCapture capture(node_.get(), [this](const std::string & entity_id) -> DataProvider * {
+  EntityFreezeFrameCapture capture(node_.get(), *sub_exec_, [this](const std::string & entity_id) -> DataProvider * {
     return entity_id == "plc_app" ? provider_.get() : nullptr;
   });
 
+  ASSERT_TRUE(wait_for_match());
   auto event = make_confirmed_event("PLC_UPDATED_ONLY", {"plc_app"});
   event.event_type = FaultEvent::EVENT_UPDATED;
-  publisher_->publish(event);
-  for (int i = 0; i < 20; ++i) {
-    rclcpp::spin_some(node_);
+  for (int i = 0; i < 25; ++i) {
+    publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
   EXPECT_TRUE(capture.frames_for("PLC_UPDATED_ONLY").empty());

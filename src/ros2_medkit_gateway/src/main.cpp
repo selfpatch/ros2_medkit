@@ -134,6 +134,12 @@ int main(int argc, char ** argv) {
     auto data_provider = std::make_shared<ros2_medkit_gateway::Ros2TopicDataProvider>(sub_exec, serializer, dp_cfg);
     node->set_topic_data_provider(data_provider);
 
+    // Zero-config entity freeze-frames subscribe through the same serial worker
+    // (issue #375). Wired here because the executor is built after the node; the
+    // slot is dropped in ~GatewayNode, which runs after sub_exec.reset() below
+    // and so takes the executor's shutdown fast path.
+    node->init_entity_freeze_frame_capture(*sub_exec);
+
     // Spin in a try/catch so an uncaught handler exception falls through to the
     // explicit teardown block below. Without this, an escaping throw bypasses
     // the teardown ordering and triggers exactly the rclcpp abort described

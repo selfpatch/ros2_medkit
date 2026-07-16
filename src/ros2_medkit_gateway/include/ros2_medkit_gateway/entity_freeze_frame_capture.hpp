@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -27,6 +28,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {
@@ -60,11 +62,14 @@ class EntityFreezeFrameCapture {
   using DataProviderResolver = std::function<DataProvider *(const std::string & entity_id)>;
 
   /**
-   * @param node ROS 2 node for creating the subscription (caller manages lifetime)
+   * @param node ROS 2 node used to resolve the fault-events topic name and logger
+   * @param exec shared subscription executor; the fault-events subscription is
+   *        created and torn down on its serial worker (issue #375 invariant)
    * @param resolver entity-to-DataProvider resolver (typically wraps PluginManager)
    * @param max_faults retained-frame bound; oldest fault's frames evicted past it
    */
-  EntityFreezeFrameCapture(rclcpp::Node * node, DataProviderResolver resolver, size_t max_faults = 256);
+  EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
+                           DataProviderResolver resolver, size_t max_faults = 256);
 
   ~EntityFreezeFrameCapture();
 
@@ -85,7 +90,7 @@ class EntityFreezeFrameCapture {
  private:
   void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
 
-  rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
+  std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;
   rclcpp::Logger logger_;
   const size_t max_faults_;
