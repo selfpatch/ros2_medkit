@@ -218,6 +218,40 @@ bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std
   return faults::fault_in_source_scope(fault, source_fqns);
 }
 
+// Static method: merge zero-config entity freeze-frames into the intermediate
+// environment-data JSON (transport shape), before build_sovd_fault_response.
+json FaultHandlers::merge_entity_freeze_frames(json env_data,
+                                               const std::vector<EntityFreezeFrameCapture::Frame> & frames) {
+  if (frames.empty()) {
+    return env_data;
+  }
+  if (!env_data.contains("snapshots") || !env_data["snapshots"].is_array()) {
+    env_data["snapshots"] = json::array();
+  }
+  // Explicit snapshot config wins: if the fault_manager captured any
+  // freeze-frame for this fault, the zero-config entity frames stay out.
+  for (const auto & s : env_data["snapshots"]) {
+    if (s.value("snapshot_type", s.value("type", "")) == "freeze_frame") {
+      return env_data;
+    }
+  }
+  for (const auto & frame : frames) {
+    // Intermediate transport shape (fault_msg_conversions): the freeze_frame
+    // branch of build_sovd_fault_response turns this into the standard wire
+    // entry (type/name/data + x-medkit.full_data/captured_at).
+    json snap;
+    snap["type"] = "freeze_frame";
+    snap["snapshot_type"] = "freeze_frame";
+    snap["name"] = frame.entity_id;
+    snap["data"] = frame.values.dump();
+    snap["topic"] = "";  // entity data values, not a ROS topic
+    snap["message_type"] = "";
+    snap["captured_at_ns"] = frame.captured_at_ns;
+    env_data["snapshots"].push_back(std::move(snap));
+  }
+  return env_data;
+}
+
 // Static method: Build SOVD-compliant fault response from transport-supplied JSON.
 //
 // The transport adapter performs ros2_medkit_msgs -> JSON translation; the
@@ -677,7 +711,10 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
           const auto & cache = ctx_.node()->get_thread_safe_cache();
           auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
           if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
-            const auto & env_data_json = mgr_result.data.value("environment_data", json::object());
+            json env_data_json = mgr_result.data.value("environment_data", json::object());
+            if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
+              env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
+            }
             auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
             return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
           }
@@ -734,7 +771,10 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
                           {"fault_code", fault_code}}));
     }
 
-    const auto & env_data_json = result.data.value("environment_data", json::object());
+    json env_data_json = result.data.value("environment_data", json::object());
+    if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
+      env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
+    }
     auto detail = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 
     return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));

@@ -196,6 +196,14 @@ Configure how the gateway connects to the fault manager services and event topic
      - float
      - ``5.0``
      - Timeout for fault manager service calls such as ``list_faults`` and ``get_snapshots``.
+   * - ``entity_freeze_frame.enabled``
+     - bool
+     - ``true``
+     - Zero-config freeze-frames for plugin-backed entities: when a fault from a
+       plugin-owned entity confirms, snapshot the entity's current data values
+       (via its plugin's DataProvider) and merge them into the fault detail's
+       ``environment_data.snapshots``. Explicit snapshot config in the fault
+       manager always wins when present. Only active when plugins are loaded.
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default

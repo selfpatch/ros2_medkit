@@ -115,6 +115,12 @@ struct SnapshotConfig {
   /// Default topics to capture if no specific or pattern match
   std::vector<std::string> default_topics;
 
+  /// Zero-config fallback when NO explicit config matches a fault code: capture
+  /// the topics published by the fault's reporting source node(s) instead of
+  /// skipping the capture entirely. Explicit config (fault_specific / patterns /
+  /// default_topics) always wins when present.
+  bool entity_default{true};
+
   /// Rosbag recording configuration (optional)
   RosbagConfig rosbag;
 };
@@ -151,7 +157,9 @@ class SnapshotCapture {
   /// Capture snapshots for a fault that was just confirmed
   ///
   /// If the fault code resolves to no capture set (not in fault_specific, no pattern
-  /// match, no default_topics), capture returns early: no freeze_frames row is written
+  /// match, no default_topics), the entity-default fallback (when enabled) captures
+  /// the reporting source node's own published topics instead. Only when that also
+  /// resolves nothing does capture return early: no freeze_frames row is written
   /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
   /// @param fault_code The fault code that was confirmed
   void capture(const std::string & fault_code);
@@ -170,6 +178,12 @@ class SnapshotCapture {
   /// Resolve which topics to capture for a given fault code
   /// Priority: fault_specific > patterns > default_topics
   std::vector<std::string> resolve_topics(const std::string & fault_code) const;
+
+  /// Entity-default fallback: topics published by the fault's reporting source
+  /// node(s), excluding per-node noise (/rosout, /parameter_events). Empty when
+  /// no source resolves to a live node (e.g. plugin entity ids - the gateway
+  /// covers those). Never throws; any failure degrades to empty.
+  std::vector<std::string> resolve_entity_topics(const std::string & fault_code) const;
 
   /// Capture a single topic on-demand (creates temporary subscription)
   /// On success also records the captured value into @p freeze_frame under the topic key.

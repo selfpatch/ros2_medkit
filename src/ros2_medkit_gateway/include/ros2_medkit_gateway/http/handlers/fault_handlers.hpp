@@ -19,8 +19,10 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "ros2_medkit_gateway/dto/faults.hpp"
+#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -174,6 +176,20 @@ class FaultHandlers {
    * and indirectly via the per-entity collection routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
+
+  /**
+   * @brief Merge zero-config entity freeze-frames into environment data.
+   *
+   * Appends one intermediate-shape freeze_frame snapshot per captured frame
+   * (same shape as the transport emits, so build_sovd_fault_response processes
+   * them identically) UNLESS the fault_manager already captured a freeze-frame
+   * for this fault - explicit snapshot config always wins over the zero-config
+   * entity capture.
+   *
+   * Public static for direct unit testing; called by `get_fault`.
+   */
+  static nlohmann::json merge_entity_freeze_frames(nlohmann::json env_data,
+                                                   const std::vector<EntityFreezeFrameCapture::Frame> & frames);
 
  private:
   HandlerContext & ctx_;

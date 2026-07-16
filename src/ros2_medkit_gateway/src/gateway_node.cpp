@@ -243,6 +243,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
 
+  // Zero-config freeze-frames for plugin-backed entities (opt-out)
+  declare_parameter("entity_freeze_frame.enabled", true);
+
   // Locking parameters
   declare_parameter("locking.enabled", true);
   declare_parameter("locking.default_max_expiration", 3600);
@@ -732,6 +735,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // Entity ownership is also registered during refresh_cache() (single introspect() call
     // per plugin handles both injection and ownership). No separate init-time registration
     // needed because refresh_cache() runs before the HTTP server accepts requests.
+  }
+
+  // Zero-config freeze-frames for plugin-backed entities: snapshot the faulting
+  // entity's current data values when its fault confirms. Only useful when a
+  // plugin can own entities, so gated on loaded plugins.
+  if (get_parameter("entity_freeze_frame.enabled").as_bool() && plugin_mgr_->has_plugins()) {
+    entity_freeze_frame_capture_ =
+        std::make_unique<EntityFreezeFrameCapture>(this, [this](const std::string & entity_id) {
+          return plugin_mgr_ ? plugin_mgr_->get_data_provider_for_entity(entity_id) : nullptr;
+        });
   }
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
@@ -1665,7 +1678,11 @@ GatewayNode::~GatewayNode() {
   if (resource_change_notifier_) {
     resource_change_notifier_->shutdown();
   }
-  // 6. Shutdown plugins
+  // 6. Drop the entity freeze-frame subscription BEFORE plugin shutdown: its
+  //    callback resolves into plugin DataProviders, which must not be reachable
+  //    once shutdown_all() has run.
+  entity_freeze_frame_capture_.reset();
+  //    Shutdown plugins
   if (plugin_mgr_) {
     plugin_mgr_->shutdown_all();
   }
@@ -1774,6 +1791,10 @@ ScriptManager * GatewayNode::get_script_manager() const {
 
 PluginManager * GatewayNode::get_plugin_manager() const {
   return plugin_mgr_.get();
+}
+
+EntityFreezeFrameCapture * GatewayNode::get_entity_freeze_frame_capture() const {
+  return entity_freeze_frame_capture_.get();
 }
 
 ResourceSamplerRegistry * GatewayNode::get_sampler_registry() const {

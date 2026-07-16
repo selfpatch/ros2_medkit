@@ -19,6 +19,7 @@
 #include <rclcpp/serialized_message.hpp>
 #include <set>
 #include <thread>
+#include <utility>
 
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
@@ -123,6 +124,13 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   }
 
   auto topics = resolve_topics(fault_code);
+  // Zero-config fallback: no explicit config matched, so capture the reporting
+  // source node's own published topics (explicit config always wins above).
+  bool entity_scoped = false;
+  if (topics.empty() && config_.entity_default) {
+    topics = resolve_entity_topics(fault_code);
+    entity_scoped = !topics.empty();
+  }
   if (topics.empty()) {
     // Unconfigured fault code: resolve_topics() yielded nothing, so capture returns early.
     // No freeze_frames row is written (we never persist an empty {} row) and no
@@ -132,15 +140,17 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     return;
   }
 
-  RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics)", fault_code.c_str(),
-              topics.size());
+  RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics%s)", fault_code.c_str(),
+              topics.size(), entity_scoped ? ", entity-default" : "");
 
   // Accumulate a compact dict of captured topic values alongside the per-topic snapshots.
   nlohmann::json freeze_frame = nlohmann::json::object();
   size_t captured_count = 0;
   for (const auto & topic : topics) {
     bool success = false;
-    if (config_.background_capture) {
+    // Entity-default topics are not known at construction, so the background
+    // cache never holds them - always sample those on demand.
+    if (config_.background_capture && !entity_scoped) {
       success = capture_topic_from_cache(fault_code, topic, freeze_frame);
     } else {
       success = capture_topic_on_demand(fault_code, topic, freeze_frame);
@@ -161,6 +171,14 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   // An empty capture must never clobber an existing non-empty frame: a re-confirm while
   // the source publishers are down would otherwise replace the retained record with {}.
   if (captured_count == 0) {
+    // Entity-default runs are best-effort: an empty one must not create a row
+    // (absence still means "nothing configured captured anything") nor clobber
+    // a retained frame from an earlier explicit-config capture.
+    if (entity_scoped) {
+      RCLCPP_DEBUG(node_->get_logger(), "Entity-default capture for fault '%s' sampled nothing; no row written",
+                   fault_code.c_str());
+      return;
+    }
     auto existing = storage_->get_freeze_frame(fault_code);
     if (existing.has_value() && existing->data != "{}") {
       RCLCPP_WARN(node_->get_logger(), "Nothing captured for fault '%s'; keeping previously retained freeze-frame",
@@ -199,6 +217,77 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
   }
 
   return {};
+}
+
+std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::string & fault_code) const {
+  // Bound the on-demand sweep: each silent-but-published topic costs up to
+  // timeout_sec, so a node with many declared topics must not stall a capture
+  // pool worker indefinitely.
+  static constexpr size_t kMaxEntityTopics = 16;
+
+  std::set<std::string> topics;
+  // Guarded like RosbagCapture::resolve_entity_topics: this runs on a capture
+  // pool worker with no outer catch, and storage_->get_fault() can throw on
+  // the sqlite backend. Any failure degrades to "no entity-default capture".
+  try {
+    auto fault = storage_->get_fault(fault_code);
+    if (!fault || fault->reporting_sources.empty()) {
+      return {};
+    }
+
+    // reporting_sources hold the reporting node's FQN (e.g. "/planner_server").
+    // Split each into (name, namespace) to match against topic endpoints.
+    std::set<std::pair<std::string, std::string>> wanted;
+    for (const auto & source : fault->reporting_sources) {
+      std::string ns = "/";
+      std::string name = source;
+      const auto slash = source.rfind('/');
+      if (slash != std::string::npos) {
+        name = source.substr(slash + 1);
+        ns = (slash == 0) ? "/" : source.substr(0, slash);
+      }
+      if (!name.empty()) {
+        wanted.emplace(name, ns);
+      }
+    }
+
+    // The entity's "own data" = topics it publishes. Every node publishes
+    // /rosout and /parameter_events; those say nothing about the entity.
+    static const std::set<std::string> kExcluded = {"/rosout", "/parameter_events"};
+
+    auto published_by_wanted = [&wanted](const std::vector<rclcpp::TopicEndpointInfo> & eps) {
+      for (const auto & ep : eps) {
+        if (wanted.count({ep.node_name(), ep.node_namespace()})) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const auto & [topic, types] : node_->get_topic_names_and_types()) {
+      if (kExcluded.count(topic)) {
+        continue;
+      }
+      if (published_by_wanted(node_->get_publishers_info_by_topic(topic))) {
+        topics.insert(topic);
+        if (topics.size() >= kMaxEntityTopics) {
+          RCLCPP_WARN(node_->get_logger(),
+                      "Entity-default capture for fault '%s' capped at %zu topics; remaining topics skipped",
+                      fault_code.c_str(), kMaxEntityTopics);
+          break;
+        }
+      }
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "Entity-default topic resolution failed for fault '%s': %s", fault_code.c_str(),
+                e.what());
+    return {};
+  }
+
+  if (!topics.empty()) {
+    RCLCPP_INFO(node_->get_logger(), "Entity-default capture for fault '%s': %zu topic(s) from the reporting node(s)",
+                fault_code.c_str(), topics.size());
+  }
+  return {topics.begin(), topics.end()};
 }
 
 bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, const std::string & topic,

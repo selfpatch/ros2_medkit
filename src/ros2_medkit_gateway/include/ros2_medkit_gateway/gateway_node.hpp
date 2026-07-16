@@ -52,6 +52,7 @@
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
+#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
@@ -179,6 +180,12 @@ class GatewayNode : public rclcpp::Node {
    * @return Raw pointer to PluginManager (valid for lifetime of GatewayNode)
    */
   PluginManager * get_plugin_manager() const;
+
+  /**
+   * @brief Get the zero-config entity freeze-frame capture
+   * @return Raw pointer, or nullptr when disabled / no plugins loaded
+   */
+  EntityFreezeFrameCapture * get_entity_freeze_frame_capture() const;
 
   /**
    * @brief Get the ResourceSamplerRegistry instance
@@ -351,6 +358,8 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerStore> trigger_store_;
   std::unique_ptr<TriggerManager> trigger_mgr_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
+  // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
+  std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
   std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
   // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
   std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;

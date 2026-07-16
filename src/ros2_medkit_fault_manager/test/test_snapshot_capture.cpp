@@ -428,6 +428,132 @@ TEST_F(SnapshotCaptureTest, DisabledCaptureWritesNoFreezeFrame) {
   EXPECT_FALSE(storage_->get_freeze_frame("ANY_FAULT").has_value());
 }
 
+// Entity-default (zero-config) capture tests. The reporting source is this
+// test node's own FQN, so resolve_entity_topics finds the topics it publishes.
+
+class EntityDefaultCaptureTest : public SnapshotCaptureTest {
+ protected:
+  /// Store a CONFIRMED fault whose reporting source is this test node.
+  void store_fault_from_this_node(const std::string & fault_code) {
+    ros2_medkit_fault_manager::DebounceConfig debounce;  // threshold -1: first FAILED confirms
+    storage_->report_fault_event(fault_code, 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                                 "test fault", node_->get_fully_qualified_name(), rclcpp::Clock().now(), debounce);
+  }
+
+  /// Wait until this node's publisher on @p topic is visible on the graph.
+  void wait_for_publisher(const std::string & topic) {
+    auto start = std::chrono::steady_clock::now();
+    while (node_->count_publishers(topic) == 0 && std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_GT(node_->count_publishers(topic), 0u);
+  }
+};
+
+// @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, EntityDefaultCapturesSourceNodeTopics) {
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/own_metric", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  // No fault_specific / patterns / default_topics: only the entity-default
+  // fallback can produce a capture set.
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  store_fault_from_this_node("ENTITY_FAULT");
+
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 13.5;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  wait_for_publisher("/entity/own_metric");
+
+  capture.capture("ENTITY_FAULT");
+
+  auto frame = storage_->get_freeze_frame("ENTITY_FAULT");
+  ASSERT_TRUE(frame.has_value());
+  auto parsed = nlohmann::json::parse(frame->data);
+  ASSERT_TRUE(parsed.contains("/entity/own_metric"));
+  EXPECT_DOUBLE_EQ(parsed["/entity/own_metric"]["data"].get<double>(), 13.5);
+  // Per-node noise topics never enter the entity capture set.
+  EXPECT_FALSE(parsed.contains("/rosout"));
+  EXPECT_FALSE(parsed.contains("/parameter_events"));
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, EntityDefaultDisabledWritesNoFreezeFrame) {
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/opted_out", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.entity_default = false;
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  store_fault_from_this_node("OPTED_OUT_FAULT");
+  wait_for_publisher("/entity/opted_out");
+
+  capture.capture("OPTED_OUT_FAULT");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_FAULT").has_value());
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, ExplicitConfigWinsOverEntityDefault) {
+  auto configured_pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/configured", rclcpp::QoS(10));
+  auto own_pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/own_other", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  config.fault_specific["CONFIGURED_FAULT"] = {"/entity/configured"};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  store_fault_from_this_node("CONFIGURED_FAULT");
+
+  ScopedPublisherThread pub_thread([&configured_pub, &own_pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 1.0;
+      configured_pub->publish(msg);
+      own_pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  wait_for_publisher("/entity/configured");
+
+  capture.capture("CONFIGURED_FAULT");
+
+  auto frame = storage_->get_freeze_frame("CONFIGURED_FAULT");
+  ASSERT_TRUE(frame.has_value());
+  auto parsed = nlohmann::json::parse(frame->data);
+  // Only the explicitly configured topic is captured, never the node's other topics.
+  EXPECT_TRUE(parsed.contains("/entity/configured"));
+  EXPECT_FALSE(parsed.contains("/entity/own_other"));
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
+  SnapshotConfig config;
+  config.enabled = true;
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  // Plugin-style bare entity id: not a live node, resolves to no topics.
+  ros2_medkit_fault_manager::DebounceConfig debounce;
+  storage_->report_fault_event("PLC_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "plc fault", "beckhoff_plc_app", rclcpp::Clock().now(), debounce);
+
+  capture.capture("PLC_FAULT");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("PLC_FAULT").has_value());
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
