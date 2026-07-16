@@ -20,7 +20,6 @@
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
-#include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -28,15 +27,17 @@ using namespace ros2_medkit_gateway;
 /**
  * @brief Demo plugin mirroring the commercial PLC bridge shape (.so for tests).
  *
- * Deliberately does NOT export get_data_provider: like the S7comm/Modbus/ADS
- * bridges it exports only create_plugin + get_introspection_provider +
- * get_fault_provider and serves its live values exclusively through a
- * registered `apps/<id>/x-plc-data` route (poller-snapshot style response
- * with `connected` + `items[]`). Used by test_entity_freeze_frame.test.py to
- * prove the gateway's in-process route-dispatch fallback captures a
- * zero-config freeze-frame for such plugins.
+ * Deliberately exports ONLY create_plugin + get_introspection_provider - no
+ * DataProvider, no FaultProvider - like the S7comm bridge. Live values are
+ * served exclusively through a registered `apps/<id>/x-plc-data` route
+ * (poller-snapshot style response with `connected` + `items[]`); faults are
+ * reported to the fault_manager via ReportFault only. Used by
+ * test_entity_freeze_frame.test.py to prove the gateway's in-process
+ * route-dispatch fallback captures a zero-config freeze-frame for such
+ * plugins, and that their faults are served through the fault_manager
+ * fall-through despite the missing FaultProvider.
  */
-class TestRouteDataPlugin : public GatewayPlugin, public IntrospectionProvider, public FaultProvider {
+class TestRouteDataPlugin : public GatewayPlugin, public IntrospectionProvider {
  public:
   static constexpr const char * kAppId = "test_route_plc_app";
 
@@ -92,35 +93,6 @@ class TestRouteDataPlugin : public GatewayPlugin, public IntrospectionProvider, 
     return result;
   }
 
-  // --- FaultProvider (same projection as test_data_provider_plugin: the list
-  // mirrors the fault_manager's records; get_fault returns not-found so the
-  // handler serves the enriched record with environment_data) ---
-  tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override {
-    nlohmann::json items = nlohmann::json::array();
-    if (ctx_ != nullptr) {
-      auto faults = ctx_->list_entity_faults(entity_id);
-      if (faults.is_array()) {
-        for (const auto & f : faults) {
-          items.push_back({{"code", f.value("fault_code", "")},
-                           {"severity", f.value("severity", 0)},
-                           {"status", f.value("status", "")}});
-        }
-      }
-    }
-    return dto::FaultListResult{nlohmann::json{{"items", std::move(items)}}};
-  }
-
-  tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & /*entity_id*/,
-                                                                         const std::string & fault_code) override {
-    return tl::make_unexpected(
-        FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "Fault not found: " + fault_code, 404});
-  }
-
-  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
-                                                                          const std::string & fault_code) override {
-    return dto::FaultClearResult{nlohmann::json{{"code", fault_code}, {"cleared", true}}};
-  }
-
  private:
   void handle_plc_data(const PluginRequest & req, PluginResponse & res) {
     auto entity_id = req.path_param(1);
@@ -147,7 +119,8 @@ class TestRouteDataPlugin : public GatewayPlugin, public IntrospectionProvider, 
   PluginContext * ctx_{nullptr};
 };
 
-// --- Plugin exports (intentionally NO get_data_provider) ---
+// --- Plugin exports (intentionally ONLY the two below - no get_data_provider,
+// no get_fault_provider - matching the leanest commercial bridge) ---
 
 extern "C" GATEWAY_PLUGIN_EXPORT int plugin_api_version() {
   return PLUGIN_API_VERSION;
@@ -158,9 +131,5 @@ extern "C" GATEWAY_PLUGIN_EXPORT GatewayPlugin * create_plugin() {
 }
 
 extern "C" GATEWAY_PLUGIN_EXPORT IntrospectionProvider * get_introspection_provider(GatewayPlugin * plugin) {
-  return static_cast<TestRouteDataPlugin *>(plugin);
-}
-
-extern "C" GATEWAY_PLUGIN_EXPORT FaultProvider * get_fault_provider(GatewayPlugin * plugin) {
   return static_cast<TestRouteDataPlugin *>(plugin);
 }

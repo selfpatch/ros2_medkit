@@ -901,9 +901,11 @@ if(BUILD_TESTING)
   )
   install(TARGETS test_data_provider_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
 
-  # Demo commercial-bridge-shaped plugin: Introspection + Fault providers only,
-  # live values served exclusively via a registered x-plc-data route (no
-  # get_data_provider export). Proves the freeze-frame route-dispatch fallback.
+  # Demo commercial-bridge-shaped plugin: IntrospectionProvider ONLY, live
+  # values served exclusively via a registered x-plc-data route (no
+  # get_data_provider / get_fault_provider exports, like the S7comm bridge).
+  # Proves the freeze-frame route-dispatch fallback and the fault_manager
+  # fall-through for FaultProvider-less plugin entities.
   add_library(test_route_data_plugin MODULE test/demo_nodes/test_route_data_plugin.cpp)
   target_include_directories(test_route_data_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_route_data_plugin

@@ -461,30 +461,31 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     }
     const auto entity_info = *entity_result;
 
-    // Delegate to plugin FaultProvider if entity is plugin-owned
+    // Delegate to plugin FaultProvider if entity is plugin-owned. Plugins
+    // without a FaultProvider report via ReportFault only (the native path):
+    // their faults live in the fault_manager, so fall through to the shared
+    // scoped listing below like any other entity.
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
-      if (fault_prov == nullptr) {
-        return tl::make_unexpected(
-            make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
-      }
-      try {
-        auto result = fault_prov->list_faults(entity_id);
-        if (!result) {
+      if (fault_prov != nullptr) {
+        try {
+          auto result = fault_prov->list_faults(entity_id);
+          if (!result) {
+            return tl::make_unexpected(
+                make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+          }
+          return std::move(*result);
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
           return tl::make_unexpected(
-              make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+              make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
-        return std::move(*result);
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                     e.what());
-        return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-      } catch (...) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                     entity_id.c_str());
-        return tl::make_unexpected(
-            make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
     }
 
@@ -693,50 +694,50 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
-      if (fault_prov == nullptr) {
-        return tl::make_unexpected(
-            make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
-      }
-
-      // Prefer the fault_manager's environment-enriched record when this entity
-      // OWNS the fault (it was reported to the fault_manager under an app the
-      // entity owns, per the fault-scope resolution). This carries the
-      // freeze-frame/rosbag snapshots, consistent with the non-plugin detail
-      // path. Fall through to the plugin's own provider for faults the
-      // fault_manager does not hold (e.g. on-demand UDS DTCs).
-      if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
-        auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
-        if (mgr_result.success) {
-          const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-          const auto & cache = ctx_.node()->get_thread_safe_cache();
-          auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-          if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
-            json env_data_json = mgr_result.data.value("environment_data", json::object());
-            if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
-              env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
+      // Plugins without a FaultProvider report via ReportFault only (the
+      // native path): skip the plugin delegation entirely and serve the
+      // fault_manager's enriched record through the shared path below.
+      if (fault_prov != nullptr) {
+        // Prefer the fault_manager's environment-enriched record when this entity
+        // OWNS the fault (it was reported to the fault_manager under an app the
+        // entity owns, per the fault-scope resolution). This carries the
+        // freeze-frame/rosbag snapshots, consistent with the non-plugin detail
+        // path. Fall through to the plugin's own provider for faults the
+        // fault_manager does not hold (e.g. on-demand UDS DTCs).
+        if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+          auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
+          if (mgr_result.success) {
+            const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
+            const auto & cache = ctx_.node()->get_thread_safe_cache();
+            auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+            if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
+              json env_data_json = mgr_result.data.value("environment_data", json::object());
+              if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
+                env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
+              }
+              auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
+              return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
             }
-            auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
-            return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
           }
         }
-      }
 
-      try {
-        auto result = fault_prov->get_fault(entity_id, fault_code);
-        if (!result) {
+        try {
+          auto result = fault_prov->get_fault(entity_id, fault_code);
+          if (!result) {
+            return tl::make_unexpected(
+                make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+          }
+          return std::move(*result);
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
           return tl::make_unexpected(
-              make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+              make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
-        return std::move(*result);
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                     e.what());
-        return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-      } catch (...) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                     entity_id.c_str());
-        return tl::make_unexpected(
-            make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
     }
 
@@ -833,54 +834,54 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
-      if (fault_prov == nullptr) {
-        return tl::make_unexpected(
-            make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
-      }
-
-      // Cross-entity clear guard: the plugin clear_fault forwards the code to
-      // the fault_manager with no scope check, so without this a
-      // DELETE /{A}/faults/{code} could clear a fault owned by entity B. When
-      // the fault_manager holds this fault, require it to be in this entity's
-      // source scope before delegating; reject out-of-scope. Faults the
-      // fault_manager does not hold (plugin-internal, e.g. on-demand UDS DTCs)
-      // fall through to the plugin provider unchanged. Mirrors the ownership
-      // check in the plugin get_fault branch and the non-plugin clear path.
-      if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
-        auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
-        if (mgr_result.success) {
-          const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-          const auto & cache = ctx_.node()->get_thread_safe_cache();
-          auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-          if (!FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
-            return tl::make_unexpected(
-                make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
-                           json{{"details",
-                                 "Fault is not in scope for this entity: every reporting source must be one of the "
-                                 "entity's owned apps, and a mixed-source fault that includes any out-of-entity "
-                                 "reporter is rejected to prevent cross-entity clear"},
-                                {entity_info.id_field, entity_id},
-                                {"fault_code", fault_code}}));
+      // Plugins without a FaultProvider report via ReportFault only (the
+      // native path): fall through to the scope-checked fault_manager clear
+      // below like any other entity.
+      if (fault_prov != nullptr) {
+        // Cross-entity clear guard: the plugin clear_fault forwards the code to
+        // the fault_manager with no scope check, so without this a
+        // DELETE /{A}/faults/{code} could clear a fault owned by entity B. When
+        // the fault_manager holds this fault, require it to be in this entity's
+        // source scope before delegating; reject out-of-scope. Faults the
+        // fault_manager does not hold (plugin-internal, e.g. on-demand UDS DTCs)
+        // fall through to the plugin provider unchanged. Mirrors the ownership
+        // check in the plugin get_fault branch and the non-plugin clear path.
+        if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+          auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
+          if (mgr_result.success) {
+            const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
+            const auto & cache = ctx_.node()->get_thread_safe_cache();
+            auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+            if (!FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
+              return tl::make_unexpected(
+                  make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+                             json{{"details",
+                                   "Fault is not in scope for this entity: every reporting source must be one of the "
+                                   "entity's owned apps, and a mixed-source fault that includes any out-of-entity "
+                                   "reporter is rejected to prevent cross-entity clear"},
+                                  {entity_info.id_field, entity_id},
+                                  {"fault_code", fault_code}}));
+            }
           }
         }
-      }
 
-      try {
-        auto result = fault_prov->clear_fault(entity_id, fault_code);
-        if (!result) {
+        try {
+          auto result = fault_prov->clear_fault(entity_id, fault_code);
+          if (!result) {
+            return tl::make_unexpected(
+                make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+          }
+          return Outcome{std::move(*result)};
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
           return tl::make_unexpected(
-              make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+              make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
-        return Outcome{std::move(*result)};
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                     e.what());
-        return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-      } catch (...) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                     entity_id.c_str());
-        return tl::make_unexpected(
-            make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
     }
 
@@ -960,48 +961,48 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
       return tl::make_unexpected(lock_err.error());
     }
 
-    // Delegate to plugin FaultProvider if entity is plugin-owned
+    // Delegate to plugin FaultProvider if entity is plugin-owned. Plugins
+    // without a FaultProvider report via ReportFault only (the native path):
+    // fall through to the scope-checked fault_manager clear below.
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.node()->get_plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
-      if (fault_prov == nullptr) {
-        return tl::make_unexpected(
-            make_error(404, ERR_RESOURCE_NOT_FOUND, "No fault provider for plugin entity '" + entity_id + "'"));
-      }
-      try {
-        auto list_result = fault_prov->list_faults(entity_id);
-        if (!list_result) {
-          return tl::make_unexpected(make_plugin_error(list_result.error().http_status, list_result.error().message,
-                                                       json{{"entity_id", entity_id}}));
-        }
-        if (list_result->content.contains("items") && list_result->content["items"].is_array()) {
-          std::vector<std::string> failed_codes;
-          for (const auto & fault : list_result->content["items"]) {
-            auto code = fault.value("code", "");
-            if (code.empty()) {
-              continue;
+      if (fault_prov != nullptr) {
+        try {
+          auto list_result = fault_prov->list_faults(entity_id);
+          if (!list_result) {
+            return tl::make_unexpected(make_plugin_error(list_result.error().http_status, list_result.error().message,
+                                                         json{{"entity_id", entity_id}}));
+          }
+          if (list_result->content.contains("items") && list_result->content["items"].is_array()) {
+            std::vector<std::string> failed_codes;
+            for (const auto & fault : list_result->content["items"]) {
+              auto code = fault.value("code", "");
+              if (code.empty()) {
+                continue;
+              }
+              auto clear_result = fault_prov->clear_fault(entity_id, code);
+              if (!clear_result) {
+                failed_codes.push_back(code);
+              }
             }
-            auto clear_result = fault_prov->clear_fault(entity_id, code);
-            if (!clear_result) {
-              failed_codes.push_back(code);
+            if (!failed_codes.empty()) {
+              return tl::make_unexpected(
+                  make_plugin_error(500, "Failed to clear " + std::to_string(failed_codes.size()) + " fault(s)",
+                                    json{{"entity_id", entity_id}, {"failed_codes", failed_codes}}));
             }
           }
-          if (!failed_codes.empty()) {
-            return tl::make_unexpected(
-                make_plugin_error(500, "Failed to clear " + std::to_string(failed_codes.size()) + " fault(s)",
-                                  json{{"entity_id", entity_id}, {"failed_codes", failed_codes}}));
-          }
+          return http::NoContent{};
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
+          return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+        } catch (...) {
+          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
+          return tl::make_unexpected(
+              make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
-        return http::NoContent{};
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                     e.what());
-        return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-      } catch (...) {
-        RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                     entity_id.c_str());
-        return tl::make_unexpected(
-            make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
       }
     }
 
