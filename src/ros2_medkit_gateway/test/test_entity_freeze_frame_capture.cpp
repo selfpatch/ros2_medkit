@@ -14,9 +14,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
@@ -204,6 +206,89 @@ TEST_F(EntityFreezeFrameCaptureTest, NonConfirmedEventsAreIgnored) {
     std::this_thread::sleep_for(10ms);
   }
   EXPECT_TRUE(capture.frames_for("PLC_UPDATED_ONLY").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, RouteFallbackCapturesWhenPluginHasNoDataProvider) {
+  // Mirror the commercial PLC bridges: no DataProvider, values only through
+  // the plugin's x-plc-data route (dispatched in-process by the fetcher).
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id != "route_plc_app") {
+          return std::nullopt;
+        }
+        return json{{"connected", true},
+                    {"items", json::array({{{"name", "level"}, {"value", 87.5}, {"unit", "mm"}},
+                                           {{"name", "alarm"}, {"value", true}}})}};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_ROUTE_LEVEL_HIGH", {"route_plc_app"})));
+
+  auto frames = capture.frames_for("PLC_ROUTE_LEVEL_HIGH");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "route_plc_app");
+  EXPECT_DOUBLE_EQ(frames[0].values.value("level", 0.0), 87.5);
+  EXPECT_EQ(frames[0].values.value("alarm", false), true);
+  EXPECT_GT(frames[0].captured_at_ns, 0);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, RouteFallbackSkipsDisconnectedPlc) {
+  // A disconnected PLC must not freeze-frame a row of stale/null values.
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [](const std::string &) -> std::optional<json> {
+        return json{{"connected", false}, {"items", json::array({{{"name", "level"}, {"value", nullptr}}})}};
+      });
+
+  ASSERT_TRUE(wait_for_match());
+  auto event = make_confirmed_event("PLC_DISCONNECTED", {"route_plc_app"});
+  for (int i = 0; i < 25; ++i) {
+    publisher_->publish(event);
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(capture.frames_for("PLC_DISCONNECTED").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, DataProviderWinsOverRouteFallback) {
+  std::atomic<bool> fetcher_called{false};
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      [&fetcher_called](const std::string &) -> std::optional<json> {
+        fetcher_called = true;
+        return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", 1.0}}})}};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_PROVIDER_FIRST", {"plc_app"})));
+
+  auto frames = capture.frames_for("PLC_PROVIDER_FIRST");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_DOUBLE_EQ(frames[0].values.value("temperature", 0.0), 42.5);  // provider values, not route
+  EXPECT_FALSE(fetcher_called.load());
+}
+
+TEST(RouteContentHasLiveData, GatesOnConnectedAndItems) {
+  using Capture = EntityFreezeFrameCapture;
+  EXPECT_TRUE(Capture::route_content_has_live_data(
+      json{{"connected", true}, {"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
+  // No "connected" field: items alone are enough (plugin-defined shape).
+  EXPECT_TRUE(Capture::route_content_has_live_data(json{{"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
+  EXPECT_FALSE(Capture::route_content_has_live_data(
+      json{{"connected", false}, {"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
+  EXPECT_FALSE(Capture::route_content_has_live_data(json{{"connected", true}, {"items", json::array()}}));
+  EXPECT_FALSE(Capture::route_content_has_live_data(json{{"connected", true}}));
+  EXPECT_FALSE(Capture::route_content_has_live_data(json::array()));
 }
 
 TEST(ValuesFromListContent, BuildsCompactDictFromItems) {

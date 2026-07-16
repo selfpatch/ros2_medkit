@@ -160,6 +160,43 @@ class MockRoutePlugin : public GatewayPlugin {
   std::string last_path_param_;
 };
 
+/// Commercial-bridge-shaped plugin: serves live values only through a
+/// registered x-plc-data route (no DataProvider), like the S7comm/Modbus/ADS
+/// bridges. Exercises PluginManager::fetch_entity_data_via_route.
+class MockPlcRoutePlugin : public GatewayPlugin {
+ public:
+  std::string name() const override {
+    return "mock_plc";
+  }
+  void configure(const json & /*cfg*/) override {
+  }
+  std::vector<PluginRoute> get_routes() override {
+    ++get_routes_calls_;
+    return {
+        {"GET", R"(apps/([^/]+)/x-plc-data)",
+         [this](const PluginRequest & req, PluginResponse & res) {
+           last_path_ = req.path();
+           auto entity = req.path_param(1);
+           if (entity != "plc_app") {
+             res.send_error(404, "resource-not-found", "No PLC data mapped for entity: " + entity);
+             return;
+           }
+           res.send_json({{"connected", connected_},
+                          {"items", json::array({{{"name", "level"}, {"value", 87.5}, {"unit", "mm"}},
+                                                 {{"name", "alarm"}, {"value", true}}})}});
+         }},
+        // Longer sibling pattern must not shadow the exact match above.
+        {"GET", R"(apps/([^/]+)/x-plc-data/([^/]+))",
+         [](const PluginRequest & /*req*/, PluginResponse & res) {
+           res.send_json({{"single", true}});
+         }},
+    };
+  }
+  bool connected_ = true;
+  int get_routes_calls_ = 0;
+  std::string last_path_;
+};
+
 /// Plugin that throws during get_routes
 class MockThrowOnGetRoutes : public GatewayPlugin, public IntrospectionProvider {
  public:
@@ -369,6 +406,68 @@ TEST(PluginManagerTest, RegisterRoutesWrapsPluginHandlers) {
   EXPECT_EQ(body["handled"], true);
   EXPECT_EQ(body["entity"], "test_entity");
   EXPECT_EQ(raw->last_path_param_, "test_entity");
+}
+
+TEST(PluginManagerTest, FetchEntityDataViaRouteDispatchesOwningPluginHandler) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockPlcRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.configure_plugins();
+  mgr.register_entity_ownership("mock_plc", {"plc_app"});
+
+  auto body = mgr.fetch_entity_data_via_route("plc_app");
+  ASSERT_TRUE(body.has_value());
+  EXPECT_EQ((*body)["connected"], true);
+  ASSERT_EQ((*body)["items"].size(), 2u);
+  EXPECT_EQ((*body)["items"][0]["name"], "level");
+  EXPECT_EQ((*body)["items"][0]["value"], 87.5);
+  // The handler saw a real-looking request: full API path with regex captures.
+  EXPECT_EQ(raw->last_path_, "/api/v1/apps/plc_app/x-plc-data");
+}
+
+TEST(PluginManagerTest, FetchEntityDataViaRouteUnownedEntityReturnsNullopt) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockPlcRoutePlugin>());
+  mgr.configure_plugins();
+
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+}
+
+TEST(PluginManagerTest, FetchEntityDataViaRouteErrorResponseReturnsNullopt) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockPlcRoutePlugin>());
+  mgr.configure_plugins();
+  // Owned by the plugin, but its handler 404s for this entity.
+  mgr.register_entity_ownership("mock_plc", {"unmapped_app"});
+
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route("unmapped_app").has_value());
+}
+
+TEST(PluginManagerTest, FetchEntityDataViaRouteNoMatchingRouteReturnsNullopt) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<MockRoutePlugin>());  // registers x-test-route only
+  mgr.configure_plugins();
+  mgr.register_entity_ownership("mock_route", {"plc_app"});
+
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+}
+
+TEST(PluginManagerTest, GetRoutesCalledOnceAcrossRegisterAndFetch) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<MockPlcRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.configure_plugins();
+  mgr.register_entity_ownership("mock_plc", {"plc_app"});
+
+  // Fetch before server setup (lazy cache), then register, then fetch again:
+  // the "called once during REST server setup" plugin contract must hold.
+  EXPECT_TRUE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  httplib::Server srv;
+  mgr.register_routes(srv, "/api/v1");
+  EXPECT_TRUE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  EXPECT_EQ(raw->get_routes_calls_, 1);
 }
 
 TEST(PluginManagerTest, ShutdownAllIdempotent) {

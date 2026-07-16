@@ -18,8 +18,10 @@
 #include <httplib.h>
 
 #include <rclcpp/rclcpp.hpp>
+#include <regex>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
 
 namespace ros2_medkit_gateway {
@@ -221,6 +223,9 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
   lp.load_result.data_provider = nullptr;
   lp.load_result.operation_provider = nullptr;
   lp.load_result.fault_provider = nullptr;
+  // Cached route handlers capture the plugin instance - drop them with it.
+  lp.routes.clear();
+  lp.routes_cached = false;
   lp.load_result.plugin.reset();
 }
 
@@ -284,60 +289,144 @@ void PluginManager::register_transport(std::unique_ptr<SubscriptionTransportProv
   transport_registry_->register_transport(std::move(provider));
 }
 
+bool PluginManager::cache_routes_locked(LoadedPlugin & lp) {
+  if (lp.routes_cached) {
+    return true;
+  }
+  try {
+    lp.routes = lp.load_result.plugin->get_routes();
+    lp.routes_cached = true;
+    return true;
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Plugin '%s' threw during get_routes(): %s - disabling",
+                 lp.load_result.plugin->name().c_str(), e.what());
+    disable_plugin(lp);
+  } catch (...) {
+    RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during get_routes() - disabling",
+                 lp.load_result.plugin->name().c_str());
+    disable_plugin(lp);
+  }
+  return false;
+}
+
 void PluginManager::register_routes(httplib::Server & server, const std::string & api_prefix) {
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
   for (auto & lp : plugins_) {
-    if (!lp.load_result.plugin) {
+    if (!lp.load_result.plugin || !cache_routes_locked(lp)) {
       continue;
     }
-    try {
-      auto routes = lp.load_result.plugin->get_routes();
-      for (auto & route : routes) {
-        std::string full_pattern = api_prefix + "/" + route.pattern;
-        auto handler_fn = route.handler;  // capture by value for lambda
-        auto plugin_name = lp.load_result.plugin->name();
-        auto httplib_handler = [handler_fn, plugin_name, full_pattern](const httplib::Request & req,
-                                                                       httplib::Response & res) {
-          try {
-            PluginRequest plugin_req(&req);
-            PluginResponse plugin_res(&res);
-            handler_fn(plugin_req, plugin_res);
-          } catch (const std::exception & e) {
-            RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s",
-                         plugin_name.c_str(), full_pattern.c_str(), e.what());
-            PluginResponse plugin_res(&res);
-            plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
-          } catch (...) {
-            RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
-                         plugin_name.c_str(), full_pattern.c_str());
-            PluginResponse plugin_res(&res);
-            plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
-          }
-        };
-
-        if (route.method == "GET") {
-          server.Get(full_pattern, httplib_handler);
-        } else if (route.method == "POST") {
-          server.Post(full_pattern, httplib_handler);
-        } else if (route.method == "PUT") {
-          server.Put(full_pattern, httplib_handler);
-        } else if (route.method == "DELETE") {
-          server.Delete(full_pattern, httplib_handler);
-        } else {
-          RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
-                      lp.load_result.plugin->name().c_str(), route.method.c_str());
+    for (auto & route : lp.routes) {
+      std::string full_pattern = api_prefix + "/" + route.pattern;
+      auto handler_fn = route.handler;  // capture by value for lambda
+      auto plugin_name = lp.load_result.plugin->name();
+      auto httplib_handler = [handler_fn, plugin_name, full_pattern](const httplib::Request & req,
+                                                                     httplib::Response & res) {
+        try {
+          PluginRequest plugin_req(&req);
+          PluginResponse plugin_res(&res);
+          handler_fn(plugin_req, plugin_res);
+        } catch (const std::exception & e) {
+          RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s", plugin_name.c_str(),
+                       full_pattern.c_str(), e.what());
+          PluginResponse plugin_res(&res);
+          plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
+        } catch (...) {
+          RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
+                       plugin_name.c_str(), full_pattern.c_str());
+          PluginResponse plugin_res(&res);
+          plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
         }
+      };
+
+      if (route.method == "GET") {
+        server.Get(full_pattern, httplib_handler);
+      } else if (route.method == "POST") {
+        server.Post(full_pattern, httplib_handler);
+      } else if (route.method == "PUT") {
+        server.Put(full_pattern, httplib_handler);
+      } else if (route.method == "DELETE") {
+        server.Delete(full_pattern, httplib_handler);
+      } else {
+        RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
+                    lp.load_result.plugin->name().c_str(), route.method.c_str());
       }
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during get_routes(): %s - disabling",
-                   lp.load_result.plugin->name().c_str(), e.what());
-      disable_plugin(lp);
-    } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during get_routes() - disabling",
-                   lp.load_result.plugin->name().c_str());
-      disable_plugin(lp);
     }
   }
+}
+
+std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(const std::string & entity_id) {
+  const std::string full_path = std::string(API_BASE_PATH) + "/apps/" + entity_id + "/x-plc-data";
+
+  // Copy the owning plugin's matching GET handler out under the lock and
+  // invoke it after release: handlers run arbitrary plugin code that may call
+  // back into this manager (shared_mutex is not reentrant).
+  std::function<void(const PluginRequest &, PluginResponse &)> handler;
+  std::string matched_pattern;
+  {
+    // Unique lock: first call may populate the route cache.
+    std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
+    auto own_it = entity_ownership_.find(entity_id);
+    if (own_it == entity_ownership_.end()) {
+      return std::nullopt;
+    }
+    for (auto & lp : plugins_) {
+      if (!lp.load_result.plugin || lp.load_result.plugin->name() != own_it->second) {
+        continue;
+      }
+      if (!cache_routes_locked(lp)) {
+        return std::nullopt;
+      }
+      for (const auto & route : lp.routes) {
+        if (route.method != "GET") {
+          continue;
+        }
+        try {
+          if (std::regex_match(full_path, std::regex(API_BASE_PATH + ("/" + route.pattern)))) {
+            handler = route.handler;
+            matched_pattern = route.pattern;
+            break;
+          }
+        } catch (const std::regex_error &) {
+          continue;  // malformed plugin pattern - the HTTP server would reject it too
+        }
+      }
+      break;
+    }
+  }
+  if (!handler) {
+    return std::nullopt;
+  }
+
+  // Synthesize the request exactly as the HTTP server presents it: full API
+  // path plus regex captures, so path_param() and path()-based entity-type
+  // checks in the handler behave identically to a real request.
+  httplib::Request req;
+  req.method = "GET";
+  req.path = full_path;
+  std::regex_match(req.path, req.matches, std::regex(API_BASE_PATH + ("/" + matched_pattern)));
+  httplib::Response res;
+  res.status = 200;  // the server defaults handled routes to 200; send_error overrides
+
+  try {
+    PluginRequest plugin_req(&req);
+    PluginResponse plugin_res(&res);
+    handler(plugin_req, plugin_res);
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw: %s", entity_id.c_str(), e.what());
+    return std::nullopt;
+  } catch (...) {
+    RCLCPP_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw unknown exception", entity_id.c_str());
+    return std::nullopt;
+  }
+
+  if (res.status != 200) {
+    return std::nullopt;
+  }
+  auto body = nlohmann::json::parse(res.body, nullptr, /*allow_exceptions=*/false);
+  if (body.is_discarded()) {
+    return std::nullopt;
+  }
+  return body;
 }
 
 void PluginManager::shutdown_all() {

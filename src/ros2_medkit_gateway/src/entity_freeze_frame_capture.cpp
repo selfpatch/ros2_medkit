@@ -21,8 +21,12 @@
 namespace ros2_medkit_gateway {
 
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
-                                                   DataProviderResolver resolver, size_t max_faults)
-  : resolver_(std::move(resolver)), logger_(node->get_logger()), max_faults_(max_faults > 0 ? max_faults : 1) {
+                                                   DataProviderResolver resolver, RouteDataFetcher route_fetcher,
+                                                   size_t max_faults)
+  : resolver_(std::move(resolver))
+  , route_fetcher_(std::move(route_fetcher))
+  , logger_(node->get_logger())
+  , max_faults_(max_faults > 0 ? max_faults : 1) {
   // Resolve the topic from the gateway node (it owns fault_manager.namespace);
   // the subscription itself is created on the executor's dedicated _sub node so
   // it never races rcl's hash-map on the main node (issue #375).
@@ -71,6 +75,50 @@ nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann
   return values;
 }
 
+bool EntityFreezeFrameCapture::route_content_has_live_data(const nlohmann::json & content) {
+  if (!content.is_object()) {
+    return false;
+  }
+  if (content.contains("connected") && content["connected"].is_boolean() && !content["connected"].get<bool>()) {
+    return false;
+  }
+  return content.contains("items") && content["items"].is_array() && !content["items"].empty();
+}
+
+std::optional<EntityFreezeFrameCapture::Frame>
+EntityFreezeFrameCapture::capture_via_route(const std::string & entity_id, const std::string & fault_code) {
+  std::optional<nlohmann::json> content;
+  try {
+    content = route_fetcher_(entity_id);
+  } catch (const std::exception & e) {
+    log_fallback_failure_once(fault_code, std::string("x-plc-data dispatch threw: ") + e.what());
+    return std::nullopt;
+  }
+  if (!content) {
+    return std::nullopt;  // not plugin-owned, no x-plc-data route, or handler error
+  }
+  if (!route_content_has_live_data(*content)) {
+    log_fallback_failure_once(fault_code, "entity '" + entity_id + "' x-plc-data reported no live values");
+    return std::nullopt;
+  }
+  Frame frame;
+  frame.entity_id = entity_id;
+  frame.values = values_from_list_content(*content);
+  frame.captured_at_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  return frame;
+}
+
+void EntityFreezeFrameCapture::log_fallback_failure_once(const std::string & fault_code, const std::string & message) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!fallback_logged_.insert(fault_code).second) {
+      return;
+    }
+  }
+  RCLCPP_WARN(logger_, "Entity freeze-frame for fault '%s': %s", fault_code.c_str(), message.c_str());
+}
+
 void EntityFreezeFrameCapture::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
   // Mirror the fault_manager's own capture trigger: freeze-frames are taken
   // when a fault confirms, not on every update.
@@ -82,7 +130,15 @@ void EntityFreezeFrameCapture::on_fault_event(const ros2_medkit_msgs::msg::Fault
   for (const auto & source : msg->fault.reporting_sources) {
     DataProvider * provider = resolver_ ? resolver_(source) : nullptr;
     if (provider == nullptr) {
-      continue;  // not a plugin-owned entity (ROS sources are the fault_manager's job)
+      // No DataProvider: the owning plugin may still serve live values through
+      // its own x-plc-data route (the commercial PLC bridges). For non-plugin
+      // (ROS) sources the fetcher resolves no owner and returns nullopt.
+      if (route_fetcher_) {
+        if (auto frame = capture_via_route(source, msg->fault.fault_code)) {
+          frames.push_back(std::move(*frame));
+        }
+      }
+      continue;
     }
 
     // list_data is expected to serve from the plugin's latest polled values
