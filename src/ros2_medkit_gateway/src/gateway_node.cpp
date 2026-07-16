@@ -1793,9 +1793,16 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
   if (!get_parameter("entity_freeze_frame.enabled").as_bool() || !plugin_mgr_ || !plugin_mgr_->has_plugins()) {
     return;
   }
-  entity_freeze_frame_capture_ =
-      std::make_unique<EntityFreezeFrameCapture>(this, exec, [this](const std::string & entity_id) {
+  entity_freeze_frame_capture_ = std::make_unique<EntityFreezeFrameCapture>(
+      this, exec,
+      [this](const std::string & entity_id) {
         return plugin_mgr_ ? plugin_mgr_->get_data_provider_for_entity(entity_id) : nullptr;
+      },
+      // Plugins without a DataProvider (the commercial PLC bridges) serve live
+      // values only through their own x-plc-data route - dispatch it in-process
+      // as the capture fallback.
+      [this](const std::string & entity_id) -> std::optional<nlohmann::json> {
+        return plugin_mgr_ ? plugin_mgr_->fetch_entity_data_via_route(entity_id) : std::nullopt;
       });
 }
 

@@ -20,8 +20,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -61,15 +63,24 @@ class EntityFreezeFrameCapture {
   /// the entity is not plugin-owned). Called from the subscription callback.
   using DataProviderResolver = std::function<DataProvider *(const std::string & entity_id)>;
 
+  /// Fallback for plugins without a DataProvider: fetches the entity's current
+  /// values by dispatching the owning plugin's own `x-plc-data` route
+  /// in-process (typically wraps PluginManager::fetch_entity_data_via_route).
+  /// Returns the parsed route response, nullopt when unavailable.
+  using RouteDataFetcher = std::function<std::optional<nlohmann::json>(const std::string & entity_id)>;
+
   /**
    * @param node ROS 2 node used to resolve the fault-events topic name and logger
    * @param exec shared subscription executor; the fault-events subscription is
    *        created and torn down on its serial worker (issue #375 invariant)
    * @param resolver entity-to-DataProvider resolver (typically wraps PluginManager)
+   * @param route_fetcher x-plc-data route fallback for entities whose plugin
+   *        has no DataProvider (the commercial PLC bridges); may be null
    * @param max_faults retained-frame bound; oldest fault's frames evicted past it
    */
   EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
-                           DataProviderResolver resolver, size_t max_faults = 256);
+                           DataProviderResolver resolver, RouteDataFetcher route_fetcher = nullptr,
+                           size_t max_faults = 256);
 
   ~EntityFreezeFrameCapture();
 
@@ -87,19 +98,34 @@ class EntityFreezeFrameCapture {
   /// "items" array is kept verbatim (plugin-defined shape).
   static nlohmann::json values_from_list_content(const nlohmann::json & content);
 
+  /// True when an x-plc-data route response carries real live values: not
+  /// flagged disconnected, with a non-empty items array. A PLC that is down
+  /// must not freeze-frame a row of nulls.
+  static bool route_content_has_live_data(const nlohmann::json & content);
+
  private:
   void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
 
+  /// Capture via the plugin's own x-plc-data route (no DataProvider exported).
+  /// Returns nullopt when the route yields nothing usable.
+  std::optional<Frame> capture_via_route(const std::string & entity_id, const std::string & fault_code);
+
+  /// Log a fallback failure once per fault code (faults re-confirm on every
+  /// clear/re-report cycle; one line per code is enough for an operator).
+  void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
+
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;
+  RouteDataFetcher route_fetcher_;
   rclcpp::Logger logger_;
   const size_t max_faults_;
 
-  /// Guards frames_ and insertion_order_: subscription callback writes,
-  /// HTTP handler threads read.
+  /// Guards frames_, insertion_order_ and fallback_logged_: subscription
+  /// callback writes, HTTP handler threads read.
   mutable std::mutex mutex_;
   std::unordered_map<std::string, std::vector<Frame>> frames_;
-  std::deque<std::string> insertion_order_;  ///< eviction order (FIFO)
+  std::deque<std::string> insertion_order_;          ///< eviction order (FIFO)
+  std::unordered_set<std::string> fallback_logged_;  ///< fault codes already warned about
 };
 
 }  // namespace ros2_medkit_gateway

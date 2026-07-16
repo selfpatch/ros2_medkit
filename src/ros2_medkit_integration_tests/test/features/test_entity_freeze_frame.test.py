@@ -16,14 +16,18 @@
 """Zero-config freeze-frames: the faulting entity's own data, no snapshot config.
 
 The fault manager runs WITHOUT any snapshot configuration (empty
-``snapshots.default_topics``, no config file). Two entity-default paths are
+``snapshots.default_topics``, no config file). Three entity-default paths are
 proven end to end:
 
-1. Plugin-backed entity (the headline PLC case): a fault reported under the
-   demo data-provider plugin's bare app id carries a freeze-frame of that
-   entity's current data values, captured by the gateway from the plugin's
-   DataProvider at confirm time.
-2. ROS-backed entity: a fault reported under a demo node's FQN carries a
+1. Plugin-backed entity with a DataProvider: a fault reported under the demo
+   data-provider plugin's bare app id carries a freeze-frame of that entity's
+   current data values, captured by the gateway from the plugin's DataProvider
+   at confirm time.
+2. Plugin-backed entity WITHOUT a DataProvider (the commercial PLC bridge
+   shape): the demo route-data plugin exports only introspection + fault
+   providers and serves live values through its registered x-plc-data route.
+   The gateway captures the freeze-frame by dispatching that route in-process.
+3. ROS-backed entity: a fault reported under a demo node's FQN carries a
    freeze-frame of that node's own published topics, captured by the fault
    manager's entity-default fallback.
 """
@@ -47,18 +51,17 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 PLUGIN_APP = 'test_plc_app'
 PLUGIN_FAULT_CODE = 'PLC_OVERPRESSURE'
+ROUTE_PLUGIN_APP = 'test_route_plc_app'
+ROUTE_PLUGIN_FAULT_CODE = 'PLC_ROUTE_LEVEL_HIGH'
 ROS_APP = 'temp_sensor'
 ROS_SOURCE = '/powertrain/engine/temp_sensor'
 ROS_FAULT_CODE = 'ENGINE_TEMP_SENSOR_DEGRADED'
 
 
-def _get_plugin_path():
-    """Get path to the demo data-provider plugin .so."""
+def _get_plugin_path(so_name):
+    """Get path to a demo plugin .so."""
     pkg_prefix = get_package_prefix('ros2_medkit_gateway')
-    return os.path.join(
-        pkg_prefix, 'lib', 'ros2_medkit_gateway',
-        'libtest_data_provider_plugin.so',
-    )
+    return os.path.join(pkg_prefix, 'lib', 'ros2_medkit_gateway', so_name)
 
 
 def generate_test_description():
@@ -76,8 +79,11 @@ def generate_test_description():
             'snapshots.timeout_sec': 5.0,
         },
         gateway_params={
-            'plugins': ['test_data_provider'],
-            'plugins.test_data_provider.path': _get_plugin_path(),
+            'plugins': ['test_data_provider', 'test_route_data'],
+            'plugins.test_data_provider.path':
+                _get_plugin_path('libtest_data_provider_plugin.so'),
+            'plugins.test_route_data.path':
+                _get_plugin_path('libtest_route_data_plugin.so'),
         },
     )
 
@@ -85,8 +91,8 @@ def generate_test_description():
 class TestEntityFreezeFrame(GatewayTestCase):
     """Faults carry the faulting entity's own data with zero snapshot config."""
 
-    MIN_EXPECTED_APPS = 2
-    REQUIRED_APPS = {PLUGIN_APP, ROS_APP}
+    MIN_EXPECTED_APPS = 3
+    REQUIRED_APPS = {PLUGIN_APP, ROUTE_PLUGIN_APP, ROS_APP}
 
     @classmethod
     def setUpClass(cls):
@@ -160,6 +166,31 @@ class TestEntityFreezeFrame(GatewayTestCase):
         # its DataProvider (compact {resource_id: value} dict).
         self.assertEqual(frame['data'].get('temperature'), 42.5)
         self.assertEqual(frame['data'].get('pressure'), 3.2)
+
+        # Standard freeze_frame x-medkit metadata block (fleet_ui contract).
+        x_medkit = frame.get('x-medkit', {})
+        self.assertIn('full_data', x_medkit)
+        self.assertIn('captured_at', x_medkit)
+
+    def test_route_only_plugin_fault_carries_entity_values(self):
+        """A commercial-bridge-shaped plugin (no DataProvider) still carries
+        its entity's own values, captured via in-process x-plc-data dispatch.
+
+        @verifies REQ_INTEROP_088
+        """
+        self._report_fault(ROUTE_PLUGIN_FAULT_CODE, ROUTE_PLUGIN_APP)
+
+        frames = self._wait_for_freeze_frame(
+            f'/apps/{ROUTE_PLUGIN_APP}', ROUTE_PLUGIN_FAULT_CODE)
+        frame = next(
+            (f for f in frames if f.get('name') == ROUTE_PLUGIN_APP), None)
+        self.assertIsNotNone(
+            frame, f'No frame named {ROUTE_PLUGIN_APP} in {frames}')
+
+        # The frame holds the canned values the plugin serves exclusively
+        # through its registered x-plc-data route (keyed by item "name").
+        self.assertEqual(frame['data'].get('level'), 87.5)
+        self.assertEqual(frame['data'].get('alarm'), True)
 
         # Standard freeze_frame x-medkit metadata block (fleet_ui contract).
         x_medkit = frame.get('x-medkit', {})

@@ -215,6 +215,20 @@ class PluginManager : public LogProviderRegistry {
   /// Get FaultProvider for a specific entity (if plugin-owned)
   FaultProvider * get_fault_provider_for_entity(const std::string & entity_id) const;
 
+  /**
+   * @brief Fetch an entity's current data by dispatching the owning plugin's
+   *        own `apps/<entity_id>/x-plc-data` GET route in-process.
+   *
+   * Fallback for plugins that serve live values only through registered HTTP
+   * routes (the commercial PLC bridges) instead of a DataProvider. The route
+   * table is matched exactly like the HTTP server would and the handler is
+   * invoked with a synthesized request - no loopback connection.
+   *
+   * @return Parsed JSON body on a 200 response; nullopt when the entity is
+   *         not plugin-owned, no route matches, or the handler fails.
+   */
+  std::optional<nlohmann::json> fetch_entity_data_via_route(const std::string & entity_id);
+
   /// Check if an entity is owned by a plugin
   /// @return Plugin name if owned, nullopt otherwise
   std::optional<std::string> get_entity_owner(const std::string & entity_id) const;
@@ -237,7 +251,15 @@ class PluginManager : public LogProviderRegistry {
     OperationProvider * operation_provider = nullptr;
     LifecycleProvider * lifecycle_provider = nullptr;
     FaultProvider * fault_provider = nullptr;
+    /// get_routes() result, fetched once per plugin (contract: called once);
+    /// shared by register_routes() and fetch_entity_data_via_route().
+    std::vector<GatewayPlugin::PluginRoute> routes;
+    bool routes_cached = false;
   };
+
+  /// Fetch and cache lp.routes on first use (unique lock must be held).
+  /// A throwing get_routes() disables the plugin. @return false when disabled.
+  bool cache_routes_locked(LoadedPlugin & lp);
 
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).
   /// Also clears provider pointers in load_result to prevent dangling references.
