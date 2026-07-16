@@ -20,21 +20,30 @@
 
 namespace ros2_medkit_gateway {
 
-EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, DataProviderResolver resolver,
-                                                   size_t max_faults)
+EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
+                                                   DataProviderResolver resolver, size_t max_faults)
   : resolver_(std::move(resolver)), logger_(node->get_logger()), max_faults_(max_faults > 0 ? max_faults : 1) {
+  // Resolve the topic from the gateway node (it owns fault_manager.namespace);
+  // the subscription itself is created on the executor's dedicated _sub node so
+  // it never races rcl's hash-map on the main node (issue #375).
   const auto fault_events_topic = build_fault_manager_events_topic(node);
-  subscription_ = node->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      fault_events_topic, rclcpp::QoS(100).reliable(),
-      [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+  auto slot = ros2_common::Ros2SubscriptionSlot::create_typed<ros2_medkit_msgs::msg::FaultEvent>(
+      exec, fault_events_topic, rclcpp::QoS(100).reliable(),
+      [this](std::shared_ptr<const ros2_medkit_msgs::msg::FaultEvent> msg) {
         on_fault_event(msg);
       });
+  if (!slot) {
+    RCLCPP_ERROR(logger_, "EntityFreezeFrameCapture: failed to subscribe to %s: %s", fault_events_topic.c_str(),
+                 slot.error().c_str());
+    return;
+  }
+  subscription_slot_ = std::move(*slot);
 
   RCLCPP_INFO(logger_, "EntityFreezeFrameCapture initialized, subscribed to %s", fault_events_topic.c_str());
 }
 
 EntityFreezeFrameCapture::~EntityFreezeFrameCapture() {
-  subscription_.reset();
+  subscription_slot_.reset();
 }
 
 std::vector<EntityFreezeFrameCapture::Frame>

@@ -737,15 +737,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // needed because refresh_cache() runs before the HTTP server accepts requests.
   }
 
-  // Zero-config freeze-frames for plugin-backed entities: snapshot the faulting
-  // entity's current data values when its fault confirms. Only useful when a
-  // plugin can own entities, so gated on loaded plugins.
-  if (get_parameter("entity_freeze_frame.enabled").as_bool() && plugin_mgr_->has_plugins()) {
-    entity_freeze_frame_capture_ =
-        std::make_unique<EntityFreezeFrameCapture>(this, [this](const std::string & entity_id) {
-          return plugin_mgr_ ? plugin_mgr_->get_data_provider_for_entity(entity_id) : nullptr;
-        });
-  }
+  // Zero-config freeze-frames need the shared subscription executor, which is
+  // built after the node (main.cpp). Its wiring is deferred to
+  // init_entity_freeze_frame_capture(), called once the executor exists.
 
   // Initialize log manager (subscribes to /rosout, delegates to plugin if available)
   static constexpr int kMinBufferSize = 1;
@@ -1791,6 +1785,18 @@ ScriptManager * GatewayNode::get_script_manager() const {
 
 PluginManager * GatewayNode::get_plugin_manager() const {
   return plugin_mgr_.get();
+}
+
+void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2SubscriptionExecutor & exec) {
+  // Snapshot the faulting entity's current data values when its fault confirms.
+  // Only useful when a plugin can own entities, so gated on loaded plugins.
+  if (!get_parameter("entity_freeze_frame.enabled").as_bool() || !plugin_mgr_ || !plugin_mgr_->has_plugins()) {
+    return;
+  }
+  entity_freeze_frame_capture_ =
+      std::make_unique<EntityFreezeFrameCapture>(this, exec, [this](const std::string & entity_id) {
+        return plugin_mgr_ ? plugin_mgr_->get_data_provider_for_entity(entity_id) : nullptr;
+      });
 }
 
 EntityFreezeFrameCapture * GatewayNode::get_entity_freeze_frame_capture() const {
