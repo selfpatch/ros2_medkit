@@ -224,6 +224,11 @@ class PluginManager : public LogProviderRegistry {
    * table is matched exactly like the HTTP server would and the handler is
    * invoked with a synthesized request - no loopback connection.
    *
+   * The handler runs on the caller's thread, possibly concurrently with HTTP
+   * server threads serving the same route - plugin route handlers must be
+   * thread-safe (already the contract across concurrent HTTP workers; this
+   * entry point just adds one more caller).
+   *
    * @return Parsed JSON body on a 200 response; nullopt when the entity is
    *         not plugin-owned, no route matches, or the handler fails.
    */

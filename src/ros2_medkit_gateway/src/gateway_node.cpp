@@ -1672,9 +1672,9 @@ GatewayNode::~GatewayNode() {
   if (resource_change_notifier_) {
     resource_change_notifier_->shutdown();
   }
-  // 6. Drop the entity freeze-frame subscription BEFORE plugin shutdown: its
-  //    callback resolves into plugin DataProviders, which must not be reachable
-  //    once shutdown_all() has run.
+  // 6. Drop the entity freeze-frame capture BEFORE plugin shutdown: its
+  //    capture thread (joined here) resolves into plugin DataProviders and
+  //    routes, which must not be reachable once shutdown_all() has run.
   entity_freeze_frame_capture_.reset();
   //    Shutdown plugins
   if (plugin_mgr_) {
