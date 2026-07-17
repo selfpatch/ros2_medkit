@@ -554,6 +554,38 @@ TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
   EXPECT_FALSE(storage_->get_freeze_frame("PLC_FAULT").has_value());
 }
 
+// @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, BarePluginIdNeverMatchesSameNamedNode) {
+  // A bare plugin entity id that happens to equal a live root-namespace node's
+  // name (this test node) must not be parsed as (name, ns="/") and capture
+  // that unrelated node's topics.
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/bare_id_metric", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  ros2_medkit_fault_manager::DebounceConfig debounce;
+  storage_->report_fault_event("BARE_ID_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "plugin fault", node_->get_name(), rclcpp::Clock().now(), debounce);
+
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 7.0;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  wait_for_publisher("/entity/bare_id_metric");
+
+  capture.capture("BARE_ID_FAULT");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("BARE_ID_FAULT").has_value());
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

@@ -235,20 +235,25 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::strin
       return {};
     }
 
-    // reporting_sources hold the reporting node's FQN (e.g. "/planner_server").
-    // Split each into (name, namespace) to match against topic endpoints.
+    // Only ROS node FQNs (e.g. "/ns/planner_server") participate. Plugin
+    // entities report under bare SOVD ids (e.g. "tank_process"); treating one
+    // as (name, ns="/") could match an unrelated root-namespace node of the
+    // same name and freeze-frame its topics. Their zero-config frames come
+    // from the gateway's EntityFreezeFrameCapture instead.
     std::set<std::pair<std::string, std::string>> wanted;
     for (const auto & source : fault->reporting_sources) {
-      std::string ns = "/";
-      std::string name = source;
-      const auto slash = source.rfind('/');
-      if (slash != std::string::npos) {
-        name = source.substr(slash + 1);
-        ns = (slash == 0) ? "/" : source.substr(0, slash);
+      if (source.size() < 2 || source.front() != '/') {
+        continue;
       }
+      const auto slash = source.rfind('/');
+      const std::string name = source.substr(slash + 1);
+      const std::string ns = (slash == 0) ? "/" : source.substr(0, slash);
       if (!name.empty()) {
         wanted.emplace(name, ns);
       }
+    }
+    if (wanted.empty()) {
+      return {};
     }
 
     // The entity's "own data" = topics it publishes. Every node publishes

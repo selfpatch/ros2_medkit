@@ -49,6 +49,11 @@ namespace ros2_medkit_gateway {
  * The frames are merged into the fault detail's environment_data.snapshots
  * only when the fault_manager captured no freeze-frame itself - explicit
  * snapshot config always wins (see FaultHandlers::merge_entity_freeze_frames).
+ *
+ * Retention mirrors the fault_manager's freeze-frame semantics: frames are
+ * kept across EVENT_CLEARED (the confirmed-state record stays attached to
+ * the cleared fault's detail) and overwritten on every EVENT_CONFIRMED, so
+ * a re-occurrence re-samples the plugin at its own confirm time.
  */
 class EntityFreezeFrameCapture {
  public:
