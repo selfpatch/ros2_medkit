@@ -14,115 +14,260 @@
 
 #include <gtest/gtest.h>
 
-#include <string>
+#include <httplib.h>
+#include <rclcpp/rclcpp.hpp>
 
-#include "ros2_medkit_gateway/core/configuration/parameter_types.hpp"
+#include <chrono>
+#include <memory>
+#include <regex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/config_handlers.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/typed_router.hpp"
 
-namespace ros2_medkit_gateway {
+using ros2_medkit_gateway::App;
+using ros2_medkit_gateway::AuthConfig;
+using ros2_medkit_gateway::Component;
+using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND;
+using ros2_medkit_gateway::ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
+using ros2_medkit_gateway::ErrorInfo;
+using ros2_medkit_gateway::GatewayNode;
+using ros2_medkit_gateway::ThreadSafeEntityCache;
+using ros2_medkit_gateway::TlsConfig;
+using ros2_medkit_gateway::handlers::ConfigHandlers;
+using ros2_medkit_gateway::handlers::HandlerContext;
+namespace http = ros2_medkit_gateway::http;
+
 namespace {
 
-using handlers::ParameterErrorAccumulator;
+constexpr const char * kMissingParam = "definitely_missing_param";
+constexpr const char * kGetConfigPattern = R"(/api/v1/components/([^/]+)/configurations/([^/]+))";
 
-ParameterResult make_failure(ParameterErrorCode code, const std::string & message) {
-  ParameterResult r;
-  r.success = false;
-  r.error_message = message;
-  r.error_code = code;
-  return r;
-}
-
-// Regression for the multi-node GET probe loop: a NOT_FOUND from one node
-// must not mask a timeout/unavailable from another, in either iteration
-// order.
-
-TEST(ParameterErrorPrecedence, TimeoutThenNotFoundSurfacesUnavailable) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-
-  EXPECT_FALSE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 503);
-  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
-  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
-}
-
-TEST(ParameterErrorPrecedence, NotFoundThenTimeoutSurfacesUnavailable) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
-
-  EXPECT_FALSE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 503);
-  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
-  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
-}
-
-TEST(ParameterErrorPrecedence, NotFoundNeverReplacesUnavailable) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::SERVICE_UNAVAILABLE, "service not available"));
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-
-  EXPECT_FALSE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 503);
-  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
-}
-
-// Three distinct verdicts folded in both orders: the surfaced error must be
-// the highest-severity one (503), not whichever non-404 happened to fold last.
-
-TEST(ParameterErrorPrecedence, ThreeNodesInternalThenTimeoutThenNotFoundSurfacesUnavailable) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
-  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-
-  EXPECT_FALSE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 503);
-  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
-  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
-}
-
-TEST(ParameterErrorPrecedence, ThreeNodesNotFoundThenTimeoutThenInternalSurfacesUnavailable) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
-  acc.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
-
-  EXPECT_FALSE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 503);
-  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
-  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
-}
-
-TEST(ParameterErrorPrecedence, ServerErrorOutranksClientErrorBothOrders) {
-  ParameterErrorAccumulator first_order;
-  first_order.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
-  first_order.add(make_failure(ParameterErrorCode::INVALID_VALUE, "bad value"));
-
-  ParameterErrorAccumulator second_order;
-  second_order.add(make_failure(ParameterErrorCode::INVALID_VALUE, "bad value"));
-  second_order.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
-
-  for (const auto * acc : {&first_order, &second_order}) {
-    EXPECT_FALSE(acc->all_not_found());
-    EXPECT_EQ(acc->classification().status_code, 500);
-    EXPECT_EQ(acc->classification().error_code, ERR_INTERNAL_ERROR);
-    EXPECT_EQ(acc->worst().error_code, ParameterErrorCode::INTERNAL_ERROR);
-  }
-}
-
-TEST(ParameterErrorPrecedence, AllNotFoundStays404) {
-  ParameterErrorAccumulator acc;
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
-
-  EXPECT_TRUE(acc.all_not_found());
-  EXPECT_EQ(acc.classification().status_code, 404);
-  EXPECT_EQ(acc.classification().error_code, ERR_RESOURCE_NOT_FOUND);
+httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
+  httplib::Request req;
+  req.path = path;
+  std::regex re(pattern);
+  std::regex_match(req.path, req.matches, re);
+  return req;
 }
 
 }  // namespace
-}  // namespace ros2_medkit_gateway
+
+// =============================================================================
+// Handler-level regression tests for the multi-node probe loop in
+// GET /{entity}/configurations/{param}: when no backing node succeeds, the
+// surfaced error must be the highest-severity per-node failure regardless of
+// node iteration order (a NOT_FOUND from one node must never mask an
+// unavailable/timeout from another). Exercised end-to-end through
+// ConfigHandlers::get_configuration against a live GatewayNode with real
+// per-node failures:
+//   - "ghost" node FQN with no ROS node behind it -> SERVICE_UNAVAILABLE
+//   - unspun node (parameter services exist, never answered) -> TIMEOUT
+//   - the gateway's own node missing the parameter -> NOT_FOUND
+// =============================================================================
+
+class ParameterErrorPrecedenceTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    rclcpp::init(0, nullptr);
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+
+  void SetUp() override {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        // Fail fast on the ghost node's wait_for_service and keep the test
+        // runtime bounded.
+        rclcpp::Parameter("parameter_service_timeout_sec", 1.0),
+        // Disable the negative cache so every probe classifies fresh
+        // (TIMEOUT stays TIMEOUT instead of a cached SERVICE_UNAVAILABLE).
+        rclcpp::Parameter("parameter_service_negative_cache_sec", 0.0),
+    });
+    gateway_node_ = std::make_shared<GatewayNode>(options);
+    ASSERT_NE(gateway_node_, nullptr);
+    // The cache is injected below; a graph-driven refresh would wipe it.
+    gateway_node_->stop_discovery_refresh_for_testing();
+
+    // A node whose parameter services exist in the DDS graph but are never
+    // spun: parameter requests to it time out instead of failing fast.
+    unspun_node_ = std::make_shared<rclcpp::Node>("param_precedence_unspun");
+
+    executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(gateway_node_);
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
+
+    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    handlers_ = std::make_unique<ConfigHandlers>(*ctx_);
+
+    wait_for_unspun_node_discovery();
+    seed_cache();
+  }
+
+  void TearDown() override {
+    if (executor_) {
+      executor_->cancel();
+    }
+    if (spin_thread_.joinable()) {
+      spin_thread_.join();
+    }
+    handlers_.reset();
+    ctx_.reset();
+    executor_.reset();
+    unspun_node_.reset();
+    gateway_node_.reset();
+  }
+
+  /// Wait until the gateway sees the unspun node's parameter services in the
+  /// graph, so its probes deterministically reach the TIMEOUT path (service
+  /// discovered, request never answered) instead of SERVICE_UNAVAILABLE.
+  void wait_for_unspun_node_discovery() {
+    const std::string service = unspun_fqn() + "/get_parameters";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto services = gateway_node_->get_service_names_and_types();
+      if (services.count(service) > 0) {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    FAIL() << "unspun node parameter service not discovered: " << service;
+  }
+
+  std::string self_fqn() const {
+    return gateway_node_->get_fully_qualified_name();
+  }
+
+  std::string unspun_fqn() const {
+    return unspun_node_->get_fully_qualified_name();
+  }
+
+  static App make_app(const std::string & id, const std::string & component_id, const std::string & fqn) {
+    App app;
+    app.id = id;
+    app.name = id;
+    app.component_id = component_id;
+    app.bound_fqn = fqn;
+    app.is_online = true;
+    return app;
+  }
+
+  /// Seed aggregated components whose backing-node order is fixed by app
+  /// insertion order (get_component_configurations preserves it), covering
+  /// both iteration orders for every scenario.
+  void seed_cache() {
+    const std::string ghost_fqn = "/param_precedence_ghost";
+
+    std::vector<Component> components;
+    std::vector<App> apps;
+
+    auto add_component = [&](const std::string & id, const std::vector<std::string> & fqns) {
+      Component comp;
+      comp.id = id;
+      comp.name = id;
+      components.push_back(comp);
+      for (size_t i = 0; i < fqns.size(); ++i) {
+        apps.push_back(make_app(id + "_app" + std::to_string(i), id, fqns[i]));
+      }
+    };
+
+    // Unavailable node first / last, plus a node that lacks the parameter.
+    add_component("stack_unavail_first", {ghost_fqn, self_fqn()});
+    add_component("stack_unavail_last", {self_fqn(), ghost_fqn});
+
+    // Three distinct verdicts (TIMEOUT, SERVICE_UNAVAILABLE, NOT_FOUND) in
+    // both orders.
+    add_component("stack_mixed_timeout_first", {unspun_fqn(), ghost_fqn, self_fqn()});
+    add_component("stack_mixed_timeout_last", {self_fqn(), ghost_fqn, unspun_fqn()});
+
+    // Every node reachable but none has the parameter.
+    add_component("stack_all_missing", {self_fqn(), self_fqn()});
+
+    auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
+    cache.update_all({}, components, apps, {});
+  }
+
+  ErrorInfo get_missing_param_error(const std::string & component_id) {
+    const std::string path = "/api/v1/components/" + component_id + "/configurations/" + kMissingParam;
+    auto raw = make_request_with_match(path, kGetConfigPattern);
+    http::TypedRequest req(raw);
+
+    auto result = handlers_->get_configuration(req);
+    EXPECT_FALSE(result.has_value()) << "expected an error for " << path;
+    return result.has_value() ? ErrorInfo{} : result.error();
+  }
+
+  CorsConfig cors_{};
+  AuthConfig auth_{};
+  TlsConfig tls_{};
+  std::shared_ptr<GatewayNode> gateway_node_;
+  std::shared_ptr<rclcpp::Node> unspun_node_;
+  std::unique_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  std::thread spin_thread_;
+  std::unique_ptr<HandlerContext> ctx_;
+  std::unique_ptr<ConfigHandlers> handlers_;
+};
+
+// Regression order for the pre-fix overwrite bug: the unavailable node is
+// probed first, then the reachable node reports NOT_FOUND last. The old code
+// classified only the LAST failure, so this surfaced 404 instead of 503.
+TEST_F(ParameterErrorPrecedenceTest, UnavailableNodeFirstNotFoundLastReturns503) {
+  auto err = get_missing_param_error("stack_unavail_first");
+
+  EXPECT_EQ(err.http_status, 503);
+  EXPECT_EQ(err.code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+}
+
+// Opposite iteration order must surface the same verdict.
+TEST_F(ParameterErrorPrecedenceTest, NotFoundFirstUnavailableNodeLastReturns503) {
+  auto err = get_missing_param_error("stack_unavail_last");
+
+  EXPECT_EQ(err.http_status, 503);
+  EXPECT_EQ(err.code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+}
+
+// Three distinct per-node verdicts (TIMEOUT, SERVICE_UNAVAILABLE, NOT_FOUND):
+// a 503-class failure must win over NOT_FOUND, and within the 503 rank the
+// first failure probed is the one surfaced in details.
+TEST_F(ParameterErrorPrecedenceTest, MixedThreeNodeFailuresTimeoutFirstReturns503) {
+  auto err = get_missing_param_error("stack_mixed_timeout_first");
+
+  EXPECT_EQ(err.http_status, 503);
+  EXPECT_EQ(err.code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+  // First 503-rank failure probed: the unspun node's TIMEOUT.
+  ASSERT_TRUE(err.params.contains("details"));
+  EXPECT_NE(err.params["details"].get<std::string>().find("did not respond"), std::string::npos) << err.params.dump();
+}
+
+TEST_F(ParameterErrorPrecedenceTest, MixedThreeNodeFailuresTimeoutLastReturns503) {
+  auto err = get_missing_param_error("stack_mixed_timeout_last");
+
+  EXPECT_EQ(err.http_status, 503);
+  EXPECT_EQ(err.code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+  // First 503-rank failure probed: the ghost node's SERVICE_UNAVAILABLE.
+  ASSERT_TRUE(err.params.contains("details"));
+  EXPECT_NE(err.params["details"].get<std::string>().find("not available"), std::string::npos) << err.params.dump();
+}
+
+// When every backing node is reachable and reports NOT_FOUND, the aggregate
+// verdict stays a plain 404.
+TEST_F(ParameterErrorPrecedenceTest, AllNodesMissingParameterReturns404) {
+  auto err = get_missing_param_error("stack_all_missing");
+
+  EXPECT_EQ(err.http_status, 404);
+  EXPECT_EQ(err.code, ERR_RESOURCE_NOT_FOUND);
+}
