@@ -11,6 +11,10 @@
 #      the reporting source node's own published topics are captured
 #      (parameter snapshots.entity_default, on by default)
 #
+# A fault code listed in fault_specific (or matched by a pattern) with an
+# EMPTY topic list is an explicit per-fault opt-out: nothing is captured and
+# the entity-default fallback is skipped for that code.
+#
 # Usage:
 #   ros2 run ros2_medkit_fault_manager fault_manager_node \
 #     --ros-args -p snapshots.config_file:=/path/to/snapshots.yaml

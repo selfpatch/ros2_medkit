@@ -539,6 +539,41 @@ TEST_F(EntityDefaultCaptureTest, ExplicitConfigWinsOverEntityDefault) {
 }
 
 // @verifies REQ_INTEROP_088
+TEST_F(EntityDefaultCaptureTest, ExplicitEmptyConfigEntryOptsOutOfEntityDefault) {
+  // A present-but-empty fault_specific or pattern entry is an explicit
+  // "capture nothing for this code" and must not fall through to the
+  // entity-default capture of the node's own topics.
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/entity/own_optout", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  config.fault_specific["OPTED_OUT_SPECIFIC"] = {};
+  config.patterns["^OPTED_OUT_PATTERN_.*"] = {};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  store_fault_from_this_node("OPTED_OUT_SPECIFIC");
+  store_fault_from_this_node("OPTED_OUT_PATTERN_X");
+
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 7.0;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  wait_for_publisher("/entity/own_optout");
+
+  capture.capture("OPTED_OUT_SPECIFIC");
+  capture.capture("OPTED_OUT_PATTERN_X");
+
+  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_SPECIFIC").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_PATTERN_X").has_value());
+}
+
+// @verifies REQ_INTEROP_088
 TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
   SnapshotConfig config;
   config.enabled = true;
