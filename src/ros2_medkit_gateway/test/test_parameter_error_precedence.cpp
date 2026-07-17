@@ -70,6 +70,50 @@ TEST(ParameterErrorPrecedence, NotFoundNeverReplacesUnavailable) {
   EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::SERVICE_UNAVAILABLE);
 }
 
+// Three distinct verdicts folded in both orders: the surfaced error must be
+// the highest-severity one (503), not whichever non-404 happened to fold last.
+
+TEST(ParameterErrorPrecedence, ThreeNodesInternalThenTimeoutThenNotFoundSurfacesUnavailable) {
+  ParameterErrorAccumulator acc;
+  acc.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
+  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
+  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
+
+  EXPECT_FALSE(acc.all_not_found());
+  EXPECT_EQ(acc.classification().status_code, 503);
+  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
+}
+
+TEST(ParameterErrorPrecedence, ThreeNodesNotFoundThenTimeoutThenInternalSurfacesUnavailable) {
+  ParameterErrorAccumulator acc;
+  acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
+  acc.add(make_failure(ParameterErrorCode::TIMEOUT, "timed out"));
+  acc.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
+
+  EXPECT_FALSE(acc.all_not_found());
+  EXPECT_EQ(acc.classification().status_code, 503);
+  EXPECT_EQ(acc.classification().error_code, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE);
+  EXPECT_EQ(acc.worst().error_code, ParameterErrorCode::TIMEOUT);
+}
+
+TEST(ParameterErrorPrecedence, ServerErrorOutranksClientErrorBothOrders) {
+  ParameterErrorAccumulator first_order;
+  first_order.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
+  first_order.add(make_failure(ParameterErrorCode::INVALID_VALUE, "bad value"));
+
+  ParameterErrorAccumulator second_order;
+  second_order.add(make_failure(ParameterErrorCode::INVALID_VALUE, "bad value"));
+  second_order.add(make_failure(ParameterErrorCode::INTERNAL_ERROR, "node crashed"));
+
+  for (const auto * acc : {&first_order, &second_order}) {
+    EXPECT_FALSE(acc->all_not_found());
+    EXPECT_EQ(acc->classification().status_code, 500);
+    EXPECT_EQ(acc->classification().error_code, ERR_INTERNAL_ERROR);
+    EXPECT_EQ(acc->worst().error_code, ParameterErrorCode::INTERNAL_ERROR);
+  }
+}
+
 TEST(ParameterErrorPrecedence, AllNotFoundStays404) {
   ParameterErrorAccumulator acc;
   acc.add(make_failure(ParameterErrorCode::NOT_FOUND, "Parameter not found"));
