@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -42,10 +43,15 @@ using ros2_medkit_msgs::msg::FaultEvent;
 
 namespace {
 
-/// Fake plugin DataProvider serving fixed PLC-like values for one entity.
+/// Fake plugin DataProvider serving PLC-like values for one entity. The
+/// temperature is settable so tests can prove a re-confirm re-samples.
 class FakePlcDataProvider : public DataProvider {
  public:
   explicit FakePlcDataProvider(std::string entity_id) : entity_id_(std::move(entity_id)) {
+  }
+
+  void set_temperature(double value) {
+    temperature_.store(value);
   }
 
   tl::expected<ros2_medkit_gateway::dto::DataListResult, DataProviderErrorInfo>
@@ -54,7 +60,7 @@ class FakePlcDataProvider : public DataProvider {
       return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::EntityNotFound, "not found", 404});
     }
     json items = json::array();
-    items.push_back({{"id", "temperature"}, {"name", "Temperature"}, {"value", 42.5}});
+    items.push_back({{"id", "temperature"}, {"name", "Temperature"}, {"value", temperature_.load()}});
     items.push_back({{"id", "pressure"}, {"name", "Pressure"}, {"value", 3.2}});
     return ros2_medkit_gateway::dto::DataListResult{json{{"items", std::move(items)}}};
   }
@@ -72,6 +78,7 @@ class FakePlcDataProvider : public DataProvider {
 
  private:
   std::string entity_id_;
+  std::atomic<double> temperature_{42.5};
 };
 
 FaultEvent make_confirmed_event(const std::string & fault_code, const std::vector<std::string> & sources) {
@@ -206,6 +213,42 @@ TEST_F(EntityFreezeFrameCaptureTest, NonConfirmedEventsAreIgnored) {
     std::this_thread::sleep_for(10ms);
   }
   EXPECT_TRUE(capture.frames_for("PLC_UPDATED_ONLY").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, FramesRetainedAcrossClearAndOverwrittenOnReconfirm) {
+  EntityFreezeFrameCapture capture(node_.get(), *sub_exec_, [this](const std::string & entity_id) -> DataProvider * {
+    return entity_id == "plc_app" ? provider_.get() : nullptr;
+  });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_CYCLING", {"plc_app"})));
+  ASSERT_DOUBLE_EQ(capture.frames_for("PLC_CYCLING")[0].values.value("temperature", 0.0), 42.5);
+
+  // Clearing retains the confirmed-state record, mirroring the fault_manager's
+  // freeze-frame retention across clear_fault.
+  auto cleared = make_confirmed_event("PLC_CYCLING", {"plc_app"});
+  cleared.event_type = FaultEvent::EVENT_CLEARED;
+  for (int i = 0; i < 25; ++i) {
+    publisher_->publish(cleared);
+    std::this_thread::sleep_for(10ms);
+  }
+  auto retained = capture.frames_for("PLC_CYCLING");
+  ASSERT_EQ(retained.size(), 1u);
+  EXPECT_DOUBLE_EQ(retained[0].values.value("temperature", 0.0), 42.5);
+
+  // The next confirm re-samples the plugin, replacing the retained frame, so
+  // a new occurrence never serves the previous incident's values past confirm.
+  provider_->set_temperature(99.0);
+  const auto reconfirm = make_confirmed_event("PLC_CYCLING", {"plc_app"});
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  bool overwritten = false;
+  while (std::chrono::steady_clock::now() < deadline && !overwritten) {
+    publisher_->publish(reconfirm);
+    std::this_thread::sleep_for(20ms);
+    auto latest = capture.frames_for("PLC_CYCLING");
+    overwritten = !latest.empty() && std::abs(latest[0].values.value("temperature", 0.0) - 99.0) < 1e-9;
+  }
+  EXPECT_TRUE(overwritten);
 }
 
 /// @verifies REQ_INTEROP_088

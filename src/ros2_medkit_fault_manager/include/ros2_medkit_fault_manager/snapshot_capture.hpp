@@ -180,9 +180,10 @@ class SnapshotCapture {
   std::vector<std::string> resolve_topics(const std::string & fault_code) const;
 
   /// Entity-default fallback: topics published by the fault's reporting source
-  /// node(s), excluding per-node noise (/rosout, /parameter_events). Empty when
-  /// no source resolves to a live node (e.g. plugin entity ids - the gateway
-  /// covers those). Never throws; any failure degrades to empty.
+  /// node(s), excluding per-node noise (/rosout, /parameter_events). Non-FQN
+  /// sources (bare plugin entity ids - the gateway covers those) are skipped,
+  /// and empty is returned when no source resolves to a live node. Never
+  /// throws; any failure degrades to empty.
   std::vector<std::string> resolve_entity_topics(const std::string & fault_code) const;
 
   /// Capture a single topic on-demand (creates temporary subscription)
