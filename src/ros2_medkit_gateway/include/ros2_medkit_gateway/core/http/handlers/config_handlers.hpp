@@ -33,9 +33,10 @@ struct ParameterErrorClassification {
 };
 
 /// Folds per-node parameter lookup failures so the error surfaced when no
-/// node succeeds does not depend on node iteration order: a non-404 failure
-/// (node unavailable, timeout, ...) always wins over NOT_FOUND, and a 404
-/// never replaces a held non-404.
+/// node succeeds does not depend on node iteration order. Failures are
+/// ranked by severity: node unavailable/timeout (503) > other server errors
+/// (5xx) > non-404 client errors (4xx) > NOT_FOUND (404). The highest rank
+/// folded so far is kept; within a rank the first failure folded wins.
 class ParameterErrorAccumulator {
  public:
   /// Fold one failed ParameterResult.
@@ -46,7 +47,7 @@ class ParameterErrorAccumulator {
     return all_not_found_;
   }
 
-  /// The failure to surface: the latest non-404 folded, else the latest 404.
+  /// The failure to surface: the highest-severity failure folded so far.
   const ParameterResult & worst() const {
     return worst_;
   }
@@ -59,6 +60,7 @@ class ParameterErrorAccumulator {
  private:
   ParameterResult worst_;
   ParameterErrorClassification classification_;
+  int worst_rank_ = -1;
   bool all_not_found_ = true;
 };
 

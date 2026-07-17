@@ -306,18 +306,36 @@ void apply_fan_out_observability(dto::ConfigListXMedkit & xm,
   }
 }
 
+/// Severity rank for order-independent folding: node-unavailable (503) is the
+/// most actionable verdict (retry), then other server errors, then non-404
+/// client errors; NOT_FOUND ranks lowest so it can never mask a real failure.
+int severity_rank(int status_code) {
+  if (status_code == 404) {
+    return 0;
+  }
+  if (status_code == 503) {
+    return 3;
+  }
+  if (status_code >= 500) {
+    return 2;
+  }
+  return 1;  // non-404 4xx
+}
+
 }  // namespace
 
 void ParameterErrorAccumulator::add(const ParameterResult & result) {
   auto err = classify_parameter_error(result);
-  const bool not_found = err.status_code == 404;
-  // Non-404 failures win; a 404 never replaces a held non-404.
-  if (!not_found || all_not_found_) {
+  const int rank = severity_rank(err.status_code);
+  if (rank > 0) {
+    all_not_found_ = false;
+  }
+  // Strictly-greater keeps the first failure folded at the winning rank, so
+  // the surfaced status never depends on node iteration order.
+  if (rank > worst_rank_) {
     worst_ = result;
     classification_ = std::move(err);
-  }
-  if (!not_found) {
-    all_not_found_ = false;
+    worst_rank_ = rank;
   }
 }
 
@@ -483,9 +501,9 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
 
   // For non-aggregated entities (or aggregated entities without a prefix) we
   // probe every backing node for the parameter and return the first success.
-  // Failures fold through ParameterErrorAccumulator so a non-404 from any
-  // node (e.g. unavailable) wins over a pure "not found" verdict regardless
-  // of node iteration order.
+  // Failures fold through ParameterErrorAccumulator, which ranks them by
+  // severity (503 > other 5xx > non-404 4xx > 404), so the surfaced error is
+  // the same regardless of node iteration order.
   ParameterErrorAccumulator errors;
 
   for (const auto & node_info : agg_configs.nodes) {
