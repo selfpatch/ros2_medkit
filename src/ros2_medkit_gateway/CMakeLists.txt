@@ -592,9 +592,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_error_info test/test_error_info.cpp)
   target_link_libraries(test_error_info gateway_ros2)
 
-  # Parameter error precedence tests (multi-node GET aggregation)
+  # Parameter error precedence tests (multi-node GET aggregation, live GatewayNode)
   ament_add_gtest(test_parameter_error_precedence test/test_parameter_error_precedence.cpp)
   target_link_libraries(test_parameter_error_precedence gateway_ros2)
+  medkit_target_dependencies(test_parameter_error_precedence rclcpp)
+  medkit_set_test_domain(test_parameter_error_precedence)
 
   # Add ROS 2 subscription executor tests
   ament_add_gtest(test_ros2_subscription_executor test/test_ros2_subscription_executor.cpp)

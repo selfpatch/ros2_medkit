@@ -114,6 +114,12 @@ const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo> & nod
   return nullptr;
 }
 
+/// HTTP status + SOVD error code for a failed parameter operation.
+struct ParameterErrorClassification {
+  int status_code = 500;
+  std::string error_code;
+};
+
 /// Map a structured `ParameterErrorCode` to an HTTP status + SOVD error code.
 /// Identical mapping to the legacy `classify_error_code` helper.
 ParameterErrorClassification classify_error_code(ParameterErrorCode error_code) {
@@ -322,22 +328,51 @@ int severity_rank(int status_code) {
   return 1;  // non-404 4xx
 }
 
-}  // namespace
+/// Folds per-node parameter lookup failures so the error surfaced when no
+/// node succeeds does not depend on node iteration order. Failures are
+/// ranked by `severity_rank`; the highest rank folded so far is kept, and
+/// within a rank the first failure folded wins.
+class ParameterErrorAccumulator {
+ public:
+  /// Fold one failed ParameterResult.
+  void add(const ParameterResult & result) {
+    auto err = classify_parameter_error(result);
+    const int rank = severity_rank(err.status_code);
+    if (rank > 0) {
+      all_not_found_ = false;
+    }
+    // Strictly-greater keeps the first failure folded at the winning rank, so
+    // the surfaced status never depends on node iteration order.
+    if (rank > worst_rank_) {
+      worst_ = result;
+      classification_ = std::move(err);
+      worst_rank_ = rank;
+    }
+  }
 
-void ParameterErrorAccumulator::add(const ParameterResult & result) {
-  auto err = classify_parameter_error(result);
-  const int rank = severity_rank(err.status_code);
-  if (rank > 0) {
-    all_not_found_ = false;
+  /// True when every folded failure classified as 404.
+  bool all_not_found() const {
+    return all_not_found_;
   }
-  // Strictly-greater keeps the first failure folded at the winning rank, so
-  // the surfaced status never depends on node iteration order.
-  if (rank > worst_rank_) {
-    worst_ = result;
-    classification_ = std::move(err);
-    worst_rank_ = rank;
+
+  /// The failure to surface: the highest-severity failure folded so far.
+  const ParameterResult & worst() const {
+    return worst_;
   }
-}
+
+  /// Classification of worst().
+  const ParameterErrorClassification & classification() const {
+    return classification_;
+  }
+
+ private:
+  ParameterResult worst_;
+  ParameterErrorClassification classification_;
+  int worst_rank_ = -1;
+  bool all_not_found_ = true;
+};
+
+}  // namespace
 
 // ===========================================================================
 // GET /{entity-path}/configurations
