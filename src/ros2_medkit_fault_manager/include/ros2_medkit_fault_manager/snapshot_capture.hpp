@@ -158,8 +158,10 @@ class SnapshotCapture {
   ///
   /// If the fault code resolves to no capture set (not in fault_specific, no pattern
   /// match, no default_topics), the entity-default fallback (when enabled) captures
-  /// the reporting source node's own published topics instead. Only when that also
-  /// resolves nothing does capture return early: no freeze_frames row is written
+  /// the reporting source node's own published topics instead. A code explicitly
+  /// listed in fault_specific or matched by a pattern never falls through - a
+  /// present-but-empty topic list is a per-fault opt-out. Only when nothing
+  /// resolves does capture return early: no freeze_frames row is written
   /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
   /// @param fault_code The fault code that was confirmed
   void capture(const std::string & fault_code);
@@ -177,7 +179,11 @@ class SnapshotCapture {
  private:
   /// Resolve which topics to capture for a given fault code
   /// Priority: fault_specific > patterns > default_topics
-  std::vector<std::string> resolve_topics(const std::string & fault_code) const;
+  /// @param[out] explicit_match true when the code hit fault_specific or a
+  ///             pattern (even with an empty list - an explicit opt-out) or
+  ///             default_topics applied; such codes never fall through to the
+  ///             entity-default capture.
+  std::vector<std::string> resolve_topics(const std::string & fault_code, bool & explicit_match) const;
 
   /// Entity-default fallback: topics published by the fault's reporting source
   /// node(s), excluding per-node noise (/rosout, /parameter_events). Non-FQN

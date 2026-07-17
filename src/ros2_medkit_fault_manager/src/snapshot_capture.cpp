@@ -123,11 +123,13 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     return;
   }
 
-  auto topics = resolve_topics(fault_code);
-  // Zero-config fallback: no explicit config matched, so capture the reporting
-  // source node's own published topics (explicit config always wins above).
+  bool explicit_match = false;
+  auto topics = resolve_topics(fault_code, explicit_match);
+  // Zero-config fallback: nothing in the explicit config even mentioned this
+  // code. A present-but-empty fault_specific/pattern entry is an explicit
+  // per-fault opt-out (explicit_match == true) and must NOT fall through here.
   bool entity_scoped = false;
-  if (topics.empty() && config_.entity_default) {
+  if (topics.empty() && !explicit_match && config_.entity_default) {
     topics = resolve_entity_topics(fault_code);
     entity_scoped = !topics.empty();
   }
@@ -194,7 +196,9 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   storage_->store_freeze_frame(frame);
 }
 
-std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fault_code) const {
+std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fault_code, bool & explicit_match) const {
+  explicit_match = true;
+
   // Priority 1: Exact match in fault_specific
   auto it = config_.fault_specific.find(fault_code);
   if (it != config_.fault_specific.end()) {
@@ -210,12 +214,13 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
     }
   }
 
-  // Priority 3: Default topics
+  // Priority 3: Default topics (empty means "not configured", not an opt-out)
   if (!config_.default_topics.empty()) {
     RCLCPP_DEBUG(node_->get_logger(), "Using default_topics for '%s'", fault_code.c_str());
     return config_.default_topics;
   }
 
+  explicit_match = false;
   return {};
 }
 
