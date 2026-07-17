@@ -20,6 +20,24 @@
 
 namespace ros2_medkit_gateway {
 
+namespace {
+
+/// Capture backlog bound: a confirm burst beyond this drops the oldest event.
+constexpr size_t kMaxQueuedEvents = 64;
+
+/// fallback_logged_ bound: past this the set resets (re-arming one warn per
+/// code) instead of growing forever on churny/synthetic fault codes.
+constexpr size_t kMaxLoggedFaultCodes = 1024;
+
+/// Read a string field totally: json::value() throws type_error.302 when the
+/// key is present but not a string, and plugin content is untrusted.
+std::string string_field(const nlohmann::json & item, const char * field) {
+  const auto it = item.find(field);
+  return it != item.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
+}  // namespace
+
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                                                    DataProviderResolver resolver, RouteDataFetcher route_fetcher,
                                                    size_t max_faults)
@@ -42,12 +60,29 @@ EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_com
     return;
   }
   subscription_slot_ = std::move(*slot);
+  capture_thread_ = std::thread([this] {
+    capture_worker();
+  });
 
   RCLCPP_INFO(logger_, "EntityFreezeFrameCapture initialized, subscribed to %s", fault_events_topic.c_str());
 }
 
 EntityFreezeFrameCapture::~EntityFreezeFrameCapture() {
+  // Not a synchronous barrier: the slot posts an async destroy with a bounded
+  // deadline, so use-after-free safety also relies on the owner tearing down
+  // the subscription executor (joining its worker) before this object's node
+  // dies - keep that ordering in main.cpp / gateway_node shutdown.
   subscription_slot_.reset();
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    stop_ = true;
+  }
+  queue_cv_.notify_all();
+  // Joins through any in-flight plugin call: a hung read delays shutdown
+  // rather than leaving a capture racing plugin unload.
+  if (capture_thread_.joinable()) {
+    capture_thread_.join();
+  }
 }
 
 std::vector<EntityFreezeFrameCapture::Frame>
@@ -66,7 +101,10 @@ nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann
     if (!item.is_object()) {
       continue;
     }
-    std::string key = item.value("id", item.value("name", ""));
+    std::string key = string_field(item, "id");
+    if (key.empty()) {
+      key = string_field(item, "name");
+    }
     if (key.empty()) {
       continue;
     }
@@ -75,7 +113,7 @@ nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann
   return values;
 }
 
-bool EntityFreezeFrameCapture::route_content_has_live_data(const nlohmann::json & content) {
+bool EntityFreezeFrameCapture::content_has_live_data(const nlohmann::json & content) {
   if (!content.is_object()) {
     return false;
   }
@@ -83,6 +121,39 @@ bool EntityFreezeFrameCapture::route_content_has_live_data(const nlohmann::json 
     return false;
   }
   return content.contains("items") && content["items"].is_array() && !content["items"].empty();
+}
+
+bool EntityFreezeFrameCapture::values_have_data(const nlohmann::json & values) {
+  if (values.is_object()) {
+    for (const auto & entry : values.items()) {
+      if (!entry.value().is_null()) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return !values.is_null();
+}
+
+std::optional<EntityFreezeFrameCapture::Frame>
+EntityFreezeFrameCapture::frame_from_content(const std::string & entity_id, const std::string & fault_code,
+                                             const nlohmann::json & content) {
+  if (!content_has_live_data(content)) {
+    log_fallback_failure_once(fault_code, "entity '" + entity_id + "' reported no live values");
+    return std::nullopt;
+  }
+  Frame frame;
+  frame.entity_id = entity_id;
+  frame.values = values_from_list_content(content);
+  if (!values_have_data(frame.values)) {
+    // Items present but nothing usable in them (all-null values, or no usable
+    // ids): still a dead/cold row - no frame, same invariant as above.
+    log_fallback_failure_once(fault_code, "entity '" + entity_id + "' values are all null");
+    return std::nullopt;
+  }
+  frame.captured_at_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  return frame;
 }
 
 std::optional<EntityFreezeFrameCapture::Frame>
@@ -97,21 +168,15 @@ EntityFreezeFrameCapture::capture_via_route(const std::string & entity_id, const
   if (!content) {
     return std::nullopt;  // not plugin-owned, no x-plc-data route, or handler error
   }
-  if (!route_content_has_live_data(*content)) {
-    log_fallback_failure_once(fault_code, "entity '" + entity_id + "' x-plc-data reported no live values");
-    return std::nullopt;
-  }
-  Frame frame;
-  frame.entity_id = entity_id;
-  frame.values = values_from_list_content(*content);
-  frame.captured_at_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  return frame;
+  return frame_from_content(entity_id, fault_code, *content);
 }
 
 void EntityFreezeFrameCapture::log_fallback_failure_once(const std::string & fault_code, const std::string & message) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (fallback_logged_.size() >= kMaxLoggedFaultCodes) {
+      fallback_logged_.clear();
+    }
     if (!fallback_logged_.insert(fault_code).second) {
       return;
     }
@@ -126,15 +191,56 @@ void EntityFreezeFrameCapture::on_fault_event(const ros2_medkit_msgs::msg::Fault
     return;
   }
 
+  // This runs on the shared subscription worker (which also serves all /data
+  // sampling and subscribe/unsubscribe), so only enqueue here: the plugin
+  // calls run on capture_thread_, where a slow or live read cannot stall the
+  // worker and a handler that re-enters the executor cannot self-deadlock.
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (stop_) {
+      return;
+    }
+    if (queue_.size() >= kMaxQueuedEvents) {
+      RCLCPP_WARN(logger_, "Entity freeze-frame capture backlog full; dropping oldest confirm event");
+      queue_.pop_front();
+    }
+    queue_.push_back(msg);
+  }
+  queue_cv_.notify_one();
+}
+
+void EntityFreezeFrameCapture::capture_worker() {
+  for (;;) {
+    ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr event;
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      queue_cv_.wait(lock, [this] {
+        return stop_ || !queue_.empty();
+      });
+      if (stop_) {
+        // Drop the backlog: the owner destroys this right before plugin
+        // shutdown, and a late capture would call into an unloading plugin.
+        return;
+      }
+      event = queue_.front();
+      queue_.pop_front();
+    }
+    capture_for_event(*event);
+  }
+}
+
+void EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::FaultEvent & event) {
+  const std::string & fault_code = event.fault.fault_code;
+
   std::vector<Frame> frames;
-  for (const auto & source : msg->fault.reporting_sources) {
+  for (const auto & source : event.fault.reporting_sources) {
     DataProvider * provider = resolver_ ? resolver_(source) : nullptr;
     if (provider == nullptr) {
       // No DataProvider: the owning plugin may still serve live values through
       // its own x-plc-data route (the commercial PLC bridges). For non-plugin
       // (ROS) sources the fetcher resolves no owner and returns nullopt.
       if (route_fetcher_) {
-        if (auto frame = capture_via_route(source, msg->fault.fault_code)) {
+        if (auto frame = capture_via_route(source, fault_code)) {
           frames.push_back(std::move(*frame));
         }
       }
@@ -147,20 +253,14 @@ void EntityFreezeFrameCapture::on_fault_event(const ros2_medkit_msgs::msg::Fault
     try {
       auto result = provider->list_data(source);
       if (!result) {
-        RCLCPP_WARN(logger_, "Entity freeze-frame for fault '%s': list_data('%s') failed: %s",
-                    msg->fault.fault_code.c_str(), source.c_str(), result.error().message.c_str());
+        log_fallback_failure_once(fault_code, "list_data('" + source + "') failed: " + result.error().message);
         continue;
       }
-      Frame frame;
-      frame.entity_id = source;
-      frame.values = values_from_list_content(result->content);
-      frame.captured_at_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
-              .count();
-      frames.push_back(std::move(frame));
+      if (auto frame = frame_from_content(source, fault_code, result->content)) {
+        frames.push_back(std::move(*frame));
+      }
     } catch (const std::exception & e) {
-      RCLCPP_WARN(logger_, "Entity freeze-frame for fault '%s': plugin threw for entity '%s': %s",
-                  msg->fault.fault_code.c_str(), source.c_str(), e.what());
+      log_fallback_failure_once(fault_code, "plugin threw for entity '" + source + "': " + e.what());
     }
   }
 
@@ -169,7 +269,6 @@ void EntityFreezeFrameCapture::on_fault_event(const ros2_medkit_msgs::msg::Fault
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  const std::string & fault_code = msg->fault.fault_code;
   if (frames_.find(fault_code) == frames_.end()) {
     insertion_order_.push_back(fault_code);
     while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {

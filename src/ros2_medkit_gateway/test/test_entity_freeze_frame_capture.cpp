@@ -81,6 +81,37 @@ class FakePlcDataProvider : public DataProvider {
   std::atomic<double> temperature_{42.5};
 };
 
+/// Fake DataProvider serving fixed list_data content (for gate tests).
+class StaticContentDataProvider : public DataProvider {
+ public:
+  StaticContentDataProvider(std::string entity_id, json content)
+    : entity_id_(std::move(entity_id)), content_(std::move(content)) {
+  }
+
+  tl::expected<ros2_medkit_gateway::dto::DataListResult, DataProviderErrorInfo>
+  list_data(const std::string & entity_id) override {
+    if (entity_id != entity_id_) {
+      return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::EntityNotFound, "not found", 404});
+    }
+    return ros2_medkit_gateway::dto::DataListResult{content_};
+  }
+
+  tl::expected<ros2_medkit_gateway::dto::DataValue, DataProviderErrorInfo>
+  read_data(const std::string & /*entity_id*/, const std::string & /*resource_name*/) override {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::Internal, "unused", 500});
+  }
+
+  tl::expected<ros2_medkit_gateway::dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource_name*/,
+             const json & /*value*/) override {
+    return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, "read-only", 405});
+  }
+
+ private:
+  std::string entity_id_;
+  json content_;
+};
+
 FaultEvent make_confirmed_event(const std::string & fault_code, const std::vector<std::string> & sources) {
   FaultEvent event;
   event.event_type = FaultEvent::EVENT_CONFIRMED;
@@ -321,17 +352,75 @@ TEST_F(EntityFreezeFrameCaptureTest, DataProviderWinsOverRouteFallback) {
   EXPECT_FALSE(fetcher_called.load());
 }
 
-TEST(RouteContentHasLiveData, GatesOnConnectedAndItems) {
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, DataProviderWithoutLiveValuesCapturesNothing) {
+  // Same "no row = nothing captured" invariant as the route path: an empty
+  // items array (cold poll cache), all-null values (down link) or a
+  // disconnected flag must not freeze-frame a row of {} / nulls.
+  StaticContentDataProvider cold_provider("cold_app", json{{"items", json::array()}});
+  StaticContentDataProvider null_provider("null_app", json{{"items", json::array({{{"id", "level"}}})}});
+  StaticContentDataProvider down_provider(
+      "down_app", json{{"connected", false}, {"items", json::array({{{"id", "level"}, {"value", 1.0}}})}});
+  EntityFreezeFrameCapture capture(node_.get(), *sub_exec_, [&](const std::string & entity_id) -> DataProvider * {
+    if (entity_id == "cold_app") {
+      return &cold_provider;
+    }
+    if (entity_id == "null_app") {
+      return &null_provider;
+    }
+    if (entity_id == "down_app") {
+      return &down_provider;
+    }
+    return nullptr;
+  });
+
+  ASSERT_TRUE(wait_for_match());
+  auto event = make_confirmed_event("PLC_NO_LIVE_DATA", {"cold_app", "null_app", "down_app"});
+  for (int i = 0; i < 25; ++i) {
+    publisher_->publish(event);
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(capture.frames_for("PLC_NO_LIVE_DATA").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, OldestFaultEvictedPastMaxFaults) {
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      nullptr, /*max_faults=*/2);
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_A", {"plc_app"})));
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_B", {"plc_app"})));
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_C", {"plc_app"})));
+
+  EXPECT_TRUE(capture.frames_for("PLC_EVICT_A").empty());  // FIFO-evicted
+  EXPECT_FALSE(capture.frames_for("PLC_EVICT_B").empty());
+  EXPECT_FALSE(capture.frames_for("PLC_EVICT_C").empty());
+}
+
+TEST(ContentHasLiveData, GatesOnConnectedAndItems) {
   using Capture = EntityFreezeFrameCapture;
-  EXPECT_TRUE(Capture::route_content_has_live_data(
+  EXPECT_TRUE(Capture::content_has_live_data(
       json{{"connected", true}, {"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
   // No "connected" field: items alone are enough (plugin-defined shape).
-  EXPECT_TRUE(Capture::route_content_has_live_data(json{{"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
-  EXPECT_FALSE(Capture::route_content_has_live_data(
+  EXPECT_TRUE(Capture::content_has_live_data(json{{"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
+  EXPECT_FALSE(Capture::content_has_live_data(
       json{{"connected", false}, {"items", json::array({{{"name", "a"}, {"value", 1}}})}}));
-  EXPECT_FALSE(Capture::route_content_has_live_data(json{{"connected", true}, {"items", json::array()}}));
-  EXPECT_FALSE(Capture::route_content_has_live_data(json{{"connected", true}}));
-  EXPECT_FALSE(Capture::route_content_has_live_data(json::array()));
+  EXPECT_FALSE(Capture::content_has_live_data(json{{"connected", true}, {"items", json::array()}}));
+  EXPECT_FALSE(Capture::content_has_live_data(json{{"connected", true}}));
+  EXPECT_FALSE(Capture::content_has_live_data(json::array()));
+}
+
+TEST(ValuesHaveData, RejectsEmptyAndAllNull) {
+  using Capture = EntityFreezeFrameCapture;
+  EXPECT_TRUE(Capture::values_have_data(json{{"a", 1}}));
+  EXPECT_TRUE(Capture::values_have_data(json{{"a", nullptr}, {"b", 0.0}}));
+  EXPECT_FALSE(Capture::values_have_data(json::object()));
+  EXPECT_FALSE(Capture::values_have_data(json{{"a", nullptr}, {"b", nullptr}}));
+  EXPECT_FALSE(Capture::values_have_data(json(nullptr)));
 }
 
 TEST(ValuesFromListContent, BuildsCompactDictFromItems) {
@@ -347,6 +436,17 @@ TEST(ValuesFromListContent, BuildsCompactDictFromItems) {
 TEST(ValuesFromListContent, NonItemsShapeKeptVerbatim) {
   json content = {{"status", "ok"}, {"raw", 7}};
   EXPECT_EQ(EntityFreezeFrameCapture::values_from_list_content(content), content);
+}
+
+TEST(ValuesFromListContent, NonStringIdOrNameNeverThrows) {
+  // json::value() throws type_error.302 on present-but-non-string keys;
+  // plugin content is untrusted, so the builder must be total instead.
+  json content = {{"items", json::array({{{"id", 42}, {"name", "b"}, {"value", 2}},  // int id -> name fallback
+                                         {{"id", 7}, {"value", 1}},                  // no usable key -> skipped
+                                         {{"name", true}}})}};                       // no usable key -> skipped
+  json values;
+  ASSERT_NO_THROW(values = EntityFreezeFrameCapture::values_from_list_content(content));
+  EXPECT_EQ(values, json({{"b", 2}}));
 }
 
 TEST(MergeEntityFreezeFrames, AppendsWhenNoConfiguredFreezeFrame) {
