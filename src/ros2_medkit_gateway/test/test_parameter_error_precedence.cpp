@@ -17,6 +17,7 @@
 #include <httplib.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <regex>
@@ -45,11 +46,14 @@ using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::ConfigHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
 namespace http = ros2_medkit_gateway::http;
+namespace dto = ros2_medkit_gateway::dto;
 
 namespace {
 
 constexpr const char * kMissingParam = "definitely_missing_param";
 constexpr const char * kGetConfigPattern = R"(/api/v1/components/([^/]+)/configurations/([^/]+))";
+constexpr const char * kListConfigPattern = R"(/api/v1/components/([^/]+)/configurations)";
+constexpr const char * kGhostFqn = "/param_precedence_ghost";
 
 httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
   httplib::Request req;
@@ -62,16 +66,22 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
 }  // namespace
 
 // =============================================================================
-// Handler-level regression tests for the multi-node probe loop in
-// GET /{entity}/configurations/{param}: when no backing node succeeds, the
-// surfaced error must be the highest-severity per-node failure regardless of
-// node iteration order (a NOT_FOUND from one node must never mask an
-// unavailable/timeout from another). Exercised end-to-end through
-// ConfigHandlers::get_configuration against a live GatewayNode with real
+// Handler-level regression tests for the multi-node config endpoints, exercised
+// end-to-end through ConfigHandlers against a live GatewayNode with real
 // per-node failures:
 //   - "ghost" node FQN with no ROS node behind it -> SERVICE_UNAVAILABLE
 //   - unspun node (parameter services exist, never answered) -> TIMEOUT
 //   - the gateway's own node missing the parameter -> NOT_FOUND
+//
+// GET /{entity}/configurations/{param}: when no backing node succeeds, the
+// surfaced error must be the highest-severity per-node failure regardless of
+// node iteration order (a NOT_FOUND from one node must never mask an
+// unavailable/timeout from another).
+//
+// GET /{entity}/configurations (list, issue #541): when some backing nodes are
+// up and others are down, the 200 response must flag itself partial and name
+// the unavailable nodes rather than silently dropping them - matching the
+// single-parameter GET's 503 honesty for the same outage.
 // =============================================================================
 
 class ParameterErrorPrecedenceTest : public ::testing::Test {
@@ -170,7 +180,7 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
   /// insertion order (get_component_configurations preserves it), covering
   /// both iteration orders for every scenario.
   void seed_cache() {
-    const std::string ghost_fqn = "/param_precedence_ghost";
+    const std::string ghost_fqn = kGhostFqn;
 
     std::vector<Component> components;
     std::vector<App> apps;
@@ -209,6 +219,21 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
     auto result = handlers_->get_configuration(req);
     EXPECT_FALSE(result.has_value()) << "expected an error for " << path;
     return result.has_value() ? ErrorInfo{} : result.error();
+  }
+
+  /// Run GET /{entity}/configurations and return the parsed x-medkit block.
+  /// The call must succeed (list is a 200 even when a backing node is down).
+  dto::ConfigListXMedkit list_xmedkit(const std::string & component_id) {
+    const std::string path = "/api/v1/components/" + component_id + "/configurations";
+    auto raw = make_request_with_match(path, kListConfigPattern);
+    http::TypedRequest req(raw);
+
+    auto result = handlers_->list_configurations(req);
+    EXPECT_TRUE(result.has_value()) << "list_configurations should return 200 for " << path;
+    if (!result.has_value() || !result.value().x_medkit.has_value()) {
+      return dto::ConfigListXMedkit{};
+    }
+    return *result.value().x_medkit;
   }
 
   CorsConfig cors_{};
@@ -270,4 +295,40 @@ TEST_F(ParameterErrorPrecedenceTest, AllNodesMissingParameterReturns404) {
 
   EXPECT_EQ(err.http_status, 404);
   EXPECT_EQ(err.code, ERR_RESOURCE_NOT_FOUND);
+}
+
+// Issue #541: one backing node down and one up. The list endpoint must stay a
+// 200 but flag itself partial and name the unavailable node, instead of
+// silently returning a shrunken list. Both node orders are covered.
+TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeFirstIsPartial) {
+  auto xm = list_xmedkit("stack_unavail_first");
+
+  ASSERT_TRUE(xm.partial.has_value());
+  EXPECT_TRUE(*xm.partial);
+  ASSERT_TRUE(xm.unavailable_nodes.has_value());
+  EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
+            xm.unavailable_nodes->end())
+      << "unavailable node list must name the down node";
+  // The reachable node's parameters are still listed (queried_nodes non-empty).
+  ASSERT_TRUE(xm.queried_nodes.has_value());
+  EXPECT_FALSE(xm.queried_nodes->empty());
+}
+
+TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeLastIsPartial) {
+  auto xm = list_xmedkit("stack_unavail_last");
+
+  ASSERT_TRUE(xm.partial.has_value());
+  EXPECT_TRUE(*xm.partial);
+  ASSERT_TRUE(xm.unavailable_nodes.has_value());
+  EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
+            xm.unavailable_nodes->end());
+}
+
+// Control: when every backing node is reachable, the list is not flagged
+// partial and no unavailable nodes are reported.
+TEST_F(ParameterErrorPrecedenceTest, ListWithAllNodesReachableIsNotPartial) {
+  auto xm = list_xmedkit("stack_all_missing");
+
+  EXPECT_FALSE(xm.partial.has_value() && *xm.partial);
+  EXPECT_FALSE(xm.unavailable_nodes.has_value());
 }

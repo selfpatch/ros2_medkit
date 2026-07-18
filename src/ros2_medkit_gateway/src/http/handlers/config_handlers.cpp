@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/http/parameter_error_classification.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -112,90 +113,6 @@ const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo> & nod
     }
   }
   return nullptr;
-}
-
-/// HTTP status + SOVD error code for a failed parameter operation.
-struct ParameterErrorClassification {
-  int status_code = 500;
-  std::string error_code;
-};
-
-/// Map a structured `ParameterErrorCode` to an HTTP status + SOVD error code.
-/// Identical mapping to the legacy `classify_error_code` helper.
-ParameterErrorClassification classify_error_code(ParameterErrorCode error_code) {
-  ParameterErrorClassification result;
-
-  switch (error_code) {
-    case ParameterErrorCode::NOT_FOUND:
-    case ParameterErrorCode::NO_DEFAULTS_CACHED:
-      result.status_code = 404;
-      result.error_code = ERR_RESOURCE_NOT_FOUND;
-      break;
-    case ParameterErrorCode::READ_ONLY:
-      result.status_code = 403;
-      result.error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
-      break;
-    case ParameterErrorCode::SERVICE_UNAVAILABLE:
-    case ParameterErrorCode::TIMEOUT:
-      result.status_code = 503;
-      result.error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
-      break;
-    case ParameterErrorCode::TYPE_MISMATCH:
-    case ParameterErrorCode::INVALID_VALUE:
-      result.status_code = 400;
-      result.error_code = ERR_INVALID_PARAMETER;
-      break;
-    case ParameterErrorCode::NONE:
-      // NONE means "no error" - caller (classify_parameter_error) pre-filters
-      // this case, so reaching here indicates a programming error.
-      result.status_code = 500;
-      result.error_code = ERR_INTERNAL_ERROR;
-      break;
-    case ParameterErrorCode::SHUT_DOWN:
-    case ParameterErrorCode::INTERNAL_ERROR:
-    default:
-      result.status_code = 500;
-      result.error_code = ERR_INTERNAL_ERROR;
-      break;
-  }
-
-  return result;
-}
-
-/// Classify a ParameterResult into HTTP status + error code. Prefers the
-/// structured `error_code` field and falls back to string-matching the legacy
-/// error messages for backward compatibility with older transports.
-ParameterErrorClassification classify_parameter_error(const ParameterResult & result) {
-  // Prefer structured error code
-  if (result.error_code != ParameterErrorCode::NONE) {
-    return classify_error_code(result.error_code);
-  }
-
-  // Fallback to string parsing for backward compatibility
-  ParameterErrorClassification classification;
-  const auto & error_message = result.error_message;
-
-  if (error_message.find("not found") != std::string::npos ||
-      error_message.find("Parameter not found") != std::string::npos) {
-    classification.status_code = 404;
-    classification.error_code = ERR_RESOURCE_NOT_FOUND;
-  } else if (error_message.find("read-only") != std::string::npos ||
-             error_message.find("read only") != std::string::npos ||
-             error_message.find("is read_only") != std::string::npos) {
-    classification.status_code = 403;
-    classification.error_code = ERR_X_MEDKIT_ROS2_PARAMETER_READ_ONLY;
-  } else if (error_message.find("not available") != std::string::npos ||
-             error_message.find("service not available") != std::string::npos ||
-             error_message.find("timed out") != std::string::npos ||
-             error_message.find("timeout") != std::string::npos) {
-    classification.status_code = 503;
-    classification.error_code = ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
-  } else {
-    classification.status_code = 400;
-    classification.error_code = ERR_INVALID_REQUEST;
-  }
-
-  return classification;
 }
 
 /// Build a typed `ErrorInfo` for a failed parameter operation. Mirrors the
@@ -411,6 +328,7 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     bool any_success = false;
     std::string first_error;
     std::string first_error_node;  // Track which node failed for better diagnostics
+    std::vector<std::string> unavailable_nodes;
 
     for (const auto & qr : node_results) {
       const auto & node_info = qr.node_info;
@@ -435,9 +353,14 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
             all_parameters.push_back(std::move(param_with_source));
           }
         }
-      } else if (first_error.empty()) {
-        first_error = result.error_message;
-        first_error_node = node_info.node_fqn;
+      } else {
+        // Record every failed backing node so a partial list can name what is
+        // missing, and keep the first failure for the all-nodes-down 503.
+        unavailable_nodes.push_back(node_info.node_fqn);
+        if (first_error.empty()) {
+          first_error = result.error_message;
+          first_error_node = node_info.node_fqn;
+        }
       }
     }
 
@@ -453,6 +376,16 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     }
     if (!queried_nodes.empty()) {
       xm.queried_nodes = queried_nodes;
+    }
+    // Some (but not all) backing nodes were unreachable. Mirror the peer
+    // fan-out honesty convention (partial + failed_peers) for local nodes:
+    // flag the response partial and name the unavailable nodes instead of
+    // silently returning a shrunken 200. This keeps the list surface
+    // consistent with GET /{entity}/configurations/{param}, which returns 503
+    // ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE for the same backing-node outage.
+    if (!unavailable_nodes.empty()) {
+      xm.partial = true;
+      xm.unavailable_nodes = std::move(unavailable_nodes);
     }
   }
 

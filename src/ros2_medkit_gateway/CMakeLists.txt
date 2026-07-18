@@ -175,6 +175,7 @@ add_library(gateway_ros2 STATIC
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/fan_out_helpers.cpp
+  src/http/parameter_error_classification.cpp
   src/http/handlers/auth_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/config_handlers.cpp
@@ -592,6 +593,10 @@ if(BUILD_TESTING)
   # Add error info tests
   ament_add_gtest(test_error_info test/test_error_info.cpp)
   target_link_libraries(test_error_info gateway_ros2)
+
+  # Parameter error classification unit tests (pure C++, no rclcpp)
+  ament_add_gtest(test_parameter_error_classification test/test_parameter_error_classification.cpp)
+  target_link_libraries(test_parameter_error_classification gateway_ros2)
 
   # Parameter error precedence tests (multi-node GET aggregation, live GatewayNode)
   ament_add_gtest(test_parameter_error_precedence test/test_parameter_error_precedence.cpp)

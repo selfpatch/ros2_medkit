@@ -2530,6 +2530,26 @@ response), the response includes vendor metadata indicating partial results:
 When all peers respond successfully, these fields are omitted. See the
 :doc:`aggregation configuration guide </config/aggregation>` for setup details.
 
+``GET /{entity}/configurations`` applies the same honesty to its *local*
+backing nodes. When an entity is backed by several ROS 2 nodes and some are
+reachable while others are down, the response stays ``200`` but flags itself
+``partial`` and names the unreachable nodes in ``unavailable_nodes`` rather than
+silently returning a shrunken list:
+
+.. code-block:: json
+
+   {
+     "items": [],
+     "x-medkit": {
+       "partial": true,
+       "unavailable_nodes": ["/down_node"]
+     }
+   }
+
+This matches ``GET /{entity}/configurations/{param}``, which returns ``503``
+``x-medkit-ros2-node-unavailable`` for the same backing-node outage. When every
+backing node responds, both fields are omitted.
+
 Capability Description (OpenAPI Docs)
 --------------------------------------
 

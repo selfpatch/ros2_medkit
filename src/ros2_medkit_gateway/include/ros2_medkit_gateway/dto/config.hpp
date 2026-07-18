@@ -101,6 +101,7 @@ struct ConfigListXMedkit {
   std::optional<nlohmann::json> parameters;  // free-form: array of raw param JSON
   std::optional<std::vector<std::string>> source_ids;
   std::optional<std::vector<std::string>> queried_nodes;
+  std::optional<std::vector<std::string>> unavailable_nodes;
   std::optional<bool> partial;
   std::optional<std::vector<std::string>> failed_peers;
   std::optional<std::vector<DroppedItem>> peer_dropped_items;
@@ -112,7 +113,8 @@ inline constexpr auto dto_fields<ConfigListXMedkit> = std::make_tuple(
     field("aggregation_level", &ConfigListXMedkit::aggregation_level),
     field("is_aggregated", &ConfigListXMedkit::is_aggregated), field("parameters", &ConfigListXMedkit::parameters),
     field("source_ids", &ConfigListXMedkit::source_ids), field("queried_nodes", &ConfigListXMedkit::queried_nodes),
-    field("partial", &ConfigListXMedkit::partial), field("failed_peers", &ConfigListXMedkit::failed_peers),
+    field("unavailable_nodes", &ConfigListXMedkit::unavailable_nodes), field("partial", &ConfigListXMedkit::partial),
+    field("failed_peers", &ConfigListXMedkit::failed_peers),
     field("peer_dropped_items", &ConfigListXMedkit::peer_dropped_items));
 
 template <>
