@@ -193,7 +193,7 @@ std::string derive_local_cidr() {
 }
 
 OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j,
-                                       const std::function<void(const std::string &)> & warn) {
+                                            const std::function<void(const std::string &)> & warn) {
   OpcuaDiscoveryConfig cfg;
   const auto warn_fn = [&](const std::string & m) {
     if (warn) {
