@@ -50,21 +50,19 @@ void collect_app_fqn(const ThreadSafeEntityCache & cache, const std::string & ap
 
 void collect_component_app_fqns(const ThreadSafeEntityCache & cache, const std::string & comp_id,
                                 std::set<std::string> & out) {
-  std::set<std::string> local;
+  // The component itself is a legitimate reporting source, not only its child
+  // apps: protocol bridge plugins raise faults (e.g. PLC_COMMS_LOST) with the
+  // component's own id as source_id. Scoping to child-app FQNs alone made
+  // component-scoped fault queries return empty for exactly the faults the
+  // component reported. Matching is exact-id (ROS sources are /-prefixed
+  // FQNs), so a native component that never reports under its id gains no
+  // faults from this.
+  if (cache.get_component(comp_id)) {
+    out.insert(comp_id);
+  }
   for (const auto & app_id : cache.get_apps_for_component(comp_id)) {
-    collect_app_fqn(cache, app_id, local);
+    collect_app_fqn(cache, app_id, out);
   }
-  if (local.empty()) {
-    // No child app contributed a source (no apps, or all unbound/empty-FQN).
-    // An external component owns its fault_manager faults under its own id -
-    // mirrors the external-App rule (#516). A non-external component stays
-    // empty: an unbound ROS component must not claim faults it never reported.
-    auto comp = cache.get_component(comp_id);
-    if (comp && comp->external.value_or(false)) {
-      local.insert(comp_id);
-    }
-  }
-  out.insert(local.begin(), local.end());
 }
 
 void collect_area_app_fqns(const ThreadSafeEntityCache & cache, const std::string & area_id,
