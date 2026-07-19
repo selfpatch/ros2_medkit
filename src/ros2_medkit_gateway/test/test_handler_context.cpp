@@ -1517,7 +1517,12 @@ TEST(ResolveEntitySourceFqnsTest, AreaCollectsAppsFromAllComponentsInArea) {
   });
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "engine"));
-  std::set<std::string> expected{"/powertrain/engine/temp_sensor", "/powertrain/engine/rpm_sensor"};
+  // Components in the area are themselves valid reporting sources (bridge
+  // plugins report under the component id), so the area rollup carries the
+  // component ids alongside the hosted apps' FQNs. The off-area lidar
+  // component and its app must not appear.
+  std::set<std::string> expected{"temp-hw", "rpm-hw", "/powertrain/engine/temp_sensor",
+                                 "/powertrain/engine/rpm_sensor"};
   EXPECT_EQ(fqns, expected);
 }
 
@@ -1591,7 +1596,10 @@ TEST(ResolveEntitySourceFqnsTest, AreaWalksNestedSubareasRecursively) {
   });
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "powertrain"));
-  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
+  // The subarea's component id rides along (components are reporting sources
+  // in their own right); the off-area lidar branch must not.
+  std::set<std::string> expected{"engine-ecu", "/powertrain/engine/temp_sensor"};
+  EXPECT_EQ(fqns, expected);
 }
 
 TEST(ResolveEntitySourceFqnsTest, FunctionHostingComponentExpandsToComponentApps) {
@@ -1617,7 +1625,9 @@ TEST(ResolveEntitySourceFqnsTest, FunctionHostingComponentExpandsToComponentApps
   cache.update_functions({autonomy});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "autonomy"));
-  std::set<std::string> expected{"/drive/planner_node", "/drive/localizer_node", "/misc/standalone_node"};
+  // The component host contributes its own id too (components are reporting
+  // sources in their own right).
+  std::set<std::string> expected{"drive-ecu", "/drive/planner_node", "/drive/localizer_node", "/misc/standalone_node"};
   EXPECT_EQ(fqns, expected);
 }
 
@@ -1732,7 +1742,10 @@ TEST(ResolveEntitySourceFqnsTest, AreaHostingExternalAppOwnsItsFaults) {
   cache.update_apps({make_external_app("process", "s7_1500")});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "cell_a"));
-  EXPECT_EQ(fqns, std::set<std::string>{"process"});
+  // The external app's bare id plus the hosting component's own id (components
+  // are reporting sources too).
+  std::set<std::string> expected{"s7_1500", "process"};
+  EXPECT_EQ(fqns, expected);
 }
 
 TEST(ResolveEntitySourceFqnsTest, ExternalAppWithStrayRosBindingOwnsFaultsByBareId) {
@@ -1772,9 +1785,12 @@ TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithNoAppsOwnsFaultsUnderItsO
   EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
 }
 
-TEST(ResolveEntitySourceFqnsTest, NonExternalComponentWithNoAppsStaysEmpty) {
-  // Security guardrail: a non-external Component with no apps must NOT claim its
-  // bare id - an unbound ROS component must not own faults it never reported.
+TEST(ResolveEntitySourceFqnsTest, ComponentAlwaysOwnsFaultsReportedUnderItsOwnId) {
+  // A Component is a reporting source in its own right, external or not:
+  // bridge plugins raise PLC_COMMS_LOST-class faults with source_id = the
+  // component id, and those must surface on GET /components/<id>/faults even
+  // though the component hosts no apps. Matching stays exact-id, so a ROS
+  // component whose nodes report under /-prefixed FQNs gains nothing.
   ThreadSafeEntityCache cache;
   Component comp;
   comp.id = "nav_comp";
@@ -1782,12 +1798,13 @@ TEST(ResolveEntitySourceFqnsTest, NonExternalComponentWithNoAppsStaysEmpty) {
   cache.update_components({comp});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "nav_comp"));
-  EXPECT_TRUE(fqns.empty());
+  EXPECT_EQ(fqns, std::set<std::string>{"nav_comp"});
 }
 
-TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithContributingAppKeepsAppScope) {
-  // An external Component that DOES host a ROS-bound app resolves to the app's
-  // FQN; the component id is NOT added (fallback dormant when apps contribute).
+TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithContributingAppKeepsBothScopes) {
+  // A Component that hosts a ROS-bound app owns the app's FQN AND its own id:
+  // faults reported by the component itself must not vanish just because a
+  // child app also contributes sources.
   ThreadSafeEntityCache cache;
   Component plc;
   plc.id = "s7_1500";
@@ -1796,7 +1813,8 @@ TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithContributingAppKeepsAppSc
   cache.update_apps({make_owned_app("planner", "s7_1500", "planner", "/perception/nav")});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "s7_1500"));
-  EXPECT_EQ(fqns, std::set<std::string>{"/perception/nav/planner"});
+  std::set<std::string> expected{"s7_1500", "/perception/nav/planner"};
+  EXPECT_EQ(fqns, expected);
 }
 
 TEST(ResolveEntitySourceFqnsTest, FunctionHostingExternalComponentOwnsItsFaults) {
