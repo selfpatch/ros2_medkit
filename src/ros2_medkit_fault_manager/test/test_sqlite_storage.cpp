@@ -742,6 +742,105 @@ TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+// confirmed_at_ns column (consumed by the compliance timeline exporter)
+
+namespace {
+int64_t read_confirmed_at(const std::filesystem::path & db_path, const std::string & fault_code) {
+  sqlite3 * raw = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.string().c_str(), &raw), SQLITE_OK);
+  sqlite3_stmt * stmt = nullptr;
+  EXPECT_EQ(sqlite3_prepare_v2(raw, "SELECT confirmed_at_ns FROM faults WHERE fault_code = ?", -1, &stmt, nullptr),
+            SQLITE_OK);
+  sqlite3_bind_text(stmt, 1, fault_code.c_str(), -1, SQLITE_TRANSIENT);
+  int64_t value = -1;
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    value = sqlite3_column_int64(stmt, 0);
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(raw);
+  return value;
+}
+}  // namespace
+
+TEST_F(SqliteFaultStorageTest, ConfirmedAtRecordedOnImmediateConfirmation) {
+  rclcpp::Clock clock;
+  auto t = clock.now();
+  // Default config confirms on the first FAILED event.
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t,
+                               default_config());
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), t.nanoseconds());
+
+  // A later FAILED on an already-confirmed fault must NOT move the timestamp.
+  auto t2 = rclcpp::Time(t.nanoseconds() + static_cast<int64_t>(5e9));
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t2,
+                               default_config());
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), t.nanoseconds());
+}
+
+TEST_F(SqliteFaultStorageTest, ConfirmedAtRecordedOnDebouncedConfirmation) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -2;  // second FAILED event confirms
+
+  auto t1 = clock.now();
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t1, config);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), 0) << "not confirmed yet: no confirmation timestamp";
+
+  auto t2 = rclcpp::Time(t1.nanoseconds() + static_cast<int64_t>(1e9));
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t2, config);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), t2.nanoseconds());
+}
+
+TEST_F(SqliteFaultStorageTest, ConfirmedAtRecordedOnTimeBasedConfirmation) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.auto_confirm_after_sec = 10.0;
+  storage_->set_debounce_config(config);
+
+  auto now = clock.now();
+  storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", now, config);
+
+  auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
+  auto confirmed = storage_->check_time_based_confirmation(after_timeout);
+  ASSERT_EQ(confirmed.size(), 1u);
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), after_timeout.nanoseconds());
+}
+
+TEST_F(SqliteFaultStorageTest, ConfirmedAtColumnMigratedIntoOldDatabase) {
+  // Rebuild the faults table without confirmed_at_ns (a pre-migration DB),
+  // then reopen: the storage must add the column and treat old rows as 0.
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0); "
+                           "INSERT INTO faults VALUES ('OLD', 2, 'd', 1, 1, 1, 'CONFIRMED', '[\"/n\"]', -1, 1, 0);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+  EXPECT_TRUE(storage_->contains("OLD"));
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "OLD"), 0) << "pre-migration rows carry no confirmation time";
+
+  rclcpp::Clock clock;
+  auto t = clock.now();
+  storage_->report_fault_event("NEW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t,
+                               default_config());
+  EXPECT_EQ(read_confirmed_at(temp_db_path_, "NEW"), t.nanoseconds());
+}
+
 // Snapshot storage tests
 // @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
