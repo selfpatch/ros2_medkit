@@ -329,6 +329,7 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     std::string first_error;
     std::string first_error_node;  // Track which node failed for better diagnostics
     std::vector<std::string> unavailable_nodes;
+    std::optional<ErrorInfo> hard_error;  // non-availability failure -> fail the whole list
 
     for (const auto & qr : node_results) {
       const auto & node_info = qr.node_info;
@@ -354,14 +355,29 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
           }
         }
       } else {
-        // Record every failed backing node so a partial list can name what is
-        // missing, and keep the first failure for the all-nodes-down 503.
-        unavailable_nodes.push_back(node_info.node_fqn);
-        if (first_error.empty()) {
-          first_error = result.error_message;
-          first_error_node = node_info.node_fqn;
+        // Only a genuine availability failure (503: node down/unresponsive)
+        // makes the node "unavailable" and the list merely partial, mirroring
+        // the 503 the single-parameter GET returns for the same outage. A
+        // non-503 failure (shutdown/internal) is a hard error, not an
+        // availability gap: surface it rather than mislabel the node
+        // unavailable and mask it behind a partial 200.
+        auto cls = classify_parameter_error(result);
+        if (cls.status_code == 503) {
+          unavailable_nodes.push_back(node_info.node_fqn);
+          if (first_error.empty()) {
+            first_error = result.error_message;
+            first_error_node = node_info.node_fqn;
+          }
+        } else if (!hard_error) {
+          hard_error = make_error(
+              cls.status_code, cls.error_code, "Failed to list parameters",
+              json{{"details", result.error_message}, {"entity_id", entity_id}, {"failed_node", node_info.node_fqn}});
         }
       }
+    }
+
+    if (hard_error) {
+      return tl::unexpected(std::move(*hard_error));
     }
 
     if (!any_success) {

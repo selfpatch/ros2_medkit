@@ -37,6 +37,7 @@ using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::ERR_INTERNAL_ERROR;
 using ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND;
 using ros2_medkit_gateway::ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
 using ros2_medkit_gateway::ErrorInfo;
@@ -331,4 +332,21 @@ TEST_F(ParameterErrorPrecedenceTest, ListWithAllNodesReachableIsNotPartial) {
 
   EXPECT_FALSE(xm.partial.has_value() && *xm.partial);
   EXPECT_FALSE(xm.unavailable_nodes.has_value());
+}
+
+// A non-availability hard failure (manager shut down -> SHUT_DOWN on every
+// node) must fail the list with a 500 internal-error, not mislabel the nodes
+// "unavailable" behind a partial 200. Guards the list-vs-GET consistency:
+// GET surfaces 500 for the same code, so the list must not swallow it.
+TEST_F(ParameterErrorPrecedenceTest, ListWithHardErrorFailsRequestNotPartial) {
+  gateway_node_->get_configuration_manager()->shutdown();
+
+  const std::string path = "/api/v1/components/stack_all_missing/configurations";
+  auto raw = make_request_with_match(path, kListConfigPattern);
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->list_configurations(req);
+  ASSERT_FALSE(result.has_value()) << "hard per-node error must fail the list, not return a partial 200";
+  EXPECT_EQ(result.error().http_status, 500);
+  EXPECT_EQ(result.error().code, ERR_INTERNAL_ERROR);
 }

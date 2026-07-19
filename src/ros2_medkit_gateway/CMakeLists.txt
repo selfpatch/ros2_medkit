@@ -175,7 +175,6 @@ add_library(gateway_ros2 STATIC
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
   src/http/fan_out_helpers.cpp
-  src/http/parameter_error_classification.cpp
   src/http/handlers/auth_handlers.cpp
   src/http/handlers/bulkdata_handlers.cpp
   src/http/handlers/config_handlers.cpp
