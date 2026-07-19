@@ -98,6 +98,18 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `DELETE /api/v1/{entity}/{id}/triggers/{trigger_id}` - Delete a trigger
 - `GET /api/v1/{entity}/{id}/triggers/{trigger_id}/events` - SSE stream of trigger events
 
+### Fault-Trigger Endpoints (threshold rules)
+
+- `GET /api/v1/apps/{app_id}/fault-triggers` - List threshold rules for an app
+- `POST /api/v1/apps/{app_id}/fault-triggers` - Create a threshold rule (fires/clears a SOVD fault on value cross)
+- `DELETE /api/v1/apps/{app_id}/fault-triggers/{id}` - Delete a rule (clears any fault it asserts)
+
+Two separate collections by design: `/triggers` is the SOVD notification-trigger
+CRUD (condition subscriptions delivering SSE events), while `/fault-triggers`
+holds server-side threshold rules that raise and clear faults. They share no
+schema or store, so the threshold engine is mounted as a sibling instead of
+overloading the SOVD `/triggers` contract.
+
 ### Scripts Endpoints
 
 - `GET /api/v1/{entity}/{id}/scripts` - List available diagnostic scripts

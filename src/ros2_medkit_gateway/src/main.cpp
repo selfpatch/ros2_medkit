@@ -146,6 +146,9 @@ int main(int argc, char ** argv) {
     // destroyed subscriber. shutdown_trigger_subscriber() below drops those
     // subscriptions while sub_exec is still alive.
     node->set_trigger_subscription_executor(*sub_exec);
+    // Config-less threshold-rule (fault-trigger) engine (issue #235). Started
+    // here so its evaluation loop sees loaded plugins; joined in ~GatewayNode.
+    node->init_fault_trigger_engine();
 
     // Spin in a try/catch so an uncaught handler exception falls through to the
     // explicit teardown block below. Without this, an escaping throw bypasses

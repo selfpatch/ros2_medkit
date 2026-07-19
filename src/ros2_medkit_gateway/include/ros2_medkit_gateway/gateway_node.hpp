@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/default_script_provider.hpp"
+#include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
@@ -225,6 +226,19 @@ class GatewayNode : public rclcpp::Node {
   void stop_rest_server();
 
   /**
+   * @brief Wire the config-less threshold-rule (fault-trigger) engine and its
+   *        evaluation loop. Call once after plugins are loaded (main.cpp).
+   *        No-op when disabled (``fault_triggers.enabled=false``) or no plugins.
+   */
+  void init_fault_trigger_engine();
+
+  /**
+   * @brief Get the config-less fault-trigger (threshold-rule) engine.
+   * @return Raw pointer, or nullptr when disabled / no plugins loaded
+   */
+  FaultTriggerEngine * get_fault_trigger_engine() const;
+
+  /**
    * @brief Get the ResourceSamplerRegistry instance
    * @return Raw pointer to ResourceSamplerRegistry (valid for lifetime of GatewayNode)
    */
@@ -396,6 +410,11 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
   std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
+  // Config-less threshold-rule engine + its dedicated evaluation loop (issue
+  // #235). The thread is joined in ~GatewayNode BEFORE plugin/fault shutdown.
+  std::unique_ptr<FaultTriggerEngine> fault_trigger_engine_;
+  std::thread fault_trigger_thread_;
+  std::atomic<bool> fault_trigger_stop_{false};
   std::unique_ptr<TriggerTopicSubscriber> trigger_topic_subscriber_;
   // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
   std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;
