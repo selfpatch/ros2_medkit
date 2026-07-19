@@ -37,12 +37,13 @@ std::string json_string(const nlohmann::json & j, const char * key) {
 }  // namespace
 
 FaultTriggerEngine::FaultTriggerEngine(std::string storage_path, ValueFetcher fetcher, FaultReportFn report,
-                                       FaultClearFn clear, LogFn log)
+                                       FaultClearFn clear, LogFn log, DataPointNamesFn data_point_names)
   : storage_path_(std::move(storage_path))
   , fetcher_(std::move(fetcher))
   , report_(std::move(report))
   , clear_(std::move(clear))
-  , log_(std::move(log)) {
+  , log_(std::move(log))
+  , data_point_names_(std::move(data_point_names)) {
   load();
 }
 
@@ -130,6 +131,27 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
   if (!valid_severity(rule.severity)) {
     return tl::make_unexpected(
         std::make_pair(400, std::string("'severity' must be one of INFO, WARNING, ERROR, CRITICAL")));
+  }
+
+  // A rule bound to a data point the app does not have can never fire, yet it
+  // would list as active - a silently dead alarm. Reject it at creation when
+  // the app's points are enumerable; nullopt (entity unreadable right now)
+  // skips the check so a transient PLC outage does not block rule creation.
+  if (data_point_names_) {
+    const auto names = data_point_names_(rule.app_id);
+    if (names.has_value() && std::find(names->begin(), names->end(), rule.data_name) == names->end()) {
+      std::string available;
+      constexpr size_t kMaxListed = 20;
+      for (size_t i = 0; i < names->size() && i < kMaxListed; ++i) {
+        available += (i == 0 ? "" : ", ") + (*names)[i];
+      }
+      if (names->size() > kMaxListed) {
+        available += ", ...";
+      }
+      return tl::make_unexpected(
+          std::make_pair(400, "data point '" + rule.data_name + "' does not exist on app '" + rule.app_id + "'" +
+                                  (available.empty() ? std::string{} : " (available: " + available + ")")));
+    }
   }
 
   std::lock_guard<std::mutex> lock(mutex_);

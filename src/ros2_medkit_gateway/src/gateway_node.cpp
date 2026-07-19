@@ -1914,10 +1914,34 @@ void GatewayNode::init_fault_trigger_engine() {
     }
   };
 
-  fault_trigger_engine_ = std::make_unique<FaultTriggerEngine>(storage_path, std::move(fetcher), std::move(report),
-                                                               std::move(clear), [this](const std::string & m) {
-                                                                 RCLCPP_INFO(get_logger(), "%s", m.c_str());
-                                                               });
+  // Data-point enumeration for create-time validation: same in-process route as
+  // the fetcher, so "exists" means exactly "the fetcher could ever read it".
+  auto data_point_names = [this](const std::string & app_id) -> std::optional<std::vector<std::string>> {
+    if (!plugin_mgr_) {
+      return std::nullopt;
+    }
+    const auto content = plugin_mgr_->fetch_entity_data_via_route(app_id);
+    if (!content || !EntityFreezeFrameCapture::content_has_live_data(*content)) {
+      return std::nullopt;
+    }
+    const auto values = EntityFreezeFrameCapture::values_from_list_content(*content);
+    if (!values.is_object()) {
+      return std::nullopt;
+    }
+    std::vector<std::string> names;
+    names.reserve(values.size());
+    for (auto it = values.begin(); it != values.end(); ++it) {
+      names.push_back(it.key());
+    }
+    return names;
+  };
+
+  fault_trigger_engine_ = std::make_unique<FaultTriggerEngine>(
+      storage_path, std::move(fetcher), std::move(report), std::move(clear),
+      [this](const std::string & m) {
+        RCLCPP_INFO(get_logger(), "%s", m.c_str());
+      },
+      std::move(data_point_names));
 
   // Dedicated evaluation loop: the value fetch + synchronous ReportFault call
   // must not run on the main ROS executor (mirrors the freeze-frame capture's

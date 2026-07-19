@@ -71,9 +71,15 @@ class FaultTriggerEngine {
   /// Neutral log sink (keeps this layer ROS-free); may be null.
   using LogFn = std::function<void(const std::string & message)>;
 
+  /// Enumerate the discovered data-point names of ``app_id``. ``std::nullopt``
+  /// when they cannot be enumerated right now (entity not data-routed, PLC
+  /// unreadable); create() then skips the existence check instead of blocking
+  /// rule creation on a transient outage.
+  using DataPointNamesFn = std::function<std::optional<std::vector<std::string>>(const std::string & app_id)>;
+
   /// @param storage_path JSON store path; empty disables persistence (in-memory)
   FaultTriggerEngine(std::string storage_path, ValueFetcher fetcher, FaultReportFn report, FaultClearFn clear,
-                     LogFn log = nullptr);
+                     LogFn log = nullptr, DataPointNamesFn data_point_names = nullptr);
 
   // --- REST-facing CRUD (thread-safe) ---
 
@@ -112,6 +118,7 @@ class FaultTriggerEngine {
   FaultReportFn report_;
   FaultClearFn clear_;
   LogFn log_;
+  DataPointNamesFn data_point_names_;
   std::vector<FaultTriggerRule> rules_;
   uint64_t next_seq_{1};  ///< monotonic suffix for id generation
 };
