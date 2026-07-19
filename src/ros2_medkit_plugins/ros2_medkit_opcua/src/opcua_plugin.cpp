@@ -539,6 +539,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   // ``event_alarms:`` mappings still take precedence over auto-derivation at
   // the poller (see OpcuaPoller::effective_alarm_sources) regardless.
   if (config.contains("auto_alarms")) {
+    auto_alarms_configured_ = true;
     apply_auto_alarms_param(config["auto_alarms"], node_map_.mutable_auto_alarms(), [this](const std::string & msg) {
       log_warn(msg);
     });
@@ -574,16 +575,48 @@ void OpcuaPlugin::set_context(PluginContext & context) {
 
   log_security_profile();
 
-  if (client_->connect(client_config_)) {
+  const bool connected = client_->connect(client_config_);
+  if (connected) {
     log_info("Connected to OPC-UA server: " + client_config_.endpoint_url);
+  } else {
+    log_warn("Failed to connect to OPC-UA server: " + client_config_.endpoint_url);
+  }
+
+  // Config-less discovery: name the SOVD component from the device's OWN read
+  // identity, never a hardcoded product string. DI nameplate (Siemens AG /
+  // CPU 1505SP F) wins, else BuildInfo ApplicationName/ProductName, else the
+  // neutral endpoint fallback opcua-<host>. Runs before the node map is
+  // consumed (auto_alarms finalize + auto_browse below both rebuild
+  // entity_defs off component_id_), so every derived reference stays
+  // consistent. Only in config-less mode: an explicit node map owns the name.
+  if (node_map_path_.empty()) {
+    const OpcuaClient::DeviceInfo info = connected ? client_->read_device_info() : OpcuaClient::DeviceInfo{};
+    const ComponentIdentity ci = derive_component_identity(info, client_config_.endpoint_url);
+    if (!ci.id.empty()) {
+      node_map_.set_component_identity(ci.id, ci.name);
+      log_info("Component identity derived from device: id='" + ci.id + "', name='" + ci.name + "'");
+    }
+
+    // Zero-config native A&C: with no node map and no explicit auto_alarms
+    // block, subscribe the Server EventNotifier by default so discovered
+    // Alarms & Conditions surface on /api/v1/faults with a fault_code derived
+    // from the ConditionName/source. Finalize picks up the component id set
+    // above for the ``<component_id>_alarms`` fallback entity.
+    if (!auto_alarms_configured_) {
+      node_map_.mutable_auto_alarms().enabled = true;
+      node_map_.finalize_auto_alarms_overlay();
+      if (node_map_.auto_alarms().enabled) {
+        log_info("auto_alarms auto-enabled (config-less native A&C, source " +
+                 node_map_.auto_alarms().source_node_id_str + ", entity " + node_map_.auto_alarms().entity_id + ")");
+      }
+    }
+  }
+
+  if (connected && node_map_.auto_browse_config().enabled) {
     // auto_browse needs a live session to walk the address space, so it can
     // only run here - after connect(), before the node map is consumed to
     // build publishers/poller below.
-    if (node_map_.auto_browse_config().enabled) {
-      run_auto_browse();
-    }
-  } else {
-    log_warn("Failed to connect to OPC-UA server: " + client_config_.endpoint_url);
+    run_auto_browse();
   }
 
   // Publisher creation moved here (was originally before connect()) so that

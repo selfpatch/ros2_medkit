@@ -251,8 +251,8 @@ IdentifyResult lds_identity() {
   return r;
 }
 
-DiscoveryConfig scenario_cfg() {
-  DiscoveryConfig cfg;
+OpcuaDiscoveryConfig scenario_cfg() {
+  OpcuaDiscoveryConfig cfg;
   cfg.enabled = true;
   cfg.subnets = {"192.168.1.0/24"};  // explicit, so no local-interface derivation
   cfg.ports = {4840, 102};
@@ -318,7 +318,7 @@ TEST(NetworkDiscoveryRun, DedupsByApplicationUri) {
       {"opc.tcp://192.168.1.10:4840", siemens_identity()},
       {"opc.tcp://192.168.1.20:4840", siemens_identity()},
   });
-  DiscoveryConfig cfg;
+  OpcuaDiscoveryConfig cfg;
   cfg.enabled = true;
   cfg.subnets = {"192.168.1.0/24"};
   cfg.ports = {4840};
@@ -343,7 +343,7 @@ TEST(NetworkDiscoveryRun, ParallelIdentifyKeepsDeterministicOrder) {
     r.advertised_url = "opc.tcp://" + ip + ":4840";
     table.emplace("opc.tcp://" + ip + ":4840", r);
   }
-  DiscoveryConfig cfg;
+  OpcuaDiscoveryConfig cfg;
   cfg.enabled = true;
   cfg.subnets = {"192.168.1.0/24"};
   cfg.ports = {4840};
@@ -366,7 +366,7 @@ TEST(NetworkDiscoveryRun, IdentifyFailureRecordedAsLead) {
   IdentifyResult bad;
   bad.error = "BadTimeout";
   auto identify = make_identify({{"opc.tcp://192.168.1.50:4840", bad}});
-  DiscoveryConfig cfg;
+  OpcuaDiscoveryConfig cfg;
   cfg.enabled = true;
   cfg.subnets = {"192.168.1.0/24"};
   cfg.ports = {4840};
@@ -386,7 +386,7 @@ TEST(SelectAutoEndpoint, PicksAnonymousNoneDataServerSkipsLds) {
       {"opc.tcp://192.168.1.9:4840", lds_identity()},
       {"opc.tcp://192.168.1.10:4840", siemens_identity()},
   });
-  DiscoveryConfig cfg;
+  OpcuaDiscoveryConfig cfg;
   cfg.enabled = true;
   cfg.subnets = {"192.168.1.0/24"};
   cfg.ports = {4840};

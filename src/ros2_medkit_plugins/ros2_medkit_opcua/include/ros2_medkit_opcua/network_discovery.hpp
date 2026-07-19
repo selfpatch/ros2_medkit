@@ -84,7 +84,7 @@ struct DiscoveredEndpoint {
 
 /// ``discovery:`` config block for the opcua plugin. Off by default; active
 /// scan is opt-in and bounded.
-struct DiscoveryConfig {
+struct OpcuaDiscoveryConfig {
   bool enabled{false};
 
   /// active | passive | both. Only "active" (bounded TCP scan + GetEndpoints)
@@ -139,7 +139,7 @@ std::string derive_local_cidr();
 /// override the defaults. Ports outside 1..65535, non-positive timeout /
 /// concurrency, and an unknown ``mode`` are rejected back to their defaults
 /// with a warning.
-DiscoveryConfig parse_discovery_config(const nlohmann::json & j, const std::function<void(const std::string &)> & warn);
+OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j, const std::function<void(const std::string &)> & warn);
 
 /// Read-only active-scan discovery orchestrator. Sweeps the configured subnets
 /// for open OPC-UA ports, runs a GetEndpoints identify on each :4840 hit, and
@@ -148,7 +148,7 @@ DiscoveryConfig parse_discovery_config(const nlohmann::json & j, const std::func
 /// testable without touching the network.
 class NetworkDiscovery {
  public:
-  NetworkDiscovery(DiscoveryConfig cfg, PortScanFn scan, IdentifyFn identify);
+  NetworkDiscovery(OpcuaDiscoveryConfig cfg, PortScanFn scan, IdentifyFn identify);
 
   /// Run one full discovery pass (blocking). Read-only: TCP connect +
   /// GetEndpoints only. Deduplicated by ApplicationUri (fallback ip:port),
@@ -168,7 +168,7 @@ class NetworkDiscovery {
                                                          bool anonymous_none_only);
 
  private:
-  DiscoveryConfig cfg_;
+  OpcuaDiscoveryConfig cfg_;
   PortScanFn scan_;
   IdentifyFn identify_;
 };

@@ -110,6 +110,18 @@ target_include_directories(ros2_medkit_opcua_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Hide every symbol by default; only the extern "C" entry points tagged
+# GATEWAY_PLUGIN_EXPORT (create_plugin, plugin_api_version, get_*_provider)
+# stay visible. The final gateway dlopens ALL plugins into one process, so an
+# unhidden weak/inline symbol here (e.g. a duplicated struct method) could
+# interpose one from another plugin - the exact class of ODR collision that
+# drove the DiscoveryConfig -> OpcuaDiscoveryConfig rename. Hidden visibility
+# gives each plugin its own copy and closes that whole failure mode.
+target_compile_options(ros2_medkit_opcua_plugin PRIVATE
+  -fvisibility=hidden
+  -fvisibility-inlines-hidden
+)
+
 medkit_target_dependencies(ros2_medkit_opcua_plugin
   ros2_medkit_msgs
   ros2_medkit_gateway

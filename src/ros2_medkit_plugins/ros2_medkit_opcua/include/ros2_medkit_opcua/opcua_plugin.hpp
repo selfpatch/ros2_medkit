@@ -210,11 +210,16 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   std::string node_map_path_;
 
   // Read-only PLC/OPC-UA network discovery (opt-in, default disabled).
-  DiscoveryConfig discovery_config_;
+  OpcuaDiscoveryConfig discovery_config_;
   // True when the operator pinned endpoint_url via config or OPCUA_ENDPOINT_URL.
   // Discovery only auto-selects an endpoint when this is false, so it never
   // overrides an explicit target or opens a second session on a polled PLC.
   bool endpoint_configured_{false};
+  // True when the operator supplied a ``plugins.opcua.auto_alarms`` block.
+  // When false AND no node_map_path is set, config-less discovery enables
+  // native A&C by itself (default source Server object i=2253) so discovered
+  // Alarms & Conditions surface on /api/v1/faults with no per-alarm mapping.
+  bool auto_alarms_configured_{false};
   // Injected discovery I/O; default to the real POSIX / open62541pp probes.
   // Tests substitute in-memory fakes to exercise the auto-endpoint path without
   // a network. Set in configure(), consumed in run_startup_discovery().

@@ -14,10 +14,57 @@
 
 #include "ros2_medkit_opcua/device_identity.hpp"
 
+#include <cctype>
+
 namespace ros2_medkit_gateway {
 
 namespace {
 constexpr const char * kOpcuaSource = "opcua";
+
+/// Lowercase underscore slug: alnum kept, every other run collapsed to a
+/// single '_', leading/trailing '_' trimmed. Yields a URL-safe SOVD id.
+std::string slugify(const std::string & in) {
+  std::string out;
+  out.reserve(in.size());
+  bool pending_sep = false;
+  for (unsigned char c : in) {
+    if (std::isalnum(c)) {
+      if (pending_sep && !out.empty()) {
+        out += '_';
+      }
+      pending_sep = false;
+      out += static_cast<char>(std::tolower(c));
+    } else {
+      pending_sep = true;
+    }
+  }
+  return out;
+}
+
+/// Extract the host from an ``opc.tcp://host:port/path`` endpoint URL.
+std::string host_from_endpoint(const std::string & endpoint_url) {
+  std::string s = endpoint_url;
+  const auto scheme = s.find("://");
+  if (scheme != std::string::npos) {
+    s = s.substr(scheme + 3);
+  }
+  const auto end = s.find_first_of(":/");
+  if (end != std::string::npos) {
+    s = s.substr(0, end);
+  }
+  return s;
+}
+
+/// Join two nameplate fields with a single space, skipping empties.
+std::string join_nonempty(const std::string & a, const std::string & b) {
+  if (a.empty()) {
+    return b;
+  }
+  if (b.empty()) {
+    return a;
+  }
+  return a + " " + b;
+}
 }  // namespace
 
 AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url) {
@@ -49,6 +96,32 @@ AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info
   }
 
   return identity;
+}
+
+ComponentIdentity derive_component_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url) {
+  // 1. DI nameplate (per-device, most specific): Manufacturer + Model.
+  std::string name = join_nonempty(info.di_manufacturer, info.di_model);
+
+  // 2. Server BuildInfo (OPC-UA ApplicationName/ProductName equivalent).
+  if (name.empty()) {
+    name = join_nonempty(info.manufacturer_name, info.product_name);
+  }
+
+  if (!name.empty()) {
+    std::string id = slugify(name);
+    if (!id.empty()) {
+      return {id, name};
+    }
+  }
+
+  // 3. Neutral endpoint-derived fallback. NEVER a fixed product string.
+  const std::string host = host_from_endpoint(endpoint_url);
+  if (!host.empty()) {
+    const std::string fallback = "opcua-" + host;
+    return {fallback, fallback};
+  }
+
+  return {};
 }
 
 bool opcua_identity_trusted(const OpcuaClientConfig & config) {

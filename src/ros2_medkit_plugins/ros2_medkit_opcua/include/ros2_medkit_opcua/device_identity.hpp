@@ -33,6 +33,26 @@ namespace ros2_medkit_gateway {
 /// server exposes no device-info at all.
 AssetIdentity opcua_device_info_to_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url);
 
+/// SOVD component identity (id + display name) derived from a device's own
+/// read identity. Used by config-less discovery so the component surfaced over
+/// SOVD carries the device's real name instead of any hardcoded product string.
+struct ComponentIdentity {
+  std::string id;    ///< URL-safe slug, e.g. "siemens_ag_cpu_1505sp_f"
+  std::string name;  ///< Human-readable, e.g. "Siemens AG CPU 1505SP F"
+};
+
+/// Derive a component id/name from what the server actually reports, with a
+/// strict precedence so nothing device-specific is ever hardcoded:
+///   1. DI nameplate ``Manufacturer`` + ``Model`` (most specific).
+///   2. BuildInfo ``ManufacturerName`` + ``ProductName`` (every compliant
+///      server, the OPC-UA ApplicationName/ProductName equivalent).
+///   3. A neutral endpoint-derived fallback ``opcua-<host>`` when the server
+///      exposes no usable identity at all.
+/// ``id`` is a lowercase underscore slug of the name for cases 1-2, and the
+/// literal ``opcua-<host>`` for case 3. Returns an empty ComponentIdentity only
+/// if ``endpoint_url`` is unparseable and no identity fields are present.
+ComponentIdentity derive_component_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url);
+
 /// Whether a live nameplate read over this connection may outrank the
 /// operator-authored manifest in the identity merge.
 ///

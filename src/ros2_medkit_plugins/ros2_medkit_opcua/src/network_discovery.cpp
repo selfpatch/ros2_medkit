@@ -192,9 +192,9 @@ std::string derive_local_cidr() {
   return result;
 }
 
-DiscoveryConfig parse_discovery_config(const nlohmann::json & j,
+OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j,
                                        const std::function<void(const std::string &)> & warn) {
-  DiscoveryConfig cfg;
+  OpcuaDiscoveryConfig cfg;
   const auto warn_fn = [&](const std::string & m) {
     if (warn) {
       warn(m);
@@ -318,7 +318,7 @@ DiscoveryConfig parse_discovery_config(const nlohmann::json & j,
   return cfg;
 }
 
-NetworkDiscovery::NetworkDiscovery(DiscoveryConfig cfg, PortScanFn scan, IdentifyFn identify)
+NetworkDiscovery::NetworkDiscovery(OpcuaDiscoveryConfig cfg, PortScanFn scan, IdentifyFn identify)
   : cfg_(std::move(cfg)), scan_(std::move(scan)), identify_(std::move(identify)) {
 }
 

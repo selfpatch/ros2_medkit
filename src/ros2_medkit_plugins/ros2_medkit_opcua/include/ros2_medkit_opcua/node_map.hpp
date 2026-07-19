@@ -408,6 +408,22 @@ class NodeMap {
     return component_name_;
   }
 
+  /// Override the SOVD component id/name at runtime. Config-less discovery
+  /// calls this with an identity derived from the device itself (see
+  /// ``derive_component_identity``) so the component never surfaces the
+  /// neutral placeholder default. Must be called before ``build_entity_defs``
+  /// runs (i.e. before ``finalize_auto_alarms_overlay`` /
+  /// ``merge_auto_browsed_entries``) so every derived reference - entity_defs
+  /// ``component_id``, the ``<component_id>_alarms`` auto-alarm entity, and the
+  /// introspect component - picks up the same id. No-op on empty ``id``.
+  void set_component_identity(const std::string & id, const std::string & name) {
+    if (id.empty()) {
+      return;
+    }
+    component_id_ = id;
+    component_name_ = name.empty() ? id : name;
+  }
+
   /// Whether auto-browse mode is enabled
   bool auto_browse() const {
     return auto_browse_config_.enabled;
@@ -474,8 +490,12 @@ class NodeMap {
 
   std::string area_id_ = "plc_systems";
   std::string area_name_ = "PLC Systems";
-  std::string component_id_ = "openplc_runtime";
-  std::string component_name_ = "OpenPLC Runtime";
+  // Neutral placeholder only. In config-less discovery the plugin overrides
+  // these from the device's own read identity (set_component_identity); an
+  // explicit node-map YAML overrides them from ``component_id`` /
+  // ``component_name``. No device-specific product string is ever baked in.
+  std::string component_id_ = "opcua_device";
+  std::string component_name_ = "OPC UA Device";
   AutoBrowseConfig auto_browse_config_;
 };
 
