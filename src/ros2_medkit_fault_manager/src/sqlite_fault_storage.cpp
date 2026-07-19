@@ -157,7 +157,8 @@ void SqliteFaultStorage::initialize_schema() {
       reporting_sources TEXT NOT NULL,
       debounce_counter INTEGER NOT NULL DEFAULT 0,
       last_failed_ns INTEGER NOT NULL DEFAULT 0,
-      last_passed_ns INTEGER NOT NULL DEFAULT 0
+      last_passed_ns INTEGER NOT NULL DEFAULT 0,
+      confirmed_at_ns INTEGER NOT NULL DEFAULT 0
     );
   )";
 
@@ -166,6 +167,28 @@ void SqliteFaultStorage::initialize_schema() {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
     throw std::runtime_error("Failed to create faults table: " + error);
+  }
+
+  // Migration: databases created before confirmed_at_ns existed keep their rows;
+  // the column arrives as 0 (= confirmation time unknown). Consumers (the
+  // compliance timeline) treat 0 as "not recorded".
+  {
+    bool has_confirmed_at = false;
+    SqliteStatement info(db_, "PRAGMA table_info(faults)");
+    while (info.step() == SQLITE_ROW) {
+      if (info.column_text(1) == "confirmed_at_ns") {
+        has_confirmed_at = true;
+        break;
+      }
+    }
+    if (!has_confirmed_at) {
+      if (sqlite3_exec(db_, "ALTER TABLE faults ADD COLUMN confirmed_at_ns INTEGER NOT NULL DEFAULT 0", nullptr,
+                       nullptr, &err_msg) != SQLITE_OK) {
+        std::string error = err_msg ? err_msg : "Unknown error";
+        sqlite3_free(err_msg);
+        throw std::runtime_error("Failed to add confirmed_at_ns column: " + error);
+      }
+    }
   }
 
   // Create snapshots table for storing topic data captured when faults are confirmed
@@ -370,8 +393,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
   // Check if fault exists
   SqliteStatement check_stmt(db_,
-                             "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter FROM "
-                             "faults WHERE fault_code = ?");
+                             "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, "
+                             "confirmed_at_ns FROM faults WHERE fault_code = ?");
   check_stmt.bind_text(1, fault_code);
 
   if (check_stmt.step() == SQLITE_ROW) {
@@ -381,6 +404,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     std::string sources_json = check_stmt.column_text(2);
     std::string current_status = check_stmt.column_text(3);
     int32_t debounce_counter = check_stmt.column_int(4);
+    int64_t confirmed_at_ns = check_stmt.column_int64(5);
 
     // Bring a runaway counter persisted by an older build (the bug this fixes) back into range on
     // first touch; this also keeps the +1/-1 below overflow-safe. The counter is local to this call.
@@ -427,15 +451,24 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         new_status = compute_debounce_status(debounce_counter, current_status, config);
       }
 
+      // Record the confirmation instant on the transition into CONFIRMED (also
+      // on a reactivation that re-confirms); an already-confirmed fault keeps
+      // its original timestamp.
+      if (new_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
+          current_status != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+        confirmed_at_ns = timestamp_ns;
+      }
+
       // Update with new values
       SqliteStatement update_stmt(
           db_, description.empty() ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, "
                                      "occurrence_count = ?, "
-                                     "reporting_sources = ?, status = ?, debounce_counter = ? WHERE fault_code = ?"
+                                     "reporting_sources = ?, status = ?, debounce_counter = ?, confirmed_at_ns = ? "
+                                     "WHERE fault_code = ?"
                                    : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, "
                                      "last_failed_ns = ?, "
-                                     "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ? "
-                                     "WHERE fault_code = ?");
+                                     "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ?, "
+                                     "confirmed_at_ns = ? WHERE fault_code = ?");
 
       if (description.empty()) {
         update_stmt.bind_int(1, new_severity);
@@ -445,7 +478,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         update_stmt.bind_text(5, serialize_json_array(sources));
         update_stmt.bind_text(6, new_status);
         update_stmt.bind_int(7, debounce_counter);
-        update_stmt.bind_text(8, fault_code);
+        update_stmt.bind_int64(8, confirmed_at_ns);
+        update_stmt.bind_text(9, fault_code);
       } else {
         update_stmt.bind_int(1, new_severity);
         update_stmt.bind_text(2, description);
@@ -455,7 +489,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         update_stmt.bind_text(6, serialize_json_array(sources));
         update_stmt.bind_text(7, new_status);
         update_stmt.bind_int(8, debounce_counter);
-        update_stmt.bind_text(9, fault_code);
+        update_stmt.bind_int64(9, confirmed_at_ns);
+        update_stmt.bind_text(10, fault_code);
       }
 
       if (update_stmt.step() != SQLITE_DONE) {
@@ -504,9 +539,10 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   SqliteStatement insert_stmt(db_,
                               "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, "
                               "last_occurred_ns, occurrence_count, status, reporting_sources, "
-                              "debounce_counter, last_failed_ns, last_passed_ns) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                              "debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
+  const bool confirmed_now = initial_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
   insert_stmt.bind_text(1, fault_code);
   insert_stmt.bind_int(2, static_cast<int>(severity));
   insert_stmt.bind_text(3, description);
@@ -518,6 +554,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   insert_stmt.bind_int(9, -1);               // debounce_counter = -1 for first FAILED
   insert_stmt.bind_int64(10, timestamp_ns);  // last_failed_ns
   insert_stmt.bind_int64(11, 0);             // last_passed_ns (never passed)
+  insert_stmt.bind_int64(12, confirmed_now ? timestamp_ns : 0);
 
   if (insert_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to insert fault: ") + sqlite3_errmsg(db_));
@@ -732,11 +769,13 @@ std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(const
     return confirmed;
   }
 
-  SqliteStatement update_stmt(
-      db_, "UPDATE faults SET status = ? WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+  SqliteStatement update_stmt(db_,
+                              "UPDATE faults SET status = ?, confirmed_at_ns = ? "
+                              "WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
   update_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
-  update_stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
-  update_stmt.bind_int64(3, cutoff_ns);
+  update_stmt.bind_int64(2, current_ns);
+  update_stmt.bind_text(3, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+  update_stmt.bind_int64(4, cutoff_ns);
 
   if (update_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to confirm faults: ") + sqlite3_errmsg(db_));
