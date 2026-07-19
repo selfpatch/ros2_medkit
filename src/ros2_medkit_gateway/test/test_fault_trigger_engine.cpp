@@ -85,6 +85,37 @@ TEST(FaultTriggerEngineTest, CreateRejectsInvalidBodies) {
   EXPECT_TRUE(ok->active);
 }
 
+TEST(FaultTriggerEngineTest, CreateRejectsNonexistentDataPoint) {
+  // A rule on a data point the app does not expose can never fire (a silently
+  // dead alarm); with the app's points enumerable, create() must 400 it.
+  auto names = [](const std::string & app_id) -> std::optional<std::vector<std::string>> {
+    if (app_id == "tank") {
+      return std::vector<std::string>{"level", "trigger", "trigger2"};
+    }
+    return std::nullopt;  // unknown app: points not enumerable
+  };
+  FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr, names);
+
+  auto bogus = engine.create("tank", make_body("/plc/bogus_point", ">", 10.0, "F", "ERROR"));
+  ASSERT_FALSE(bogus);
+  EXPECT_EQ(bogus.error().first, 400);
+  EXPECT_NE(bogus.error().second.find("'/plc/bogus_point' does not exist"), std::string::npos);
+  EXPECT_NE(bogus.error().second.find("level"), std::string::npos) << "message should list the available points";
+  EXPECT_TRUE(engine.list("tank").empty());
+
+  // Existing point passes.
+  EXPECT_TRUE(engine.create("tank", make_body("level", ">", 50.0, "F", "ERROR")));
+
+  // Points not enumerable right now (nullopt): creation must not be blocked.
+  EXPECT_TRUE(engine.create("other_app", make_body("anything", ">", 1.0, "F2", "ERROR")));
+}
+
+TEST(FaultTriggerEngineTest, CreateWithoutEnumeratorSkipsExistenceCheck) {
+  // No DataPointNamesFn injected (legacy wiring): behavior unchanged.
+  FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr);
+  EXPECT_TRUE(engine.create("tank", make_body("whatever", ">", 1.0, "F", "ERROR")));
+}
+
 TEST(FaultTriggerEngineTest, ListIsScopedPerApp) {
   FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr);
   ASSERT_TRUE(engine.create("app_a", make_body("x", ">", 1.0, "FA", "ERROR")));
