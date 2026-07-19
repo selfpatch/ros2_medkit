@@ -160,4 +160,51 @@ TEST(DeviceIdentityTrust, CertValidationWithoutSecureChannelIsUntrusted) {
   EXPECT_FALSE(opcua_identity_trusted(config));
 }
 
+// -- derive_component_identity: config-less component naming ---------------
+
+TEST(ComponentIdentityDerive, DiNameplateWinsAndSlugs) {
+  OpcuaClient::DeviceInfo info;
+  info.di_manufacturer = "Siemens AG";
+  info.di_model = "CPU 1505SP F";
+  // BuildInfo present too, but DI nameplate must win.
+  info.manufacturer_name = "Siemens";
+  info.product_name = "S7-1500";
+  auto ci = derive_component_identity(info, "opc.tcp://192.168.1.10:4840");
+  EXPECT_EQ(ci.name, "Siemens AG CPU 1505SP F");
+  EXPECT_EQ(ci.id, "siemens_ag_cpu_1505sp_f");
+}
+
+TEST(ComponentIdentityDerive, FallsBackToBuildInfo) {
+  OpcuaClient::DeviceInfo info;
+  info.manufacturer_name = "open62541";
+  info.product_name = "Test Alarm PLC";
+  auto ci = derive_component_identity(info, "opc.tcp://plc:4840");
+  EXPECT_EQ(ci.name, "open62541 Test Alarm PLC");
+  EXPECT_EQ(ci.id, "open62541_test_alarm_plc");
+}
+
+TEST(ComponentIdentityDerive, EndpointFallbackWhenNoIdentity) {
+  OpcuaClient::DeviceInfo info;  // empty
+  auto ci = derive_component_identity(info, "opc.tcp://192.168.1.10:4840");
+  // Neutral, endpoint-derived, never a fixed product string.
+  EXPECT_EQ(ci.id, "opcua-192.168.1.10");
+  EXPECT_EQ(ci.name, "opcua-192.168.1.10");
+}
+
+TEST(ComponentIdentityDerive, NeverEmitsOpenPlc) {
+  // Regression guard: no code path may return the retired hardcoded default.
+  OpcuaClient::DeviceInfo info;
+  auto ci = derive_component_identity(info, "opc.tcp://10.0.0.5:4840");
+  EXPECT_EQ(ci.id.find("openplc"), std::string::npos);
+  EXPECT_EQ(ci.name.find("OpenPLC"), std::string::npos);
+}
+
+TEST(ComponentIdentityDerive, ModelOnlyNoManufacturer) {
+  OpcuaClient::DeviceInfo info;
+  info.di_model = "CPU 1505SP F";
+  auto ci = derive_component_identity(info, "opc.tcp://plc:4840");
+  EXPECT_EQ(ci.name, "CPU 1505SP F");
+  EXPECT_EQ(ci.id, "cpu_1505sp_f");
+}
+
 }  // namespace ros2_medkit_gateway

@@ -2173,17 +2173,36 @@ TEST(AutoAlarmsFinalizeOverlayTest, ParamOnlyNoNodeMapProducesActiveConfigAndEnt
   // poller subscribes to the right EventNotifier in the no-node_map path.
   EXPECT_EQ(finalized.source_node_id_str, "i=2253");
   EXPECT_EQ(finalized.source_node_id.toString(), NodeMap::parse_node_id("i=2253").toString());
-  // Entity defaulted from the (default) component_id, and registered as
-  // fault-bearing so SOVD discovery surfaces the alarms App with no node map.
-  EXPECT_EQ(finalized.entity_id, "openplc_runtime_alarms");
+  // Entity defaulted from the neutral default component_id (config-less
+  // discovery overrides it from device identity at runtime), and registered
+  // as fault-bearing so SOVD discovery surfaces the alarms App with no node map.
+  EXPECT_EQ(finalized.entity_id, "opcua_device_alarms");
   bool found = false;
   for (const auto & def : map.entity_defs()) {
-    if (def.id == "openplc_runtime_alarms") {
+    if (def.id == "opcua_device_alarms") {
       found = true;
       EXPECT_TRUE(def.has_faults);
     }
   }
   EXPECT_TRUE(found);
+}
+
+TEST(AutoAlarmsFinalizeOverlayTest, ComponentIdentityOverrideFlowsIntoAlarmEntity) {
+  // Config-less discovery: the plugin sets the component id/name from the
+  // device's own identity before enabling auto_alarms. The derived alarms
+  // entity must key off the overridden id, not the neutral default.
+  NodeMap map;
+  map.set_component_identity("siemens_ag_cpu_1505sp_f", "Siemens AG CPU 1505SP F");
+  EXPECT_EQ(map.component_id(), "siemens_ag_cpu_1505sp_f");
+  EXPECT_EQ(map.component_name(), "Siemens AG CPU 1505SP F");
+
+  map.mutable_auto_alarms().enabled = true;
+  ASSERT_TRUE(map.finalize_auto_alarms_overlay());
+  EXPECT_EQ(map.auto_alarms().entity_id, "siemens_ag_cpu_1505sp_f_alarms");
+
+  // Empty id is a no-op guard (keeps the current identity).
+  map.set_component_identity("", "ignored");
+  EXPECT_EQ(map.component_id(), "siemens_ag_cpu_1505sp_f");
 }
 
 TEST(AutoAlarmsFinalizeOverlayTest, ParamOnlyRespectsOverriddenSourceAndEntity) {
