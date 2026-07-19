@@ -1046,6 +1046,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_trigger_handlers test/test_trigger_handlers.cpp)
   target_link_libraries(test_trigger_handlers gateway_ros2)
 
+  # Fault-trigger (threshold-rule) engine tests (issue #235): CRUD, validation,
+  # edge-detection, persistence. Links gateway_core only (ROS-neutral).
+  ament_add_gtest(test_fault_trigger_engine test/test_fault_trigger_engine.cpp)
+  target_link_libraries(test_fault_trigger_engine gateway_core)
+
   # Peer client tests (aggregation module)
   ament_add_gtest(test_peer_client test/test_peer_client.cpp)
   target_link_libraries(test_peer_client gateway_ros2)
@@ -1168,6 +1173,7 @@ if(BUILD_TESTING)
       test_trigger_store
       test_trigger_manager
       test_trigger_handlers
+      test_fault_trigger_engine
       test_peer_client
       test_entity_merger
       test_fan_out_helpers

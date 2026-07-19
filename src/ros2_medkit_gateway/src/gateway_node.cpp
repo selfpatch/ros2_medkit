@@ -240,6 +240,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("triggers.on_restart_behavior", "reset");
   declare_parameter("triggers.storage.path", "");
 
+  // Config-less threshold-rule (fault-trigger) engine parameters (issue #235).
+  declare_parameter("fault_triggers.enabled", true);
+  declare_parameter("fault_triggers.poll_interval_ms", 1000);
+  declare_parameter("fault_triggers.storage.path", "");
+
   // Plugin framework parameters
   declare_parameter("plugins", std::vector<std::string>{});
 
@@ -1672,6 +1677,14 @@ GatewayNode::~GatewayNode() {
   if (resource_change_notifier_) {
     resource_change_notifier_->shutdown();
   }
+  // 5b. Stop the fault-trigger evaluation loop BEFORE plugin/fault shutdown:
+  //     it resolves into plugin routes and the FaultManager, neither of which
+  //     may be used once shutdown_all() has run.
+  fault_trigger_stop_.store(true, std::memory_order_relaxed);
+  if (fault_trigger_thread_.joinable()) {
+    fault_trigger_thread_.join();
+  }
+  fault_trigger_engine_.reset();
   // 6. Drop the entity freeze-frame capture BEFORE plugin shutdown: its
   //    capture thread (joined here) resolves into plugin DataProviders and
   //    routes, which must not be reachable once shutdown_all() has run.
@@ -1820,6 +1833,117 @@ void GatewayNode::shutdown_trigger_subscriber() {
   if (trigger_topic_subscriber_) {
     trigger_topic_subscriber_->shutdown();
   }
+}
+
+namespace {
+
+// Coerce a discovered data point's JSON value to a double for threshold
+// comparison. Handles the numeric, boolean and numeric-string shapes the PLC
+// bridges emit; returns nullopt for anything non-numeric.
+std::optional<double> value_to_double(const nlohmann::json & v) {
+  if (v.is_number()) {
+    return v.get<double>();
+  }
+  if (v.is_boolean()) {
+    return v.get<bool>() ? 1.0 : 0.0;
+  }
+  if (v.is_string()) {
+    try {
+      size_t pos = 0;
+      const double d = std::stod(v.get<std::string>(), &pos);
+      if (pos > 0) {
+        return d;
+      }
+    } catch (const std::exception &) {
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+void GatewayNode::init_fault_trigger_engine() {
+  if (!get_parameter("fault_triggers.enabled").as_bool() || !plugin_mgr_ || !plugin_mgr_->has_plugins()) {
+    return;
+  }
+  const std::string storage_path = get_parameter("fault_triggers.storage.path").as_string();
+  int poll_ms = static_cast<int>(get_parameter("fault_triggers.poll_interval_ms").as_int());
+  if (poll_ms < 50) {
+    poll_ms = 50;  // floor: never busy-spin the evaluation loop
+  }
+
+  // Value fetch: same in-process x-plc-data route the freeze-frame capture uses,
+  // so a rule always sees exactly the value the /data endpoint would serve.
+  auto fetcher = [this](const std::string & app_id, const std::string & data_name) -> std::optional<double> {
+    if (!plugin_mgr_) {
+      return std::nullopt;
+    }
+    const auto content = plugin_mgr_->fetch_entity_data_via_route(app_id);
+    if (!content || !EntityFreezeFrameCapture::content_has_live_data(*content)) {
+      return std::nullopt;
+    }
+    const auto values = EntityFreezeFrameCapture::values_from_list_content(*content);
+    if (!values.is_object() || !values.contains(data_name)) {
+      return std::nullopt;
+    }
+    return value_to_double(values[data_name]);
+  };
+
+  auto report = [this](const std::string & app_id, const std::string & fault_code, const std::string & severity,
+                       const std::string & description) {
+    if (!fault_mgr_) {
+      return;
+    }
+    uint8_t sev = 1;  // WARNING default
+    if (severity == "INFO") {
+      sev = 0;
+    } else if (severity == "WARNING") {
+      sev = 1;
+    } else if (severity == "ERROR") {
+      sev = 2;
+    } else if (severity == "CRITICAL") {
+      sev = 3;
+    }
+    fault_mgr_->report_fault(fault_code, sev, description, app_id);
+  };
+
+  auto clear = [this](const std::string & /*app_id*/, const std::string & fault_code) {
+    if (fault_mgr_) {
+      fault_mgr_->clear_fault(fault_code);
+    }
+  };
+
+  fault_trigger_engine_ = std::make_unique<FaultTriggerEngine>(storage_path, std::move(fetcher), std::move(report),
+                                                               std::move(clear), [this](const std::string & m) {
+                                                                 RCLCPP_INFO(get_logger(), "%s", m.c_str());
+                                                               });
+
+  // Dedicated evaluation loop: the value fetch + synchronous ReportFault call
+  // must not run on the main ROS executor (mirrors the freeze-frame capture's
+  // own thread). Joined in ~GatewayNode before plugin/fault shutdown.
+  const auto interval = std::chrono::milliseconds(poll_ms);
+  fault_trigger_thread_ = std::thread([this, interval]() {
+    while (!fault_trigger_stop_.load(std::memory_order_relaxed)) {
+      try {
+        fault_trigger_engine_->evaluate_once();
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(get_logger(), "fault-trigger evaluation error: %s", e.what());
+      }
+      // Sleep in short slices so shutdown does not wait a whole interval.
+      auto slept = std::chrono::milliseconds(0);
+      while (slept < interval && !fault_trigger_stop_.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        slept += std::chrono::milliseconds(25);
+      }
+    }
+  });
+  RCLCPP_INFO(get_logger(), "fault-trigger engine active (poll %d ms, store '%s')", poll_ms,
+              storage_path.empty() ? "in-memory" : storage_path.c_str());
+}
+
+FaultTriggerEngine * GatewayNode::get_fault_trigger_engine() const {
+  return fault_trigger_engine_.get();
 }
 
 ResourceSamplerRegistry * GatewayNode::get_sampler_registry() const {

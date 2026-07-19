@@ -322,6 +322,77 @@ void RESTServer::setup_routes() {
   });
 #endif
 
+  // === Config-less fault-trigger (threshold-rule) routes (issue #235) ===
+  // Registered directly on the server (like the docs routes) so the CRUD does
+  // not need a typed DTO. Mounted at .../fault-triggers - a sibling of the SOVD
+  // notification `/triggers` collection, never overloading it. GET is public;
+  // POST/DELETE follow the gateway's write-auth policy.
+  {
+    auto ft_json_error = [](httplib::Response & res, int status, const std::string & message) {
+      nlohmann::json err;
+      err["error_code"] = status == 404 ? ERR_RESOURCE_NOT_FOUND : ERR_INVALID_PARAMETER;
+      err["message"] = message;
+      res.status = status;
+      res.set_content(err.dump(2), "application/json");
+    };
+
+    srv->Get(api_path(R"(/apps/([^/]+)/fault-triggers)"),
+             [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
+               auto * engine = node_->get_fault_trigger_engine();
+               if (!engine) {
+                 ft_json_error(res, 404, "fault-trigger engine is not enabled");
+                 return;
+               }
+               const std::string app_id = req.matches.size() > 1 ? req.matches[1].str() : std::string{};
+               nlohmann::json items = nlohmann::json::array();
+               for (const auto & r : engine->list(app_id)) {
+                 items.push_back(FaultTriggerEngine::rule_to_json(r));
+               }
+               res.status = 200;
+               res.set_content(nlohmann::json{{"items", items}}.dump(2), "application/json");
+             });
+
+    srv->Post(api_path(R"(/apps/([^/]+)/fault-triggers)"),
+              [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
+                auto * engine = node_->get_fault_trigger_engine();
+                if (!engine) {
+                  ft_json_error(res, 404, "fault-trigger engine is not enabled");
+                  return;
+                }
+                const std::string app_id = req.matches.size() > 1 ? req.matches[1].str() : std::string{};
+                nlohmann::json body;
+                try {
+                  body = nlohmann::json::parse(req.body);
+                } catch (const nlohmann::json::exception &) {
+                  ft_json_error(res, 400, "request body is not valid JSON");
+                  return;
+                }
+                auto created = engine->create(app_id, body);
+                if (!created) {
+                  ft_json_error(res, created.error().first, created.error().second);
+                  return;
+                }
+                res.status = 201;
+                res.set_content(FaultTriggerEngine::rule_to_json(*created).dump(2), "application/json");
+              });
+
+    srv->Delete(api_path(R"(/apps/([^/]+)/fault-triggers/([^/]+))"),
+                [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
+                  auto * engine = node_->get_fault_trigger_engine();
+                  if (!engine) {
+                    ft_json_error(res, 404, "fault-trigger engine is not enabled");
+                    return;
+                  }
+                  const std::string app_id = req.matches.size() > 1 ? req.matches[1].str() : std::string{};
+                  const std::string id = req.matches.size() > 2 ? req.matches[2].str() : std::string{};
+                  if (!engine->remove(app_id, id)) {
+                    ft_json_error(res, 404, "no such fault-trigger '" + id + "'");
+                    return;
+                  }
+                  res.status = 204;
+                });
+  }
+
   auto & reg = *route_registry_;
   using SB = openapi::SchemaBuilder;
 
