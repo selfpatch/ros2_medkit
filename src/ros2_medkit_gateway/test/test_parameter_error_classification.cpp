@@ -87,22 +87,24 @@ TEST(ParameterErrorClassification, InternalErrorIs500) {
 }
 
 // Regression pin for issue #542: the removed legacy string-matching fallback
-// routed a failure carrying ParameterErrorCode::NONE to 400 ERR_INVALID_REQUEST
-// whenever its substrings failed to match the real transport messages (which is
-// always - the shipped transport uses "did not respond" / "not currently set",
-// none of which the fallback recognised). Such a NONE failure cannot occur on
-// the shipped transport, so if one ever does it is a gateway-side defect and
-// must surface as 500 internal-error, never as a 400 that blames the client.
+// only ran on a failure carrying ParameterErrorCode::NONE, which the shipped
+// transport never emits, so it was dead code. Had it run it would have mapped
+// by message substrings - agreeing with the structured mapping for some (e.g.
+// "not available" -> 503) and misrouting the rest to 400 ERR_INVALID_REQUEST.
+// A NONE failure is a gateway-side defect, so it must surface as 500
+// internal-error regardless of message, never as a 400 that blames the client.
 TEST(ParameterErrorClassification, NoneFailureIsInternalErrorNot400) {
-  // A message the old fallback would have misrouted to 503, still NONE-coded.
-  auto did_not_respond =
-      classify_parameter_error(failure(ParameterErrorCode::NONE, "Parameter service did not respond for node: /x"));
-  EXPECT_EQ(did_not_respond.status_code, 500);
-  EXPECT_EQ(did_not_respond.error_code, ERR_INTERNAL_ERROR);
-  EXPECT_NE(did_not_respond.status_code, 400);
-  EXPECT_NE(did_not_respond.error_code, ERR_INVALID_REQUEST);
+  // A message the old fallback matched and would have misrouted to 503 (its
+  // "not available" substring), still NONE-coded.
+  auto not_available =
+      classify_parameter_error(failure(ParameterErrorCode::NONE, "Parameter service not available for node: /x"));
+  EXPECT_EQ(not_available.status_code, 500);
+  EXPECT_EQ(not_available.error_code, ERR_INTERNAL_ERROR);
+  EXPECT_NE(not_available.status_code, 400);
+  EXPECT_NE(not_available.error_code, ERR_INVALID_REQUEST);
 
-  // A message the old fallback would have misrouted to 400 invalid-request.
+  // A message the old fallback did not match, so it fell through to 400
+  // invalid-request.
   auto not_set = classify_parameter_error(failure(ParameterErrorCode::NONE, "Parameter not currently set: foo"));
   EXPECT_EQ(not_set.status_code, 500);
   EXPECT_EQ(not_set.error_code, ERR_INTERNAL_ERROR);

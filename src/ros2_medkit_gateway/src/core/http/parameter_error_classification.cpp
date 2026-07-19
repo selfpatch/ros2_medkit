@@ -49,9 +49,9 @@ ParameterErrorClassification classify_error_code(ParameterErrorCode error_code) 
       // A failed ParameterResult that still carries NONE cannot occur on the
       // shipped transport (every failure path sets a structured code), so a
       // NONE failure is a gateway-side defect: surface it as 500 internal-error.
-      // The removed legacy string-matching fallback misrouted these to 400
-      // invalid-request because its substrings never matched the real transport
-      // messages ("did not respond", "not currently set").
+      // The removed legacy string-matching fallback was unreachable, and would
+      // have misrouted messages it did not recognise (e.g. "did not respond",
+      // "not currently set") to 400 invalid-request had it ever run.
       result.status_code = 500;
       result.error_code = ERR_INTERNAL_ERROR;
       break;

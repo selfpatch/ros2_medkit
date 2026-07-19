@@ -2531,15 +2531,21 @@ When all peers respond successfully, these fields are omitted. See the
 :doc:`aggregation configuration guide </config/aggregation>` for setup details.
 
 ``GET /{entity}/configurations`` applies the same honesty to its *local*
-backing nodes. When an entity is backed by several ROS 2 nodes and some are
-reachable while others are down, the response stays ``200`` but flags itself
-``partial`` and names the unreachable nodes in ``unavailable_nodes`` rather than
-silently returning a shrunken list:
+backing nodes. This only arises for entities backed by more than one ROS 2
+node; a single-node entity has no partial state, since its one node either
+answers or the whole request fails. When several backing nodes contribute and
+some answer while others do not, the response stays ``200`` but flags itself
+``partial`` and names the failed nodes: nodes that were down or unresponsive
+(``503``-class) in ``unavailable_nodes``, any other per-node failure in
+``failed_nodes``. The parameters of the nodes that *did* answer are still
+returned - a partial list never discards them:
 
 .. code-block:: json
 
    {
-     "items": [],
+     "items": [
+       {"id": "use_sim_time", "name": "use_sim_time", "type": "parameter"}
+     ],
      "x-medkit": {
        "partial": true,
        "unavailable_nodes": ["/down_node"]
@@ -2547,8 +2553,18 @@ silently returning a shrunken list:
    }
 
 This matches ``GET /{entity}/configurations/{param}``, which returns ``503``
-``x-medkit-ros2-node-unavailable`` for the same backing-node outage. When every
-backing node responds, both fields are omitted.
+``x-medkit-ros2-node-unavailable`` for the same backing-node outage.
+
+When every backing node responds, ``unavailable_nodes`` and ``failed_nodes`` are
+omitted. Note that ``partial`` may still appear on its own from the peer
+fan-out described above, without any local unavailable node.
+
+When *no* backing node answers, the route fails rather than returning an empty
+partial list: it surfaces the highest-severity per-node failure, so a
+node-unavailability outage returns ``503`` while a purely internal failure -
+for example every backing node reporting shutdown - returns ``500``. This route
+could not return ``500`` before; clients that previously saw ``503`` for a
+manager shutdown now see ``500``.
 
 Capability Description (OpenAPI Docs)
 --------------------------------------

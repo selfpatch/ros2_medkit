@@ -326,10 +326,9 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     const auto node_results = query_nodes_in_parallel(config_mgr, agg_configs);
 
     bool any_success = false;
-    std::string first_error;
-    std::string first_error_node;  // Track which node failed for better diagnostics
-    std::vector<std::string> unavailable_nodes;
-    std::optional<ErrorInfo> hard_error;  // non-availability failure -> fail the whole list
+    ParameterErrorAccumulator errors;            // worst failure to surface if no node answers
+    std::vector<std::string> unavailable_nodes;  // 503-class: node down/unresponsive
+    std::vector<std::string> failed_nodes;       // other per-node failures
 
     for (const auto & qr : node_results) {
       const auto & node_info = qr.node_info;
@@ -355,35 +354,34 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
           }
         }
       } else {
-        // Only a genuine availability failure (503: node down/unresponsive)
-        // makes the node "unavailable" and the list merely partial, mirroring
-        // the 503 the single-parameter GET returns for the same outage. A
-        // non-503 failure (shutdown/internal) is a hard error, not an
-        // availability gap: surface it rather than mislabel the node
-        // unavailable and mask it behind a partial 200.
-        auto cls = classify_parameter_error(result);
-        if (cls.status_code == 503) {
+        errors.add(result);
+        // A per-node failure never discards the nodes that answered. A 503-class
+        // failure (node down/unresponsive) is an availability gap named in
+        // `unavailable_nodes`; any other failure is named in `failed_nodes`.
+        // Both keep the answering nodes' parameters and flag the list partial.
+        if (classify_parameter_error(result).status_code == 503) {
           unavailable_nodes.push_back(node_info.node_fqn);
-          if (first_error.empty()) {
-            first_error = result.error_message;
-            first_error_node = node_info.node_fqn;
-          }
-        } else if (!hard_error) {
-          hard_error = make_error(
-              cls.status_code, cls.error_code, "Failed to list parameters",
-              json{{"details", result.error_message}, {"entity_id", entity_id}, {"failed_node", node_info.node_fqn}});
+        } else {
+          failed_nodes.push_back(node_info.node_fqn);
         }
       }
     }
 
-    if (hard_error) {
-      return tl::unexpected(std::move(*hard_error));
-    }
-
     if (!any_success) {
+      // No backing node answered. Surface the worst failure order-independently
+      // (`severity_rank`: 503 outranks other 5xx), so a mixed down + internal
+      // outage returns 503 to match GET /{entity}/configurations/{param}; name
+      // every failed node so the outage is diagnosable.
+      const auto & cls = errors.classification();
+      json details{{"details", errors.worst().error_message}, {"entity_id", entity_id}};
+      if (!unavailable_nodes.empty()) {
+        details["unavailable_nodes"] = unavailable_nodes;
+      }
+      if (!failed_nodes.empty()) {
+        details["failed_nodes"] = failed_nodes;
+      }
       return tl::unexpected(
-          make_error(503, ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE, "Failed to list parameters from any node",
-                     json{{"details", first_error}, {"entity_id", entity_id}, {"failed_node", first_error_node}}));
+          make_error(cls.status_code, cls.error_code, "Failed to list parameters from any node", std::move(details)));
     }
 
     xm.parameters = all_parameters;
@@ -393,15 +391,21 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     if (!queried_nodes.empty()) {
       xm.queried_nodes = queried_nodes;
     }
-    // Some (but not all) backing nodes were unreachable. Mirror the peer
-    // fan-out honesty convention (partial + failed_peers) for local nodes:
-    // flag the response partial and name the unavailable nodes instead of
-    // silently returning a shrunken 200. This keeps the list surface
-    // consistent with GET /{entity}/configurations/{param}, which returns 503
-    // ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE for the same backing-node outage.
-    if (!unavailable_nodes.empty()) {
+    // Some (but not all) backing nodes failed. Mirror the peer fan-out honesty
+    // convention (partial + failed_peers) for local nodes: keep the answering
+    // nodes' parameters, flag the response partial, and name what failed -
+    // 503-class nodes in `unavailable_nodes`, other failures in `failed_nodes` -
+    // instead of silently returning a shrunken 200. Keeps the list surface
+    // consistent with GET /{entity}/configurations/{param}, which returns the
+    // same 503 for a backing-node outage.
+    if (!unavailable_nodes.empty() || !failed_nodes.empty()) {
       xm.partial = true;
+    }
+    if (!unavailable_nodes.empty()) {
       xm.unavailable_nodes = std::move(unavailable_nodes);
+    }
+    if (!failed_nodes.empty()) {
+      xm.failed_nodes = std::move(failed_nodes);
     }
   }
 

@@ -222,19 +222,24 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
     return result.has_value() ? ErrorInfo{} : result.error();
   }
 
-  /// Run GET /{entity}/configurations and return the parsed x-medkit block.
+  using ConfigListCollection = dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit>;
+
+  /// Run GET /{entity}/configurations and return the full typed collection.
   /// The call must succeed (list is a 200 even when a backing node is down).
-  dto::ConfigListXMedkit list_xmedkit(const std::string & component_id) {
+  ConfigListCollection list_collection(const std::string & component_id) {
     const std::string path = "/api/v1/components/" + component_id + "/configurations";
     auto raw = make_request_with_match(path, kListConfigPattern);
     http::TypedRequest req(raw);
 
     auto result = handlers_->list_configurations(req);
     EXPECT_TRUE(result.has_value()) << "list_configurations should return 200 for " << path;
-    if (!result.has_value() || !result.value().x_medkit.has_value()) {
-      return dto::ConfigListXMedkit{};
-    }
-    return *result.value().x_medkit;
+    return result.has_value() ? result.value() : ConfigListCollection{};
+  }
+
+  /// Convenience: just the parsed x-medkit block of the list response.
+  dto::ConfigListXMedkit list_xmedkit(const std::string & component_id) {
+    auto collection = list_collection(component_id);
+    return collection.x_medkit.has_value() ? *collection.x_medkit : dto::ConfigListXMedkit{};
   }
 
   CorsConfig cors_{};
@@ -302,7 +307,8 @@ TEST_F(ParameterErrorPrecedenceTest, AllNodesMissingParameterReturns404) {
 // 200 but flag itself partial and name the unavailable node, instead of
 // silently returning a shrunken list. Both node orders are covered.
 TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeFirstIsPartial) {
-  auto xm = list_xmedkit("stack_unavail_first");
+  auto collection = list_collection("stack_unavail_first");
+  const auto & xm = collection.x_medkit.value();
 
   ASSERT_TRUE(xm.partial.has_value());
   EXPECT_TRUE(*xm.partial);
@@ -310,19 +316,23 @@ TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeFirstIsPartial) {
   EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
             xm.unavailable_nodes->end())
       << "unavailable node list must name the down node";
-  // The reachable node's parameters are still listed (queried_nodes non-empty).
-  ASSERT_TRUE(xm.queried_nodes.has_value());
-  EXPECT_FALSE(xm.queried_nodes->empty());
+  // The reachable node's parameters are still merged into the returned list -
+  // a partial result must not throw away the nodes that answered.
+  EXPECT_FALSE(collection.items.empty()) << "answering node's parameters must survive the partial";
 }
 
 TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeLastIsPartial) {
-  auto xm = list_xmedkit("stack_unavail_last");
+  auto collection = list_collection("stack_unavail_last");
+  const auto & xm = collection.x_medkit.value();
 
   ASSERT_TRUE(xm.partial.has_value());
   EXPECT_TRUE(*xm.partial);
   ASSERT_TRUE(xm.unavailable_nodes.has_value());
   EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
             xm.unavailable_nodes->end());
+  // Reachable node comes first in this order, so it is the one that stresses
+  // accumulation: assert its parameters survive here too.
+  EXPECT_FALSE(collection.items.empty()) << "answering node's parameters must survive the partial";
 }
 
 // Control: when every backing node is reachable, the list is not flagged
@@ -334,10 +344,18 @@ TEST_F(ParameterErrorPrecedenceTest, ListWithAllNodesReachableIsNotPartial) {
   EXPECT_FALSE(xm.unavailable_nodes.has_value());
 }
 
-// A non-availability hard failure (manager shut down -> SHUT_DOWN on every
-// node) must fail the list with a 500 internal-error, not mislabel the nodes
-// "unavailable" behind a partial 200. Guards the list-vs-GET consistency:
-// GET surfaces 500 for the same code, so the list must not swallow it.
+// When NO backing node answers, the list fails with the worst per-node
+// verdict instead of returning an empty partial 200. Here the manager is shut
+// down so every node returns SHUT_DOWN and the surfaced status is 500
+// internal-error, mirroring GET, rather than mislabelling the nodes
+// "unavailable" behind a partial 200.
+//
+// The complementary case - one node failing while another answers - now keeps
+// the answering node's parameters and stays a 200 partial (asserted by the
+// ListWith*NodeIsPartial cases above via collection.items), so the old
+// 200->500 loud-drop no longer exists. That mixed case cannot be pinned more
+// tightly here because the live-node harness has no per-node non-503 fault
+// hook (shutdown is manager-wide; the ghost/unspun nodes only yield 503).
 TEST_F(ParameterErrorPrecedenceTest, ListWithHardErrorFailsRequestNotPartial) {
   gateway_node_->get_configuration_manager()->shutdown();
 

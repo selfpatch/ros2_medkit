@@ -87,8 +87,11 @@ inline constexpr std::string_view dto_name<ConfigurationMetaData> = "Configurati
 //   parameters        - full parameter details including value/type/read_only
 //                       (free-form: raw ConfigurationManager output + x-medkit)
 //   source_ids        - namespace/FQN strings used for node lookup
-//   queried_nodes     - list of node FQNs successfully queried
-//   partial            - true when a fan-out peer request failed
+//   queried_nodes      - list of node FQNs successfully queried
+//   unavailable_nodes  - backing node FQNs that were down/unresponsive (503-class)
+//   failed_nodes       - backing node FQNs that failed for a non-availability reason
+//   partial            - true when a fan-out peer request failed OR a local backing
+//                        node did not answer (see unavailable_nodes/failed_nodes)
 //   failed_peers       - list of peer addresses that returned errors
 //   peer_dropped_items - per-peer items dropped due to malformed JSON
 //                        (observability for invisible drift)
@@ -102,6 +105,7 @@ struct ConfigListXMedkit {
   std::optional<std::vector<std::string>> source_ids;
   std::optional<std::vector<std::string>> queried_nodes;
   std::optional<std::vector<std::string>> unavailable_nodes;
+  std::optional<std::vector<std::string>> failed_nodes;
   std::optional<bool> partial;
   std::optional<std::vector<std::string>> failed_peers;
   std::optional<std::vector<DroppedItem>> peer_dropped_items;
@@ -113,7 +117,8 @@ inline constexpr auto dto_fields<ConfigListXMedkit> = std::make_tuple(
     field("aggregation_level", &ConfigListXMedkit::aggregation_level),
     field("is_aggregated", &ConfigListXMedkit::is_aggregated), field("parameters", &ConfigListXMedkit::parameters),
     field("source_ids", &ConfigListXMedkit::source_ids), field("queried_nodes", &ConfigListXMedkit::queried_nodes),
-    field("unavailable_nodes", &ConfigListXMedkit::unavailable_nodes), field("partial", &ConfigListXMedkit::partial),
+    field("unavailable_nodes", &ConfigListXMedkit::unavailable_nodes),
+    field("failed_nodes", &ConfigListXMedkit::failed_nodes), field("partial", &ConfigListXMedkit::partial),
     field("failed_peers", &ConfigListXMedkit::failed_peers),
     field("peer_dropped_items", &ConfigListXMedkit::peer_dropped_items));
 
@@ -250,7 +255,8 @@ inline constexpr std::string_view dto_name<ConfigurationDeleteMultiStatus> = "Co
 // Same wire shape as the legacy `Collection<ConfigurationMetaData>` named
 // `ConfigurationList`, but the `x-medkit` payload carries the rich
 // `ConfigListXMedkit` fields (entity_id, source, parameters, aggregation_level,
-// is_aggregated, source_ids, queried_nodes, partial, failed_peers,
+// is_aggregated, source_ids, queried_nodes, unavailable_nodes, failed_nodes,
+// partial, failed_peers,
 // peer_dropped_items) instead of the generic `XMedkitCollection`. The schema
 // name is kept identical to the legacy `ConfigurationList` $ref so existing
 // OpenAPI clients are not affected; the difference is purely server-side
