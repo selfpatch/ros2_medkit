@@ -47,6 +47,13 @@ class AutoBrowseSource {
   /// optional reachability check (see ``AutoBrowseConfig::read_initial_values``).
   /// ``std::nullopt`` means the read failed (Bad status / not connected).
   virtual std::optional<OpcuaValue> read_initial_value(const opcua::NodeId & variable_node) = 0;
+
+  /// True/false when the server's AccessLevel/UserAccessLevel for this Variable
+  /// resolved (CurrentWrite bit -> writable), ``std::nullopt`` when the
+  /// attribute read failed. Drives ``NodeMapEntry::writable`` under
+  /// ``AutoBrowseConfig::infer_writable`` so a config-less walk exposes a write
+  /// surface exactly where the server permits it.
+  virtual std::optional<bool> read_writable(const opcua::NodeId & variable_node) = 0;
 };
 
 /// ``AutoBrowseSource`` backed by a live ``OpcuaClient`` session.
@@ -69,6 +76,14 @@ class OpcuaClientBrowseSource : public AutoBrowseSource {
       return std::nullopt;
     }
     return result.value;
+  }
+
+  std::optional<bool> read_writable(const opcua::NodeId & variable_node) override {
+    const auto info = client_.read_access_level(variable_node);
+    if (!info.ok) {
+      return std::nullopt;
+    }
+    return info.writable;
   }
 
  private:

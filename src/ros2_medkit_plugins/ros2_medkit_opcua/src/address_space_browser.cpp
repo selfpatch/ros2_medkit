@@ -224,11 +224,20 @@ void AutoBrowser::visit_object(const opcua::NodeId & node, const std::vector<std
       }
       entry.display_name = display;
       entry.data_type = medkit_type;
-      // auto_browse never marks a point writable: without a human reviewing
-      // the mapping there is no basis for exposing a write surface on a PLC
-      // actuator. Promote specific points to writable via an explicit
-      // node_map `nodes:` entry (which always takes precedence).
+      // Writability comes from the server itself: read the node's
+      // AccessLevel/UserAccessLevel and expose a write surface exactly when the
+      // CurrentWrite bit is set for this session. A failed attribute read (or
+      // infer_writable disabled) keeps the safe read-only default; an explicit
+      // node_map `nodes:` entry still takes precedence downstream.
       entry.writable = false;
+      if (config_.infer_writable) {
+        const std::optional<bool> writable = source_.read_writable(child.node_id);
+        if (writable.has_value()) {
+          entry.writable = *writable;
+        }
+        RCLCPP_DEBUG(auto_browse_logger(), "auto_browse: %s (%s) writable=%s", child.node_id.toString().c_str(),
+                     display.c_str(), entry.writable ? "true" : (writable.has_value() ? "false" : "unknown"));
+      }
       local_entries.push_back(std::move(entry));
     }
     // Other node classes cannot reach here - browse_children already

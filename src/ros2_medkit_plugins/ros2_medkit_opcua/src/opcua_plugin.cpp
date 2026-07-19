@@ -512,11 +512,18 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
           warn("plugins.opcua.auto_browse.read_initial_values must be a boolean - keeping current value");
         }
       }
+      if (ab.contains("infer_writable")) {
+        if (ab["infer_writable"].is_boolean()) {
+          ab_cfg.infer_writable = ab["infer_writable"].get<bool>();
+        } else {
+          warn("plugins.opcua.auto_browse.infer_writable must be a boolean - keeping current value");
+        }
+      }
       static const std::array<const char *, 6> kKnownKeys{"enabled",   "root_nodes",      "max_depth",
                                                           "max_nodes", "namespace_allow", "namespace_deny"};
       for (const auto & [key, value] : ab.items()) {
         (void)value;
-        if (key == "read_initial_values") {
+        if (key == "read_initial_values" || key == "infer_writable") {
           continue;
         }
         if (std::find_if(kKnownKeys.begin(), kKnownKeys.end(), [&key](const char * k) {
@@ -1298,6 +1305,13 @@ void OpcuaPlugin::run_auto_browse() {
   // without the lock so it never stalls the REST read handlers.
   AutoBrowseResult result = browser.browse();
 
+  size_t writable_points = 0;
+  for (const auto & e : result.entries) {
+    if (e.writable) {
+      ++writable_points;
+    }
+  }
+
   size_t added = 0;
   size_t entity_count = 0;
   {
@@ -1314,7 +1328,8 @@ void OpcuaPlugin::run_auto_browse() {
   auto_browse_generation_ = client_->connection_generation();
 
   log_info("auto_browse: walked " + std::to_string(result.nodes_visited) + " address-space nodes, added " +
-           std::to_string(added) + " data points (" + std::to_string(entity_count) + " entities total)" +
+           std::to_string(added) + " data points (" + std::to_string(entity_count) + " entities total, " +
+           std::to_string(writable_points) + " server-writable)" +
            (result.node_cap_hit ? " [node cap reached - tree may be incomplete]" : "") +
            (result.depth_cap_hit ? " [depth cap reached on at least one branch]" : ""));
 }

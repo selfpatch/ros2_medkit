@@ -191,6 +191,26 @@ class OpcuaClient {
   tl::expected<void, WriteErrorInfo> write_value(const opcua::NodeId & node_id, const OpcuaValue & value,
                                                  const std::string & data_type_hint = "");
 
+  /// The AccessLevel / UserAccessLevel bits of a Variable node, read straight
+  /// from the server. ``ok`` is false when not connected or the attribute read
+  /// failed (in which case the bit flags are all cleared and the caller must
+  /// NOT assume a permission). ``writable`` is the effective, session-scoped
+  /// CurrentWrite bit: UserAccessLevel when it read back, otherwise the node's
+  /// inherent AccessLevel. The raw bitmasks are kept for diagnostics.
+  struct AccessLevelInfo {
+    bool ok{false};
+    bool readable{false};
+    bool writable{false};
+    uint8_t access_level{0};       ///< raw AccessLevel bitmask
+    uint8_t user_access_level{0};  ///< raw UserAccessLevel bitmask
+  };
+
+  /// Read a Variable node's AccessLevel and UserAccessLevel attributes and
+  /// decode the CurrentRead / CurrentWrite bits (OPC-UA Part 3 §5.6.2). Used
+  /// by auto_browse to mark a discovered data point writable exactly when the
+  /// server says this session may write it - no hand-written node map needed.
+  AccessLevelInfo read_access_level(const opcua::NodeId & variable_node);
+
   /// Create a subscription with data change notifications
   /// @return Subscription ID, or 0 on failure
   uint32_t create_subscription(double publish_interval_ms, DataChangeCallback callback);
