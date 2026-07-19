@@ -723,6 +723,39 @@ std::string OpcuaClient::read_variable_type_name(const opcua::NodeId & variable_
   }
 }
 
+OpcuaClient::AccessLevelInfo OpcuaClient::read_access_level(const opcua::NodeId & variable_node) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  AccessLevelInfo info;
+
+  if (!impl_->connected) {
+    return info;
+  }
+
+  try {
+    opcua::Node node(impl_->client, variable_node);
+    const opcua::Bitmask<opcua::AccessLevel> access = node.readAccessLevel();
+    info.access_level = static_cast<uint8_t>(access.get());
+    bool have_user = false;
+    opcua::Bitmask<opcua::AccessLevel> user = access;
+    try {
+      user = node.readUserAccessLevel();
+      info.user_access_level = static_cast<uint8_t>(user.get());
+      have_user = true;
+    } catch (const opcua::BadStatus &) {
+      // Not every server exposes UserAccessLevel; fall back to AccessLevel.
+      info.user_access_level = info.access_level;
+    }
+    const auto & effective = have_user ? user : access;
+    info.readable = effective.anyOf(opcua::AccessLevel::CurrentRead);
+    info.writable = effective.anyOf(opcua::AccessLevel::CurrentWrite);
+    info.ok = true;
+  } catch (const opcua::BadStatus & e) {
+    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+  }
+
+  return info;
+}
+
 ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   ReadResult result;
@@ -797,12 +830,12 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
         v);
   };
 
-  // Helper: coerce OpcuaValue to int32 for integer writes
-  auto to_int32 = [](const OpcuaValue & v) -> int32_t {
+  // Helper: coerce OpcuaValue to int64 (widest integer) for width dispatch
+  auto to_int64 = [](const OpcuaValue & v) -> int64_t {
     return std::visit(
-        [](auto && x) -> int32_t {
+        [](auto && x) -> int64_t {
           if constexpr (std::is_arithmetic_v<std::decay_t<decltype(x)>>) {
-            return static_cast<int32_t>(x);
+            return static_cast<int64_t>(x);
           }
           return 0;
         },
@@ -824,6 +857,46 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
         v);
   };
 
+  // The coarse "int" NodeMap hint does not carry the OPC-UA integer width, so
+  // a fixed Int32 write is rejected (BadTypeMismatch) by narrower nodes such as
+  // the S7 "Int" (Int16). Probe the node's real DataType and write the matching
+  // scalar width; fall back to Int32 when the type cannot be resolved.
+  auto write_integer_typed = [&to_int64, &value](auto & node) {
+    uint32_t dt = 0;
+    try {
+      const auto data_type = node.readDataType();
+      if (data_type.getNamespaceIndex() == 0 && data_type.getIdentifierType() == opcua::NodeIdType::Numeric) {
+        // node is a generic (auto) parameter, so data_type is a dependent type.
+        dt = data_type.template getIdentifierAs<uint32_t>();
+      }
+    } catch (...) {
+      // leave dt=0 -> Int32 default
+    }
+    const int64_t iv = to_int64(value);
+    // if-else over numeric ids (not a switch: -Werror=switch-enum would demand
+    // every DataTypeId enumerator be listed).
+    auto id = [](opcua::DataTypeId d) {
+      return static_cast<uint32_t>(d);
+    };
+    if (dt == id(opcua::DataTypeId::SByte)) {
+      node.writeValueScalar(static_cast<int8_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::Byte)) {
+      node.writeValueScalar(static_cast<uint8_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::Int16)) {
+      node.writeValueScalar(static_cast<int16_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::UInt16)) {
+      node.writeValueScalar(static_cast<uint16_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::UInt32)) {
+      node.writeValueScalar(static_cast<uint32_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::Int64)) {
+      node.writeValueScalar(static_cast<int64_t>(iv));
+    } else if (dt == id(opcua::DataTypeId::UInt64)) {
+      node.writeValueScalar(static_cast<uint64_t>(iv));
+    } else {
+      node.writeValueScalar(static_cast<int32_t>(iv));
+    }
+  };
+
   try {
     opcua::Node node(impl_->client, node_id);
 
@@ -833,7 +906,7 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
       if (data_type_hint == "float") {
         node.writeValueScalar(static_cast<float>(to_double(value)));
       } else if (data_type_hint == "int") {
-        node.writeValueScalar(to_int32(value));
+        write_integer_typed(node);
       } else if (data_type_hint == "bool") {
         node.writeValueScalar(to_bool(value));
       } else if (data_type_hint == "string") {
@@ -862,10 +935,12 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
       node.writeValueScalar(static_cast<float>(to_double(value)));
     } else if (current.isType<double>()) {
       node.writeValueScalar(to_double(value));
-    } else if (current.isType<int32_t>()) {
-      node.writeValueScalar(to_int32(value));
     } else if (current.isType<bool>()) {
       node.writeValueScalar(to_bool(value));
+    } else if (current.isType<int8_t>() || current.isType<uint8_t>() || current.isType<int16_t>() ||
+               current.isType<uint16_t>() || current.isType<int32_t>() || current.isType<uint32_t>() ||
+               current.isType<int64_t>() || current.isType<uint64_t>()) {
+      write_integer_typed(node);
     } else {
       auto var = value_to_variant(value);
       node.writeValue(var);

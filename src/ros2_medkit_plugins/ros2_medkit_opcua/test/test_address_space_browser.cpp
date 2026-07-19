@@ -91,6 +91,14 @@ class FakeAutoBrowseSource : public AutoBrowseSource {
   void set_unreadable(const opcua::NodeId & node) {
     unreadable_.insert(node.toString());
   }
+  // Mark a node the server reports as writable (CurrentWrite set).
+  void set_writable(const opcua::NodeId & node) {
+    writable_.insert(node.toString());
+  }
+  // Mark a node whose AccessLevel attribute read fails (read_writable -> nullopt).
+  void set_access_level_unreadable(const opcua::NodeId & node) {
+    access_unreadable_.insert(node.toString());
+  }
 
   std::vector<OpcuaClient::BrowseChild> browse_children(const opcua::NodeId & parent) override {
     ++browse_calls;
@@ -110,12 +118,21 @@ class FakeAutoBrowseSource : public AutoBrowseSource {
     return OpcuaValue{1.0};
   }
 
+  std::optional<bool> read_writable(const opcua::NodeId & variable_node) override {
+    if (access_unreadable_.count(variable_node.toString()) > 0) {
+      return std::nullopt;
+    }
+    return writable_.count(variable_node.toString()) > 0;
+  }
+
   int browse_calls{0};
 
  private:
   std::unordered_map<std::string, std::vector<OpcuaClient::BrowseChild>> tree_;
   std::unordered_map<std::string, std::string> types_;
   std::unordered_set<std::string> unreadable_;
+  std::unordered_set<std::string> writable_;
+  std::unordered_set<std::string> access_unreadable_;
 };
 
 const NodeMapEntry * find_entry(const std::vector<NodeMapEntry> & entries, const std::string & node_id_str) {
@@ -143,6 +160,8 @@ TEST(AutoBrowserTest, MapsObjectHierarchyToEntityAndVariablesToDataPoints) {
   source.add_child(db_test, make_child("ns=2;s=DB_Test.Running", 2, "Running", "Running", opcua::NodeClass::Variable));
   source.set_type(level, "Float");
   source.set_type(running, "Boolean");
+  // The server marks Running writable (CurrentWrite) but Level read-only.
+  source.set_writable(running);
 
   AutoBrowseConfig cfg;
   AutoBrowser browser(source, cfg);
@@ -159,14 +178,61 @@ TEST(AutoBrowserTest, MapsObjectHierarchyToEntityAndVariablesToDataPoints) {
   EXPECT_EQ(level_entry->display_name, "Level");
   EXPECT_EQ(level_entry->data_type, "float");
   EXPECT_EQ(level_entry->ros2_topic, "/plc/plc_1_db_test/level");
-  EXPECT_FALSE(level_entry->writable);
+  EXPECT_FALSE(level_entry->writable);  // server: read-only
 
   EXPECT_EQ(running_entry->entity_id, "plc_1_db_test");
   EXPECT_EQ(running_entry->data_name, "running");
   EXPECT_EQ(running_entry->data_type, "bool");
+  EXPECT_TRUE(running_entry->writable);  // server: CurrentWrite set
 
   EXPECT_FALSE(result.node_cap_hit);
   EXPECT_FALSE(result.depth_cap_hit);
+}
+
+// -- writable inferred from the server's AccessLevel -------------------
+
+TEST(AutoBrowserTest, WritableInferredFromServerAccessLevel) {
+  FakeAutoBrowseSource source;
+  const auto root = NodeMap::parse_node_id("i=85");
+  const auto rw = NodeMap::parse_node_id("ns=2;s=Setpoint");  // writable
+  const auto ro = NodeMap::parse_node_id("ns=2;s=Measured");  // read-only
+  const auto unk = NodeMap::parse_node_id("ns=2;s=Unknown");  // AccessLevel read fails
+
+  source.add_child(root, make_child("ns=2;s=Setpoint", 2, "Setpoint", "Setpoint", opcua::NodeClass::Variable));
+  source.add_child(root, make_child("ns=2;s=Measured", 2, "Measured", "Measured", opcua::NodeClass::Variable));
+  source.add_child(root, make_child("ns=2;s=Unknown", 2, "Unknown", "Unknown", opcua::NodeClass::Variable));
+  source.set_type(rw, "Float");
+  source.set_type(ro, "Float");
+  source.set_type(unk, "Float");
+  source.set_writable(rw);
+  source.set_access_level_unreadable(unk);
+
+  AutoBrowseConfig cfg;
+  AutoBrowser browser(source, cfg);
+  auto result = browser.browse();
+
+  ASSERT_EQ(result.entries.size(), 3u);
+  EXPECT_TRUE(find_entry(result.entries, rw.toString())->writable);
+  EXPECT_FALSE(find_entry(result.entries, ro.toString())->writable);
+  // AccessLevel read failed -> safe read-only default, never a false-positive.
+  EXPECT_FALSE(find_entry(result.entries, unk.toString())->writable);
+}
+
+TEST(AutoBrowserTest, InferWritableDisabledKeepsEverythingReadOnly) {
+  FakeAutoBrowseSource source;
+  const auto root = NodeMap::parse_node_id("i=85");
+  const auto rw = NodeMap::parse_node_id("ns=2;s=Setpoint");
+  source.add_child(root, make_child("ns=2;s=Setpoint", 2, "Setpoint", "Setpoint", opcua::NodeClass::Variable));
+  source.set_type(rw, "Float");
+  source.set_writable(rw);
+
+  AutoBrowseConfig cfg;
+  cfg.infer_writable = false;
+  AutoBrowser browser(source, cfg);
+  auto result = browser.browse();
+
+  ASSERT_EQ(result.entries.size(), 1u);
+  EXPECT_FALSE(find_entry(result.entries, rw.toString())->writable);
 }
 
 TEST(AutoBrowserTest, PureObjectsWithoutVariablesDoNotBecomeEntities) {

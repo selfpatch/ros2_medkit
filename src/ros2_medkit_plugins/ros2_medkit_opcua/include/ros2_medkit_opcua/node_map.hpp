@@ -256,6 +256,13 @@ struct AutoBrowseConfig {
   /// every type-matched Variable is kept, which is faster to start up on very
   /// large trees.
   bool read_initial_values{true};
+
+  /// When true (default) each discovered Variable's AccessLevel/UserAccessLevel
+  /// is read and its ``writable`` flag is set from the server's CurrentWrite
+  /// bit, so a config-less walk exposes a write surface exactly where the PLC
+  /// permits it. When false, every auto-browsed point stays read-only and only
+  /// an explicit node_map ``nodes:`` entry can promote it (legacy behaviour).
+  bool infer_writable{true};
 };
 
 /// SOVD entity definition derived from the node map
