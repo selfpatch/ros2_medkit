@@ -99,7 +99,13 @@ class FakePluginContext : public RosPluginContext {
     nlohmann::json result = nlohmann::json::array();
     if (all_faults.contains("faults")) {
       for (const auto & f : all_faults["faults"]) {
-        if (f.value("source_id", "") == entity_id) {
+        bool in_scope = f.value("source_id", "") == entity_id;
+        if (!in_scope && f.contains("reporting_sources") && f["reporting_sources"].is_array()) {
+          for (const auto & src : f["reporting_sources"]) {
+            in_scope = in_scope || (src.is_string() && src.get<std::string>() == entity_id);
+          }
+        }
+        if (in_scope) {
           result.push_back(f);
         }
       }
@@ -295,6 +301,44 @@ TEST_F(OpcuaPluginTest, ListFaultsWithData) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->content["items"].size(), 1u);
   EXPECT_EQ(result->content["items"][0]["code"], "PLC_LOW_LEVEL");
+}
+
+TEST_F(OpcuaPluginTest, ListFaultsPassesThroughOccurrenceData) {
+  // The entity-scoped route must not drop the occurrence fields the fault
+  // manager provides - clients rendered "time unknown" when the serializer
+  // projected only {code, severity, description, status, source_id}.
+  ctx_.all_faults = {{"faults",
+                      {{{"fault_code", "PLC_LOW_LEVEL"},
+                        {"source_id", "tank"},
+                        {"severity", 2},
+                        {"severity_label", "ERROR"},
+                        {"status", "CONFIRMED"},
+                        {"first_occurred", 100.5},
+                        {"last_occurred", 200.25},
+                        {"occurrence_count", 7},
+                        {"reporting_sources", {"tank"}}}}}};
+  auto result = plugin_.list_faults("tank");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->content["items"].size(), 1u);
+  const auto & item = result->content["items"][0];
+  EXPECT_EQ(item["code"], "PLC_LOW_LEVEL");
+  EXPECT_EQ(item["first_occurred"], 100.5);
+  EXPECT_EQ(item["last_occurred"], 200.25);
+  EXPECT_EQ(item["occurrence_count"], 7);
+  EXPECT_EQ(item["severity_label"], "ERROR");
+  EXPECT_EQ(item["reporting_sources"][0], "tank");
+  EXPECT_EQ(item["source_id"], "tank");
+}
+
+TEST_F(OpcuaPluginTest, ListFaultsDerivesSourceIdFromReportingSources) {
+  // Fault-manager records carry reporting_sources, not source_id; the item's
+  // source_id must fall back to the first reporting source instead of "".
+  ctx_.all_faults = {
+      {"faults", {{{"fault_code", "PLC_LOW_LEVEL"}, {"severity", 2}, {"reporting_sources", {"tank", "other"}}}}}};
+  auto result = plugin_.list_faults("tank");
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->content["items"].size(), 1u);
+  EXPECT_EQ(result->content["items"][0]["source_id"], "tank");
 }
 
 TEST_F(OpcuaPluginTest, GetFaultNotFound) {

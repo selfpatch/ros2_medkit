@@ -1938,7 +1938,25 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
       item["severity"] = f.value("severity", 0);
       item["description"] = f.value("description", "");
       item["status"] = f.value("status", "");
-      item["source_id"] = f.value("source_id", "");
+      // Fault records carry reporting_sources, not source_id; surface the
+      // first source so the field is not always empty.
+      std::string source_id = f.value("source_id", "");
+      if (source_id.empty() && f.contains("reporting_sources") && f["reporting_sources"].is_array() &&
+          !f["reporting_sources"].empty() && f["reporting_sources"][0].is_string()) {
+        source_id = f["reporting_sources"][0].get<std::string>();
+      }
+      item["source_id"] = source_id;
+      // Pass occurrence data through: without it the entity-scoped route
+      // serves faults with no timestamps ("time unknown" in clients) while the
+      // instance-level route has them.
+      for (const char * key : {"first_occurred", "last_occurred", "occurrence_count", "severity_label"}) {
+        if (f.contains(key)) {
+          item[key] = f[key];
+        }
+      }
+      if (f.contains("reporting_sources")) {
+        item["reporting_sources"] = f["reporting_sources"];
+      }
       items.push_back(std::move(item));
     }
   }
