@@ -101,6 +101,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
                                                                 const std::string & resource_name) override;
   tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
   write_data(const std::string & entity_id, const std::string & resource_name, const nlohmann::json & value) override;
+  // Component and alarms-fallback entities own no NodeMap entries; false here
+  // keeps the gateway from advertising a `data` capability list_data would 404.
+  bool has_data(const std::string & entity_id) const override;
 
   // -- OperationProvider interface --
   tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
@@ -108,6 +111,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
   execute_operation(const std::string & entity_id, const std::string & operation_name,
                     const nlohmann::json & parameters) override;
+  // True for any entity_defs() entry (mirrors list_operations' own lookup),
+  // false for the Component itself, which has no entity_defs entry.
+  bool has_operations(const std::string & entity_id) const override;
 
   // -- FaultProvider interface --
   tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override;

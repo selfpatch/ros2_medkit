@@ -102,6 +102,19 @@ class DataProvider {
   /// @param value JSON value to write
   virtual tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
   write_data(const std::string & entity_id, const std::string & resource_name, const nlohmann::json & value) = 0;
+
+  /// Whether this provider actually has data for the given entity.
+  ///
+  /// A plugin implements one DataProvider for every entity it owns, but not
+  /// every owned entity is data-bearing (e.g. a grouping Component, or an
+  /// App that only surfaces faults). Override this so PluginManager stops
+  /// routing - and the gateway stops advertising the `data` capability - for
+  /// entities this provider cannot actually serve. Defaults to true, which
+  /// preserves current behavior for providers whose owned entities are all
+  /// data-bearing.
+  virtual bool has_data(const std::string & /*entity_id*/) const {
+    return true;
+  }
 };
 
 }  // namespace ros2_medkit_gateway
