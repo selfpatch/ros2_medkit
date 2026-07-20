@@ -394,7 +394,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   // Check if fault exists
   SqliteStatement check_stmt(db_,
                              "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, "
-                             "confirmed_at_ns FROM faults WHERE fault_code = ?");
+                             "confirmed_at_ns, first_occurred_ns FROM faults WHERE fault_code = ?");
   check_stmt.bind_text(1, fault_code);
 
   if (check_stmt.step() == SQLITE_ROW) {
@@ -405,6 +405,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
     std::string current_status = check_stmt.column_text(3);
     int32_t debounce_counter = check_stmt.column_int(4);
     int64_t confirmed_at_ns = check_stmt.column_int64(5);
+    int64_t first_occurred_ns = check_stmt.column_int64(6);
 
     // Bring a runaway counter persisted by an older build (the bug this fixes) back into range on
     // first touch; this also keeps the +1/-1 below overflow-safe. The counter is local to this call.
@@ -418,8 +419,11 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         return false;
       }
       // FAILED event reactivates - reset debounce counter to 0 so FAILED branch
-      // decrements it to -1, then reuse the existing FAILED logic below
+      // decrements it to -1, then reuse the existing FAILED logic below. Also
+      // reset first_occurred: this is a new outage cycle, not a continuation
+      // of the one that just cleared.
       debounce_counter = 0;
+      first_occurred_ns = timestamp_ns;
       is_reactivation = true;
     }
 
@@ -434,9 +438,11 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       // Escalate severity if new severity is higher
       int new_severity = std::max(existing_severity, static_cast<int>(severity));
 
-      // Increment count with saturation
+      // Increment count with saturation - only on a genuine new occurrence (reactivation
+      // after CLEARED). A still-active fault being re-reported (level-triggered poller,
+      // or debounce building toward confirmation) is the same continuous occurrence.
       int64_t new_count = existing_count;
-      if (new_count < std::numeric_limits<uint32_t>::max()) {
+      if (is_reactivation && new_count < std::numeric_limits<uint32_t>::max()) {
         ++new_count;
       }
 
@@ -463,12 +469,12 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
       SqliteStatement update_stmt(
           db_, description.empty() ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, "
                                      "occurrence_count = ?, "
-                                     "reporting_sources = ?, status = ?, debounce_counter = ?, confirmed_at_ns = ? "
-                                     "WHERE fault_code = ?"
+                                     "reporting_sources = ?, status = ?, debounce_counter = ?, confirmed_at_ns = ?, "
+                                     "first_occurred_ns = ? WHERE fault_code = ?"
                                    : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, "
                                      "last_failed_ns = ?, "
                                      "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ?, "
-                                     "confirmed_at_ns = ? WHERE fault_code = ?");
+                                     "confirmed_at_ns = ?, first_occurred_ns = ? WHERE fault_code = ?");
 
       if (description.empty()) {
         update_stmt.bind_int(1, new_severity);
@@ -479,7 +485,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         update_stmt.bind_text(6, new_status);
         update_stmt.bind_int(7, debounce_counter);
         update_stmt.bind_int64(8, confirmed_at_ns);
-        update_stmt.bind_text(9, fault_code);
+        update_stmt.bind_int64(9, first_occurred_ns);
+        update_stmt.bind_text(10, fault_code);
       } else {
         update_stmt.bind_int(1, new_severity);
         update_stmt.bind_text(2, description);
@@ -490,7 +497,8 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         update_stmt.bind_text(7, new_status);
         update_stmt.bind_int(8, debounce_counter);
         update_stmt.bind_int64(9, confirmed_at_ns);
-        update_stmt.bind_text(10, fault_code);
+        update_stmt.bind_int64(10, first_occurred_ns);
+        update_stmt.bind_text(11, fault_code);
       }
 
       if (update_stmt.step() != SQLITE_DONE) {

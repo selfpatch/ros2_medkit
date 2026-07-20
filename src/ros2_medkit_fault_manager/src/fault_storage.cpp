@@ -150,8 +150,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       // PASSED events for CLEARED faults are ignored
       return false;
     }
-    // FAILED event reactivates the fault - reset debounce counter
+    // FAILED event reactivates the fault - reset debounce counter and first-seen:
+    // this is a new outage cycle, not a continuation of the one that just cleared.
     state.debounce_counter = -1;
+    state.first_occurred = timestamp;
     state.last_failed_time = timestamp;
     state.last_occurred = timestamp;
     state.reporting_sources.insert(source_id);
@@ -178,10 +180,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   if (is_failed) {
     state.last_failed_time = timestamp;
 
-    // Increment occurrence_count with saturation
-    if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
-      ++state.occurrence_count;
-    }
+    // occurrence_count is NOT bumped here: this is a still-active fault being
+    // re-reported (level-triggered poller, or debounce building toward
+    // confirmation), the same continuous occurrence. It only increments on a
+    // genuine edge - new fault (above) or reactivation after CLEARED (above).
 
     // Decrement towards confirmation, clamped to the thresholds (a long FAILED burst can't
     // run the counter off to INT32_MIN and delay later healing).

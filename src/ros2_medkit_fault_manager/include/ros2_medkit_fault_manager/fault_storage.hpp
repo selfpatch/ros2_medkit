@@ -37,7 +37,8 @@ namespace ros2_medkit_fault_manager {
 /// cannot flip them. One consequence is a latch delay: a fault that becomes active again is not
 /// immediately back in the default (CONFIRMED-only) list - it can take up to
 /// (healing_threshold - confirmation_threshold) reports to re-confirm. During that window
-/// occurrence_count and last_occurred still reflect the activity.
+/// last_occurred still reflects the activity; occurrence_count does not (it only counts
+/// the edge that started this occurrence, not every report within it).
 struct DebounceConfig {
   /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value,
   /// and the debounce counter is clamped to this lower bound so a long burst of FAILED events
@@ -85,7 +86,7 @@ struct FaultState {
   std::string description;
   rclcpp::Time first_occurred;
   rclcpp::Time last_occurred;
-  uint32_t occurrence_count{0};  ///< Count of FAILED events
+  uint32_t occurrence_count{0};  ///< Count of genuine occurrences (new fault + each re-raise after CLEARED)
   std::string status;
   std::set<std::string> reporting_sources;
 
