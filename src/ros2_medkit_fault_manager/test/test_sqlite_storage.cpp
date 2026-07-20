@@ -100,9 +100,27 @@ TEST_F(SqliteFaultStorageTest, ReportExistingFaultEventUpdates) {
 
   auto fault = storage_->get_fault("MOTOR_OVERHEAT");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 2u);
+  // Still the same continuous occurrence (not CLEARED in between): occurrence_count
+  // does not bump on every report, only severity/sources/description update.
+  EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->severity, Fault::SEVERITY_ERROR);  // Updated to higher severity
   EXPECT_EQ(fault->reporting_sources.size(), 2u);
+}
+
+TEST_F(SqliteFaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCount) {
+  rclcpp::Clock clock;
+
+  // Simulate a level-triggered poller re-reporting the same still-true condition
+  // every cycle (issue #11): occurrence_count must stay at 1, not grow per poll.
+  for (int i = 0; i < 25; ++i) {
+    storage_->report_fault_event("TANK_OVERFILL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                 "level = 95 > 80", "/tank", clock.now(), default_config());
+  }
+
+  auto fault = storage_->get_fault("TANK_OVERFILL");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->occurrence_count, 1u);
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(SqliteFaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
@@ -343,7 +361,7 @@ TEST_F(SqliteFaultStorageTest, FaultStaysPrefailedAboveThreshold) {
 
   auto fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 2u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Still debouncing towards confirmation, same occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);
 }
 
@@ -364,7 +382,7 @@ TEST_F(SqliteFaultStorageTest, FaultConfirmsAtThreshold) {
 
   auto fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 3u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Debounce build-up is still one occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
@@ -401,14 +419,16 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultCanBeReactivated) {
   rclcpp::Clock clock;
 
   // Report to confirm (with default threshold=-1, single report confirms)
+  auto first_ts = clock.now();
   bool is_new = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                             "Initial", "/node1", clock.now(), default_config());
+                                             "Initial", "/node1", first_ts, default_config());
   EXPECT_TRUE(is_new);
 
   auto fault = storage_->get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(fault->occurrence_count, 1u);
+  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), first_ts.nanoseconds());
 
   // Clear the fault
   storage_->clear_fault("FAULT_1");
@@ -416,9 +436,10 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultCanBeReactivated) {
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);
 
-  // Report again - should reactivate
+  // Report again after a gap - should reactivate as a new cycle
+  rclcpp::Time second_ts(first_ts.nanoseconds() + 1'000'000'000LL);  // +1s
   is_new = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                        "Reactivated", "/node2", clock.now(), default_config());
+                                        "Reactivated", "/node2", second_ts, default_config());
   EXPECT_TRUE(is_new);  // Should return true like a new fault
 
   fault = storage_->get_fault("FAULT_1");
@@ -427,6 +448,8 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultCanBeReactivated) {
   EXPECT_EQ(fault->occurrence_count, 2u);             // Should increment
   EXPECT_EQ(fault->reporting_sources.size(), 2u);     // Both sources
   EXPECT_EQ(fault->description, "Reactivated");       // Updated description
+  // #25: first_occurred must reflect the new cycle, not the outage that already cleared.
+  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), second_ts.nanoseconds());
 }
 
 TEST_F(SqliteFaultStorageTest, PassedEventForClearedFaultIgnored) {

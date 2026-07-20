@@ -104,9 +104,27 @@ TEST_F(FaultStorageTest, ReportExistingFaultEventUpdates) {
 
   auto fault = storage_.get_fault("MOTOR_OVERHEAT");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 2u);
+  // Still the same continuous occurrence (not CLEARED in between): occurrence_count
+  // does not bump on every report, only severity/sources/description update.
+  EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->severity, Fault::SEVERITY_ERROR);  // Updated to higher severity
   EXPECT_EQ(fault->reporting_sources.size(), 2u);
+}
+
+TEST_F(FaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCount) {
+  rclcpp::Clock clock;
+
+  // Simulate a level-triggered poller re-reporting the same still-true condition
+  // every cycle (issue #11): occurrence_count must stay at 1, not grow per poll.
+  for (int i = 0; i < 25; ++i) {
+    storage_.report_fault_event("TANK_OVERFILL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                "level = 95 > 80", "/tank", clock.now(), default_config());
+  }
+
+  auto fault = storage_.get_fault("TANK_OVERFILL");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(fault->occurrence_count, 1u);
+  EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(FaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
@@ -248,7 +266,7 @@ TEST_F(FaultStorageTest, FaultStaysPrefailedAboveThreshold) {
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 2u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Still debouncing towards confirmation, same occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);
 }
 
@@ -269,7 +287,7 @@ TEST_F(FaultStorageTest, FaultConfirmsAtThreshold) {
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 3u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Debounce build-up is still one occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
@@ -284,7 +302,7 @@ TEST_F(FaultStorageTest, ConfirmedFaultStaysConfirmed) {
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 4u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Same occurrence throughout, not one per report
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
@@ -318,7 +336,7 @@ TEST_F(FaultStorageTest, SameSourceMultipleReportsConfirms) {
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->occurrence_count, 3u);
+  EXPECT_EQ(fault->occurrence_count, 1u);  // Repeated reports from one source, one occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(fault->reporting_sources.size(), 1u);  // Only one unique source
 }
@@ -372,14 +390,16 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
   rclcpp::Clock clock;
 
   // Report to confirm (with default threshold=-1, single report confirms)
+  auto first_ts = clock.now();
   bool is_new = storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                            "Initial", "/node1", clock.now(), default_config());
+                                            "Initial", "/node1", first_ts, default_config());
   EXPECT_TRUE(is_new);
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(fault->occurrence_count, 1u);
+  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), first_ts.nanoseconds());
 
   // Clear the fault
   storage_.clear_fault("FAULT_1");
@@ -387,9 +407,10 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);
 
-  // Report again - should reactivate
+  // Report again after a gap - should reactivate as a new cycle
+  auto second_ts = rclcpp::Time(first_ts.nanoseconds() + 1'000'000'000LL);  // +1s
   is_new = storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                       "Reactivated", "/node2", clock.now(), default_config());
+                                       "Reactivated", "/node2", second_ts, default_config());
   EXPECT_TRUE(is_new);  // Should return true like a new fault
 
   fault = storage_.get_fault("FAULT_1");
@@ -398,6 +419,8 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
   EXPECT_EQ(fault->occurrence_count, 2u);             // Should increment
   EXPECT_EQ(fault->reporting_sources.size(), 2u);     // Both sources
   EXPECT_EQ(fault->description, "Reactivated");       // Updated description
+  // #25: first_occurred must reflect the new cycle, not the outage that already cleared.
+  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), second_ts.nanoseconds());
 }
 
 TEST_F(FaultStorageTest, PassedEventForClearedFaultIgnored) {
@@ -1109,11 +1132,11 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
     return received_events_.size() >= 1;
   }));
 
-  // Verify EVENT_UPDATED was published
+  // Verify EVENT_UPDATED was published (severity/sources changed; still one occurrence)
   ASSERT_EQ(received_events_.size(), 1u);
   EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_UPDATED);
   EXPECT_EQ(received_events_[0].fault.fault_code, "TEST_FAULT_2");
-  EXPECT_EQ(received_events_[0].fault.occurrence_count, 2u);
+  EXPECT_EQ(received_events_[0].fault.occurrence_count, 1u);
 }
 
 TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
