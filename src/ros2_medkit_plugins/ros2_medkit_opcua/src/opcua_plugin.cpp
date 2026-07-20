@@ -774,10 +774,15 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
     result.new_entities.apps.push_back(std::move(app));
 
     // Register capabilities per entity (never type-level): only PLC-backed
-    // apps advertise x-plc-data; apps with writable nodes also get
-    // x-plc-operations.
+    // apps advertise x-plc-data. The auto_alarms fallback App (and any
+    // event_alarms-only App) has an entity_defs entry to host faults but no
+    // NodeMap entries of its own, so def.data_names stays empty - skip it or
+    // /apps/<id>/x-plc-data 404s despite being advertised. Apps with
+    // writable nodes also get x-plc-operations.
     if (ctx_) {
-      ctx_->register_entity_capability(def.id, "x-plc-data");
+      if (!def.data_names.empty()) {
+        ctx_->register_entity_capability(def.id, "x-plc-data");
+      }
       if (!def.writable_names.empty()) {
         ctx_->register_entity_capability(def.id, "x-plc-operations");
       }
@@ -1710,6 +1715,14 @@ tl::expected<dto::DataWriteResult, DataProviderErrorInfo> OpcuaPlugin::write_dat
   return dto::DataWriteResult{std::move(result)};
 }
 
+bool OpcuaPlugin::has_data(const std::string & entity_id) const {
+  // Same check list_data uses to 404 - keeps advertised capabilities honest
+  // for entities with no NodeMap entries (the Component, the auto_alarms
+  // fallback App).
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+  return !node_map_.entries_for_entity(entity_id).empty();
+}
+
 // -- OperationProvider interface --
 
 tl::expected<dto::Collection<dto::OperationItem>, OperationProviderErrorInfo>
@@ -1917,6 +1930,17 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
       },
       *parsed);
   return dto::OperationExecutionResult{std::move(result)};
+}
+
+bool OpcuaPlugin::has_operations(const std::string & entity_id) const {
+  // Mirrors list_operations' own lookup: true for any entity_defs() entry
+  // (writable data points, or acknowledge_fault/confirm_fault on an
+  // event-alarm entity), false for the Component, which has none.
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+  const auto & defs = node_map_.entity_defs();
+  return std::any_of(defs.begin(), defs.end(), [&entity_id](const PlcEntityDef & def) {
+    return def.id == entity_id;
+  });
 }
 
 // -- FaultProvider interface --

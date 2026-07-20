@@ -106,6 +106,19 @@ class OperationProvider {
   virtual tl::expected<dto::OperationExecutionResult, OperationProviderErrorInfo>
   execute_operation(const std::string & entity_id, const std::string & operation_name,
                     const nlohmann::json & parameters) = 0;
+
+  /// Whether this provider actually has operations for the given entity.
+  ///
+  /// Mirrors DataProvider::has_data: a plugin implements one OperationProvider
+  /// for every entity it owns, but not every owned entity has operations
+  /// (e.g. a grouping Component). Override this so PluginManager stops
+  /// routing - and the gateway stops advertising the `operations`
+  /// capability - for entities this provider cannot actually serve. Defaults
+  /// to true, which preserves current behavior for providers whose owned
+  /// entities all have operations.
+  virtual bool has_operations(const std::string & /*entity_id*/) const {
+    return true;
+  }
 };
 
 }  // namespace ros2_medkit_gateway

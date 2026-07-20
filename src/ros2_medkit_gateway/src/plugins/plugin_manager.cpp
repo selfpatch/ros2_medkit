@@ -591,7 +591,9 @@ DataProvider * PluginManager::get_data_provider_for_entity(const std::string & e
   }
   for (const auto & lp : plugins_) {
     if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
-      return lp.data_provider;
+      // Ownership is plugin-wide, but data is not: ask the provider whether
+      // this specific entity is data-bearing (see DataProvider::has_data).
+      return lp.data_provider && lp.data_provider->has_data(entity_id) ? lp.data_provider : nullptr;
     }
   }
   return nullptr;
@@ -605,7 +607,10 @@ OperationProvider * PluginManager::get_operation_provider_for_entity(const std::
   }
   for (const auto & lp : plugins_) {
     if (lp.load_result.plugin && lp.load_result.plugin->name() == own_it->second) {
-      return lp.operation_provider;
+      // Same reasoning as get_data_provider_for_entity: ownership does not
+      // imply this entity has operations (see OperationProvider::has_operations).
+      return lp.operation_provider && lp.operation_provider->has_operations(entity_id) ? lp.operation_provider
+                                                                                        : nullptr;
     }
   }
   return nullptr;

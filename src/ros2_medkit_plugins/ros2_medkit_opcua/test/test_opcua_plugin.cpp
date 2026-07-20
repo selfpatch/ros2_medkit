@@ -118,9 +118,15 @@ class FakePluginContext : public RosPluginContext {
     return get_entity(entity_id);
   }
 
+  // Recorded so tests can assert exactly which entities get which vendor
+  // capability (e.g. x-plc-data must not be registered for a def with no
+  // data points - see the auto_alarms fallback entity below).
+  std::vector<std::pair<std::string, std::string>> registered_entity_capabilities;
+
   void register_capability(SovdEntityType /*type*/, const std::string & /*capability*/) override {
   }
-  void register_entity_capability(const std::string & /*entity_id*/, const std::string & /*capability*/) override {
+  void register_entity_capability(const std::string & entity_id, const std::string & capability) override {
+    registered_entity_capabilities.emplace_back(entity_id, capability);
   }
   std::vector<std::string> get_type_capabilities(SovdEntityType /*type*/) const override {
     return {};
@@ -256,6 +262,24 @@ TEST_F(OpcuaPluginTest, WriteDataMissingValue) {
   EXPECT_EQ(result.error().code, DataProviderError::InvalidValue);
 }
 
+// has_data gates PluginManager::get_data_provider_for_entity (and, through
+// it, the gateway's `data` capability advertisement) at entity granularity -
+// see discovery_handlers.cpp's prune_plugin_unserved_capabilities. It must
+// track list_data's own "no entries" check exactly.
+TEST_F(OpcuaPluginTest, HasDataTrueForDataBearingEntity) {
+  EXPECT_TRUE(plugin_.has_data("tank"));
+}
+
+TEST_F(OpcuaPluginTest, HasDataFalseForComponentEntity) {
+  // "test_runtime" is the PLC runtime Component id, not a data-bearing App -
+  // it owns no NodeMap entries.
+  EXPECT_FALSE(plugin_.has_data("test_runtime"));
+}
+
+TEST_F(OpcuaPluginTest, HasDataFalseForUnknownEntity) {
+  EXPECT_FALSE(plugin_.has_data("nonexistent"));
+}
+
 // -- OperationProvider tests --
 
 TEST_F(OpcuaPluginTest, ListOperationsOnlyWritable) {
@@ -272,6 +296,24 @@ TEST_F(OpcuaPluginTest, ListOperationsEntityNotFound) {
   EXPECT_EQ(result.error().code, OperationProviderError::EntityNotFound);
 }
 
+// has_operations mirrors list_operations' own entity_defs() lookup so it
+// gates PluginManager::get_operation_provider_for_entity at the same
+// granularity list_operations already uses to 404.
+TEST_F(OpcuaPluginTest, HasOperationsTrueForKnownEntityDef) {
+  EXPECT_TRUE(plugin_.has_operations("tank"));
+}
+
+TEST_F(OpcuaPluginTest, HasOperationsFalseForComponentEntity) {
+  // "test_runtime" has no entity_defs entry (see build_entity_defs' comment
+  // on why the Component id is deliberately excluded), so it has no
+  // operations even though the plugin implements OperationProvider.
+  EXPECT_FALSE(plugin_.has_operations("test_runtime"));
+}
+
+TEST_F(OpcuaPluginTest, HasOperationsFalseForUnknownEntity) {
+  EXPECT_FALSE(plugin_.has_operations("nonexistent"));
+}
+
 TEST_F(OpcuaPluginTest, ExecuteOperationMissingValue) {
   nlohmann::json params = {{"not_value", 42}};
   auto result = plugin_.execute_operation("tank", "set_level", params);
@@ -284,6 +326,85 @@ TEST_F(OpcuaPluginTest, ExecuteOperationReadOnly) {
   auto result = plugin_.execute_operation("tank", "set_pressure", params);
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, OperationProviderError::Rejected);
+}
+
+// -- auto_alarms fallback entity: has data/operations fitness + introspect
+// -- capability registration --
+//
+// build_entity_defs() gives the auto_alarms fallback entity ("<component>_
+// alarms") an entity_defs entry purely to host faults (has_faults=true) -
+// it owns no NodeMap entries. Before this fix introspect() unconditionally
+// registered x-plc-data for every entity_defs entry, so this fallback
+// entity advertised x-plc-data (and, via the plugin-wide DataProvider, the
+// base SOVD `data` capability) despite list_data 404ing on it.
+
+class OpcuaPluginAlarmsFitnessTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    yaml_path_ = "/tmp/test_opcua_plugin_alarms_fitness_nodemap.yaml";
+    std::ofstream f(yaml_path_);
+    f << R"(
+area_id: test_plc
+component_id: test_runtime
+auto_alarms:
+  enabled: true
+  source_node_id: "ns=2;i=999"
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    display_name: Tank Level
+    data_type: float
+    writable: false
+)";
+    f.close();
+
+    nlohmann::json config;
+    config["node_map_path"] = yaml_path_;
+    config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+    plugin_.configure(config);
+    plugin_.set_context(ctx_);
+  }
+
+  std::string yaml_path_;
+  OpcuaPlugin plugin_;
+  FakePluginContext ctx_;
+  // "<component_id>_alarms" per NodeMap::finalize_auto_alarms_overlay's
+  // default when auto_alarms.entity_id is not set explicitly.
+  static constexpr const char * kAlarmsEntityId = "test_runtime_alarms";
+};
+
+TEST_F(OpcuaPluginAlarmsFitnessTest, HasDataFalseForAlarmsFallbackEntity) {
+  EXPECT_FALSE(plugin_.has_data(kAlarmsEntityId));
+}
+
+TEST_F(OpcuaPluginAlarmsFitnessTest, HasOperationsTrueForAlarmsFallbackEntity) {
+  // The fallback entity DOES have an entity_defs entry (it exists purely to
+  // host faults), so list_operations succeeds (with an empty or
+  // ack/confirm-only list) rather than 404ing - unlike the Component, whose
+  // id never appears in entity_defs() at all.
+  EXPECT_TRUE(plugin_.has_operations(kAlarmsEntityId));
+}
+
+TEST_F(OpcuaPluginAlarmsFitnessTest, IntrospectSkipsXPlcDataForAlarmsFallbackEntity) {
+  auto result = plugin_.introspect({});
+
+  bool alarms_got_x_plc_data = false;
+  bool tank_got_x_plc_data = false;
+  for (const auto & [entity_id, capability] : ctx_.registered_entity_capabilities) {
+    if (capability != "x-plc-data") {
+      continue;
+    }
+    if (entity_id == kAlarmsEntityId) {
+      alarms_got_x_plc_data = true;
+    }
+    if (entity_id == "tank") {
+      tank_got_x_plc_data = true;
+    }
+  }
+  EXPECT_FALSE(alarms_got_x_plc_data) << "auto_alarms fallback entity has no data points - "
+                                         "x-plc-data must not be registered for it";
+  EXPECT_TRUE(tank_got_x_plc_data) << "data-bearing entities must keep x-plc-data";
 }
 
 // -- FaultProvider tests --
