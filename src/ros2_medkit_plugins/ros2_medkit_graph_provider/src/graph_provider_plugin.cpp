@@ -15,14 +15,13 @@
 #include "ros2_medkit_graph_provider/graph_provider_plugin.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <ros2_medkit_msgs/msg/fault.hpp>
 #include <set>
+#include <unordered_set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -194,8 +193,7 @@ bool is_metrics_fresh(const GraphProviderPlugin::TopicMetrics & metrics, int64_t
 }
 
 EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source, const App & target,
-                                const std::string & topic_name, const std::string & topic_id,
-                                const GraphProviderPlugin::TopicMetrics * metrics,
+                                const std::string & topic_id, const GraphProviderPlugin::TopicMetrics * metrics,
                                 const GraphProviderPlugin::GraphBuildState & state,
                                 const GraphProviderPlugin::GraphBuildConfig & config) {
   EdgeBuildResult result;
@@ -220,14 +218,6 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
   // Note: an offline app (source or target) always has an empty topic list
   // (see App::topics population sites), so it can never contribute an edge
   // here in the first place - there is no "node offline" case to special-case.
-
-  const bool topic_stale = state.stale_topics.count(topic_name) > 0;
-  if (topic_stale) {
-    result.json["metrics"]["metrics_status"] = "error";
-    result.json["metrics"]["error_reason"] = "topic_stale";
-    result.is_error = true;
-    return result;
-  }
 
   if (!metrics) {
     result.json["metrics"]["metrics_status"] = "pending";
@@ -327,8 +317,7 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
         const auto metrics_it = state.topic_metrics.find(topic_name);
         const GraphProviderPlugin::TopicMetrics * metrics =
             metrics_it == state.topic_metrics.end() ? nullptr : &metrics_it->second;
-        auto edge =
-            build_edge_json(edge_id, *publisher, *subscriber, topic_name, topic_it->second, metrics, state, config);
+        auto edge = build_edge_json(edge_id, *publisher, *subscriber, topic_it->second, metrics, state, config);
 
         has_errors = has_errors || edge.is_error;
         has_degraded = has_degraded || edge.is_degraded;
@@ -478,7 +467,7 @@ IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & i
   // the waste removed above.
   const auto timestamp = current_timestamp();
   const auto snapshot_input = ctx_ ? ctx_->get_entity_snapshot() : input;
-  build_state_snapshot("", snapshot_input, timestamp, false);
+  build_state_snapshot(snapshot_input, timestamp);
   return {};
 }
 
@@ -630,27 +619,6 @@ std::optional<double> GraphProviderPlugin::parse_double(const std::string & valu
   }
 }
 
-std::string GraphProviderPlugin::generate_fault_code(const std::string & diagnostic_name) {
-  std::string result;
-  result.reserve(diagnostic_name.size());
-
-  bool last_was_separator = true;
-  for (char c : diagnostic_name) {
-    if (std::isalnum(static_cast<unsigned char>(c))) {
-      result += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-      last_was_separator = false;
-    } else if (!last_was_separator) {
-      result += '_';
-      last_was_separator = true;
-    }
-  }
-
-  if (!result.empty() && result.back() == '_') {
-    result.pop_back();
-  }
-  return result;
-}
-
 std::string GraphProviderPlugin::current_timestamp() {
   return format_timestamp_ns(current_time_ns());
 }
@@ -692,62 +660,18 @@ std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache
 
   auto input = ctx_->get_entity_snapshot();
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot(function_id, input, timestamp, false);
+  auto state = build_state_snapshot(input, timestamp);
   const auto scoped_apps = resolve_scoped_apps(function_id, input);
   return build_graph_document_for_apps(function_id, scoped_apps, state, resolve_config(function_id), timestamp);
 }
 
-std::unordered_set<std::string> GraphProviderPlugin::collect_stale_topics(const std::string & function_id,
-                                                                          const IntrospectionInput & input) const {
-  std::unordered_set<std::string> stale_topics;
-  if (!ctx_) {
-    return stale_topics;
-  }
-
-  std::unordered_map<std::string, std::string> fault_code_to_topic;
-  for (const auto * app : resolve_scoped_apps(function_id, input)) {
-    for (const auto & topic_name : filtered_topics(app->topics.publishes)) {
-      fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
-    }
-    for (const auto & topic_name : filtered_topics(app->topics.subscribes)) {
-      fault_code_to_topic.emplace(generate_fault_code(topic_name), topic_name);
-    }
-  }
-
-  auto fault_data = ctx_->list_all_faults();
-  if (!fault_data.contains("faults") || !fault_data["faults"].is_array()) {
-    return stale_topics;
-  }
-
-  for (const auto & fault : fault_data["faults"]) {
-    if (!fault.contains("fault_code") || !fault.contains("severity") || !fault.contains("status")) {
-      continue;
-    }
-    const auto code_it = fault_code_to_topic.find(fault["fault_code"].get<std::string>());
-    if (code_it == fault_code_to_topic.end()) {
-      continue;
-    }
-    if (fault["status"].get<std::string>() == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
-        fault["severity"].get<uint8_t>() == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
-      stale_topics.insert(code_it->second);
-    }
-  }
-
-  return stale_topics;
-}
-
-GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const std::string & function_id,
-                                                                               const IntrospectionInput & input,
-                                                                               const std::string & timestamp,
-                                                                               bool include_stale_topics) {
+GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const IntrospectionInput & input,
+                                                                               const std::string & timestamp) {
   GraphBuildState state;
   state.now_ns = current_time_ns();
   {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     state.topic_metrics = topic_metrics_;
-  }
-  if (include_stale_topics) {
-    state.stale_topics = collect_stale_topics(function_id, input);
   }
 
   {

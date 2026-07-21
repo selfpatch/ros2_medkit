@@ -23,7 +23,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
@@ -55,7 +54,6 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
 
   struct GraphBuildState {
     std::unordered_map<std::string, TopicMetrics> topic_metrics;
-    std::unordered_set<std::string> stale_topics;
     std::unordered_map<std::string, std::string> last_seen_by_app;
     // Epoch nanoseconds (plugin clock) used as "now" for freshness
     // comparisons against TopicMetrics::last_update_ns. Explicit field
@@ -99,16 +97,12 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg);
   static std::optional<TopicMetrics> parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status);
   static std::optional<double> parse_double(const std::string & value);
-  static std::string generate_fault_code(const std::string & diagnostic_name);
   static std::string current_timestamp();
   static int64_t current_time_ns();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
   std::optional<nlohmann::json> build_current_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
-  std::unordered_set<std::string> collect_stale_topics(const std::string & function_id,
-                                                       const IntrospectionInput & input) const;
-  GraphBuildState build_state_snapshot(const std::string & function_id, const IntrospectionInput & input,
-                                       const std::string & timestamp, bool include_stale_topics = true);
+  GraphBuildState build_state_snapshot(const IntrospectionInput & input, const std::string & timestamp);
   void load_parameters();
 
   RosPluginContext * ctx_{nullptr};

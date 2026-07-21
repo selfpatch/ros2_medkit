@@ -27,7 +27,6 @@ include(ROS2MedkitWarnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(ros2_medkit_gateway REQUIRED)
-find_package(ros2_medkit_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
@@ -45,7 +44,6 @@ target_include_directories(ros2_medkit_graph_provider_plugin PRIVATE
 )
 
 medkit_target_dependencies(ros2_medkit_graph_provider_plugin
-  ros2_medkit_msgs
   ros2_medkit_gateway
   rclcpp
   diagnostic_msgs
@@ -110,7 +108,6 @@ if(BUILD_TESTING)
     ros2_medkit_gateway
     rclcpp
     diagnostic_msgs
-    ros2_medkit_msgs
   )
   target_compile_definitions(test_graph_provider_plugin PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
   target_link_libraries(test_graph_provider_plugin
