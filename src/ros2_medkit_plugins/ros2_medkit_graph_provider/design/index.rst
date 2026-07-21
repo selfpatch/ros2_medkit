@@ -35,7 +35,6 @@ The following diagram shows the plugin's main components and data flow.
            +register_capability()
            +register_sampler()
            +get_entity_snapshot()
-           +list_all_faults()
        }
    }
 
@@ -46,8 +45,8 @@ The following diagram shows the plugin's main components and data flow.
    package "ros2_medkit_graph_provider" {
 
        class GraphProviderPlugin {
-           - graph_cache_: map<string, json>
            - topic_metrics_: map<string, TopicMetrics>
+           - topic_metrics_order_: deque<string>
            - last_seen_by_app_: map<string, string>
            - config_: ConfigOverrides
            --
@@ -55,11 +54,11 @@ The following diagram shows the plugin's main components and data flow.
            + {static} build_graph_document(): json
            --
            - subscribe_to_diagnostics()
-           - diagnostics_callback(msg)
-           - get_cached_or_built_graph(func_id)
+           - diagnostics_callback(msg, msg_info)
+           - resolve_publisher_source(msg_info): optional<string>
+           - build_current_graph(func_id)
            - build_graph_from_entity_cache(func_id)
-           - collect_stale_topics(func_id)
-           - build_state_snapshot()
+           - build_state_snapshot(input, timestamp)
            - resolve_config(func_id)
            - load_parameters()
        }
@@ -67,21 +66,24 @@ The following diagram shows the plugin's main components and data flow.
        class TopicMetrics {
            + frequency_hz: optional<double>
            + latency_ms: optional<double>
-           + drop_rate_percent: double
+           + drop_rate_percent: optional<double>
            + expected_frequency_hz: optional<double>
+           + source: optional<string>
+           + last_update_ns: int64
        }
 
        class GraphBuildState {
            + topic_metrics: map
-           + stale_topics: set
            + last_seen_by_app: map
-           + diagnostics_seen: bool
+           + now_ns: int64
        }
 
        class GraphBuildConfig {
            + expected_frequency_hz_default: 30.0
            + degraded_frequency_ratio: 0.5
            + drop_rate_percent_threshold: 5.0
+           + freshness_headroom_factor: 3.0
+           + freshness_floor_sec: 5.0
        }
    }
 
@@ -100,30 +102,39 @@ Graph Document Schema
 
 The plugin generates a JSON document per Function entity with the following structure:
 
-- **schema_version**: ``"1.0.0"``
+- **schema_version**: ``"2.0.0"`` - a real, semver contract on the document's shape and
+  field semantics. A minor bump is additive/backward-compatible (new optional field, new
+  enum value a tolerant client can ignore); a major bump means the shape or the meaning of
+  an existing field changed and old parsing logic may break.
 - **graph_id**: ``"{function_id}-graph"``
 - **timestamp**: ISO 8601 nanosecond timestamp
 - **scope**: Function entity that owns the graph
 - **pipeline_status**: ``"healthy"``, ``"degraded"``, or ``"broken"``
 - **bottleneck_edge**: Edge ID with the lowest frequency ratio (only when degraded)
-- **topics**: List of topics with stable IDs
+- **topics**: List of topics with **positional** IDs (``topic-1``, ``topic-2``, ...,
+  assigned by enumeration order on every build). They renumber whenever the topic set
+  changes and must never be persisted or treated as stable across requests.
 - **nodes**: List of app entities with reachability status
-- **edges**: Publisher-subscriber connections with per-edge metrics
+- **edges**: Publisher-subscriber connections with per-edge metrics, keyed by
+  equally positional ``edge-1``, ``edge-2``, ... IDs
 
-Edge metrics include frequency, latency, drop rate, and a status field:
+Edge metrics include frequency, latency, drop rate, and a ``metrics_status`` field:
 
-- ``"active"`` - Diagnostics data available, normal operation
-- ``"pending"`` - No diagnostics data received yet
-- ``"error"`` - Node offline, topic stale, or no data source after diagnostics started
+- ``"active"`` - A ``/diagnostics`` sample was merged within the freshness window
+- ``"pending"`` - No ``/diagnostics`` sample has ever been merged for this topic
+- ``"error"`` - A sample was merged in the past, but the newest one is older than the
+  freshness window (``error_reason: "metrics_stale"`` - the only reachable value)
 
 Pipeline Status Logic
 ---------------------
 
 The overall pipeline status is determined by aggregating edge states:
 
-1. **broken** - At least one edge has ``metrics_status: "error"`` (node offline or topic stale)
+1. **broken** - At least one edge has ``metrics_status: "error"`` (``metrics_stale`` -
+   a real, currently-broken data flow)
 2. **degraded** - At least one edge has frequency below the degraded ratio threshold, or drop rate exceeds the threshold
-3. **healthy** - All edges are active with acceptable metrics
+3. **healthy** - Everything else, including a graph where every edge is still ``pending``
+   (a pipeline that was never observed is not evidence of a broken one)
 
 When the status is ``"degraded"``, the ``bottleneck_edge`` field identifies the edge
 with the lowest frequency-to-expected ratio, helping operators pinpoint the
@@ -136,30 +147,36 @@ Diagnostics Subscription
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 The plugin subscribes to ``/diagnostics`` and parses ``DiagnosticStatus`` messages
-for topic-level metrics. Recognized keys:
+for topic-level metrics, keyed on ``DiagnosticStatus.name`` (the fully-qualified
+topic name). Recognized keys:
 
-- ``frame_rate_msg`` - Mapped to ``frequency_hz``
+- ``frame_rate_msg`` - Mapped to ``frequency_hz``; falls back to ``frame_rate_node``
+  when ``frame_rate_msg`` is present but exactly ``0`` (header-less message types
+  cannot be rated from a header timestamp)
 - ``current_delay_from_realtime_ms`` - Mapped to ``latency_ms``
 - ``drop_rate_percent`` / ``drop_rate`` - Mapped to ``drop_rate_percent``
-- ``expected_frequency`` - Mapped to ``expected_frequency_hz``
+- ``expected_frequency`` - Mapped to ``expected_frequency_hz``; wins over any
+  graph-provider-side configuration for that topic when present
+- ``total_dropped_frames`` - Recognized (keeps the sample from being skipped as
+  irrelevant) but not currently mapped to an output field
 
-A bounded cache (max 512 topics) with LRU eviction prevents unbounded memory growth.
+Each ``DiagnosticArray`` message resolves to exactly one publisher (via publisher
+GID matching against ``get_publishers_info_by_topic("/diagnostics")``), stamped as
+``metrics.source`` on every topic that message updates. No GID match leaves
+``source`` unresolved for that update - never a fabricated name or a vendor
+literal; a pending or unresolved edge simply omits the ``source`` key.
 
-Fault Manager Integration
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The plugin queries the fault manager via ``PluginContext::list_all_faults()`` to
-detect stale topics. A topic is considered stale when there is a confirmed critical
-fault whose fault code matches the topic name (after normalization). Stale topics
-cause their edges to be marked as ``"error"`` with reason ``"topic_stale"``.
+A bounded cache (max 512 topics) with FIFO eviction (oldest-inserted topic evicted
+first, tracked via an insertion-ordered deque) prevents unbounded memory growth.
 
 Entity Cache
 ~~~~~~~~~~~~
 
-On HTTP requests, the plugin rebuilds the graph from the current entity cache
-(``PluginContext::get_entity_snapshot()``) rather than serving the potentially stale
-introspection-pipeline cache. This ensures the HTTP endpoint always reflects the
-latest node and topic state.
+On every request (HTTP route and cyclic-subscription sampler alike), the plugin
+rebuilds the graph fresh from the current entity cache
+(``PluginContext::get_entity_snapshot()``) - there is no cross-request graph cache
+to go stale. This ensures the response always reflects the latest node and topic
+state.
 
 Function Scoping
 ~~~~~~~~~~~~~~~~

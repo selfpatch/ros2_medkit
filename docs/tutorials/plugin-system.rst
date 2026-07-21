@@ -883,6 +883,16 @@ Per-function overrides are also supported:
        plugins.graph_provider.function_overrides.my_pipeline.degraded_frequency_ratio: 0.3
        plugins.graph_provider.function_overrides.my_pipeline.drop_rate_percent_threshold: 2.0
 
+.. note::
+
+   The keys above are not the full set. There are also two freshness-window keys
+   (``freshness_floor_sec``, ``freshness_headroom_factor``) that control when an
+   edge with no recent ``/diagnostics`` sample flips from ``active`` to
+   ``error``/``metrics_stale``. See :doc:`/config/graph-provider` for the
+   complete reference, and :doc:`graph-provider` for the ``/diagnostics``
+   producer contract this plugin depends on - without a matching producer,
+   every edge stays ``pending`` forever.
+
 **Disabling the plugin**
 
 To disable graph functionality without uninstalling the package, remove ``"graph_provider"``

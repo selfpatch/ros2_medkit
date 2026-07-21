@@ -372,6 +372,11 @@ Functions
 
 ``GET /api/v1/functions/{function_id}/x-medkit-graph``
    Get a function-scoped topology snapshot with per-topic metrics and pipeline status.
+   Served by the ``ros2_medkit_graph_provider`` plugin. **Requires a real
+   ``/diagnostics`` producer** publishing ``DiagnosticStatus`` messages keyed on the
+   exact fully-qualified topic name - without one, every edge stays ``"pending"``
+   forever. See :doc:`/tutorials/graph-provider` for the full prerequisites and a
+   worked walkthrough, and :doc:`/config/graph-provider` for the threshold reference.
 
    **Example Response:**
 
@@ -379,7 +384,7 @@ Functions
 
       {
         "x-medkit-graph": {
-          "schema_version": "1.0.0",
+          "schema_version": "2.0.0",
           "graph_id": "perception_graph-graph",
           "timestamp": "2026-03-08T12:00:00.000Z",
           "scope": {
@@ -387,11 +392,15 @@ Functions
             "entity_id": "perception_graph"
           },
           "pipeline_status": "degraded",
-          "bottleneck_edge": "edge-2",
+          "bottleneck_edge": "edge-1",
           "topics": [
             {
               "topic_id": "topic-1",
               "name": "/camera/front/image_raw"
+            },
+            {
+              "topic_id": "topic-2",
+              "name": "/camera/front/camera_info"
             }
           ],
           "nodes": [
@@ -401,23 +410,35 @@ Functions
             },
             {
               "entity_id": "detector",
-              "node_status": "unreachable",
-              "last_seen": "2026-03-08T11:59:42.100Z"
+              "node_status": "reachable"
             }
           ],
           "edges": [
             {
-              "edge_id": "edge-2",
+              "edge_id": "edge-1",
               "source": "camera_front",
               "target": "detector",
               "topic_id": "topic-1",
               "transport_type": "unknown",
               "metrics": {
-                "source": "greenwave_monitor",
+                "source": "/greenwave_monitor",
                 "frequency_hz": 12.5,
                 "latency_ms": 4.2,
                 "drop_rate_percent": 0.0,
                 "metrics_status": "active"
+              }
+            },
+            {
+              "edge_id": "edge-2",
+              "source": "camera_front",
+              "target": "detector",
+              "topic_id": "topic-2",
+              "transport_type": "unknown",
+              "metrics": {
+                "frequency_hz": null,
+                "latency_ms": null,
+                "drop_rate_percent": 0.0,
+                "metrics_status": "pending"
               }
             }
           ]
@@ -426,10 +447,35 @@ Functions
 
    **Field Notes:**
 
-   - ``pipeline_status``: overall graph state, one of ``healthy``, ``degraded``, ``broken``
+   - ``schema_version``: semver contract on the document's shape and field semantics.
+     A minor bump is additive/backward-compatible (new optional field, new enum value a
+     tolerant client can ignore); a major bump means an existing field's shape or
+     meaning changed and old parsing logic may break.
+   - ``pipeline_status``: overall graph state, one of ``healthy``, ``degraded``, ``broken``.
+     A graph where every edge is still ``pending`` reads as ``healthy`` - a pipeline
+     never observed is not evidence of a broken one.
    - ``node_status``: per-node reachability, one of ``reachable``, ``unreachable``
-   - ``metrics_status``: per-edge telemetry state, one of ``pending``, ``active``, ``error``
-   - ``error_reason``: present when ``metrics_status`` is ``error``; one of ``node_offline``, ``topic_stale``, ``no_data_source``
+   - ``topic_id`` / ``edge_id``: **positional, not stable.** Assigned by enumeration
+     order on every build (``topic-1``, ``topic-2``, ... / ``edge-1``, ``edge-2``, ...)
+     and renumbered whenever the topic/edge set changes. Do not persist them or use
+     them as a cross-request reference.
+   - ``metrics_status``: per-edge telemetry state, one of:
+
+     - ``pending`` - no ``/diagnostics`` sample has ever been merged for this topic
+       (permanent until real data arrives)
+     - ``active`` - a sample was merged within the freshness window (tracks freshness,
+       not field completeness)
+     - ``error`` - a sample was merged in the past, but the newest one is older than
+       the freshness window
+   - ``error_reason``: present only when ``metrics_status`` is ``error``; the only
+     reachable value is ``metrics_stale``
+   - ``metrics.source``: the resolved fully-qualified node name that published the
+     ``/diagnostics`` message this edge's metrics were last updated from. **Omitted**
+     on ``pending`` edges and on any edge whose most recent sample could not be
+     attributed to a specific publisher - never a fabricated name or a hardcoded
+     vendor literal.
+   - ``transport_type``: reserved and currently unpopulated. Always the literal
+     ``"unknown"``.
 
    .. note::
 

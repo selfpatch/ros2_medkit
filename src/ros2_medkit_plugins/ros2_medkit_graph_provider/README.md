@@ -1,37 +1,60 @@
 # ros2_medkit_graph_provider
 
-Gateway plugin that provides ROS 2 topic graph analysis with latency, frequency,
-and drop-rate metrics. This is the default `IntrospectionProvider` - extracted
-from `ros2_medkit_gateway` into a standalone plugin package in v0.4.0.
+Gateway plugin that builds a live ROS 2 topic dataflow graph per SOVD Function,
+enriched with frequency, latency, and drop-rate metrics sourced from `/diagnostics`.
+This is the default `IntrospectionProvider` - extracted from `ros2_medkit_gateway`
+into a standalone plugin package in v0.4.0.
 
 ## What It Does
 
-- Subscribes to `/diagnostics` for hardware-level metrics
-- Builds a topic graph with per-topic metrics: frequency (Hz), latency (ms), drop rate (%)
-- Detects stale topics with no recent data
-- Tracks which nodes published to which topics
-- Provides graph state snapshots via the `x-medkit-graph` vendor extension endpoint
+- Serves `GET /api/v1/functions/{function_id}/x-medkit-graph`, plus a cyclic-subscription
+  sampler under the same resource name and a capability href on every Function's
+  detail response.
+- Subscribes to `/diagnostics` and resolves the publishing node for each metrics sample
+  (never a fabricated or hardcoded name).
+- Builds a per-Function graph of Apps (nodes) and topic connections (edges) with
+  per-edge frequency (Hz), latency (ms), and drop-rate (%) metrics.
+- Reports `pipeline_status` (`healthy` / `degraded` / `broken`) and, when degraded,
+  the `bottleneck_edge`.
+
+The metrics require a real `/diagnostics` producer running elsewhere in your system -
+see the [Graph Provider tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/graph-provider.html)
+for the producer contract before doing anything else. Without one, every edge stays
+`pending` forever.
 
 ## Configuration
 
-Loaded as a gateway plugin via `gateway.launch.py` (configured by default):
+Loaded as a gateway plugin. `gateway.launch.py` auto-detects and loads this plugin
+when the package is installed, with no configuration required. To load it manually:
 
 ```yaml
 plugins: ["graph_provider"]
-plugins.graph_provider.path: "/path/to/libros2_medkit_graph_provider.so"
-plugins.graph_provider.expected_frequency_hz: 30.0
+plugins.graph_provider.path: "/path/to/lib/ros2_medkit_graph_provider/libros2_medkit_graph_provider_plugin.so"
+plugins.graph_provider.expected_frequency_hz_default: 30.0
 ```
+
+See the [configuration reference](https://selfpatch.github.io/ros2_medkit/config/graph-provider.html)
+for the full set of thresholds and per-function overrides.
 
 ## Architecture
 
 The plugin implements `GatewayPlugin` + `IntrospectionProvider`:
 
 - `GraphProviderPlugin` - Main plugin class with ROS 2 subscriptions
-- `GraphBuildState` - Internal state tracking topic metrics and staleness
-- `GraphBuildConfig` - Configuration (expected frequency defaults)
+- `GraphBuildState` - Per-request snapshot of topic metrics and app last-seen timestamps
+- `GraphBuildConfig` - Resolved thresholds (expected frequency, degradation, freshness)
 
 Entity cache is populated from the ROS 2 graph during each discovery cycle
-via the merge pipeline's `PluginLayer`.
+via the merge pipeline's `PluginLayer`. The graph document itself is always rebuilt
+fresh from the live entity cache on every request - there is no cross-request cache
+to go stale.
+
+## Documentation
+
+- [Graph Provider Tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/graph-provider.html)
+- [Graph Provider Configuration](https://selfpatch.github.io/ros2_medkit/config/graph-provider.html)
+- [Plugin System Guide](https://selfpatch.github.io/ros2_medkit/tutorials/plugin-system.html)
+- [REST API Reference](https://selfpatch.github.io/ros2_medkit/api/rest.html)
 
 ## License
 
