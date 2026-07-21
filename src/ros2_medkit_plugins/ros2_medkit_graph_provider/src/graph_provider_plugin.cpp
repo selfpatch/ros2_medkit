@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <ros2_medkit_msgs/msg/fault.hpp>
 #include <set>
 #include <utility>
@@ -60,6 +61,27 @@ bool is_filtered_topic_name(const std::string & topic_name) {
     return true;
   }
   return false;
+}
+
+// Flatten a (possibly nested) JSON object back to dotted keys. The gateway
+// splits every dotted plugin-config parameter on '.' and builds a nested
+// object (param_utils.hpp's insert_nested_param), so
+// plugins.graph_provider.function_overrides.<function_id>.<field> arrives as
+// {"function_overrides": {"<function_id>": {"<field>": value}}}, never as a
+// flat "function_overrides.<function_id>.<field>" key. Walk it back to the
+// full dotted key so the existing "split on the last dot" parsing keeps
+// working unchanged, the same way the commercial graph_watchdog package's
+// ParamDriftConfig::flatten_expect() un-nests a dotted `expect` config key.
+void flatten_json_object(const nlohmann::json & obj, const std::string & prefix,
+                         std::map<std::string, nlohmann::json> & out) {
+  for (const auto & item : obj.items()) {
+    const std::string key = prefix.empty() ? item.key() : prefix + "." + item.key();
+    if (item.value().is_object()) {
+      flatten_json_object(item.value(), key, out);
+    } else {
+      out.emplace(key, item.value());
+    }
+  }
 }
 
 struct EdgeBuildResult {
@@ -378,7 +400,7 @@ void GraphProviderPlugin::set_context(PluginContext & context) {
   ctx_->register_sampler("x-medkit-graph",
                          [this](const std::string & entity_id,
                                 const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
-                           auto payload = get_cached_or_built_graph(entity_id);
+                           auto payload = build_current_graph(entity_id);
                            if (!payload.has_value()) {
                              return tl::make_unexpected(std::string("Graph snapshot not available: ") + entity_id);
                            }
@@ -418,7 +440,7 @@ std::vector<GatewayPlugin::PluginRoute> GraphProviderPlugin::get_routes() {
            return;
          }
 
-         auto payload = get_cached_or_built_graph(function_id);
+         auto payload = build_current_graph(function_id);
          if (!payload.has_value()) {
            res.send_error(503, ERR_SERVICE_UNAVAILABLE, "Graph snapshot not available", {{"function_id", function_id}});
            return;
@@ -430,20 +452,33 @@ std::vector<GatewayPlugin::PluginRoute> GraphProviderPlugin::get_routes() {
 }
 
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
-  std::unordered_map<std::string, nlohmann::json> new_cache;
+  // Building a per-function graph document here used to feed graph_cache_,
+  // but nothing ever read it: get_cached_or_built_graph's (now
+  // build_current_graph's) rebuild-from-live-snapshot branch runs whenever
+  // ctx_ is set, which is unconditionally true in production, so the cache
+  // read was dead code and this was O(functions x apps x topics) of pure
+  // waste on the discovery thread every cycle. Only run build_state_snapshot
+  // for its last_seen_by_app_ side effect (marks online apps seen now, prunes
+  // apps no longer in the graph at all) - the graph itself is always built
+  // fresh, on demand, in build_current_graph.
+  //
+  // The gateway's refresh loop (backstop timer + graph-change poller) always
+  // calls every plugin's introspect() with a default-constructed, EMPTY
+  // IntrospectionInput (gateway_node.cpp: `IntrospectionInput input;` right
+  // before `provider->introspect(input)`), in every discovery mode. Trusting
+  // that empty `input` for the prune below would erase last_seen_by_app_ in
+  // its entirety on every cycle, including apps that are genuinely
+  // present-but-offline, destroying the very feature the prune exists to
+  // preserve. Pull the real, current app set from the live entity cache
+  // instead - the same source build_graph_from_entity_cache already uses on
+  // the on-request path - so the prune sees the true app set regardless of
+  // what the caller happened to pass in. This only fetches the flat entity
+  // lists (areas/components/apps/functions) from the cache under a shared
+  // lock, not a per-function graph document build, so it does not reintroduce
+  // the waste removed above.
   const auto timestamp = current_timestamp();
-  auto state = build_state_snapshot("", input, timestamp, false);
-
-  for (const auto & function : input.functions) {
-    new_cache.emplace(function.id,
-                      build_graph_document(function.id, input, state, resolve_config(function.id), timestamp));
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    graph_cache_.swap(new_cache);
-  }
-
+  const auto snapshot_input = ctx_ ? ctx_->get_entity_snapshot() : input;
+  build_state_snapshot("", snapshot_input, timestamp, false);
   return {};
 }
 
@@ -635,28 +670,19 @@ GraphProviderPlugin::GraphBuildConfig GraphProviderPlugin::resolve_config(const 
   return resolved;
 }
 
-std::optional<nlohmann::json> GraphProviderPlugin::get_cached_or_built_graph(const std::string & function_id) {
-  // In the real gateway, the merged entity cache is the source of truth. The
-  // plugin-side cache is populated during the merge pipeline before runtime
-  // linking finishes, so rebuilding here avoids serving stale node/topic state.
-  if (ctx_) {
-    auto rebuilt = build_graph_from_entity_cache(function_id);
-    if (rebuilt.has_value()) {
-      std::lock_guard<std::mutex> lock(cache_mutex_);
-      graph_cache_[function_id] = *rebuilt;
-      return rebuilt;
-    }
+std::optional<nlohmann::json> GraphProviderPlugin::build_current_graph(const std::string & function_id) {
+  // In the real gateway, the merged entity cache (read via
+  // ctx_->get_entity_snapshot() inside build_graph_from_entity_cache) is the
+  // source of truth, so this always rebuilds from it rather than serving a
+  // possibly-stale pre-built document. There used to be a graph_cache_
+  // fallback for when ctx_ was unset, but ctx_ is always set by the time
+  // either caller (the HTTP route and the cyclic-subscription sampler) can
+  // reach this method - both are only reachable after set_context() has run -
+  // so that fallback was unreachable dead code and has been removed.
+  if (!ctx_) {
+    return std::nullopt;
   }
-
-  {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto it = graph_cache_.find(function_id);
-    if (it != graph_cache_.end()) {
-      return it->second;
-    }
-  }
-
-  return std::nullopt;
+  return build_graph_from_entity_cache(function_id);
 }
 
 std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache(const std::string & function_id) {
@@ -726,9 +752,26 @@ GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(c
 
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
+    std::unordered_set<std::string> known_app_ids;
+    known_app_ids.reserve(input.apps.size());
     for (const auto & app : input.apps) {
+      known_app_ids.insert(app.id);
       if (app.is_online) {
         last_seen_by_app_[app.id] = timestamp;
+      }
+    }
+    // Bound the map: an entry is only useful while its app is still known to
+    // the graph (only offline apps' entries are ever read, to fill last_seen
+    // on an unreachable node). Without this, ROS 2's continuously-minted
+    // unique node names (_ros2cli_<pid> from every CLI call, respawned nodes)
+    // make this map grow without bound, and the whole thing is deep-copied
+    // below on every HTTP request, sampler tick, and discovery cycle. An app
+    // that is merely offline (still present in input.apps) is untouched here.
+    for (auto it = last_seen_by_app_.begin(); it != last_seen_by_app_.end();) {
+      if (known_app_ids.count(it->first) == 0) {
+        it = last_seen_by_app_.erase(it);
+      } else {
+        ++it;
       }
     }
     state.last_seen_by_app = last_seen_by_app_;
@@ -745,44 +788,97 @@ void GraphProviderPlugin::load_parameters() {
     return default_val;
   };
 
-  ConfigOverrides new_config;
-  new_config.defaults.expected_frequency_hz_default = get_config_double("expected_frequency_hz_default", 30.0);
-  new_config.defaults.degraded_frequency_ratio = get_config_double("degraded_frequency_ratio", 0.5);
-  new_config.defaults.drop_rate_percent_threshold = get_config_double("drop_rate_percent_threshold", 5.0);
-  new_config.defaults.freshness_headroom_factor = get_config_double("freshness_headroom_factor", 3.0);
-  new_config.defaults.freshness_floor_sec = get_config_double("freshness_floor_sec", 5.0);
+  // A non-positive expected_frequency_hz_default/degraded_frequency_ratio/
+  // freshness_headroom_factor/freshness_floor_sec silently disables
+  // degradation and staleness detection (resolve_expected_frequency and
+  // resolve_freshness_window_sec both divide by / gate on these), and a
+  // negative drop_rate_percent_threshold has the same silent effect (zero is
+  // a valid threshold there). Reject a bad value, fall back to `fallback`
+  // (always one of this function's own hardcoded, always-valid defaults), and
+  // warn naming the offending key and value.
+  auto validate_positive = [this](const std::string & key, double value, double fallback) -> double {
+    if (value > 0.0) {
+      return value;
+    }
+    log_warn("Ignoring invalid graph provider config '" + key + "'=" + std::to_string(value) +
+             " (want a positive number); keeping " + std::to_string(fallback));
+    return fallback;
+  };
+  auto validate_non_negative = [this](const std::string & key, double value, double fallback) -> double {
+    if (value >= 0.0) {
+      return value;
+    }
+    log_warn("Ignoring invalid graph provider config '" + key + "'=" + std::to_string(value) +
+             " (want a non-negative number); keeping " + std::to_string(fallback));
+    return fallback;
+  };
 
-  // Per-function overrides from config (keys like "function_overrides.<func>.<field>")
-  const std::string prefix = "function_overrides.";
-  for (const auto & [key, value] : plugin_config_.items()) {
-    if (key.rfind(prefix, 0) != 0 || !value.is_number()) {
+  ConfigOverrides new_config;
+  new_config.defaults.expected_frequency_hz_default = validate_positive(
+      "expected_frequency_hz_default", get_config_double("expected_frequency_hz_default", 30.0), 30.0);
+  new_config.defaults.degraded_frequency_ratio =
+      validate_positive("degraded_frequency_ratio", get_config_double("degraded_frequency_ratio", 0.5), 0.5);
+  new_config.defaults.drop_rate_percent_threshold =
+      validate_non_negative("drop_rate_percent_threshold", get_config_double("drop_rate_percent_threshold", 5.0), 5.0);
+  new_config.defaults.freshness_headroom_factor =
+      validate_positive("freshness_headroom_factor", get_config_double("freshness_headroom_factor", 3.0), 3.0);
+  new_config.defaults.freshness_floor_sec =
+      validate_positive("freshness_floor_sec", get_config_double("freshness_floor_sec", 5.0), 5.0);
+
+  // Per-function overrides. The gateway delivers plugin config as nested
+  // objects, never as a flat "function_overrides.<function_id>.<field>" key
+  // (see param_utils.hpp's insert_nested_param): a dotted parameter
+  // plugins.graph_provider.function_overrides.<function_id>.<field> arrives
+  // as {"function_overrides": {"<function_id>": {"<field>": value}}}.
+  // Flatten it back to a dotted key exactly the way
+  // ros2_medkit_graph_watchdog's ParamDriftConfig::flatten_expect() un-nests
+  // its `expect` config key, then split on the LAST dot: every field name
+  // below is a fixed, dot-free identifier, so this is unambiguous even if the
+  // function id itself contains a dot (matching how insert_nested_param would
+  // have split such an id into further nesting levels on the way in).
+  std::map<std::string, nlohmann::json> flat_overrides;
+  if (plugin_config_.contains("function_overrides") && plugin_config_["function_overrides"].is_object()) {
+    flatten_json_object(plugin_config_["function_overrides"], "", flat_overrides);
+  }
+
+  for (const auto & [key, value] : flat_overrides) {
+    if (!value.is_number()) {
       continue;
     }
 
-    const auto remainder = key.substr(prefix.size());
-    const auto dot = remainder.rfind('.');
+    const auto dot = key.rfind('.');
     if (dot == std::string::npos) {
       continue;
     }
 
-    const auto function_id = remainder.substr(0, dot);
-    const auto field = remainder.substr(dot + 1);
+    const auto function_id = key.substr(0, dot);
+    const auto field = key.substr(dot + 1);
+    const auto log_key = "function_overrides." + key;
 
     auto [config_it, inserted] = new_config.by_function.emplace(function_id, new_config.defaults);
     auto & function_config = config_it->second;
     (void)inserted;
 
     const double numeric_value = value.get<double>();
+    // An override must not be able to smuggle in a value the defaults above
+    // would reject (e.g. a zero expected_frequency_hz); on rejection it falls
+    // back to whatever this function's config already resolved to (the
+    // validated default, or an earlier valid override for the same field).
     if (field == "expected_frequency_hz") {
-      function_config.expected_frequency_hz_default = numeric_value;
+      function_config.expected_frequency_hz_default =
+          validate_positive(log_key, numeric_value, function_config.expected_frequency_hz_default);
     } else if (field == "degraded_frequency_ratio") {
-      function_config.degraded_frequency_ratio = numeric_value;
+      function_config.degraded_frequency_ratio =
+          validate_positive(log_key, numeric_value, function_config.degraded_frequency_ratio);
     } else if (field == "drop_rate_percent_threshold") {
-      function_config.drop_rate_percent_threshold = numeric_value;
+      function_config.drop_rate_percent_threshold =
+          validate_non_negative(log_key, numeric_value, function_config.drop_rate_percent_threshold);
     } else if (field == "freshness_headroom_factor") {
-      function_config.freshness_headroom_factor = numeric_value;
+      function_config.freshness_headroom_factor =
+          validate_positive(log_key, numeric_value, function_config.freshness_headroom_factor);
     } else if (field == "freshness_floor_sec") {
-      function_config.freshness_floor_sec = numeric_value;
+      function_config.freshness_floor_sec =
+          validate_positive(log_key, numeric_value, function_config.freshness_floor_sec);
     }
   }
 
