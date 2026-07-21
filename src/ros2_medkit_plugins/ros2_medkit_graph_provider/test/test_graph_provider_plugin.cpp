@@ -523,7 +523,7 @@ TEST(GraphProviderPluginBuildTest, ReturnsEmptyGraphForNoApps) {
                                                        "2026-03-08T12:00:00.000Z");
   const auto & graph = doc["x-medkit-graph"];
 
-  EXPECT_EQ(graph["schema_version"], "1.0.0");
+  EXPECT_EQ(graph["schema_version"], kGraphSchemaVersion);
   EXPECT_EQ(graph["graph_id"], "fn-graph");
   EXPECT_EQ(graph["scope"]["type"], "function");
   EXPECT_EQ(graph["scope"]["entity_id"], "fn");
@@ -719,7 +719,7 @@ TEST(GraphProviderPluginRouteTest, ServesFunctionGraphFromCachedSnapshot) {
 
   auto body = nlohmann::json::parse(res->body);
   ASSERT_TRUE(body.contains("x-medkit-graph"));
-  EXPECT_EQ(body["x-medkit-graph"]["schema_version"], "1.0.0");
+  EXPECT_EQ(body["x-medkit-graph"]["schema_version"], kGraphSchemaVersion);
   EXPECT_EQ(body["x-medkit-graph"]["scope"]["type"], "function");
   EXPECT_EQ(body["x-medkit-graph"]["scope"]["entity_id"], "fn");
   EXPECT_TRUE(body["x-medkit-graph"].contains("timestamp"));

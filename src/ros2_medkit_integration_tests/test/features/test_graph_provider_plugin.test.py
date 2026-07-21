@@ -126,7 +126,7 @@ class TestGraphProviderPlugin(GatewayTestCase):
 
         graph = data['x-medkit-graph']
         self.assertIn('schema_version', graph)
-        self.assertEqual(graph['schema_version'], '1.0.0')
+        self.assertEqual(graph['schema_version'], '2.0.0')
         self.assertIn('graph_id', graph)
         self.assertIn('timestamp', graph)
         self.assertIn('scope', graph)

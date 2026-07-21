@@ -294,7 +294,7 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
                                              const GraphProviderPlugin::GraphBuildState & state,
                                              const GraphProviderPlugin::GraphBuildConfig & config,
                                              const std::string & timestamp) {
-  nlohmann::json graph = {{"schema_version", "1.0.0"},
+  nlohmann::json graph = {{"schema_version", kGraphSchemaVersion},
                           {"graph_id", function_id + "-graph"},
                           {"timestamp", timestamp},
                           {"scope", {{"type", "function"}, {"entity_id", function_id}}},
