@@ -79,6 +79,16 @@ void PluginResponse::send_error(int status, const std::string & /*error_code*/, 
   res.headers.emplace("Content-Type", "application/json");
 }
 
+// Accessor for private state, used only by tests that need to observe an
+// internal bound (last_seen_by_app_ size) rather than a JSON-visible field.
+class GraphProviderPluginTestAccess {
+ public:
+  static size_t last_seen_by_app_count(const GraphProviderPlugin & plugin) {
+    std::lock_guard<std::mutex> lock(plugin.status_mutex_);
+    return plugin.last_seen_by_app_.size();
+  }
+};
+
 }  // namespace ros2_medkit_gateway
 
 /// Helper: register all routes from get_routes() on an httplib::Server with a given api_prefix.
@@ -696,17 +706,23 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   plugin.configure({});
   plugin.set_context(ctx);
 
+  // introspect() now sources the app set for its last_seen_by_app_ side
+  // effect from ctx_->get_entity_snapshot(), not from its own `input`
+  // parameter - matching the real gateway, which always calls introspect()
+  // with an empty IntrospectionInput. Set the snapshot on the context and
+  // pass an empty input to introspect(), exactly as production does.
   auto online_input = make_input({make_app("node1", {}, {}, true)}, {make_function("fn", {"node1"})});
-  plugin.introspect(online_input);
+  ctx.entity_snapshot_ = online_input;
+  plugin.introspect(IntrospectionInput{});
 
   // Ensure timestamps differ even under CPU contention during parallel testing
   std::this_thread::sleep_for(50ms);
 
   auto offline_input = make_input({make_app("node1", {}, {}, false)}, {make_function("fn", {"node1"})});
-  plugin.introspect(offline_input);
-
-  // Expose offline input to the context so get_cached_or_built_graph() rebuilds from current entity state.
   ctx.entity_snapshot_ = offline_input;
+  plugin.introspect(IntrospectionInput{});
+
+  // ctx.entity_snapshot_ already reflects offline_input, which build_current_graph() rebuilds from below.
 
   httplib::Server server;
   register_plugin_routes(server, "/api/v1", plugin);
@@ -795,6 +811,124 @@ TEST(GraphProviderPluginRouteTest, AppliesConfigFromConfigure) {
   auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
   ASSERT_TRUE(result.has_value());
   ASSERT_TRUE(result->contains("x-medkit-graph"));
+}
+
+// Defect C: last_seen_by_app_ must not retain an entry for an app that has
+// left discovery entirely (e.g. a ROS 2 `_ros2cli_<pid>` name that will never
+// be seen again) - only entries for apps still present (online OR offline)
+// in the current app set are useful, since only offline apps ever have their
+// last_seen read, and only while they are still known to the graph.
+TEST(GraphProviderPluginRouteTest, LastSeenByAppPrunesEntriesForAppsNoLongerInDiscovery) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  // introspect() sources the app set for this side effect from
+  // ctx_->get_entity_snapshot(), not from its own `input` parameter -
+  // matching the real gateway, which always calls introspect() with an
+  // empty IntrospectionInput. Set the snapshot on the context and pass an
+  // empty input to introspect(), exactly as production does.
+  auto input_three_apps =
+      make_input({make_app("a", {}, {}, true), make_app("b", {}, {}, true), make_app("c", {}, {}, true)},
+                 {make_function("fn", {"a", "b", "c"})});
+  ctx.entity_snapshot_ = input_three_apps;
+  plugin.introspect(IntrospectionInput{});
+  EXPECT_EQ(GraphProviderPluginTestAccess::last_seen_by_app_count(plugin), 3u);
+
+  // "b" and "c" leave discovery entirely on the next cycle (not merely go
+  // offline) - their last_seen entries must be pruned, not retained forever.
+  auto input_one_app = make_input({make_app("a", {}, {}, true)}, {make_function("fn", {"a"})});
+  ctx.entity_snapshot_ = input_one_app;
+  plugin.introspect(IntrospectionInput{});
+  EXPECT_EQ(GraphProviderPluginTestAccess::last_seen_by_app_count(plugin), 1u);
+}
+
+// Finding 1 regression test: the real gateway (gateway_node.cpp's refresh
+// loop) calls every plugin's introspect() with a default-constructed, EMPTY
+// IntrospectionInput on every cycle - the backstop timer and the debounced
+// graph-change poller both do this, in every discovery mode. Before the fix,
+// build_state_snapshot()'s known_app_ids set was built straight from that
+// empty `input`, so the prune erased last_seen_by_app_ in its entirety on
+// every single cycle - including entries for apps that are genuinely
+// present-but-offline in the real entity cache, destroying the offline-node
+// last_seen feature the prune was supposed to preserve. This test drives
+// introspect() exactly the way the gateway does (empty input, real state only
+// reachable via ctx_->get_entity_snapshot()) and asserts the offline app's
+// last_seen survives.
+TEST(GraphProviderPluginRouteTest, IntrospectWithEmptyInputStillPreservesOfflineLastSeen) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  // Cycle 1: "node1" is online. The gateway would call introspect() with an
+  // empty input here too, but the entity cache (ctx.entity_snapshot_) already
+  // reflects the real, populated graph.
+  auto online_input = make_input({make_app("node1", {}, {}, true)}, {make_function("fn", {"node1"})});
+  ctx.entity_snapshot_ = online_input;
+  plugin.introspect(IntrospectionInput{});
+  EXPECT_EQ(GraphProviderPluginTestAccess::last_seen_by_app_count(plugin), 1u);
+
+  std::this_thread::sleep_for(50ms);
+
+  // Cycle 2: "node1" goes offline but is still present in the entity cache.
+  // This is exactly what the gateway's refresh loop does: it calls
+  // introspect() with an EMPTY IntrospectionInput, never the real one.
+  auto offline_input = make_input({make_app("node1", {}, {}, false)}, {make_function("fn", {"node1"})});
+  ctx.entity_snapshot_ = offline_input;
+  plugin.introspect(IntrospectionInput{});
+
+  // The offline-but-still-known app's last_seen entry must have survived the
+  // prune (pre-fix, it would have been erased because the empty `input`
+  // parameter produced an empty known_app_ids set every cycle).
+  EXPECT_EQ(GraphProviderPluginTestAccess::last_seen_by_app_count(plugin), 1u);
+
+  httplib::Server server;
+  register_plugin_routes(server, "/api/v1", plugin);
+
+  LocalHttpServer local_server;
+  local_server.start(server);
+
+  httplib::Client client("127.0.0.1", local_server.port());
+  auto res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  for (int attempt = 0; !res && attempt < 19; ++attempt) {
+    std::this_thread::sleep_for(50ms);
+    res = client.Get("/api/v1/functions/fn/x-medkit-graph");
+  }
+
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res->status, 200);
+
+  auto body = nlohmann::json::parse(res->body);
+  const auto & graph = body["x-medkit-graph"];
+  const auto * node = find_node(graph, "node1");
+  ASSERT_NE(node, nullptr);
+  ASSERT_TRUE(node->contains("last_seen"));
+  EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
+
+  local_server.stop();
+}
+
+// Defect D pin: introspect() no longer pre-builds a per-function graph cache
+// (it had no reader - get_cached_or_built_graph's rebuild-first branch always
+// wins whenever ctx_ is set, which is always true in production). Serving a
+// function that was NEVER passed to introspect() must still work, proving
+// nothing depends on introspect() pre-populating anything for this function.
+TEST(GraphProviderPluginRouteTest, ServesGraphForFunctionNeverPassedToIntrospect) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  EXPECT_EQ(graph["edges"].size(), 1u);
 }
 
 class GraphProviderPluginRosTest : public ::testing::Test {
@@ -1110,4 +1244,205 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsCallbackAfterShutdownIsNoop) {
   IntrospectionInput input;
   auto result = plugin.introspect(input);
   // Just verifying it doesn't crash is sufficient
+}
+
+// Defect A: the gateway delivers per-function overrides as NESTED objects
+// (param_utils.hpp's insert_nested_param splits every dotted parameter on
+// '.'), never as a flat "function_overrides.<fn>.<field>" key. Construct the
+// config the way the gateway actually would, and assert the override changes
+// an observable graph field (pipeline_status) - not just that parsing
+// produced a map entry.
+TEST_F(GraphProviderPluginRosTest, PerFunctionOverrideFromNestedConfigChangesPipelineStatus) {
+  auto node = std::make_shared<rclcpp::Node>("test_nested_override_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"degraded_frequency_ratio", 0.95}}}}}};
+
+  GraphProviderPlugin plugin;
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  // Ratio 25/30 ~= 0.833: healthy under the default degraded_frequency_ratio
+  // (0.5), degraded once the 0.95 override for "fn" actually applies.
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/topic";
+  diagnostic_msgs::msg::KeyValue freq_kv;
+  freq_kv.key = "frame_rate_msg";
+  freq_kv.value = "25.0";
+  diagnostic_msgs::msg::KeyValue expected_kv;
+  expected_kv.key = "expected_frequency";
+  expected_kv.value = "30.0";
+  status.values.push_back(freq_kv);
+  status.values.push_back(expected_kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+  EXPECT_EQ(graph["bottleneck_edge"], (*edge)["edge_id"]);
+}
+
+// Defect B: expected_frequency_hz_default: 0 must be rejected (it makes
+// resolve_expected_frequency return 0, the `expected_frequency > 0.0` guard
+// in build_edge_json never passes, no edge is ever degraded, and
+// bottleneck_edge is always null - silently). The valid default (30.0) must
+// apply instead, so degradation detection keeps working.
+TEST_F(GraphProviderPluginRosTest, RejectsNonPositiveExpectedFrequencyDefaultAndKeepsDegradationDetectionWorking) {
+  auto node = std::make_shared<rclcpp::Node>("test_reject_zero_expected_frequency_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  nlohmann::json config = {{"expected_frequency_hz_default", 0.0}};
+
+  GraphProviderPlugin plugin;
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  // No "expected_frequency" key in this sample, so resolve_expected_frequency
+  // must fall through to config.expected_frequency_hz_default.
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/topic";
+  diagnostic_msgs::msg::KeyValue freq_kv;
+  freq_kv.key = "frame_rate_msg";
+  freq_kv.value = "5.0";
+  status.values.push_back(freq_kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+  EXPECT_FALSE(graph["bottleneck_edge"].is_null());
+}
+
+// Defect B: a negative degraded_frequency_ratio has the same silent effect as
+// a zero expected_frequency_hz_default (the ratio comparison never trips), so
+// it must be rejected too, falling back to the valid default (0.5).
+TEST_F(GraphProviderPluginRosTest, RejectsNegativeDegradedFrequencyRatioAndKeepsDefault) {
+  auto node = std::make_shared<rclcpp::Node>("test_reject_negative_ratio_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  nlohmann::json config = {{"degraded_frequency_ratio", -1.0}};
+
+  GraphProviderPlugin plugin;
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  // Ratio 9/30 = 0.3: degraded under the valid default (0.5), but NOT
+  // degraded if -1.0 were accepted literally (0.3 < -1.0 is false).
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/topic";
+  diagnostic_msgs::msg::KeyValue freq_kv;
+  freq_kv.key = "frame_rate_msg";
+  freq_kv.value = "9.0";
+  diagnostic_msgs::msg::KeyValue expected_kv;
+  expected_kv.key = "expected_frequency";
+  expected_kv.value = "30.0";
+  status.values.push_back(freq_kv);
+  status.values.push_back(expected_kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+}
+
+// Defect B regression: drop_rate_percent_threshold is the one field where
+// zero is a VALID, meaningful value (it uses validate_non_negative, unlike
+// every other field here which uses validate_positive and rejects zero).
+// Without a test, an accidental switch to validate_positive would silently
+// start rejecting a configured 0 and falling back to the 5.0 default -
+// nothing would catch it. Configure the threshold to 0 and publish a small
+// but positive drop rate (1.0%) that is healthy under the 5.0 default but
+// must trip degraded under a live 0 threshold (1.0 > 0.0).
+TEST_F(GraphProviderPluginRosTest, AcceptsZeroDropRateThresholdAndTripsOnAnyPositiveDropRate) {
+  auto node = std::make_shared<rclcpp::Node>("test_zero_drop_rate_threshold_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  nlohmann::json config = {{"drop_rate_percent_threshold", 0.0}};
+
+  GraphProviderPlugin plugin;
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  // Frequency ratio 30/30 = 1.0: healthy on its own, so only the drop rate
+  // can trip degraded here. drop_rate_percent 1.0 is healthy under the
+  // default threshold (5.0) but degraded under a live 0 threshold.
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/topic";
+  diagnostic_msgs::msg::KeyValue freq_kv;
+  freq_kv.key = "frame_rate_msg";
+  freq_kv.value = "30.0";
+  diagnostic_msgs::msg::KeyValue expected_kv;
+  expected_kv.key = "expected_frequency";
+  expected_kv.value = "30.0";
+  diagnostic_msgs::msg::KeyValue drop_kv;
+  drop_kv.key = "drop_rate_percent";
+  drop_kv.value = "1.0";
+  status.values.push_back(freq_kv);
+  status.values.push_back(expected_kv);
+  status.values.push_back(drop_kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["drop_rate_percent"], 1.0);
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
 }

@@ -33,7 +33,11 @@ namespace ros2_medkit_gateway {
 class PluginContext;
 class RosPluginContext;
 
+class GraphProviderPluginTestAccess;  // Forward declaration for test friend
+
 class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
+  friend class GraphProviderPluginTestAccess;
+
  public:
   struct TopicMetrics {
     std::optional<double> frequency_hz;
@@ -99,7 +103,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   static std::string current_timestamp();
   static int64_t current_time_ns();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
-  std::optional<nlohmann::json> get_cached_or_built_graph(const std::string & function_id);
+  std::optional<nlohmann::json> build_current_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
   std::unordered_set<std::string> collect_stale_topics(const std::string & function_id,
                                                        const IntrospectionInput & input) const;
@@ -110,10 +114,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   RosPluginContext * ctx_{nullptr};
   nlohmann::json plugin_config_;
 
-  // Each mutex protects an independent cache/state bucket; no code path acquires more than one.
-  mutable std::mutex cache_mutex_;
-  std::unordered_map<std::string, nlohmann::json> graph_cache_;
-
+  // Each mutex protects an independent state bucket; no code path acquires more than one.
   mutable std::mutex metrics_mutex_;
   std::unordered_map<std::string, TopicMetrics> topic_metrics_;
   std::deque<std::string> topic_metrics_order_;
