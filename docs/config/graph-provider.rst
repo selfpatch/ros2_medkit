@@ -45,14 +45,32 @@ All keys are set under the ``plugins.graph_provider.`` prefix in
      - ``3.0``
      - Multiplier applied to the expected message interval when computing the
        freshness window (see formula below).
+   * - ``stale_grace_sec``
+     - ``2.0``
+     - Extra seconds an edge may remain outside its freshness window before
+       ``metrics_status`` flips to ``error``/``metrics_stale``. Absorbs a single
+       late DDS/executor-jitter ``/diagnostics`` sample so ``pipeline_status``
+       does not flap to ``broken`` and back on the very next on-time sample.
+       ``0.0`` disables the grace (report stale exactly at the window
+       boundary - today's behavior before this option existed). See
+       :ref:`graph-provider-stale-grace` below.
+   * - ``multi_publisher_rate``
+     - ``"annotate"``
+     - Policy for edges whose DATA topic has more than one live publisher:
+       ``"annotate"`` always shows the measured rate and flags the ambiguity;
+       ``"suppress"`` hides the (untrustworthy) rate instead. See
+       :ref:`graph-provider-multi-publisher-rate` below.
 
-All five keys are validated on load: ``expected_frequency_hz_default``,
+All seven keys are validated on load: ``expected_frequency_hz_default``,
 ``degraded_frequency_ratio``, ``freshness_headroom_factor``, and
 ``freshness_floor_sec`` must be strictly positive; ``drop_rate_percent_threshold``
-must be non-negative (zero is a valid threshold). An invalid value is rejected,
-logged as a warning naming the offending key and value, and the plugin's own
-hardcoded default is used instead - it never silently disables degradation or
-staleness detection by falling through to a non-positive divisor.
+and ``stale_grace_sec`` must be non-negative (zero is a valid value for both -
+a zero threshold and a zero grace are both meaningful, not "disabled"); and
+``multi_publisher_rate`` must be exactly ``"annotate"`` or ``"suppress"``. An
+invalid value is rejected, logged as a warning naming the offending key and
+value, and the plugin's own hardcoded default is used instead - it never
+silently disables degradation or staleness detection by falling through to a
+non-positive divisor.
 
 Freshness Window
 -----------------
@@ -84,6 +102,71 @@ Example: raising the floor for a deliberately slow diagnostic producer:
        plugins: ["graph_provider"]
        plugins.graph_provider.freshness_floor_sec: 15.0
 
+.. _graph-provider-stale-grace:
+
+Stale-Grace Debounce
+----------------------
+
+An edge is not reported ``metrics_stale`` the instant its age crosses the
+freshness window above - it must stay outside that window continuously for
+more than ``stale_grace_sec`` before ``metrics_status`` flips to ``error``:
+
+.. code-block:: text
+
+   metrics_stale iff age_sec > freshness_window_sec + stale_grace_sec
+
+This is a stateless function of the sample's age, the resolved freshness
+window, and the grace period - there is no separate onset/tick state to
+maintain, so it always uses whichever window the edge actually resolved (its
+own per-function config, never a different function's or the global default).
+The default, ``2.0`` seconds, absorbs ordinary DDS/executor jitter; raise it
+for a noisier network or executor, or set it to ``0.0`` for immediate,
+point-in-time detection (the plugin's original behavior before this option
+existed). ``stale_grace_sec`` can be overridden per Function like every other
+threshold on this page.
+
+.. _graph-provider-multi-publisher-rate:
+
+Multi-Publisher Rate Policy
+------------------------------
+
+``frequency_hz`` (mapped from the producer's ``frame_rate_msg``/``frame_rate_node``,
+see :doc:`/tutorials/graph-provider`) is a **topic-level arrival rate measured on
+the subscriber side of the ``/diagnostics`` producer, summed across every live
+publisher on that topic name** - the graph provider has no way to attribute an
+incoming sample to one specific publisher. If a second, leftover, or duplicate
+publisher ends up on the same topic, its messages inflate the summed rate, and a
+genuinely slow or stalled primary publisher can read as healthy.
+
+To make that ambiguity visible, every edge whose DATA topic (queried live from
+the ROS graph, independent of and in addition to ``/diagnostics``) resolves more
+than one live publisher always gets ``metrics.publisher_count`` (the live count)
+and ``metrics.rate_ambiguous: true`` in its response, regardless of policy - see
+:doc:`/api/rest`'s field notes. ``multi_publisher_rate`` controls what happens to
+``frequency_hz`` itself once that is true:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Value
+     - Behavior
+   * - ``"annotate"`` (default)
+     - Keep showing the measured ``frequency_hz`` and let it drive the degraded
+       ratio as usual; ``publisher_count``/``rate_ambiguous`` warn the operator
+       that the number may be inflated, but the plugin still trusts it.
+   * - ``"suppress"``
+     - Omit ``frequency_hz`` entirely and never let it drive a ``degraded``
+       verdict for this edge. Freshness/``metrics_status`` is unaffected -
+       suppression is only about the rate number, never about whether the
+       edge is stale.
+
+Choose ``"annotate"`` when you want visibility without losing data. Choose
+``"suppress"`` for a safety-critical deployment where a false ``"healthy"``
+reading on a degraded pipeline is worse than losing the rate figure whenever
+more than one publisher is present. ``multi_publisher_rate`` can be overridden
+per Function like every other setting on this page.
+
 Per-Function Overrides
 ------------------------
 
@@ -98,7 +181,7 @@ deployment.
    The override field names are **not** the same strings as the global default
    keys. Most notably: the global default is
    ``expected_frequency_hz_default``, but the per-function override field is
-   ``expected_frequency_hz`` (no ``_default`` suffix). The other four fields
+   ``expected_frequency_hz`` (no ``_default`` suffix). The other six fields
    keep the same name in both places:
 
    .. list-table::
@@ -117,14 +200,48 @@ deployment.
         - ``freshness_headroom_factor``
       * - ``freshness_floor_sec``
         - ``freshness_floor_sec``
+      * - ``stale_grace_sec``
+        - ``stale_grace_sec``
+      * - ``multi_publisher_rate``
+        - ``multi_publisher_rate``
 
 A function with no override for a given field inherits that field from the
-resolved global defaults, not from a separate hardcoded fallback. An override
-value is validated with the same positive/non-negative rules as its global
-counterpart; a rejected override falls back to whatever the function's config
-already resolved to (an earlier valid override for the same field, or the
-validated global default) - it can never smuggle in a value the global
-defaults would themselves reject (e.g. a zero ``expected_frequency_hz``).
+resolved global defaults, not from a separate hardcoded fallback. A numeric
+override value is validated with the same positive/non-negative rules as its
+global counterpart, and a ``multi_publisher_rate`` override is validated
+against the same ``{"annotate", "suppress"}`` enum as its global counterpart; a
+rejected override falls back to whatever the function's config already
+resolved to (an earlier valid override for the same field, or the validated
+global default) - it can never smuggle in a value the global defaults would
+themselves reject (e.g. a zero ``expected_frequency_hz``).
+
+.. warning::
+
+   **Per-function overrides only take effect via a params YAML loaded with**
+   ``config_file``. Two other ways an operator might expect to set one either
+   silently do nothing or fail outright:
+
+   - A bare ``ros2 launch ros2_medkit_gateway gateway.launch.py
+     plugins.graph_provider.function_overrides.<function_id>.<field>:=value``
+     is dropped without warning: ``gateway.launch.py`` only forwards a fixed
+     set of launch arguments into the node's parameters (``server_host``,
+     ``server_port``, ``refresh_interval_ms``, ``cors_allowed_origins``,
+     ``config_file``) - there is no passthrough for arbitrary plugin
+     parameters.
+   - ``ros2 run ... --ros-args -p
+     plugins.graph_provider.function_overrides.<function_id>.<field>:=value``
+     fails to parse whenever ``<function_id>`` contains a hyphen (e.g.
+     ``lidar-pipeline``, ``engine-monitoring``) - rcl's parameter-value lexer
+     rejects the hyphen there, and the command errors out before the gateway
+     starts.
+
+   The only reliable path is a YAML params file with the flat, dotted keys
+   (see the worked example below) loaded via ``config_file``:
+
+   .. code-block:: bash
+
+      ros2 launch ros2_medkit_gateway gateway.launch.py \
+        config_file:=/path/to/graph-provider-overrides.yaml
 
 Worked Example
 ~~~~~~~~~~~~~~
@@ -168,9 +285,13 @@ not just this one). For the ``lidar-pipeline`` override above,
      }
    }
 
-Only numeric values are accepted for override fields; a non-numeric value
-(e.g. a string) or an unrecognized field name is silently ignored rather than
-crashing configuration load.
+Only numeric values are accepted for the six numeric override fields, and only
+a string value for ``multi_publisher_rate``. A non-numeric value for a numeric
+field, a non-string value for ``multi_publisher_rate``, or an unrecognized
+field name never crashes configuration load, but it also no longer applies
+silently: each case logs a warning naming the offending function, field, and
+value, and the override is skipped in favor of whatever that function's config
+already resolved to.
 
 See Also
 --------

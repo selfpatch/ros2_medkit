@@ -886,10 +886,12 @@ Per-function overrides are also supported:
 .. note::
 
    The keys above are not the full set. There are also two freshness-window keys
-   (``freshness_floor_sec``, ``freshness_headroom_factor``) that control when an
-   edge with no recent ``/diagnostics`` sample flips from ``active`` to
-   ``error``/``metrics_stale``. See :doc:`/config/graph-provider` for the
-   complete reference, and :doc:`graph-provider` for the ``/diagnostics``
+   (``freshness_floor_sec``, ``freshness_headroom_factor``), a stale-grace
+   debounce key (``stale_grace_sec``), and a ``multi_publisher_rate`` policy key
+   that control when and how an edge with no recent ``/diagnostics`` sample
+   flips from ``active`` to ``error``/``metrics_stale``, and how a topic with
+   more than one live publisher is reported. See :doc:`/config/graph-provider`
+   for the complete reference, and :doc:`graph-provider` for the ``/diagnostics``
    producer contract this plugin depends on - without a matching producer,
    every edge stays ``pending`` forever.
 

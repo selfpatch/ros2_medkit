@@ -422,6 +422,8 @@ Functions
               "transport_type": "unknown",
               "metrics": {
                 "source": "/greenwave_monitor",
+                "publisher_count": 2,
+                "rate_ambiguous": true,
                 "frequency_hz": 12.5,
                 "latency_ms": 4.2,
                 "drop_rate_percent": 0.0,
@@ -435,6 +437,7 @@ Functions
               "topic_id": "topic-2",
               "transport_type": "unknown",
               "metrics": {
+                "publisher_count": 1,
                 "frequency_hz": null,
                 "latency_ms": null,
                 "drop_rate_percent": 0.0,
@@ -455,6 +458,21 @@ Functions
      A graph where every edge is still ``pending`` reads as ``healthy`` - a pipeline
      never observed is not evidence of a broken one.
    - ``node_status``: per-node reachability, one of ``reachable``, ``unreachable``
+   - ``last_seen``: present only on a node whose ``node_status`` is ``unreachable``;
+     an ISO 8601 millisecond-precision timestamp of the last introspection cycle
+     that saw the app online, when known (omitted for an app that has never been
+     seen online). A node whose ``node_status`` is ``unreachable`` always has an
+     empty ``topics.publishes``/``topics.subscribes`` list, so it never appears as
+     ``source`` or ``target`` of any edge in the same document:
+
+     .. code-block:: json
+
+        {
+          "entity_id": "old_lidar_node",
+          "node_status": "unreachable",
+          "last_seen": "2026-03-08T11:59:42.017Z"
+        }
+
    - ``topic_id`` / ``edge_id``: **positional, not stable.** Assigned by enumeration
      order on every build (``topic-1``, ``topic-2``, ... / ``edge-1``, ``edge-2``, ...)
      and renumbered whenever the topic/edge set changes. Do not persist them or use
@@ -465,8 +483,10 @@ Functions
        (permanent until real data arrives)
      - ``active`` - a sample was merged within the freshness window (tracks freshness,
        not field completeness)
-     - ``error`` - a sample was merged in the past, but the newest one is older than
-       the freshness window
+     - ``error`` - a sample was merged in the past, but the newest one has been older
+       than the freshness window continuously for longer than ``stale_grace_sec``
+       (default ``2.0`` s - a single late sample does not flip this immediately; see
+       :doc:`/config/graph-provider`)
    - ``error_reason``: present only when ``metrics_status`` is ``error``; the only
      reachable value is ``metrics_stale``
    - ``metrics.source``: the resolved fully-qualified node name that published the
@@ -474,6 +494,19 @@ Functions
      on ``pending`` edges and on any edge whose most recent sample could not be
      attributed to a specific publisher - never a fabricated name or a hardcoded
      vendor literal.
+   - ``metrics.publisher_count``: live publisher count on this edge's DATA topic,
+     from the ROS graph (independent of ``/diagnostics``). Emitted whenever that
+     graph query resolved - even at ``1``, and even while ``metrics_status`` is
+     still ``pending`` - and omitted only when the query never ran or came back
+     empty (never a fabricated ``0``).
+   - ``metrics.rate_ambiguous``: present (``true``) only when ``publisher_count``
+     is greater than ``1``. ``frequency_hz`` is a topic-level arrival rate summed
+     across every publisher on the topic, so a duplicate or leftover publisher can
+     inflate it and mask a genuinely slow pipeline as healthy - this is the
+     operator-facing signal that the rate number is suspect. See
+     :doc:`/config/graph-provider`'s ``multi_publisher_rate`` setting for the
+     policy controlling whether ``frequency_hz`` is still shown (and allowed to
+     drive the degraded verdict) once this is true.
    - ``transport_type``: reserved and currently unpopulated. Always the literal
      ``"unknown"``.
 

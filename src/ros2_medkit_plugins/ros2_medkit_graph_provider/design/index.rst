@@ -84,6 +84,8 @@ The following diagram shows the plugin's main components and data flow.
            + drop_rate_percent_threshold: 5.0
            + freshness_headroom_factor: 3.0
            + freshness_floor_sec: 5.0
+           + stale_grace_sec: 2.0
+           + multi_publisher_rate: annotate
        }
    }
 
@@ -107,14 +109,17 @@ The plugin generates a JSON document per Function entity with the following stru
   enum value a tolerant client can ignore); a major bump means the shape or the meaning of
   an existing field changed and old parsing logic may break.
 - **graph_id**: ``"{function_id}-graph"``
-- **timestamp**: ISO 8601 nanosecond timestamp
+- **timestamp**: ISO 8601 millisecond-precision timestamp
 - **scope**: Function entity that owns the graph
 - **pipeline_status**: ``"healthy"``, ``"degraded"``, or ``"broken"``
 - **bottleneck_edge**: Edge ID with the lowest frequency ratio (only when degraded)
 - **topics**: List of topics with **positional** IDs (``topic-1``, ``topic-2``, ...,
   assigned by enumeration order on every build). They renumber whenever the topic set
   changes and must never be persisted or treated as stable across requests.
-- **nodes**: List of app entities with reachability status
+- **nodes**: List of app entities with reachability status. A node whose
+  ``node_status`` is ``"unreachable"`` also carries ``last_seen``: an ISO 8601
+  timestamp of the last introspection cycle that saw the app online, when known
+  (omitted for an app that has never been seen online).
 - **edges**: Publisher-subscriber connections with per-edge metrics, keyed by
   equally positional ``edge-1``, ``edge-2``, ... IDs
 
@@ -122,8 +127,10 @@ Edge metrics include frequency, latency, drop rate, and a ``metrics_status`` fie
 
 - ``"active"`` - A ``/diagnostics`` sample was merged within the freshness window
 - ``"pending"`` - No ``/diagnostics`` sample has ever been merged for this topic
-- ``"error"`` - A sample was merged in the past, but the newest one is older than the
-  freshness window (``error_reason: "metrics_stale"`` - the only reachable value)
+- ``"error"`` - A sample was merged in the past, but the newest one has been older than
+  the freshness window continuously for longer than ``stale_grace_sec`` (see
+  `Stale-Grace Debounce`_ below) (``error_reason: "metrics_stale"`` - the only
+  reachable value)
 
 Pipeline Status Logic
 ---------------------
@@ -160,11 +167,32 @@ topic name). Recognized keys:
 - ``total_dropped_frames`` - Recognized (keeps the sample from being skipped as
   irrelevant) but not currently mapped to an output field
 
+Drop-rate degradation only fires against a producer that actually emits
+``drop_rate_percent`` or ``drop_rate``. The reference producer,
+``greenwave_monitor``, does **not** emit either key - it only reports
+``total_dropped_frames`` (recognized, but never converted to a rate) - so the
+drop-rate threshold is inert against ``greenwave_monitor`` out of the box; it
+only activates against a producer that emits one of the two mapped keys.
+
 Each ``DiagnosticArray`` message resolves to exactly one publisher (via publisher
 GID matching against ``get_publishers_info_by_topic("/diagnostics")``), stamped as
-``metrics.source`` on every topic that message updates. No GID match leaves
-``source`` unresolved for that update - never a fabricated name or a vendor
-literal; a pending or unresolved edge simply omits the ``source`` key.
+``metrics.source`` on every topic that message updates, latest-wins: a later
+message whose publisher cannot be resolved clears ``source`` again rather than
+retaining the last successfully-attributed name, so ``source`` and the sample's
+freshness stamp always describe the same, most recent message. No GID match
+leaves ``source`` unresolved for that update - never a fabricated name or a
+vendor literal; a pending or unresolved edge simply omits the ``source`` key.
+
+Separately, every edge also carries ``publisher_count`` - the live publisher
+count on its DATA topic, queried directly from the ROS graph (independent of
+``/diagnostics``, and emitted even while the edge is still ``pending``).
+``frequency_hz`` is a topic-level arrival rate summed across every publisher on
+the topic name, so when ``publisher_count`` is greater than 1 the edge also
+carries ``rate_ambiguous: true`` - a duplicate or leftover publisher can inflate
+the summed rate and mask a genuinely slow pipeline as healthy. See
+:doc:`/config/graph-provider`'s ``multi_publisher_rate`` setting for the policy
+that controls whether ``frequency_hz`` is still shown (and allowed to drive the
+degraded verdict) once this ambiguity exists.
 
 A bounded cache (max 512 topics) with FIFO eviction (oldest-inserted topic evicted
 first, tracked via an insertion-ordered deque) prevents unbounded memory growth.
@@ -211,9 +239,55 @@ Per-Function Config Overrides
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The plugin supports per-function configuration overrides for thresholds
-(expected frequency, degraded ratio, drop rate). This allows operators to set
-different health baselines for different subsystems - for example, a camera
-pipeline at 30 Hz vs. a LiDAR pipeline at 10 Hz.
+(expected frequency, degraded ratio, drop rate, staleness grace, multi-publisher
+rate policy). This allows operators to set different health baselines for
+different subsystems - for example, a camera pipeline at 30 Hz vs. a LiDAR
+pipeline at 10 Hz. Overrides can only be delivered via a params YAML loaded
+with ``config_file`` - see :doc:`/config/graph-provider` for why the ROS 2 CLI
+``-p`` path does not work for a hyphenated function id, and why
+``gateway.launch.py`` does not forward arbitrary plugin parameters.
+
+Monotonic Freshness Clock
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``TopicMetrics::last_update_ns`` and ``GraphBuildState::now_ns`` are both stamped
+from ``std::chrono::steady_clock``, never ``system_clock``. Freshness is computed
+as a subtraction of the two (``now_ns - last_update_ns``); a backward wall-clock
+step (an NTP correction, common on a device booting before time sync) would make
+that subtraction go negative against a non-monotonic clock and could read a
+genuinely dead topic as fresh forever. The document's human-readable ``timestamp``
+field is the one place that still uses ``system_clock`` - it is never diffed
+against anything.
+
+Stale-Grace Debounce
+~~~~~~~~~~~~~~~~~~~~~
+
+An edge does not flip to ``error``/``metrics_stale`` the instant its age crosses
+the freshness window; it must stay outside that window continuously for more
+than ``stale_grace_sec`` (default ``2.0``, overridable per Function). This is a
+stateless function of ``(now_ns, last_update_ns, window_sec, grace_sec)`` with no
+separate onset/tick state to maintain, so it absorbs a single late
+DDS/executor-jitter ``/diagnostics`` sample without ``pipeline_status`` flapping
+to ``"broken"`` and back on the very next on-time sample. ``stale_grace_sec: 0.0``
+reproduces the original, un-debounced point-in-time behavior exactly. See
+:doc:`/config/graph-provider` for the full formula.
+
+Multi-Publisher Rate Defense
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``frequency_hz`` is derived from ``frame_rate_msg``/``frame_rate_node``, both a
+subscriber-side arrival rate summed across every publisher on the topic name -
+the plugin cannot attribute an incoming ``/diagnostics`` sample to a single
+publisher. A duplicate or leftover publisher on the same topic can therefore
+inflate the summed rate enough to mask a stalled primary publisher as healthy.
+The plugin queries the live ROS graph for each DATA topic's publisher count
+(independent of ``/diagnostics``) and emits it as ``publisher_count`` on every
+edge on that topic, flagging ``rate_ambiguous: true`` whenever it is greater than
+one. The ``multi_publisher_rate`` setting (default ``"annotate"``) controls
+whether ``frequency_hz`` keeps driving the degraded verdict once that ambiguity
+exists, or is suppressed for safety-critical deployments that would rather lose
+the number than risk a false ``"healthy"``. See :doc:`/config/graph-provider` for
+the full policy reference.
 
 Cyclic Subscription Sampler
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
