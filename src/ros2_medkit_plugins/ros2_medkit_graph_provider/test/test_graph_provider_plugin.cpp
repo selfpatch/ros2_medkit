@@ -1060,6 +1060,204 @@ TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfMultiPublisherRateApplie
   EXPECT_EQ(default_resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
 }
 
+// Config validation: a typo'd per-function override FIELD NAME (e.g.
+// "expected_frequency" instead of "expected_frequency_hz") used to be
+// silently dropped - the if/else-if chain on `field` in load_parameters had
+// no trailing else, so an operator whose override never applied got zero
+// signal (asymmetric with a recognized field's bad VALUE, which does warn).
+// The override value itself (99.0) is well-formed and would have changed
+// expected_frequency_hz_default had the key been spelled correctly, so this
+// also proves the typo'd key really did nothing - every real field for "fn"
+// must still resolve to its default.
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithUnrecognizedFieldNameHasNoEffect) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"expected_frequency", 99.0}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  const auto expected = default_config();
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, expected.expected_frequency_hz_default);
+  EXPECT_DOUBLE_EQ(resolved.degraded_frequency_ratio, expected.degraded_frequency_ratio);
+  EXPECT_DOUBLE_EQ(resolved.drop_rate_percent_threshold, expected.drop_rate_percent_threshold);
+  EXPECT_DOUBLE_EQ(resolved.freshness_headroom_factor, expected.freshness_headroom_factor);
+  EXPECT_DOUBLE_EQ(resolved.freshness_floor_sec, expected.freshness_floor_sec);
+  EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, expected.stale_grace_sec);
+  EXPECT_EQ(resolved.multi_publisher_rate, expected.multi_publisher_rate);
+}
+
+// Guard for the fix above: the new trailing `else` must never fire for a
+// currently-valid field. multi_publisher_rate is the field most at risk of a
+// false positive - it is matched and continue'd BEFORE the numeric
+// is_number() gate the new `else` lives behind - so pair it in the SAME
+// function_overrides object as a typo'd field to prove the unrecognized-name
+// path for one key never swallows a valid override for another key on the
+// same function.
+TEST(GraphProviderPluginRouteTest, UnrecognizedFieldWarningDoesNotSwallowAdjacentValidMultiPublisherRateOverride) {
+  nlohmann::json config = {
+      {"function_overrides", {{"fn", {{"expected_frequency", 99.0}, {"multi_publisher_rate", "suppress"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, default_config().expected_frequency_hz_default);
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress);
+}
+
+// Config validation: a per-function override on a KNOWN numeric field given
+// a non-numeric value (e.g. expected_frequency_hz: "foo" - a wrong-type
+// value, not a typo'd name) used to be dropped by the bare
+// `if (!value.is_number()) { continue; }` gate in the per-override loop
+// BEFORE the field-name is even inspected - the same silent-failure class as
+// PerFunctionOverrideWithUnrecognizedFieldNameHasNoEffect above, just for a
+// bad VALUE on a good field name instead of a bad name. log_fn_ is only
+// wired up by PluginManager (never in this unit-test harness), so the new
+// warning itself isn't observable here; asserting the override had no
+// effect on the resolved config is the same fallback the unrecognized-name
+// test above uses.
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithNonNumericValueForKnownFieldHasNoEffect) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"expected_frequency_hz", "foo"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  const auto expected = default_config();
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, expected.expected_frequency_hz_default);
+  EXPECT_DOUBLE_EQ(resolved.degraded_frequency_ratio, expected.degraded_frequency_ratio);
+  EXPECT_DOUBLE_EQ(resolved.drop_rate_percent_threshold, expected.drop_rate_percent_threshold);
+  EXPECT_DOUBLE_EQ(resolved.freshness_headroom_factor, expected.freshness_headroom_factor);
+  EXPECT_DOUBLE_EQ(resolved.freshness_floor_sec, expected.freshness_floor_sec);
+  EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, expected.stale_grace_sec);
+  EXPECT_EQ(resolved.multi_publisher_rate, expected.multi_publisher_rate);
+}
+
+// Same gap, the other half: an UNRECOGNIZED field name given a non-numeric
+// value never even reaches the field-name check (warn_unrecognized_function_
+// override_field), because the is_number() gate runs first. Before this fix
+// this was doubly silent - wrong value AND unrecognized name, zero signal.
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithNonNumericValueForUnrecognizedFieldHasNoEffect) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"expected_frequency", "foo"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  const auto expected = default_config();
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, expected.expected_frequency_hz_default);
+  EXPECT_EQ(resolved.multi_publisher_rate, expected.multi_publisher_rate);
+}
+
+// Guard for the fix above, mirroring
+// UnrecognizedFieldWarningDoesNotSwallowAdjacentValidMultiPublisherRateOverride:
+// the new is_number() warn-and-continue must never fire for, or otherwise
+// disturb, a legitimate multi_publisher_rate string override on the SAME
+// function - it is matched and continue'd BEFORE the is_number() gate the
+// new warning lives behind, so pair a non-numeric value for a known field
+// with a valid multi_publisher_rate override in the same function_overrides
+// object to prove one key's rejection never swallows the other key's valid
+// override.
+TEST(GraphProviderPluginRouteTest, NonNumericOverrideWarningDoesNotSwallowAdjacentValidMultiPublisherRateOverride) {
+  nlohmann::json config = {
+      {"function_overrides", {{"fn", {{"expected_frequency_hz", "foo"}, {"multi_publisher_rate", "suppress"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, default_config().expected_frequency_hz_default);
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress);
+}
+
+// R2's review flagged this gap: no test exercised an INVALID string value in
+// a PER-FUNCTION multi_publisher_rate override (only the invalid GLOBAL
+// value - RejectsUnknownMultiPublisherRateAndKeepsAnnotateDefault - and the
+// valid per-function value - PerFunctionOverrideOfMultiPublisherRateApplies -
+// were covered), even though both paths share validate_multi_publisher_rate.
+// Assert via an observable graph effect, not just the resolved enum: at
+// publisher_count > 1, the measured (possibly-inflated) rate must still be
+// visible (annotate, the safe fallback), not hidden (suppress) - same
+// numbers as AnnotateModeFlagsAmbiguityButLeavesInflatedRateAndVerdictUnchanged.
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfMultiPublisherRateRejectsInvalidValueAndFallsBackToAnnotate) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"multi_publisher_rate", "nonsense"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(2.235, 1.0, 0.0, 2.0);
+  state.topic_publisher_counts["/topic"] = 2;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, resolved, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 2);
+  EXPECT_EQ((*edge)["metrics"]["rate_ambiguous"], true);
+  ASSERT_FALSE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 2.235);
+}
+
+// Sibling of PerFunctionOverrideOfMultiPublisherRateRejectsInvalidValueAndFallsBackToAnnotate
+// above, for the other silent-drop shape on this same field: a per-function
+// multi_publisher_rate override given a NON-STRING value (e.g.
+// multi_publisher_rate: 2.0, a number where a string is expected) used to be
+// dropped by the bare `if (!value.is_string()) { continue; }` gate in the
+// per-override loop, before validate_multi_publisher_rate (and even the
+// by_function emplace) is ever reached - the same silent-failure class as
+// the numeric fields' non-numeric-value gap, just for the one string-valued
+// field going the other direction. log_fn_ is only wired up by
+// PluginManager (never in this unit-test harness), so the new warning
+// itself isn't observable here; assert via the same observable graph effect
+// as the sibling test above: at publisher_count > 1, the measured rate must
+// still be visible (annotate, the untouched default), not hidden (suppress).
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfMultiPublisherRateRejectsNonStringValueAndFallsBackToAnnotate) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"multi_publisher_rate", 2.0}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
+
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(2.235, 1.0, 0.0, 2.0);
+  state.topic_publisher_counts["/topic"] = 2;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, resolved, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 2);
+  EXPECT_EQ((*edge)["metrics"]["rate_ambiguous"], true);
+  ASSERT_FALSE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 2.235);
+}
+
 TEST(GraphProviderPluginMetricsTest, KeepsBrokenPipelineBottleneckNullWhenMetricsAreStale) {
   auto input =
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
@@ -1392,6 +1590,33 @@ TEST(GraphProviderPluginRouteTest, IntrospectWithEmptyInputStillPreservesOffline
   EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
 
   local_server.stop();
+}
+
+// introspect() now guards on shutdown_requested_ at entry, mirroring the
+// guard diagnostics_callback already has (see
+// DiagnosticsCallbackAfterShutdownIsNoop). Both shutdown() and introspect()
+// are public, so this is directly reachable from the unit harness without any
+// reflection: call shutdown() first, then assert introspect() neither
+// performs its last_seen_by_app_ side effect nor returns anything. Contrast
+// with IntrospectWithEmptyInputStillPreservesOfflineLastSeen above, which
+// proves an online app reachable via ctx_->get_entity_snapshot() normally DOES
+// populate last_seen_by_app_ - so a 0 count here is only explained by the
+// shutdown guard firing, not by some other reason introspect() had nothing to
+// do.
+TEST(GraphProviderPluginRouteTest, IntrospectAfterShutdownIsNoopAndDoesNotTouchState) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto online_input = make_input({make_app("node1", {}, {}, true)}, {make_function("fn", {"node1"})});
+  ctx.entity_snapshot_ = online_input;
+
+  plugin.shutdown();
+
+  const auto result = plugin.introspect(IntrospectionInput{});
+  EXPECT_TRUE(result.metadata.empty());
+  EXPECT_EQ(GraphProviderPluginTestAccess::last_seen_by_app_count(plugin), 0u);
 }
 
 // Defect D pin: introspect() no longer pre-builds a per-function graph cache

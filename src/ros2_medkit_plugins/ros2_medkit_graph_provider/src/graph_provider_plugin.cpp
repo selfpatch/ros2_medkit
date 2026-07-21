@@ -569,6 +569,15 @@ std::vector<GatewayPlugin::PluginRoute> GraphProviderPlugin::get_routes() {
 }
 
 IntrospectionResult GraphProviderPlugin::introspect(const IntrospectionInput & input) {
+  // Defense-in-depth, matching the guard diagnostics_callback already has at
+  // its entry: not exploitable today (the gateway only tears plugins down
+  // after the executor has joined, so introspect() cannot race a live
+  // shutdown in production), but introspect() otherwise relies entirely on
+  // that external, non-local ordering invariant. Cheap to check, so check it.
+  if (shutdown_requested_.load()) {
+    return {};
+  }
+
   // Building a per-function graph document here used to feed graph_cache_,
   // but nothing ever read it: get_cached_or_built_graph's (now
   // build_current_graph's) rebuild-from-live-snapshot branch runs whenever
@@ -996,6 +1005,45 @@ void GraphProviderPlugin::load_parameters() {
              (fallback == MultiPublisherRatePolicy::kSuppress ? "suppress" : "annotate") + "'");
     return fallback;
   };
+  // A typo'd per-function override FIELD NAME (e.g. "expected_frequency"
+  // instead of "expected_frequency_hz") used to be silently dropped by the
+  // per-function override loop below - unlike a recognized field with a bad
+  // VALUE (which warns via the three validators above), a bad field NAME gave
+  // an operator zero signal that their override never applied. Defined here,
+  // alongside the other warn-and-default helpers, rather than built inline in
+  // the loop, so the string concatenation happens in a function called once
+  // per (rare) unrecognized field, not textually inside the per-override loop
+  // body itself.
+  auto warn_unrecognized_function_override_field = [this](const std::string & field, const std::string & function_id,
+                                                          const std::string & log_key) {
+    log_warn("Ignoring unrecognized graph provider function override field '" + field + "' for function '" +
+             function_id + "' (" + log_key + ")");
+  };
+  // Sibling of warn_unrecognized_function_override_field above: a value that
+  // fails the is_number() gate below used to be dropped silently too, in two
+  // cases that are the same silent-failure class as the unrecognized-name
+  // one - a KNOWN numeric field given the wrong JSON type (e.g.
+  // expected_frequency_hz: "foo") and an UNKNOWN field given a non-numeric
+  // value (which never reaches the field-name check at all). Built here, not
+  // inline in the loop, for the same reason as the sibling helper: the string
+  // concatenation runs once per (rare) rejected value, not textually inside
+  // the per-override loop body.
+  auto warn_non_numeric_function_override_field = [this](const std::string & field, const std::string & function_id,
+                                                         const std::string & log_key) {
+    log_warn("Ignoring non-numeric graph provider function override field '" + field + "' for function '" +
+             function_id + "' (" + log_key + "): expected a number");
+  };
+  // Sibling of warn_non_numeric_function_override_field above, for the one
+  // override field that goes the other way: multi_publisher_rate is
+  // string-valued, so a non-string value (e.g. multi_publisher_rate: 2.0)
+  // used to be dropped silently by the is_string() gate in the loop below.
+  // Same rationale as the two helpers above for keeping the string
+  // concatenation out of the per-override loop body.
+  auto warn_non_string_function_override_field = [this](const std::string & field, const std::string & function_id,
+                                                        const std::string & log_key) {
+    log_warn("Ignoring non-string graph provider function override field '" + field + "' for function '" + function_id +
+             "' (" + log_key + "): expected a string");
+  };
 
   ConfigOverrides new_config;
   new_config.defaults.expected_frequency_hz_default = validate_positive(
@@ -1046,9 +1094,12 @@ void GraphProviderPlugin::load_parameters() {
 
     // multi_publisher_rate is the one string-valued override field below;
     // every other field is numeric. Branch on it before the is_number() gate
-    // so a string value is not silently discarded there.
+    // so a legitimate string value neither gets dropped there nor
+    // misreported by warn_non_numeric_function_override_field as "expected a
+    // number".
     if (field == "multi_publisher_rate") {
       if (!value.is_string()) {
+        warn_non_string_function_override_field(field, function_id, log_key);
         continue;
       }
       auto [config_it, inserted] = new_config.by_function.emplace(function_id, new_config.defaults);
@@ -1059,6 +1110,7 @@ void GraphProviderPlugin::load_parameters() {
     }
 
     if (!value.is_number()) {
+      warn_non_numeric_function_override_field(field, function_id, log_key);
       continue;
     }
 
@@ -1088,6 +1140,12 @@ void GraphProviderPlugin::load_parameters() {
           validate_positive(log_key, numeric_value, function_config.freshness_floor_sec);
     } else if (field == "stale_grace_sec") {
       function_config.stale_grace_sec = validate_non_negative(log_key, numeric_value, function_config.stale_grace_sec);
+    } else {
+      // Reached only when the field name is not multi_publisher_rate
+      // (handled and continue'd above) and not one of the six numeric
+      // fields checked above (all handled and never fall through) - i.e. a
+      // typo'd field name.
+      warn_unrecognized_function_override_field(field, function_id, log_key);
     }
   }
 
