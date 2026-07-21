@@ -155,13 +155,15 @@ GraphProviderPlugin::GraphBuildState make_state() {
 GraphProviderPlugin::TopicMetrics make_metrics(double frequency_hz, std::optional<double> latency_ms = std::nullopt,
                                                std::optional<double> drop_rate_percent = 0.0,
                                                std::optional<double> expected_frequency_hz = std::nullopt,
-                                               int64_t last_update_ns = 0) {
+                                               int64_t last_update_ns = 0,
+                                               std::optional<std::string> source = std::nullopt) {
   GraphProviderPlugin::TopicMetrics metrics;
   metrics.frequency_hz = frequency_hz;
   metrics.latency_ms = latency_ms;
   metrics.drop_rate_percent = drop_rate_percent;
   metrics.expected_frequency_hz = expected_frequency_hz;
   metrics.last_update_ns = last_update_ns;
+  metrics.source = std::move(source);
   return metrics;
 }
 
@@ -548,11 +550,11 @@ TEST(GraphProviderPluginBuildTest, ExpandsComponentHostsToScopedApps) {
   EXPECT_NE(find_edge(graph, "a", "b", "/topic"), nullptr);
 }
 
-TEST(GraphProviderPluginMetricsTest, MarksActiveEdgeWhenGreenwaveMetricsExist) {
+TEST(GraphProviderPluginMetricsTest, MarksActiveEdgeWhenMetricsExist) {
   auto input =
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
   auto state = make_state();
-  state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0);
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0, "/resolved_monitor_node");
 
   auto doc =
       GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
@@ -560,7 +562,7 @@ TEST(GraphProviderPluginMetricsTest, MarksActiveEdgeWhenGreenwaveMetricsExist) {
   const auto * edge = find_edge(graph, "a", "b", "/topic");
 
   ASSERT_NE(edge, nullptr);
-  EXPECT_EQ((*edge)["metrics"]["source"], "greenwave_monitor");
+  EXPECT_EQ((*edge)["metrics"]["source"], "/resolved_monitor_node");
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 29.8);
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["latency_ms"], 1.2);
@@ -568,6 +570,26 @@ TEST(GraphProviderPluginMetricsTest, MarksActiveEdgeWhenGreenwaveMetricsExist) {
   EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
   EXPECT_FALSE(edge->contains("error_reason"));
   EXPECT_EQ(graph["pipeline_status"], "healthy");
+}
+
+// Honest-failure requirement: a TopicMetrics entry whose source could not be
+// resolved (e.g. the publisher GID had no match in get_publishers_info_by_topic)
+// must never surface a fabricated or default value - the "source" key must be
+// absent from the emitted JSON entirely, exactly like a pending edge omits it.
+TEST(GraphProviderPluginMetricsTest, OmitsSourceKeyWhenTopicMetricsSourceIsUnresolved) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0);  // source left unresolved (nullopt)
+
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
+  EXPECT_FALSE((*edge)["metrics"].contains("source"));
 }
 
 TEST(GraphProviderPluginMetricsTest, MarksPendingWhenNoMetricsHaveArrivedForThisTopic) {
@@ -583,6 +605,7 @@ TEST(GraphProviderPluginMetricsTest, MarksPendingWhenNoMetricsHaveArrivedForThis
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "pending");
   EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
   EXPECT_FALSE(edge->contains("error_reason"));
+  EXPECT_FALSE((*edge)["metrics"].contains("source"));
 }
 
 TEST(GraphProviderPluginMetricsTest, FreshMetricIsActiveAgedMetricIsStaleAndBreaksPipeline) {
@@ -1023,6 +1046,123 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsForUnrelatedTopicDoesNotPoisonPend
   ASSERT_NE(edge, nullptr);
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "pending");
   EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
+  // A pending edge makes no claim about a producer: no diagnostics ever
+  // arrived for its own topic, so "source" must be absent, not defaulted to
+  // any literal.
+  EXPECT_FALSE((*edge)["metrics"].contains("source"));
+}
+
+// This is the provenance regression test: metrics.source must be the REAL
+// resolved node name that published the /diagnostics message (via publisher
+// GID matching against get_publishers_info_by_topic), never a hardcoded
+// literal and never DiagnosticStatus.hardware_id (a vendor label). The
+// publishing node here is named distinctly from any literal the
+// implementation might hardcode, and hardware_id is deliberately set to
+// "nvidia" (a real vendor label greenwave uses) to prove that field is never
+// read for provenance either.
+TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceIsRealPublisherNodeNameNotAHardcodedLiteral) {
+  auto node = std::make_shared<rclcpp::Node>("test_diag_real_source_node");
+  FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input = make_input({make_app("a1", {"/topic1"}, {}), make_app("a2", {}, {"/topic1"})},
+                          {make_function("f1", {"a1", "a2"})});
+  ctx.entity_snapshot_ = input;
+
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/topic1";
+  status.hardware_id = "nvidia";  // vendor label - must never be used as source
+  diagnostic_msgs::msg::KeyValue kv;
+  kv.key = "frame_rate_msg";
+  kv.value = "30.0";
+  status.values.push_back(kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a1", "a2", "/topic1");
+
+  ASSERT_NE(edge, nullptr);
+  ASSERT_TRUE((*edge)["metrics"].contains("source"));
+  EXPECT_EQ((*edge)["metrics"]["source"], std::string(node->get_fully_qualified_name()));
+  EXPECT_NE((*edge)["metrics"]["source"], "greenwave_monitor");
+  EXPECT_NE((*edge)["metrics"]["source"], "nvidia");
+}
+
+// Two distinct /diagnostics publishers, each reporting a different topic in
+// its own message, must resolve to two different "source" values on their
+// respective edges. Per-message GID resolution is what disambiguates which
+// publisher sent which message - a "first publisher on the topic" shortcut
+// would collapse both edges onto the same (wrong) source.
+TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPublisherOnTopic) {
+  auto node = std::make_shared<rclcpp::Node>("test_diag_multi_monitor_sub_node");
+  FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input = make_input({make_app("a1", {"/topic_one", "/topic_two"}, {}), make_app("a2", {}, {"/topic_one"}),
+                           make_app("a3", {}, {"/topic_two"})},
+                          {make_function("f1", {"a1", "a2", "a3"})});
+  ctx.entity_snapshot_ = input;
+
+  auto monitor_one = std::make_shared<rclcpp::Node>("test_diag_monitor_one_node");
+  auto monitor_two = std::make_shared<rclcpp::Node>("test_diag_monitor_two_node");
+  auto pub_one = monitor_one->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  auto pub_two = monitor_two->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+
+  diagnostic_msgs::msg::DiagnosticArray msg_one;
+  diagnostic_msgs::msg::DiagnosticStatus status_one;
+  status_one.name = "/topic_one";
+  diagnostic_msgs::msg::KeyValue kv_one;
+  kv_one.key = "frame_rate_msg";
+  kv_one.value = "30.0";
+  status_one.values.push_back(kv_one);
+  msg_one.status.push_back(status_one);
+
+  diagnostic_msgs::msg::DiagnosticArray msg_two;
+  diagnostic_msgs::msg::DiagnosticStatus status_two;
+  status_two.name = "/topic_two";
+  diagnostic_msgs::msg::KeyValue kv_two;
+  kv_two.key = "frame_rate_msg";
+  kv_two.value = "15.0";
+  status_two.values.push_back(kv_two);
+  msg_two.status.push_back(status_two);
+
+  pub_one->publish(msg_one);
+  pub_two->publish(msg_two);
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge_one = find_edge(graph, "a1", "a2", "/topic_one");
+  const auto * edge_two = find_edge(graph, "a1", "a3", "/topic_two");
+
+  ASSERT_NE(edge_one, nullptr);
+  ASSERT_NE(edge_two, nullptr);
+  ASSERT_TRUE((*edge_one)["metrics"].contains("source"));
+  ASSERT_TRUE((*edge_two)["metrics"].contains("source"));
+  EXPECT_EQ((*edge_one)["metrics"]["source"], std::string(monitor_one->get_fully_qualified_name()));
+  EXPECT_EQ((*edge_two)["metrics"]["source"], std::string(monitor_two->get_fully_qualified_name()));
+  EXPECT_NE((*edge_one)["metrics"]["source"], (*edge_two)["metrics"]["source"]);
 }
 
 TEST_F(GraphProviderPluginRosTest, DiagnosticsMessageMakesMatchingEdgeActive) {

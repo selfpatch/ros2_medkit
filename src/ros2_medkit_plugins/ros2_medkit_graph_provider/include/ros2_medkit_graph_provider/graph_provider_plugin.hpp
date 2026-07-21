@@ -20,6 +20,7 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <mutex>
 #include <optional>
+#include <rclcpp/message_info.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <unordered_map>
@@ -52,6 +53,12 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // previously-observed drop rate.
     std::optional<double> drop_rate_percent;
     std::optional<double> expected_frequency_hz;
+    // Resolved node name that published the /diagnostics message this entry
+    // was last updated from (via publisher GID matching, see
+    // resolve_publisher_source()). Empty when no GID match was found for a
+    // sample (publisher left the graph between publishing and the graph
+    // query, or a race) - never a fabricated name or a vendor literal.
+    std::optional<std::string> source;
     // Epoch nanoseconds (plugin clock) of the last update merged into this
     // entry. Defaults to 0 so hand-built test fixtures with a matching
     // default-constructed GraphBuildState::now_ns (also 0) read as fresh.
@@ -100,7 +107,16 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   };
 
   void subscribe_to_diagnostics();
-  void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg);
+  void diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg,
+                            const rclcpp::MessageInfo & msg_info);
+  // Resolves the node that published this /diagnostics message by matching
+  // msg_info's publisher GID against the endpoints returned by
+  // get_publishers_info_by_topic("/diagnostics") - a fresh graph query, run
+  // once per message (never cached: a stale mapping would misattribute after
+  // a publisher restarts). Returns nullopt on no match (publisher left the
+  // graph between publishing and this query, or a race) - callers must never
+  // substitute a fabricated name or a vendor literal for an empty result.
+  std::optional<std::string> resolve_publisher_source(const rclcpp::MessageInfo & msg_info) const;
   static std::optional<TopicMetrics> parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status);
   static std::optional<double> parse_double(const std::string & value);
   static std::string current_timestamp();
