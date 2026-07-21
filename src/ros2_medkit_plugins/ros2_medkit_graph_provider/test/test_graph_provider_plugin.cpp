@@ -227,6 +227,39 @@ const nlohmann::json * find_node(const nlohmann::json & graph, const std::string
   return nullptr;
 }
 
+// Bounded wait for DDS discovery to propagate `min_publisher_count`
+// /diagnostics publisher(s) into `node`'s graph cache.
+// resolve_publisher_source() (see graph_provider_plugin.cpp) matches an
+// incoming message's publisher_gid against
+// node->get_publishers_info_by_topic("/diagnostics"), which only reflects a
+// publisher once discovery has caught up - a fixed sleep before publishing
+// races this under CI's DDS latency (the message can be delivered and
+// processed before its publisher's endpoint is visible in the graph cache,
+// which is exactly the flake this waits out). Callers that need a message's
+// source to RESOLVE must call this after creating the publisher(s) and
+// before publishing the message they will assert on. Returns a gtest
+// AssertionResult so callers get a clear, bounded timeout failure (never a
+// longer fixed sleep, never a silent false the caller might ignore) via
+// ASSERT_TRUE.
+testing::AssertionResult wait_for_diagnostics_publisher_discovery(const std::shared_ptr<rclcpp::Node> & node,
+                                                                  size_t min_publisher_count) {
+  constexpr auto kTimeout = 5s;
+  constexpr auto kPollInterval = 10ms;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  size_t last_seen_count = 0;
+  do {
+    rclcpp::spin_some(node);
+    last_seen_count = node->get_publishers_info_by_topic("/diagnostics").size();
+    if (last_seen_count >= min_publisher_count) {
+      return testing::AssertionSuccess();
+    }
+    std::this_thread::sleep_for(kPollInterval);
+  } while (std::chrono::steady_clock::now() < deadline);
+  return testing::AssertionFailure() << "timed out after " << kTimeout.count() << "s waiting for "
+                                     << min_publisher_count << " /diagnostics publisher(s) to be discovered by "
+                                     << node->get_fully_qualified_name() << " (last saw " << last_seen_count << ")";
+}
+
 class FakePluginContext : public RosPluginContext {
  public:
   explicit FakePluginContext(std::unordered_map<std::string, PluginEntityInfo> entities, rclcpp::Node * node = nullptr)
@@ -1817,6 +1850,12 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceIsRealPublisherNodeNameNotAH
   ctx.entity_snapshot_ = input;
 
   auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  // Wait until DDS discovery has propagated this publisher into node's own
+  // graph cache before publishing the message whose source we assert -
+  // otherwise resolve_publisher_source's GID lookup can race discovery and
+  // (correctly) come back unresolved. See helper doc comment for why.
+  ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 1));
+
   diagnostic_msgs::msg::DiagnosticArray msg;
   diagnostic_msgs::msg::DiagnosticStatus status;
   status.name = "/topic1";
@@ -1867,6 +1906,12 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPu
   auto monitor_two = std::make_shared<rclcpp::Node>("test_diag_monitor_two_node");
   auto pub_one = monitor_one->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
   auto pub_two = monitor_two->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+
+  // Wait for BOTH publishers to be discovered before publishing either
+  // message - this proves per-message GID resolution disambiguates two
+  // simultaneously-live publishers, not "whichever one discovery happened to
+  // see first".
+  ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 2));
 
   diagnostic_msgs::msg::DiagnosticArray msg_one;
   diagnostic_msgs::msg::DiagnosticStatus status_one;
@@ -1930,8 +1975,13 @@ TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolv
   plugin.configure({});
   plugin.set_context(ctx);
 
-  // First message: a real, live publisher - resolves normally.
+  // First message: a real, live publisher - resolves normally. Only this
+  // setup needs the discovery wait: the second message below deliberately
+  // uses a bogus GID that can never match any live publisher, so it is
+  // unresolved by construction regardless of discovery timing.
   auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 1));
+
   diagnostic_msgs::msg::DiagnosticArray msg;
   diagnostic_msgs::msg::DiagnosticStatus status;
   status.name = "/shared_topic";
@@ -2000,6 +2050,11 @@ TEST_F(GraphProviderPluginRosTest, SourceUpdatesToLatestResolvedPublisherNotStuc
   auto monitor_two = std::make_shared<rclcpp::Node>("test_diag_source_monitor_two_node");
   auto pub_one = monitor_one->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
   auto pub_two = monitor_two->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+
+  // Both publishers exist before either publishes, so waiting once for both
+  // to be discovered covers both of this test's later assertions - no
+  // per-message wait is needed since discovery is already settled.
+  ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 2));
 
   auto make_msg = [](double rate) {
     diagnostic_msgs::msg::DiagnosticArray msg;

@@ -423,10 +423,35 @@ class TestGraphProviderGreenwave(GatewayTestCase):
         Never a bare literal ("greenwave_monitor") and never a vendor
         literal ("nvidia") - only the resolved, fully-qualified node name.
 
+        metrics.source resolves from a fresh
+        ``get_publishers_info_by_topic("/diagnostics")`` query against the
+        gateway's own graph cache (see resolve_publisher_source in
+        graph_provider_plugin.cpp), which can lag the edge's first "active"
+        sample by a discovery cycle - the edge going active only requires a
+        message to have arrived, not that DDS discovery has yet propagated
+        greenwave's publisher endpoint. So this polls past the first active
+        sample specifically for ``source`` to appear, rather than asserting
+        on whatever the first active poll happens to return.
+
         @verifies REQ_INTEROP_003
         """
-        graph = self._poll_until_primary_active()
-        edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
+
+        def _condition(data):
+            graph = data.get('x-medkit-graph')
+            if not graph:
+                return None
+            edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
+            if (edge and edge['metrics'].get('metrics_status') == 'active'
+                    and edge['metrics'].get('frequency_hz') is not None
+                    and edge['metrics'].get('source') is not None):
+                return edge
+            return None
+
+        # Same generous budget as _poll_until_primary_active: source needs
+        # everything that helper waits for, plus one more discovery cycle.
+        edge = self.poll_endpoint_until(
+            self.GRAPH_ENDPOINT, _condition, timeout=40.0, interval=1.0,
+        )
         source = edge['metrics'].get('source')
         self.assertEqual(source, EXPECTED_GREENWAVE_SOURCE)
         self.assertNotEqual(source, GREENWAVE_NODE_NAME)
