@@ -26,7 +26,10 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    PARAM_SERVICE_TIMEOUT,
+)
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -43,6 +46,21 @@ class TestConfigurationApi(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
+
+    def setUp(self):
+        """Wait for the node's parameter service before each test.
+
+        The configurations endpoints read the ROS 2 parameter service on the
+        temp_sensor node, which can be briefly unavailable just after discovery
+        (the endpoint returns 503 until it is ready) - more likely under the
+        slowdown of the sanitizer jobs. Gate every test on it being ready so the
+        per-test requests are not racing param-service startup.
+        """
+        super().setUp()
+        self.poll_endpoint_until(
+            '/apps/temp_sensor/configurations',
+            timeout=PARAM_SERVICE_TIMEOUT,
+        )
 
     def test_01_list_configurations(self):
         """GET /apps/{app_id}/configurations lists all parameters.
