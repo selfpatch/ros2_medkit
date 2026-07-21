@@ -435,6 +435,65 @@ TEST(GraphProviderPluginBuildTest, FiltersInfrastructureAndNitrosTopics) {
   EXPECT_NE(find_edge(graph, "a", "b", "/real"), nullptr);
 }
 
+// The old filter matched "/nitros" and "_supported_types" as substrings
+// anywhere in the topic name. That wrongly dropped real topics that merely
+// contain those strings inside a longer segment name -
+// "isaac_ros_nitros_bridge" is a real NVIDIA package, and any topic under a
+// "/nitros_bridge" namespace contains "/nitros" as a substring;
+// "/perception/nitros_input" has "nitros" embedded in a segment;
+// "/a/_supported_types/b" contains "_supported_types" as a non-trailing
+// segment. None of these are REP-2009 negotiation topics and must survive
+// the filter.
+TEST(GraphProviderPluginBuildTest, DoesNotFilterTopicsWhereNitrosOrSupportedTypesIsOnlyASubstring) {
+  const std::vector<std::string> real_topics = {"/nitros_bridge/data", "/perception/nitros_input",
+                                                "/a/_supported_types/b"};
+  auto input =
+      make_input({make_app("a", real_topics, {}), make_app("b", {}, real_topics)}, {make_function("fn", {"a", "b"})});
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(), default_config(),
+                                                       "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  ASSERT_EQ(graph["topics"].size(), real_topics.size());
+  ASSERT_EQ(graph["edges"].size(), real_topics.size());
+  for (const auto & topic : real_topics) {
+    EXPECT_NE(find_edge(graph, "a", "b", topic), nullptr) << "expected edge for " << topic;
+  }
+}
+
+// REP-2009 negotiation topics are formed by appending path segments to a
+// base topic: "<base>/nitros" (negotiated-topics-info), "<base>/nitros/
+// _supported_types" (supported-types), and "<base>/nitros/<format>"
+// (negotiated data). All three must still be filtered regardless of how
+// many segments precede "nitros".
+TEST(GraphProviderPluginBuildTest, FiltersNitrosNegotiationTopicsAtAnySegmentDepth) {
+  const std::vector<std::string> negotiation_topics = {"/nitros", "/a/nitros", "/a/b/nitros/c",
+                                                       "/camera/nitros/_supported_types", "/camera/nitros/rgb8"};
+  auto input = make_input({make_app("a", negotiation_topics, {}), make_app("b", {}, negotiation_topics)},
+                          {make_function("fn", {"a", "b"})});
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(), default_config(),
+                                                       "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  EXPECT_TRUE(graph["topics"].empty());
+  EXPECT_TRUE(graph["edges"].empty());
+}
+
+// The trailing-segment rule for "_supported_types" must not fire when the
+// segment appears anywhere other than the end of the path.
+TEST(GraphProviderPluginBuildTest, FiltersSupportedTypesOnlyAsTrailingSegment) {
+  auto input = make_input({make_app("a", {"/a/b/_supported_types"}, {}), make_app("b", {}, {"/a/b/_supported_types"})},
+                          {make_function("fn", {"a", "b"})});
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, make_state(), default_config(),
+                                                       "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  EXPECT_TRUE(graph["topics"].empty());
+  EXPECT_TRUE(graph["edges"].empty());
+}
+
 TEST(GraphProviderPluginBuildTest, MarksReachableAndUnreachableNodes) {
   auto input = make_input({make_app("online", {"/topic"}, {}, true), make_app("offline", {}, {"/topic"}, false)},
                           {make_function("fn", {"online", "offline"})});
@@ -1425,4 +1484,48 @@ TEST_F(GraphProviderPluginRosTest, AcceptsZeroDropRateThresholdAndTripsOnAnyPosi
   ASSERT_NE(edge, nullptr);
   EXPECT_DOUBLE_EQ((*edge)["metrics"]["drop_rate_percent"], 1.0);
   EXPECT_EQ(graph["pipeline_status"], "degraded");
+}
+
+// The same segment-anchored filter runs over DiagnosticStatus.name in
+// diagnostics_callback. A monitored topic whose name merely contains
+// "nitros" as part of a longer segment (e.g. "/nitros_bridge/data" under
+// isaac_ros_nitros_bridge) must have its metrics ingested and reach its
+// edge, not be silently discarded as if it were a NITROS negotiation topic.
+TEST_F(GraphProviderPluginRosTest, DiagnosticsForTopicWithNitrosSubstringInSegmentIsIngested) {
+  auto node = std::make_shared<rclcpp::Node>("test_diag_nitros_substring_node");
+  FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input = make_input({make_app("a1", {"/nitros_bridge/data"}, {}), make_app("a2", {}, {"/nitros_bridge/data"})},
+                          {make_function("f1", {"a1", "a2"})});
+  ctx.entity_snapshot_ = input;
+
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/nitros_bridge/data";
+  status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+  diagnostic_msgs::msg::KeyValue kv;
+  kv.key = "frame_rate_msg";
+  kv.value = "30.0";
+  status.values.push_back(kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a1", "a2", "/nitros_bridge/data");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 30.0);
 }

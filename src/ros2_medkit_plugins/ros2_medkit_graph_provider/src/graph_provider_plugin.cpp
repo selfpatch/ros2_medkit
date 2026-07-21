@@ -49,14 +49,51 @@ std::string format_timestamp_ns(int64_t ns) {
 
 constexpr size_t kMaxCachedTopicMetrics = 512;
 
+// True if any '/'-delimited path segment of `topic_name` is exactly `segment`.
+// Anchors matching to whole segments instead of a substring search, so a
+// real topic like "/nitros_bridge/data" (under the isaac_ros_nitros_bridge
+// package) does not falsely match "nitros" the way a plain substring find
+// would.
+bool has_path_segment(const std::string & topic_name, const std::string & segment) {
+  size_t start = 0;
+  while (start <= topic_name.size()) {
+    const size_t end = topic_name.find('/', start);
+    const std::string current =
+        (end == std::string::npos) ? topic_name.substr(start) : topic_name.substr(start, end - start);
+    if (current == segment) {
+      return true;
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return false;
+}
+
+// True if the final '/'-delimited path segment of `topic_name` is exactly
+// `segment`.
+bool has_trailing_path_segment(const std::string & topic_name, const std::string & segment) {
+  const auto last_slash = topic_name.find_last_of('/');
+  const std::string trailing = (last_slash == std::string::npos) ? topic_name : topic_name.substr(last_slash + 1);
+  return trailing == segment;
+}
+
 bool is_filtered_topic_name(const std::string & topic_name) {
   if (topic_name == "/parameter_events" || topic_name == "/rosout" || topic_name == "/diagnostics") {
     return true;
   }
-  if (topic_name.find("/nitros") != std::string::npos) {
+  // REP-2009 NITROS negotiation side topics: "<base>/nitros" (negotiated-
+  // topics-info) and "<base>/nitros/<format>" (negotiated data) both have a
+  // path segment exactly "nitros"; "<base>/nitros/_supported_types" (the
+  // supported-types topic) also has a trailing segment exactly
+  // "_supported_types". Matching whole segments (not substrings) keeps real
+  // topics that merely contain "nitros" or "_supported_types" inside a
+  // longer segment name out of the filter.
+  if (has_path_segment(topic_name, "nitros")) {
     return true;
   }
-  if (topic_name.find("_supported_types") != std::string::npos) {
+  if (has_trailing_path_segment(topic_name, "_supported_types")) {
     return true;
   }
   return false;
