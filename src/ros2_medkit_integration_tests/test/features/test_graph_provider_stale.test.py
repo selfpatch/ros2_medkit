@@ -28,10 +28,11 @@ Silencing mechanism (see the module docstring investigation notes below for
 why this is the reliable lever, not a guess):
 
 ``engine_temp_sensor``'s ``publish_rate`` parameter is live-tunable (the same
-``AsyncParameterClient`` mechanism the acceptance-gate suite uses for its
-degradation case) but is clamped to >= 0.1 Hz - it can never be driven to a
-literal 0. Dropping it to 0.1 Hz (one message every 10s) still reliably
-triggers ``metrics_stale``: empirically probing the real
+direct ``rcl_interfaces/srv/SetParameters`` service-client mechanism the
+acceptance-gate suite uses for its degradation case) but is clamped to
+>= 0.1 Hz - it can never be driven to a literal 0. Dropping it to 0.1 Hz
+(one message every 10s) still reliably triggers ``metrics_stale``:
+empirically probing the real
 ``greenwave_monitor`` binary (ros-jazzy-greenwave-monitor, vendored, no
 local source) shows it declares its OWN "DIAGNOSTICS STALE" state roughly
 1-1.5s after a monitored topic's last message, and when in that state its
@@ -65,10 +66,10 @@ from launch import LaunchDescription
 from launch.actions import TimerAction
 import launch_testing
 import launch_testing.actions
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.parameter_client import AsyncParameterClient
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
@@ -235,15 +236,19 @@ class TestGraphProviderStale(GatewayTestCase):
     def setUpClass(cls):
         """Wait for gateway/discovery, then set up a live parameter client.
 
-        Targets the real temp_sensor node so tests can drop and restore its
-        publish_rate live, mid-suite (see the module docstring for why this
-        is the reliable lever for both the stale and recovery cases).
+        Targets the real temp_sensor node's ``set_parameters`` service so
+        tests can drop and restore its publish_rate live, mid-suite (see the
+        module docstring for why this is the reliable lever for both the
+        stale and recovery cases). A raw ``rcl_interfaces/srv/
+        SetParameters`` client is used directly (rather than
+        ``rclpy.parameter_client.AsyncParameterClient``, which is Jazzy+
+        only) so this suite also loads and runs on Humble.
         """
         super().setUpClass()
         rclpy.init()
         cls._param_node = Node('graph_provider_stale_param_client')
-        cls._param_client = AsyncParameterClient(
-            cls._param_node, f'{PRIMARY_NAMESPACE}/temp_sensor',
+        cls._param_client = cls._param_node.create_client(
+            SetParameters, f'{PRIMARY_NAMESPACE}/temp_sensor/set_parameters',
         )
 
     @classmethod
@@ -262,12 +267,14 @@ class TestGraphProviderStale(GatewayTestCase):
     def _set_publish_rate(self, rate_hz):
         """Live-set temp_sensor's publish_rate parameter, asserting success."""
         self.assertTrue(
-            self._param_client.wait_for_services(timeout_sec=15.0),
+            self._param_client.wait_for_service(timeout_sec=15.0),
             'temp_sensor parameter services not available',
         )
-        future = self._param_client.set_parameters(
-            [Parameter('publish_rate', Parameter.Type.DOUBLE, rate_hz)],
-        )
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter('publish_rate', Parameter.Type.DOUBLE, rate_hz).to_parameter_msg(),
+        ]
+        future = self._param_client.call_async(request)
         rclpy.spin_until_future_complete(self._param_node, future, timeout_sec=10.0)
         result = future.result()
         self.assertIsNotNone(result, 'set_parameters call to temp_sensor timed out')

@@ -37,12 +37,14 @@ so this test cannot affect any other integration test):
   regression (unit-covered already; this confirms the whole stack agrees).
 
 Degradation (case 3) is triggered by a LIVE parameter change to the primary
-temp_sensor's ``publish_rate`` partway through the suite (via
-``rclpy.parameter_client.AsyncParameterClient``), not by a node that is slow
-from launch. A permanently-slow third pair would race case 2's "pipeline
-stays healthy" assertion, since nothing paces when greenwave first observes
-enough low-rate samples to call it "active" - the live change makes the
-transition deterministic and keeps case 2 and case 3 from interfering.
+temp_sensor's ``publish_rate`` partway through the suite, via a direct
+``rcl_interfaces/srv/SetParameters`` service call against the node's own
+``<node>/set_parameters`` service (``rclpy.parameter_client`` is Jazzy+ only
+and would break this suite's launch under Humble CI), not by a node that is
+slow from launch. A permanently-slow third pair would race case 2's
+"pipeline stays healthy" assertion, since nothing paces when greenwave first
+observes enough low-rate samples to call it "active" - the live change makes
+the transition deterministic and keeps case 2 and case 3 from interfering.
 
 Expected-frequency alignment: temp_sensor publishes at 2 Hz, but the graph
 provider's global ``expected_frequency_hz_default`` is 30 Hz, so an unaligned
@@ -66,10 +68,10 @@ from launch.actions import TimerAction
 import launch_ros.actions
 import launch_testing
 import launch_testing.actions
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.parameter_client import AsyncParameterClient
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.coverage import get_coverage_env
@@ -274,17 +276,21 @@ class TestGraphProviderGreenwave(GatewayTestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Wait for gateway/discovery, then set up an rclpy parameter client.
+        """Wait for gateway/discovery, then set up a live parameter client.
 
-        The client (used only by test_03) targets the real temp_sensor node
-        to drop its publish_rate live, mid-suite - see the module docstring
-        for why this beats a permanently-slow third node.
+        The client (used only by test_03) targets the real temp_sensor
+        node's ``set_parameters`` service to drop its publish_rate live,
+        mid-suite - see the module docstring for why this beats a
+        permanently-slow third node. A raw ``rcl_interfaces/srv/
+        SetParameters`` client is used directly (rather than
+        ``rclpy.parameter_client.AsyncParameterClient``, which is Jazzy+
+        only) so this suite also loads and runs on Humble.
         """
         super().setUpClass()
         rclpy.init()
         cls._param_node = Node('graph_provider_greenwave_param_client')
-        cls._param_client = AsyncParameterClient(
-            cls._param_node, f'{PRIMARY_NAMESPACE}/temp_sensor',
+        cls._param_client = cls._param_node.create_client(
+            SetParameters, f'{PRIMARY_NAMESPACE}/temp_sensor/set_parameters',
         )
 
     @classmethod
@@ -379,12 +385,15 @@ class TestGraphProviderGreenwave(GatewayTestCase):
         @verifies REQ_INTEROP_003
         """
         self.assertTrue(
-            self._param_client.wait_for_services(timeout_sec=15.0),
+            self._param_client.wait_for_service(timeout_sec=15.0),
             'temp_sensor parameter services not available',
         )
-        future = self._param_client.set_parameters(
-            [Parameter('publish_rate', Parameter.Type.DOUBLE, DEGRADED_PUBLISH_RATE_HZ)],
+        rate_param = Parameter(
+            'publish_rate', Parameter.Type.DOUBLE, DEGRADED_PUBLISH_RATE_HZ,
         )
+        request = SetParameters.Request()
+        request.parameters = [rate_param.to_parameter_msg()]
+        future = self._param_client.call_async(request)
         rclpy.spin_until_future_complete(self._param_node, future, timeout_sec=10.0)
         result = future.result()
         self.assertIsNotNone(result, 'set_parameters call to temp_sensor timed out')
