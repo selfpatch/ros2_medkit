@@ -283,11 +283,17 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
         """GET /apps/{id}/configurations returns parameters when node is running.
 
         App is defined in manifest with bound_fqn. Configurations are retrieved
-        from the ROS 2 parameter service on the node.
+        from the ROS 2 parameter service on the node, which may not be ready the
+        instant the app is discovered - the endpoint returns 503 until it is.
+        Poll until it responds rather than asserting on a single early GET.
 
         @verifies REQ_INTEROP_003
         """
-        data = self.get_json('/apps/lidar-sensor/configurations')
+        data = self.poll_endpoint_until(
+            '/apps/lidar-sensor/configurations',
+            lambda d: d if 'items' in d else None,
+            timeout=15.0,
+        )
         self.assertIn('items', data)
         self.assertIn('x-medkit', data)
 
