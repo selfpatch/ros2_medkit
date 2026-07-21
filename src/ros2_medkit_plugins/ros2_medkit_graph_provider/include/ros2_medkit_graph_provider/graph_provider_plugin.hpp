@@ -45,6 +45,30 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   friend class GraphProviderPluginTestAccess;
 
  public:
+  // Policy for how an edge's `metrics` react when more than one live
+  // publisher is found on its DATA topic (see
+  // resolve_data_topic_publisher_counts()). `frame_rate_msg` (the value the
+  // rest of this file reads into TopicMetrics::frequency_hz) is a
+  // SUBSCRIBER-SIDE arrival rate summed across every publisher on the topic
+  // name, so a genuinely slow producer plus a leftover/duplicate publisher on
+  // the same topic can sum to a healthy-looking rate while the real pipeline
+  // is broken - the plugin cannot tell the difference from frame_rate_msg
+  // alone.
+  enum class MultiPublisherRatePolicy {
+    // Default, safe: keep emitting frequency_hz (and let it drive the
+    // degraded ratio) exactly as before this policy existed, but also emit
+    // publisher_count and rate_ambiguous so the operator sees the ambiguity
+    // and can judge for themselves.
+    kAnnotate,
+    // Conservative against a false "healthy": omit frequency_hz (and exclude
+    // it from the degraded ratio / bottleneck calculation) whenever
+    // publisher_count > 1, so an inflated arrival rate can never mask a
+    // broken pipeline as healthy. publisher_count and rate_ambiguous are
+    // still emitted; metrics_status is untouched - suppression is only about
+    // the untrustworthy rate number, never about freshness.
+    kSuppress,
+  };
+
   struct TopicMetrics {
     std::optional<double> frequency_hz;
     std::optional<double> latency_ms;
@@ -58,6 +82,10 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // resolve_publisher_source()). Empty when no GID match was found for a
     // sample (publisher left the graph between publishing and the graph
     // query, or a race) - never a fabricated name or a vendor literal.
+    // Unlike every other field in this struct, `source` is LATEST-WINS, not
+    // merge-not-replace: it tracks who sent the MOST RECENT sample, so an
+    // unresolved current message must clear a stale earlier attribution
+    // rather than preserve it. See the merge in diagnostics_callback().
     std::optional<std::string> source;
     // Monotonic-clock (steady_clock) nanoseconds of the last update merged
     // into this entry. Defaults to 0 so hand-built test fixtures with a
@@ -81,6 +109,18 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // current_steady_ns(), tests set it directly. Deliberately NOT
     // system_clock - see TopicMetrics::last_update_ns.
     int64_t now_ns{0};
+    // Live ROS-graph publisher count per DATA topic (from
+    // get_publishers_info_by_topic - NOT /diagnostics), resolved once per
+    // unique topic per graph build and reused across every edge sharing that
+    // topic - see resolve_data_topic_publisher_counts(). A topic absent from
+    // this map is UNRESOLVED (the query was never run - e.g. a hand-built
+    // test fixture that only exercises the pure build_graph_document path -
+    // or it returned empty: the publisher left the graph between being
+    // modeled and this query, or a race). Absent is deliberately never
+    // recorded as a count of 0: build_edge_json omits `publisher_count` from
+    // the JSON in that case, exactly like TopicMetrics::source omits
+    // `source` when unresolved - never a fabricated value.
+    std::unordered_map<std::string, int> topic_publisher_counts;
   };
 
   struct GraphBuildConfig {
@@ -101,6 +141,9 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // last_update_ns, window, grace) with no separate onset/tick state to
     // maintain.
     double stale_grace_sec{2.0};
+    // See MultiPublisherRatePolicy. Defaults to the safe, non-breaking
+    // choice: annotate but never hide a measured rate.
+    MultiPublisherRatePolicy multi_publisher_rate{MultiPublisherRatePolicy::kAnnotate};
   };
 
   GraphProviderPlugin() = default;
@@ -134,6 +177,14 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   // graph between publishing and this query, or a race) - callers must never
   // substitute a fabricated name or a vendor literal for an empty result.
   std::optional<std::string> resolve_publisher_source(const rclcpp::MessageInfo & msg_info) const;
+  // Resolves the live publisher count for every unique DATA topic reachable
+  // from `scoped_apps`, via get_publishers_info_by_topic - once per unique
+  // topic name (not once per edge; a topic shared by a fan-out/fan-in group
+  // of edges is queried exactly once and the result is reused for all of
+  // them). A topic whose query returns empty is left OUT of the returned map
+  // rather than recorded as 0 - see GraphBuildState::topic_publisher_counts.
+  std::unordered_map<std::string, int>
+  resolve_data_topic_publisher_counts(const std::vector<const App *> & scoped_apps) const;
   static std::optional<TopicMetrics> parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status);
   static std::optional<double> parse_double(const std::string & value);
   static std::string current_timestamp();
