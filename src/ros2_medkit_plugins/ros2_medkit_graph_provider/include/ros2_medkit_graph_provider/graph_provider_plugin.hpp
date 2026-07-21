@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <mutex>
@@ -37,21 +38,37 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   struct TopicMetrics {
     std::optional<double> frequency_hz;
     std::optional<double> latency_ms;
-    double drop_rate_percent{0.0};
+    // Optional (not defaulted to 0.0) so a diagnostics sample that omits this
+    // key can be merged into an existing entry without clobbering a
+    // previously-observed drop rate.
+    std::optional<double> drop_rate_percent;
     std::optional<double> expected_frequency_hz;
+    // Epoch nanoseconds (plugin clock) of the last update merged into this
+    // entry. Defaults to 0 so hand-built test fixtures with a matching
+    // default-constructed GraphBuildState::now_ns (also 0) read as fresh.
+    int64_t last_update_ns{0};
   };
 
   struct GraphBuildState {
     std::unordered_map<std::string, TopicMetrics> topic_metrics;
     std::unordered_set<std::string> stale_topics;
     std::unordered_map<std::string, std::string> last_seen_by_app;
-    bool diagnostics_seen{false};
+    // Epoch nanoseconds (plugin clock) used as "now" for freshness
+    // comparisons against TopicMetrics::last_update_ns. Explicit field
+    // (rather than reading the wall clock inside the pure build functions)
+    // so build_graph_document stays a deterministic pure function - the
+    // production path stamps it in build_state_snapshot(), tests set it
+    // directly.
+    int64_t now_ns{0};
   };
 
   struct GraphBuildConfig {
     double expected_frequency_hz_default{30.0};
     double degraded_frequency_ratio{0.5};
     double drop_rate_percent_threshold{5.0};
+    // Freshness window = max(freshness_floor_sec, freshness_headroom_factor / expected_frequency_hz).
+    double freshness_headroom_factor{3.0};
+    double freshness_floor_sec{5.0};
   };
 
   GraphProviderPlugin() = default;
@@ -80,6 +97,7 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   static std::optional<double> parse_double(const std::string & value);
   static std::string generate_fault_code(const std::string & diagnostic_name);
   static std::string current_timestamp();
+  static int64_t current_time_ns();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
   std::optional<nlohmann::json> get_cached_or_built_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
@@ -99,7 +117,6 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   mutable std::mutex metrics_mutex_;
   std::unordered_map<std::string, TopicMetrics> topic_metrics_;
   std::deque<std::string> topic_metrics_order_;
-  bool diagnostics_seen_{false};  // Guarded by metrics_mutex_.
 
   mutable std::mutex status_mutex_;
   std::unordered_map<std::string, std::string> last_seen_by_app_;

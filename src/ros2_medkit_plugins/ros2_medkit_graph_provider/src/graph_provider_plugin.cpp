@@ -151,6 +151,26 @@ double resolve_expected_frequency(const GraphProviderPlugin::TopicMetrics * metr
   return config.expected_frequency_hz_default;
 }
 
+// Freshness window derived from the resolved expected frequency: a topic
+// expected at f Hz should not be reported stale before roughly
+// headroom_factor message intervals have passed, floored at a few seconds so
+// slow producers (e.g. the 1 Hz greenwave_monitor reference) don't flap
+// between samples.
+double resolve_freshness_window_sec(const GraphProviderPlugin::TopicMetrics * metrics,
+                                    const GraphProviderPlugin::GraphBuildConfig & config) {
+  const double expected_frequency = resolve_expected_frequency(metrics, config);
+  if (expected_frequency <= 0.0) {
+    return config.freshness_floor_sec;
+  }
+  const double expected_interval_sec = 1.0 / expected_frequency;
+  return std::max(config.freshness_floor_sec, expected_interval_sec * config.freshness_headroom_factor);
+}
+
+bool is_metrics_fresh(const GraphProviderPlugin::TopicMetrics & metrics, int64_t now_ns, double window_sec) {
+  const auto window_ns = static_cast<int64_t>(window_sec * 1e9);
+  return (now_ns - metrics.last_update_ns) <= window_ns;
+}
+
 EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source, const App & target,
                                 const std::string & topic_name, const std::string & topic_id,
                                 const GraphProviderPlugin::TopicMetrics * metrics,
@@ -169,23 +189,17 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
     if (metrics->latency_ms.has_value()) {
       metrics_json["latency_ms"] = *metrics->latency_ms;
     }
-    metrics_json["drop_rate_percent"] = metrics->drop_rate_percent;
+    metrics_json["drop_rate_percent"] = metrics->drop_rate_percent.value_or(0.0);
   }
 
   result.json = {{"edge_id", edge_id},   {"source", source.id},         {"target", target.id},
                  {"topic_id", topic_id}, {"transport_type", "unknown"}, {"metrics", metrics_json}};
 
-  const bool node_offline = !source.is_online || !target.is_online;
+  // Note: an offline app (source or target) always has an empty topic list
+  // (see App::topics population sites), so it can never contribute an edge
+  // here in the first place - there is no "node offline" case to special-case.
+
   const bool topic_stale = state.stale_topics.count(topic_name) > 0;
-  const bool has_frequency = metrics && metrics->frequency_hz.has_value();
-
-  if (node_offline) {
-    result.json["metrics"]["metrics_status"] = "error";
-    result.json["metrics"]["error_reason"] = "node_offline";
-    result.is_error = true;
-    return result;
-  }
-
   if (topic_stale) {
     result.json["metrics"]["metrics_status"] = "error";
     result.json["metrics"]["error_reason"] = "topic_stale";
@@ -193,31 +207,36 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
     return result;
   }
 
-  if (has_frequency) {
+  if (!metrics) {
+    result.json["metrics"]["metrics_status"] = "pending";
+    return result;
+  }
+
+  const double freshness_window_sec = resolve_freshness_window_sec(metrics, config);
+  if (!is_metrics_fresh(*metrics, state.now_ns, freshness_window_sec)) {
+    result.json["metrics"]["metrics_status"] = "error";
+    result.json["metrics"]["error_reason"] = "metrics_stale";
+    result.is_error = true;
+    return result;
+  }
+
+  // Observed and current. Metrics that carry latency/drop-rate but no
+  // frequency (e.g. a rejected negative frame_rate_msg sample) are still
+  // "active" - freshness, not field completeness, drives status.
+  result.json["metrics"]["metrics_status"] = "active";
+  if (metrics->frequency_hz.has_value()) {
     const double expected_frequency = resolve_expected_frequency(metrics, config);
     const double frequency = *metrics->frequency_hz;
-    result.json["metrics"]["metrics_status"] = "active";
-
     if (expected_frequency > 0.0) {
       result.ratio = frequency / expected_frequency;
       if (*result.ratio < config.degraded_frequency_ratio) {
         result.is_degraded = true;
       }
     }
-    if (metrics->drop_rate_percent > config.drop_rate_percent_threshold) {
-      result.is_degraded = true;
-    }
-    return result;
   }
-
-  if (!state.diagnostics_seen) {
-    result.json["metrics"]["metrics_status"] = "pending";
-    return result;
+  if (metrics->drop_rate_percent.value_or(0.0) > config.drop_rate_percent_threshold) {
+    result.is_degraded = true;
   }
-
-  result.json["metrics"]["metrics_status"] = "error";
-  result.json["metrics"]["error_reason"] = "no_data_source";
-  result.is_error = true;
   return result;
 }
 
@@ -464,13 +483,38 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     }
   }
 
+  const auto now_ns = current_time_ns();
+
   std::lock_guard<std::mutex> lock(metrics_mutex_);
-  diagnostics_seen_ = true;
-  for (auto & [topic_name, metrics] : updates) {
-    if (topic_metrics_.find(topic_name) == topic_metrics_.end()) {
+  for (auto & [topic_name, incoming] : updates) {
+    auto it = topic_metrics_.find(topic_name);
+    if (it == topic_metrics_.end()) {
       topic_metrics_order_.push_back(topic_name);
+      incoming.last_update_ns = now_ns;
+      topic_metrics_.emplace(topic_name, incoming);
+      continue;
     }
-    topic_metrics_[topic_name] = metrics;
+
+    // Merge field-by-field into the existing entry instead of replacing it
+    // wholesale: a sample where only one key failed to parse must not wipe
+    // the other, previously-good fields (e.g. a trailing-space frame_rate_msg
+    // must not erase a good latency_ms from an earlier sample).
+    TopicMetrics & existing = it->second;
+    if (incoming.frequency_hz.has_value()) {
+      existing.frequency_hz = incoming.frequency_hz;
+    }
+    if (incoming.latency_ms.has_value()) {
+      existing.latency_ms = incoming.latency_ms;
+    }
+    if (incoming.drop_rate_percent.has_value()) {
+      existing.drop_rate_percent = incoming.drop_rate_percent;
+    }
+    if (incoming.expected_frequency_hz.has_value()) {
+      existing.expected_frequency_hz = incoming.expected_frequency_hz;
+    }
+    // The message itself arrived now regardless of which fields parsed, so
+    // the freshness stamp always advances.
+    existing.last_update_ns = now_ns;
   }
   while (topic_metrics_order_.size() > kMaxCachedTopicMetrics) {
     const auto evicted_topic = topic_metrics_order_.front();
@@ -483,13 +527,15 @@ std::optional<GraphProviderPlugin::TopicMetrics>
 GraphProviderPlugin::parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status) {
   TopicMetrics metrics;
   bool has_relevant_key = false;
+  std::optional<double> frame_rate_msg;
+  std::optional<double> frame_rate_node;
 
   for (const auto & kv : status.values) {
     if (kv.key == "frame_rate_msg") {
-      auto value = parse_double(kv.value);
-      if (value.has_value() && std::isfinite(*value)) {
-        metrics.frequency_hz = *value;
-      }
+      frame_rate_msg = parse_double(kv.value);
+      has_relevant_key = true;
+    } else if (kv.key == "frame_rate_node") {
+      frame_rate_node = parse_double(kv.value);
       has_relevant_key = true;
     } else if (kv.key == "current_delay_from_realtime_ms") {
       auto value = parse_double(kv.value);
@@ -512,6 +558,22 @@ GraphProviderPlugin::parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticS
     } else if (kv.key == "total_dropped_frames") {
       has_relevant_key = true;
     }
+  }
+
+  // Header-less message types report frame_rate_msg: 0 with the real rate in
+  // frame_rate_node (the reference producer, greenwave_monitor, does this for
+  // any message type with no header field). Fall back to frame_rate_node only
+  // when frame_rate_msg is present but exactly zero. Negative values (e.g. a
+  // "-1 not measured yet" sentinel) are rejected outright - they must never
+  // win a bottleneck ratio comparison.
+  if (frame_rate_msg.has_value() && std::isfinite(*frame_rate_msg) && *frame_rate_msg > 0.0) {
+    metrics.frequency_hz = *frame_rate_msg;
+  } else if (frame_rate_msg.has_value() && std::isfinite(*frame_rate_msg) && *frame_rate_msg >= 0.0 &&
+             frame_rate_node.has_value() && std::isfinite(*frame_rate_node) && *frame_rate_node > 0.0) {
+    // Reached only when frame_rate_msg is not > 0.0, so combined with the
+    // >= 0.0 check above this branch is exactly the "present but zero" case
+    // (avoids an exact floating-point == comparison).
+    metrics.frequency_hz = *frame_rate_node;
   }
 
   if (!has_relevant_key) {
@@ -555,9 +617,12 @@ std::string GraphProviderPlugin::generate_fault_code(const std::string & diagnos
 }
 
 std::string GraphProviderPlugin::current_timestamp() {
-  const auto now_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  return format_timestamp_ns(now_ns);
+  return format_timestamp_ns(current_time_ns());
+}
+
+int64_t GraphProviderPlugin::current_time_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 GraphProviderPlugin::GraphBuildConfig GraphProviderPlugin::resolve_config(const std::string & function_id) const {
@@ -650,10 +715,10 @@ GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(c
                                                                                const std::string & timestamp,
                                                                                bool include_stale_topics) {
   GraphBuildState state;
+  state.now_ns = current_time_ns();
   {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     state.topic_metrics = topic_metrics_;
-    state.diagnostics_seen = diagnostics_seen_;
   }
   if (include_stale_topics) {
     state.stale_topics = collect_stale_topics(function_id, input);
@@ -684,6 +749,8 @@ void GraphProviderPlugin::load_parameters() {
   new_config.defaults.expected_frequency_hz_default = get_config_double("expected_frequency_hz_default", 30.0);
   new_config.defaults.degraded_frequency_ratio = get_config_double("degraded_frequency_ratio", 0.5);
   new_config.defaults.drop_rate_percent_threshold = get_config_double("drop_rate_percent_threshold", 5.0);
+  new_config.defaults.freshness_headroom_factor = get_config_double("freshness_headroom_factor", 3.0);
+  new_config.defaults.freshness_floor_sec = get_config_double("freshness_floor_sec", 5.0);
 
   // Per-function overrides from config (keys like "function_overrides.<func>.<field>")
   const std::string prefix = "function_overrides.";
@@ -712,6 +779,10 @@ void GraphProviderPlugin::load_parameters() {
       function_config.degraded_frequency_ratio = numeric_value;
     } else if (field == "drop_rate_percent_threshold") {
       function_config.drop_rate_percent_threshold = numeric_value;
+    } else if (field == "freshness_headroom_factor") {
+      function_config.freshness_headroom_factor = numeric_value;
+    } else if (field == "freshness_floor_sec") {
+      function_config.freshness_floor_sec = numeric_value;
     }
   }
 
