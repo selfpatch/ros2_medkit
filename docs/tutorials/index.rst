@@ -28,6 +28,7 @@ Step-by-step guides for common use cases with ros2_medkit.
    beacon-discovery
    plugin-system
    linux-introspection
+   graph-provider
    triggers-use-cases
    multi-instance
 
@@ -123,6 +124,10 @@ Advanced Tutorials
 
 :doc:`linux-introspection`
    Enrich discovery with Linux process, systemd, and container metadata.
+
+:doc:`graph-provider`
+   Use the ``x-medkit-graph`` vendor extension to monitor per-Function dataflow
+   health with frequency, latency, and drop-rate metrics from ``/diagnostics``.
 
 :doc:`triggers-use-cases`
    Set up multi-trigger monitoring scenarios for OTA updates, thermal protection, and fleet diagnostics.

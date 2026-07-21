@@ -183,6 +183,51 @@ The Faults API requires ``ros2_medkit_fault_manager`` node:
 Components must use ``ros2_medkit_fault_reporter`` to report faults.
 The REST API is read-only for fault status.
 
+.. _graph-provider-pending-troubleshooting:
+
+Graph Provider Issues
+---------------------
+
+**Every edge shows "pending" / no metrics**
+
+The ``x-medkit-graph`` metrics model has exactly one source of live data: a
+``/diagnostics`` producer whose ``DiagnosticStatus.name`` matches the topic's
+fully-qualified name byte-for-byte. With no such producer running, every
+edge's ``metrics_status`` stays ``"pending"`` forever - it never transitions
+to ``"active"`` or ``"error"`` on its own.
+
+Possible causes:
+
+1. **No ``/diagnostics`` producer is running** - nothing publishes
+   ``DiagnosticStatus`` messages for the topic at all.
+2. **The producer's monitored-topic list omits this topic** - many producers
+   (including the reference ``greenwave_monitor``) resolve their monitored
+   topics once at startup and never re-resolve; a topic added or renamed
+   afterward is silently skipped forever.
+3. **Name mismatch** - ``DiagnosticStatus.name`` must equal the ROS topic name
+   exactly (leading ``/``, no aliasing, no shortened form). Any other string
+   never matches, however close.
+4. **Producer started before its publishers existed** - a producer that
+   resolves its monitored topics once at startup (see cause 2) must be
+   started strictly after the topics it monitors already have live
+   publishers in the ROS graph.
+
+Check what is actually being published:
+
+.. code-block:: bash
+
+   ros2 topic echo /diagnostics --once
+
+If nothing appears, no producer is running - start one (see
+:doc:`/tutorials/graph-provider` for the reference ``greenwave_monitor``
+invocation). If a ``DiagnosticStatus`` for the topic IS present but the edge
+still reads ``pending``, compare its ``name`` field character-for-character
+against the topic's fully-qualified ROS name.
+
+See :doc:`/tutorials/graph-provider` for the full producer contract, and
+:doc:`/config/graph-provider` for the freshness/degradation thresholds that
+govern the ``active`` / ``error`` states once data does arrive.
+
 Performance Issues
 ------------------
 

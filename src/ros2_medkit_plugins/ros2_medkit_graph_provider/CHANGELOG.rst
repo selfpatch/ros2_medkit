@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_graph_provider
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* ``x-medkit-graph`` pipeline health rework: ``pipeline_status`` no longer misreports ``"broken"`` for edges with no ``/diagnostics`` coverage at all (the previous status model conflated "never observed" with "actively broken"). ``error_reason`` is now freshness-based and its only reachable value is ``metrics_stale``; ``node_offline``, ``topic_stale``, and ``no_data_source`` are gone. ``metrics.source`` is now the actual resolved ``/diagnostics`` publisher node name (resolved per message via publisher GID matching against ``/diagnostics``), omitted rather than hardcoded to ``"greenwave_monitor"`` when it cannot be resolved. Per-function threshold overrides (``plugins.graph_provider.function_overrides.<function_id>.*``) now take effect. ``schema_version`` bumped to ``"2.0.0"`` (`#545 <https://github.com/selfpatch/ros2_medkit/issues/545>`_)
+
 0.6.0 (2026-06-22)
 ------------------
 * No functional changes; version bump for the coordinated 0.6.0 release.
