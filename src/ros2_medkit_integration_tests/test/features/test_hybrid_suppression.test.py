@@ -28,7 +28,7 @@ Manifest (demo_nodes_manifest.yaml) defines:
   - 9 components (engine-ecu, temp-sensor-hw, rpm-sensor-hw, brake-ecu,
                    brake-pressure-sensor-hw, brake-actuator-hw,
                    door-sensor-hw, light-module, lidar-unit)
-  - 9 apps     (engine-temp-sensor, engine-rpm-sensor,
+  - 10 apps    (engine-temp-sensor, engine-temp-monitor, engine-rpm-sensor,
                  engine-calibration-service, engine-long-calibration,
                  brake-pressure-sensor, brake-actuator, door-status-sensor,
                  light-controller, lidar-sensor)
@@ -75,9 +75,10 @@ MANIFEST_COMPONENTS = {
     'hateoas-component-no-area',
 }
 MANIFEST_APPS = {
-    'engine-temp-sensor', 'engine-rpm-sensor', 'engine-calibration-service',
-    'engine-long-calibration', 'brake-pressure-sensor', 'brake-actuator',
-    'door-status-sensor', 'light-controller', 'lidar-sensor',
+    'engine-temp-sensor', 'engine-temp-monitor', 'engine-rpm-sensor',
+    'engine-calibration-service', 'engine-long-calibration',
+    'brake-pressure-sensor', 'brake-actuator', 'door-status-sensor',
+    'light-controller', 'lidar-sensor',
     # HATEOAS edge-case fixtures (manifest-only, no ros_binding)
     'hateoas-app-standalone', 'hateoas-app-on-area-less-component',
 }
@@ -113,8 +114,11 @@ def generate_test_description():
         'discovery.merge_pipeline.gap_fill.allow_heuristic_apps': False,
     })
 
-    # Launch ALL demo nodes so every manifest app gets a runtime match.
-    demo_nodes = create_demo_nodes(ALL_DEMO_NODES)
+    # Launch ALL demo nodes plus temp_monitor so every manifest app gets a
+    # runtime match. temp_monitor (the graph-provider consumer edge, bound to
+    # the engine-temp-monitor app) is not in ALL_DEMO_NODES because most tests
+    # do not need it, so it is added explicitly here.
+    demo_nodes = create_demo_nodes(ALL_DEMO_NODES + ['temp_monitor'])
     delayed = TimerAction(period=2.0, actions=demo_nodes)
 
     return (
