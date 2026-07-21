@@ -69,6 +69,36 @@ Recognized ``DiagnosticStatus.values`` keys:
 A negative ``frame_rate_msg`` or ``frame_rate_node`` (a "not measured yet"
 sentinel some producers emit) is rejected outright and never used.
 
+.. note::
+
+   **Drop-rate degradation is not automatic.** It only fires against a producer
+   that actually emits ``drop_rate_percent`` or ``drop_rate``. The reference
+   producer, ``greenwave_monitor`` (see below), does **not** emit either key -
+   it only reports ``total_dropped_frames``, which is recognized (it keeps the
+   sample from being skipped as irrelevant) but never converted to a rate. Run
+   ``greenwave_monitor`` and the drop-rate threshold in
+   :doc:`/config/graph-provider` will simply never trip, however unhealthy the
+   real drop rate is - it becomes active only against a producer that emits one
+   of the two mapped keys.
+
+Producer vocabulary is not automatic
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The recognized keys and the ``DiagnosticStatus.name`` == topic-name rule above
+are this plugin's entire contract - a producer must speak both, or it does not
+work. In particular, **a stock ``diagnostic_updater``-based producer will not
+work without adapting it.** ``diagnostic_updater`` emits its own key vocabulary
+(e.g. ``"Actual frequency (Hz)"``, not ``frame_rate_msg``) and names
+``DiagnosticStatus.name`` after the diagnostic task (e.g. ``"topic_monitor:
+/powertrain/engine/temperature"`` or similar), not the bare, fully-qualified
+topic name the graph provider matches against. Neither the keys nor the name
+match what this plugin looks for, so every edge on that topic stays
+``"pending"`` forever - silently, with no error anywhere. To use
+``diagnostic_updater``, either write a custom ``DiagnosticTask`` that emits the
+recognized key vocabulary above and sets ``.name`` to the plain topic name, or
+run a separate producer that already speaks it (like ``greenwave_monitor``,
+next).
+
 The header-stamp requirement
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -146,6 +176,33 @@ turn into Functions automatically (``create_functions_from_namespaces``,
 enabled by default). The ``x-medkit-graph`` endpoint is not manifest-only: any
 Function, however it was discovered, gets the capability.
 
+Aligning the expected frequency for this walkthrough
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The worked example below publishes at 2 Hz, but the global
+``expected_frequency_hz_default`` is 30 Hz (see :doc:`/config/graph-provider`).
+Without an override, ``2 / 30 = 0.067`` falls below the default
+``degraded_frequency_ratio`` of ``0.5``, and the graph would read
+``"degraded"``, not ``"healthy"``. To get the ``"healthy"`` result shown below,
+add a per-function override for the ``engine-monitoring`` Function to a params
+YAML file:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       plugins.graph_provider.function_overrides.engine-monitoring.expected_frequency_hz: 2.0
+
+and load it via ``config_file`` - **not** a bare ``ros2 launch ... key:=value``
+(silently dropped) or a CLI ``-p`` flag (fails to parse: ``engine-monitoring``
+has a hyphen, which the per-function override mechanism does not accept from
+the ROS 2 CLI - see :doc:`/config/graph-provider`'s note on override delivery):
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway gateway.launch.py \
+     config_file:=/path/to/engine-monitoring-overrides.yaml
+
 The Discovery Path
 -------------------
 
@@ -215,6 +272,7 @@ Function ``engine-monitoring`` hosting an ``engine-temp-sensor`` App (publishes
            "transport_type": "unknown",
            "metrics": {
              "source": "/greenwave_monitor",
+             "publisher_count": 1,
              "frequency_hz": 2.02,
              "latency_ms": 3.8,
              "drop_rate_percent": 0.0,
@@ -224,6 +282,16 @@ Function ``engine-monitoring`` hosting an ``engine-temp-sensor`` App (publishes
        ]
      }
    }
+
+``publisher_count`` reflects a live query of the ROS graph for this edge's
+DATA topic (``/powertrain/engine/temperature``), independent of
+``/diagnostics``. Here it is ``1`` - a single publisher, so the measured
+``frequency_hz`` is trustworthy. If a second publisher ever appeared on that
+topic (a duplicate node, a leftover process), this edge would instead carry
+``"publisher_count": 2`` and ``"rate_ambiguous": true``, meaning
+``frequency_hz`` is now a rate summed across both publishers and could be
+inflated. See :doc:`/config/graph-provider`'s ``multi_publisher_rate`` setting
+for how to control the response to that ambiguity.
 
 If a second App pair existed in the same Function without a matching
 ``greenwave_monitor`` entry in ``gw_monitored_topics``, its edge would appear
@@ -270,7 +338,7 @@ Then stream events from ``event_source``. Each frame's payload is the same
 
 .. code-block:: text
 
-   data: {"timestamp":"2026-07-20T14:03:12.204Z","payload":{"x-medkit-graph":{"schema_version":"2.0.0","graph_id":"engine-monitoring-graph","timestamp":"2026-07-20T14:03:12.204Z","scope":{"type":"function","entity_id":"engine-monitoring"},"pipeline_status":"healthy","bottleneck_edge":null,"topics":[{"topic_id":"topic-1","name":"/powertrain/engine/temperature"}],"nodes":[{"entity_id":"engine-temp-sensor","node_status":"reachable"},{"entity_id":"engine-temp-monitor","node_status":"reachable"}],"edges":[{"edge_id":"edge-1","source":"engine-temp-sensor","target":"engine-temp-monitor","topic_id":"topic-1","transport_type":"unknown","metrics":{"source":"/greenwave_monitor","frequency_hz":2.03,"latency_ms":3.7,"drop_rate_percent":0.0,"metrics_status":"active"}}]}}}
+   data: {"timestamp":"2026-07-20T14:03:12.204Z","payload":{"x-medkit-graph":{"schema_version":"2.0.0","graph_id":"engine-monitoring-graph","timestamp":"2026-07-20T14:03:12.204Z","scope":{"type":"function","entity_id":"engine-monitoring"},"pipeline_status":"healthy","bottleneck_edge":null,"topics":[{"topic_id":"topic-1","name":"/powertrain/engine/temperature"}],"nodes":[{"entity_id":"engine-temp-sensor","node_status":"reachable"},{"entity_id":"engine-temp-monitor","node_status":"reachable"}],"edges":[{"edge_id":"edge-1","source":"engine-temp-sensor","target":"engine-temp-monitor","topic_id":"topic-1","transport_type":"unknown","metrics":{"source":"/greenwave_monitor","publisher_count":1,"frequency_hz":2.03,"latency_ms":3.7,"drop_rate_percent":0.0,"metrics_status":"active"}}]}}}
 
 Before the producer has warmed up, the same stream carries the edge as
 ``"metrics_status": "pending"`` with no ``metrics.source`` key - a client
@@ -280,6 +348,13 @@ reconnecting.
 Reading the Output
 -------------------
 
+``node_status`` / ``last_seen`` (per node)
+   - ``reachable`` - the app is currently present in the ROS graph.
+   - ``unreachable`` - the app is not currently present. The node also carries
+     ``last_seen``: an ISO 8601 timestamp of the last introspection cycle that
+     saw it online, when known (omitted for an app that has never been seen
+     online).
+
 ``metrics_status`` (per edge)
    - ``pending`` - no ``/diagnostics`` sample has ever been merged for this
      topic. Permanent until real data arrives; see the prerequisites above.
@@ -287,10 +362,24 @@ Reading the Output
      (see :doc:`/config/graph-provider`). Tracks freshness, not field
      completeness: an edge with a zero-rate warmup sample from the producer
      is still ``active``.
-   - ``error`` - a sample was merged at some point but the newest one is older
-     than the freshness window. Carries ``"error_reason": "metrics_stale"`` -
-     the only reachable value of that field. This is a real, currently-broken
+   - ``error`` - a sample was merged at some point, but the newest one has been
+     outside the freshness window for longer than ``stale_grace_sec`` (default
+     ``2.0`` s - a single late sample does not flip this immediately; see
+     :doc:`/config/graph-provider`). Carries ``"error_reason": "metrics_stale"``
+     - the only reachable value of that field. This is a real, currently-broken
      data flow, distinct from ``pending`` (never observed).
+
+``metrics.publisher_count`` / ``metrics.rate_ambiguous`` (per edge)
+   ``publisher_count`` is the live publisher count on this edge's DATA topic,
+   queried directly from the ROS graph - independent of ``/diagnostics``, and
+   present even while ``metrics_status`` is still ``pending``. When it is
+   greater than ``1``, the edge also carries ``rate_ambiguous: true``:
+   ``frequency_hz`` is a topic-level arrival rate summed across every
+   publisher, so a duplicate or leftover publisher can inflate it and mask a
+   genuinely slow pipeline as healthy. Treat ``frequency_hz`` on such an edge
+   as suspect, not authoritative. See :doc:`/config/graph-provider`'s
+   ``multi_publisher_rate`` setting for the policy that controls whether
+   ``frequency_hz`` is still shown once this ambiguity exists.
 
 ``pipeline_status`` (per graph)
    - ``broken`` - at least one edge is ``error``/``metrics_stale``.

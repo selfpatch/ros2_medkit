@@ -13,9 +13,15 @@ into a standalone plugin package in v0.4.0.
 - Subscribes to `/diagnostics` and resolves the publishing node for each metrics sample
   (never a fabricated or hardcoded name).
 - Builds a per-Function graph of Apps (nodes) and topic connections (edges) with
-  per-edge frequency (Hz), latency (ms), and drop-rate (%) metrics.
+  per-edge frequency (Hz), latency (ms), and drop-rate (%) metrics. Drop-rate
+  degradation only fires if your producer actually emits `drop_rate_percent`/`drop_rate` -
+  the reference `greenwave_monitor` producer does not, so that rule is inert against it
+  out of the box.
 - Reports `pipeline_status` (`healthy` / `degraded` / `broken`) and, when degraded,
   the `bottleneck_edge`.
+- Flags each edge's live publisher count (`publisher_count`) and a `rate_ambiguous`
+  warning when more than one publisher shares a topic, since the measured rate is then
+  summed across publishers and can mask a slow pipeline as healthy.
 
 The metrics require a real `/diagnostics` producer running elsewhere in your system -
 see the [Graph Provider tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/graph-provider.html)
