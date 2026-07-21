@@ -730,16 +730,40 @@ std::optional<std::string> GraphProviderPlugin::resolve_publisher_source(const r
   // a later message once a publisher restarts (new GID, same or new node).
   const auto & msg_gid = msg_info.get_rmw_message_info().publisher_gid;
   const auto endpoints = ctx_->node()->get_publishers_info_by_topic("/diagnostics");
+
+  // Best-effort exact attribution: match the sample's publisher GID against a
+  // discovered endpoint. This is what disambiguates WHICH of several
+  // /diagnostics publishers sent this sample - but only on RMWs whose
+  // message-info publisher_gid is the same identifier as the graph
+  // endpoint_gid (e.g. rmw_fastrtps_cpp). On rmw_cyclonedds_cpp the message
+  // publisher_gid is a DDS instance handle, not the endpoint GUID, so it never
+  // matches here; the single-publisher fallback below covers the common case
+  // on such RMWs. No RMW is special-cased: the match simply succeeds or does
+  // not, and the code path is identical everywhere.
   for (const auto & endpoint : endpoints) {
     const auto & endpoint_gid = endpoint.endpoint_gid();
     if (std::equal(msg_gid.data, msg_gid.data + RMW_GID_STORAGE_SIZE, endpoint_gid.begin())) {
       return endpoint_fqn(endpoint);
     }
   }
-  // No match: the publisher may have left the graph between publishing and
-  // this query, or this is a race. Leave the source unresolved rather than
-  // guessing - the caller (diagnostics_callback) must not substitute a
-  // fabricated name or a vendor literal for an empty result.
+
+  // RMW-agnostic fallback: if exactly one publisher exists on /diagnostics,
+  // any sample on it must have come from that publisher, so attribute it
+  // unambiguously without relying on GID comparison. This is what makes source
+  // resolve on RMWs where GID matching is unavailable (rmw_cyclonedds_cpp, and
+  // any RMW whose message GID is not the endpoint GID). It changes nothing on
+  // an RMW where the GID match already succeeded above.
+  if (endpoints.size() == 1) {
+    return endpoint_fqn(endpoints.front());
+  }
+
+  // Two or more publishers on /diagnostics and no GID match: the sample cannot
+  // be attributed to a specific one (an RMW without comparable GIDs cannot tell
+  // them apart). Leave source unresolved rather than guessing - the caller
+  // (diagnostics_callback) omits the key, and that absence is itself the honest
+  // signal that the latest sample could not be attributed. This also covers a
+  // publisher that left the graph between publishing and this query (zero
+  // endpoints), or a genuine race.
   return std::nullopt;
 }
 

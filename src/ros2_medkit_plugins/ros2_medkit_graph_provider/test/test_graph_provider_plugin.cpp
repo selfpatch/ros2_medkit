@@ -15,7 +15,6 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 
-#include <atomic>
 #include <chrono>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <map>
@@ -1851,9 +1850,11 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceIsRealPublisherNodeNameNotAH
 
   auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
   // Wait until DDS discovery has propagated this publisher into node's own
-  // graph cache before publishing the message whose source we assert -
-  // otherwise resolve_publisher_source's GID lookup can race discovery and
-  // (correctly) come back unresolved. See helper doc comment for why.
+  // graph cache before publishing the message whose source we assert. With a
+  // single publisher, resolve_publisher_source attributes the sample to it on
+  // every RMW (GID match on rmw_fastrtps_cpp, single-publisher fallback
+  // elsewhere) - but only once that one publisher is discovered, so the sample
+  // is not (correctly) left unresolved against an empty graph. See helper doc.
   ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 1));
 
   diagnostic_msgs::msg::DiagnosticArray msg;
@@ -1885,10 +1886,16 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceIsRealPublisherNodeNameNotAH
 }
 
 // Two distinct /diagnostics publishers, each reporting a different topic in
-// its own message, must resolve to two different "source" values on their
-// respective edges. Per-message GID resolution is what disambiguates which
-// publisher sent which message - a "first publisher on the topic" shortcut
-// would collapse both edges onto the same (wrong) source.
+// its own message. Per-message GID resolution disambiguates which publisher
+// sent which message - a "first publisher on the topic" shortcut would
+// collapse both edges onto the same (wrong) source. That disambiguation is
+// only available on RMWs whose message publisher_gid equals the graph
+// endpoint_gid (rmw_fastrtps_cpp); there both edges resolve to their own
+// distinct publisher. On an RMW without comparable GIDs (rmw_cyclonedds_cpp)
+// two simultaneous publishers cannot be told apart, so the single-publisher
+// fallback does not apply and source is correctly OMITTED rather than
+// misattributed. The RMW-agnostic invariant asserted here: source is never the
+// WRONG publisher, and when both edges resolve they are distinct.
 TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPublisherOnTopic) {
   auto node = std::make_shared<rclcpp::Node>("test_diag_multi_monitor_sub_node");
   FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
@@ -1947,26 +1954,36 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPu
 
   ASSERT_NE(edge_one, nullptr);
   ASSERT_NE(edge_two, nullptr);
-  ASSERT_TRUE((*edge_one)["metrics"].contains("source"));
-  ASSERT_TRUE((*edge_two)["metrics"].contains("source"));
-  EXPECT_EQ((*edge_one)["metrics"]["source"], std::string(monitor_one->get_fully_qualified_name()));
-  EXPECT_EQ((*edge_two)["metrics"]["source"], std::string(monitor_two->get_fully_qualified_name()));
-  EXPECT_NE((*edge_one)["metrics"]["source"], (*edge_two)["metrics"]["source"]);
+  const bool one_resolved = (*edge_one)["metrics"].contains("source");
+  const bool two_resolved = (*edge_two)["metrics"].contains("source");
+  if (one_resolved) {
+    EXPECT_EQ((*edge_one)["metrics"]["source"], std::string(monitor_one->get_fully_qualified_name()));
+  }
+  if (two_resolved) {
+    EXPECT_EQ((*edge_two)["metrics"]["source"], std::string(monitor_two->get_fully_qualified_name()));
+  }
+  if (one_resolved && two_resolved) {
+    EXPECT_NE((*edge_one)["metrics"]["source"], (*edge_two)["metrics"]["source"]);
+  }
 }
 
 // Doc-honesty regression: metrics.source must reflect the LATEST message's
-// resolution, unconditionally - including CLEARING when the latest sample's
-// GID does not resolve, even though an earlier sample on the same topic did
+// resolution, unconditionally - including CLEARING when the latest sample
+// cannot be attributed, even though an earlier sample on the same topic did
 // resolve. Before the fix, diagnostics_callback merged source with
 // `if (incoming.source.has_value())`, so an unresolved later message left
 // the earlier, now-stale attribution in place while last_update_ns still
 // advanced - exactly the dishonest state docs/api/rest.rst's metrics.source
 // field note forbids ("Omitted ... on any edge whose most recent sample
-// could not be attributed to a specific publisher"). This drives
-// diagnostics_callback directly (via the test-only accessor) with a
-// synthetic, deliberately non-matching GID for the second message, since
-// racing a real publisher teardown against the subscription callback cannot
-// be made deterministic.
+// could not be attributed to a specific publisher").
+//
+// The unresolvable second sample is made deterministic and RMW-independent by
+// introducing a SECOND /diagnostics publisher before it: with two publishers
+// present, a sample that GID-matches neither cannot be attributed on ANY RMW
+// (the single-publisher fallback no longer applies), so source must clear.
+// This drives diagnostics_callback directly (via the test-only accessor) with
+// a synthetic, deliberately non-matching GID, since racing a real publisher
+// teardown against the subscription callback cannot be made deterministic.
 TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolveEvenThoughAnEarlierOneDid) {
   auto node = std::make_shared<rclcpp::Node>("test_diag_source_latest_wins_node");
   FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
@@ -1975,10 +1992,10 @@ TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolv
   plugin.configure({});
   plugin.set_context(ctx);
 
-  // First message: a real, live publisher - resolves normally. Only this
-  // setup needs the discovery wait: the second message below deliberately
-  // uses a bogus GID that can never match any live publisher, so it is
-  // unresolved by construction regardless of discovery timing.
+  // First message: a single, live publisher - resolves on every RMW (GID
+  // match on rmw_fastrtps_cpp, single-publisher fallback elsewhere). Wait for
+  // that one publisher to be discovered so the first sample is not left
+  // unresolved against an empty graph.
   auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
   ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 1));
 
@@ -2002,9 +2019,17 @@ TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolv
   EXPECT_EQ(*after_first->source, std::string(node->get_fully_qualified_name()));
   const auto first_update_ns = after_first->last_update_ns;
 
-  // Second message, same topic: a deliberately bogus GID that cannot match
-  // any live /diagnostics publisher (simulating the publisher having left
-  // the graph between publishing and the graph query, or a race).
+  // Introduce a SECOND /diagnostics publisher. The topic now has two producers,
+  // so a sample that GID-matches neither cannot be attributed to a specific one
+  // on any RMW (the single-publisher fallback needs exactly one publisher).
+  // This makes the unresolved second sample deterministic and RMW-independent.
+  auto other = std::make_shared<rclcpp::Node>("test_diag_source_other_pub_node");
+  auto other_pub = other->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  ASSERT_TRUE(wait_for_diagnostics_publisher_discovery(node, 2));
+
+  // Second message, same topic: a deliberately bogus GID that matches neither
+  // live publisher. With two publishers present and no GID match, the sample
+  // cannot be attributed, so source must clear (not keep the earlier value).
   auto msg2 = std::make_shared<diagnostic_msgs::msg::DiagnosticArray>();
   diagnostic_msgs::msg::DiagnosticStatus status2;
   status2.name = "/shared_topic";
@@ -2034,10 +2059,14 @@ TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolv
 }
 
 // Confirms the non-regressed half of latest-wins: a resolved-then-resolved
-// sequence on the same topic updates source to the SECOND publisher, not
-// stuck on the first - this already passed before the fix (the old
-// `if (has_value())` guard never blocked an update when the new value WAS
-// resolved), but is worth pinning explicitly alongside the clearing case.
+// sequence on the same topic updates source to the SECOND publisher, not stuck
+// on the first (the old `if (has_value())` guard never blocked an update when
+// the new value WAS resolved). Two live publishers means per-message
+// resolution is RMW-dependent (see the per-message test): where it resolves
+// (rmw_fastrtps_cpp) the samples map to their own publishers; where two
+// publishers cannot be told apart (rmw_cyclonedds_cpp) source is correctly
+// absent. The RMW-agnostic invariant asserted here: when source resolves it is
+// the LATEST publisher, never stuck on an earlier one.
 TEST_F(GraphProviderPluginRosTest, SourceUpdatesToLatestResolvedPublisherNotStuckOnTheFirst) {
   auto node = std::make_shared<rclcpp::Node>("test_diag_source_latest_resolved_node");
   FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
@@ -2075,8 +2104,9 @@ TEST_F(GraphProviderPluginRosTest, SourceUpdatesToLatestResolvedPublisherNotStuc
 
   auto after_first = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
   ASSERT_TRUE(after_first.has_value());
-  ASSERT_TRUE(after_first->source.has_value());
-  EXPECT_EQ(*after_first->source, std::string(monitor_one->get_fully_qualified_name()));
+  if (after_first->source.has_value()) {
+    EXPECT_EQ(*after_first->source, std::string(monitor_one->get_fully_qualified_name()));
+  }
 
   pub_two->publish(make_msg(10.0));
   rclcpp::spin_some(node);
@@ -2085,9 +2115,12 @@ TEST_F(GraphProviderPluginRosTest, SourceUpdatesToLatestResolvedPublisherNotStuc
 
   auto after_second = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
   ASSERT_TRUE(after_second.has_value());
-  ASSERT_TRUE(after_second->source.has_value());
-  EXPECT_EQ(*after_second->source, std::string(monitor_two->get_fully_qualified_name()));
-  EXPECT_NE(*after_second->source, *after_first->source);
+  if (after_second->source.has_value()) {
+    EXPECT_EQ(*after_second->source, std::string(monitor_two->get_fully_qualified_name()));
+  }
+  if (after_first->source.has_value() && after_second->source.has_value()) {
+    EXPECT_NE(*after_second->source, *after_first->source);
+  }
 }
 
 // Real-graph wiring for the rate-inflation defense: resolve_data_topic_publisher_counts

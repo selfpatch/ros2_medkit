@@ -493,7 +493,12 @@ Functions
      ``/diagnostics`` message this edge's metrics were last updated from. **Omitted**
      on ``pending`` edges and on any edge whose most recent sample could not be
      attributed to a specific publisher - never a fabricated name or a hardcoded
-     vendor literal.
+     vendor literal. With a single ``/diagnostics`` publisher the sample resolves
+     on every RMW. Telling several simultaneous ``/diagnostics`` publishers apart
+     per sample needs an RMW whose message publisher GID matches the graph endpoint
+     GID (``rmw_fastrtps_cpp``); on an RMW without that (e.g. ``rmw_cyclonedds_cpp``)
+     a sample from one of several publishers is left unattributed (omitted) rather
+     than guessed.
    - ``metrics.publisher_count``: live publisher count on this edge's DATA topic,
      from the ROS graph (independent of ``/diagnostics``). Emitted whenever that
      graph query resolved - even at ``1``, and even while ``metrics_status`` is

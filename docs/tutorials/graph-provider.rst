@@ -293,6 +293,15 @@ topic (a duplicate node, a leftover process), this edge would instead carry
 inflated. See :doc:`/config/graph-provider`'s ``multi_publisher_rate`` setting
 for how to control the response to that ambiguity.
 
+``metrics.source`` is the node that published the ``/diagnostics`` sample this
+edge was last updated from, resolved from the live ROS graph. With a single
+``/diagnostics`` publisher (the case here) it resolves on every RMW. Telling
+several simultaneous ``/diagnostics`` publishers apart per sample needs an RMW
+whose message publisher GID matches the graph endpoint GID (``rmw_fastrtps_cpp``);
+on an RMW without that (for example ``rmw_cyclonedds_cpp``) a sample from one of
+several publishers is left unattributed and ``metrics.source`` is omitted rather
+than guessed.
+
 If a second App pair existed in the same Function without a matching
 ``greenwave_monitor`` entry in ``gw_monitored_topics``, its edge would appear
 in the same document with ``"metrics_status": "pending"`` and no
