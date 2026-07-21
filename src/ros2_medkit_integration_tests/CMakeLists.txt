@@ -184,6 +184,23 @@ if(BUILD_TESTING)
     test_leaf_collision_aggregation
     PROPERTIES RESOURCE_LOCK medkit_secondary_dds_domains
   )
+
+  # test_graph_provider_greenwave drives a real greenwave_monitor node,
+  # which only publishes /diagnostics at ~1 Hz with the first useful
+  # reading a few seconds in, plus an 8s launch-ordering delay so
+  # greenwave starts strictly after the demo nodes it monitors are already
+  # publishing (see the test's module docstring). The default 120s feature
+  # timeout does not leave enough headroom for that startup delay plus the
+  # 30-90s polling budgets its cases need, so widen it to match the
+  # scenario-test timeout.
+  set_tests_properties(test_graph_provider_greenwave PROPERTIES TIMEOUT 300)
+
+  # test_graph_provider_stale and test_graph_provider_sse also drive a real
+  # greenwave_monitor node through the same 10s launch-ordering delay plus
+  # warmup as test_graph_provider_greenwave above, and their staleness/SSE
+  # polling budgets are similarly generous - widen both to match.
+  set_tests_properties(test_graph_provider_stale PROPERTIES TIMEOUT 300)
+  set_tests_properties(test_graph_provider_sse PROPERTIES TIMEOUT 300)
 endif()
 
 ament_package()

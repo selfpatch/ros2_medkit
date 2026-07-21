@@ -198,6 +198,85 @@ def create_fault_manager_node(
 
 
 # ---------------------------------------------------------------------------
+# Factory: greenwave_monitor node
+# ---------------------------------------------------------------------------
+
+def create_greenwave_node(
+    *,
+    monitored_topics=None,
+    frequency_monitored_topics=None,
+    time_check_preset='header_with_nodetime_fallback',
+    name='greenwave_monitor',
+    extra_params=None,
+):
+    """Create an NVIDIA ``greenwave_monitor`` node for real ``/diagnostics`` metrics.
+
+    ``greenwave_monitor`` resolves its monitored topics ONCE at node
+    startup and never re-resolves them: if a topic has no live publisher
+    yet when this node starts, greenwave logs "No topics to monitor" (or
+    simply never reports on that topic) and nothing is ever emitted for
+    it afterwards. Callers MUST schedule this node's launch action on a
+    LATER ``TimerAction`` than the publishers of every topic it should
+    monitor - see ``create_demo_nodes``'s ``TimerAction`` usage for the
+    earlier stage and give this node its own, later-firing timer.
+
+    ``greenwave_monitor`` also publishes ``/diagnostics`` at only ~1 Hz,
+    with the first useful (non-transient) reading typically a few seconds
+    after it starts, so callers polling for its output need budgets of at
+    least 30 seconds, not the usual 15.
+
+    Parameters
+    ----------
+    monitored_topics : list of str or None
+        Fully-qualified topic names (leading ``/``) for the simple
+        ``gw_monitored_topics`` parameter (no expected-frequency
+        tracking). Omitted entirely from the parameter set when empty -
+        an empty list parameter can crash ``launch`` on type inference.
+        greenwave stamps ``DiagnosticStatus.name`` with exactly this
+        string, and the graph provider plugin keys its metrics map on it,
+        so these must match the ROS topic names byte-for-byte.
+    frequency_monitored_topics : dict or None
+        Topic -> ``{'expected_frequency': float, 'tolerance': float}`` for
+        the ``gw_frequency_monitored_topics`` parameter. When set here, a
+        topic's ``expected_frequency`` is stamped into its ``/diagnostics``
+        status and wins over any graph-provider-side config (function-level
+        override or global default) for that topic. Omitted entirely when
+        empty, for the same launch-type-inference reason as above.
+    time_check_preset : str
+        ``gw_time_check_preset`` value (default matches greenwave's own
+        example config: check header timestamp with a node-time fallback).
+    name : str
+        ROS node name. With no namespace, the node's fully-qualified name
+        is ``/<name>`` - this is also the value the graph provider plugin
+        resolves into ``metrics.source`` for every topic this node reports
+        on (via publisher GID matching against ``/diagnostics``).
+    extra_params : dict or None
+        Additional ROS parameters merged into the node config.
+
+    Returns
+    -------
+    launch_ros.actions.Node
+        Ready-to-use ``greenwave_monitor`` node launch action.
+
+    """
+    params = {'gw_time_check_preset': time_check_preset}
+    if monitored_topics:
+        params['gw_monitored_topics'] = monitored_topics
+    if frequency_monitored_topics:
+        params['gw_frequency_monitored_topics'] = frequency_monitored_topics
+    if extra_params:
+        params.update(extra_params)
+
+    return launch_ros.actions.Node(
+        package='greenwave_monitor',
+        executable='greenwave_monitor',
+        name=name,
+        output='screen',
+        parameters=[params],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Factory: demo nodes
 # ---------------------------------------------------------------------------
 
@@ -242,14 +321,14 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
     for key in nodes:
         executable, ros_name, namespace = DEMO_NODE_REGISTRY[key]
 
-        node_kwargs = dict(
-            package='ros2_medkit_integration_tests',
-            executable=executable,
-            name=ros_name,
-            namespace=namespace,
-            output='screen',
-            additional_env=env,
-        )
+        node_kwargs = {
+            'package': 'ros2_medkit_integration_tests',
+            'executable': executable,
+            'name': ros_name,
+            'namespace': namespace,
+            'output': 'screen',
+            'additional_env': env,
+        }
 
         # Apply faulty parameters for lidar_sensor
         if key == 'lidar_sensor' and lidar_faulty:
