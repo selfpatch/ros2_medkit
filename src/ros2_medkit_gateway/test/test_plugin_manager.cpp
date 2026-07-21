@@ -227,6 +227,56 @@ class MockThrowOnShutdown : public GatewayPlugin {
   }
 };
 
+/// Plugin that registers a cyclic-subscription sampler during set_context(),
+/// mirroring GraphProviderPlugin::set_context(). The callable captures `this`
+/// so a dangling registration after teardown would be a use-after-free.
+class MockSamplerPlugin : public GatewayPlugin {
+ public:
+  explicit MockSamplerPlugin(std::string collection) : collection_(std::move(collection)) {
+  }
+  std::string name() const override {
+    return "sampler_plugin";
+  }
+  void configure(const json & /*cfg*/) override {
+  }
+  void set_context(PluginContext & context) override {
+    context.register_sampler(collection_,
+                             [this](const std::string &, const std::string &) -> tl::expected<json, std::string> {
+                               return json{{"plugin", name()}};
+                             });
+  }
+
+ private:
+  std::string collection_;
+};
+
+/// Same sampler-registering behavior as MockSamplerPlugin, but also throws
+/// from get_routes() - the reachable ordering the design doc calls out:
+/// set_context() has already registered the sampler by the time a later
+/// get_routes() failure disables the plugin.
+class MockSamplerThrowOnGetRoutes : public GatewayPlugin {
+ public:
+  explicit MockSamplerThrowOnGetRoutes(std::string collection) : collection_(std::move(collection)) {
+  }
+  std::string name() const override {
+    return "sampler_throw_get_routes";
+  }
+  void configure(const json & /*cfg*/) override {
+  }
+  void set_context(PluginContext & context) override {
+    context.register_sampler(collection_,
+                             [](const std::string &, const std::string &) -> tl::expected<json, std::string> {
+                               return json{{"ok", true}};
+                             });
+  }
+  std::vector<PluginRoute> get_routes() override {
+    throw std::runtime_error("get_routes failed");
+  }
+
+ private:
+  std::string collection_;
+};
+
 TEST(PluginManagerTest, EmptyManagerHasNoPlugins) {
   PluginManager mgr;
   EXPECT_FALSE(mgr.has_plugins());
@@ -359,6 +409,68 @@ TEST(PluginManagerTest, ThrowOnSetContextDisablesPlugin) {
   // Only good plugin remains active
   EXPECT_EQ(mgr.plugin_names().size(), 1u);
   EXPECT_EQ(mgr.plugin_names()[0], "mock");
+}
+
+TEST(PluginManagerTest, DisablePluginRemovesItsSampler) {
+  ResourceSamplerRegistry sampler_registry;
+  TransportRegistry transport_registry;
+  PluginManager mgr;
+  mgr.set_registries(sampler_registry, transport_registry);
+  mgr.add_plugin(std::make_unique<MockSamplerThrowOnGetRoutes>("x-mock-disable-sampler"));
+  mgr.configure_plugins();
+
+  auto ctx = make_gateway_plugin_context(nullptr, nullptr, &sampler_registry);
+  mgr.set_context(*ctx);
+  ASSERT_TRUE(sampler_registry.has_sampler("x-mock-disable-sampler"));
+
+  httplib::Server srv;
+  mgr.register_routes(srv, "/api/v1");  // get_routes() throws -> disable_plugin
+
+  EXPECT_FALSE(sampler_registry.has_sampler("x-mock-disable-sampler"));
+  EXPECT_FALSE(sampler_registry.get_sampler("x-mock-disable-sampler").has_value());
+  EXPECT_FALSE(mgr.has_plugins());
+}
+
+TEST(PluginManagerTest, ShutdownAllRemovesPluginSamplers) {
+  ResourceSamplerRegistry sampler_registry;
+  TransportRegistry transport_registry;
+  PluginManager mgr;
+  mgr.set_registries(sampler_registry, transport_registry);
+  mgr.add_plugin(std::make_unique<MockSamplerPlugin>("x-mock-shutdown-sampler"));
+  mgr.configure_plugins();
+
+  auto ctx = make_gateway_plugin_context(nullptr, nullptr, &sampler_registry);
+  mgr.set_context(*ctx);
+  ASSERT_TRUE(sampler_registry.has_sampler("x-mock-shutdown-sampler"));
+
+  mgr.shutdown_all();
+
+  EXPECT_FALSE(sampler_registry.has_sampler("x-mock-shutdown-sampler"));
+}
+
+TEST(PluginManagerTest, BuiltinSamplerSurvivesPluginDisable) {
+  ResourceSamplerRegistry sampler_registry;
+  TransportRegistry transport_registry;
+  sampler_registry.register_sampler(
+      "data",
+      [](const std::string &, const std::string &) -> tl::expected<json, std::string> {
+        return json{{"builtin", true}};
+      },
+      true);
+
+  PluginManager mgr;
+  mgr.set_registries(sampler_registry, transport_registry);
+  mgr.add_plugin(std::make_unique<MockSamplerThrowOnGetRoutes>("x-mock-alongside-builtin"));
+  mgr.configure_plugins();
+
+  auto ctx = make_gateway_plugin_context(nullptr, nullptr, &sampler_registry);
+  mgr.set_context(*ctx);
+
+  httplib::Server srv;
+  mgr.register_routes(srv, "/api/v1");  // disables the plugin
+
+  EXPECT_FALSE(sampler_registry.has_sampler("x-mock-alongside-builtin"));
+  EXPECT_TRUE(sampler_registry.has_sampler("data"));
 }
 
 TEST(PluginManagerTest, ThrowOnGetRoutesDisablesPlugin) {
