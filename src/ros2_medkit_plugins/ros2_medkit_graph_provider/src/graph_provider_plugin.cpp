@@ -20,6 +20,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <rclcpp/message_info.hpp>
+#include <rclcpp/node_interfaces/node_graph_interface.hpp>
 #include <set>
 #include <unordered_set>
 #include <utility>
@@ -97,6 +99,22 @@ bool is_filtered_topic_name(const std::string & topic_name) {
     return true;
   }
   return false;
+}
+
+// Fully-qualified node name (namespace + name), the same form `ros2 node
+// list` displays: "/talker" for a node in the root namespace, "/ns/talker"
+// otherwise. Chosen over the bare node_name() so two publishers with the
+// same short name in different namespaces are not conflated in metrics.source.
+std::string endpoint_fqn(const rclcpp::TopicEndpointInfo & endpoint) {
+  const auto & ns = endpoint.node_namespace();
+  const auto & name = endpoint.node_name();
+  if (ns.empty() || ns == "/") {
+    return "/" + name;
+  }
+  if (ns.back() == '/') {
+    return ns + name;
+  }
+  return ns + "/" + name;
 }
 
 // Flatten a (possibly nested) JSON object back to dotted keys. The gateway
@@ -235,8 +253,10 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
                                 const GraphProviderPlugin::GraphBuildConfig & config) {
   EdgeBuildResult result;
   auto metrics_json = nlohmann::json{
-      {"source", "greenwave_monitor"}, {"frequency_hz", nullptr},     {"latency_ms", nullptr},
-      {"drop_rate_percent", 0.0},      {"metrics_status", "pending"},
+      {"frequency_hz", nullptr},
+      {"latency_ms", nullptr},
+      {"drop_rate_percent", 0.0},
+      {"metrics_status", "pending"},
   };
 
   if (metrics) {
@@ -247,6 +267,15 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
       metrics_json["latency_ms"] = *metrics->latency_ms;
     }
     metrics_json["drop_rate_percent"] = metrics->drop_rate_percent.value_or(0.0);
+    // Honest failure handling: metrics.source (the resolved /diagnostics
+    // publisher node name) is only emitted when it was actually resolved.
+    // No GID match (publisher left the graph between publishing and the
+    // graph query, or a race) leaves TopicMetrics::source empty, and that
+    // must never be papered over with a fabricated name or a vendor literal
+    // - the key is simply omitted, the same way a pending edge omits it.
+    if (metrics->source.has_value()) {
+      metrics_json["source"] = *metrics->source;
+    }
   }
 
   result.json = {{"edge_id", edge_id},   {"source", source.id},         {"target", target.id},
@@ -522,14 +551,16 @@ void GraphProviderPlugin::subscribe_to_diagnostics() {
   }
 
   diagnostics_sub_ = ctx_->node()->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
-      "/diagnostics", rclcpp::QoS(10), [this](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
-        diagnostics_callback(msg);
+      "/diagnostics", rclcpp::QoS(10),
+      [this](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg, const rclcpp::MessageInfo & msg_info) {
+        diagnostics_callback(msg, msg_info);
       });
 
   log_info("Subscribed to /diagnostics for x-medkit-graph metrics");
 }
 
-void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
+void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg,
+                                               const rclcpp::MessageInfo & msg_info) {
   if (shutdown_requested_.load()) {
     return;
   }
@@ -544,10 +575,26 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     }
   }
 
+  if (updates.empty()) {
+    // Nothing to stamp, so skip the graph query below entirely - it is a
+    // live introspection call and every status in this message was already
+    // filtered out or unparseable.
+    return;
+  }
+
+  // A DiagnosticArray carries exactly one publisher for every status it
+  // contains, so the source is resolved once per message here and applied
+  // to every topic this message updates below - never once per status, and
+  // never "the first publisher on the topic" (there can be more than one
+  // /diagnostics publisher; only the GID match tells us which one sent THIS
+  // message).
+  const auto source = resolve_publisher_source(msg_info);
+
   const auto now_ns = current_time_ns();
 
   std::lock_guard<std::mutex> lock(metrics_mutex_);
   for (auto & [topic_name, incoming] : updates) {
+    incoming.source = source;
     auto it = topic_metrics_.find(topic_name);
     if (it == topic_metrics_.end()) {
       topic_metrics_order_.push_back(topic_name);
@@ -559,7 +606,9 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     // Merge field-by-field into the existing entry instead of replacing it
     // wholesale: a sample where only one key failed to parse must not wipe
     // the other, previously-good fields (e.g. a trailing-space frame_rate_msg
-    // must not erase a good latency_ms from an earlier sample).
+    // must not erase a good latency_ms from an earlier sample). The same
+    // rule protects source: an unresolved GID this round (incoming.source
+    // empty) must not erase a good source resolved on an earlier message.
     TopicMetrics & existing = it->second;
     if (incoming.frequency_hz.has_value()) {
       existing.frequency_hz = incoming.frequency_hz;
@@ -573,6 +622,9 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     if (incoming.expected_frequency_hz.has_value()) {
       existing.expected_frequency_hz = incoming.expected_frequency_hz;
     }
+    if (incoming.source.has_value()) {
+      existing.source = incoming.source;
+    }
     // The message itself arrived now regardless of which fields parsed, so
     // the freshness stamp always advances.
     existing.last_update_ns = now_ns;
@@ -582,6 +634,29 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     topic_metrics_order_.pop_front();
     topic_metrics_.erase(evicted_topic);
   }
+}
+
+std::optional<std::string> GraphProviderPlugin::resolve_publisher_source(const rclcpp::MessageInfo & msg_info) const {
+  if (!ctx_ || !ctx_->node()) {
+    return std::nullopt;
+  }
+
+  // A fresh graph query, run once per message (see diagnostics_callback) -
+  // never cached across messages, since a cached mapping would misattribute
+  // a later message once a publisher restarts (new GID, same or new node).
+  const auto & msg_gid = msg_info.get_rmw_message_info().publisher_gid;
+  const auto endpoints = ctx_->node()->get_publishers_info_by_topic("/diagnostics");
+  for (const auto & endpoint : endpoints) {
+    const auto & endpoint_gid = endpoint.endpoint_gid();
+    if (std::equal(msg_gid.data, msg_gid.data + RMW_GID_STORAGE_SIZE, endpoint_gid.begin())) {
+      return endpoint_fqn(endpoint);
+    }
+  }
+  // No match: the publisher may have left the graph between publishing and
+  // this query, or this is a race. Leave the source unresolved rather than
+  // guessing - the caller (diagnostics_callback) must not substitute a
+  // fabricated name or a vendor literal for an empty result.
+  return std::nullopt;
 }
 
 std::optional<GraphProviderPlugin::TopicMetrics>
