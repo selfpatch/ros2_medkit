@@ -59,21 +59,27 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // sample (publisher left the graph between publishing and the graph
     // query, or a race) - never a fabricated name or a vendor literal.
     std::optional<std::string> source;
-    // Epoch nanoseconds (plugin clock) of the last update merged into this
-    // entry. Defaults to 0 so hand-built test fixtures with a matching
-    // default-constructed GraphBuildState::now_ns (also 0) read as fresh.
+    // Monotonic-clock (steady_clock) nanoseconds of the last update merged
+    // into this entry. Defaults to 0 so hand-built test fixtures with a
+    // matching default-constructed GraphBuildState::now_ns (also 0) read as
+    // fresh. Deliberately NOT system_clock: age is computed as
+    // `now_ns - last_update_ns`, and a backward wall-clock step (e.g. an NTP
+    // correction on a Jetson booting before sync) would make that
+    // subtraction go negative and read as "fresh forever" against a
+    // non-monotonic clock. See GraphProviderPlugin::current_steady_ns().
     int64_t last_update_ns{0};
   };
 
   struct GraphBuildState {
     std::unordered_map<std::string, TopicMetrics> topic_metrics;
     std::unordered_map<std::string, std::string> last_seen_by_app;
-    // Epoch nanoseconds (plugin clock) used as "now" for freshness
-    // comparisons against TopicMetrics::last_update_ns. Explicit field
-    // (rather than reading the wall clock inside the pure build functions)
-    // so build_graph_document stays a deterministic pure function - the
-    // production path stamps it in build_state_snapshot(), tests set it
-    // directly.
+    // Monotonic-clock (steady_clock) nanoseconds used as "now" for freshness
+    // comparisons against TopicMetrics::last_update_ns.
+    // Explicit field (rather than reading the clock inside the pure build
+    // functions) so build_graph_document stays a deterministic pure function
+    // - the production path stamps it in build_state_snapshot() from
+    // current_steady_ns(), tests set it directly. Deliberately NOT
+    // system_clock - see TopicMetrics::last_update_ns.
     int64_t now_ns{0};
   };
 
@@ -84,6 +90,17 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
     // Freshness window = max(freshness_floor_sec, freshness_headroom_factor / expected_frequency_hz).
     double freshness_headroom_factor{3.0};
     double freshness_floor_sec{5.0};
+    // Minimum continuous duration (seconds) a topic must remain outside its
+    // freshness window before an edge is reported "metrics_stale" - absorbs
+    // a single late DDS/executor-jitter sample without flapping
+    // pipeline_status to "broken" and back on the very next on-time sample.
+    // 0.0 = point-in-time, today's un-debounced behavior (age > window alone
+    // decides). Purely a threshold added to the window - see
+    // is_metrics_stale() in graph_provider_plugin.cpp: stale iff
+    // `age > window + grace`, a stateless function of (now_ns,
+    // last_update_ns, window, grace) with no separate onset/tick state to
+    // maintain.
+    double stale_grace_sec{2.0};
   };
 
   GraphProviderPlugin() = default;
@@ -120,7 +137,15 @@ class GraphProviderPlugin : public GatewayPlugin, public IntrospectionProvider {
   static std::optional<TopicMetrics> parse_topic_metrics(const diagnostic_msgs::msg::DiagnosticStatus & status);
   static std::optional<double> parse_double(const std::string & value);
   static std::string current_timestamp();
+  // Wall-clock (system_clock) nanoseconds - used ONLY for the human-readable
+  // `timestamp` document field (via current_timestamp()/format_timestamp_ns).
+  // Never use this for age/freshness arithmetic - see current_steady_ns().
   static int64_t current_time_ns();
+  // Monotonic-clock (steady_clock) nanoseconds - used for every freshness/age
+  // comparison (TopicMetrics::last_update_ns, GraphBuildState::now_ns) so a
+  // backward wall-clock step (NTP correction) can never make a dead topic
+  // read as fresh.
+  static int64_t current_steady_ns();
   GraphBuildConfig resolve_config(const std::string & function_id) const;
   std::optional<nlohmann::json> build_current_graph(const std::string & function_id);
   std::optional<nlohmann::json> build_graph_from_entity_cache(const std::string & function_id);
