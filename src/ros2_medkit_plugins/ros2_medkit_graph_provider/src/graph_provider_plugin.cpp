@@ -274,7 +274,7 @@ bool is_metrics_stale(const GraphProviderPlugin::TopicMetrics & metrics, int64_t
 
 EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source, const App & target,
                                 const std::string & topic_id, const GraphProviderPlugin::TopicMetrics * metrics,
-                                const GraphProviderPlugin::GraphBuildState & state,
+                                std::optional<int> publisher_count, const GraphProviderPlugin::GraphBuildState & state,
                                 const GraphProviderPlugin::GraphBuildConfig & config) {
   EdgeBuildResult result;
   auto metrics_json = nlohmann::json{
@@ -284,8 +284,30 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
       {"metrics_status", "pending"},
   };
 
+  // publisher_count is a live ROS-graph fact about the DATA topic itself
+  // (get_publishers_info_by_topic), not something carried in TopicMetrics, so
+  // it applies to every edge on this topic whether or not /diagnostics has
+  // ever reported anything for it - hence this runs before (and regardless
+  // of) the `metrics` null-check below. Unresolved (nullopt: the query was
+  // never run, came back empty, or ctx_/node() was unavailable) omits the
+  // key entirely, exactly like TopicMetrics::source - never a fabricated 0.
+  // Both policies always emit publisher_count when resolved, even at 1.
+  const bool rate_ambiguous = publisher_count.has_value() && *publisher_count > 1;
+  const bool suppress_rate =
+      rate_ambiguous && config.multi_publisher_rate == GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress;
+  if (publisher_count.has_value()) {
+    metrics_json["publisher_count"] = *publisher_count;
+    if (rate_ambiguous) {
+      metrics_json["rate_ambiguous"] = true;
+    }
+  }
+
   if (metrics) {
-    if (metrics->frequency_hz.has_value()) {
+    // Under kSuppress with more than one live publisher, the measured rate is
+    // untrustworthy (it may be inflated by a leftover/duplicate publisher) -
+    // omit it rather than let a genuinely broken pipeline read as healthy.
+    // kAnnotate (the default) always shows the measured rate unchanged.
+    if (metrics->frequency_hz.has_value() && !suppress_rate) {
       metrics_json["frequency_hz"] = *metrics->frequency_hz;
     }
     if (metrics->latency_ms.has_value()) {
@@ -327,7 +349,11 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
   // frequency (e.g. a rejected negative frame_rate_msg sample) are still
   // "active" - freshness, not field completeness, drives status.
   result.json["metrics"]["metrics_status"] = "active";
-  if (metrics->frequency_hz.has_value()) {
+  // suppress_rate excludes the (untrustworthy, possibly-inflated) rate from
+  // the degraded ratio / bottleneck calculation too - a missing frequency
+  // must never itself drive a degraded verdict for this edge (drop_rate below
+  // is unaffected and can still trip degraded on its own).
+  if (metrics->frequency_hz.has_value() && !suppress_rate) {
     const double expected_frequency = resolve_expected_frequency(metrics, config);
     const double frequency = *metrics->frequency_hz;
     if (expected_frequency > 0.0) {
@@ -398,6 +424,16 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
         continue;
       }
 
+      // Resolved once per unique topic (see resolve_data_topic_publisher_counts)
+      // and reused below for every edge on this topic - a single map lookup
+      // here, not a re-query, even when several subscribers fan out from the
+      // same topic.
+      std::optional<int> publisher_count;
+      const auto publisher_count_it = state.topic_publisher_counts.find(topic_name);
+      if (publisher_count_it != state.topic_publisher_counts.end()) {
+        publisher_count = publisher_count_it->second;
+      }
+
       for (const auto * subscriber : scoped_apps) {
         const auto sub_it = subscribes_by_app.find(subscriber->id);
         if (sub_it == subscribes_by_app.end() || sub_it->second.count(topic_name) == 0) {
@@ -408,7 +444,8 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
         const auto metrics_it = state.topic_metrics.find(topic_name);
         const GraphProviderPlugin::TopicMetrics * metrics =
             metrics_it == state.topic_metrics.end() ? nullptr : &metrics_it->second;
-        auto edge = build_edge_json(edge_id, *publisher, *subscriber, topic_it->second, metrics, state, config);
+        auto edge = build_edge_json(edge_id, *publisher, *subscriber, topic_it->second, metrics, publisher_count, state,
+                                    config);
 
         has_errors = has_errors || edge.is_error;
         has_degraded = has_degraded || edge.is_degraded;
@@ -633,9 +670,9 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     // Merge field-by-field into the existing entry instead of replacing it
     // wholesale: a sample where only one key failed to parse must not wipe
     // the other, previously-good fields (e.g. a trailing-space frame_rate_msg
-    // must not erase a good latency_ms from an earlier sample). The same
-    // rule protects source: an unresolved GID this round (incoming.source
-    // empty) must not erase a good source resolved on an earlier message.
+    // must not erase a good latency_ms from an earlier sample). `source` is
+    // the one deliberate exception to this merge-not-replace rule - see its
+    // assignment below.
     TopicMetrics & existing = it->second;
     if (incoming.frequency_hz.has_value()) {
       existing.frequency_hz = incoming.frequency_hz;
@@ -649,9 +686,20 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
     if (incoming.expected_frequency_hz.has_value()) {
       existing.expected_frequency_hz = incoming.expected_frequency_hz;
     }
-    if (incoming.source.has_value()) {
-      existing.source = incoming.source;
-    }
+    // Latest-wins, unconditionally - including clearing on unresolved. Every
+    // field above merges (a sample that omits a key must not wipe a
+    // previously-good value) because each one accumulates the best-known
+    // reading. `source` means something different: "who sent the message
+    // this entry was LAST updated from" (see the doc comment on
+    // TopicMetrics::source and docs/api/rest.rst's metrics.source field
+    // note). A later message whose GID does not resolve still advances
+    // last_update_ns (the message really did arrive), so leaving the old
+    // `source` in place would attribute a fresh sample to a stale, no-longer-
+    // confirmed publisher - exactly the honesty violation this field exists
+    // to prevent. Assigning incoming.source unconditionally (nullopt clears
+    // it) keeps source and last_update_ns in lockstep: both always describe
+    // the same, most recent message.
+    existing.source = incoming.source;
     // The message itself arrived now regardless of which fields parsed, so
     // the freshness stamp always advances.
     existing.last_update_ns = now_ns;
@@ -684,6 +732,37 @@ std::optional<std::string> GraphProviderPlugin::resolve_publisher_source(const r
   // guessing - the caller (diagnostics_callback) must not substitute a
   // fabricated name or a vendor literal for an empty result.
   return std::nullopt;
+}
+
+std::unordered_map<std::string, int>
+GraphProviderPlugin::resolve_data_topic_publisher_counts(const std::vector<const App *> & scoped_apps) const {
+  std::unordered_map<std::string, int> counts;
+  if (!ctx_ || !ctx_->node()) {
+    return counts;
+  }
+
+  // collect_unique_topics already dedupes across every app in this function's
+  // scope (both publishes and subscribes), so this queries the real ROS
+  // graph exactly once per unique DATA topic per graph build - never once per
+  // edge. build_graph_document_for_apps looks the result up by topic name and
+  // reuses it for every edge sharing that topic (fan-out/fan-in), so a topic
+  // shared by N edges costs one query here, not N.
+  for (const auto & topic_name : collect_unique_topics(scoped_apps)) {
+    // A fresh query per build (never cached across builds): a stale count
+    // would miss a publisher that joined or left since the last build - the
+    // exact failure mode this defense exists to catch.
+    const auto endpoints = ctx_->node()->get_publishers_info_by_topic(topic_name);
+    // Empty is left OUT of the map (never recorded as a count of 0): a data
+    // topic reachable from a modeled app should always have at least one
+    // live publisher, so an empty result here means the query raced the
+    // publisher leaving the graph, or it hasn't been discovered yet -
+    // unresolved, not "zero publishers". See
+    // GraphBuildState::topic_publisher_counts.
+    if (!endpoints.empty()) {
+      counts[topic_name] = static_cast<int>(endpoints.size());
+    }
+  }
+  return counts;
 }
 
 std::optional<GraphProviderPlugin::TopicMetrics>
@@ -809,6 +888,10 @@ std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache
   const auto timestamp = current_timestamp();
   auto state = build_state_snapshot(input, timestamp);
   const auto scoped_apps = resolve_scoped_apps(function_id, input);
+  // Real ROS-graph query, scoped to exactly this function's unique data
+  // topics - see resolve_data_topic_publisher_counts() for the once-per-
+  // topic (not once-per-edge) cost.
+  state.topic_publisher_counts = resolve_data_topic_publisher_counts(scoped_apps);
   return build_graph_document_for_apps(function_id, scoped_apps, state, resolve_config(function_id), timestamp);
 }
 
@@ -861,6 +944,18 @@ void GraphProviderPlugin::load_parameters() {
     }
     return default_val;
   };
+  // A key that is absent, or present with a non-string JSON value, is
+  // silently treated as "not configured" here - exactly like get_config_double
+  // above treats a non-number value as absent (falls through to the
+  // hardcoded default without a warning). Only a STRING value outside
+  // {"annotate", "suppress"} is a genuine config mistake and gets a warning,
+  // via validate_multi_publisher_rate below.
+  auto get_config_string = [this](const std::string & key) -> std::optional<std::string> {
+    if (plugin_config_.contains(key) && plugin_config_[key].is_string()) {
+      return plugin_config_[key].get<std::string>();
+    }
+    return std::nullopt;
+  };
 
   // A non-positive expected_frequency_hz_default/degraded_frequency_ratio/
   // freshness_headroom_factor/freshness_floor_sec silently disables
@@ -886,6 +981,21 @@ void GraphProviderPlugin::load_parameters() {
              " (want a non-negative number); keeping " + std::to_string(fallback));
     return fallback;
   };
+  // Same warn-and-default shape as validate_positive/validate_non_negative
+  // above, for a string enum instead of a numeric range.
+  auto validate_multi_publisher_rate = [this](const std::string & key, const std::string & value,
+                                              MultiPublisherRatePolicy fallback) -> MultiPublisherRatePolicy {
+    if (value == "annotate") {
+      return MultiPublisherRatePolicy::kAnnotate;
+    }
+    if (value == "suppress") {
+      return MultiPublisherRatePolicy::kSuppress;
+    }
+    log_warn("Ignoring invalid graph provider config '" + key + "'='" + value +
+             "' (want one of \"annotate\", \"suppress\"); keeping '" +
+             (fallback == MultiPublisherRatePolicy::kSuppress ? "suppress" : "annotate") + "'");
+    return fallback;
+  };
 
   ConfigOverrides new_config;
   new_config.defaults.expected_frequency_hz_default = validate_positive(
@@ -903,6 +1013,10 @@ void GraphProviderPlugin::load_parameters() {
   // not validate_positive.
   new_config.defaults.stale_grace_sec =
       validate_non_negative("stale_grace_sec", get_config_double("stale_grace_sec", 2.0), 2.0);
+  if (auto raw = get_config_string("multi_publisher_rate")) {
+    new_config.defaults.multi_publisher_rate =
+        validate_multi_publisher_rate("multi_publisher_rate", *raw, new_config.defaults.multi_publisher_rate);
+  }
 
   // Per-function overrides. The gateway delivers plugin config as nested
   // objects, never as a flat "function_overrides.<function_id>.<field>" key
@@ -921,10 +1035,6 @@ void GraphProviderPlugin::load_parameters() {
   }
 
   for (const auto & [key, value] : flat_overrides) {
-    if (!value.is_number()) {
-      continue;
-    }
-
     const auto dot = key.rfind('.');
     if (dot == std::string::npos) {
       continue;
@@ -933,6 +1043,24 @@ void GraphProviderPlugin::load_parameters() {
     const auto function_id = key.substr(0, dot);
     const auto field = key.substr(dot + 1);
     const auto log_key = "function_overrides." + key;
+
+    // multi_publisher_rate is the one string-valued override field below;
+    // every other field is numeric. Branch on it before the is_number() gate
+    // so a string value is not silently discarded there.
+    if (field == "multi_publisher_rate") {
+      if (!value.is_string()) {
+        continue;
+      }
+      auto [config_it, inserted] = new_config.by_function.emplace(function_id, new_config.defaults);
+      (void)inserted;
+      config_it->second.multi_publisher_rate =
+          validate_multi_publisher_rate(log_key, value.get<std::string>(), config_it->second.multi_publisher_rate);
+      continue;
+    }
+
+    if (!value.is_number()) {
+      continue;
+    }
 
     auto [config_it, inserted] = new_config.by_function.emplace(function_id, new_config.defaults);
     auto & function_config = config_it->second;

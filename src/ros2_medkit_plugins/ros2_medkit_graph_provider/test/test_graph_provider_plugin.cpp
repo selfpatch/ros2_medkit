@@ -91,6 +91,31 @@ class GraphProviderPluginTestAccess {
                                                               const std::string & function_id) {
     return plugin.resolve_config(function_id);
   }
+
+  // Drives the private diagnostics_callback directly with a caller-supplied
+  // MessageInfo, so a test can simulate a GID that does not resolve to any
+  // live /diagnostics publisher (e.g. a publisher that left the graph
+  // between publishing and the graph query, or a race) deterministically -
+  // racing a real publisher teardown against the subscription callback
+  // cannot be made reliable.
+  static void invoke_diagnostics_callback(GraphProviderPlugin & plugin,
+                                          const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg,
+                                          const rclcpp::MessageInfo & msg_info) {
+    plugin.diagnostics_callback(msg, msg_info);
+  }
+
+  // Observes the accumulated TopicMetrics entry the way diagnostics_callback
+  // left it, for tests that need to inspect the merge result (e.g. source
+  // latest-wins) directly rather than through a built graph document.
+  static std::optional<GraphProviderPlugin::TopicMetrics> topic_metrics_for(const GraphProviderPlugin & plugin,
+                                                                            const std::string & topic_name) {
+    std::lock_guard<std::mutex> lock(plugin.metrics_mutex_);
+    auto it = plugin.topic_metrics_.find(topic_name);
+    if (it == plugin.topic_metrics_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
 };
 
 }  // namespace ros2_medkit_gateway
@@ -598,6 +623,133 @@ TEST(GraphProviderPluginMetricsTest, OmitsSourceKeyWhenTopicMetricsSourceIsUnres
   EXPECT_FALSE((*edge)["metrics"].contains("source"));
 }
 
+// Rate-inflation defense, annotate mode (the default): frame_rate_msg is a
+// subscriber-side arrival rate summed across every live publisher on the
+// topic name, so a genuinely slow producer plus a leftover/duplicate
+// publisher can sum to a healthy-looking measured rate. These exact numbers
+// reproduce the live-found masking bug: a real 0.3 Hz producer plus a
+// leftover 2 Hz publisher sum to 2.235 Hz against an expected 2 Hz (ratio
+// ~1.12) - "healthy" under the default policy, which never hides the
+// measured number. publisher_count/rate_ambiguous now surface the ambiguity
+// so an operator can judge; frequency_hz and the verdict itself are
+// unchanged from before this feature existed (non-breaking default).
+TEST(GraphProviderPluginMultiPublisherTest, AnnotateModeFlagsAmbiguityButLeavesInflatedRateAndVerdictUnchanged) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(2.235, 1.0, 0.0, 2.0);
+  state.topic_publisher_counts["/topic"] = 2;
+  auto config = default_config();
+  config.multi_publisher_rate = GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 2);
+  EXPECT_EQ((*edge)["metrics"]["rate_ambiguous"], true);
+  ASSERT_FALSE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 2.235);
+  EXPECT_EQ(graph["pipeline_status"], "healthy");
+}
+
+// A single publisher is the common, unambiguous case: publisher_count is
+// still emitted (useful even at 1, per the spec), but rate_ambiguous must not
+// appear and the measured rate is unaffected.
+TEST(GraphProviderPluginMultiPublisherTest, SinglePublisherShowsCountWithoutAmbiguityFlag) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.0, 0.0, 30.0);
+  state.topic_publisher_counts["/topic"] = 1;
+
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 1);
+  EXPECT_FALSE((*edge)["metrics"].contains("rate_ambiguous"));
+  ASSERT_FALSE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 29.8);
+}
+
+// Rate-inflation defense, suppress mode: the conservative choice. Same
+// numbers as the annotate test above (the identical masking scenario), but
+// here frequency_hz must be hidden and must never drive a degraded verdict -
+// the whole point of this mode is to stop an inflated rate from reading as
+// healthy. metrics_status must stay "active": suppression is about the
+// untrustworthy NUMBER, never about freshness.
+TEST(GraphProviderPluginMultiPublisherTest, SuppressModeHidesAmbiguousRateAndNeverDegradesOnTheMissingFrequency) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(2.235, 1.0, 0.0, 2.0);
+  state.topic_publisher_counts["/topic"] = 2;
+  auto config = default_config();
+  config.multi_publisher_rate = GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 2);
+  EXPECT_EQ((*edge)["metrics"]["rate_ambiguous"], true);
+  EXPECT_TRUE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "active");
+  EXPECT_EQ(graph["pipeline_status"], "healthy");
+  EXPECT_TRUE(graph["bottleneck_edge"].is_null());
+}
+
+// Suppression must not blind the pipeline to a REAL degradation from another
+// signal (drop_rate_percent) on the very same, rate-ambiguous edge - only the
+// ratio/bottleneck contribution from the hidden frequency is disabled.
+TEST(GraphProviderPluginMultiPublisherTest, SuppressModeStillDegradesOnDropRateEvenWithHiddenFrequency) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(2.235, 1.0, /*drop_rate_percent=*/7.5, 2.0);
+  state.topic_publisher_counts["/topic"] = 2;
+  auto config = default_config();
+  config.multi_publisher_rate = GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_TRUE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+}
+
+// The graph query failing/racing (no entry in topic_publisher_counts) must
+// never be conflated with "single publisher": publisher_count is omitted
+// entirely (never a fabricated 0), and normal (non-suppressed) behavior
+// applies since ambiguity cannot be determined either way.
+TEST(GraphProviderPluginMultiPublisherTest, OmitsPublisherCountWhenUnresolvedAndBehavesAsIfPolicyWereInert) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto state = make_state();
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.0, 0.0, 30.0);
+  // state.topic_publisher_counts left empty: query never ran / came back
+  // empty / ctx_ unavailable.
+  auto config = default_config();
+  config.multi_publisher_rate = GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress;
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_FALSE((*edge)["metrics"].contains("publisher_count"));
+  EXPECT_FALSE((*edge)["metrics"].contains("rate_ambiguous"));
+  ASSERT_FALSE((*edge)["metrics"]["frequency_hz"].is_null());
+  EXPECT_DOUBLE_EQ((*edge)["metrics"]["frequency_hz"], 29.8);
+}
+
 TEST(GraphProviderPluginMetricsTest, MarksPendingWhenNoMetricsHaveArrivedForThisTopic) {
   auto input =
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
@@ -857,6 +1009,55 @@ TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfStaleGraceSecApplies) {
 
   const auto default_resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "other");
   EXPECT_DOUBLE_EQ(default_resolved.stale_grace_sec, 2.0);
+}
+
+// Config validation: multi_publisher_rate is the one string-valued key,
+// validated against a fixed set ({"annotate", "suppress"}) rather than a
+// numeric range - same warn-and-default shape as the numeric validators
+// above (e.g. RejectsNegativeStaleGraceSecAndKeepsDefault), but for an enum.
+TEST(GraphProviderPluginRouteTest, RejectsUnknownMultiPublisherRateAndKeepsAnnotateDefault) {
+  nlohmann::json config = {{"multi_publisher_rate", "bogus_mode"}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
+}
+
+TEST(GraphProviderPluginRouteTest, AcceptsSuppressMultiPublisherRateValue) {
+  nlohmann::json config = {{"multi_publisher_rate", "suppress"}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress);
+}
+
+// Config validation: a per-function override of multi_publisher_rate must
+// apply only to the overridden function, leaving every other function's
+// resolved config at the (valid) global default - same nested-config
+// delivery shape as the numeric function_overrides fields (see
+// PerFunctionOverrideOfStaleGraceSecApplies above).
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfMultiPublisherRateApplies) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"multi_publisher_rate", "suppress"}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}},
+                         {"other", PluginEntityInfo{SovdEntityType::FUNCTION, "other", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto overridden = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(overridden.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kSuppress);
+
+  const auto default_resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "other");
+  EXPECT_EQ(default_resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
 }
 
 TEST(GraphProviderPluginMetricsTest, KeepsBrokenPipelineBottleneckNullWhenMetricsAreStale) {
@@ -1384,6 +1585,214 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPu
   EXPECT_EQ((*edge_one)["metrics"]["source"], std::string(monitor_one->get_fully_qualified_name()));
   EXPECT_EQ((*edge_two)["metrics"]["source"], std::string(monitor_two->get_fully_qualified_name()));
   EXPECT_NE((*edge_one)["metrics"]["source"], (*edge_two)["metrics"]["source"]);
+}
+
+// Doc-honesty regression: metrics.source must reflect the LATEST message's
+// resolution, unconditionally - including CLEARING when the latest sample's
+// GID does not resolve, even though an earlier sample on the same topic did
+// resolve. Before the fix, diagnostics_callback merged source with
+// `if (incoming.source.has_value())`, so an unresolved later message left
+// the earlier, now-stale attribution in place while last_update_ns still
+// advanced - exactly the dishonest state docs/api/rest.rst's metrics.source
+// field note forbids ("Omitted ... on any edge whose most recent sample
+// could not be attributed to a specific publisher"). This drives
+// diagnostics_callback directly (via the test-only accessor) with a
+// synthetic, deliberately non-matching GID for the second message, since
+// racing a real publisher teardown against the subscription callback cannot
+// be made deterministic.
+TEST_F(GraphProviderPluginRosTest, SourceIsClearedWhenLatestMessageDoesNotResolveEvenThoughAnEarlierOneDid) {
+  auto node = std::make_shared<rclcpp::Node>("test_diag_source_latest_wins_node");
+  FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  // First message: a real, live publisher - resolves normally.
+  auto pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  diagnostic_msgs::msg::DiagnosticArray msg;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "/shared_topic";
+  diagnostic_msgs::msg::KeyValue kv;
+  kv.key = "frame_rate_msg";
+  kv.value = "30.0";
+  status.values.push_back(kv);
+  msg.status.push_back(status);
+  pub->publish(msg);
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  auto after_first = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
+  ASSERT_TRUE(after_first.has_value());
+  ASSERT_TRUE(after_first->source.has_value());
+  EXPECT_EQ(*after_first->source, std::string(node->get_fully_qualified_name()));
+  const auto first_update_ns = after_first->last_update_ns;
+
+  // Second message, same topic: a deliberately bogus GID that cannot match
+  // any live /diagnostics publisher (simulating the publisher having left
+  // the graph between publishing and the graph query, or a race).
+  auto msg2 = std::make_shared<diagnostic_msgs::msg::DiagnosticArray>();
+  diagnostic_msgs::msg::DiagnosticStatus status2;
+  status2.name = "/shared_topic";
+  diagnostic_msgs::msg::KeyValue kv2;
+  kv2.key = "frame_rate_msg";
+  kv2.value = "15.0";
+  status2.values.push_back(kv2);
+  msg2->status.push_back(status2);
+
+  rclcpp::MessageInfo bogus_info;
+  auto & rmw_info = bogus_info.get_rmw_message_info();
+  std::fill(std::begin(rmw_info.publisher_gid.data), std::end(rmw_info.publisher_gid.data), static_cast<uint8_t>(0xAB));
+
+  GraphProviderPluginTestAccess::invoke_diagnostics_callback(plugin, msg2, bogus_info);
+
+  auto after_second = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
+  ASSERT_TRUE(after_second.has_value());
+  // Latest-wins: the unresolved second message must CLEAR source, not leave
+  // the earlier resolved value in place. Fails against the pre-fix
+  // `if (incoming.source.has_value())` merge.
+  EXPECT_FALSE(after_second->source.has_value());
+  // Freshness still advanced - the message really did arrive.
+  EXPECT_GT(after_second->last_update_ns, first_update_ns);
+  // Unrelated fields merge normally (unaffected by the source exception).
+  ASSERT_TRUE(after_second->frequency_hz.has_value());
+  EXPECT_DOUBLE_EQ(*after_second->frequency_hz, 15.0);
+}
+
+// Confirms the non-regressed half of latest-wins: a resolved-then-resolved
+// sequence on the same topic updates source to the SECOND publisher, not
+// stuck on the first - this already passed before the fix (the old
+// `if (has_value())` guard never blocked an update when the new value WAS
+// resolved), but is worth pinning explicitly alongside the clearing case.
+TEST_F(GraphProviderPluginRosTest, SourceUpdatesToLatestResolvedPublisherNotStuckOnTheFirst) {
+  auto node = std::make_shared<rclcpp::Node>("test_diag_source_latest_resolved_node");
+  FakePluginContext ctx({{"f1", PluginEntityInfo{SovdEntityType::FUNCTION, "f1", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto monitor_one = std::make_shared<rclcpp::Node>("test_diag_source_monitor_one_node");
+  auto monitor_two = std::make_shared<rclcpp::Node>("test_diag_source_monitor_two_node");
+  auto pub_one = monitor_one->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+  auto pub_two = monitor_two->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+
+  auto make_msg = [](double rate) {
+    diagnostic_msgs::msg::DiagnosticArray msg;
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "/shared_topic";
+    diagnostic_msgs::msg::KeyValue kv;
+    kv.key = "frame_rate_msg";
+    kv.value = std::to_string(rate);
+    status.values.push_back(kv);
+    msg.status.push_back(status);
+    return msg;
+  };
+
+  pub_one->publish(make_msg(30.0));
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  auto after_first = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
+  ASSERT_TRUE(after_first.has_value());
+  ASSERT_TRUE(after_first->source.has_value());
+  EXPECT_EQ(*after_first->source, std::string(monitor_one->get_fully_qualified_name()));
+
+  pub_two->publish(make_msg(10.0));
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  auto after_second = GraphProviderPluginTestAccess::topic_metrics_for(plugin, "/shared_topic");
+  ASSERT_TRUE(after_second.has_value());
+  ASSERT_TRUE(after_second->source.has_value());
+  EXPECT_EQ(*after_second->source, std::string(monitor_two->get_fully_qualified_name()));
+  EXPECT_NE(*after_second->source, *after_first->source);
+}
+
+// Real-graph wiring for the rate-inflation defense: resolve_data_topic_publisher_counts
+// must query the ACTUAL ROS graph (get_publishers_info_by_topic), not a
+// scoped-apps count - a second, real publisher on the same DATA topic that no
+// App in the entity model represents at all (an unmanaged leftover, exactly
+// the scenario the review reproduced) must still be counted. The unit-level
+// tests above cover the annotate/suppress DECISION logic with an injected
+// count; this is the one test that exercises the real query, using the same
+// mechanism resolve_publisher_source already relies on in this same test
+// binary (a real rclcpp::Node via FakePluginContext).
+TEST_F(GraphProviderPluginRosTest, PublisherCountReflectsRealRosGraphIncludingAnUnmanagedLeftoverPublisher) {
+  auto node = std::make_shared<rclcpp::Node>("test_publisher_count_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic1"}, {}), make_app("b", {}, {"/topic1"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  // Two REAL publishers on the data topic: only one of the two would ever be
+  // modeled by an entity/manifest; the second is exactly the kind of
+  // unmanaged leftover a scoped-apps count would never see.
+  auto primary_node = std::make_shared<rclcpp::Node>("test_publisher_count_primary_node");
+  auto leftover_node = std::make_shared<rclcpp::Node>("test_publisher_count_leftover_node");
+  auto primary_pub = primary_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/topic1", 10);
+  auto leftover_pub = leftover_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/topic1", 10);
+  (void)primary_pub;
+  (void)leftover_pub;
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic1");
+
+  ASSERT_NE(edge, nullptr);
+  ASSERT_TRUE((*edge)["metrics"].contains("publisher_count"));
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 2);
+  EXPECT_EQ((*edge)["metrics"]["rate_ambiguous"], true);
+}
+
+// The single-publisher-on-a-real-topic case, via the same real graph-query
+// path: exactly one live publisher must read publisher_count 1 with no
+// rate_ambiguous - the real-graph counterpart to
+// SinglePublisherShowsCountWithoutAmbiguityFlag above.
+TEST_F(GraphProviderPluginRosTest, PublisherCountIsOneAndUnambiguousForARealSinglePublisherTopic) {
+  auto node = std::make_shared<rclcpp::Node>("test_publisher_count_single_node");
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}}, node.get());
+
+  GraphProviderPlugin plugin;
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  auto input =
+      make_input({make_app("a", {"/topic1"}, {}), make_app("b", {}, {"/topic1"})}, {make_function("fn", {"a", "b"})});
+  ctx.entity_snapshot_ = input;
+
+  auto only_pub = node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/topic1", 10);
+  (void)only_pub;
+
+  rclcpp::spin_some(node);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(node);
+
+  plugin.introspect(input);
+  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  ASSERT_TRUE(result.has_value());
+  const auto & graph = (*result)["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic1");
+
+  ASSERT_NE(edge, nullptr);
+  ASSERT_TRUE((*edge)["metrics"].contains("publisher_count"));
+  EXPECT_EQ((*edge)["metrics"]["publisher_count"], 1);
+  EXPECT_FALSE((*edge)["metrics"].contains("rate_ambiguous"));
 }
 
 TEST_F(GraphProviderPluginRosTest, DiagnosticsMessageMakesMatchingEdgeActive) {
