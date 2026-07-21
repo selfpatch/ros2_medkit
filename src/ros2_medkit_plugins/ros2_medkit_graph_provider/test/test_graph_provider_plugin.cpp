@@ -26,7 +26,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -525,25 +524,6 @@ TEST(GraphProviderPluginMetricsTest, MarksPendingWhenNoMetricsHaveArrivedForThis
   EXPECT_EQ((*edge)["metrics"]["metrics_status"], "pending");
   EXPECT_FALSE((*edge)["metrics"].contains("error_reason"));
   EXPECT_FALSE(edge->contains("error_reason"));
-}
-
-TEST(GraphProviderPluginMetricsTest, MarksTopicStaleErrorsFromFaultState) {
-  auto input =
-      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
-  auto state = make_state();
-  state.stale_topics.insert("/topic");
-
-  auto doc =
-      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
-  const auto & graph = doc["x-medkit-graph"];
-  const auto * edge = find_edge(graph, "a", "b", "/topic");
-
-  ASSERT_NE(edge, nullptr);
-  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
-  ASSERT_TRUE((*edge)["metrics"].contains("error_reason"));
-  EXPECT_EQ((*edge)["metrics"]["error_reason"], "topic_stale");
-  EXPECT_FALSE(edge->contains("error_reason"));
-  EXPECT_EQ(graph["pipeline_status"], "broken");
 }
 
 TEST(GraphProviderPluginMetricsTest, FreshMetricIsActiveAgedMetricIsStaleAndBreaksPipeline) {

@@ -12,7 +12,6 @@
 
   <depend>rclcpp</depend>
   <depend>diagnostic_msgs</depend>
-  <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_gateway</depend>
   <depend>nlohmann-json-dev</depend>
 
