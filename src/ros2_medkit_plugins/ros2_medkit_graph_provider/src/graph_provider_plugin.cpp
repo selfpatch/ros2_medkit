@@ -242,9 +242,34 @@ double resolve_freshness_window_sec(const GraphProviderPlugin::TopicMetrics * me
   return std::max(config.freshness_floor_sec, expected_interval_sec * config.freshness_headroom_factor);
 }
 
-bool is_metrics_fresh(const GraphProviderPlugin::TopicMetrics & metrics, int64_t now_ns, double window_sec) {
-  const auto window_ns = static_cast<int64_t>(window_sec * 1e9);
-  return (now_ns - metrics.last_update_ns) <= window_ns;
+// Debounced freshness verdict used by build_edge_json: an edge is only
+// reported "metrics_stale" once its age has been outside the freshness
+// window for more than `grace_sec` - a single late DDS/executor-jitter
+// sample must not flip pipeline_status to "broken" and back on the very
+// next on-time sample. Stale iff `age > window_sec + grace_sec`: a pure
+// function of (now_ns, last_update_ns, window_sec, grace_sec) with no
+// separate onset/tick state to maintain, so it always uses whichever
+// window_sec the caller resolved (build_edge_json always resolves the real,
+// per-function config - see GraphProviderPlugin::resolve_config) - never a
+// value computed against a different (e.g. global-default) window.
+//
+// `grace_sec == 0.0` reduces this to exactly `age > window_sec`, preserving
+// today's un-debounced behavior bit-for-bit (including its boundary: age
+// exactly equal to the window is still active, not stale).
+//
+// A negative age (last_update_ns reading "in the future" relative to
+// now_ns) can only come from a backward clock step - both stamps are
+// steady_clock in production so this cannot happen there, but it must never
+// read as a healthy, active edge, so it is treated as stale here regardless
+// of window/grace.
+bool is_metrics_stale(const GraphProviderPlugin::TopicMetrics & metrics, int64_t now_ns, double window_sec,
+                      double grace_sec) {
+  const auto age_ns = now_ns - metrics.last_update_ns;
+  if (age_ns < 0) {
+    return true;
+  }
+  const auto threshold_ns = static_cast<int64_t>((window_sec + grace_sec) * 1e9);
+  return age_ns > threshold_ns;
 }
 
 EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source, const App & target,
@@ -291,7 +316,7 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
   }
 
   const double freshness_window_sec = resolve_freshness_window_sec(metrics, config);
-  if (!is_metrics_fresh(*metrics, state.now_ns, freshness_window_sec)) {
+  if (is_metrics_stale(*metrics, state.now_ns, freshness_window_sec, config.stale_grace_sec)) {
     result.json["metrics"]["metrics_status"] = "error";
     result.json["metrics"]["error_reason"] = "metrics_stale";
     result.is_error = true;
@@ -590,7 +615,9 @@ void GraphProviderPlugin::diagnostics_callback(const diagnostic_msgs::msg::Diagn
   // message).
   const auto source = resolve_publisher_source(msg_info);
 
-  const auto now_ns = current_time_ns();
+  // Monotonic clock: this stamp is later diffed against GraphBuildState::now_ns
+  // (also steady_clock) to compute age - see current_steady_ns().
+  const auto now_ns = current_steady_ns();
 
   std::lock_guard<std::mutex> lock(metrics_mutex_);
   for (auto & [topic_name, incoming] : updates) {
@@ -732,11 +759,19 @@ std::optional<double> GraphProviderPlugin::parse_double(const std::string & valu
 }
 
 std::string GraphProviderPlugin::current_timestamp() {
+  // Wall clock (system_clock) deliberately: this feeds only the
+  // human-readable `timestamp` document field, never an age comparison - see
+  // current_time_ns()'s and current_steady_ns()'s doc comments.
   return format_timestamp_ns(current_time_ns());
 }
 
 int64_t GraphProviderPlugin::current_time_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+int64_t GraphProviderPlugin::current_steady_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
 
@@ -780,7 +815,10 @@ std::optional<nlohmann::json> GraphProviderPlugin::build_graph_from_entity_cache
 GraphProviderPlugin::GraphBuildState GraphProviderPlugin::build_state_snapshot(const IntrospectionInput & input,
                                                                                const std::string & timestamp) {
   GraphBuildState state;
-  state.now_ns = current_time_ns();
+  // Monotonic clock: diffed against TopicMetrics::last_update_ns (also
+  // steady_clock) for freshness/grace age comparisons - see
+  // current_steady_ns()'s doc comment.
+  state.now_ns = current_steady_ns();
   {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     state.topic_metrics = topic_metrics_;
@@ -860,6 +898,11 @@ void GraphProviderPlugin::load_parameters() {
       validate_positive("freshness_headroom_factor", get_config_double("freshness_headroom_factor", 3.0), 3.0);
   new_config.defaults.freshness_floor_sec =
       validate_positive("freshness_floor_sec", get_config_double("freshness_floor_sec", 5.0), 5.0);
+  // Zero is a valid, meaningful grace (point-in-time, today's un-debounced
+  // behavior) so this uses validate_non_negative like drop_rate_percent_threshold,
+  // not validate_positive.
+  new_config.defaults.stale_grace_sec =
+      validate_non_negative("stale_grace_sec", get_config_double("stale_grace_sec", 2.0), 2.0);
 
   // Per-function overrides. The gateway delivers plugin config as nested
   // objects, never as a flat "function_overrides.<function_id>.<field>" key
@@ -915,6 +958,8 @@ void GraphProviderPlugin::load_parameters() {
     } else if (field == "freshness_floor_sec") {
       function_config.freshness_floor_sec =
           validate_positive(log_key, numeric_value, function_config.freshness_floor_sec);
+    } else if (field == "stale_grace_sec") {
+      function_config.stale_grace_sec = validate_non_negative(log_key, numeric_value, function_config.stale_grace_sec);
     }
   }
 

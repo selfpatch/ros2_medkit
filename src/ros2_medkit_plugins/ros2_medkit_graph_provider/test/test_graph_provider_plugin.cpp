@@ -86,6 +86,11 @@ class GraphProviderPluginTestAccess {
     std::lock_guard<std::mutex> lock(plugin.status_mutex_);
     return plugin.last_seen_by_app_.size();
   }
+
+  static GraphProviderPlugin::GraphBuildConfig resolve_config(const GraphProviderPlugin & plugin,
+                                                              const std::string & function_id) {
+    return plugin.resolve_config(function_id);
+  }
 };
 
 }  // namespace ros2_medkit_gateway
@@ -142,6 +147,7 @@ GraphProviderPlugin::GraphBuildConfig default_config() {
   config.drop_rate_percent_threshold = 5.0;
   config.freshness_headroom_factor = 3.0;
   config.freshness_floor_sec = 5.0;
+  config.stale_grace_sec = 2.0;
   return config;
 }
 
@@ -611,7 +617,11 @@ TEST(GraphProviderPluginMetricsTest, MarksPendingWhenNoMetricsHaveArrivedForThis
 TEST(GraphProviderPluginMetricsTest, FreshMetricIsActiveAgedMetricIsStaleAndBreaksPipeline) {
   auto input =
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
-  const auto config = default_config();
+  auto config = default_config();
+  // This test is about the freshness WINDOW boundary, not the stale-grace
+  // debounce (which has its own dedicated tests) - pin grace at 0 so age >
+  // window alone decides, exactly like before the debounce existed.
+  config.stale_grace_sec = 0.0;
   // expected_frequency_hz=30 -> interval ~0.033s; headroom*interval is tiny,
   // so the floor (5s) is the effective freshness window.
   const auto window_ns = static_cast<int64_t>(config.freshness_floor_sec * 1e9);
@@ -644,10 +654,218 @@ TEST(GraphProviderPluginMetricsTest, FreshMetricIsActiveAgedMetricIsStaleAndBrea
   EXPECT_EQ(stale_graph["pipeline_status"], "broken");
 }
 
+// Robustness fix: is_metrics_stale must never treat a NEGATIVE computed age
+// (last_update_ns reading "in the future" relative to now_ns) as active. In
+// production this cannot occur any more now that both stamps are
+// steady_clock, but this guards the underlying bug directly and simulates
+// exactly the failure mode a backward wall-clock step (e.g. an NTP
+// correction on a Jetson booting before sync) used to cause when both
+// stamps were system_clock: `(now_ns - last_update_ns)` goes negative, and a
+// naive `age <= window` reads a large negative number as "fresh forever".
+// Against the pre-fix `<=` comparison (no negative-age guard), this test
+// fails: it would read "active"/"healthy" instead of "error"/"broken".
+TEST(GraphProviderPluginMetricsTest, NegativeAgeFromBackwardClockStepIsTreatedAsStaleNotFresh) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto config = default_config();
+  config.stale_grace_sec = 0.0;  // isolate the negative-age guard from the debounce
+
+  auto state = make_state();
+  state.now_ns = static_cast<int64_t>(1e9);  // t = 1s
+  // last_update_ns is AHEAD of now_ns - simulates a sample stamped just
+  // before a backward clock step, now reading as "in the future".
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/static_cast<int64_t>(5e9));
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+  const auto * edge = find_edge(graph, "a", "b", "/topic");
+
+  ASSERT_NE(edge, nullptr);
+  EXPECT_EQ((*edge)["metrics"]["metrics_status"], "error");
+  ASSERT_TRUE((*edge)["metrics"].contains("error_reason"));
+  EXPECT_EQ((*edge)["metrics"]["error_reason"], "metrics_stale");
+  EXPECT_EQ(graph["pipeline_status"], "broken");
+}
+
+// Pins the `stale_grace_sec == 0.0` case exactly: is_metrics_stale must
+// reduce to today's un-debounced `age > window` check, transitioning to
+// stale the instant age crosses the window. This is what makes grace=0
+// backward-compatible.
+TEST(GraphProviderPluginMetricsTest, ZeroStaleGraceTransitionsToStaleExactlyAtWindowWithNoDelay) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto config = default_config();
+  config.stale_grace_sec = 0.0;
+  const auto window_ns = static_cast<int64_t>(config.freshness_floor_sec * 1e9);
+
+  auto at_window_state = make_state();
+  at_window_state.now_ns = window_ns;  // exactly at the boundary - still fresh
+  at_window_state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+  auto at_window_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, at_window_state, config, "2026-03-08T12:00:00.000Z");
+  const auto * at_window_edge = find_edge(at_window_doc["x-medkit-graph"], "a", "b", "/topic");
+  ASSERT_NE(at_window_edge, nullptr);
+  EXPECT_EQ((*at_window_edge)["metrics"]["metrics_status"], "active");
+
+  auto past_window_state = make_state();
+  past_window_state.now_ns = window_ns + 1;  // one nanosecond past the boundary
+  past_window_state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+  auto past_window_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, past_window_state, config, "2026-03-08T12:00:00.000Z");
+  const auto & past_window_graph = past_window_doc["x-medkit-graph"];
+  const auto * past_window_edge = find_edge(past_window_graph, "a", "b", "/topic");
+  ASSERT_NE(past_window_edge, nullptr);
+  EXPECT_EQ((*past_window_edge)["metrics"]["metrics_status"], "error");
+  EXPECT_EQ((*past_window_edge)["metrics"]["error_reason"], "metrics_stale");
+  EXPECT_EQ(past_window_graph["pipeline_status"], "broken");
+}
+
+// Grace debounce: an edge whose age has just crossed outside the freshness
+// window must stay "active" while the continuous-stale duration is still
+// within stale_grace_sec, and only flip to "metrics_stale"/"broken" once
+// grace has fully elapsed. is_metrics_stale is a pure function of
+// (now_ns, last_update_ns, window_sec, grace_sec) - no separate onset/tick
+// state, so these ages are expressed directly via last_update_ns/now_ns.
+TEST(GraphProviderPluginMetricsTest, StaleGraceKeepsEdgeActiveUntilGraceElapsesThenBreaksPipeline) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+  auto config = default_config();
+  config.stale_grace_sec = 2.0;
+  const auto window_ns = static_cast<int64_t>(config.freshness_floor_sec * 1e9);
+  const auto grace_ns = static_cast<int64_t>(config.stale_grace_sec * 1e9);
+
+  // last_update_ns = 0 (the window crossing); "now" is window + 1s - past
+  // the window, but short of the 2s grace.
+  auto within_grace_state = make_state();
+  within_grace_state.now_ns = window_ns + static_cast<int64_t>(1e9);
+  within_grace_state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+
+  auto within_grace_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, within_grace_state, config, "2026-03-08T12:00:00.000Z");
+  const auto & within_grace_graph = within_grace_doc["x-medkit-graph"];
+  const auto * within_grace_edge = find_edge(within_grace_graph, "a", "b", "/topic");
+  ASSERT_NE(within_grace_edge, nullptr);
+  EXPECT_EQ((*within_grace_edge)["metrics"]["metrics_status"], "active");
+  EXPECT_FALSE((*within_grace_edge)["metrics"].contains("error_reason"));
+  EXPECT_EQ(within_grace_graph["pipeline_status"], "healthy");
+
+  // Same last_update_ns; "now" is past window + grace - the debounce has
+  // elapsed.
+  auto past_grace_state = make_state();
+  past_grace_state.now_ns = window_ns + grace_ns + static_cast<int64_t>(1e9);
+  past_grace_state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+
+  auto past_grace_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, past_grace_state, config, "2026-03-08T12:00:00.000Z");
+  const auto & past_grace_graph = past_grace_doc["x-medkit-graph"];
+  const auto * past_grace_edge = find_edge(past_grace_graph, "a", "b", "/topic");
+  ASSERT_NE(past_grace_edge, nullptr);
+  EXPECT_EQ((*past_grace_edge)["metrics"]["metrics_status"], "error");
+  EXPECT_EQ((*past_grace_edge)["metrics"]["error_reason"], "metrics_stale");
+  EXPECT_EQ(past_grace_graph["pipeline_status"], "broken");
+}
+
+// Regression guard for a Critical review finding: is_metrics_stale must use
+// whichever freshness window the CALLER resolved for a given function, never
+// a value computed against a different (e.g. global-default) window. Before
+// this fix, the grace debounce's onset (TopicMetrics::stale_since_ns) was
+// advanced on the plugin's introspect() cadence using ONLY the global
+// default config (GraphProviderPlugin::advance_stale_since, now removed) -
+// never the per-function config a function's own freshness overrides
+// resolve to. A topic scoped into a function with a materially different
+// freshness_floor_sec then got the WRONG stale-grace transition: at an age
+// past that function's own window+grace but still within the global
+// window, the old onset-tracking never even noticed the topic had gone
+// stale (from the global window's perspective it was still fresh), so
+// stale_since_ns was never set - and with it unset, the pre-fix
+// `is_metrics_stale` unconditionally treated the onset as "now" and could
+// never satisfy grace_sec > 0, permanently reading "active" no matter how
+// long the real outage lasted. The stateless design has no such divergence:
+// is_metrics_stale always evaluates the exact window_sec/grace_sec it is
+// called with.
+TEST(GraphProviderPluginMetricsTest, PerFunctionFreshnessWindowOverrideDrivesStaleGraceTransitionNotGlobalWindow) {
+  auto input =
+      make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
+
+  // Global default window is generous (20s floor); "fn" resolves to a much
+  // narrower 1s floor. Both share the same 2s grace.
+  auto global_config = default_config();
+  global_config.freshness_floor_sec = 20.0;
+  global_config.stale_grace_sec = 2.0;
+  auto function_config = global_config;
+  function_config.freshness_floor_sec = 1.0;
+
+  auto state = make_state();
+  // Age = 5s: past fn's own window+grace (1.0 + 2.0 = 3.0s), but
+  // comfortably inside the GLOBAL window alone (20.0s), let alone its grace.
+  state.now_ns = static_cast<int64_t>(5.0 * 1e9);
+  state.topic_metrics["/topic"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+
+  // Sanity: evaluated against the global config alone, this age is still
+  // well inside the window itself - stays active regardless of grace.
+  auto global_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, global_config, "2026-03-08T12:00:00.000Z");
+  const auto * global_edge = find_edge(global_doc["x-medkit-graph"], "a", "b", "/topic");
+  ASSERT_NE(global_edge, nullptr);
+  EXPECT_EQ((*global_edge)["metrics"]["metrics_status"], "active");
+
+  // "fn"'s own resolved config (1s floor, same 2s grace) must decide this
+  // edge's verdict: window+grace = 3s, age = 5s -> stale/broken, regardless
+  // of what the global window alone would say about the same sample.
+  auto fn_doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, function_config, "2026-03-08T12:00:00.000Z");
+  const auto & fn_graph = fn_doc["x-medkit-graph"];
+  const auto * fn_edge = find_edge(fn_graph, "a", "b", "/topic");
+  ASSERT_NE(fn_edge, nullptr);
+  EXPECT_EQ((*fn_edge)["metrics"]["metrics_status"], "error");
+  EXPECT_EQ((*fn_edge)["metrics"]["error_reason"], "metrics_stale");
+  EXPECT_EQ(fn_graph["pipeline_status"], "broken");
+}
+
+// Config validation: a negative stale_grace_sec is silently invalid (unlike
+// 0.0, which is a real, meaningful "no debounce" setting) - it must be
+// rejected and fall back to the default, exactly like drop_rate_percent_threshold's
+// validate_non_negative pattern.
+TEST(GraphProviderPluginRouteTest, RejectsNegativeStaleGraceSecAndKeepsDefault) {
+  nlohmann::json config = {{"stale_grace_sec", -1.0}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, 2.0);
+}
+
+// Config validation: a per-function override of stale_grace_sec must apply
+// only to the overridden function, leaving every other function's resolved
+// config at the (valid) global default - same nested-config delivery shape
+// as the other function_overrides fields (see
+// PerFunctionOverrideFromNestedConfigChangesPipelineStatus).
+TEST(GraphProviderPluginRouteTest, PerFunctionOverrideOfStaleGraceSecApplies) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"stale_grace_sec", 4.0}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}},
+                         {"other", PluginEntityInfo{SovdEntityType::FUNCTION, "other", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto overridden = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(overridden.stale_grace_sec, 4.0);
+
+  const auto default_resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "other");
+  EXPECT_DOUBLE_EQ(default_resolved.stale_grace_sec, 2.0);
+}
+
 TEST(GraphProviderPluginMetricsTest, KeepsBrokenPipelineBottleneckNullWhenMetricsAreStale) {
   auto input =
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
-  const auto config = default_config();
+  auto config = default_config();
+  // Pin grace at 0 - this test is about bottleneck-null-when-stale, not the
+  // debounce itself.
+  config.stale_grace_sec = 0.0;
 
   auto state = make_state();
   // A stale-but-numerically-good ratio must never surface as the bottleneck:
@@ -821,7 +1039,10 @@ TEST(GraphProviderPluginMetricsTest, BrokenPipelineHasNullBottleneckEdgeEvenWhen
   auto input = make_input(
       {make_app("a", {"/ab", "/ac"}, {}, true), make_app("b", {}, {"/ab"}, true), make_app("c", {}, {"/ac"}, true)},
       {make_function("fn", {"a", "b", "c"})});
-  const auto config = default_config();
+  auto config = default_config();
+  // Pin grace at 0 - this test is about bottleneck selection, not the
+  // debounce itself.
+  config.stale_grace_sec = 0.0;
   auto state = make_state();
   state.now_ns = static_cast<int64_t>((config.freshness_floor_sec + 1.0) * 1e9);
   // /ab: stamped at t=0, now far past the freshness window -> stale -> broken.
