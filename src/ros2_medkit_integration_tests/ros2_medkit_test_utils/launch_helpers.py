@@ -43,6 +43,9 @@ from ros2_medkit_test_utils.coverage import get_coverage_env
 DEMO_NODE_REGISTRY = {
     # Sensors
     'temp_sensor': ('demo_engine_temp_sensor', 'temp_sensor', '/powertrain/engine'),
+    # Subscribes to /powertrain/engine/temperature. Pairs with temp_sensor so the
+    # demo stack has a real publisher/subscriber edge inside one Function.
+    'temp_monitor': ('demo_engine_temp_monitor', 'temp_monitor', '/powertrain/engine'),
     'rpm_sensor': ('demo_rpm_sensor', 'rpm_sensor', '/powertrain/engine'),
     'pressure_sensor': ('demo_brake_pressure_sensor', 'pressure_sensor', '/chassis/brakes'),
     'status_sensor': ('demo_door_status_sensor', 'status_sensor', '/body/door/front_left'),

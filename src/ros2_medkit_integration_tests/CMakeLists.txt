@@ -33,6 +33,10 @@ add_executable(demo_engine_temp_sensor demo_nodes/engine_temp_sensor.cpp)
 target_include_directories(demo_engine_temp_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_engine_temp_sensor rclcpp rcl_interfaces sensor_msgs)
 
+add_executable(demo_engine_temp_monitor demo_nodes/engine_temp_monitor.cpp)
+target_include_directories(demo_engine_temp_monitor PRIVATE ${_demo_include_dir})
+medkit_target_dependencies(demo_engine_temp_monitor rclcpp rcl_interfaces sensor_msgs)
+
 add_executable(demo_rpm_sensor demo_nodes/rpm_sensor.cpp)
 target_include_directories(demo_rpm_sensor PRIVATE ${_demo_include_dir})
 medkit_target_dependencies(demo_rpm_sensor rclcpp std_msgs)
@@ -82,6 +86,7 @@ medkit_target_dependencies(demo_unresponsive_param_node rclcpp rcl_interfaces)
 
 install(TARGETS
   demo_engine_temp_sensor
+  demo_engine_temp_monitor
   demo_rpm_sensor
   demo_brake_pressure_sensor
   demo_door_status_sensor
