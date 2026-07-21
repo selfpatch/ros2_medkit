@@ -70,6 +70,16 @@ GATEWAY_STARTUP_INTERVAL = 0.5
 DISCOVERY_TIMEOUT = 60.0
 DISCOVERY_INTERVAL = 0.5  # seconds between discovery polls
 
+# Parameter service readiness
+# A node's ROS 2 parameter service can lag its graph discovery, and the
+# configurations endpoint returns 503 until it responds. This lag is small
+# without instrumentation but grows under the TSan job, where the service was
+# still 503 more than 15s after discovery finished. Generous on purpose: a
+# larger timeout costs nothing on the passing path (the poll returns the moment
+# the endpoint answers 200) and only bounds how long a genuinely dead service
+# waits before failing, well inside the sanitizer jobs' 360s ctest budget.
+PARAM_SERVICE_TIMEOUT = 90.0
+
 # Operations
 ACTION_TIMEOUT = 30.0
 
