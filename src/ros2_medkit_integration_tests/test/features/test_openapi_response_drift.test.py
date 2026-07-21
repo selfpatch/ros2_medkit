@@ -60,7 +60,10 @@ try:
 except ImportError:
     from jsonschema.validators import Draft7Validator as _Validator
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    PARAM_SERVICE_TIMEOUT,
+)
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -380,11 +383,13 @@ class TestOpenApiResponseDrift(GatewayTestCase):
 
         @verifies REQ_INTEROP_002
         """
-        resp = requests.get(
-            f'{self.BASE_URL}/apps/temp_sensor/configurations', timeout=10
+        # The configurations endpoint reads the node's parameter service, which
+        # returns 503 until it is ready just after discovery. Poll for it rather
+        # than asserting 200 on a single early GET.
+        body = self.poll_endpoint_until(
+            '/apps/temp_sensor/configurations',
+            timeout=PARAM_SERVICE_TIMEOUT,
         )
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
 
         items = body.get('items', [])
         self.assertGreater(

@@ -41,7 +41,10 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    PARAM_SERVICE_TIMEOUT,
+)
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
 
@@ -287,7 +290,11 @@ class TestScenarioDiscoveryManifest(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        data = self.get_json('/apps/lidar-sensor/configurations')
+        data = self.poll_endpoint_until(
+            '/apps/lidar-sensor/configurations',
+            lambda d: d if 'items' in d else None,
+            timeout=PARAM_SERVICE_TIMEOUT,
+        )
         self.assertIn('items', data)
         self.assertIn('x-medkit', data)
 
