@@ -990,6 +990,71 @@ TEST(GraphProviderPluginRouteTest, RejectsNegativeStaleGraceSecAndKeepsDefault) 
   EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, 2.0);
 }
 
+// Config validation: unlike the per-function override loop (which already
+// warned on a wrong-typed value), the GLOBAL config reads used to silently
+// treat a wrong-typed value exactly like an absent one - falling back to the
+// hardcoded default with no signal at all. get_config_double now warns (see
+// load_parameters) before falling back, matching the per-function behavior.
+// log_fn_ is only wired up by PluginManager (never in this unit-test
+// harness), so the new warning itself isn't observable here; asserting the
+// resolved default took effect is the same fallback-observability pattern
+// the per-function tests above use (e.g.
+// PerFunctionOverrideWithNonNumericValueForKnownFieldHasNoEffect).
+TEST(GraphProviderPluginRouteTest, RejectsNonNumericGlobalConfigValueAndKeepsDefault) {
+  nlohmann::json config = {{"expected_frequency_hz_default", "fast"}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, default_config().expected_frequency_hz_default);
+}
+
+// Sibling of RejectsNonNumericGlobalConfigValueAndKeepsDefault above, for the
+// GLOBAL multi_publisher_rate string read (get_config_string) instead of
+// get_config_double: a NON-STRING global value (e.g. a bare number, where a
+// string is expected) now warns and falls back to nullopt - so
+// validate_multi_publisher_rate is never even reached for this key, and
+// GraphBuildConfig::multi_publisher_rate keeps its own untouched default
+// (kAnnotate). Distinct from RejectsUnknownMultiPublisherRateAndKeepsAnnotateDefault
+// above, which covers a valid STRING that fails validate_multi_publisher_rate's
+// enum check ("bogus_mode") - a different gate entirely.
+TEST(GraphProviderPluginRouteTest, RejectsNonStringGlobalMultiPublisherRateValueAndKeepsAnnotateDefault) {
+  nlohmann::json config = {{"multi_publisher_rate", 2.0}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
+}
+
+// Guard for both fixes above: an ABSENT global key is normal (most keys are
+// never set) and must never warn - only a key that is PRESENT with the wrong
+// type is a genuine config mistake. An empty config object exercises every
+// global get_config_double/get_config_string call site at once, so every
+// field below must resolve to its own hardcoded default.
+TEST(GraphProviderPluginRouteTest, AbsentGlobalConfigKeysResolveToDefaultsWithoutWarning) {
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure({});
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  const auto expected = default_config();
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, expected.expected_frequency_hz_default);
+  EXPECT_DOUBLE_EQ(resolved.degraded_frequency_ratio, expected.degraded_frequency_ratio);
+  EXPECT_DOUBLE_EQ(resolved.drop_rate_percent_threshold, expected.drop_rate_percent_threshold);
+  EXPECT_DOUBLE_EQ(resolved.freshness_headroom_factor, expected.freshness_headroom_factor);
+  EXPECT_DOUBLE_EQ(resolved.freshness_floor_sec, expected.freshness_floor_sec);
+  EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, expected.stale_grace_sec);
+  EXPECT_EQ(resolved.multi_publisher_rate, GraphProviderPlugin::MultiPublisherRatePolicy::kAnnotate);
+}
+
 // Config validation: a per-function override of stale_grace_sec must apply
 // only to the overridden function, leaving every other function's resolved
 // config at the (valid) global default - same nested-config delivery shape
@@ -1088,10 +1153,12 @@ TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithUnrecognizedFieldNameH
   EXPECT_EQ(resolved.multi_publisher_rate, expected.multi_publisher_rate);
 }
 
-// Guard for the fix above: the new trailing `else` must never fire for a
-// currently-valid field. multi_publisher_rate is the field most at risk of a
-// false positive - it is matched and continue'd BEFORE the numeric
-// is_number() gate the new `else` lives behind - so pair it in the SAME
+// Guard for the fix above: the unrecognized-field-name gate (checked before
+// any value-type gate, so it fires regardless of what the bad key's value
+// looks like - see load_parameters) must never fire for a currently-valid
+// field. multi_publisher_rate is the field most at risk of a false
+// positive - it is matched and continue'd in its own branch, separate from
+// the numeric fields' is_number() gate - so pair it in the SAME
 // function_overrides object as a typo'd field to prove the unrecognized-name
 // path for one key never swallows a valid override for another key on the
 // same function.
@@ -1111,9 +1178,10 @@ TEST(GraphProviderPluginRouteTest, UnrecognizedFieldWarningDoesNotSwallowAdjacen
 
 // Config validation: a per-function override on a KNOWN numeric field given
 // a non-numeric value (e.g. expected_frequency_hz: "foo" - a wrong-type
-// value, not a typo'd name) used to be dropped by the bare
-// `if (!value.is_number()) { continue; }` gate in the per-override loop
-// BEFORE the field-name is even inspected - the same silent-failure class as
+// value, not a typo'd name) is rejected by the `if (!value.is_number())`
+// gate in the per-override loop - reached only AFTER the field name has
+// already passed the recognized-field-name gate (see load_parameters), since
+// expected_frequency_hz IS a recognized field. Same silent-failure class as
 // PerFunctionOverrideWithUnrecognizedFieldNameHasNoEffect above, just for a
 // bad VALUE on a good field name instead of a bad name. log_fn_ is only
 // wired up by PluginManager (never in this unit-test harness), so the new
@@ -1140,9 +1208,15 @@ TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithNonNumericValueForKnow
 }
 
 // Same gap, the other half: an UNRECOGNIZED field name given a non-numeric
-// value never even reaches the field-name check (warn_unrecognized_function_
-// override_field), because the is_number() gate runs first. Before this fix
-// this was doubly silent - wrong value AND unrecognized name, zero signal.
+// value. Before the unrecognized-name warning existed at all, this was
+// doubly silent - wrong value AND unrecognized name, zero signal. The
+// unrecognized-field-name gate now runs BEFORE the is_number() gate (see
+// load_parameters), so an unrecognized field like this one is reported as
+// "unrecognized" rather than the misleading "expected a number" - either
+// way the override never applies, so the resolved-config assertion below
+// (the only thing observable from this unit-test harness - see
+// PerFunctionOverrideWithNonNumericValueForKnownFieldHasNoEffect above)
+// holds regardless of which gate rejected it.
 TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithNonNumericValueForUnrecognizedFieldHasNoEffect) {
   nlohmann::json config = {{"function_overrides", {{"fn", {{"expected_frequency", "foo"}}}}}};
 
@@ -1155,6 +1229,29 @@ TEST(GraphProviderPluginRouteTest, PerFunctionOverrideWithNonNumericValueForUnre
   const auto expected = default_config();
   EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, expected.expected_frequency_hz_default);
   EXPECT_EQ(resolved.multi_publisher_rate, expected.multi_publisher_rate);
+}
+
+// New coverage for the reorder itself: pairs the same unrecognized-name +
+// non-numeric-value key as the test above with a genuinely valid override on
+// a DIFFERENT, numeric field (stale_grace_sec) in the SAME function_overrides
+// object. The prior two guard tests
+// (UnrecognizedFieldWarningDoesNotSwallowAdjacentValidMultiPublisherRateOverride,
+// NonNumericOverrideWarningDoesNotSwallowAdjacentValidMultiPublisherRateOverride)
+// only ever paired a bad key with multi_publisher_rate (the one field that
+// bypasses the numeric gate entirely); this proves the unrecognized-name gate
+// for one key never swallows a valid override for another key that DOES go
+// through the shared is_number()/if-else-if numeric path.
+TEST(GraphProviderPluginRouteTest, UnrecognizedFieldWithNonNumericValueDoesNotSwallowAdjacentValidNumericOverride) {
+  nlohmann::json config = {{"function_overrides", {{"fn", {{"expected_frequency", "foo"}, {"stale_grace_sec", 4.0}}}}}};
+
+  GraphProviderPlugin plugin;
+  FakePluginContext ctx({{"fn", PluginEntityInfo{SovdEntityType::FUNCTION, "fn", "", ""}}});
+  plugin.configure(config);
+  plugin.set_context(ctx);
+
+  const auto resolved = GraphProviderPluginTestAccess::resolve_config(plugin, "fn");
+  EXPECT_DOUBLE_EQ(resolved.expected_frequency_hz_default, default_config().expected_frequency_hz_default);
+  EXPECT_DOUBLE_EQ(resolved.stale_grace_sec, 4.0);
 }
 
 // Guard for the fix above, mirroring
