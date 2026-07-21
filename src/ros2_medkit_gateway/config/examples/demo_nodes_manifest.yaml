@@ -173,6 +173,15 @@ apps:
       node_name: temp_sensor
       namespace: /powertrain/engine
 
+  - id: engine-temp-monitor
+    name: "Engine Temperature Monitor"
+    category: "monitoring"
+    is_located_on: temp-sensor-hw
+    description: "Consumes engine temperature readings and checks them against an overheat threshold"
+    ros_binding:
+      node_name: temp_monitor
+      namespace: /powertrain/engine
+
   - id: engine-rpm-sensor
     name: "Engine RPM Sensor"
     category: "sensor"
@@ -285,6 +294,7 @@ functions:
     description: "Monitor engine health via temperature and RPM"
     hosted_by:
       - engine-temp-sensor
+      - engine-temp-monitor
       - engine-rpm-sensor
 
   - id: engine-calibration
