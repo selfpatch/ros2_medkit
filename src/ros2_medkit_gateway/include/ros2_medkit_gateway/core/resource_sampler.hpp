@@ -86,6 +86,17 @@ class ResourceSamplerRegistry {
   /// invocation of an outstanding copy returns an error instead of calling
   /// into the (now unsafe to touch) plugin. See the class comment for why
   /// the drain, not just the flag, is required.
+  ///
+  /// Caller-blocking contract: this call blocks until any in-flight
+  /// invocation of that sampler callable returns. Callers (e.g.
+  /// `PluginManager::disable_plugin`, which holds `plugins_mutex_` for the
+  /// duration of this call) must not hold a lock that the sampler callable
+  /// could itself need to acquire, or the two will deadlock - this call
+  /// cannot return until that invocation finishes, and the invocation cannot
+  /// finish if it blocks on a lock its own caller is still holding. Today the
+  /// only in-tree sampler callable (graph_provider's `x-medkit-graph`
+  /// sampler) takes no such lock, so this is currently safe; this note is for
+  /// the next plugin author who adds one that does.
   void remove_sampler(const std::string & collection);
 
   /// Snapshot of all currently registered collection names (built-in and
