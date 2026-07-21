@@ -29,6 +29,12 @@
 
 namespace ros2_medkit_gateway {
 
+/// Schema version stamped on the `x-medkit-graph` document's `schema_version`
+/// field. Bump the major component whenever a change to the document's
+/// shape or semantics (field removal, value-set change, altered meaning of
+/// an existing field) would break an external consumer parsing it.
+inline constexpr const char * kGraphSchemaVersion = "2.0.0";
+
 class PluginContext;
 class RosPluginContext;
 
