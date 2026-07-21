@@ -114,9 +114,6 @@ class PluginManager : public LogProviderRegistry {
    */
   void register_routes(httplib::Server & server, const std::string & api_prefix);
 
-  /// Register a resource sampler for a vendor collection (must start with "x-")
-  void register_resource_sampler(const std::string & collection, ResourceSamplerFn fn);
-
   /// Register a custom transport provider
   void register_transport(std::unique_ptr<SubscriptionTransportProvider> provider);
 
@@ -260,6 +257,13 @@ class PluginManager : public LogProviderRegistry {
     /// shared by register_routes() and fetch_entity_data_via_route().
     std::vector<GatewayPlugin::PluginRoute> routes;
     bool routes_cached = false;
+    /// Resource sampler collections this plugin registered via
+    /// PluginContext::register_sampler() during set_context(). Captured by
+    /// diffing ResourceSamplerRegistry::collection_names() around that call
+    /// (see capture_new_sampler_collections) so they can be removed when the
+    /// plugin is torn down - the sampler's callable captures the plugin
+    /// instance, so a dangling entry after teardown is a use-after-free.
+    std::vector<std::string> sampler_collections;
   };
 
   /// Fetch and cache lp.routes on first use (unique lock must be held).
@@ -269,6 +273,18 @@ class PluginManager : public LogProviderRegistry {
   /// Disable a plugin after a lifecycle error (nulls providers, resets plugin).
   /// Also clears provider pointers in load_result to prevent dangling references.
   void disable_plugin(LoadedPlugin & lp);
+
+  /// Record which sampler collections a plugin's set_context() call just
+  /// added, by comparing the registry's collection set before that call
+  /// (`before`) to its current set. Called immediately after set_context()
+  /// returns or throws, so partially-completed registrations are still
+  /// captured. No-op if no ResourceSamplerRegistry is configured.
+  void capture_new_sampler_collections(LoadedPlugin & lp, const std::vector<std::string> & before);
+
+  /// Remove every sampler collection tracked for a plugin (see
+  /// LoadedPlugin::sampler_collections) from the ResourceSamplerRegistry, and
+  /// clear the tracked list. No-op if no ResourceSamplerRegistry is configured.
+  void remove_plugin_samplers(LoadedPlugin & lp);
 
   mutable std::shared_mutex plugins_mutex_;
   std::vector<LoadedPlugin> plugins_;

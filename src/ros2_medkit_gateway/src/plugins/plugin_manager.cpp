@@ -19,6 +19,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <regex>
+#include <unordered_set>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -226,7 +227,31 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
   // Cached route handlers capture the plugin instance - drop them with it.
   lp.routes.clear();
   lp.routes_cached = false;
+  // Cyclic-subscription samplers capture the plugin instance too - same hazard.
+  remove_plugin_samplers(lp);
   lp.load_result.plugin.reset();
+}
+
+void PluginManager::capture_new_sampler_collections(LoadedPlugin & lp, const std::vector<std::string> & before) {
+  if (!sampler_registry_) {
+    return;
+  }
+  std::unordered_set<std::string> before_set(before.begin(), before.end());
+  for (auto & name : sampler_registry_->collection_names()) {
+    if (before_set.count(name) == 0) {
+      lp.sampler_collections.push_back(std::move(name));
+    }
+  }
+}
+
+void PluginManager::remove_plugin_samplers(LoadedPlugin & lp) {
+  if (!sampler_registry_) {
+    return;
+  }
+  for (const auto & collection : lp.sampler_collections) {
+    sampler_registry_->remove_sampler(collection);
+  }
+  lp.sampler_collections.clear();
 }
 
 void PluginManager::configure_plugins() {
@@ -256,13 +281,25 @@ void PluginManager::set_context(PluginContext & context) {
     if (!lp.load_result.plugin) {
       continue;
     }
+    // Plugins register cyclic-subscription samplers directly against the
+    // shared ResourceSamplerRegistry from within set_context() (see
+    // GraphProviderPlugin::set_context()), bypassing this manager. Snapshot
+    // the registry's collections before and after the call so any newly
+    // added ones can be attributed to this plugin and removed on teardown.
+    std::vector<std::string> before_collections;
+    if (sampler_registry_) {
+      before_collections = sampler_registry_->collection_names();
+    }
     try {
       lp.load_result.plugin->set_context(context);
+      capture_new_sampler_collections(lp, before_collections);
     } catch (const std::exception & e) {
+      capture_new_sampler_collections(lp, before_collections);
       RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_context(): %s - disabling",
                    lp.load_result.plugin->name().c_str(), e.what());
       disable_plugin(lp);
     } catch (...) {
+      capture_new_sampler_collections(lp, before_collections);
       RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_context() - disabling",
                    lp.load_result.plugin->name().c_str());
       disable_plugin(lp);
@@ -273,13 +310,6 @@ void PluginManager::set_context(PluginContext & context) {
 void PluginManager::set_registries(ResourceSamplerRegistry & samplers, TransportRegistry & transports) {
   sampler_registry_ = &samplers;
   transport_registry_ = &transports;
-}
-
-void PluginManager::register_resource_sampler(const std::string & collection, ResourceSamplerFn fn) {
-  if (!sampler_registry_) {
-    throw std::runtime_error("Sampler registry not initialized");
-  }
-  sampler_registry_->register_sampler(collection, std::move(fn));
 }
 
 void PluginManager::register_transport(std::unique_ptr<SubscriptionTransportProvider> provider) {
@@ -447,6 +477,10 @@ void PluginManager::shutdown_all() {
       RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
                   lp.load_result.plugin->name().c_str());
     }
+    // The plugin instance itself is freed later, in ~PluginManager()'s
+    // plugins_.clear() - but ResourceSamplerRegistry is owned by GatewayNode
+    // and outlives PluginManager, so its dangling entries must be dropped now.
+    remove_plugin_samplers(lp);
   }
 }
 
