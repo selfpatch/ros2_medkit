@@ -153,9 +153,12 @@ class TriggerTopicSubscriber {
     SampleCallback callback;
   };
 
-  /// Per-handle pending entry awaiting topic-type resolution.
+  /// Per-handle pending entry awaiting topic-type resolution or, before the
+  /// subscription executor is wired at startup, the executor itself.
   struct PendingEntry {
     std::string topic_name;
+    /// Caller-provided type, or empty to auto-resolve from the ROS graph on retry.
+    std::string msg_type;
     SampleCallback callback;
     std::chrono::steady_clock::time_point created_at;
   };
