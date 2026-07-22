@@ -328,9 +328,10 @@ void RESTServer::setup_routes() {
   // notification `/triggers` collection, never overloading it. GET is public;
   // POST/DELETE follow the gateway's write-auth policy.
   {
-    auto ft_json_error = [](httplib::Response & res, int status, const std::string & message) {
+    auto ft_json_error = [](httplib::Response & res, int status, const std::string & message,
+                            const char * error_code = nullptr) {
       nlohmann::json err;
-      err["error_code"] = status == 404 ? ERR_RESOURCE_NOT_FOUND : ERR_INVALID_PARAMETER;
+      err["error_code"] = error_code ? error_code : (status == 404 ? ERR_RESOURCE_NOT_FOUND : ERR_INVALID_PARAMETER);
       err["message"] = message;
       res.status = status;
       res.set_content(err.dump(2), "application/json");
@@ -364,7 +365,8 @@ void RESTServer::setup_routes() {
                 try {
                   body = nlohmann::json::parse(req.body);
                 } catch (const nlohmann::json::exception &) {
-                  ft_json_error(res, 400, "request body is not valid JSON");
+                  // Malformed request, not semantic validation - ERR_INVALID_REQUEST.
+                  ft_json_error(res, 400, "request body is not valid JSON", ERR_INVALID_REQUEST);
                   return;
                 }
                 auto created = engine->create(app_id, body);
