@@ -155,6 +155,17 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  // fault_code is the PRIMARY KEY of the fault-manager store, so two rules
+  // sharing one code would fight over the same stored fault (one rule's clear
+  // erases the other's assertion) and make per-app delete/clear ambiguous.
+  const auto dup = std::find_if(rules_.begin(), rules_.end(), [&](const FaultTriggerRule & r) {
+    return r.fault_code == rule.fault_code;
+  });
+  if (dup != rules_.end()) {
+    return tl::make_unexpected(std::make_pair(
+        409, "fault_code '" + rule.fault_code + "' is already used by rule '" + dup->id + "' on app '" + dup->app_id +
+                 "' - fault codes are global to the fault store, pick a distinct one"));
+  }
   rule.id = "ftr_" + std::to_string(next_seq_++);
   rules_.push_back(rule);
   save_locked();
