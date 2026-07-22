@@ -1517,12 +1517,10 @@ TEST(ResolveEntitySourceFqnsTest, AreaCollectsAppsFromAllComponentsInArea) {
   });
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "engine"));
-  // Components in the area are themselves valid reporting sources (bridge
-  // plugins report under the component id), so the area rollup carries the
-  // component ids alongside the hosted apps' FQNs. The off-area lidar
-  // component and its app must not appear.
-  std::set<std::string> expected{"temp-hw", "rpm-hw", "/powertrain/engine/temp_sensor",
-                                 "/powertrain/engine/rpm_sensor"};
+  // Non-external components never claim their bare ids (#516 guardrail), so
+  // the area rollup carries only the hosted apps' FQNs. The off-area lidar
+  // branch must not appear.
+  std::set<std::string> expected{"/powertrain/engine/temp_sensor", "/powertrain/engine/rpm_sensor"};
   EXPECT_EQ(fqns, expected);
 }
 
@@ -1596,10 +1594,9 @@ TEST(ResolveEntitySourceFqnsTest, AreaWalksNestedSubareasRecursively) {
   });
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "powertrain"));
-  // The subarea's component id rides along (components are reporting sources
-  // in their own right); the off-area lidar branch must not.
-  std::set<std::string> expected{"engine-ecu", "/powertrain/engine/temp_sensor"};
-  EXPECT_EQ(fqns, expected);
+  // The subarea's non-external component does not ride along (#516 guardrail);
+  // neither does the off-area lidar branch.
+  EXPECT_EQ(fqns, std::set<std::string>{"/powertrain/engine/temp_sensor"});
 }
 
 TEST(ResolveEntitySourceFqnsTest, FunctionHostingComponentExpandsToComponentApps) {
@@ -1625,9 +1622,9 @@ TEST(ResolveEntitySourceFqnsTest, FunctionHostingComponentExpandsToComponentApps
   cache.update_functions({autonomy});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::FUNCTION, "autonomy"));
-  // The component host contributes its own id too (components are reporting
-  // sources in their own right).
-  std::set<std::string> expected{"drive-ecu", "/drive/planner_node", "/drive/localizer_node", "/misc/standalone_node"};
+  // The non-external component host contributes only its apps' FQNs, not its
+  // own id (#516 guardrail).
+  std::set<std::string> expected{"/drive/planner_node", "/drive/localizer_node", "/misc/standalone_node"};
   EXPECT_EQ(fqns, expected);
 }
 
@@ -1738,12 +1735,12 @@ TEST(ResolveEntitySourceFqnsTest, AreaHostingExternalAppOwnsItsFaults) {
   Component plc;
   plc.id = "s7_1500";
   plc.area = "cell_a";
+  plc.external = true;  // plugin-discovered PLC component
   cache.update_components({plc});
   cache.update_apps({make_external_app("process", "s7_1500")});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "cell_a"));
-  // The external app's bare id plus the hosting component's own id (components
-  // are reporting sources too).
+  // The external app's bare id plus the hosting external component's own id.
   std::set<std::string> expected{"s7_1500", "process"};
   EXPECT_EQ(fqns, expected);
 }
@@ -1785,12 +1782,11 @@ TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithNoAppsOwnsFaultsUnderItsO
   EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
 }
 
-TEST(ResolveEntitySourceFqnsTest, ComponentAlwaysOwnsFaultsReportedUnderItsOwnId) {
-  // A Component is a reporting source in its own right, external or not:
-  // bridge plugins raise PLC_COMMS_LOST-class faults with source_id = the
-  // component id, and those must surface on GET /components/<id>/faults even
-  // though the component hosts no apps. Matching stays exact-id, so a ROS
-  // component whose nodes report under /-prefixed FQNs gains nothing.
+TEST(ResolveEntitySourceFqnsTest, InternalComponentNeverOwnsBareIdFaults) {
+  // #516 guardrail: a non-external Component must not claim faults reported
+  // under its bare id - an unbound ROS component would otherwise own faults
+  // it never reported. Only external components (bridge plugins raising
+  // PLC_COMMS_LOST-class faults with source_id = component id) get that.
   ThreadSafeEntityCache cache;
   Component comp;
   comp.id = "nav_comp";
@@ -1798,7 +1794,7 @@ TEST(ResolveEntitySourceFqnsTest, ComponentAlwaysOwnsFaultsReportedUnderItsOwnId
   cache.update_components({comp});
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::COMPONENT, "nav_comp"));
-  EXPECT_EQ(fqns, std::set<std::string>{"nav_comp"});
+  EXPECT_TRUE(fqns.empty());
 }
 
 TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithContributingAppKeepsBothScopes) {

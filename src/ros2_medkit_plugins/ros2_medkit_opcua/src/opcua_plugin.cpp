@@ -730,6 +730,9 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   // the plugin layer (it only stamps "plugin" on empty sources); per-field
   // provenance stays "opcua" for transparency in both cases.
   comp.source = opcua_identity_trusted(client_config_) ? "opcua" : "plugin";
+  // Fault scope grants bare-id ownership only to external entities; the poller
+  // reports PLC_COMMS_LOST under this component's own id.
+  comp.external = true;
   comp.description = "PLC runtime connected at " + client_config_.endpoint_url;
 
   // INV2: fill the asset-identity nameplate from the live server's device-info
