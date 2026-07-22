@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
+#include <unistd.h>
 
 #include <cstdio>
 #include <map>
@@ -189,7 +190,14 @@ TEST(FaultTriggerEngineTest, UnreadableValueHoldsState) {
 }
 
 TEST(FaultTriggerEngineTest, PersistsAcrossReload) {
-  const std::string path = std::string(std::tmpnam(nullptr)) + "_ftr.json";
+  // mkstemp, not std::tmpnam: tmpnam is TOCTOU-racy and collides under
+  // parallel test runs. The fd is closed immediately - only the unique path
+  // matters; the engine reopens it by name.
+  char tmpl[] = "/tmp/ftr_store_XXXXXX";
+  const int fd = mkstemp(tmpl);
+  ASSERT_NE(fd, -1);
+  close(fd);
+  const std::string path = std::string(tmpl) + "_ftr.json";
   {
     FaultTriggerEngine engine(path, nullptr, nullptr, nullptr, nullptr);
     ASSERT_TRUE(engine.create("tank", make_body("level", ">=", 80.0, "TANK_OVERFILL", "CRITICAL")));
