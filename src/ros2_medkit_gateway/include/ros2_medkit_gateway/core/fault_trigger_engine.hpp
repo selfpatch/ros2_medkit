@@ -39,9 +39,11 @@ struct FaultTriggerRule {
   std::string severity;  ///< "INFO" | "WARNING" | "ERROR" | "CRITICAL"
   bool active{true};
 
-  /// Runtime edge-detect latch (not part of the persisted rule contract): true
-  /// while the fault is currently asserted so evaluate_once fires on the rising
-  /// edge and auto-clears on the falling edge.
+  /// Runtime latch (not part of the persisted rule contract): true while the
+  /// fault is currently asserted. Reporting is LEVEL-triggered - evaluate_once
+  /// re-reports every poll while the value stays crossed (so the fault confirms
+  /// past the manager's debounce and stays asserted); `crossed` only gates the
+  /// auto-clear on the falling edge.
   bool crossed{false};
 };
 
