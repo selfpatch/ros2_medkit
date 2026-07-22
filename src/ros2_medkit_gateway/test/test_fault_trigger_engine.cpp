@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 #include <unistd.h>
+#include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 
 #include <cstdio>
 #include <map>
