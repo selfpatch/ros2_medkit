@@ -1910,7 +1910,12 @@ void GatewayNode::init_fault_trigger_engine() {
 
   auto clear = [this](const std::string & /*app_id*/, const std::string & fault_code) {
     if (fault_mgr_) {
-      fault_mgr_->clear_fault(fault_code);
+      // A trigger-rule auto-clear (falling edge / rule deletion) is a local,
+      // rule-scoped event: skip the correlation engine's cascade so clearing
+      // one rule's fault can never wipe correlated faults owned by anything
+      // else. fault_code is globally unique (create() rejects duplicates), so
+      // the app scope is already encoded in the code itself.
+      fault_mgr_->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
     }
   };
 
