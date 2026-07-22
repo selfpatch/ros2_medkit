@@ -104,9 +104,10 @@ TriggerTopicSubscriber::create_slot_unlocked(const std::string & handle_key, con
                                              const std::string & msg_type) {
   auto * exec = sub_exec_.load(std::memory_order_acquire);
   if (!exec) {
-    // Fail loudly instead of silently creating on the racy main node/executor
-    // path. In the wired gateway this never happens (main.cpp calls
-    // set_subscription_executor before any subscribe()).
+    // Defensive: the callers only reach here once the executor is wired -
+    // subscribe() defers to pending while it is unwired, and retry runs off the
+    // timer, which fires only after spin (i.e. after wiring). Never create on
+    // the racy main-node path; report so the caller leaves the handle pending.
     return tl::unexpected(std::string{"TriggerTopicSubscriber: no subscription executor wired"});
   }
   const rclcpp::QoS qos = rclcpp::SensorDataQoS();
@@ -119,25 +120,39 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
   if (shutdown_flag_.load()) {
     return;
   }
-  if (!sub_exec_.load(std::memory_order_acquire)) {
-    // Fail loudly rather than falling back to the racy main-node path. The
-    // transport wraps subscribe() in try/catch and returns nullptr on throw,
-    // so the trigger creation is rejected instead of registering a dead handle.
-    RCLCPP_ERROR(node_->get_logger(),
-                 "TriggerTopicSubscriber: no subscription executor wired; cannot subscribe handle '%s' to '%s'",
-                 handle_key.c_str(), topic_name.c_str());
-    throw std::runtime_error("TriggerTopicSubscriber: subscription executor not wired");
-  }
 
-  // Phase A (under lock): drop any prior registration for this handle and
-  // resolve the message type. The prior slot is moved out and destroyed
-  // OUTSIDE the lock - ~Ros2SubscriptionSlot posts a run_sync destroy to the
-  // worker, which would deadlock against a callback waiting on mutex_.
-  // old_slot is declared in the function scope (before the lock_guard) so that
-  // on the early return below it is destroyed AFTER the lock_guard releases
-  // mutex_ during stack unwinding.
-  std::unique_ptr<ros2_common::Ros2SubscriptionSlot> old_slot;
+  // If the subscription executor is not wired yet, defer to pending instead of
+  // failing. This window is real: persistent triggers are restored in the
+  // GatewayNode constructor, and the REST server (also started there) can take a
+  // POST /triggers, both before main.cpp wires the executor. The retry timer
+  // only fires once the executor is spinning (after wiring), so a deferred
+  // handle resolves on its first tick - no error log, no 5xx for a valid
+  // request. sub_exec_ is set once and never cleared, so a value seen here stays
+  // valid through Phase B below.
+  const bool executor_ready = sub_exec_.load(std::memory_order_acquire) != nullptr;
+
+  // Resolve the message type OUTSIDE mutex_. get_topic_names_and_types() takes
+  // the rmw graph locks and building the full map is not cheap; holding mutex_
+  // across it would stall every sample dispatch on the worker (each takes
+  // mutex_) for the query's duration. Phase C re-checks the world under the
+  // lock, so a race between this resolve and the commit is harmless. Skip it
+  // when the executor is unwired - we would defer to pending regardless, and
+  // retry re-resolves then.
   std::string resolved_type = msg_type;
+  if (executor_ready && resolved_type.empty()) {
+    resolved_type = resolve_topic_type(topic_name);
+  }
+  // A single const decision, used for both the queue-under-lock branch and the
+  // early return below, so `callback` is moved on exactly one of the two
+  // mutually exclusive paths (queue vs create).
+  const bool should_defer = !executor_ready || resolved_type.empty();
+
+  // Phase A (under lock): drop any prior registration for this handle. The prior
+  // slot is moved out and destroyed OUTSIDE the lock - ~Ros2SubscriptionSlot
+  // posts a run_sync destroy to the worker, which would deadlock against a
+  // callback waiting on mutex_. old_slot is declared in the function scope so it
+  // is destroyed only after the lock_guard releases mutex_.
+  std::unique_ptr<ros2_common::Ros2SubscriptionSlot> old_slot;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = live_.find(handle_key);
@@ -146,29 +161,35 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
       live_.erase(it);
     }
     pending_.erase(handle_key);
+  }
+  // Drop the prior slot outside the lock (run_sync destroy on the worker).
+  old_slot.reset();
 
-    if (resolved_type.empty()) {
-      resolved_type = resolve_topic_type(topic_name);
+  if (should_defer) {
+    // Queue for retry, which creates the slot once the type resolves and the
+    // executor is wired. `callback` is consumed on this branch only; the create
+    // path below (reached only when !should_defer) never touches it.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      PendingEntry entry;
+      entry.topic_name = topic_name;
+      entry.msg_type = msg_type;  // caller's original; retry re-resolves when empty
+      entry.callback = std::move(callback);
+      entry.created_at = std::chrono::steady_clock::now();
+      pending_[handle_key] = std::move(entry);
     }
-
-    if (resolved_type.empty()) {
+    if (!executor_ready) {
+      RCLCPP_DEBUG(node_->get_logger(),
+                   "TriggerTopicSubscriber: subscription executor not wired yet, queuing handle '%s' ('%s') for retry",
+                   handle_key.c_str(), topic_name.c_str());
+    } else {
       RCLCPP_WARN(node_->get_logger(),
                   "TriggerTopicSubscriber: cannot determine type for topic '%s' "
                   "(no publishers yet), queuing handle '%s' for retry",
                   topic_name.c_str(), handle_key.c_str());
-      PendingEntry entry;
-      entry.topic_name = topic_name;
-      entry.callback = std::move(callback);
-      entry.created_at = std::chrono::steady_clock::now();
-      pending_[handle_key] = std::move(entry);
-      // Queued as pending; retry_pending_subscriptions() takes it from here.
-      // Returning here (not falling through) keeps the moved-from `callback`
-      // strictly on this branch, and old_slot drops after mutex_ releases.
-      return;
     }
+    return;
   }
-  // Drop the prior slot outside the lock (run_sync destroy on the worker).
-  old_slot.reset();
 
   // Phase B (outside lock): create the slot on the shared executor worker.
   auto slot_or_err = create_slot_unlocked(handle_key, topic_name, resolved_type);
@@ -287,10 +308,10 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
     return;
   }
 
-  // One resolvable pending handle. The callback is COPIED (not moved) so
-  // pending_[handle_key] stays intact as the "still wanted" marker until the
-  // slot is committed; if unsubscribe() removes it while we create the slot
-  // (outside the lock), the commit is skipped and the slot dropped.
+  // The callback is COPIED (not moved) out of pending_ so pending_[handle_key]
+  // stays intact as the "still wanted" marker until the slot is committed; if
+  // unsubscribe() removes it while we create the slot (outside the lock), the
+  // commit is skipped and the slot dropped.
   struct Resolvable {
     std::string handle_key;
     std::string topic_name;
@@ -298,10 +319,17 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
     SampleCallback callback;
   };
 
-  // Phase A (under lock): snapshot resolvable handles and expire stale ones.
-  // Subscription creation does NOT happen here - it goes through run_sync,
-  // which must never run while holding mutex_.
-  std::vector<Resolvable> resolvable;
+  // Phase A (under lock): expire stale handles and snapshot the rest. NO graph
+  // query here - get_topic_names_and_types() takes the rmw graph locks and is
+  // not cheap, and holding mutex_ across it would stall every sample dispatch on
+  // the worker (each takes mutex_) for the query's duration.
+  struct Candidate {
+    std::string handle_key;
+    std::string topic_name;
+    std::string msg_type;  // caller's requested type, empty = auto-resolve
+    SampleCallback callback;
+  };
+  std::vector<Candidate> candidates;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (pending_.empty()) {
@@ -309,7 +337,6 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    auto topic_names_and_types = node_->get_topic_names_and_types();
     std::vector<std::string> expired_keys;
 
     for (auto & [handle_key, entry] : pending_) {
@@ -320,15 +347,29 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
         expired_keys.push_back(handle_key);
         continue;
       }
-
-      auto type_it = topic_names_and_types.find(entry.topic_name);
-      if (type_it != topic_names_and_types.end() && !type_it->second.empty()) {
-        resolvable.push_back(Resolvable{handle_key, entry.topic_name, type_it->second[0], entry.callback});
-      }
+      candidates.push_back(Candidate{handle_key, entry.topic_name, entry.msg_type, entry.callback});
     }
 
     for (const auto & key : expired_keys) {
       pending_.erase(key);
+    }
+  }
+
+  // Resolve types OUTSIDE the lock: use the caller's explicit type when given,
+  // otherwise the current ROS graph. A handle unsubscribed between here and the
+  // commit is caught by the Phase C re-check, so racing this query is harmless.
+  const auto topic_names_and_types = node_->get_topic_names_and_types();
+  std::vector<Resolvable> resolvable;
+  for (auto & c : candidates) {
+    std::string type = c.msg_type;
+    if (type.empty()) {
+      auto type_it = topic_names_and_types.find(c.topic_name);
+      if (type_it != topic_names_and_types.end() && !type_it->second.empty()) {
+        type = type_it->second[0];
+      }
+    }
+    if (!type.empty()) {
+      resolvable.push_back(Resolvable{c.handle_key, c.topic_name, std::move(type), std::move(c.callback)});
     }
   }
 
