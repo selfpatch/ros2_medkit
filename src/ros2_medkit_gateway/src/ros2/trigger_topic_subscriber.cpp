@@ -202,27 +202,33 @@ void TriggerTopicSubscriber::subscribe(const std::string & topic_name, const std
   }
   auto slot = std::move(*slot_or_err);
 
-  // Phase C (under lock): commit unless shutdown began meanwhile. A fresh
-  // handle key has no concurrent unsubscribe (the transport Handle does not
-  // exist until this returns), so shutdown_flag_ is the only world-change to
-  // guard here - the create-then-insert TOCTOU.
+  // Populate the entry BEFORE the lock (function scope). If live_'s insert then
+  // throws bad_alloc under the lock, entry - which owns the slot - is destroyed
+  // during unwind AFTER the lock_guard releases mutex_, so ~Ros2SubscriptionSlot
+  // posts its run_sync destroy off the lock, never under it (which would
+  // deadlock the worker). Same discipline as old_slot/slots_to_drop.
+  LiveEntry entry;
+  entry.slot = std::move(slot);
+  entry.topic_name = topic_name;
+  entry.msg_type = resolved_type;
+  entry.callback = std::move(callback);
+
+  // Phase C (under lock): commit unless shutdown began meanwhile. A fresh handle
+  // key has no concurrent unsubscribe (the transport Handle does not exist until
+  // this returns), so shutdown_flag_ is the only world-change to guard here.
   bool committed = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!shutdown_flag_.load()) {
-      LiveEntry entry;
-      entry.slot = std::move(slot);
-      entry.topic_name = topic_name;
-      entry.msg_type = resolved_type;
-      entry.callback = std::move(callback);
       live_[handle_key] = std::move(entry);
       committed = true;
     }
   }
   if (!committed) {
-    // Shutdown raced us between create and insert: drop the just-created slot
-    // OUTSIDE the lock instead of inserting it.
-    slot.reset();
+    // Shutdown raced us between create and insert. `entry` still owns the slot;
+    // it is destroyed at function return, outside the lock (run_sync destroy on
+    // the worker, which is still alive because shutdown() runs before
+    // sub_exec.reset()).
     RCLCPP_INFO(node_->get_logger(),
                 "TriggerTopicSubscriber: dropped subscription for handle '%s' (shutdown in progress)",
                 handle_key.c_str());
@@ -388,20 +394,25 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
                    r.topic_name.c_str(), r.handle_key.c_str(), slot_or_err.error().c_str());
       continue;  // leave it pending; a later tick retries until the timeout
     }
-    auto slot = std::move(*slot_or_err);
+    // Populate the entry BEFORE the lock. If live_'s insert throws bad_alloc
+    // under the lock, entry - which owns the slot - is destroyed during unwind
+    // AFTER the lock releases, so ~Ros2SubscriptionSlot posts its run_sync
+    // destroy off the lock, never under it (which would deadlock the worker).
+    LiveEntry entry;
+    entry.slot = std::move(*slot_or_err);
+    entry.topic_name = r.topic_name;
+    entry.msg_type = r.msg_type;
+    entry.callback = std::move(r.callback);
 
     bool committed = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       auto pend_it = pending_.find(r.handle_key);
       if (!shutdown_flag_.load() && pend_it != pending_.end()) {
-        pending_.erase(pend_it);
-        LiveEntry entry;
-        entry.slot = std::move(slot);
-        entry.topic_name = r.topic_name;
-        entry.msg_type = r.msg_type;
-        entry.callback = std::move(r.callback);
+        // Insert BEFORE erasing pending_: if the insert throws, the handle
+        // stays pending and a later tick retries it, rather than being lost.
         live_[r.handle_key] = std::move(entry);
+        pending_.erase(pend_it);
         committed = true;
       }
     }
@@ -409,9 +420,9 @@ void TriggerTopicSubscriber::retry_pending_subscriptions() {
       RCLCPP_INFO(node_->get_logger(), "TriggerTopicSubscriber: resolved pending handle '%s' -> '%s' (type=%s)",
                   r.handle_key.c_str(), r.topic_name.c_str(), r.msg_type.c_str());
     } else {
-      // Unsubscribed or shutdown between snapshot and commit: drop the
-      // just-created slot OUTSIDE the lock instead of inserting it.
-      slot.reset();
+      // Unsubscribed or shutdown between snapshot and commit. `entry` still owns
+      // the slot; it is destroyed at the end of this loop iteration, outside the
+      // lock.
       RCLCPP_DEBUG(node_->get_logger(),
                    "TriggerTopicSubscriber: pending handle '%s' vanished before commit; dropped subscription",
                    r.handle_key.c_str());
