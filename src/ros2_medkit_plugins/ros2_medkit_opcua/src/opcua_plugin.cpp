@@ -1965,12 +1965,22 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
       item["severity"] = f.value("severity", 0);
       item["description"] = f.value("description", "");
       item["status"] = f.value("status", "");
-      // Fault records carry reporting_sources, not source_id; surface the
-      // first source so the field is not always empty.
+      // Fault records carry reporting_sources, not source_id. On this
+      // entity-scoped list prefer the requested entity when it is among the
+      // sources - reporting_sources[0] is ordering-dependent and can name a
+      // different co-reporting entity; fall back to the first source only
+      // when the entity itself never reported.
       std::string source_id = f.value("source_id", "");
-      if (source_id.empty() && f.contains("reporting_sources") && f["reporting_sources"].is_array() &&
-          !f["reporting_sources"].empty() && f["reporting_sources"][0].is_string()) {
-        source_id = f["reporting_sources"][0].get<std::string>();
+      if (source_id.empty() && f.contains("reporting_sources") && f["reporting_sources"].is_array()) {
+        for (const auto & src : f["reporting_sources"]) {
+          if (src.is_string() && src.get<std::string>() == entity_id) {
+            source_id = entity_id;
+            break;
+          }
+        }
+        if (source_id.empty() && !f["reporting_sources"].empty() && f["reporting_sources"][0].is_string()) {
+          source_id = f["reporting_sources"][0].get<std::string>();
+        }
       }
       item["source_id"] = source_id;
       // Pass occurrence data through: without it the entity-scoped route
