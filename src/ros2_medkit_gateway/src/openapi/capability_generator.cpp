@@ -118,6 +118,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
           {"Bulk Data", "Large file downloads (rosbags, snapshots)"},
           {"Subscriptions", "Cyclic data subscriptions and event streaming"},
           {"Triggers", "Event-driven condition monitoring and notifications"},
+          {"FaultTriggers", "Threshold rules on discovered data points that raise and auto-clear faults"},
           {"Locking", "Entity lock management for exclusive access"},
           {"Scripts", "Diagnostic script upload, execution, and management"},
           {"Updates", "Software update management"},
