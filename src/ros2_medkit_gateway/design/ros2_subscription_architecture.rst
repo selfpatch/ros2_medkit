@@ -241,9 +241,13 @@ Regression gate
 ``create_callback_group``. New production code must route through
 ``Ros2SubscriptionSlot``.
 
-Known-legacy call sites (fault subscribers, operation manager, log manager,
-trigger_topic_subscriber) are explicitly allowlisted and tracked for
-migration under Phase C of the provider architecture rollout.
+Known-legacy call sites (fault subscribers, operation manager, log manager)
+are explicitly allowlisted and tracked for migration under Phase C of the
+provider architecture rollout. The trigger topic subscriber was migrated to
+``Ros2SubscriptionSlot`` (issue #548): its per-trigger subscriptions are now
+created, destroyed, and dispatched on the executor worker, so a subscription
+callback can no longer fire on a partially destroyed subscriber during
+shutdown.
 
 Observability
 -------------
