@@ -47,20 +47,39 @@ class TestConfigurationApi(GatewayTestCase):
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'temp_sensor'}
 
+    # Monotonic param-service readiness, cached across this class's tests.
+    _param_service_ready = False
+    _param_service_dead = False
+
     def setUp(self):
         """Wait for the node's parameter service before each test.
 
         The configurations endpoints read the ROS 2 parameter service on the
         temp_sensor node, which can be briefly unavailable just after discovery
         (the endpoint returns 503 until it is ready) - more likely under the
-        slowdown of the sanitizer jobs. Gate every test on it being ready so the
-        per-test requests are not racing param-service startup.
+        slowdown of the sanitizer jobs. Gate every test on it being ready.
+
+        Readiness is monotonic, so cache it on the class: only the first test
+        polls (up to PARAM_SERVICE_TIMEOUT); the rest return immediately. On a
+        genuinely dead service the first poll times out and marks the class dead
+        so the remaining tests fail fast, instead of each paying the full
+        timeout (which would blow the ctest job budget).
         """
         super().setUp()
-        self.poll_endpoint_until(
-            '/apps/temp_sensor/configurations',
-            timeout=PARAM_SERVICE_TIMEOUT,
-        )
+        cls = type(self)
+        if cls._param_service_ready:
+            return
+        if cls._param_service_dead:
+            self.fail('parameter service was not ready (cached from an earlier test)')
+        try:
+            self.poll_endpoint_until(
+                '/apps/temp_sensor/configurations',
+                timeout=PARAM_SERVICE_TIMEOUT,
+            )
+        except AssertionError:
+            cls._param_service_dead = True
+            raise
+        cls._param_service_ready = True
 
     def test_01_list_configurations(self):
         """GET /apps/{app_id}/configurations lists all parameters.
