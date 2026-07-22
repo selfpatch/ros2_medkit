@@ -576,7 +576,7 @@ OperationProvider * PluginManager::get_operation_provider_for_entity(const std::
       // Same reasoning as get_data_provider_for_entity: ownership does not
       // imply this entity has operations (see OperationProvider::has_operations).
       return lp.operation_provider && lp.operation_provider->has_operations(entity_id) ? lp.operation_provider
-                                                                                        : nullptr;
+                                                                                       : nullptr;
     }
   }
   return nullptr;
