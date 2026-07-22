@@ -196,7 +196,9 @@ class TestFaultReporterIntegration(unittest.TestCase):
         )
 
         self.assertIsNotNone(fault)
-        self.assertEqual(fault.occurrence_count, 3)
+        # Edge-counting: re-reports of a still-active fault do not bump the
+        # count; severity escalation and source aggregation still apply.
+        self.assertEqual(fault.occurrence_count, 1)
         self.assertEqual(fault.severity, Fault.SEVERITY_CRITICAL)
         self.assertIn('/node_a', fault.reporting_sources)
         self.assertIn('/node_b', fault.reporting_sources)

@@ -364,7 +364,10 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         self.assertIsNotNone(updated_fault)
         self.assertEqual(updated_fault.severity, Fault.SEVERITY_ERROR)
-        self.assertEqual(updated_fault.occurrence_count, 2)
+        # Edge-counting: a re-report of a still-active fault is the same
+        # continuous occurrence, so the count stays at 1 (it only increments
+        # on reactivation after CLEARED).
+        self.assertEqual(updated_fault.occurrence_count, 1)
         self.assertEqual(len(updated_fault.reporting_sources), 2)
         print(f'Updated fault: occurrence_count={updated_fault.occurrence_count}, '
               f'sources={updated_fault.reporting_sources}')
@@ -397,7 +400,9 @@ class TestFaultManagerIntegration(unittest.TestCase):
         # Find the fault and verify its state
         confirmed_fault = next(f for f in response.faults if f.fault_code == fault_code)
         self.assertEqual(confirmed_fault.status, Fault.STATUS_CONFIRMED)
-        self.assertEqual(confirmed_fault.occurrence_count, 3)
+        # Edge-counting: the debounce reports that built toward confirmation
+        # are one continuous occurrence, not three.
+        self.assertEqual(confirmed_fault.occurrence_count, 1)
         print(f'Fault confirmed: status={confirmed_fault.status}, '
               f'occurrence_count={confirmed_fault.occurrence_count}')
 
@@ -465,7 +470,9 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertIsNotNone(fault)
         self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
         self.assertEqual(len(fault.reporting_sources), 3)
-        self.assertEqual(fault.occurrence_count, 3)
+        # Edge-counting: three sources reporting the same active fault are one
+        # continuous occurrence; the count tracks raise edges, not reports.
+        self.assertEqual(fault.occurrence_count, 1)
         print(f'Multi-source fault confirmed: sources={fault.reporting_sources}')
 
     def test_14_critical_severity_immediate_confirmation(self):
