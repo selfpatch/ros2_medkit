@@ -402,8 +402,10 @@ void RESTServer::setup_routes() {
         .request_body("Fault-trigger rule definition",
                       nlohmann::json{{"type", "object"}, {"additionalProperties", true}})
         .response(201, "Created rule", nlohmann::json{{"type", "object"}})
-        .response(400, "Validation error")
-        .response(409, "fault_code already used by another rule");
+        // 400/404 come from the registry's automatic response-level
+        // GenericError $ref; only 409 needs a manual declaration.
+        .response(409, "fault_code already used by another rule",
+                  nlohmann::json{{"$ref", "#/components/schemas/GenericError"}});
 
     route_registry_
         ->raw("delete", "/apps/{app_id}/fault-triggers/{trigger_id}",
@@ -429,8 +431,7 @@ void RESTServer::setup_routes() {
         .operation_id("deleteFaultTrigger")
         .path_param("app_id", "App (entity) the rule is scoped to")
         .path_param("trigger_id", "Rule id as returned on create")
-        .response(204, "Deleted")
-        .response(404, "No such rule");
+        .response(204, "Deleted");
   }
 
   auto & reg = *route_registry_;
