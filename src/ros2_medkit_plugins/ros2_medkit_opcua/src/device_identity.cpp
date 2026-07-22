@@ -48,6 +48,12 @@ std::string host_from_endpoint(const std::string & endpoint_url) {
   if (scheme != std::string::npos) {
     s = s.substr(scheme + 3);
   }
+  // Bracketed IPv6 literal (opc.tcp://[fe80::1]:4840): the host is the
+  // bracket body - find_first_of(":") would truncate inside the address.
+  if (!s.empty() && s.front() == '[') {
+    const auto close = s.find(']');
+    return close != std::string::npos ? s.substr(1, close - 1) : s.substr(1);
+  }
   const auto end = s.find_first_of(":/");
   if (end != std::string::npos) {
     s = s.substr(0, end);

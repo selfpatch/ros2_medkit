@@ -199,6 +199,15 @@ TEST(ComponentIdentityDerive, NeverEmitsOpenPlc) {
   EXPECT_EQ(ci.name.find("OpenPLC"), std::string::npos);
 }
 
+TEST(ComponentIdentityDerive, BracketedIpv6EndpointYieldsHostNotTruncatedAddress) {
+  // opc.tcp://[fe80::1]:4840 - the host is the bracket body; a naive ":" cut
+  // would truncate mid-address and produce an invalid fallback id.
+  OpcuaClient::DeviceInfo info;
+  auto ci = derive_component_identity(info, "opc.tcp://[fe80::1]:4840");
+  EXPECT_NE(ci.name.find("fe80::1"), std::string::npos);
+  EXPECT_EQ(ci.name.find('['), std::string::npos);
+}
+
 TEST(ComponentIdentityDerive, ModelOnlyNoManufacturer) {
   OpcuaClient::DeviceInfo info;
   info.di_model = "CPU 1505SP F";
