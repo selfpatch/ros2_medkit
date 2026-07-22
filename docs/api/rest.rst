@@ -1955,6 +1955,55 @@ configuration:
 
 Non-persistent triggers are always cleared on restart.
 
+Fault Triggers (threshold rules)
+--------------------------------
+
+Fault triggers are runtime threshold rules on an app's discovered data points:
+the engine polls each rule's value and reports a fault while the value stays
+crossed (level-triggered), then auto-clears it when the value recovers. They
+are a sibling of the SOVD notification ``/triggers`` collection above and never
+overload it; rules persist to a JSON store and survive a restart.
+
+The routes are part of the generated OpenAPI spec (``/api/v1/docs``, tag
+``FaultTriggers``), so generated clients and Swagger UI discover them the same
+way as every other endpoint.
+
+``GET /api/v1/apps/{app_id}/fault-triggers``
+   List the app's rules.
+
+   .. code-block:: json
+
+      {
+        "items": [
+          {
+            "id": "ftr_1",
+            "app_id": "tank_process",
+            "data_name": "level",
+            "operator": ">=",
+            "threshold": 80.0,
+            "fault_code": "TANK_OVERFILL",
+            "severity": "CRITICAL",
+            "active": true
+          }
+        ]
+      }
+
+``POST /api/v1/apps/{app_id}/fault-triggers``
+   Create a rule. Required: ``data_name``, ``operator`` (``>``, ``<``, ``>=``,
+   ``<=``, ``==``), ``threshold`` (number), ``fault_code``, ``severity``
+   (``INFO``/``WARNING``/``ERROR``/``CRITICAL``). Optional: ``active``
+   (default ``true``). Returns ``201`` with the created rule.
+
+   Validation: ``400`` for missing/invalid fields or a ``data_name`` the app
+   does not expose (when enumerable); ``409`` when the ``fault_code`` is
+   already used by another rule - fault codes are global to the fault store,
+   so two rules sharing one would fight over the same fault.
+
+``DELETE /api/v1/apps/{app_id}/fault-triggers/{trigger_id}``
+   Remove a rule (``204``). A fault currently asserted by the rule is cleared;
+   the correlation cascade is skipped so the clear stays scoped to the rule's
+   own fault.
+
 Rate Limiting
 -------------
 
