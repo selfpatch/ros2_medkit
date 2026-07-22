@@ -323,10 +323,12 @@ void RESTServer::setup_routes() {
 #endif
 
   // === Config-less fault-trigger (threshold-rule) routes (issue #235) ===
-  // Registered directly on the server (like the docs routes) so the CRUD does
-  // not need a typed DTO. Mounted at .../fault-triggers - a sibling of the SOVD
-  // notification `/triggers` collection, never overloading it. GET is public;
-  // POST/DELETE follow the gateway's write-auth policy.
+  // Registered through RouteRegistry's raw() escape hatch (no typed DTO), so
+  // the CRUD is part of the generated OpenAPI spec / Swagger UI / endpoint
+  // list instead of being invisible to /api/v1/docs. Mounted at
+  // .../fault-triggers - a sibling of the SOVD notification `/triggers`
+  // collection, never overloading it. GET is public; POST/DELETE follow the
+  // gateway's write-auth policy (global pre-routing middleware).
   {
     auto ft_json_error = [](httplib::Response & res, int status, const std::string & message,
                             const char * error_code = nullptr) {
@@ -337,8 +339,9 @@ void RESTServer::setup_routes() {
       res.set_content(err.dump(2), "application/json");
     };
 
-    srv->Get(api_path(R"(/apps/([^/]+)/fault-triggers)"),
-             [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
+    route_registry_
+        ->raw("get", "/apps/{app_id}/fault-triggers",
+              [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
                auto * engine = node_->get_fault_trigger_engine();
                if (!engine) {
                  ft_json_error(res, 404, "fault-trigger engine is not enabled");
@@ -351,9 +354,20 @@ void RESTServer::setup_routes() {
                }
                res.status = 200;
                res.set_content(nlohmann::json{{"items", items}}.dump(2), "application/json");
-             });
+             })
+        .tag("FaultTriggers")
+        .summary("List fault-trigger rules")
+        .description("Threshold rules on the app's discovered data points; each fires a fault on cross "
+                     "and auto-clears on recovery.")
+        .operation_id("listFaultTriggers")
+        .path_param("app_id", "App (entity) the rules are scoped to")
+        .response(200, "Rule list",
+                  nlohmann::json{{"type", "object"},
+                                 {"properties",
+                                  {{"items", {{"type", "array"}, {"items", {{"type", "object"}}}}}}}});
 
-    srv->Post(api_path(R"(/apps/([^/]+)/fault-triggers)"),
+    route_registry_
+        ->raw("post", "/apps/{app_id}/fault-triggers",
               [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
                 auto * engine = node_->get_fault_trigger_engine();
                 if (!engine) {
@@ -376,10 +390,23 @@ void RESTServer::setup_routes() {
                 }
                 res.status = 201;
                 res.set_content(FaultTriggerEngine::rule_to_json(*created).dump(2), "application/json");
-              });
+              })
+        .tag("FaultTriggers")
+        .summary("Create a fault-trigger rule")
+        .description("Body: data_name, operator (>, <, >=, <=, ==), threshold, fault_code, severity "
+                     "(INFO|WARNING|ERROR|CRITICAL), optional active. fault_code must be unique across "
+                     "all rules (409 on duplicates).")
+        .operation_id("createFaultTrigger")
+        .path_param("app_id", "App (entity) to scope the rule to")
+        .request_body("Fault-trigger rule definition",
+                      nlohmann::json{{"type", "object"}, {"additionalProperties", true}})
+        .response(201, "Created rule", nlohmann::json{{"type", "object"}})
+        .response(400, "Validation error")
+        .response(409, "fault_code already used by another rule");
 
-    srv->Delete(api_path(R"(/apps/([^/]+)/fault-triggers/([^/]+))"),
-                [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
+    route_registry_
+        ->raw("delete", "/apps/{app_id}/fault-triggers/{trigger_id}",
+              [this, ft_json_error](const httplib::Request & req, httplib::Response & res) {
                   auto * engine = node_->get_fault_trigger_engine();
                   if (!engine) {
                     ft_json_error(res, 404, "fault-trigger engine is not enabled");
@@ -392,7 +419,16 @@ void RESTServer::setup_routes() {
                     return;
                   }
                   res.status = 204;
-                });
+                })
+        .tag("FaultTriggers")
+        .summary("Delete a fault-trigger rule")
+        .description("Removes the rule; a currently-asserted fault from it is cleared "
+                     "(correlation cascade skipped).")
+        .operation_id("deleteFaultTrigger")
+        .path_param("app_id", "App (entity) the rule is scoped to")
+        .path_param("trigger_id", "Rule id as returned on create")
+        .response(204, "Deleted")
+        .response(404, "No such rule");
   }
 
   auto & reg = *route_registry_;
