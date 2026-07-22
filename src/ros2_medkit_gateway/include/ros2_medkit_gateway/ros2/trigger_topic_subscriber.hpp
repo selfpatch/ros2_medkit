@@ -24,7 +24,10 @@
 #include <unordered_map>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/serialized_message.hpp>
+#include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
 
 namespace ros2_medkit_gateway {
@@ -34,22 +37,36 @@ namespace ros2_medkit_gateway {
  *
  * Each trigger that observes a "data" resource registers exactly one
  * subscription here, identified by a caller-provided handle key. The
- * subscriber owns the rclcpp::GenericSubscription, performs the CDR -> JSON
+ * subscriber owns a subscription slot on the shared subscription executor,
+ * performs the CDR -> JSON
  * deserialization, and delivers each sample to the handle's callback. When
  * the topic's type cannot be resolved at subscribe time (publisher not yet
  * up), the entry is queued as "pending" and retried every 5 seconds. Pending
  * entries time out after 60 seconds.
  *
  * Threading: subscribe()/unsubscribe()/shutdown() are mutex-guarded.
- * Per-handle callbacks are invoked from rclcpp executor threads. The
- * subscription-destructor pattern (callbacks cannot fire on a partially
- * destroyed subscriber) is enforced by the shutdown_flag_ guard followed by
- * subscription map clearing inside shutdown().
+ * Every subscription is created, destroyed, AND dispatched on the single
+ * worker thread of the shared Ros2SubscriptionExecutor (via
+ * Ros2SubscriptionSlot). Because create, destroy, and callback dispatch all
+ * run on the same worker, a destroy can never race an in-flight callback, and
+ * executor teardown drains any queued callback before the subscriber's state
+ * (serializer, captured strings) is torn down. This closes the shutdown data
+ * race in issue #548, where subscriptions created directly on the main node
+ * were dispatched by the multi-threaded main executor and could fire on a
+ * partially destroyed subscriber.
+ *
+ * @warning Ros2SubscriptionSlot creation and destruction post a task to the
+ * executor worker and block until it runs (run_sync). The per-handle callback
+ * acquires mutex_. Therefore slot create/destroy must NEVER happen while
+ * holding mutex_: the worker could be inside a callback blocked on mutex_ while
+ * the caller waits for that same worker, deadlocking. All map bookkeeping
+ * happens under mutex_; all slot create/destroy happens strictly outside it.
  *
  * The lifetime of an individual subscription is tied to the corresponding
  * handle key: unsubscribe(handle_key) atomically removes both the user
- * callback and the underlying rclcpp::Subscription, so any in-flight
- * dispatch sees the empty map and short-circuits.
+ * callback and the subscription slot from the map, so any in-flight dispatch
+ * sees the empty map and short-circuits; the slot is then destroyed outside
+ * the lock, draining the worker.
  *
  * The retry callback (set via set_retry_callback) is fired on every retry
  * tick. The trigger manager wires this to retry_unresolved_triggers() so
@@ -77,9 +94,23 @@ class TriggerTopicSubscriber {
   TriggerTopicSubscriber & operator=(TriggerTopicSubscriber &&) = delete;
 
   /**
+   * @brief Wire the shared subscription executor used to create, destroy, and
+   *        dispatch every per-handle subscription.
+   *
+   * Non-owning: the executor must outlive every subscription (the gateway
+   * calls shutdown() before destroying the executor). Must be set before the
+   * first subscribe() that resolves to a real topic; if it is null when a
+   * subscription would be created, subscribe() throws and retry logs+skips
+   * rather than silently falling back to a racy path.
+   *
+   * @param exec Shared subscription executor, or nullptr to detach.
+   */
+  void set_subscription_executor(ros2_common::Ros2SubscriptionExecutor * exec);
+
+  /**
    * @brief Subscribe to a topic under a unique handle key.
    *
-   * Each call yields one rclcpp::GenericSubscription dedicated to the
+   * Each call yields one subscription slot dedicated to the
    * caller's handle. If @p msg_type is empty the type is resolved from the
    * ROS graph; if no publisher is yet advertising the topic, the entry is
    * queued for retry.
@@ -97,7 +128,7 @@ class TriggerTopicSubscriber {
                  SampleCallback callback);
 
   /// Drop the subscription for @p handle_key. Both the user callback and the
-  /// rclcpp::GenericSubscription are released; in-flight dispatch is
+  /// subscription slot are released; in-flight dispatch is
   /// guaranteed not to fire after this returns.
   void unsubscribe(const std::string & handle_key);
 
@@ -110,9 +141,13 @@ class TriggerTopicSubscriber {
   void set_retry_callback(RetryCallback cb);
 
  private:
-  /// Per-handle live subscription state.
+  /// rclcpp generic-subscription callback delivering one serialized sample.
+  using MessageCallback = std::function<void(std::shared_ptr<const rclcpp::SerializedMessage>)>;
+
+  /// Per-handle live subscription state. The slot creates its subscription on
+  /// the shared executor worker and destroys it there when reset.
   struct LiveEntry {
-    rclcpp::GenericSubscription::SharedPtr subscription;
+    std::unique_ptr<ros2_common::Ros2SubscriptionSlot> slot;
     std::string topic_name;
     std::string msg_type;
     SampleCallback callback;
@@ -131,15 +166,34 @@ class TriggerTopicSubscriber {
   /// Interval between retry attempts for pending subscriptions (seconds).
   static constexpr int kRetryIntervalSec = 5;
 
-  /// Create a GenericSubscription for @p handle_key with the resolved type.
-  /// Caller must hold mutex_.
-  void create_subscription_internal(const std::string & handle_key, const std::string & topic_name,
-                                    const std::string & msg_type, SampleCallback callback);
+  /// Build the rclcpp callback that deserializes a sample and dispatches it to
+  /// the handle's user callback (looked up under mutex_). Pure builder - no
+  /// locking, safe to call outside mutex_.
+  MessageCallback make_message_callback(const std::string & handle_key, const std::string & topic_name,
+                                        const std::string & msg_type);
+
+  /// Create a subscription slot for @p handle_key on the shared executor.
+  /// MUST be called WITHOUT holding mutex_ (create_generic posts to the worker
+  /// via run_sync). Returns the slot or an error string; the caller inserts it
+  /// into live_ under the lock with a fresh world-state re-check.
+  tl::expected<std::unique_ptr<ros2_common::Ros2SubscriptionSlot>, std::string>
+  create_slot_unlocked(const std::string & handle_key, const std::string & topic_name, const std::string & msg_type);
+
+  /// Resolve a topic's message type from the ROS graph (read-only query; does
+  /// not require mutex_). Returns empty when no publisher advertises the topic.
+  std::string resolve_topic_type(const std::string & topic_name) const;
 
   /// Retry callback for pending subscriptions. Called by retry_timer_.
   void retry_pending_subscriptions();
 
   rclcpp::Node * node_;
+  // Non-owning shared subscription executor. All slot create/destroy/dispatch
+  // is serialized on its single worker thread. Must outlive every slot.
+  // Atomic because it is set once on the main thread (after construction) while
+  // the REST server - started in the GatewayNode constructor - can already be
+  // running subscribe() on an httplib thread; the reads below are deliberately
+  // outside mutex_, so acquire/release is the right tool, not the lock.
+  std::atomic<ros2_common::Ros2SubscriptionExecutor *> sub_exec_{nullptr};
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
   std::mutex mutex_;
   std::unordered_map<std::string, LiveEntry> live_;

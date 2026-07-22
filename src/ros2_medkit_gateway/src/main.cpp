@@ -140,6 +140,13 @@ int main(int argc, char ** argv) {
     // and so takes the executor's shutdown fast path.
     node->init_entity_freeze_frame_capture(*sub_exec);
 
+    // Route per-trigger topic subscriptions through the same serial worker
+    // (issue #548): their callbacks are then dispatched on - and drained by -
+    // the executor at teardown, so a subscription cannot fire on a partially
+    // destroyed subscriber. shutdown_trigger_subscriber() below drops those
+    // subscriptions while sub_exec is still alive.
+    node->set_trigger_subscription_executor(*sub_exec);
+
     // Spin in a try/catch so an uncaught handler exception falls through to the
     // explicit teardown block below. Without this, an escaping throw bypasses
     // the teardown ordering and triggers exactly the rclcpp abort described
@@ -161,11 +168,15 @@ int main(int argc, char ** argv) {
     //   1. detach the provider from GatewayNode so the managers stop using it
     //      before we drop it (GatewayNode otherwise holds a shared_ptr that
     //      would keep the provider alive past data_provider.reset()).
-    //   2. drop the provider (clears pool entries via the subscription worker)
-    //   3. reset sub_exec (joins worker, tears down internal subscription executor)
-    //   4. remove the gateway node from the executor and drop our ref so
+    //   2. shut down the trigger topic subscriber so its per-trigger
+    //      subscriptions are destroyed on - and drained by - the subscription
+    //      worker while sub_exec is still alive (issue #548).
+    //   3. drop the provider (clears pool entries via the subscription worker)
+    //   4. reset sub_exec (joins worker, tears down internal subscription executor)
+    //   5. remove the gateway node from the executor and drop our ref so
     //      ~GatewayNode runs with the executor still alive.
     node->set_topic_data_provider(nullptr);
+    node->shutdown_trigger_subscriber();
     data_provider.reset();
     sub_exec.reset();
     executor.remove_node(node);

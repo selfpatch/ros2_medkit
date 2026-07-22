@@ -1810,6 +1810,18 @@ EntityFreezeFrameCapture * GatewayNode::get_entity_freeze_frame_capture() const 
   return entity_freeze_frame_capture_.get();
 }
 
+void GatewayNode::set_trigger_subscription_executor(ros2_common::Ros2SubscriptionExecutor & exec) {
+  if (trigger_topic_subscriber_) {
+    trigger_topic_subscriber_->set_subscription_executor(&exec);
+  }
+}
+
+void GatewayNode::shutdown_trigger_subscriber() {
+  if (trigger_topic_subscriber_) {
+    trigger_topic_subscriber_->shutdown();
+  }
+}
+
 ResourceSamplerRegistry * GatewayNode::get_sampler_registry() const {
   return sampler_registry_.get();
 }

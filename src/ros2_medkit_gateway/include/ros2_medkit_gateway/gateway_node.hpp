@@ -195,6 +195,26 @@ class GatewayNode : public rclcpp::Node {
   EntityFreezeFrameCapture * get_entity_freeze_frame_capture() const;
 
   /**
+   * @brief Route the trigger topic subscriber through the shared subscription
+   *        executor (issue #548). Its per-trigger subscriptions are then
+   *        created, destroyed, and dispatched on the executor's single worker
+   *        thread, so callbacks drain before teardown instead of racing the
+   *        main multi-threaded executor. Call once after the executor is built
+   *        (main.cpp). No-op when triggers are disabled.
+   */
+  void set_trigger_subscription_executor(ros2_common::Ros2SubscriptionExecutor & exec);
+
+  /**
+   * @brief Shut down the trigger topic subscriber, draining and destroying its
+   *        subscriptions on the executor worker. Idempotent. Must be called
+   *        BEFORE the subscription executor is destroyed (the trigger
+   *        subscriptions live on the executor's node and are torn down via its
+   *        worker). No-op when triggers are disabled. ~GatewayNode also calls
+   *        it, which becomes a no-op once this has run.
+   */
+  void shutdown_trigger_subscriber();
+
+  /**
    * @brief Get the ResourceSamplerRegistry instance
    * @return Raw pointer to ResourceSamplerRegistry (valid for lifetime of GatewayNode)
    */
