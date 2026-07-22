@@ -364,6 +364,15 @@ class RouteRegistry {
     auth_enabled_ = enabled;
   }
 
+  /// Escape hatch for JSON routes without typed DTOs (e.g. the fault-trigger
+  /// CRUD): registers a raw cpp-httplib handler under an OpenAPI-style path so
+  /// the route shows up in the generated spec, Swagger UI and the endpoint
+  /// list. The caller documents request/response schemas manually via the
+  /// fluent builder. Prefer the typed get<T>/post<T> API for new routes.
+  RouteEntry & raw(const std::string & method, const std::string & openapi_path, HandlerFn handler) {
+    return add_route(method, openapi_path, std::move(handler));
+  }
+
  private:
   /// Convert OpenAPI path to cpp-httplib regex path.
   /// e.g., "/apps/{app_id}/data/{data_id}" -> "/apps/([^/]+)/data/(.+)"
