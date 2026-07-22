@@ -165,16 +165,22 @@ int main(int argc, char ** argv) {
     // (Lyrical; recent Jazzy patch releases) asserts 'node needs to be
     // associated with an executor' and aborts with exit -6 when the managers'
     // shutdown paths touch service clients. Explicit teardown avoids that:
-    //   1. detach the provider from GatewayNode so the managers stop using it
+    //   1. stop + join the REST server FIRST, so no httplib handler thread can
+    //      be mid-subscribe()/unsubscribe() (which dereference sub_exec through
+    //      the trigger subscriber, and the data provider likewise) when the
+    //      subscription executor is freed in step 4 (issue #548). ~GatewayNode
+    //      calls stop_rest_server() again; it is idempotent.
+    //   2. detach the provider from GatewayNode so the managers stop using it
     //      before we drop it (GatewayNode otherwise holds a shared_ptr that
     //      would keep the provider alive past data_provider.reset()).
-    //   2. shut down the trigger topic subscriber so its per-trigger
+    //   3. shut down the trigger topic subscriber so its per-trigger
     //      subscriptions are destroyed on - and drained by - the subscription
     //      worker while sub_exec is still alive (issue #548).
-    //   3. drop the provider (clears pool entries via the subscription worker)
-    //   4. reset sub_exec (joins worker, tears down internal subscription executor)
-    //   5. remove the gateway node from the executor and drop our ref so
+    //   4. drop the provider (clears pool entries via the subscription worker)
+    //   5. reset sub_exec (joins worker, tears down internal subscription executor)
+    //   6. remove the gateway node from the executor and drop our ref so
     //      ~GatewayNode runs with the executor still alive.
+    node->stop_rest_server();
     node->set_topic_data_provider(nullptr);
     node->shutdown_trigger_subscriber();
     data_provider.reset();

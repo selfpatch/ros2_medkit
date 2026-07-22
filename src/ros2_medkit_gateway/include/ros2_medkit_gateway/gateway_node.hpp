@@ -215,6 +215,16 @@ class GatewayNode : public rclcpp::Node {
   void shutdown_trigger_subscriber();
 
   /**
+   * @brief Stop and join the REST server.
+   *
+   * Callable from the main teardown before the subscription executor is
+   * destroyed, so no httplib handler thread can be mid-subscribe()/unsubscribe()
+   * (which dereference the subscription executor) when it is freed. Idempotent;
+   * ~GatewayNode also calls it.
+   */
+  void stop_rest_server();
+
+  /**
    * @brief Get the ResourceSamplerRegistry instance
    * @return Raw pointer to ResourceSamplerRegistry (valid for lifetime of GatewayNode)
    */
@@ -302,7 +312,6 @@ class GatewayNode : public rclcpp::Node {
  private:
   void refresh_cache();
   void start_rest_server();
-  void stop_rest_server();
 
   /// Log a one-time discovery summary shortly after startup: discovered node /
   /// topic / entity counts, the REST URL and a sample curl. When no application
