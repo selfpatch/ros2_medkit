@@ -813,9 +813,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // hoisting it here covers the explicit path too, so it runs once, before the
   // explicit/auto split below.
   if (!is_condition_event(condition_id)) {
-    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                        "on_event: non-condition event (null ConditionId, type=" << event_type.toString()
-                                                                                 << ") - ignoring");
+    RCLCPP_DEBUG_STREAM(opcua_poller_logger(), "on_event: non-condition event (null ConditionId, type="
+                                                   << event_type.toString() << ") - ignoring");
     return;
   }
 
