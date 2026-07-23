@@ -684,6 +684,25 @@ bool OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus last_status, const 
   return seen.find(condition_id) == seen.end();
 }
 
+// True when ANOTHER tracked condition instance carries the same fault_code and
+// is currently Confirmed. Siemens A&C mints a fresh ConditionId (GUID) for
+// every activation of the same Program_Alarm, so a stale instance's heal /
+// reconcile-clear races the new instance's raise; because fault_manager keys
+// by fault_code alone, letting the stale clear through would wipe the fault
+// the live instance just asserted (seen on a real 1505SP: CONFIRMED then
+// HEALED 170 us apart, alarm ends invisible). Caller must hold
+// conditions_mutex_.
+bool OpcuaPoller::same_code_active_elsewhere_locked(const std::string & fault_code,
+                                                    const std::string & condition_id_str) const {
+  for (const auto & [cid, runtime] : conditions_) {
+    if (cid != condition_id_str && runtime.fault_code == fault_code &&
+        runtime.last_status == SovdAlarmStatus::Confirmed) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const std::set<std::string> & failed_sources,
                                        const std::set<std::string> & modeled_sources) {
   std::vector<AlarmEventDelivery> clears;
@@ -691,6 +710,10 @@ void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
       if (should_clear_condition(runtime.last_status, cid, runtime.source_id, seen, failed_sources, modeled_sources)) {
+        if (same_code_active_elsewhere_locked(runtime.fault_code, cid)) {
+          runtime.last_status = SovdAlarmStatus::Cleared;  // retire the stale instance quietly
+          continue;
+        }
         // Tracked as active but absent from a successful read scan -> the alarm
         // cleared while we were offline. Clear the SOVD fault.
         runtime.last_status = SovdAlarmStatus::Cleared;
@@ -713,6 +736,10 @@ void OpcuaPoller::reconcile_after_refresh(const std::set<std::string> & seen) {
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
       if (!should_clear_after_refresh(runtime.last_status, cid, seen)) {
+        continue;
+      }
+      if (same_code_active_elsewhere_locked(runtime.fault_code, cid)) {
+        runtime.last_status = SovdAlarmStatus::Cleared;  // retire the stale instance quietly
         continue;
       }
       // Tracked as active but the completed ConditionRefresh burst did not
@@ -1011,6 +1038,17 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
     if (outcome.action == AlarmAction::NoOp) {
       // Redundant observation (same as last status) - drop while still holding
       // the lock to avoid a needless callback round-trip.
+      return;
+    }
+
+    if ((outcome.action == AlarmAction::ReportHealed || outcome.action == AlarmAction::ClearFault) &&
+        same_code_active_elsewhere_locked(it->second.fault_code, condition_id_str)) {
+      // A newer condition instance of the same fault is Confirmed - this
+      // instance is a stale GUID from a previous activation cycle. Track its
+      // own state but never let it heal/clear the live fault.
+      RCLCPP_DEBUG_STREAM(opcua_poller_logger(), "suppressing stale-instance heal/clear for fault_code='"
+                                                     << it->second.fault_code << "' (condition " << condition_id_str
+                                                     << ")");
       return;
     }
 
