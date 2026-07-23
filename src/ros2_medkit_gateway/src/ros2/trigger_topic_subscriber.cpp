@@ -43,9 +43,20 @@ TriggerTopicSubscriber::~TriggerTopicSubscriber() {
 }
 
 void TriggerTopicSubscriber::set_subscription_executor(ros2_common::Ros2SubscriptionExecutor * exec) {
-  // Release so a subscribe() on an httplib thread that observes this executor
-  // also observes everything the setter's caller published before it.
-  sub_exec_.store(exec, std::memory_order_release);
+  if (exec == nullptr) {
+    RCLCPP_WARN(node_->get_logger(), "TriggerTopicSubscriber: ignoring null subscription executor");
+    return;
+  }
+  // Wire exactly once. Existing slots hold this executor (they tear down through
+  // it), so a later re-set to a different one would orphan them; reject it with
+  // compare_exchange and warn. Release so a subscribe() on an httplib thread
+  // that observes the executor also observes everything published before it.
+  ros2_common::Ros2SubscriptionExecutor * expected = nullptr;
+  if (!sub_exec_.compare_exchange_strong(expected, exec, std::memory_order_release, std::memory_order_acquire) &&
+      expected != exec) {
+    RCLCPP_WARN(node_->get_logger(),
+                "TriggerTopicSubscriber: subscription executor already wired; ignoring re-set to a different one");
+  }
 }
 
 std::string TriggerTopicSubscriber::resolve_topic_type(const std::string & topic_name) const {
