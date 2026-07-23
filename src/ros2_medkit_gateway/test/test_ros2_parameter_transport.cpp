@@ -151,11 +151,14 @@ class TestRos2ParameterTransportUnresponsiveNode : public ::testing::Test {
     // Release any in-flight blocking service callback first so the spin loop
     // (spin_some, not a blocking spin()) can drain and the spin thread exit.
     release_blocking_callback_ = true;
-    // Documented MultiThreadedExecutor teardown order: cancel -> join spin
-    // thread -> reset executor -> reset nodes. cancel() before join is safe
-    // here because the loop is a spin_some poll gated on spin_thread_running_,
-    // so it exits regardless; cancel() also unblocks any in-flight spin_some.
-    executor_->cancel();
+    // Stop and JOIN the spin thread before touching the executor. The loop is a
+    // spin_some(10ms) poll, so it returns on its own once spin_thread_running_
+    // is cleared - cancel() is not needed to unblock it (that is only required
+    // for a blocking spin()). Calling executor_->cancel() while the spin thread
+    // was still inside spin_some() raced the executor's notify-waitable (tsan:
+    // ExecutorNotifyWaitable::is_ready() on the spin thread vs
+    // trigger_entity_recollect() from cancel() on the main thread). With the
+    // thread joined first, nothing else touches the executor as we tear it down.
     spin_thread_running_ = false;
     if (spin_thread_.joinable()) {
       spin_thread_.join();

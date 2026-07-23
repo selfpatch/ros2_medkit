@@ -36,7 +36,7 @@ from launch.actions import TimerAction
 import launch_ros.actions
 import launch_testing
 import launch_testing.actions
-from ros2_medkit_test_utils.constants import get_test_port
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_test_port
 from ros2_medkit_test_utils.coverage import get_coverage_env
 import urllib3
 
@@ -175,6 +175,11 @@ def generate_test_description():
         parameters=[_params_file],
         additional_env=coverage_env,
         output='screen',
+        # Loaded from a params file, so this cannot use create_gateway_node;
+        # match that helper's shutdown windows directly so the node can flush
+        # gcov data before SIGKILL under coverage.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     # Allow gateway time to start
@@ -311,6 +316,14 @@ class TestHttpsErrorHandling(unittest.TestCase):
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):
     """Post-shutdown cleanup tests."""
+
+    def test_exit_codes(self, proc_info):
+        """The gateway exited cleanly (SIGTERM allowed, not SIGKILL -9)."""
+        for info in proc_info:
+            self.assertIn(
+                info.returncode, ALLOWED_EXIT_CODES,
+                '{} exited with code {}'.format(info.process_name, info.returncode)
+            )
 
     def test_cleanup_certificates(self):
         """Clean up temporary certificates after tests."""

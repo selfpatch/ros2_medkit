@@ -37,7 +37,6 @@ import unittest
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
-import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 import requests
@@ -48,7 +47,7 @@ from ros2_medkit_test_utils.constants import (
     get_test_port,
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
-from ros2_medkit_test_utils.launch_helpers import create_demo_nodes
+from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
 
 # ---------------------------------------------------------------------------
 # Port layout (stride-10 slot from CMake)
@@ -74,18 +73,14 @@ RESOURCE_URI = f'/api/v1/apps/{APP_ID}/faults'
 
 def _make_gateway_node(port, *, on_restart_behavior):
     """Return a gateway_node launch action for the given port and DB path."""
-    return launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    return create_gateway_node(
         name=f'ros2_medkit_gateway_{port}',
-        output='screen',
-        parameters=[{
-            'refresh_interval_ms': 1000,
-            'server.port': port,
+        port=port,
+        extra_params={
             'triggers.enabled': True,
             'triggers.storage.path': DB_PATH,
             'triggers.on_restart_behavior': on_restart_behavior,
-        }],
+        },
     )
 
 

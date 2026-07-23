@@ -42,6 +42,9 @@ def generate_test_description():
             'healing_enabled': True,
             'healing_threshold': 1,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     diagnostic_bridge_node = launch_ros.actions.Node(
@@ -53,6 +56,9 @@ def generate_test_description():
             'diagnostics_topic': '/diagnostics',
             'auto_generate_codes': True,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     return (

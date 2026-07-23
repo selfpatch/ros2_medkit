@@ -48,6 +48,9 @@ def generate_test_description():
             'healing_threshold': 10,
             'entity_thresholds.config_file': thresholds_config,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     return (

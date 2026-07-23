@@ -61,6 +61,7 @@ from ros2_medkit_test_utils.launch_helpers import (
     create_demo_nodes,
     create_gateway_node,
     DEMO_NODE_REGISTRY,
+    get_coverage_env,
 )
 
 
@@ -168,6 +169,7 @@ class TestGraphEventDiscovery(GatewayTestCase):
 
         env = os.environ.copy()
         env['ROS_DOMAIN_ID'] = str(DEFAULT_DOMAIN_ID)
+        env.update(get_coverage_env())
 
         binary = _resolve_demo_executable(executable)
 

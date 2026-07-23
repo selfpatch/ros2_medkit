@@ -89,17 +89,25 @@ LIDAR_FAULTY_PARAMS = {
 # Factory: gateway node
 # ---------------------------------------------------------------------------
 
-def create_gateway_node(*, port=DEFAULT_PORT, extra_params=None, coverage=True):
+def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
+                        extra_params=None, coverage=True, extra_env=None):
     """Create a ``gateway_node`` launch action with standard config.
 
     Parameters
     ----------
     port : int
         HTTP server port (default: 8080).
+    name : str
+        ROS node name. Override when a test launches more than one gateway
+        so their names do not collide (e.g. ``gateway_with_scripts``).
     extra_params : dict or None
         Additional ROS parameters merged into the node config.
     coverage : bool
         If True, set GCOV_PREFIX env vars for code coverage collection.
+    extra_env : dict or None
+        Additional environment variables merged into ``additional_env`` on
+        top of the coverage env. Useful for setting ``ROS_DOMAIN_ID`` to
+        isolate a multi-gateway test's peers into distinct DDS domains.
 
     Returns
     -------
@@ -111,17 +119,22 @@ def create_gateway_node(*, port=DEFAULT_PORT, extra_params=None, coverage=True):
     if extra_params:
         params.update(extra_params)
 
+    env = dict(get_coverage_env() if coverage else {})
+    if extra_env:
+        env.update(extra_env)
+
     return launch_ros.actions.Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
-        name='ros2_medkit_gateway',
+        name=name,
         output='screen',
         parameters=[params],
-        additional_env=get_coverage_env() if coverage else {},
+        additional_env=env,
         # Default SIGINT->SIGTERM escalation is 5s and SIGTERM->SIGKILL is 5s.
-        # Under TSan/ASan the gateway shutdown sequence (mdns stop, REST server
-        # stop, transport teardown, plugin shutdown) easily exceeds 5s on slower
-        # CI runners, causing launch_testing to escalate to SIGKILL and the
+        # Under TSan/ASan/coverage the gateway shutdown sequence (mdns stop,
+        # REST server stop, transport teardown, plugin shutdown, plus flushing
+        # gcov data) easily exceeds 5s on slower CI runners, causing
+        # launch_testing to escalate to SIGKILL and the
         # TestShutdown.test_exit_codes check to report -9. The process still
         # shuts down cleanly given enough time, so widen both windows.
         sigterm_timeout='30',
@@ -135,17 +148,22 @@ def create_gateway_node(*, port=DEFAULT_PORT, extra_params=None, coverage=True):
 
 def create_fault_manager_node(
     *,
+    name='fault_manager',
     storage_type='memory',
     rosbag_enabled=True,
     rosbag_topics=None,
     snapshot_topics=None,
     extra_params=None,
     coverage=True,
+    extra_env=None,
 ):
     """Create a ``fault_manager_node`` with test-friendly defaults.
 
     Parameters
     ----------
+    name : str
+        ROS node name. Override when a test launches more than one fault
+        manager so their names do not collide.
     storage_type : str
         Storage backend: 'memory' (default, avoids filesystem issues in CI)
         or 'sqlite'.
@@ -163,6 +181,9 @@ def create_fault_manager_node(
         ``confirmation_threshold``.
     coverage : bool
         If True, set GCOV_PREFIX env vars for code coverage collection.
+    extra_env : dict or None
+        Additional environment variables merged into ``additional_env`` on
+        top of the coverage env (e.g. ``ROS_DOMAIN_ID`` for a peer).
 
     Returns
     -------
@@ -187,13 +208,24 @@ def create_fault_manager_node(
     if extra_params:
         params.update(extra_params)
 
+    # Route this process's .gcda to the fault_manager build dir, not the
+    # gateway default, so its coverage is not written to the wrong package.
+    env = dict(get_coverage_env('ros2_medkit_fault_manager') if coverage else {})
+    if extra_env:
+        env.update(extra_env)
+
     return launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
-        name='fault_manager',
+        name=name,
         output='screen',
-        additional_env=get_coverage_env() if coverage else {},
+        additional_env=env,
         parameters=[params],
+        # Same rationale as create_gateway_node: under coverage the node must
+        # flush gcov data at shutdown, which can exceed the 5s launch default
+        # and get the process SIGKILLed to -9. Widen both windows.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
 
@@ -313,7 +345,9 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
     if nodes is None:
         nodes = ALL_DEMO_NODES
 
-    env = dict(get_coverage_env() if coverage else {})
+    # Demo executables are built in ros2_medkit_integration_tests, so route
+    # their .gcda there instead of polluting the gateway build dir.
+    env = dict(get_coverage_env('ros2_medkit_integration_tests') if coverage else {})
     if extra_env:
         env.update(extra_env)
     actions = []
@@ -328,6 +362,10 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
             'namespace': namespace,
             'output': 'screen',
             'additional_env': env,
+            # Give the node room to flush coverage data at shutdown before
+            # SIGKILL, matching the gateway/fault_manager helpers.
+            'sigterm_timeout': '30',
+            'sigkill_timeout': '15',
         }
 
         # Apply faulty parameters for lidar_sensor

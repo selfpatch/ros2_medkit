@@ -46,6 +46,7 @@ from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import (
     create_test_launch,
     DEMO_NODE_REGISTRY,
+    get_coverage_env,
 )
 
 
@@ -162,6 +163,7 @@ class TestGraphProviderUnreachable(GatewayTestCase):
         executable, ros_name, namespace = DEMO_NODE_REGISTRY[MONITOR_NODE_KEY]
         env = os.environ.copy()
         env['ROS_DOMAIN_ID'] = str(DEFAULT_DOMAIN_ID)
+        env.update(get_coverage_env())
         binary = _resolve_demo_executable(executable)
         cls._monitor_proc = subprocess.Popen(
             [

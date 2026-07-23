@@ -32,14 +32,13 @@ import unittest
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
-import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 import requests
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
-from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, get_coverage_env
+from ros2_medkit_test_utils.launch_helpers import create_demo_nodes, create_gateway_node
 
 
 PORT_WITH_SCRIPTS = get_test_port(0)
@@ -58,35 +57,21 @@ SHELL_SCRIPT = '#!/bin/sh\necho "hello"\n'
 
 def generate_test_description():
     """Launch two gateways and a demo node for entity discovery."""
-    coverage_env = get_coverage_env()
-
-    gateway_with_scripts = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    gateway_with_scripts = create_gateway_node(
         name='gateway_with_scripts',
-        output='screen',
-        parameters=[{
+        port=PORT_WITH_SCRIPTS,
+        extra_params={
             'server.host': '127.0.0.1',
-            'server.port': PORT_WITH_SCRIPTS,
-            'refresh_interval_ms': 1000,
             'scripts.scripts_dir': SCRIPTS_DIR,
             'scripts.max_concurrent_executions': 3,
             'scripts.default_timeout_sec': 30,
-        }],
-        additional_env=coverage_env,
+        },
     )
 
-    gateway_no_scripts = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    gateway_no_scripts = create_gateway_node(
         name='gateway_no_scripts',
-        output='screen',
-        parameters=[{
-            'server.host': '127.0.0.1',
-            'server.port': PORT_NO_SCRIPTS,
-            'refresh_interval_ms': 1000,
-        }],
-        additional_env=coverage_env,
+        port=PORT_NO_SCRIPTS,
+        extra_params={'server.host': '127.0.0.1'},
     )
 
     # Launch a demo node so entities are available in discovery.

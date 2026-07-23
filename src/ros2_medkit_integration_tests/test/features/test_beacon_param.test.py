@@ -82,6 +82,9 @@ def generate_test_description():
             'ros2_medkit.discovery.process_id': 9999,
             'ros2_medkit.discovery.stable_id': 'stable-temp-sensor',
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
     launch_description.add_action(param_node)
     return launch_description, context

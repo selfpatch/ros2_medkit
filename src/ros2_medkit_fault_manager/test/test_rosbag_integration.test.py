@@ -27,8 +27,10 @@ import launch_testing.actions
 import launch_testing.markers
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ReportFault
+from sensor_msgs.msg import Temperature
 
 
 def get_coverage_env():
@@ -168,6 +170,9 @@ if __name__ == '__main__':
             # lazy_start=false: Start recording immediately
             'snapshots.rosbag.lazy_start': False,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     # Delay fault_manager start so test_publisher has time to register topics
@@ -223,8 +228,13 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         assert cls.get_rosbag_client.wait_for_service(timeout_sec=15.0), \
             'get_rosbag service not available'
 
-        # Give time for rosbag capture to fill buffer with messages from
-        # background publishers (duration_sec=2.0 configured)
+        # Wait for the background publisher to come up before letting the rosbag
+        # ring buffer fill (duration_sec=2.0 configured), so a slow publisher
+        # start does not leave the buffer empty.
+        deadline = time.time() + 15.0
+        while (not cls.node.get_publishers_info_by_topic('/test/temperature')
+               and time.time() < deadline):
+            time.sleep(0.2)
         time.sleep(3.0)
 
     @classmethod
@@ -250,6 +260,57 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         request.source_id = '/test_node'
         return self._call_service(self.report_fault_client, request)
 
+    def _wait_for_rosbag(self, fault_code, timeout=12.0):
+        """
+        Poll GetRosbag until the async post-fault recording is written.
+
+        The recording plus its post-fault flush (duration_after_sec) can take
+        longer than a fixed sleep under sanitizer/coverage load, so a one-shot
+        call flakes. Mirror the polling loop in test_rosbag_entity_scope.
+        """
+        request = GetRosbag.Request()
+        request.fault_code = fault_code
+        deadline = time.time() + timeout
+        response = self._call_service(self.get_rosbag_client, request)
+        while time.time() < deadline:
+            if response is not None and response.success:
+                return response
+            time.sleep(0.5)
+            response = self._call_service(self.get_rosbag_client, request)
+        return response
+
+    def _wait_for_buffered_data(self, count=5, timeout=8.0):
+        """
+        Wait until the rosbag ring buffer holds fresh data before a confirmation.
+
+        A previous fault's post-fault recording window diverts incoming messages
+        away from the ring buffer, so right after it closes the buffer can be
+        empty and flush_to_bag creates no bag. There is no service to read the
+        buffer, so subscribe to the same source the fault manager records and
+        wait until ``count`` messages arrive - by then the co-subscribed fault
+        manager has buffered a comparable amount. Adaptive, unlike a fixed sleep.
+        """
+        received = 0
+
+        def _cb(_msg):
+            nonlocal received
+            received += 1
+
+        # Match the publisher's BEST_EFFORT sensor QoS, else no messages arrive.
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        sub = self.node.create_subscription(Temperature, '/test/temperature', _cb, qos)
+        try:
+            deadline = time.time() + timeout
+            while received < count and time.time() < deadline:
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+        finally:
+            self.node.destroy_subscription(sub)
+        return received >= count
+
     def test_01_rosbag_created_on_fault_confirmation(self):
         """Test that rosbag file is created when fault is confirmed."""
         fault_code = 'ROSBAG_TEST_001'
@@ -259,14 +320,8 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         self.assertTrue(response.accepted)
         print(f'Fault {fault_code} reported and confirmed')
 
-        # Wait for post-fault recording to complete
-        time.sleep(1.0)  # duration_after_sec=0.5 + buffer
-
-        # Query rosbag info
-        rosbag_request = GetRosbag.Request()
-        rosbag_request.fault_code = fault_code
-
-        rosbag_response = self._call_service(self.get_rosbag_client, rosbag_request)
+        # Poll until the async post-fault recording is written.
+        rosbag_response = self._wait_for_rosbag(fault_code)
 
         self.assertTrue(rosbag_response.success,
                         f'GetRosbag failed: {rosbag_response.error_message}')
@@ -292,13 +347,8 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         response = self._report_fault(fault_code, 'Cleanup test fault')
         self.assertTrue(response.accepted)
 
-        # Wait for post-fault recording
-        time.sleep(1.0)
-
-        # Verify rosbag exists
-        rosbag_request = GetRosbag.Request()
-        rosbag_request.fault_code = fault_code
-        rosbag_response = self._call_service(self.get_rosbag_client, rosbag_request)
+        # Poll until the async post-fault recording is written.
+        rosbag_response = self._wait_for_rosbag(fault_code)
 
         self.assertTrue(rosbag_response.success)
         bag_path = rosbag_response.file_path
@@ -313,8 +363,10 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         self.assertTrue(clear_response.success)
         print('Fault cleared')
 
-        # Small delay for cleanup
-        time.sleep(0.5)
+        # Poll until the async cleanup removes the bag file.
+        deadline = time.time() + 10.0
+        while os.path.exists(bag_path) and time.time() < deadline:
+            time.sleep(0.5)
 
         # Verify rosbag is deleted
         self.assertFalse(os.path.exists(bag_path),
@@ -322,6 +374,8 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         print('Rosbag auto-deleted on clear')
 
         # GetRosbag should now fail
+        rosbag_request = GetRosbag.Request()
+        rosbag_request.fault_code = fault_code
         rosbag_response2 = self._call_service(self.get_rosbag_client, rosbag_request)
         self.assertFalse(rosbag_response2.success)
         print(f'GetRosbag after clear: {rosbag_response2.error_message}')
@@ -353,18 +407,24 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         fault_codes = ['MULTI_BAG_A', 'MULTI_BAG_B']
         bag_paths = []
 
+        # test_02's post-fault recording window keeps new messages out of the
+        # ring buffer, so it can still be empty when this test starts. Wait for
+        # fresh buffered data before the first confirmation, otherwise
+        # flush_to_bag finds an empty buffer and creates no bag for MULTI_BAG_A.
+        self.assertTrue(self._wait_for_buffered_data(),
+                        'ring buffer did not refill before reporting faults')
+
         # Report multiple faults - buffer has messages from background publishers
         for fault_code in fault_codes:
             response = self._report_fault(fault_code, f'Multi-bag test: {fault_code}')
             self.assertTrue(response.accepted)
-            time.sleep(1.0)  # Wait for post-fault recording
+            # Serialize per fault: the rosbag ring buffer is shared, so let each
+            # fault's recording flush before the next fault is reported.
+            time.sleep(1.0)
 
-        # Verify each fault has its own rosbag
+        # Verify each fault has its own rosbag (poll for the async recording).
         for fault_code in fault_codes:
-            rosbag_request = GetRosbag.Request()
-            rosbag_request.fault_code = fault_code
-
-            rosbag_response = self._call_service(self.get_rosbag_client, rosbag_request)
+            rosbag_response = self._wait_for_rosbag(fault_code)
 
             self.assertTrue(rosbag_response.success,
                             f'GetRosbag failed for {fault_code}: {rosbag_response.error_message}')
@@ -384,14 +444,8 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         response = self._report_fault(fault_code, 'Duration test fault')
         self.assertTrue(response.accepted)
 
-        # Wait for post-fault recording (duration_after_sec=0.5)
-        time.sleep(1.0)
-
-        # Get rosbag info
-        rosbag_request = GetRosbag.Request()
-        rosbag_request.fault_code = fault_code
-
-        rosbag_response = self._call_service(self.get_rosbag_client, rosbag_request)
+        # Poll until the async post-fault recording is written.
+        rosbag_response = self._wait_for_rosbag(fault_code)
 
         self.assertTrue(rosbag_response.success)
 
