@@ -210,6 +210,25 @@ void OpcuaPoller::start(const PollerConfig & config) {
 
   // Start poll/reconnect thread regardless (handles reconnection and poll fallback)
   poll_thread_ = std::thread(&OpcuaPoller::poll_loop, this);
+  if (has_alarm_sources()) {
+    event_pump_thread_ = std::thread(&OpcuaPoller::event_pump_loop, this);
+  }
+}
+
+void OpcuaPoller::event_pump_loop() {
+  // See event_pump_thread_ in the header for why this exists. The iterate is
+  // deliberately short (20 ms) so each critical section on the client is tiny;
+  // the 100 ms cadence keeps worst-case publish servicing two orders of
+  // magnitude below the client requestTimeout.
+  while (running_.load()) {
+    if (client_.is_connected() && event_subscription_id_ != 0) {
+      client_.run_iterate(20);
+    }
+    std::unique_lock<std::mutex> lock(stop_mutex_);
+    stop_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+      return !running_.load();
+    });
+  }
 }
 
 void OpcuaPoller::stop() {
@@ -217,6 +236,9 @@ void OpcuaPoller::stop() {
   stop_cv_.notify_all();
   if (poll_thread_.joinable()) {
     poll_thread_.join();
+  }
+  if (event_pump_thread_.joinable()) {
+    event_pump_thread_.join();
   }
   client_.remove_subscriptions();
 }
