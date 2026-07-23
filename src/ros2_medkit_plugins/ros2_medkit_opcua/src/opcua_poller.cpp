@@ -819,6 +819,7 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   AlarmEventInput input;
   input.enabled_state = variant_or<bool>(values[kFieldEnabledState], true);
   input.active_state = variant_or<bool>(values[kFieldActiveState], false);
+  input.active_state_present = values[kFieldActiveState].isType<bool>();
   input.acked_state = variant_or<bool>(values[kFieldAckedState], false);
   input.confirmed_state = variant_or<bool>(values[kFieldConfirmedState], false);
 
@@ -1022,11 +1023,21 @@ void OpcuaPoller::apply_condition_state(const AlarmEventConfig & cfg, const opcu
     // this makes the live delivery agree with them.
     const SovdAlarmStatus prev_status = it->second.last_status;
 
+    AlarmEventInput effective_input = input;
+    if (!input.active_state_present) {
+      // Notification without a readable ActiveState (secondary ack-state
+      // notifications on Siemens): keep the instance's previous activity
+      // instead of defaulting to inactive - a phantom heal here wipes the
+      // fault the primary notification just confirmed.
+      effective_input.active_state =
+          (prev_status == SovdAlarmStatus::Confirmed || prev_status == SovdAlarmStatus::Healed);
+    }
+
     if (event_id != nullptr) {
       it->second.latest_event_id = *event_id;
     }
 
-    auto outcome = AlarmStateMachine::compute(prev_status, input, require_confirm_for_clear);
+    auto outcome = AlarmStateMachine::compute(prev_status, effective_input, require_confirm_for_clear);
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
                         "state machine: enabled="
                             << input.enabled_state << " active=" << input.active_state << " acked=" << input.acked_state

@@ -63,6 +63,12 @@ enum class AlarmAction { NoOp, ReportConfirmed, ReportHealed, ClearFault };
 struct AlarmEventInput {
   bool enabled_state{true};
   bool active_state{false};
+  /// False when the notification did not carry a readable ActiveState/Id
+  /// (Siemens sends secondary notifications - e.g. the unacked-transition of
+  /// the same condition - without it). An absent field must never read as
+  /// "inactive": the caller substitutes the tracked instance's previous
+  /// activity before compute().
+  bool active_state_present{true};
   bool acked_state{false};
   bool confirmed_state{false};
   /// True iff ShelvingState != Unshelved.
