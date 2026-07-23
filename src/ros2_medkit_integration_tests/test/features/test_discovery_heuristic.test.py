@@ -62,6 +62,9 @@ def generate_test_description():
             namespace='/powertrain/engine',
             output='screen',
             additional_env=coverage_env,
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
         launch_ros.actions.Node(
             package='ros2_medkit_integration_tests',
@@ -70,6 +73,9 @@ def generate_test_description():
             namespace='/powertrain/engine',
             output='screen',
             additional_env=coverage_env,
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
         launch_ros.actions.Node(
             package='ros2_medkit_integration_tests',
@@ -78,6 +84,9 @@ def generate_test_description():
             namespace='/chassis/brakes',
             output='screen',
             additional_env=coverage_env,
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
         # Node in root namespace
         launch_ros.actions.Node(
@@ -87,6 +96,9 @@ def generate_test_description():
             namespace='/',
             output='screen',
             additional_env=coverage_env,
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
     ]
 

@@ -21,14 +21,13 @@ import unittest
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
-import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 import requests
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
-from ros2_medkit_test_utils.launch_helpers import get_coverage_env
+from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
 
 PORT_NO_PLUGIN = get_test_port(0)
@@ -46,42 +45,27 @@ def _get_test_plugin_path():
 
 
 def generate_test_description():
-    """Launch two gateways: one without plugin (501 mode), one with demo plugin.
-
-    Uses raw Node construction instead of create_gateway_node() because we need
-    two gateway instances with distinct ROS node names.
-    """
-    coverage_env = get_coverage_env()
+    """Launch two gateways: one without plugin (501 mode), one with demo plugin."""
     plugin_path = _get_test_plugin_path()
 
-    gateway_no_plugin = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    gateway_no_plugin = create_gateway_node(
         name='gateway_no_plugin',
-        output='screen',
-        parameters=[{
+        port=PORT_NO_PLUGIN,
+        extra_params={
             'server.host': '127.0.0.1',
-            'server.port': PORT_NO_PLUGIN,
-            'refresh_interval_ms': 1000,
             'updates.enabled': True,
-        }],
-        additional_env=coverage_env,
+        },
     )
 
-    gateway_with_plugin = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    gateway_with_plugin = create_gateway_node(
         name='gateway_with_plugin',
-        output='screen',
-        parameters=[{
+        port=PORT_WITH_PLUGIN,
+        extra_params={
             'server.host': '127.0.0.1',
-            'server.port': PORT_WITH_PLUGIN,
-            'refresh_interval_ms': 1000,
             'updates.enabled': True,
             'plugins': ['test_update_backend'],
             'plugins.test_update_backend.path': plugin_path,
-        }],
-        additional_env=coverage_env,
+        },
     )
 
     return LaunchDescription([

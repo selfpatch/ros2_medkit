@@ -84,6 +84,9 @@ def generate_test_description():
             'beacon_rate_hz': 2.0,
             'beacon_process_name': 'test_beacon',
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
     launch_description.add_action(beacon_node)
     return launch_description, context

@@ -67,6 +67,9 @@ def generate_test_description():
         name='unmanifested_chassis_sensor',
         namespace='/chassis/brakes',
         output='screen',
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     # Launch an extra unmanifested node in /powertrain/engine (not blacklisted)
@@ -77,6 +80,9 @@ def generate_test_description():
         name='unmanifested_engine_sensor',
         namespace='/powertrain/engine',
         output='screen',
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     delayed = TimerAction(

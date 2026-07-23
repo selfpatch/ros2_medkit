@@ -134,6 +134,9 @@ def _probe_pair(namespace, source_id, target_id, remap_topic):
             output='screen',
             additional_env=env,
             remappings=[('temperature', remap_topic)],
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
         launch_ros.actions.Node(
             package='ros2_medkit_integration_tests',
@@ -143,6 +146,9 @@ def _probe_pair(namespace, source_id, target_id, remap_topic):
             output='screen',
             additional_env=env,
             remappings=[('temperature', remap_topic)],
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
     ]
 

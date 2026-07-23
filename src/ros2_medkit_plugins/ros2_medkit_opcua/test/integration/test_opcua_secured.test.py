@@ -66,7 +66,9 @@ PASSWORD = 'secret'
 WRONG_PASSWORD = 'definitely-not-the-password'
 APP_URI_SERVER = 'urn:test:alarms:server'
 APP_URI_CLIENT = 'urn:selfpatch:medkit:opcua-client'
-ROS_DOMAIN_ID = '228'
+# 229 is the one free slot in this package's 220-229 range (the gtests take
+# 220-228); 228 would collide with test_opcua_identity's CMake-assigned domain.
+ROS_DOMAIN_ID = '229'
 
 ALARM_CODE = 'PLC_OVERPRESSURE'
 

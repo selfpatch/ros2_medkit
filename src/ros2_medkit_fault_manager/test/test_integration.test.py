@@ -97,6 +97,9 @@ def generate_test_description():
             'snapshots.capture_queue_full_policy': 'reject_newest',
             'correlation.config_file': correlation_config,  # Enable correlation
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     return (
@@ -549,17 +552,26 @@ class TestFaultManagerIntegration(unittest.TestCase):
             rclpy.spin_once(self.node, timeout_sec=0.01)
             time.sleep(interval)
 
-    def _wait_for_topic_subscribers(self, topic_name, timeout_sec=5.0):
-        """Wait for topic to have subscribers (indicates discovery complete)."""
-        start = time.time()
-        while time.time() - start < timeout_sec:
-            count = self.node.count_subscribers(topic_name)
-            if count > 0:
-                return True
-            # Keep publishing to maintain topic presence
-            rclpy.spin_once(self.node, timeout_sec=0.01)
-            time.sleep(0.1)
-        return False
+    def _wait_for_snapshot(self, fault_code, timeout=10.0):
+        """
+        Poll GetSnapshots until the async on-demand capture completes.
+
+        The snapshot subscription is created on demand when the fault confirms
+        and fills over its own timeout window, so a fixed sleep plus a single
+        query flakes under load - poll until data arrives.
+        """
+        request = GetSnapshots.Request()
+        request.fault_code = fault_code
+        request.topic = ''
+        deadline = time.time() + timeout
+        response = self._call_service(self.get_snapshots_client, request)
+        while time.time() < deadline:
+            if (response is not None and response.success
+                    and len(response.data) > 0):
+                return response
+            time.sleep(0.5)
+            response = self._call_service(self.get_snapshots_client, request)
+        return response
 
     def test_16_snapshot_capture_on_fault_confirmation(self):
         """
@@ -602,18 +614,14 @@ class TestFaultManagerIntegration(unittest.TestCase):
             response = self._call_service(self.report_fault_client, request)
             self.assertTrue(response.accepted)
 
-            # Wait for snapshot capture to complete (snapshot timeout is 3s)
-            time.sleep(4.0)
+            # Poll for the snapshot; the publisher thread keeps feeding data.
+            # _wait_for_snapshot is the ground-truth gate (it polls GetSnapshots
+            # for the actual capture), so no fragile pre-wait on the short-lived
+            # on-demand subscription is needed.
+            snap_response = self._wait_for_snapshot(fault_code)
         finally:
             stop_publishing.set()
             pub_thread.join()
-
-        # Query snapshots
-        snap_request = GetSnapshots.Request()
-        snap_request.fault_code = fault_code
-        snap_request.topic = ''  # All topics
-
-        snap_response = self._call_service(self.get_snapshots_client, snap_request)
 
         self.assertTrue(snap_response.success)
         self.assertGreater(len(snap_response.data), 0)

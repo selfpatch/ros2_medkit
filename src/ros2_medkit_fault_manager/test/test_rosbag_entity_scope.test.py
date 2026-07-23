@@ -136,6 +136,9 @@ def generate_test_description():
             'snapshots.rosbag.storage_path': ROSBAG_STORAGE_PATH,
             'snapshots.rosbag.lazy_start': False,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     delayed_fault_manager = launch.actions.TimerAction(

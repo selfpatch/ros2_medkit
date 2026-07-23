@@ -204,6 +204,9 @@ def generate_test_description():
             namespace=UNCOVERED_NAMESPACE,
             output='screen',
             additional_env=get_coverage_env(),
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
         launch_ros.actions.Node(
             package='ros2_medkit_integration_tests',
@@ -212,6 +215,9 @@ def generate_test_description():
             namespace=UNCOVERED_NAMESPACE,
             output='screen',
             additional_env=get_coverage_env(),
+            # Give the node room to flush coverage data at shutdown before SIGKILL.
+            sigterm_timeout='30',
+            sigkill_timeout='15',
         ),
     ]
     demo_timer = TimerAction(

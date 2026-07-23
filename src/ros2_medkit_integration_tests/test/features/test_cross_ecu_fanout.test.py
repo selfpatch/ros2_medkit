@@ -36,7 +36,6 @@ import unittest
 
 from launch import LaunchDescription
 from launch.actions import SetEnvironmentVariable, TimerAction
-import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 import requests
@@ -52,6 +51,7 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.launch_helpers import (
     create_demo_nodes,
+    create_fault_manager_node,
     create_gateway_node,
 )
 
@@ -185,41 +185,21 @@ def generate_test_description():
         },
     )
 
-    peer_gateway = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    peer_gateway = create_gateway_node(
         name='secondary_gateway_node',
-        output='screen',
-        parameters=[{
-            'refresh_interval_ms': 1000,
-            'server.port': PEER_PORT,
+        port=PEER_PORT,
+        extra_params={
             'discovery.mode': 'hybrid',
             'discovery.manifest_path': peer_manifest_path,
             'discovery.manifest_strict_validation': False,
-        }],
-        additional_env=peer_domain_env,
-        # Match create_gateway_node()'s TSan/ASan-safe shutdown windows.
-        # Default 5s SIGINT->SIGTERM escalation is insufficient under
-        # sanitizers and causes SIGKILL with exit -9.
-        sigterm_timeout='30',
-        sigkill_timeout='15',
+        },
+        extra_env=peer_domain_env,
     )
 
-    primary_fault_mgr = launch_ros.actions.Node(
-        package='ros2_medkit_fault_manager',
-        executable='fault_manager_node',
-        name='fault_manager',
-        output='screen',
-        parameters=[{'storage_type': 'memory'}],
-    )
+    primary_fault_mgr = create_fault_manager_node(rosbag_enabled=False)
 
-    peer_fault_mgr = launch_ros.actions.Node(
-        package='ros2_medkit_fault_manager',
-        executable='fault_manager_node',
-        name='fault_manager',
-        output='screen',
-        parameters=[{'storage_type': 'memory'}],
-        additional_env=peer_domain_env,
+    peer_fault_mgr = create_fault_manager_node(
+        rosbag_enabled=False, extra_env=peer_domain_env,
     )
 
     primary_demo_nodes = create_demo_nodes(PRIMARY_NODES, lidar_faulty=False)

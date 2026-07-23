@@ -56,6 +56,9 @@ def generate_test_description():
             # fault heals on that single event only with healing_threshold 0.
             'healing_threshold': 0,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     # Load the packaged config first so assertExitCodes guards against the
@@ -72,6 +75,9 @@ def generate_test_description():
         parameters=[config_file, {
             'rescan_period_sec': 1.0,  # fast discovery for the test
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     return (

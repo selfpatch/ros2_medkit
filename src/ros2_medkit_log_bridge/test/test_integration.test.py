@@ -48,6 +48,9 @@ def generate_test_description():
             'healing_enabled': True,
             'healing_threshold': 1,
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     log_bridge_node = launch_ros.actions.Node(
@@ -59,6 +62,9 @@ def generate_test_description():
             'rosout_topic': '/rosout',
             'report_cooldown_sec': 0.0,  # no bridge cooldown in the test
         }],
+        # Give the node room to flush coverage data at shutdown before SIGKILL.
+        sigterm_timeout='30',
+        sigkill_timeout='15',
     )
 
     return (
@@ -135,11 +141,32 @@ class TestLogBridgeIntegration(unittest.TestCase):
             time.sleep(0.5)
         return fault
 
+    def publish_until(self, node_name, level, code_prefix, *, message,
+                      timeout=25.0):
+        """
+        Republish a log until a fault with the given code prefix appears.
+
+        An ERROR log promotes immediately, but the report reaching
+        fault_manager needs a second discovery hop: the bridge's ReportFault
+        client must have discovered fault_manager, else the fire-and-forget
+        report is dropped. That client readiness is not observable from here
+        and the report is one-shot, so re-emit the log and poll rather than
+        publishing once and racing the hop (which flaked on a loaded machine).
+        """
+        deadline = time.time() + timeout
+        fault = None
+        while time.time() < deadline:
+            self.publish_log(node_name, level, message)
+            fault = self.find_fault(self.list_faults(), code_prefix)
+            if fault is not None:
+                return fault
+        return fault
+
     def test_01_error_log_creates_attributed_fault(self):
         """An ERROR log becomes a CONFIRMED fault attributed to the node FQN."""
-        self.publish_log('planner_server', LOG_ERROR, 'failed to compute path')
-
-        fault = self.wait_for_fault('LOG_PLANNER_SERVER_')
+        fault = self.publish_until(
+            'planner_server', LOG_ERROR, 'LOG_PLANNER_SERVER_',
+            message='failed to compute path')
         self.assertIsNotNone(fault, 'expected a LOG_PLANNER_SERVER_* fault')
         self.assertEqual(fault.severity, Fault.SEVERITY_ERROR)
         # The fault must associate with the node FQN, not the raw logger name.

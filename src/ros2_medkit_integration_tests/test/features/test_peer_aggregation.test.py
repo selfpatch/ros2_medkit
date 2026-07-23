@@ -38,7 +38,6 @@ import unittest
 
 from launch import LaunchDescription
 from launch.actions import SetEnvironmentVariable, TimerAction
-import launch_ros.actions
 import launch_testing
 import launch_testing.actions
 import requests
@@ -94,21 +93,10 @@ def generate_test_description():
     )
 
     # Peer gateway: standard configuration, no aggregation, in PEER_DOMAIN_ID
-    peer_gateway = launch_ros.actions.Node(
-        package='ros2_medkit_gateway',
-        executable='gateway_node',
+    peer_gateway = create_gateway_node(
         name='peer_gateway_node',
-        output='screen',
-        parameters=[{
-            'refresh_interval_ms': 1000,
-            'server.port': PEER_PORT,
-        }],
-        additional_env=peer_domain_env,
-        # Match create_gateway_node()'s TSan/ASan-safe shutdown windows.
-        # Default 5s SIGINT->SIGTERM escalation is insufficient under
-        # sanitizers and causes SIGKILL with exit -9.
-        sigterm_timeout='30',
-        sigkill_timeout='15',
+        port=PEER_PORT,
+        extra_env=peer_domain_env,
     )
 
     # Demo nodes: each set runs in its gateway's DDS domain.
