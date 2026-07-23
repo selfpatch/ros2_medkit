@@ -129,10 +129,11 @@ if __name__ == '__main__':
     script_file.close()
     PUBLISHER_SCRIPT_PATH = script_file.name
 
-    # Use explicit ROS settings to ensure processes can discover each other
+    # Inherit the per-test ROS_DOMAIN_ID that CMake injects via
+    # medkit_set_test_domain, so this test is isolated from other packages
+    # running in parallel. ROS_LOCALHOST_ONLY keeps discovery on loopback.
     env = os.environ.copy()
-    env['ROS_DOMAIN_ID'] = '42'
-    env['ROS_LOCALHOST_ONLY'] = '1'  # Force localhost-only discovery
+    env['ROS_LOCALHOST_ONLY'] = '1'
 
     test_publisher = launch.actions.ExecuteProcess(
         cmd=['python3', script_file.name],
@@ -142,7 +143,6 @@ if __name__ == '__main__':
     )
 
     fault_manager_env = get_coverage_env()
-    fault_manager_env['ROS_DOMAIN_ID'] = '42'
     fault_manager_env['ROS_LOCALHOST_ONLY'] = '1'
 
     fault_manager_node = launch_ros.actions.Node(
@@ -198,8 +198,8 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Initialize ROS 2 context and create service clients."""
-        # Use same ROS settings as launch processes to ensure discovery
-        os.environ['ROS_DOMAIN_ID'] = '42'
+        # Match the launch processes: inherit the CMake-injected
+        # ROS_DOMAIN_ID and keep discovery on loopback.
         os.environ['ROS_LOCALHOST_ONLY'] = '1'
         rclpy.init()
         cls.node = Node('test_rosbag_client')

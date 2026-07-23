@@ -44,10 +44,10 @@ using ros2_medkit_msgs::srv::GetSnapshots;
 class FaultManagerTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    // Isolate from other packages' tests running in parallel (e.g. ros2_medkit_fault_manager
-    // launches a real fault_manager_node with /fault_manager/get_snapshots on the default domain).
-    // Without this, our mock services collide with real ones on Humble's slower DDS cleanup.
-    setenv("ROS_DOMAIN_ID", "99", 1);
+    // ROS_DOMAIN_ID is injected per test by CMake (medkit_set_test_domain in
+    // CMakeLists.txt), which keeps this suite's mock /fault_manager services
+    // isolated from the real fault_manager_node that ros2_medkit_fault_manager
+    // launches in its own tests. Do not override the injected domain here.
     rclcpp::init(0, nullptr);
   }
 

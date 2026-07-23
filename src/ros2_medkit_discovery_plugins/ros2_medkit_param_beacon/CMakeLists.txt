@@ -80,7 +80,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gmock REQUIRED)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 100 END 109)
+  medkit_init_test_domains(START 100 END 104)
 
   # Include plugin source in test (plugin is MODULE/dlopen, test instantiates directly)
   # TIMEOUT 180: the 12 test cases each spin a node for ~200-400 ms. Under

@@ -90,6 +90,9 @@ if(BUILD_TESTING)
 
   ros2_medkit_clang_tidy()
 
+  include(ROS2MedkitTestDomain)
+  medkit_init_test_domains(START 110 END 112)
+
   # Unit tests
   ament_add_gtest(test_local_filter test/test_local_filter.cpp)
   target_link_libraries(test_local_filter fault_reporter_lib)
@@ -105,11 +108,7 @@ if(BUILD_TESTING)
     DESTINATION share/${PROJECT_NAME}
   )
 
-  add_launch_test(
-    test/test_integration.test.py
-    TARGET test_integration
-    TIMEOUT 60
-  )
+  medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 60)
   ros2_medkit_relax_vendor_warnings()
 endif()
 

@@ -36,7 +36,7 @@ def get_test_domain_id(offset=0):
     """Return a DDS domain ID for this test, optionally with an offset.
 
     Each integration test gets a unique ``ROS_DOMAIN_ID`` from CMake
-    (stride of 1, range 140-229). For offset 0, returns the assigned
+    (stride of 1, range 130-219). For offset 0, returns the assigned
     domain ID directly.
 
     For offset in 1..3 (multi-gateway tests needing extra DDS domains),

@@ -97,7 +97,7 @@ if(BUILD_TESTING)
   ros2_medkit_clang_tidy()
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 210 END 214)
+  medkit_init_test_domains(START 113 END 115)
 
   ament_add_gtest(test_log_bridge test/test_log_bridge.cpp)
   target_link_libraries(test_log_bridge log_bridge_lib)
@@ -113,11 +113,7 @@ if(BUILD_TESTING)
   install(DIRECTORY test
     DESTINATION share/${PROJECT_NAME}
   )
-  add_launch_test(
-    test/test_integration.test.py
-    TARGET test_integration
-    TIMEOUT 90
-  )
+  medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 90)
 
   ros2_medkit_relax_vendor_warnings()
 endif()
