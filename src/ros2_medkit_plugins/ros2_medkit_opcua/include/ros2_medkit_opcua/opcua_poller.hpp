@@ -274,6 +274,7 @@ class OpcuaPoller {
  private:
   void poll_loop();
   void event_pump_loop();
+  bool same_code_active_elsewhere_locked(const std::string & fault_code, const std::string & condition_id_str) const;
   void do_poll();
   /// Issue #496: emit the component-scoped comms-lost raise/clear edge through
   /// the alarm callback (fault_code ``PLC_COMMS_LOST``, scoped to the node
