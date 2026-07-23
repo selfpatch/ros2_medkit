@@ -801,13 +801,18 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     }
   }
 
-  // Drop non-condition events. The server-wide EventNotifier (ns=0;i=2253)
-  // also emits BaseEventType / AuditEventType housekeeping (e.g. "Session
-  // state changed to Created ..."), which is NOT an A&C Condition and carries
-  // a null ConditionId. Such events must never enter the alarm path: they
-  // would resolve to the catch-all fault_code (PLC_ALARM) and mask a genuine
-  // process alarm that the fault store dedups on the same code+source.
-  if (condition_id.isNull()) {
+  // Drop non-condition events for EVERY alarm source, explicit or auto. The
+  // server-wide EventNotifier (ns=0;i=2253) also emits BaseEventType /
+  // AuditEventType housekeeping (e.g. "Session state changed to Created ...")
+  // that is not an A&C Condition and carries a null ConditionId (Part 9
+  // §5.5.2.13: only a Condition resolves the ConditionId select clause). A
+  // catch-all explicit event_alarms entry pointed at i=2253 would otherwise
+  // map such an event to its configured fault_code (e.g. PLC_ALARM) and mask a
+  // genuine process alarm the fault store dedups on the same code. The auto
+  // path had this guard already (see the shared is_condition_event() helper);
+  // hoisting it here covers the explicit path too, so it runs once, before the
+  // explicit/auto split below.
+  if (!is_condition_event(condition_id)) {
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
                         "on_event: non-condition event (null ConditionId, type=" << event_type.toString()
                                                                                  << ") - ignoring");
@@ -926,20 +931,9 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
         return;
       }
     }
-    // System-message filter (validated on a real Siemens S7-1500): the
-    // Server object's EventNotifier (i=2253) also emits plain BaseEvent /
-    // SystemEvent notifications (e.g. "CPU not in RUN") that are NOT
-    // AlarmConditionType instances. Per Part 9 §5.5.2.13 only a real
-    // Condition carries a ConditionId; a system message resolves it to
-    // NodeId.Null, so reject those here rather than auto-deriving a
-    // fault for a message that never raises/clears.
-    if (!is_condition_event(condition_id)) {
-      RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
-                          "on_event: dropping non-condition event (null ConditionId, likely a system "
-                          "message) message='"
-                              << message << "'");
-      return;
-    }
+    // Non-condition system messages (e.g. "CPU not in RUN") are already
+    // rejected for every source by the is_condition_event() guard at the top
+    // of on_event, so by here condition_id is guaranteed non-null.
     if (!NodeMap::auto_alarm_passes_filters(condition_name, source_name, message, auto_cfg.include_patterns,
                                             auto_cfg.exclude_patterns)) {
       return;
