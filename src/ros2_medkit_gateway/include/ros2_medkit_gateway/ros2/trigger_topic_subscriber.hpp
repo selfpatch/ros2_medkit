@@ -98,14 +98,18 @@ class TriggerTopicSubscriber {
    *        dispatch every per-handle subscription.
    *
    * Non-owning: the executor must outlive every subscription (the gateway calls
-   * shutdown() before destroying it). Set once, on the main thread, after
-   * construction; the value is read on httplib threads without the lock, so it
-   * is stored atomically and is never cleared afterwards. Until it is wired,
-   * subscribe() queues the handle as pending; the retry timer, which only fires
-   * once the executor is spinning (after wiring), creates the subscription on
-   * its first tick, so no subscription is ever created on a racy path.
+   * shutdown() before destroying it). Wired exactly once, on the main thread,
+   * after construction; the value is read on httplib threads without the lock,
+   * so it is stored atomically. It is enforced set-once: a null argument, or a
+   * re-set to a different executor, is ignored with a warning (existing slots
+   * hold the wired executor and would be orphaned by a swap). Until it is
+   * wired, subscribe() queues the handle as pending; the retry timer, which
+   * only fires once the executor is spinning (after wiring), creates the
+   * subscription on its first tick, so no subscription is ever created on a
+   * racy path.
    *
-   * @param exec Shared subscription executor. Must be non-null in normal use.
+   * @param exec Shared subscription executor. Null or a later different value
+   *             is ignored.
    */
   void set_subscription_executor(ros2_common::Ros2SubscriptionExecutor * exec);
 
