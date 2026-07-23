@@ -581,6 +581,48 @@ TEST(GraphProviderPluginBuildTest, MarksReachableAndUnreachableNodes) {
   EXPECT_EQ((*offline_node)["last_seen"], "2026-03-08T11:59:00.000Z");
 }
 
+TEST(GraphProviderPluginBuildTest, UnreachableScopedNodeDegradesPipelineStatus) {
+  // A dead node is scoped as unreachable but carries no topics (an offline App
+  // has an empty topic list), so it produces no edge. Edge health alone would
+  // read "healthy"; the unreachable node must pull the verdict to "degraded".
+  auto input = make_input({make_app("producer", {"/topic"}, {}, true), make_app("consumer", {}, {}, false)},
+                          {make_function("fn", {"producer", "consumer"})});
+  auto state = make_state();
+  state.last_seen_by_app["consumer"] = "2026-03-08T11:59:00.000Z";
+
+  auto doc =
+      GraphProviderPlugin::build_graph_document("fn", input, state, default_config(), "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  const auto * consumer_node = find_node(graph, "consumer");
+  ASSERT_NE(consumer_node, nullptr);
+  EXPECT_EQ((*consumer_node)["node_status"], "unreachable");
+  EXPECT_TRUE(graph["edges"].empty());
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
+}
+
+TEST(GraphProviderPluginBuildTest, BrokenEdgeOutranksUnreachableNodeInPipelineStatus) {
+  // A stale edge (broken) must win over an unreachable node (degraded): the
+  // verdict reports the most severe condition, not the last one evaluated.
+  auto input =
+      make_input({make_app("a", {"/ab"}, {}, true), make_app("b", {}, {"/ab"}, true), make_app("dead", {}, {}, false)},
+                 {make_function("fn", {"a", "b", "dead"})});
+  auto config = default_config();
+  config.stale_grace_sec = 0.0;
+  const auto window_ns = static_cast<int64_t>(config.freshness_floor_sec * 1e9);
+
+  auto state = make_state();
+  state.last_seen_by_app["dead"] = "2026-03-08T11:59:00.000Z";
+  // Age the /ab metric past the freshness window so its edge reads "error".
+  state.topic_metrics["/ab"] = make_metrics(29.8, 1.2, 0.0, 30.0, /*last_update_ns=*/0);
+  state.now_ns = window_ns + static_cast<int64_t>(1e9);
+
+  auto doc = GraphProviderPlugin::build_graph_document("fn", input, state, config, "2026-03-08T12:00:00.000Z");
+  const auto & graph = doc["x-medkit-graph"];
+
+  EXPECT_EQ(graph["pipeline_status"], "broken");
+}
+
 TEST(GraphProviderPluginBuildTest, ReturnsEmptyGraphForNoApps) {
   auto input = make_input({}, {make_function("fn", {})});
 
@@ -1554,6 +1596,10 @@ TEST(GraphProviderPluginRouteTest, UsesPreviousOnlineTimestampForOfflineLastSeen
   ASSERT_NE(node, nullptr);
   ASSERT_TRUE(node->contains("last_seen"));
   EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
+  // The only scoped node is unreachable, so the served graph is degraded, not
+  // healthy - verified end to end through the HTTP handler.
+  EXPECT_EQ((*node)["node_status"], "unreachable");
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
 
   local_server.stop();
 }
@@ -1717,6 +1763,10 @@ TEST(GraphProviderPluginRouteTest, IntrospectWithEmptyInputStillPreservesOffline
   ASSERT_NE(node, nullptr);
   ASSERT_TRUE(node->contains("last_seen"));
   EXPECT_LT((*node)["last_seen"].get<std::string>(), graph["timestamp"].get<std::string>());
+  // The only scoped node is unreachable, so the served graph is degraded, not
+  // healthy - verified end to end through the HTTP handler.
+  EXPECT_EQ((*node)["node_status"], "unreachable");
+  EXPECT_EQ(graph["pipeline_status"], "degraded");
 
   local_server.stop();
 }

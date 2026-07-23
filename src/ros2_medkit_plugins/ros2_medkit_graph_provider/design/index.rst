@@ -139,7 +139,10 @@ The overall pipeline status is determined by aggregating edge states:
 
 1. **broken** - At least one edge has ``metrics_status: "error"`` (``metrics_stale`` -
    a real, currently-broken data flow)
-2. **degraded** - At least one edge has frequency below the degraded ratio threshold, or drop rate exceeds the threshold
+2. **degraded** - At least one edge has frequency below the degraded ratio threshold or
+   drop rate above it, or at least one scoped node is ``unreachable``. A dead node
+   carries no topics and so contributes no edge, but the Function is not healthy while
+   one of its nodes is down.
 3. **healthy** - Everything else, including a graph where every edge is still ``pending``
    (a pipeline that was never observed is not evidence of a broken one)
 
@@ -283,11 +286,12 @@ inflate the summed rate enough to mask a stalled primary publisher as healthy.
 The plugin queries the live ROS graph for each DATA topic's publisher count
 (independent of ``/diagnostics``) and emits it as ``publisher_count`` on every
 edge on that topic, flagging ``rate_ambiguous: true`` whenever it is greater than
-one. The ``multi_publisher_rate`` setting (default ``"annotate"``) controls
-whether ``frequency_hz`` keeps driving the degraded verdict once that ambiguity
-exists, or is suppressed for safety-critical deployments that would rather lose
-the number than risk a false ``"healthy"``. See :doc:`/config/graph-provider` for
-the full policy reference.
+one. The ``multi_publisher_rate`` setting (default ``"annotate"``) controls whether
+``frequency_hz`` keeps driving the degraded verdict once that ambiguity exists,
+or is suppressed for safety-critical deployments that would rather show no rate
+than an untrustworthy one. Suppression removes the misleading number, not the
+health verdict - ``rate_ambiguous`` already flags the ambiguity. See
+:doc:`/config/graph-provider` for the full policy reference.
 
 Cyclic Subscription Sampler
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

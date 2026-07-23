@@ -162,10 +162,11 @@ and ``metrics.rate_ambiguous: true`` in its response, regardless of policy - see
        edge is stale.
 
 Choose ``"annotate"`` when you want visibility without losing data. Choose
-``"suppress"`` for a safety-critical deployment where a false ``"healthy"``
-reading on a degraded pipeline is worse than losing the rate figure whenever
-more than one publisher is present. ``multi_publisher_rate`` can be overridden
-per Function like every other setting on this page.
+``"suppress"`` for a safety-critical deployment that would rather show no rate
+than an untrustworthy one when more than one publisher is present. Suppression
+removes the misleading number, not the edge's health verdict: ``rate_ambiguous``
+flags the ambiguity and ``pipeline_status`` is unchanged. ``multi_publisher_rate``
+can be overridden per Function like every other setting on this page.
 
 Per-Function Overrides
 ------------------------
