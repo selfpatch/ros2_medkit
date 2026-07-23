@@ -752,6 +752,19 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     }
   }
 
+  // Drop non-condition events. The server-wide EventNotifier (ns=0;i=2253)
+  // also emits BaseEventType / AuditEventType housekeeping (e.g. "Session
+  // state changed to Created ..."), which is NOT an A&C Condition and carries
+  // a null ConditionId. Such events must never enter the alarm path: they
+  // would resolve to the catch-all fault_code (PLC_ALARM) and mask a genuine
+  // process alarm that the fault store dedups on the same code+source.
+  if (condition_id.isNull()) {
+    RCLCPP_DEBUG_STREAM(opcua_poller_logger(),
+                        "on_event: non-condition event (null ConditionId, type=" << event_type.toString()
+                                                                                 << ") - ignoring");
+    return;
+  }
+
   // A condition (re)reported inside a refresh burst is still active; remember it
   // so RefreshEnd does not clear it. Recorded before the field-count bail below
   // so even a partial-field replay counts as "seen".
