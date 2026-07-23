@@ -87,7 +87,17 @@ class TestLogBridgeIntegration(unittest.TestCase):
         )
         assert cls.list_faults_client.wait_for_service(timeout_sec=10.0), \
             'ListFaults service not available'
-        time.sleep(1.0)  # let the bridge connect
+        # Wait for log_bridge_node to match our /rosout publisher. A fixed sleep
+        # is not enough on a slow or loaded machine: if the bridge has not
+        # discovered us yet, the first log we publish is dropped before the
+        # subscription exists and its fault never appears (the later tests still
+        # pass because discovery has completed by then). Poll the matched
+        # subscription count instead.
+        deadline = time.time() + 15.0
+        while cls.rosout_pub.get_subscription_count() < 1 and time.time() < deadline:
+            rclpy.spin_once(cls.node, timeout_sec=0.1)
+        assert cls.rosout_pub.get_subscription_count() >= 1, \
+            'log_bridge did not subscribe to /rosout within the timeout'
 
     @classmethod
     def tearDownClass(cls):
