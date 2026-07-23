@@ -593,6 +593,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_error_info test/test_error_info.cpp)
   target_link_libraries(test_error_info gateway_ros2)
 
+  # Parameter error classification unit tests (pure C++, no rclcpp)
+  ament_add_gtest(test_parameter_error_classification test/test_parameter_error_classification.cpp)
+  target_link_libraries(test_parameter_error_classification gateway_ros2)
+
   # Parameter error precedence tests (multi-node GET aggregation, live GatewayNode)
   ament_add_gtest(test_parameter_error_precedence test/test_parameter_error_precedence.cpp)
   target_link_libraries(test_parameter_error_precedence gateway_ros2)

@@ -17,6 +17,7 @@
 #include <httplib.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <regex>
@@ -36,6 +37,7 @@ using ros2_medkit_gateway::App;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::CorsConfig;
+using ros2_medkit_gateway::ERR_INTERNAL_ERROR;
 using ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND;
 using ros2_medkit_gateway::ERR_X_MEDKIT_ROS2_NODE_UNAVAILABLE;
 using ros2_medkit_gateway::ErrorInfo;
@@ -45,11 +47,14 @@ using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::ConfigHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
 namespace http = ros2_medkit_gateway::http;
+namespace dto = ros2_medkit_gateway::dto;
 
 namespace {
 
 constexpr const char * kMissingParam = "definitely_missing_param";
 constexpr const char * kGetConfigPattern = R"(/api/v1/components/([^/]+)/configurations/([^/]+))";
+constexpr const char * kListConfigPattern = R"(/api/v1/components/([^/]+)/configurations)";
+constexpr const char * kGhostFqn = "/param_precedence_ghost";
 
 httplib::Request make_request_with_match(const std::string & path, const std::string & pattern) {
   httplib::Request req;
@@ -62,16 +67,22 @@ httplib::Request make_request_with_match(const std::string & path, const std::st
 }  // namespace
 
 // =============================================================================
-// Handler-level regression tests for the multi-node probe loop in
-// GET /{entity}/configurations/{param}: when no backing node succeeds, the
-// surfaced error must be the highest-severity per-node failure regardless of
-// node iteration order (a NOT_FOUND from one node must never mask an
-// unavailable/timeout from another). Exercised end-to-end through
-// ConfigHandlers::get_configuration against a live GatewayNode with real
+// Handler-level regression tests for the multi-node config endpoints, exercised
+// end-to-end through ConfigHandlers against a live GatewayNode with real
 // per-node failures:
 //   - "ghost" node FQN with no ROS node behind it -> SERVICE_UNAVAILABLE
 //   - unspun node (parameter services exist, never answered) -> TIMEOUT
 //   - the gateway's own node missing the parameter -> NOT_FOUND
+//
+// GET /{entity}/configurations/{param}: when no backing node succeeds, the
+// surfaced error must be the highest-severity per-node failure regardless of
+// node iteration order (a NOT_FOUND from one node must never mask an
+// unavailable/timeout from another).
+//
+// GET /{entity}/configurations (list, issue #541): when some backing nodes are
+// up and others are down, the 200 response must flag itself partial and name
+// the unavailable nodes rather than silently dropping them - matching the
+// single-parameter GET's 503 honesty for the same outage.
 // =============================================================================
 
 class ParameterErrorPrecedenceTest : public ::testing::Test {
@@ -170,7 +181,7 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
   /// insertion order (get_component_configurations preserves it), covering
   /// both iteration orders for every scenario.
   void seed_cache() {
-    const std::string ghost_fqn = "/param_precedence_ghost";
+    const std::string ghost_fqn = kGhostFqn;
 
     std::vector<Component> components;
     std::vector<App> apps;
@@ -209,6 +220,26 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
     auto result = handlers_->get_configuration(req);
     EXPECT_FALSE(result.has_value()) << "expected an error for " << path;
     return result.has_value() ? ErrorInfo{} : result.error();
+  }
+
+  using ConfigListCollection = dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit>;
+
+  /// Run GET /{entity}/configurations and return the full typed collection.
+  /// The call must succeed (list is a 200 even when a backing node is down).
+  ConfigListCollection list_collection(const std::string & component_id) {
+    const std::string path = "/api/v1/components/" + component_id + "/configurations";
+    auto raw = make_request_with_match(path, kListConfigPattern);
+    http::TypedRequest req(raw);
+
+    auto result = handlers_->list_configurations(req);
+    EXPECT_TRUE(result.has_value()) << "list_configurations should return 200 for " << path;
+    return result.has_value() ? result.value() : ConfigListCollection{};
+  }
+
+  /// Convenience: just the parsed x-medkit block of the list response.
+  dto::ConfigListXMedkit list_xmedkit(const std::string & component_id) {
+    auto collection = list_collection(component_id);
+    return collection.x_medkit.has_value() ? *collection.x_medkit : dto::ConfigListXMedkit{};
   }
 
   CorsConfig cors_{};
@@ -270,4 +301,70 @@ TEST_F(ParameterErrorPrecedenceTest, AllNodesMissingParameterReturns404) {
 
   EXPECT_EQ(err.http_status, 404);
   EXPECT_EQ(err.code, ERR_RESOURCE_NOT_FOUND);
+}
+
+// Issue #541: one backing node down and one up. The list endpoint must stay a
+// 200 but flag itself partial and name the unavailable node, instead of
+// silently returning a shrunken list. Both node orders are covered.
+TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeFirstIsPartial) {
+  auto collection = list_collection("stack_unavail_first");
+  const auto & xm = collection.x_medkit.value();
+
+  ASSERT_TRUE(xm.partial.has_value());
+  EXPECT_TRUE(*xm.partial);
+  ASSERT_TRUE(xm.unavailable_nodes.has_value());
+  EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
+            xm.unavailable_nodes->end())
+      << "unavailable node list must name the down node";
+  // The reachable node's parameters are still merged into the returned list -
+  // a partial result must not throw away the nodes that answered.
+  EXPECT_FALSE(collection.items.empty()) << "answering node's parameters must survive the partial";
+}
+
+TEST_F(ParameterErrorPrecedenceTest, ListWithUnavailableNodeLastIsPartial) {
+  auto collection = list_collection("stack_unavail_last");
+  const auto & xm = collection.x_medkit.value();
+
+  ASSERT_TRUE(xm.partial.has_value());
+  EXPECT_TRUE(*xm.partial);
+  ASSERT_TRUE(xm.unavailable_nodes.has_value());
+  EXPECT_NE(std::find(xm.unavailable_nodes->begin(), xm.unavailable_nodes->end(), kGhostFqn),
+            xm.unavailable_nodes->end());
+  // Reachable node comes first in this order, so it is the one that stresses
+  // accumulation: assert its parameters survive here too.
+  EXPECT_FALSE(collection.items.empty()) << "answering node's parameters must survive the partial";
+}
+
+// Control: when every backing node is reachable, the list is not flagged
+// partial and no unavailable nodes are reported.
+TEST_F(ParameterErrorPrecedenceTest, ListWithAllNodesReachableIsNotPartial) {
+  auto xm = list_xmedkit("stack_all_missing");
+
+  EXPECT_FALSE(xm.partial.has_value() && *xm.partial);
+  EXPECT_FALSE(xm.unavailable_nodes.has_value());
+}
+
+// When NO backing node answers, the list fails with the worst per-node
+// verdict instead of returning an empty partial 200. Here the manager is shut
+// down so every node returns SHUT_DOWN and the surfaced status is 500
+// internal-error, mirroring GET, rather than mislabelling the nodes
+// "unavailable" behind a partial 200.
+//
+// The complementary case - one node failing while another answers - now keeps
+// the answering node's parameters and stays a 200 partial (asserted by the
+// ListWith*NodeIsPartial cases above via collection.items), so the old
+// 200->500 loud-drop no longer exists. That mixed case cannot be pinned more
+// tightly here because the live-node harness has no per-node non-503 fault
+// hook (shutdown is manager-wide; the ghost/unspun nodes only yield 503).
+TEST_F(ParameterErrorPrecedenceTest, ListWithHardErrorFailsRequestNotPartial) {
+  gateway_node_->get_configuration_manager()->shutdown();
+
+  const std::string path = "/api/v1/components/stack_all_missing/configurations";
+  auto raw = make_request_with_match(path, kListConfigPattern);
+  http::TypedRequest req(raw);
+
+  auto result = handlers_->list_configurations(req);
+  ASSERT_FALSE(result.has_value()) << "hard per-node error must fail the list, not return a partial 200";
+  EXPECT_EQ(result.error().http_status, 500);
+  EXPECT_EQ(result.error().code, ERR_INTERNAL_ERROR);
 }
