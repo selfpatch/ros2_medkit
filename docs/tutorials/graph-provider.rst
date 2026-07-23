@@ -21,7 +21,8 @@ Each ``x-medkit-graph`` document is scoped to a single SOVD Function. It models:
 - **edges** - publisher/subscriber topic connections between those Apps, each
   carrying ``frequency_hz``, ``latency_ms``, ``drop_rate_percent``, and a
   ``metrics_status``.
-- **pipeline_status** - the Function's aggregate health, rolled up from every edge.
+- **pipeline_status** - the Function's aggregate health, rolled up from every edge
+  and from node reachability.
 
 The metrics themselves are **not** measured by the plugin directly (it does not
 subscribe to your data topics). They come entirely from a ``/diagnostics``
@@ -395,7 +396,10 @@ Reading the Output
    - ``degraded`` - no edge is in error, but at least one measured edge's
      frequency ratio (measured / expected) is below
      ``degraded_frequency_ratio``, or its drop rate exceeds
-     ``drop_rate_percent_threshold``.
+     ``drop_rate_percent_threshold``, or at least one scoped node is
+     ``unreachable``. A dead node carries no topics, so it contributes no
+     edge, but the Function is not healthy while one of its nodes is down -
+     ``node_status`` names which one.
    - ``healthy`` - everything else, including a graph where every edge is
      still ``pending``. A Function with no ``/diagnostics`` coverage at all
      reads as ``healthy``, not broken - a pipeline that was never observed is

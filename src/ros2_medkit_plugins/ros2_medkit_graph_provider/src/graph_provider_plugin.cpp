@@ -304,9 +304,10 @@ EdgeBuildResult build_edge_json(const std::string & edge_id, const App & source,
 
   if (metrics) {
     // Under kSuppress with more than one live publisher, the measured rate is
-    // untrustworthy (it may be inflated by a leftover/duplicate publisher) -
-    // omit it rather than let a genuinely broken pipeline read as healthy.
-    // kAnnotate (the default) always shows the measured rate unchanged.
+    // untrustworthy (it may be inflated by a leftover/duplicate publisher), so
+    // omit the number. This does not change the edge verdict: the ambiguity is
+    // surfaced via rate_ambiguous, and multiple publishers are not by
+    // themselves a failure. kAnnotate (the default) shows the rate unchanged.
     if (metrics->frequency_hz.has_value() && !suppress_rate) {
       metrics_json["frequency_hz"] = *metrics->frequency_hz;
     }
@@ -394,9 +395,11 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
     graph["topics"].push_back({{"topic_id", topic_id}, {"name", topic_name}});
   }
 
+  bool has_unreachable_node = false;
   for (const auto * app : scoped_apps) {
     nlohmann::json node = {{"entity_id", app->id}, {"node_status", app->is_online ? "reachable" : "unreachable"}};
     if (!app->is_online) {
+      has_unreachable_node = true;
       const auto last_seen_it = state.last_seen_by_app.find(app->id);
       if (last_seen_it != state.last_seen_by_app.end()) {
         node["last_seen"] = last_seen_it->second;
@@ -459,9 +462,13 @@ nlohmann::json build_graph_document_for_apps(const std::string & function_id,
     }
   }
 
+  // A scoped node that is unreachable (offline) contributes no edge - its topic
+  // list is empty - so edge health alone would read "healthy" while part of the
+  // function is down. Fold that into the verdict: an unreachable scoped node
+  // means the pipeline is at least degraded (node_status names which node).
   if (has_errors) {
     pipeline_status = "broken";
-  } else if (has_degraded) {
+  } else if (has_degraded || has_unreachable_node) {
     pipeline_status = "degraded";
   }
   graph["pipeline_status"] = pipeline_status;

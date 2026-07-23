@@ -456,7 +456,9 @@ Functions
      meaning changed and old parsing logic may break.
    - ``pipeline_status``: overall graph state, one of ``healthy``, ``degraded``, ``broken``.
      A graph where every edge is still ``pending`` reads as ``healthy`` - a pipeline
-     never observed is not evidence of a broken one.
+     never observed is not evidence of a broken one. A scoped node that is
+     ``unreachable`` makes the status at least ``degraded``: a dead node carries no
+     topics and so contributes no edge, but the Function is not healthy while it is down.
    - ``node_status``: per-node reachability, one of ``reachable``, ``unreachable``
    - ``last_seen``: present only on a node whose ``node_status`` is ``unreachable``;
      an ISO 8601 millisecond-precision timestamp of the last introspection cycle
