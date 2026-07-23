@@ -621,6 +621,12 @@ if(BUILD_TESTING)
   medkit_target_dependencies(test_ros2_topic_data_provider rclcpp std_msgs)
   medkit_set_test_domain(test_ros2_topic_data_provider)
 
+  # TriggerTopicSubscriber adapter tests (rclcpp + a real subscription executor)
+  ament_add_gtest(test_trigger_topic_subscriber test/test_trigger_topic_subscriber.cpp)
+  target_link_libraries(test_trigger_topic_subscriber gateway_ros2)
+  medkit_target_dependencies(test_trigger_topic_subscriber rclcpp std_msgs)
+  medkit_set_test_domain(test_trigger_topic_subscriber)
+
   # Add Ros2LogSource tests (rclcpp required - publishes to /rosout)
   ament_add_gtest(test_ros2_log_source test/test_ros2_log_source.cpp)
   target_link_libraries(test_ros2_log_source gateway_ros2)
@@ -1100,6 +1106,7 @@ if(BUILD_TESTING)
       test_ros2_subscription_slot
       test_topic_data_provider_interface
       test_ros2_topic_data_provider
+      test_trigger_topic_subscriber
       test_ros2_log_source
       test_discovery_models
       test_host_info_provider

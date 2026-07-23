@@ -147,6 +147,9 @@ class TriggerTopicSubscriber {
   void set_retry_callback(RetryCallback cb);
 
  private:
+  /// Test-only access to private state and the retry hook.
+  friend struct TriggerTopicSubscriberTestAccess;
+
   /// rclcpp generic-subscription callback delivering one serialized sample.
   using MessageCallback = std::function<void(std::shared_ptr<const rclcpp::SerializedMessage>)>;
 
