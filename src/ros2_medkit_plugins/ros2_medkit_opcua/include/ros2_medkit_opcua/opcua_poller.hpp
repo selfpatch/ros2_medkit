@@ -273,6 +273,7 @@ class OpcuaPoller {
 
  private:
   void poll_loop();
+  void event_pump_loop();
   void do_poll();
   /// Issue #496: emit the component-scoped comms-lost raise/clear edge through
   /// the alarm callback (fault_code ``PLC_COMMS_LOST``, scoped to the node
@@ -353,6 +354,15 @@ class OpcuaPoller {
   PollerConfig config_;
 
   std::thread poll_thread_;
+  /// Dedicated subscription pump. Publish responses are only processed inside
+  /// a runIterate, and the poll thread's single iterate per cycle loses the
+  /// client mutex to sync API traffic (fleet health checker, UI, freeze-frame
+  /// reads) long enough for outstanding publish requests to hit the client
+  /// requestTimeout - all pending publishes then expire in one burst and
+  /// AlarmCondition events silently stop. A short iterate every 100 ms from
+  /// its own thread keeps the publish channel serviced regardless of poll
+  /// cadence or API contention.
+  std::thread event_pump_thread_;
   std::atomic<bool> running_{false};
   std::atomic<bool> using_subscriptions_{false};
 
@@ -372,7 +382,8 @@ class OpcuaPoller {
   EventAlarmCallback event_alarm_callback_;
   std::mutex event_alarm_callback_mutex_;
 
-  uint32_t event_subscription_id_{0};
+  // Atomic: written by poll/reconnect and setup, read by the event pump thread.
+  std::atomic<uint32_t> event_subscription_id_{0};
   std::vector<uint32_t> event_monitored_item_ids_;
 
   mutable std::shared_mutex conditions_mutex_;
