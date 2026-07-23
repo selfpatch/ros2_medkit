@@ -86,7 +86,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(START 110 END 119)
+  medkit_init_test_domains(START 105 END 109)
 
   # Include plugin source in test (plugin is MODULE/dlopen, test instantiates directly)
   ament_add_gtest(test_topic_beacon_plugin

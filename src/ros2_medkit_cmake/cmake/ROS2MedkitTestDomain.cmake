@@ -19,19 +19,33 @@
 # non-overlapping domain ID ranges to prevent DDS cross-contamination.
 #
 # Allocated ranges:
-#   ros2_medkit_sovd_service_iface:   1 -   9 (9 slots)
-#   ros2_medkit_fault_manager:       10 -  29 (20 slots)
-#   ros2_medkit_gateway:             30 -  89 (60 slots)
-#   ros2_medkit_diagnostic_bridge:   90 -  99 (10 slots)
-#   ros2_medkit_param_beacon:       100 - 109 (10 slots)
-#   ros2_medkit_topic_beacon:       110 - 119 (10 slots)
-#   ros2_medkit_graph_provider:     120 - 129 (10 slots)
-#   ros2_medkit_linux_introspection: 130 - 139 (10 slots)
-#   ros2_medkit_integration_tests:  140 - 209 (70 slots)
-#   ros2_medkit_log_bridge:         210 - 214 (5 slots, carved from integration_tests)
-#   ros2_medkit_action_status_bridge: 215 - 219 (5 slots, carved from integration_tests)
-#   ros2_medkit_opcua:              220 - 229 (10 slots, carved from integration_tests)
-#   multi-domain tests (secondary): 230 - 232 (3 slots, reserved for peer_aggregation etc.)
+#   ros2_medkit_sovd_service_interface: 1 -   9 (9 slots)
+#   ros2_medkit_fault_manager:         10 -  29 (20 slots)
+#   ros2_medkit_gateway:               30 -  89 (60 slots)
+#   ros2_medkit_diagnostic_bridge:     90 -  99 (10 slots)
+#   ros2_medkit_param_beacon:         100 - 104 (5 slots)
+#   ros2_medkit_topic_beacon:         105 - 109 (5 slots)
+#   ros2_medkit_fault_reporter:       110 - 112 (3 slots)
+#   ros2_medkit_log_bridge:           113 - 115 (3 slots)
+#   ros2_medkit_action_status_bridge: 116 - 119 (4 slots)
+#   ros2_medkit_graph_provider:       120 - 129 (10 slots)
+#   ros2_medkit_integration_tests:    130 - 219 (90 slots)
+#   ros2_medkit_opcua:                220 - 229 (10 slots)
+#   multi-domain tests (secondary):   230 - 232 (3 slots, reserved for peer_aggregation etc.)
+#
+# Launch_testing tests (add_launch_test) create real ROS nodes and MUST consume
+# a domain, exactly like a gtest. Two concurrently scheduled tests on the same
+# domain (the default, 0) discover each other's nodes and cross-contaminate.
+# Use medkit_add_launch_test (below), which registers the test and assigns its
+# domain in one call, so a launch test can never be added without isolation.
+#
+# ros2_medkit_linux_introspection reads /proc and cgroups only (no ROS nodes),
+# so it needs no domain isolation and reserves no range.
+#
+# integration_tests (it grows by glob) and opcua are the tightest pools. When
+# either fills, reclaim slack from the fixed 5-slot beacon pools above (each
+# uses one of five) and re-carve - the 1-232 DDS space is otherwise fully
+# allocated.
 #
 # To add a new package: pick the next free range and update this comment.
 
@@ -73,4 +87,25 @@ macro(medkit_set_test_domain TEST_NAME)
     ENVIRONMENT "ROS_DOMAIN_ID=${_MEDKIT_DOMAIN_COUNTER}"
   )
   math(EXPR _MEDKIT_DOMAIN_COUNTER "${_MEDKIT_DOMAIN_COUNTER} + 1")
+endmacro()
+
+# Register a launch_testing test AND assign it a unique DDS domain in one call.
+# This is the required way to add a launch test: it makes it impossible to add
+# one without domain isolation (see the note above about domain-0 collisions).
+# Do not call add_launch_test directly.
+#
+# The caller may still set extra properties afterwards (e.g. LABELS), since this
+# only sets the ENVIRONMENT and TIMEOUT properties.
+#
+# Usage:
+#   medkit_add_launch_test(test_integration test/test_integration.test.py)
+#   medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 90)
+macro(medkit_add_launch_test TEST_NAME TEST_FILE)
+  cmake_parse_arguments(_MALT "" "TIMEOUT" "" ${ARGN})
+  if(DEFINED _MALT_TIMEOUT)
+    add_launch_test(${TEST_FILE} TARGET ${TEST_NAME} TIMEOUT ${_MALT_TIMEOUT})
+  else()
+    add_launch_test(${TEST_FILE} TARGET ${TEST_NAME})
+  endif()
+  medkit_set_test_domain(${TEST_NAME})
 endmacro()

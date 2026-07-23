@@ -130,11 +130,7 @@ if(BUILD_TESTING)
   # post-shutdown exit-code check. Override the label to "integration" via
   # set_tests_properties (the repo convention) so it runs only in the
   # integration phase.
-  add_launch_test(
-    test/test_integration.test.py
-    TARGET test_integration
-    TIMEOUT 60
-  )
+  medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 60)
   set_tests_properties(test_integration PROPERTIES LABELS "integration")
   ros2_medkit_relax_vendor_warnings()
 endif()

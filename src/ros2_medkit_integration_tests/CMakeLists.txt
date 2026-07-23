@@ -120,11 +120,15 @@ if(BUILD_TESTING)
   set(_INTEG_PORT 9100)
 
   include(ROS2MedkitTestDomain)
-  # Primary per-test domain pool. Upper bound is 229: the documented
-  # integration_tests allocation is 140-229, with 230-232 reserved for the
-  # multi-gateway secondary pool (see get_test_domain_id below). One domain is
-  # consumed per feature + scenario test.
-  medkit_init_test_domains(START 140 END 229)
+  # Primary per-test domain pool 130-219, with 220-229 owned by opcua and
+  # 230-232 reserved for the multi-gateway secondary pool (see
+  # get_test_domain_id below). One domain is consumed per feature + scenario
+  # test. This pool grows by glob, so it is the first to fill; when it does,
+  # reclaim slack from the fixed beacon pools (see ROS2MedkitTestDomain.cmake).
+  # The tests below call add_launch_test directly instead of the
+  # medkit_add_launch_test wrapper because each needs a combined
+  # GATEWAY_TEST_PORT + ROS_DOMAIN_ID environment, assigned inline in the loop.
+  medkit_init_test_domains(START 130 END 219)
 
   # Feature tests (atomic, independent, 120s timeout)
   file(GLOB FEATURE_TESTS test/features/*.test.py)

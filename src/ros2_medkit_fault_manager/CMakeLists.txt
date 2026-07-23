@@ -207,32 +207,16 @@ if(BUILD_TESTING)
     DESTINATION share/${PROJECT_NAME}
   )
 
-  add_launch_test(
-    test/test_integration.test.py
-    TARGET test_integration
-    TIMEOUT 60
-  )
+  medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 60)
   set_tests_properties(test_integration PROPERTIES LABELS "integration")
 
-  add_launch_test(
-    test/test_rosbag_integration.test.py
-    TARGET test_rosbag_integration
-    TIMEOUT 90
-  )
+  medkit_add_launch_test(test_rosbag_integration test/test_rosbag_integration.test.py TIMEOUT 90)
   set_tests_properties(test_rosbag_integration PROPERTIES LABELS "integration")
 
-  add_launch_test(
-    test/test_entity_thresholds_integration.test.py
-    TARGET test_entity_thresholds_integration
-    TIMEOUT 60
-  )
+  medkit_add_launch_test(test_entity_thresholds_integration test/test_entity_thresholds_integration.test.py TIMEOUT 60)
   set_tests_properties(test_entity_thresholds_integration PROPERTIES LABELS "integration")
 
-  add_launch_test(
-    test/test_rosbag_entity_scope.test.py
-    TARGET test_rosbag_entity_scope
-    TIMEOUT 120
-  )
+  medkit_add_launch_test(test_rosbag_entity_scope test/test_rosbag_entity_scope.test.py TIMEOUT 120)
   set_tests_properties(test_rosbag_entity_scope PROPERTIES LABELS "integration")
 
   # CaptureThreadPool unit tests (no ROS node, no domain id needed)
