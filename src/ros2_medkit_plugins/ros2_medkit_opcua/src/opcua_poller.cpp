@@ -801,17 +801,27 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     }
   }
 
-  // Drop non-condition events for EVERY alarm source, explicit or auto. The
-  // server-wide EventNotifier (ns=0;i=2253) also emits BaseEventType /
-  // AuditEventType housekeeping (e.g. "Session state changed to Created ...")
-  // that is not an A&C Condition and carries a null ConditionId (Part 9
-  // §5.5.2.13: only a Condition resolves the ConditionId select clause). A
-  // catch-all explicit event_alarms entry pointed at i=2253 would otherwise
-  // map such an event to its configured fault_code (e.g. PLC_ALARM) and mask a
-  // genuine process alarm the fault store dedups on the same code. The auto
-  // path had this guard already (see the shared is_condition_event() helper);
-  // hoisting it here covers the explicit path too, so it runs once, before the
-  // explicit/auto split below.
+  // Drop non-condition events for EVERY alarm source, explicit or auto, before
+  // the explicit/auto split below. The server-wide EventNotifier (ns=0;i=2253)
+  // also emits BaseEventType / AuditEventType housekeeping (e.g. "Session state
+  // changed to Created ...") that is not an A&C Condition and carries a null
+  // ConditionId (Part 9 §5.5.2.13: only a Condition resolves the ConditionId
+  // select clause). Such an event does NOT itself surface a fault: every
+  // alarm-state select clause resolves to null, so apply_condition_state feeds
+  // ActiveState=false from a fresh Suppressed entry into AlarmStateMachine,
+  // which returns ReportHealed - and on_event_alarm treats ReportHealed as a
+  // no-op. The harm is the latched null-ConditionId entry that reaching
+  // apply_condition_state leaves behind in conditions_ (keyed by the null
+  // NodeId string, pinned at the resolved fault_code - e.g. a catch-all
+  // event_alarms i=2253 -> PLC_ALARM), latched at Healed:
+  //   (a) should_clear_after_refresh counts Healed as active, and the null cid
+  //       is never replayed inside a ConditionRefresh burst, so the next
+  //       RefreshEnd emits a spurious ClearFault carrying that fault_code -
+  //       clearing a genuine alarm that shares the code;
+  //   (b) that null entry can win lookup_condition's linear (entity_id,
+  //       fault_code) scan, so a later Acknowledge / Confirm is misrouted to a
+  //       null ConditionId (call_method on runtime->condition_id).
+  // Dropping the event up front stops the entry from ever being created.
   if (!is_condition_event(condition_id)) {
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(), "on_event: non-condition event (null ConditionId, type="
                                                    << event_type.toString() << ") - ignoring");
