@@ -37,13 +37,15 @@ std::string json_string(const nlohmann::json & j, const char * key) {
 }  // namespace
 
 FaultTriggerEngine::FaultTriggerEngine(std::string storage_path, ValueFetcher fetcher, FaultReportFn report,
-                                       FaultClearFn clear, LogFn log, DataPointNamesFn data_point_names)
+                                       FaultClearFn clear, LogFn log, DataPointNamesFn data_point_names,
+                                       EntityExistsFn entity_exists)
   : storage_path_(std::move(storage_path))
   , fetcher_(std::move(fetcher))
   , report_(std::move(report))
   , clear_(std::move(clear))
   , log_(std::move(log))
-  , data_point_names_(std::move(data_point_names)) {
+  , data_point_names_(std::move(data_point_names))
+  , entity_exists_(std::move(entity_exists)) {
   load();
 }
 
@@ -133,6 +135,14 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
         std::make_pair(400, std::string("'severity' must be one of INFO, WARNING, ERROR, CRITICAL")));
   }
 
+  // Reject a rule targeting an app the entity registry does not know (404): a
+  // bogus app_id must not silently reserve a global fault_code. Checked before
+  // the data-point probe so that a nullopt there means "known app, points
+  // unreadable right now" (transient outage), never "unknown app".
+  if (entity_exists_ && !entity_exists_(app_id)) {
+    return tl::make_unexpected(std::make_pair(404, "app '" + app_id + "' does not exist"));
+  }
+
   // A rule bound to a data point the app does not have can never fire, yet it
   // would list as active - a silently dead alarm. Reject it at creation when
   // the app's points are enumerable; nullopt (entity unreadable right now)
@@ -177,6 +187,11 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
 }
 
 bool FaultTriggerEngine::remove(const std::string & app_id, const std::string & id) {
+  // Serialize the whole erase+clear against evaluate_once()'s report/clear (see
+  // dispatch_mutex_): otherwise a DELETE landing between evaluate's snapshot and
+  // its report_ would clear the fault here while evaluate re-asserts it, leaving
+  // a stuck fault for a rule that no longer exists.
+  std::lock_guard<std::mutex> dispatch(dispatch_mutex_);
   std::string fault_code;
   bool was_crossed = false;
   bool found = false;
@@ -194,7 +209,8 @@ bool FaultTriggerEngine::remove(const std::string & app_id, const std::string & 
     save_locked();
     found = true;
   }
-  // Clear outside the lock: the fault report path may re-enter unrelated code.
+  // Clear outside mutex_ (the fault report path may re-enter unrelated code) but
+  // still under dispatch_mutex_ so it is ordered against evaluate_once().
   if (found && was_crossed && clear_) {
     clear_(app_id, fault_code);
   }
@@ -202,8 +218,9 @@ bool FaultTriggerEngine::remove(const std::string & app_id, const std::string & 
 }
 
 void FaultTriggerEngine::evaluate_once() {
-  // Snapshot the active rules under the lock, evaluate the (blocking) value
-  // fetch + fault report outside it, then fold the new latch state back in.
+  // Snapshot the active rules under the lock, run the (blocking) value fetch
+  // outside every lock, then dispatch report/clear + fold the latch back under
+  // dispatch_mutex_ (serialized against remove()).
   struct Pending {
     std::string id;
     std::string app_id;
@@ -213,13 +230,15 @@ void FaultTriggerEngine::evaluate_once() {
     std::string fault_code;
     std::string severity;
     bool crossed;
+    std::optional<double> value;
   };
   std::vector<Pending> work;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto & r : rules_) {
       if (r.active) {
-        work.push_back({r.id, r.app_id, r.data_name, r.op, r.threshold, r.fault_code, r.severity, r.crossed});
+        work.push_back(
+            {r.id, r.app_id, r.data_name, r.op, r.threshold, r.fault_code, r.severity, r.crossed, std::nullopt});
       }
     }
   }
@@ -227,15 +246,33 @@ void FaultTriggerEngine::evaluate_once() {
     return;
   }
 
+  // Blocking value fetch OUTSIDE any lock so neither mutex is held across I/O.
   for (auto & w : work) {
-    const std::optional<double> value = fetcher_ ? fetcher_(w.app_id, w.data_name) : std::nullopt;
-    if (!value.has_value()) {
+    w.value = fetcher_ ? fetcher_(w.app_id, w.data_name) : std::nullopt;
+  }
+
+  // Dispatch under dispatch_mutex_ so the whole re-check-still-exists -> report_
+  // -> latch-fold section is atomic against remove()'s erase+clear. A rule
+  // deleted since the snapshot is skipped, so evaluate never re-asserts a fault
+  // that a concurrent DELETE just cleared.
+  std::lock_guard<std::mutex> dispatch(dispatch_mutex_);
+  for (auto & w : work) {
+    if (!w.value.has_value()) {
       continue;  // unreadable this poll: hold state, never false-clear a live fault
     }
-    const bool now_crossed = compare(*value, w.op, w.threshold);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const bool still_present = std::any_of(rules_.begin(), rules_.end(), [&](const FaultTriggerRule & r) {
+        return r.id == w.id && r.app_id == w.app_id;
+      });
+      if (!still_present) {
+        continue;  // removed under dispatch_mutex_: remove() already cleared it
+      }
+    }
+    const bool now_crossed = compare(*w.value, w.op, w.threshold);
     if (now_crossed) {
       if (report_) {
-        const std::string desc = w.data_name + " = " + std::to_string(*value) + " " + w.op + " " +
+        const std::string desc = w.data_name + " = " + std::to_string(*w.value) + " " + w.op + " " +
                                  std::to_string(w.threshold) + " (fault-trigger " + w.id + ")";
         // Re-report every poll while crossed: level-triggered, so the fault
         // confirms regardless of the manager's debounce threshold and stays
@@ -251,16 +288,23 @@ void FaultTriggerEngine::evaluate_once() {
     }
   }
 
-  // Fold latch state back into the live rules (still identified by id; a rule
-  // deleted mid-evaluation is simply skipped).
+  // Fold latch state back into the live rules and persist any edge so a restart
+  // mid-fault reloads the asserted latch and can still auto-clear on the falling
+  // edge (a rule deleted mid-evaluation is simply skipped). Only writes on an
+  // actual change, so a steadily-crossed rule does not re-save every poll.
+  bool latch_changed = false;
   std::lock_guard<std::mutex> lock(mutex_);
   for (const auto & w : work) {
     auto it = std::find_if(rules_.begin(), rules_.end(), [&](FaultTriggerRule & r) {
       return r.id == w.id && r.app_id == w.app_id;
     });
-    if (it != rules_.end()) {
+    if (it != rules_.end() && it->crossed != w.crossed) {
       it->crossed = w.crossed;
+      latch_changed = true;
     }
+  }
+  if (latch_changed) {
+    save_locked();
   }
 }
 
@@ -298,6 +342,9 @@ void FaultTriggerEngine::load() {
     r.fault_code = json_string(item, "fault_code");
     r.severity = json_string(item, "severity");
     r.active = item.contains("active") && item["active"].is_boolean() ? item["active"].get<bool>() : true;
+    // Restore the latch (default false for pre-latch stores) so a fault asserted
+    // before the restart still clears on the next falling edge instead of sticking.
+    r.crossed = item.contains("crossed") && item["crossed"].is_boolean() ? item["crossed"].get<bool>() : false;
     if (r.id.empty() || r.app_id.empty() || r.data_name.empty() || !valid_operator(r.op) || r.fault_code.empty() ||
         !valid_severity(r.severity)) {
       continue;  // drop malformed persisted rows rather than crash on them
@@ -325,7 +372,9 @@ void FaultTriggerEngine::save_locked() const {
   nlohmann::json j = nlohmann::json::array();
   for (const auto & r : rules_) {
     nlohmann::json row = rule_to_json(r);
-    row["app_id"] = r.app_id;  // store the owning entity too (not in the REST response)
+    row["app_id"] = r.app_id;    // store the owning entity too (not in the REST response)
+    row["crossed"] = r.crossed;  // persist the latch (not in the REST DTO) so a restart
+                                 // mid-fault can still auto-clear on the falling edge
     j.push_back(std::move(row));
   }
   const std::string tmp = storage_path_ + ".tmp";

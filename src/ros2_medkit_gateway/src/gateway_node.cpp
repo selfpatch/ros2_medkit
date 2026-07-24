@@ -1941,12 +1941,20 @@ void GatewayNode::init_fault_trigger_engine() {
     return names;
   };
 
+  // Entity existence for create-time validation: an app is real iff the entity
+  // registry knows its id. Distinct from the data route (which returns nullopt
+  // for both an unknown app and a transient outage), so create() can 404 a
+  // bogus app instead of reserving a global fault_code for it.
+  auto entity_exists = [this](const std::string & app_id) -> bool {
+    return get_thread_safe_cache().find_entity(app_id).has_value();
+  };
+
   fault_trigger_engine_ = std::make_unique<FaultTriggerEngine>(
       storage_path, std::move(fetcher), std::move(report), std::move(clear),
       [this](const std::string & m) {
         RCLCPP_INFO(get_logger(), "%s", m.c_str());
       },
-      std::move(data_point_names));
+      std::move(data_point_names), std::move(entity_exists));
 
   // Dedicated evaluation loop: the value fetch + synchronous ReportFault call
   // must not run on the main ROS executor (mirrors the freeze-frame capture's

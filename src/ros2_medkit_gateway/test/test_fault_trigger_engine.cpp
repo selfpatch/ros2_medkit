@@ -221,3 +221,102 @@ TEST(FaultTriggerEngineTest, PersistsAcrossReload) {
   }
   std::remove(path.c_str());
 }
+
+TEST(FaultTriggerEngineTest, RejectsRuleOnUnknownApp) {
+  // A rule on an app the entity registry does not know must 404, not silently
+  // reserve a global fault_code (which would then block the real app's rule).
+  auto exists = [](const std::string & app_id) -> bool {
+    return app_id == "tank";
+  };
+  FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr, nullptr, exists);
+
+  auto bogus = engine.create("ghost", make_body("level", ">", 10.0, "F", "ERROR"));
+  ASSERT_FALSE(bogus);
+  EXPECT_EQ(bogus.error().first, 404);
+  EXPECT_NE(bogus.error().second.find("ghost"), std::string::npos);
+  EXPECT_TRUE(engine.list("ghost").empty());
+
+  // A known app still creates normally.
+  EXPECT_TRUE(engine.create("tank", make_body("level", ">", 10.0, "F2", "ERROR")));
+}
+
+TEST(FaultTriggerEngineTest, DeleteRacingEvaluateDoesNotResurrectFault) {
+  // Reproduce the TOCTOU: a DELETE lands between evaluate_once()'s rule snapshot
+  // and its report_. The fetcher runs in evaluate's lock-free fetch phase, so
+  // removing the rule from inside it simulates exactly that interleaving. The
+  // rule (and any fault) is gone, so evaluate must NOT re-report it.
+  Recorder rec;
+  FaultTriggerEngine * engine_ptr = nullptr;
+  std::string rule_id;
+  bool removed_mid_eval = false;
+  auto fetcher = [&](const std::string & app, const std::string &) -> std::optional<double> {
+    if (!removed_mid_eval && engine_ptr != nullptr) {
+      removed_mid_eval = true;
+      engine_ptr->remove(app, rule_id);
+    }
+    return 95.0;  // above threshold
+  };
+  auto report = [&rec](const std::string & app, const std::string & code, const std::string &, const std::string &) {
+    rec.reports.push_back(app + "/" + code);
+  };
+  auto clear = [&rec](const std::string & app, const std::string & code) {
+    rec.clears.push_back(app + "/" + code);
+  };
+
+  FaultTriggerEngine engine("", fetcher, report, clear, nullptr);
+  engine_ptr = &engine;
+  auto rule = engine.create("tank", make_body("level", ">", 80.0, "TANK_OVERFILL", "ERROR"));
+  ASSERT_TRUE(rule);
+  rule_id = rule->id;
+
+  engine.evaluate_once();
+  EXPECT_TRUE(rec.reports.empty()) << "evaluate re-asserted a fault for a rule deleted mid-evaluation";
+  EXPECT_TRUE(engine.list("tank").empty());
+}
+
+TEST(FaultTriggerEngineTest, CrossedLatchSurvivesReloadAndClearsOnFallingEdge) {
+  // A fault asserted before a restart must still auto-clear afterwards: the
+  // crossed latch is persisted, so the reloaded rule remembers it was crossed
+  // and clears on the falling edge instead of leaving a stuck fault forever.
+  char tmpl[] = "/tmp/ftr_latch_XXXXXX";
+  const int fd = mkstemp(tmpl);
+  ASSERT_NE(fd, -1);
+  close(fd);
+  const std::string path = std::string(tmpl) + "_ftr.json";
+
+  std::optional<double> live = 95.0;  // above threshold
+  auto fetcher = [&live](const std::string &, const std::string &) -> std::optional<double> {
+    return live;
+  };
+
+  {
+    Recorder rec;
+    auto report = [&rec](const std::string & app, const std::string & code, const std::string &, const std::string &) {
+      rec.reports.push_back(app + "/" + code);
+    };
+    auto clear = [&rec](const std::string & app, const std::string & code) {
+      rec.clears.push_back(app + "/" + code);
+    };
+    FaultTriggerEngine engine(path, fetcher, report, clear, nullptr);
+    ASSERT_TRUE(engine.create("tank", make_body("level", ">", 80.0, "TANK_OVERFILL", "ERROR")));
+    engine.evaluate_once();  // cross -> fault asserted AND latch persisted
+    ASSERT_EQ(rec.reports.size(), 1u);
+  }
+
+  {
+    Recorder rec;
+    auto report = [&rec](const std::string & app, const std::string & code, const std::string &, const std::string &) {
+      rec.reports.push_back(app + "/" + code);
+    };
+    auto clear = [&rec](const std::string & app, const std::string & code) {
+      rec.clears.push_back(app + "/" + code);
+    };
+    live = 50.0;  // recovered before the reloaded engine's first poll
+    FaultTriggerEngine reloaded(path, fetcher, report, clear, nullptr);
+    ASSERT_EQ(reloaded.list("tank").size(), 1u);
+    reloaded.evaluate_once();  // falling edge -> must clear the persisted fault
+    EXPECT_EQ(rec.clears.size(), 1u) << "reloaded latch was lost; stuck fault never cleared";
+    EXPECT_EQ(rec.clears.front(), "tank/TANK_OVERFILL");
+  }
+  std::remove(path.c_str());
+}
