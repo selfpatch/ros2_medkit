@@ -153,7 +153,8 @@ TEST(NodeIdsEquivalentTest, UnparseableSpellingsFallBackToRawEquality) {
 TEST(IsConditionEventTest, NullConditionIdIsRejected) {
   // Part 9 §5.5.2.13: a non-condition event (e.g. a Siemens Server-object
   // system message such as "CPU not in RUN") resolves the ConditionId SAO
-  // to NodeId.Null - the system-message filter for auto_alarms.
+  // to NodeId.Null. on_event's guard drops such events for every alarm
+  // source - explicit event_alarms and auto_alarms alike.
   EXPECT_FALSE(OpcuaPoller::is_condition_event(opcua::NodeId()));
 }
 

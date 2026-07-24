@@ -220,6 +220,8 @@ State machine
 
 Inputs from each event payload (positional ``EventFilter`` select clauses):
 
+- ``ConditionId`` - NodeId; null means the notification is not an A&C Condition
+  (a plain BaseEvent / system message), gated by rule 0 below before the rest
 - ``EnabledState.Id`` - bool
 - ``ShelvingState.CurrentState.Id`` - NodeId; non-Unshelved => suppressed
 - ``ActiveState.Id`` - bool
@@ -232,6 +234,10 @@ Decision order, first match wins:
 +-----+--------------------------------------+---------------------------------------+
 | #   | Condition                            | Outcome                               |
 +=====+======================================+=======================================+
+| 0   | ``ConditionId == null``              | not a Condition: dropped for every    |
+|     | (non-condition event, e.g. a         | alarm source - explicit and auto -    |
+|     | system message)                      | before the state machine runs         |
++-----+--------------------------------------+---------------------------------------+
 | 1   | ``BranchId != null``                 | history-only (no SOVD update)         |
 +-----+--------------------------------------+---------------------------------------+
 | 2   | ``EnabledState == false``            | clear if was active, else no-op       |
@@ -253,6 +259,13 @@ Decision order, first match wins:
 |     | (``Confirmed == true`` or            |                                       |
 |     | not ``require_confirm_for_clear``)   |                                       |
 +-----+--------------------------------------+---------------------------------------+
+
+Rule 0 is enforced in the poller's ``on_event`` (via ``is_condition_event``)
+before any state-machine input is built, and applies to every alarm source -
+explicit ``event_alarms`` (including a source-level ``fault_code`` catch-all on
+``ns=0;i=2253``) and zero-config ``auto_alarms`` alike. A drop on an explicit
+source is additionally logged once as an operator warning, since a real alarm
+that genuinely lacks a ConditionId would otherwise vanish without a trace.
 
 ``require_confirm_for_clear`` (default ``true``) gates rule 5b on both
 Acknowledge and Confirm. Some servers do not implement the optional ``Confirm``

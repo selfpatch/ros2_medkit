@@ -334,8 +334,13 @@ only when all of them match the observed event; declaration order breaks ties.
 `condition_name` / `source_node` / `event_type` are equality matches;
 `match_message` is a case-sensitive substring match on the event Message.
 An event matching no mapping uses the source-level `fault_code`; if that is also
-empty the event is ignored. A mapping-level `severity_override` / `message`
-overrides the source-level one; otherwise the source-level value is inherited.
+empty the event is ignored. Exception: a non-condition event (a plain BaseEvent
+/ system message whose `ConditionId` resolves to null - e.g. a SIMATIC "CPU not
+in RUN" arriving on a `ns=0;i=2253` catch-all) is dropped before mapping
+resolution runs, so it never falls through to the source-level `fault_code` and
+that catch-all code is never raised for it (see "System messages" under
+`auto_alarms` below). A mapping-level `severity_override` / `message` overrides
+the source-level one; otherwise the source-level value is inherited.
 
 The plugin auto-registers `acknowledge_fault` and `confirm_fault` operations
 on every entity that has at least one `event_alarms` entry. Invoke them with:
@@ -493,8 +498,12 @@ no node-map file required.
 EventNotifier as real alarms - a Siemens Server object also emits SIMATIC
 system messages (e.g. `"CPU not in RUN"`) over `i=2253`. Per OPC-UA Part 9
 §5.5.2.13 only a true Condition instance carries a ConditionId; a system
-message resolves it to `NodeId.Null`, and `auto_alarms` drops those events
-before deriving a fault. Use `exclude` for anything that still needs
+message resolves it to `NodeId.Null`. The bridge drops those events for every
+alarm source - explicit `event_alarms` (including a source-level `fault_code`
+catch-all) and `auto_alarms` alike - before any mapping resolution or
+auto-derivation, so they never surface as a fault. On an explicit source it also
+logs a one-time warning (a real alarm that genuinely lacks a ConditionId would
+otherwise be dropped silently). Use `exclude` for anything that still needs
 filtering by text (e.g. a server that does set a ConditionId on system
 events).
 
