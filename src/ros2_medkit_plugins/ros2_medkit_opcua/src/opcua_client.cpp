@@ -18,10 +18,12 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <deque>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -861,7 +863,7 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
   // a fixed Int32 write is rejected (BadTypeMismatch) by narrower nodes such as
   // the S7 "Int" (Int16). Probe the node's real DataType and write the matching
   // scalar width; fall back to Int32 when the type cannot be resolved.
-  auto write_integer_typed = [&to_int64, &value](auto & node) {
+  auto write_integer_typed = [&to_int64, &value](auto & node) -> tl::expected<void, WriteErrorInfo> {
     uint32_t dt = 0;
     try {
       const auto data_type = node.readDataType();
@@ -878,22 +880,42 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
     auto id = [](opcua::DataTypeId d) {
       return static_cast<uint32_t>(d);
     };
+    // Range-check before narrowing: an unchecked static_cast wraps (40000 ->
+    // Int16 = -25536, any negative -> unsigned = a huge value), and write_data
+    // would then echo the wrapped number back as a successful value_written.
+    // Reject out-of-range as a TypeMismatch (write_data maps it to HTTP 400).
+    auto put = [&node, iv](auto type_tag, const char * type_name) -> tl::expected<void, WriteErrorInfo> {
+      using T = decltype(type_tag);
+      bool out_of_range = false;
+      if constexpr (std::is_signed_v<T>) {
+        out_of_range = iv < static_cast<int64_t>(std::numeric_limits<T>::min()) ||
+                       iv > static_cast<int64_t>(std::numeric_limits<T>::max());
+      } else {
+        out_of_range = iv < 0 || static_cast<uint64_t>(iv) > static_cast<uint64_t>(std::numeric_limits<T>::max());
+      }
+      if (out_of_range) {
+        return tl::make_unexpected(
+            WriteErrorInfo{WriteError::TypeMismatch, std::to_string(iv) + " out of range for " + type_name});
+      }
+      node.writeValueScalar(static_cast<T>(iv));
+      return {};
+    };
     if (dt == id(opcua::DataTypeId::SByte)) {
-      node.writeValueScalar(static_cast<int8_t>(iv));
+      return put(int8_t{}, "SByte");
     } else if (dt == id(opcua::DataTypeId::Byte)) {
-      node.writeValueScalar(static_cast<uint8_t>(iv));
+      return put(uint8_t{}, "Byte");
     } else if (dt == id(opcua::DataTypeId::Int16)) {
-      node.writeValueScalar(static_cast<int16_t>(iv));
+      return put(int16_t{}, "Int16");
     } else if (dt == id(opcua::DataTypeId::UInt16)) {
-      node.writeValueScalar(static_cast<uint16_t>(iv));
+      return put(uint16_t{}, "UInt16");
     } else if (dt == id(opcua::DataTypeId::UInt32)) {
-      node.writeValueScalar(static_cast<uint32_t>(iv));
+      return put(uint32_t{}, "UInt32");
     } else if (dt == id(opcua::DataTypeId::Int64)) {
-      node.writeValueScalar(static_cast<int64_t>(iv));
+      return put(int64_t{}, "Int64");
     } else if (dt == id(opcua::DataTypeId::UInt64)) {
-      node.writeValueScalar(static_cast<uint64_t>(iv));
+      return put(uint64_t{}, "UInt64");
     } else {
-      node.writeValueScalar(static_cast<int32_t>(iv));
+      return put(int32_t{}, "Int32");
     }
   };
 
@@ -906,7 +928,9 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
       if (data_type_hint == "float") {
         node.writeValueScalar(static_cast<float>(to_double(value)));
       } else if (data_type_hint == "int") {
-        write_integer_typed(node);
+        if (auto r = write_integer_typed(node); !r) {
+          return tl::make_unexpected(r.error());
+        }
       } else if (data_type_hint == "bool") {
         node.writeValueScalar(to_bool(value));
       } else if (data_type_hint == "string") {
@@ -940,7 +964,9 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
     } else if (current.isType<int8_t>() || current.isType<uint8_t>() || current.isType<int16_t>() ||
                current.isType<uint16_t>() || current.isType<int32_t>() || current.isType<uint32_t>() ||
                current.isType<int64_t>() || current.isType<uint64_t>()) {
-      write_integer_typed(node);
+      if (auto r = write_integer_typed(node); !r) {
+        return tl::make_unexpected(r.error());
+      }
     } else {
       auto var = value_to_variant(value);
       node.writeValue(var);
