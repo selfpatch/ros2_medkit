@@ -390,6 +390,10 @@ class OpcuaPoller {
   std::set<std::string> read_modeled_sources_;
   // Sources already warned about as read-fallback-unsupported (warn once each).
   std::set<std::string> read_unsupported_warned_sources_;
+  // Configured alarm sources already warned that a non-condition (null
+  // ConditionId) event was dropped despite their explicit fault_code/mappings
+  // (warn once each; see the guard in on_event).
+  std::set<std::string> noncondition_drop_warned_sources_;
 
   // ConditionRefresh bracketing state. open62541 sends the buffered historical
   // condition burst between RefreshStartEvent and RefreshEndEvent; we apply each

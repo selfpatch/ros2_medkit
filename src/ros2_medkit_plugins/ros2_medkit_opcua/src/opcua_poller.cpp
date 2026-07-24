@@ -774,6 +774,24 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   //       null ConditionId (call_method on runtime->condition_id).
   // Dropping the event up front stops the entry from ever being created.
   if (!is_condition_event(condition_id)) {
+    // On an EXPLICIT source (operator supplied a fault_code and/or mappings) a
+    // real alarm can legitimately arrive with a null ConditionId - an edge
+    // open62541 server built without UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS,
+    // or an AlarmConditionType fired via UA_Server_triggerEvent rather than
+    // createCondition. Dropping it with only the DEBUG line below would regress
+    // that path silently (pre-PR it still raised), so warn the operator once per
+    // source. The synthetic auto source carries no fault_code/mappings
+    // (effective_alarm_sources leaves them empty), so this predicate excludes
+    // it and the auto/synthetic path keeps only the DEBUG line.
+    if ((!cfg.fault_code.empty() || !cfg.mappings.empty()) &&
+        noncondition_drop_warned_sources_.insert(cfg.source_node_id_str).second) {
+      const std::string code_desc =
+          cfg.fault_code.empty() ? std::string("its mapped fault codes") : "fault_code '" + cfg.fault_code + "'";
+      warn_operator("OPC-UA non-condition event on configured alarm source '" + cfg.source_node_id_str + "' (" +
+                    code_desc +
+                    ") carries a null ConditionId and was dropped; if this source's alarms carry no ConditionId they "
+                    "will not surface as faults.");
+    }
     RCLCPP_DEBUG_STREAM(opcua_poller_logger(), "on_event: non-condition event (null ConditionId, type="
                                                    << event_type.toString() << ") - ignoring");
     return;
