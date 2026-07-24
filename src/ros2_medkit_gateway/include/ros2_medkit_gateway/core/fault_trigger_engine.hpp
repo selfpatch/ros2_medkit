@@ -79,9 +79,17 @@ class FaultTriggerEngine {
   /// rule creation on a transient outage.
   using DataPointNamesFn = std::function<std::optional<std::vector<std::string>>(const std::string & app_id)>;
 
+  /// True when ``app_id`` is a real entity in the discovery/entity registry.
+  /// Lets create() reject a rule on a bogus app (404) instead of reserving a
+  /// global fault_code for it; when null, existence is not checked. This is the
+  /// signal that disambiguates "unknown app" from "known app, unreadable now"
+  /// (the DataPointNamesFn nullopt case).
+  using EntityExistsFn = std::function<bool(const std::string & app_id)>;
+
   /// @param storage_path JSON store path; empty disables persistence (in-memory)
   FaultTriggerEngine(std::string storage_path, ValueFetcher fetcher, FaultReportFn report, FaultClearFn clear,
-                     LogFn log = nullptr, DataPointNamesFn data_point_names = nullptr);
+                     LogFn log = nullptr, DataPointNamesFn data_point_names = nullptr,
+                     EntityExistsFn entity_exists = nullptr);
 
   // --- REST-facing CRUD (thread-safe) ---
 
@@ -114,6 +122,12 @@ class FaultTriggerEngine {
   void load();
   void save_locked() const;
 
+  // Coarse dispatch lock, always taken BEFORE mutex_. Serializes remove()'s
+  // erase+clear against evaluate_once()'s report/clear so a DELETE racing the
+  // trigger thread cannot re-assert a fault the rule (and its fault) just left.
+  // Held across the report/clear callbacks, which mutex_ must not be (the fault
+  // path re-enters unrelated code).
+  std::mutex dispatch_mutex_;
   mutable std::mutex mutex_;
   std::string storage_path_;
   ValueFetcher fetcher_;
@@ -121,6 +135,7 @@ class FaultTriggerEngine {
   FaultClearFn clear_;
   LogFn log_;
   DataPointNamesFn data_point_names_;
+  EntityExistsFn entity_exists_;
   std::vector<FaultTriggerRule> rules_;
   uint64_t next_seq_{1};  ///< monotonic suffix for id generation
 };
