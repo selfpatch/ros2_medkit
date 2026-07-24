@@ -108,10 +108,7 @@ class TestFaultTriggersApi(GatewayTestCase):
         self.assertIn('does not exist', resp.json()['message'])
 
     def test_04_create_list_fire_delete(self):
-        """Create on a real data point, watch it fire, then delete clears it.
-
-        @verifies REQ_INTEROP_002
-        """
+        """Create on a real data point, watch it fire, then delete clears it."""
         resp = self._create({'data_name': 'level', 'operator': '>=',
                              'threshold': 80.0, 'fault_code': 'TEST_LEVEL_HIGH',
                              'severity': 'ERROR'})
@@ -122,10 +119,12 @@ class TestFaultTriggersApi(GatewayTestCase):
         listed = requests.get(self._url(), timeout=10).json()['items']
         self.assertIn(rule['id'], [r['id'] for r in listed])
 
-        # Duplicate fault_code (even from another app) is a conflict: the code
-        # is the fault store's primary key.
+        # Duplicate fault_code (even from another real app) is a conflict: the
+        # code is the fault store's primary key. temp_sensor is a genuinely
+        # discovered app (so it passes the app-existence check) with no PLC data
+        # route, so the rule reaches the global fault_code uniqueness check.
         dup = requests.post(
-            f'{self.BASE_URL}/apps/other_app/fault-triggers',
+            f'{self.BASE_URL}/apps/temp_sensor/fault-triggers',
             json={'data_name': 'level', 'operator': '>',
                   'threshold': 1.0, 'fault_code': 'TEST_LEVEL_HIGH',
                   'severity': 'ERROR'}, timeout=10)
@@ -147,6 +146,15 @@ class TestFaultTriggersApi(GatewayTestCase):
     def test_05_delete_unknown_is_404(self):
         resp = requests.delete(self._url('/ftr_none'), timeout=10)
         self.assertEqual(resp.status_code, 404)
+
+    def test_06_create_on_unknown_app_is_404(self):
+        """A rule on an app the gateway never discovered is refused (404)."""
+        resp = requests.post(
+            f'{self.BASE_URL}/apps/ghost_app/fault-triggers',
+            json={'data_name': 'level', 'operator': '>',
+                  'threshold': 1.0, 'fault_code': 'GHOST_RULE',
+                  'severity': 'ERROR'}, timeout=10)
+        self.assertEqual(resp.status_code, 404, resp.text)
 
     # ------------------------------------------------------------------
     # Helpers
