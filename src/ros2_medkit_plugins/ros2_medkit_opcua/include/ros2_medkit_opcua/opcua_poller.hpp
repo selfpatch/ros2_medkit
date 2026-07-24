@@ -266,9 +266,11 @@ class OpcuaPoller {
   /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
   /// (and subtype) instances; a plain BaseEvent / SystemEvent notification -
   /// e.g. a Siemens Server-object "CPU not in RUN" system message delivered on
-  /// the same EventNotifier (i=2253) auto_alarms subscribes to - carries no
-  /// ConditionId and must not be auto-derived into a fault. Pure and static so
-  /// the system-message filter is unit-testable without a server.
+  /// the same EventNotifier (i=2253) an alarm source subscribes to - carries no
+  /// ConditionId. ``on_event`` drops such an event for EVERY alarm source,
+  /// explicit ``event_alarms`` and zero-config ``auto_alarms`` alike, before the
+  /// mapping/auto-derivation split, so it never becomes a fault. Pure and static
+  /// so the guard is unit-testable without a server.
   static bool is_condition_event(const opcua::NodeId & condition_id);
 
  private:

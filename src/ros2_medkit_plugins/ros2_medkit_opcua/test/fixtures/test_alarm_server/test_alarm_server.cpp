@@ -269,6 +269,33 @@ UA_StatusCode handle_confirm(UA_Server * server, const Condition & c) {
   return UA_Server_triggerConditionEvent(server, c.node, c.source, nullptr);
 }
 
+// Fire a plain BaseEventType notification on the Server object (i=2253) - the
+// same EventNotifier a catch-all event_alarms / auto_alarms subscribes to. A
+// BaseEventType is not an AlarmConditionType, so it carries no ConditionId: the
+// gateway's ConditionId select clause resolves to NodeId.Null and the poller's
+// non-condition guard must drop it (it must never surface as a fault). This is
+// the regression fixture for that guard - the housekeeping notifications real
+// servers (e.g. a Siemens Server object) multiplex onto the alarm EventNotifier.
+UA_StatusCode handle_sysevent(UA_Server * server) {
+  UA_NodeId event_node = UA_NODEID_NULL;
+  UA_StatusCode rc = UA_Server_createEvent(server, UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE), &event_node);
+  if (rc != UA_STATUSCODE_GOOD) {
+    return rc;
+  }
+  UA_DateTime now = UA_DateTime_now();
+  UA_Server_writeObjectProperty_scalar(server, event_node, UA_QUALIFIEDNAME(0, const_cast<char *>("Time")), &now,
+                                       &UA_TYPES[UA_TYPES_DATETIME]);
+  UA_UInt16 severity = 500;
+  UA_Server_writeObjectProperty_scalar(server, event_node, UA_QUALIFIEDNAME(0, const_cast<char *>("Severity")),
+                                       &severity, &UA_TYPES[UA_TYPES_UINT16]);
+  UA_LocalizedText msg =
+      UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("Session state changed to Created"));
+  UA_Server_writeObjectProperty_scalar(server, event_node, UA_QUALIFIEDNAME(0, const_cast<char *>("Message")), &msg,
+                                       &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+  // originId = Server object (i=2253); delete the one-shot event node after.
+  return UA_Server_triggerEvent(server, event_node, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), nullptr, UA_TRUE);
+}
+
 UA_StatusCode set_shelving(UA_Server * server, const Condition & c, bool shelved) {
   // ShelvingState is a ShelvedStateMachineType sub-object on the condition
   // (Part 9). open62541's experimental A&C does not implement the TimedShelve
@@ -609,6 +636,18 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
         std::cout << "OK " << name << "=" << val << std::endl;
       } else {
         std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+      }
+      continue;
+    }
+    // ``sysevent`` fires a non-condition BaseEventType on the Server object
+    // (i=2253); it has no <name> and is not in g_conditions, so handle it
+    // before the condition lookup (like ``quit`` / ``set``).
+    if (cmd == "sysevent") {
+      UA_StatusCode rc = handle_sysevent(server);
+      if (rc == UA_STATUSCODE_GOOD) {
+        std::cout << "OK sysevent" << std::endl;
+      } else {
+        std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << std::endl;
       }
       continue;
     }

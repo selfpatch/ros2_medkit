@@ -71,6 +71,9 @@ APP_URI_CLIENT = 'urn:selfpatch:medkit:opcua-client'
 ROS_DOMAIN_ID = '229'
 
 ALARM_CODE = 'PLC_OVERPRESSURE'
+# Source-level catch-all code a non-condition event would be mis-mapped to if the
+# poller's ConditionId guard regressed.
+NONCOND_CODE = 'PLC_ALARM'
 
 
 def require_flag():
@@ -176,6 +179,32 @@ def write_node_map(path):
     )
 
 
+def write_catchall_node_map(path):
+    """
+    Node map with a single explicit event_alarms catch-all on the Server object.
+
+    Every real AlarmConditionType event on i=2253 maps to PLC_ALARM via the
+    source-level fault_code. A non-condition BaseEventType on the same
+    EventNotifier resolves its ConditionId to null and must be dropped by the
+    poller's guard rather than mapped to PLC_ALARM. Only this one source is
+    mapped, so a real condition (which is also a notifier of i=2253) surfaces
+    exactly one PLC_ALARM fault - no second monitored item, no fault_code race.
+    """
+    path.write_text(
+        'area_id: plc_systems\n'
+        'component_id: alarm_test_runtime\n'
+        'nodes:\n'
+        '  - node_id: "ns=2;s=Tank.Level"\n'
+        '    entity_id: tank_process\n'
+        '    data_name: tank_level\n'
+        '    data_type: float\n'
+        'event_alarms:\n'
+        '  - alarm_source: "ns=0;i=2253"\n'
+        '    entity_id: tank_process\n'
+        '    fault_code: PLC_ALARM\n'
+    )
+
+
 def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
                          certs, password):
     """Render a gateway params file pointing the opcua plugin at the secure server."""
@@ -263,7 +292,7 @@ def main():
     server_log = workdir / 'server.log'
     env = dict(os.environ, ROS_DOMAIN_ID=ROS_DOMAIN_ID)
 
-    server = fault_mgr = gw_good = gw_bad = None
+    server = fault_mgr = gw_good = gw_bad = gw_catch = None
     try:
         # --- Certificates (regenerated every run, never committed) ---------
         subprocess.run(['bash', str(gen_certs), str(certs)], check=True,
@@ -378,6 +407,75 @@ def main():
         terminate(gw_good)
         gw_good = None
 
+        # === NON-CONDITION GUARD: explicit event_alarms catch-all on i=2253 =
+        # A catch-all on the Server object maps every real condition to
+        # PLC_ALARM. A non-condition BaseEventType on the SAME EventNotifier
+        # (the fixture's 'sysevent' command) carries a null ConditionId and must
+        # be dropped by the poller's guard - it must never surface as PLC_ALARM,
+        # while a real condition on the catch-all still faults. Reset the still-
+        # active Overpressure condition first so its ConditionRefresh replay does
+        # not pre-map PLC_ALARM before the sysevent is even fired.
+        server.stdin.write('clear Overpressure\n')
+        server.stdin.flush()
+
+        catch_node_map = workdir / 'catchall_nodes.yaml'
+        write_catchall_node_map(catch_node_map)
+        catch_port = free_port()
+        catch_params = workdir / 'gateway_catch.yaml'
+        write_gateway_params(catch_params, port=catch_port, plugin=plugin,
+                             server_port=server_port, node_map=catch_node_map,
+                             manifest=manifest, certs=certs, password=PASSWORD)
+        catch_log = workdir / 'gateway_catch.log'
+        gw_catch = start_gateway(catch_params, catch_log, env)
+        catch_base = f'http://127.0.0.1:{catch_port}/api/v1'
+        catch_status = wait_json(
+            f'{catch_base}/components/alarm_test_runtime/x-plc-status',
+            lambda j: j.get('connected') is True, deadline=70)
+        if not (catch_status and catch_status.get('connected') is True):
+            print('FAIL: catch-all gateway did not connect over the secure channel',
+                  file=sys.stderr)
+            print(catch_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return 1
+
+        # Fire the non-condition system event; the guard must drop it.
+        server.stdin.write('sysevent\n')
+        server.stdin.flush()
+        leaked = wait_json(
+            f'{catch_base}/faults',
+            lambda j: any(i.get('fault_code') == NONCOND_CODE for i in j.get('items', [])),
+            deadline=20, period=2.0)
+        if leaked and any(i.get('fault_code') == NONCOND_CODE for i in leaked.get('items', [])):
+            print('FAIL: non-condition event surfaced as PLC_ALARM (guard regressed)',
+                  file=sys.stderr)
+            print(json.dumps(leaked), file=sys.stderr)
+            print('server log:\n' + Path(server_log).read_text(errors='replace'),
+                  file=sys.stderr)
+            return 1
+        print('  OK non-condition guard: sysevent did NOT raise PLC_ALARM')
+
+        # A real condition on the catch-all source still faults (proves the
+        # pipeline can produce PLC_ALARM, so the absence above is meaningful).
+        server.stdin.write('fire Overpressure 750\n')
+        server.stdin.flush()
+        catch_faults = wait_json(
+            f'{catch_base}/faults',
+            lambda j: any(i.get('fault_code') == NONCOND_CODE and i.get('status') == 'CONFIRMED'
+                          for i in j.get('items', [])), deadline=120)
+        got_alarm = catch_faults and any(
+            i.get('fault_code') == NONCOND_CODE and i.get('status') == 'CONFIRMED'
+            for i in catch_faults.get('items', []))
+        if not got_alarm:
+            print('FAIL: real condition on the i=2253 catch-all did not surface as PLC_ALARM',
+                  file=sys.stderr)
+            print(json.dumps(catch_faults), file=sys.stderr)
+            print('server log:\n' + Path(server_log).read_text(errors='replace'),
+                  file=sys.stderr)
+            return 1
+        print('  OK catch-all: real condition surfaced as PLC_ALARM CONFIRMED')
+
+        terminate(gw_catch)
+        gw_catch = None
+
         # === NEGATIVE: wrong password must fail closed =====================
         bad_params = workdir / 'gateway_bad.yaml'
         write_gateway_params(bad_params, port=bad_port, plugin=plugin,
@@ -415,6 +513,7 @@ def main():
         return 0
     finally:
         terminate(gw_good)
+        terminate(gw_catch)
         terminate(gw_bad)
         terminate(fault_mgr)
         if server is not None:
