@@ -121,9 +121,12 @@ ComponentIdentity derive_component_identity(const OpcuaClient::DeviceInfo & info
   }
 
   // 3. Neutral endpoint-derived fallback. NEVER a fixed product string.
+  // Slugify the host so a config-less IPv4 (opcua-192.168.1.10, dotted) yields
+  // a valid entity id (opcua-192_168_1_10); the raw dotted form is rejected by
+  // is_valid_entity_id and the whole Component would be silently dropped.
   const std::string host = host_from_endpoint(endpoint_url);
   if (!host.empty()) {
-    const std::string fallback = "opcua-" + host;
+    const std::string fallback = "opcua-" + slugify(host);
     return {fallback, fallback};
   }
 

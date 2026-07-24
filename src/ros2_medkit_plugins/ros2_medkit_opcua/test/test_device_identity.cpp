@@ -186,9 +186,11 @@ TEST(ComponentIdentityDerive, FallsBackToBuildInfo) {
 TEST(ComponentIdentityDerive, EndpointFallbackWhenNoIdentity) {
   OpcuaClient::DeviceInfo info;  // empty
   auto ci = derive_component_identity(info, "opc.tcp://192.168.1.10:4840");
-  // Neutral, endpoint-derived, never a fixed product string.
-  EXPECT_EQ(ci.id, "opcua-192.168.1.10");
-  EXPECT_EQ(ci.name, "opcua-192.168.1.10");
+  // Neutral, endpoint-derived, never a fixed product string. The host is
+  // slugified so the dotted IPv4 yields a valid entity id (a raw
+  // opcua-192.168.1.10 is rejected by is_valid_entity_id -> Component dropped).
+  EXPECT_EQ(ci.id, "opcua-192_168_1_10");
+  EXPECT_EQ(ci.name, "opcua-192_168_1_10");
 }
 
 TEST(ComponentIdentityDerive, NeverEmitsOpenPlc) {
@@ -201,10 +203,13 @@ TEST(ComponentIdentityDerive, NeverEmitsOpenPlc) {
 
 TEST(ComponentIdentityDerive, BracketedIpv6EndpointYieldsHostNotTruncatedAddress) {
   // opc.tcp://[fe80::1]:4840 - the host is the bracket body; a naive ":" cut
-  // would truncate mid-address and produce an invalid fallback id.
+  // would truncate mid-address and produce an invalid fallback id. The whole
+  // bracket body is slugified (fe80::1 -> fe80_1): the trailing "_1" proves the
+  // tail survived, and slugify strips the brackets that would break the id.
   OpcuaClient::DeviceInfo info;
   auto ci = derive_component_identity(info, "opc.tcp://[fe80::1]:4840");
-  EXPECT_NE(ci.name.find("fe80::1"), std::string::npos);
+  EXPECT_EQ(ci.id, "opcua-fe80_1");
+  EXPECT_EQ(ci.name, "opcua-fe80_1");
   EXPECT_EQ(ci.name.find('['), std::string::npos);
 }
 
