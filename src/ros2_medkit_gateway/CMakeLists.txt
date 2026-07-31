@@ -197,6 +197,7 @@ add_library(gateway_ros2 STATIC
   src/plugins/plugin_http_types.cpp
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
+  src/ros2_common/callback_groups.cpp
   src/ros2_common/ros2_subscription_executor.cpp
   src/ros2_common/ros2_subscription_slot.cpp
   src/script_manager.cpp
@@ -854,6 +855,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_operation_handlers gateway_ros2)
   medkit_target_dependencies(test_operation_handlers rclcpp rclcpp_action std_srvs example_interfaces)
   medkit_set_test_domain(test_operation_handlers)
+
+  # Callback-group wiring contract (issue #575)
+  ament_add_gtest(test_callback_groups test/test_callback_groups.cpp)
+  target_link_libraries(test_callback_groups gateway_ros2)
+  medkit_target_dependencies(test_callback_groups rclcpp action_msgs)
+  medkit_set_test_domain(test_callback_groups)
 
   # Demo update backend plugin (.so for integration tests)
   add_library(test_update_backend MODULE
