@@ -57,6 +57,7 @@ def create_watchdog_test_launch(
     port=None,
     demo_delay=2.0,
     healing_enabled=True,
+    gateway_respawn=False,
 ):
     """Build a ``LaunchDescription`` that loads graph_watchdog into a real gateway.
 
@@ -84,6 +85,14 @@ def create_watchdog_test_launch(
         Passed to the fault_manager as ``healing_enabled`` so a detector's
         level-triggered PASSED clears can actually advance the debounce
         counter to HEALED (see the plugin README, "Closing the loop").
+    gateway_respawn : bool
+        If True, ``launch`` restarts the gateway when it exits. For the one
+        scenario whose subject is a gateway restart: the fault_manager and the
+        demo nodes are separate processes, so killing only the gateway leaves
+        a raised fault in the store and brings the plugin back with every
+        detector counter at zero - the state no single-process launch can
+        reach. Off by default so an unexpected gateway death stays a visible
+        failure in every other scenario.
 
     Returns
     -------
@@ -104,7 +113,7 @@ def create_watchdog_test_launch(
     if extra_gateway_params:
         params.update(extra_gateway_params)
 
-    gateway_node = create_gateway_node(port=port, extra_params=params)
+    gateway_node = create_gateway_node(port=port, extra_params=params, respawn=gateway_respawn)
 
     delayed_actions = create_demo_nodes(demo_nodes if demo_nodes is not None else [])
     delayed_actions.append(create_fault_manager_node(
@@ -254,6 +263,56 @@ def wait_until_watchdog_armed(port, timeout=60.0, interval=0.5, app_id=None):
     # gone once the launch tears down. Print it while it still exists.
     print(f'wait_until_watchdog_armed(app_id={app_id!r}) timed out after {timeout}s; '
           f'last watchdog status: {last_seen}')
+    return False
+
+
+def wait_until_faults_endpoint_live(port, timeout=30.0, interval=0.5):
+    """Poll ``GET /faults`` until it answers HTTP 200. ``True`` once it does.
+
+    The second half of the gate every absence assertion needs.
+    :func:`wait_until_watchdog_armed` proves the plugin side is alive - the .so loaded,
+    the tick loop ran - but it is served by the plugin INSIDE the gateway process and
+    says nothing about the fault surface. The gateway answers ``GET /faults`` with 503
+    while the fault_manager's service is unavailable, and :func:`poll_faults` inspects
+    only 200 responses and swallows every transport error, returning ``None`` on timeout -
+    which is exactly what an ``assertIsNone`` wants to see. So a launch whose
+    fault_manager crashed, hung, or never DDS-matched turns a silence assertion green for
+    the one reason it must never be green.
+
+    A 200 (whatever the body) proves the gateway reached the fault_manager in THIS launch.
+    What it does NOT prove is that the PLUGIN's own ReportFault client matched - only a
+    raise proves that, and that proof lives in the scenario that raises.
+
+    Parameters
+    ----------
+    port : int
+        Gateway HTTP port.
+    timeout : float
+        Maximum time to wait in seconds.
+    interval : float
+        Sleep between retries in seconds.
+
+    Returns
+    -------
+    bool
+        ``True`` once ``GET /faults`` answers 200, ``False`` on timeout.
+
+    """
+    base = f'http://127.0.0.1:{port}{API_BASE_PATH}'
+    deadline = time.monotonic() + timeout
+    last_seen = 'GET /faults was never answered at all'
+    while time.monotonic() < deadline:
+        try:
+            response = requests.get(f'{base}/faults', timeout=5)
+            if response.status_code == 200:
+                return True
+            # 503 is the specific shape of "the fault_manager is not reachable" - worth
+            # naming, because it is the failure this gate exists for.
+            last_seen = f'HTTP {response.status_code} from GET /faults'
+        except requests.exceptions.RequestException as exc:
+            last_seen = f'GET /faults failed: {exc}'
+        time.sleep(interval)
+    print(f'wait_until_faults_endpoint_live timed out after {timeout}s; last seen: {last_seen}')
     return False
 
 

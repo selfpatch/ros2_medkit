@@ -97,7 +97,15 @@ if(BUILD_TESTING)
   # error rather than a silent collision. The launch tests cannot use it: it writes
   # ENVIRONMENT wholesale and they also need GATEWAY_TEST_PORT and the plugin path, so they
   # keep an explicit assignment and share one domain under a RESOURCE_LOCK.
-  medkit_init_test_domains(START 75 END 89)
+  #
+  # END is 88, one short of the range: every launch test below hardcodes ROS_DOMAIN_ID=89,
+  # and the two families share no lock (the gtests serialise on
+  # graph_watchdog_integration_domain, the launch tests on graph_watchdog_e2e_domain). The
+  # macro only errors when the counter goes PAST END, so leaving END at 89 makes 89 a legal
+  # gtest allocation - and the gtest that eventually draws it would run concurrently with a
+  # launch test on the same domain, where the cross-talk reads as a detector regression
+  # rather than as a domain collision.
+  medkit_init_test_domains(START 75 END 88)
 
   find_package(ament_lint_auto REQUIRED)
   # uncrustify/cpplint conflict with project-wide clang-format (120 cols vs 100).
@@ -194,6 +202,9 @@ if(BUILD_TESTING)
   medkit_set_test_domain(test_reliability_gate)
 
   # Pure matching logic over hand-built inputs: no rclcpp::Node, so no domain is needed.
+  ament_add_gtest(test_lifecycle_expectation_tracker test/test_lifecycle_expectation_tracker.cpp)
+  target_include_directories(test_lifecycle_expectation_tracker PRIVATE include)
+
   ament_add_gtest(test_orphan_policy test/test_orphan_policy.cpp)
   target_include_directories(test_orphan_policy PRIVATE include)
 
@@ -211,8 +222,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_aggregated_fault nlohmann_json::nlohmann_json)
 
   # Real DDS endpoints read through the live graph API, so each of these takes a domain of its
-  # own via medkit_set_test_domain. The two that ALSO register a fake /fault_manager/report_fault
-  # service additionally share a RESOURCE_LOCK, because they spin real nodes for many seconds and
+  # own via medkit_set_test_domain. Three of them (orphan, param_drift, lifecycle_expectation)
+  # additionally share a RESOURCE_LOCK, because they spin real nodes for many seconds and
   # running them concurrently on this box starves the discovery each one waits on.
   ament_add_gtest(test_qos_mismatch_integration
     test/test_qos_mismatch_integration.cpp
@@ -261,6 +272,23 @@ if(BUILD_TESTING)
   # timeout must never do to a diagnostic suite.
   set_tests_properties(test_param_drift_integration PROPERTIES
     TIMEOUT 300 RESOURCE_LOCK graph_watchdog_integration_domain)
+
+  # Registers a fake /fault_manager/report_fault service like orphan/param_drift above, so it
+  # shares the same RESOURCE_LOCK (see the comment on the integration block).
+  ament_add_gtest(test_lifecycle_expectation_integration
+    test/test_lifecycle_expectation_integration.cpp
+    src/detectors/lifecycle_expectation_detector.cpp
+    src/detector_registry.cpp
+    src/reliability_gate.cpp
+    src/lifecycle_watcher.cpp
+    ${LIFECYCLE_STATE_READER_SOURCES})
+  target_include_directories(test_lifecycle_expectation_integration PRIVATE include ${GATEWAY_SRC_INCLUDE_DIR})
+  medkit_target_dependencies(test_lifecycle_expectation_integration
+    ros2_medkit_gateway rclcpp rcutils ros2_medkit_msgs lifecycle_msgs)
+  target_link_libraries(test_lifecycle_expectation_integration nlohmann_json::nlohmann_json)
+  medkit_set_test_domain(test_lifecycle_expectation_integration)
+  set_tests_properties(test_lifecycle_expectation_integration PROPERTIES
+    TIMEOUT 120 RESOURCE_LOCK graph_watchdog_integration_domain)
 
   # === QoS-mismatch e2e (launch_testing) ===
   #
@@ -356,6 +384,74 @@ if(BUILD_TESTING)
     LABELS "integration;e2e"
     ENVIRONMENT
       "GATEWAY_TEST_PORT=19160;ROS_DOMAIN_ID=89;WATCHDOG_E2E_SCENARIO=mode_off_yaml_bool;GRAPH_WATCHDOG_PLUGIN_PATH=${_WATCHDOG_E2E_SO}"
+    RESOURCE_LOCK graph_watchdog_e2e_domain)
+
+  # === Lifecycle-expectation e2e (launch_testing) ===
+  #
+  # Acceptance gate for the lifecycle_expectation detector: proves GRAPH_NODE_INACTIVE
+  # raises and heals through the REAL gateway + plugin .so + fault_manager stack against
+  # a REAL managed rclcpp_lifecycle demo node driven through real ChangeState
+  # transitions - the C++ integration test can only puppet the lifecycle label.
+  #
+  # One source file, three CTest targets (the config_plumbing pattern): the plugin reads
+  # its config once at set_context() time, so the configured, unconfigured-by-default and
+  # negative-control launches need separate gateway processes. WATCHDOG_E2E_SCENARIO
+  # selects which launch and which assertions run in each.
+  #
+  # 780 s. The budget is never shorter than the sum of the file's own internal deadlines
+  # plus the teardown the launch itself configures, because a budget under that sum is
+  # killed by ctest before the message a failing deadline exists to print reaches the log -
+  # turning every one of those diagnostics into a bare "timed out with no output". The sum,
+  # per test case:
+  #   test_01: arming gate (60) + raise poll (60) + entity-scoped poll (30)          = 150
+  #   test_02: CONFIGURE (30 service wait + 30 across the call attempts + 10 for the
+  #            already-applied check a retry can need) + still-raised poll (30)       = 100
+  #   test_02b: pre-restart record (30) + port-down wait (60) + post-restart arming
+  #             gate (90) + heal-sequence settle (4) + post record (30) + poll (30)   = 244
+  #   test_03: heal precondition (30) + ACTIVATE (30 + 30 + 10) + per-entity gate (60)
+  #            + heal poll (60)                                                       = 220
+  # 714 in total, and the run that exhausts it is the slow-but-PASSING run - every poll
+  # succeeding near its deadline. On top of that, teardown runs inside the same CTest
+  # budget: every launched process carries sigterm_timeout 30 + sigkill_timeout 15
+  # (launch_helpers.py), so a process that sits out SIGTERM costs up to ~45 s AFTER the last
+  # assertion. 714 + 45 = 759, and a passing run that reached the teardown would otherwise
+  # be flipped into a timeout with no output.
+  add_launch_test(test/e2e/test_lifecycle_expectation_e2e.test.py
+    TARGET test_lifecycle_expectation_e2e_main
+    TIMEOUT 780)
+  set_tests_properties(test_lifecycle_expectation_e2e_main PROPERTIES
+    LABELS "integration;e2e"
+    ENVIRONMENT
+      "GATEWAY_TEST_PORT=19190;ROS_DOMAIN_ID=89;WATCHDOG_E2E_SCENARIO=main;GRAPH_WATCHDOG_PLUGIN_PATH=${_WATCHDOG_E2E_SO}"
+    RESOURCE_LOCK graph_watchdog_e2e_domain)
+
+  # Shipped-default silence: no detectors.lifecycle_expectation config at all, with the
+  # unconfigured lifecycle node present - the README's zero-false-positive default claim,
+  # falsifiable nowhere else. 240 s: arming gate (60) + fault-surface gate (30) +
+  # label-read poll (30) + sustained silence window (20) + the post-window re-pin of the
+  # trigger (15) = 155 internal, plus the launch's own teardown (sigterm 30 + sigkill 15).
+  add_launch_test(test/e2e/test_lifecycle_expectation_e2e.test.py
+    TARGET test_lifecycle_expectation_e2e_default_config
+    TIMEOUT 240)
+  set_tests_properties(test_lifecycle_expectation_e2e_default_config PROPERTIES
+    LABELS "integration;e2e"
+    ENVIRONMENT
+      "GATEWAY_TEST_PORT=19200;ROS_DOMAIN_ID=89;WATCHDOG_E2E_SCENARIO=default_config;GRAPH_WATCHDOG_PLUGIN_PATH=${_WATCHDOG_E2E_SO}"
+    RESOURCE_LOCK graph_watchdog_e2e_domain)
+
+  # Negative control: the same grace and cadence as the main scenario, with require_active
+  # naming the self-activating variant of the same executable instead - an active required
+  # node must never raise, so the discriminating variable is the node's real lifecycle
+  # state. 240 s: per-entity arming gate (60) + fault-surface gate (30) + label-read poll
+  # (30) + sustained silence window (20) + the post-window re-pin (15) = 155 internal, plus
+  # the launch's own teardown (sigterm 30 + sigkill 15).
+  add_launch_test(test/e2e/test_lifecycle_expectation_e2e.test.py
+    TARGET test_lifecycle_expectation_e2e_negative_control
+    TIMEOUT 240)
+  set_tests_properties(test_lifecycle_expectation_e2e_negative_control PROPERTIES
+    LABELS "integration;e2e"
+    ENVIRONMENT
+      "GATEWAY_TEST_PORT=19210;ROS_DOMAIN_ID=89;WATCHDOG_E2E_SCENARIO=negative_control;GRAPH_WATCHDOG_PLUGIN_PATH=${_WATCHDOG_E2E_SO}"
     RESOURCE_LOCK graph_watchdog_e2e_domain)
 
   ros2_medkit_relax_vendor_warnings()

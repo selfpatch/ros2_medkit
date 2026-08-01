@@ -61,10 +61,11 @@ class LifecycleWatcher {
   LifecycleWatcher & operator=(LifecycleWatcher &&) = delete;
 
   /// Discover managed nodes from the snapshot (find_lifecycle_get_state_path over
-  /// App::services): seed+subscribe new ones, drop vanished ones. `tick` is the
-  /// plugin's own tick counter (threaded through from ReliabilityGate::update()) -
-  /// used to timestamp a departure into `recently_departed_` and to prune stale
-  /// entries from it.
+  /// App::services): seed+subscribe new ones, drop vanished ones, and drop + re-seed
+  /// tracked ids whose BINDING moved (same App::id, different fqn / get_state path -
+  /// see Tracked::get_state_path). `tick` is the plugin's own tick counter (threaded
+  /// through from ReliabilityGate::update()) - used to timestamp a departure into
+  /// `recently_departed_` and to prune stale entries from it.
   void update(const ros2_medkit_gateway::IntrospectionInput & snapshot, std::uint64_t tick);
 
   bool node_ok(const std::string & app_id) const;  // true if untracked or "active"
@@ -104,6 +105,21 @@ class LifecycleWatcher {
     /// non-active, to recover an `active` transition_event lost during the DDS
     /// endpoint-matching window right after the (volatile) subscription is created.
     int reseeds_remaining = 0;
+    /// The GetState path this entry was created from. Together with `fqn` it is the
+    /// entry's BINDING identity, which update() re-checks every tick: the subscription
+    /// topic derives from this path, so if either piece moves under an unchanged
+    /// App::id, the entry describes a different node than the snapshot now binds and
+    /// must be dropped + re-seeded (an id kept across such a move would keep enforcing
+    /// the old node's label against the new binding).
+    std::string get_state_path;
+    /// Bumped every time the ~/transition_event callback writes `state_label`. A re-seed is
+    /// a BLOCKING GetState issued with no lock held and applied several steps later, so an
+    /// event that lands in between carries a FRESHER label than the answer about to be
+    /// written: the re-seed records this counter when it selects the job and skips its own
+    /// result if the counter moved. Without it the mechanism that exists to recover a lost
+    /// activation is also the one that can undo an observed one - permanently, when it
+    /// happens on the last attempt of the bounded budget.
+    std::uint64_t label_epoch = 0;
     /// Set by the ~/transition_event callback - see DepartedLifecycle for why the last
     /// label alone is not enough to classify a departure.
     bool saw_transition = false;
@@ -121,8 +137,9 @@ class LifecycleWatcher {
     std::unordered_map<std::string, Tracked> tracked;  // key = App::id
     /// A departed node's observed departure, keyed by its stable fqn (NOT App::id) -
     /// value = {departure, departed_tick}. Populated on the drop path in update() just
-    /// before a tracked entry is erased; pruned (in update(), keyed off `tick`) once
-    /// `tick - departed_tick > retention_ticks_`.
+    /// before a tracked entry is erased - whether the id left the managed set or its
+    /// binding moved (either way, the OLD binding departed); pruned (in update(), keyed
+    /// off `tick`) once `tick - departed_tick > retention_ticks_`.
     std::map<std::string, std::pair<DepartedLifecycle, std::uint64_t>> recently_departed_;
     bool shutdown_requested = false;
   };

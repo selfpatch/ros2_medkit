@@ -7,8 +7,8 @@ Detectors read the graph and raise faults through a `ReportFault` service client
 gateway node; the faults surface via FaultManager on the gateway `/faults` API.
 
 This package carries the plugin skeleton, the central reliability gate that holds raises
-until the graph has quiesced, and three detectors, `qos_mismatch`, `orphan` and
-`param_drift`. The remaining
+until the graph has quiesced, and four detectors, `qos_mismatch`, `orphan`,
+`param_drift` and `lifecycle_expectation`. The remaining
 silent-fault classes land in follow-up changes, each against its own issue; their fault
 codes are already reserved in the frozen `GRAPH_*` namespace (see "Fault codes").
 
@@ -43,6 +43,15 @@ delivers them to the plugin as a nested object. A bare `off` is a YAML 1.1 boole
 read produces one startup warning naming the key and listing the ones that exist, so a
 typo like `allow_list:` for `allowlist:` cannot silently do nothing. A typo in the detector
 id itself is warned about the same way, with the registered ids listed.
+
+### `lifecycle_expectation` keys
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `mode` | string \| bool | `raise` | As above. |
+| `require_active` | string[] | `[]` | Node names that must be in the `active` lifecycle state, each matched against a live node by its `App::id`, its full FQN (`/ns/name`), or the bare leaf of that FQN. A bare name matches that node in EVERY namespace (a fleet-wide "all `controller_server`s must be active"); use a full FQN to pin one robot's. Both the bare and the FQN form match against the node's stable FQN, so they survive the `App::id` renaming that a same-bare-name collision triggers; an entry written as an `App::id` also works, but can stop matching on a multi-robot graph for exactly that reason. Empty = the detector checks nothing and emits nothing. A `require_active` that is not a string array warns and is ignored; an empty-string entry warns and is skipped - never dropped silently, since the operator would go on believing the node is covered. |
+| `grace` | int | `5` | Consecutive not-active ticks a required node tolerates before being reported inactive - bringup time for a managed node to reach `active` (configure + activate) before the expectation is enforced. Counted per NODE, not per matching entry: a node named by both a bare-name and a full-FQN entry still advances its streak once per tick, so mixing the two documented forms cannot halve the grace that was configured. Must be a non-negative integer, and the check runs on the wide integer, so a value that only fits after truncation is rejected rather than silently turned into a hair-trigger; the accepted maximum is one below the int maximum, because the prune horizon below computes `grace + 1`. Anything else warns and keeps the default. |
+| `prune_grace` | int | `60` | Consecutive ticks a matched node may stay ABSENT from the graph before its bookkeeping is reclaimed. Injected for every detector at plugin scope and overridable per detector; a value outside 0..3600 warns and this detector keeps its own default of 60. The range check runs on the wide integer, so an out-of-int-range value is rejected rather than truncated into a hair-trigger prune horizon. The effective horizon is clamped to at least `grace + 1`, so a node currently reported inactive can never be pruned out from under its own fault. |
 
 ### `orphan` keys
 
@@ -582,6 +591,275 @@ then a start. Accepting a new value as the baseline without a restart does not e
    ROS parser types as a YAML 1.1 boolean rather than a string, which is the form operators
    actually write.
 
+#### `lifecycle_expectation` (GRAPH_NODE_INACTIVE)
+
+A configurable "this node must be active" check. The process is ALIVE and in the graph,
+but a node the operator declared critical-active is sitting in a non-active lifecycle
+state (`inactive`/`unconfigured`/`finalized`). On a Nav2 stack a `controller_server`
+stuck inactive means the robot silently will not act - no crash, no log, nothing on
+`/diagnostics` or `/rosout`. Presence itself is a different fault class
+(`GRAPH_NODE_DISAPPEARED`, reserved in the frozen namespace for a follow-up change):
+this detector only ever reports a node that is PRESENT but not active, and a required
+node that vanishes from the graph entirely is deliberately NOT kept flagged here - the
+aggregate clears and the absence is left to the presence class.
+
+**Safe default: off.** `require_active` is empty by default, so nothing is checked and
+nothing is emitted - no raises AND no clears, not a single fault_manager request - until
+an operator opts specific nodes in. Zero false positives out of the box, the same
+config-scoped posture as `param_drift`'s `expect`.
+
+```yaml
+plugins:
+  graph_watchdog:
+    detectors:
+      lifecycle_expectation:
+        require_active: ["controller_server", "planner_server"]
+        grace: 5
+```
+
+**The fault names the NODE, not the config entry.** The bare-name form is deliberately
+fleet-wide, so one entry legitimately covers N nodes - and keying the violation on the
+entry would leave the fault unable to say which of them broke. On a dual-arm robot
+`require_active: ["controller_server"]` would produce `node controller_server expected
+active but is inactive`, with nothing pointing at `/left` or `/right`, and with two
+offenders only one would survive into the report at all. `source_id` cannot
+disambiguate either (every `GRAPH_*` fault shares one), so the description is the only
+carrier. Each offending node is its own entry, named by its stable FQN, with the entry
+that demanded it as context.
+
+**A single-snapshot blink does not restart the count.** A matched node that drops out
+of the snapshot keeps its violation streak for a small absence grace (3 ticks); zeroing
+it on the first blink would mean a genuinely stuck node that drops out of one snapshot
+in every few never accumulates `grace + 1` consecutive present-and-inactive ticks and
+is never reported. That is reachable at the shipped cadence: the tick is 1s and the
+entity cache is graph-event driven with a 1s debounce, so on a churning graph the
+snapshot turns over roughly once per tick. The node's RETURN spends the same budget
+rather than resetting it: leaving the snapshot also makes the lifecycle watcher drop
+the node's tracked entry, so on return the state is re-seeded and reads `""` for a tick
+or two, and that unread tick is the tail of the same blink seen one tick later. Past
+the absence grace the streak is discarded, whether it was spent absent or unread -
+sustained absence is the presence class's concern, not this detector's.
+
+**An entry that has never matched anything is reported.** It would otherwise be silent
+in every path: it never reaches the violation branch, and a presence detector cannot
+backfill it either, because it only ever tracks nodes that were present at least once.
+So a misspelt entry - or a required node that crashed during launch, or was down when
+the gateway started - would produce no fault and no log line anywhere. After 10
+consecutive ticks matching nothing, the detector says so in the log, once per entry per
+configuration. An entry whose node WAS matched and later left the graph is deliberately
+not accused: for it both halves of that sentence are false, and a departed node is
+precisely what the presence class reports.
+
+**The typo warning does not latch.** An entry that matches present nodes but none with
+a tracked lifecycle state is probably a typo, or names a plain (non-lifecycle) node -
+so the detector warns about it, but only after more than 5 CONSECUTIVE such ticks, and
+the warning clears if the entry resolves. One transient tick is not evidence: the gateway's
+`discover_apps()` wraps per-node service enumeration in a try/catch and pushes the app
+regardless, so a sweep that races service discovery yields an app with no services and
+no tracked state. The once-per-entry bookkeeping is reset on every `configure()`, so an
+entry removed and re-added by a reconfigure warns again - which is exactly when the
+operator wants to hear that it still names nothing managed. The warning is suppressed
+when no reliability gate is wired, since then no entry has a lifecycle state to begin
+with.
+
+**Bounded tracking, by absence.** Violations are keyed by node FQN, and one bare-name
+entry can match a node of that name in every namespace, so under identity churn (nodes
+reappearing under ever-new FQNs) the tracker's map would grow without a bound. A node
+absent for more than `prune_ticks = max(prune_grace, grace + 1)` consecutive ticks has
+its bookkeeping reclaimed - the tracker's two per-node counters and the withheld-clear
+guard's own per-node entry alike. Pruning by absence is deliberate and safe here in a way it
+is not for presence-style trackers: an absent required node is never this detector's
+own reported fault, so ageing out an absent node's bookkeeping can never silently heal
+a violation this detector raised - and the `grace + 1` clamp means a node currently
+reported inactive (which is present, not absent) can never be pruned out from under
+its own fault.
+
+**Why grace, not the reliability gate.** Every detector's raise passes through
+`ctx.raise_fault()`'s central `reliability_allows(gate, source_id)` gate, which ANDs
+the entity's warmup state with `LifecycleWatcher::node_ok()` - true only when a managed
+node's lifecycle is `active` (or it has no tracked lifecycle at all). Gating THIS
+detector's raise the same way on the required node's own lifecycle would be
+self-defeating: `node_ok()` is exactly FALSE for the inactive node this detector exists
+to catch, so the central gate would suppress the signal forever. Instead the detector's
+own pure, ROS-free core (`LifecycleExpectationTracker`, independently unit-tested in
+`test_lifecycle_expectation_tracker.cpp`) counts consecutive not-active ticks itself
+and raises only past its own `grace` - completely independent of `reliability_allows`.
+The aggregated fault's outer `ctx.raise_fault` call is still subject to the central
+gate for its own `source_id` (`graph_watchdog`), same as every other detector - see
+"Reliability (bringup-quiesce)" below - just not on the required node's lifecycle
+state, which is this detector's own job.
+
+**Empty lifecycle label is never enforced - and it is not a healthy read either.**
+`ReliabilityGate::lifecycle_state_of` (the accessor this detector reads, delegating to
+the internal `LifecycleWatcher::state_of` under the gate's own mutex) can return
+`optional("")` for a tracked node whose `GetState` seed missed. `LifecycleWatcher::node_ok()`
+already treats that case as benign (an unknown label is not proof of non-active), and
+the tracker never reports a node on it: enforcing it would false-positive an
+actually-active node whose seed was transiently lost. What it does NOT do is zero the
+node's violation streak, because an unread label after a read one is the tail of an
+absence (see the blink paragraph above) rather than evidence of health. A first-contact
+`""` has no streak to preserve, so it costs nothing and holds no bookkeeping at all.
+
+**Unknown lifecycle state (`nullopt`) is also never enforced**, for a different reason:
+it means the node is not a tracked managed lifecycle node at all (no
+`GetState`/`ChangeState` services), so there is no lifecycle to be wrong about. That is
+a different fact from an empty label, and it is treated differently - there is nothing
+to preserve, so it resets the streak the way a healthy read does. Such an entry feeds
+the typo warning above rather than a fault.
+
+**A clear is withheld until the required set has actually been measured.** A clear
+asserts that every required node is healthy, and the `GRAPH_NODE_INACTIVE` raised
+before a gateway restart is still in the store while the restarted detector counts from
+zero - so a clear emitted on the strength of an empty affected map would spuriously HEAL
+a still-real fault. Three states produce that empty map without the assertion being
+true, and all three are the ordinary state of bookkeeping that just started over (a
+restarted gateway, a reconfigure, a node that respawned stuck):
+
+1. **Not matched yet.** Before the entity snapshot catches up with the graph, a
+   `require_active` entry matches no node at all - so a clear would be about a node the
+   detector has never once looked at. Every restart passes through this window: the
+   plugin starts ticking as soon as it is loaded.
+2. **Not measured.** An unread label (`nullopt` or `""`) is never enforced, so a matched
+   node nothing has answered for looks exactly like a healthy one.
+3. **Measured not-active, still inside grace.** The tracker reports only past `grace`
+   consecutive not-active ticks, so for a whole grace-wide window the detector's own last
+   read says `inactive` while its report says nothing is affected. Labels are seeded
+   before the detectors tick, so on a responsive stack this - not state 2 - is what a
+   restart actually lands in.
+
+Any of the three withholds the emission entirely, neither raise nor clear, so a fault
+already in the store keeps its state instead of being healed by a detector that has not
+re-established the node is fine.
+
+What never blocks: a RAISE is never withheld (a violation read from the nodes that did
+answer is real regardless of the unread ones), and a node absent past the absence grace
+stops blocking on both of the node-keyed states - sustained absence is the presence
+class's concern, the same handoff the tracker makes, which is also why an entry that HAS
+matched and later stops matching does not re-enter state 1. Every hold is bounded. The
+never-matched and never-read holds release after 60 consecutive ticks (a minute at the
+shipped 1s cadence), so an unmanaged node, a typo that matches a real non-lifecycle node,
+or an entry that matches nothing at all cannot block healing forever; the never-read hold
+is counted per NODE rather than per matching entry, and it burns on every matched tick,
+including ticks on which a raise about a DIFFERENT node was flowing - so a raise that
+outlives the hold leaves the clear free the moment it heals. The grace hold releases as
+soon as the node reads `active` or its streak passes grace and the fault is raised again.
+Because a withheld clear is indistinguishable from a detector that is working and finding
+nothing, a hold that lives past 10 consecutive ticks is explained in the log once per
+episode, naming every reason in force and, for the two node-keyed ones, how many nodes
+are behind each and one of them by name.
+
+**The read latch is per configuration, not per incarnation.** "A label was read" is
+keyed by node FQN and is not reset when the NODE restarts: a process that dies and
+respawns under the same name re-enters with the latch still set from the dead
+incarnation, so its brand-new labels cannot withhold anything on state 2. What guards
+that case is state 3 - the streak a node that comes back stuck starts is itself a hold.
+The alternative, a per-incarnation latch, would put a fresh 60-tick hold on every blink
+of a healthy node.
+
+**A re-bind is a fresh binding.** The lifecycle label cache is keyed by `App::id`, and
+an id can survive a graph sweep while pointing at a DIFFERENT node (id assignment
+shifts under bare-name collisions). The shared `LifecycleWatcher` therefore re-checks
+every tracked id's binding identity - its FQN and its `GetState` service path, both
+captured at first sighting - on every tick. A moved binding is two events at once: the
+OLD binding is recorded as departed under ITS OWN FQN (same record and retention as a
+vanish), and the id is re-seeded through the ordinary new-node path (fresh `GetState`,
+fresh `~/transition_event` subscription). A straggler transition event from the old
+subscription cannot write the old node's label into the new binding's entry either -
+the callback matches on the captured service path. For this detector that means the
+departed node's label is never enforced against the node the id now binds: the new
+binding starts unknown (benign) until its own label is read. That match discriminates
+BINDINGS, not incarnations: a node that blinks out of one snapshot and returns, or is
+respawned under the same name, rebuilds the identical FQN and service path, so a
+straggler from the dead incarnation is indistinguishable from a live message. What
+covers that case instead is the watcher's own re-seed, which re-reads any entry still
+cached non-active; a stale `active` left behind that way is the one label the re-seed
+does not go back for.
+
+**Aggregated fault, not per-node**, via the shared `AggregatedFault` helper - the same
+rationale as every other detector here: the fault_manager identifies a fault by
+`fault_code` alone, so one `GRAPH_NODE_INACTIVE` per stuck node would collide into a
+single record under the shared code. One graph-level fault enumerates every currently
+stuck-non-active required node, its description capped at 480 characters with a
+truncation marker; it clears (`EVENT_PASSED`) on a tick where nothing is reported
+inactive AND the withheld-clear guard above is satisfied - not on every tick where the
+affected list happens to be empty - and reaching HEALED needs the same
+`healing_enabled` requirement described in "Closing the loop" above.
+
+**Test tiers:**
+
+1. **Unit** (`test/test_lifecycle_expectation_tracker.cpp`, 23 cases): pure
+   `LifecycleExpectationTracker` logic over hand-built matches - stuck-inactive past
+   grace raising keyed by the node with the entry as context, active never raising,
+   reaching active within grace resetting the streak, absent and unknown (`nullopt`)
+   and empty-label nodes never enforced, both namesakes reported separately and a
+   healthy namesake not masking a broken one, two entries naming one node not halving
+   its grace, a violating read winning over a benign one for the same node, the
+   absence grace (a one-snapshot blink not resetting the streak; an unread label after
+   a streak counting as absence rather than as a reset; sustained absence and sustained
+   unread both discarding it; a first-contact unread label holding no bookkeeping at
+   all), the pending window a streak below grace produces and its end once absence
+   outlives the absence grace, the no-match report firing once past its threshold and
+   never for a matching entry, and the prune bound (a currently-reported entry never
+   pruned, an absent one reclaimed past `prune_ticks` with the map shrinking, the
+   streak discarded even when the absence bookkeeping is reclaimed first, and churning
+   identities staying bounded when the prune horizon undercuts the absence grace).
+2. **Integration** (`test/test_lifecycle_expectation_integration.cpp`, 45 cases): the
+   detector driven against a fake `ReportFault` service, with a REAL `ReliabilityGate`
+   arming the global bringup grace and feeding it labels through
+   `ReliabilityGate::lifecycle_state_of()` (injected via the gate's test seam strictly
+   after the last `gate.update()` - see the file header for the ordering rationale).
+   Thirty fixture cases cover the raise/clear round trip naming the node, the
+   active-from-arming positive control, the absence-after-raise clear, bare-name and
+   full-FQN matching against a namespaced app, the zero-config silence measured as zero
+   fault_manager requests of any kind (for both the missing key and an explicit
+   `require_active: []`), the once-per-configuration unmanaged-entry warning that warns
+   again after a remove-and-re-add reconfigure, all three withheld-clear states (a
+   restart stand-in that emits nothing until a label is read; the same stand-in
+   withholding while the node reads not-active below grace; a clear withheld until a
+   required entry has matched at least once) each with its own release - the two
+   60-tick bounds, a node reading active, and a raise never being withheld - plus the
+   guard's per-node counting (two entries naming one node halving neither the grace nor
+   the unread hold), the blink-plus-unread-re-seed sequence that must not restart the
+   violation count, the mixed set where an unread sibling holds the clear inside its
+   hold and stops holding it past it, the read latch surviving a respawn under the same
+   FQN together with the streak that guards that case, an unread node that vanishes
+   releasing the clear at the absence grace rather than at the prune horizon, the
+   withhold explained once per episode and again for a later episode with a different
+   reason, the no-match warning fired for an entry that never matched and withheld from
+   one whose node departed, a `grace` past the int range rejected instead of truncated
+   into a hair-trigger, 25 stuck nodes aggregating into exactly ONE fault whose
+   description honours the 480-char cap, a required node appearing mid-run and then
+   sticking inactive, and a re-bind under the same `App::id` not enforcing the old
+   node's label. Alongside the fixture, 15 `configure()`-level cases pin the config
+   contract: the unknown-key warning (`require_activ`, the worst-case typo that also
+   leaves the detector unconfigured), a fully-valid config producing zero warnings, the
+   `grace` (negative, non-integer, past the int range), `prune_grace` (out of range, and
+   both range endpoints) and `require_active` (non-array, empty-string entry,
+   non-string entries) validation branches, the `prune_ticks = max(prune_grace,
+   grace + 1)` clamp on both winning branches and at both endpoints, and boundedness
+   under identity churn when `prune_grace` undercuts the absence grace.
+3. **E2e** (`test/e2e/test_lifecycle_expectation_e2e.test.py`): the acceptance gate -
+   one file, three CTest targets, each launching its own real gateway + plugin `.so` +
+   fault_manager stack against the `managed_lifecycle` demo node. The main scenario
+   drives real `lifecycle_msgs/srv/ChangeState` transitions: the required node in its
+   launch-default unconfigured state raises on `GET /api/v1/faults` (and on the
+   entity-scoped `/apps/graph_watchdog/faults`), a real CONFIGURE leaves the fault
+   raised (inactive is still not active), a real gateway RESTART - SIGTERM, the port
+   going down, the relaunched process arming again - must not produce a single PASSED
+   for the still-inactive node, which is the withheld-clear guard at the only tier that
+   can reach it, and a real ACTIVATE finally arms the node's per-entity gate and heals
+   it. The default-config scenario launches with NO `lifecycle_expectation` config at
+   all against the same inactive node and holds a sustained silence window - the
+   zero-false-positive default, falsifiable nowhere else. The negative control runs the
+   self-activating variant of the same executable with the same grace and cadence, its
+   `require_active` naming that active variant, and holds the same window; the
+   discriminating variable is the node's actual lifecycle state. Both silence scenarios
+   gate on three facts before asserting absence and re-pin the last of them afterwards:
+   the plugin is armed, `GET /faults` answers 200 in this launch (a dead fault_manager
+   answers 503 and polls to the same `None` the assertion wants), and the target's
+   label was actually READ via the plugin's own `GET /x-medkit-watchdog` route - an
+   unread label would produce the same silence for the wrong reason.
+
 ## Reliability (bringup-quiesce)
 
 Silent-fault detectors are prone to bringup noise: a node joining the graph, a
@@ -611,8 +889,11 @@ bringup-quiesce centrally so no individual detector has to reimplement it.
   `~/transition_event` topic. A node still cached non-active shortly after
   discovery is briefly re-seeded, so an `active` transition lost during the
   subscription's endpoint-matching window self-heals instead of suppressing the
-  node forever. Seeds are bounded per tick so a batch bringup cannot stall the
-  tick loop. Non-managed nodes are never gated.
+  node forever. A re-seed's answer is dropped if a `~/transition_event` for that
+  node arrived while the (blocking) read was in flight, so the mechanism that
+  recovers a lost activation can never undo an observed one. Seeds are bounded
+  per tick so a batch bringup cannot stall the tick loop. Non-managed nodes are
+  never gated.
 - **Clock validity.** `ctx.clock->time_is_valid()` flags a paused or absent
   `/clock` (e.g. a bag pauses or a sim crashes under `use_sim_time`). This is
   **detector-consulted, not centrally enforced**: a time-based detector
@@ -676,4 +957,5 @@ adding a per-detector unit test is the one shared touch - it adds an
 Frozen in `include/ros2_medkit_graph_watchdog/graph_fault_codes.hpp`:
 `GRAPH_QOS_MISMATCH`, `GRAPH_ORPHAN`, `GRAPH_NODE_DISAPPEARED`, `GRAPH_TF_STALE`,
 `GRAPH_PARAM_DRIFT`, `GRAPH_LATENCY_BUDGET`, plus one extension of the frozen
-namespace for a new capability beyond the original six: `GRAPH_NODE_INACTIVE`.
+namespace beyond the original six: `GRAPH_NODE_INACTIVE`, raised by
+`lifecycle_expectation`.
