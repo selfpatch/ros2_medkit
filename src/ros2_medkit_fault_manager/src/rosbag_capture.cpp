@@ -45,6 +45,17 @@ std::string storage_plugin_hint(const std::string & format) {
   return "check the rosbag2 storage plugin installation";
 }
 
+/// Wall-clock seconds elapsed since @p started_at_ns, never negative. Zero when the
+/// caller has no start time, which is how a recording that produced no content at all
+/// reports itself rather than claiming the configured window.
+double span_sec_since(int64_t started_at_ns) {
+  if (started_at_ns <= 0) {
+    return 0.0;
+  }
+  const double span = static_cast<double>(get_wall_clock_ns() - started_at_ns) / 1e9;
+  return span > 0.0 ? span : 0.0;
+}
+
 /// Bound the probe reason so a verbose pluginlib error does not flood the log.
 std::string truncate_reason(const std::string & reason, size_t max_len = 200) {
   if (reason.size() <= max_len) {
@@ -312,10 +323,44 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
   resolve_entity_topics(fault_code);
 
   // Flush buffer to bag
-  std::string bag_path = flush_to_bag(fault_code);
-  if (bag_path.empty()) {
-    RCLCPP_WARN(node_->get_logger(), "Failed to create bag file for fault '%s'", fault_code.c_str());
-    return;
+  auto flush = flush_to_bag(fault_code);
+  std::string bag_path;
+  switch (flush.status) {
+    case FlushStatus::kOk:
+      bag_path = std::move(flush.bag_path);
+      break;
+
+    case FlushStatus::kEmptyBuffer: {
+      // The boundary case: this fault confirmed right after the previous post-fault
+      // window finalised, so the ring buffer holds nothing - the earlier flush moved
+      // the whole deque out and every message published during that window went
+      // straight into its bag. The post-failure data is exactly what a burst's later
+      // fault needs, so open a recording anyway and let the normal post-roll fill it.
+      if (config_.duration_after_sec <= 0.0) {
+        // No window to record into, and no history to write: nothing can be captured.
+        RCLCPP_WARN(node_->get_logger(),
+                    "No data buffered for fault '%s' and no post-fault window configured, no bag created",
+                    fault_code.c_str());
+        return;
+      }
+      auto opened = open_bag_writer(fault_code);
+      if (!opened) {
+        RCLCPP_WARN(node_->get_logger(), "Failed to create bag file for fault '%s'", fault_code.c_str());
+        return;
+      }
+      bag_path = std::move(*opened);
+      recording_started_at_ns_.store(get_wall_clock_ns());
+      RCLCPP_INFO(node_->get_logger(), "No pre-fault data buffered for fault '%s' - recording post-fault window only",
+                  fault_code.c_str());
+      break;
+    }
+
+    case FlushStatus::kIoError:
+      // Never open a post-roll on top of an I/O failure: it would hold an unusable
+      // writer open for the whole window and then store a row for a bag that the
+      // failed flush already removed.
+      RCLCPP_WARN(node_->get_logger(), "Failed to create bag file for fault '%s'", fault_code.c_str());
+      return;
   }
 
   // If duration_after_sec > 0, continue recording
@@ -351,7 +396,9 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     info.fault_code = fault_code;
     info.file_path = bag_path;
     info.format = config_.format;
-    info.duration_sec = config_.duration_sec;
+    // What the bag holds, not what was configured: a buffer that had less than
+    // duration_sec of history would otherwise be advertised as a full window.
+    info.duration_sec = span_sec_since(recording_started_at_ns_.exchange(0));
     info.size_bytes = bag_size;
     info.created_at_ns = get_wall_clock_ns();
 
@@ -831,20 +878,17 @@ std::string RosbagCapture::get_topic_type(const std::string & topic) const {
   return "";
 }
 
-std::string RosbagCapture::flush_to_bag(const std::string & fault_code) {
-  // Copy buffer under lock, then release to avoid holding mutex during IO
-  std::deque<BufferedMessage> messages_to_write;
+void RosbagCapture::discard_active_writer(const std::string & bag_path) {
   {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    if (message_buffer_.empty()) {
-      RCLCPP_WARN(node_->get_logger(), "Buffer is empty, cannot create bag file");
-      return "";
-    }
-    messages_to_write = std::move(message_buffer_);
-    message_buffer_.clear();
-    buffer_bytes_ = 0;
+    std::lock_guard<std::mutex> wlock(writer_mutex_);
+    active_writer_.reset();
+    created_topics_.clear();
   }
+  std::error_code ec;
+  std::filesystem::remove_all(bag_path, ec);
+}
 
+std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fault_code) {
   std::string bag_path = generate_bag_path(fault_code);
 
   try {
@@ -855,19 +899,49 @@ std::string RosbagCapture::flush_to_bag(const std::string & fault_code) {
     }
 
     // Create writer and store as member for post-fault recording
-    {
-      std::lock_guard<std::mutex> wlock(writer_mutex_);
-      active_writer_ = std::make_unique<rosbag2_cpp::Writer>();
-      created_topics_.clear();
+    std::lock_guard<std::mutex> wlock(writer_mutex_);
+    active_writer_ = std::make_unique<rosbag2_cpp::Writer>();
+    created_topics_.clear();
 
-      rosbag2_storage::StorageOptions storage_options;
-      storage_options.uri = bag_path;
-      storage_options.storage_id = config_.format;
-      storage_options.max_bagfile_size = config_.max_bag_size_mb * 1024 * 1024;
+    rosbag2_storage::StorageOptions storage_options;
+    storage_options.uri = bag_path;
+    storage_options.storage_id = config_.format;
+    storage_options.max_bagfile_size = config_.max_bag_size_mb * 1024 * 1024;
 
-      active_writer_->open(storage_options);
+    active_writer_->open(storage_options);
+    return bag_path;
+
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node_->get_logger(), "Failed to open bag file '%s': %s", bag_path.c_str(), e.what());
+    discard_active_writer(bag_path);
+    return std::nullopt;
+  }
+}
+
+RosbagCapture::FlushResult RosbagCapture::flush_to_bag(const std::string & fault_code) {
+  // Copy buffer under lock, then release to avoid holding mutex during IO
+  std::deque<BufferedMessage> messages_to_write;
+  {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    if (message_buffer_.empty()) {
+      // Not a failure. Right after a post-fault window closes the buffer is empty
+      // by construction, and the caller can still serve the fault with a
+      // post-fault-only recording - so the distinction from an I/O error matters.
+      return {FlushStatus::kEmptyBuffer, ""};
     }
+    messages_to_write = std::move(message_buffer_);
+    message_buffer_.clear();
+    buffer_bytes_ = 0;
+  }
 
+  const int64_t opened_at_ns = get_wall_clock_ns();
+  auto opened = open_bag_writer(fault_code);
+  if (!opened) {
+    return {FlushStatus::kIoError, ""};
+  }
+  const std::string bag_path = *opened;
+
+  try {
     // Snapshot the entity filter once (empty = write everything) so the flush loop
     // does not take capture_topics_mutex_ for every buffered message.
     std::set<std::string> capture_filter;
@@ -879,6 +953,7 @@ std::string RosbagCapture::flush_to_bag(const std::string & fault_code) {
 
     // Write messages (no buffer_mutex_ held, writer_mutex_ only for brief access)
     size_t msg_count = 0;
+    int64_t first_written_ns = 0;
     for (const auto & msg : messages_to_write) {
       // Entity mode: write only the faulting node's topics (+ /tf). No-op otherwise.
       if (entity_filtered && capture_filter.count(msg.topic) == 0) {
@@ -904,31 +979,30 @@ std::string RosbagCapture::flush_to_bag(const std::string & fault_code) {
                                         node_->get_logger());
       if (bag_msg) {
         active_writer_->write(bag_msg);
+        if (msg_count == 0) {
+          first_written_ns = msg.timestamp_ns;
+        }
         ++msg_count;
       }
       // Memory is automatically cleaned up by RAII when bag_msg goes out of scope
     }
+
+    // The recording starts at its oldest written message, not at "now minus the
+    // configured pre-fault window": a buffer that never filled, or an entity filter
+    // that matched nothing, must not make the stored row claim history it lacks.
+    recording_started_at_ns_.store(msg_count > 0 ? first_written_ns : opened_at_ns);
 
     RCLCPP_DEBUG(node_->get_logger(), "Flushed %zu messages to bag: %s", msg_count, bag_path.c_str());
 
     // Note: Writer is NOT closed here - it stays open for post-fault recording
     // It will be closed in post_fault_timer_callback()
 
-    return bag_path;
+    return {FlushStatus::kOk, bag_path};
 
   } catch (const std::exception & e) {
     RCLCPP_ERROR(node_->get_logger(), "Failed to write bag file '%s': %s", bag_path.c_str(), e.what());
-
-    // Clean up writer and partial bag file
-    {
-      std::lock_guard<std::mutex> wlock(writer_mutex_);
-      active_writer_.reset();
-      created_topics_.clear();
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(bag_path, ec);
-
-    return "";
+    discard_active_writer(bag_path);
+    return {FlushStatus::kIoError, ""};
   }
 }
 
@@ -1035,6 +1109,7 @@ void RosbagCapture::finalize_post_fault_recording() {
   std::set<std::string> attached;
   std::string fault_code;
   std::string bag_path;
+  int64_t started_at_ns = 0;
   {
     std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
     if (!recording_post_fault_.load()) {
@@ -1048,6 +1123,10 @@ void RosbagCapture::finalize_post_fault_recording() {
     attached.swap(attached_fault_codes_);
     fault_code.swap(current_fault_code_);
     bag_path.swap(current_bag_path_);
+    // Taken here, under the lock that clears the guard: a confirmation racing this
+    // finalise opens its own recording the moment the guard drops, and would
+    // otherwise overwrite the start time before this bag's row is built.
+    started_at_ns = recording_started_at_ns_.exchange(0);
   }
 
   // Close the writer (messages were written directly during post-fault period)
@@ -1063,7 +1142,10 @@ void RosbagCapture::finalize_post_fault_recording() {
   RosbagFileInfo info;
   info.file_path = bag_path;
   info.format = config_.format;
-  info.duration_sec = config_.duration_sec + config_.duration_after_sec;
+  // The real span of the recording, not the configured pre+post window. A
+  // post-fault-only bag reports roughly duration_after_sec, and a bag flushed from
+  // a partly-filled buffer reports what it holds.
+  info.duration_sec = span_sec_since(started_at_ns);
   info.size_bytes = bag_size;
   info.created_at_ns = get_wall_clock_ns();
 

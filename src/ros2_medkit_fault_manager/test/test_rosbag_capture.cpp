@@ -956,6 +956,231 @@ TEST_F(RosbagCaptureIntegrationTest, StopDuringPostRollFinalisesTheRecording) {
   EXPECT_NE(after->file_path, before->file_path);
 }
 
+// Boundary behaviour (#574): a fault confirming right AFTER the previous
+// post-roll finalised finds the ring buffer empty by construction (the flush
+// drained it and the post-roll diverted everything published since). It must
+// still get a black box: a post-fault-only bag recorded over its own
+// duration_after_sec window. The tests set duration_sec/duration_after_sec
+// explicitly (2.0/0.5, the issue's configuration) instead of inheriting
+// fixture defaults.
+
+TEST_F(RosbagCaptureIntegrationTest, ConfirmRightAfterFinalizeGetsAPostFaultOnlyBag) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 2.0;
+  rosbag_config.duration_after_sec = 0.5;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  // fill_buffer destroys its publisher on return, so nothing refills the
+  // buffer after the flush - the boundary state is reached deterministically.
+  fill_buffer("/rosbag_boundary_probe");
+
+  capture.on_fault_confirmed("BOUNDARY_A");
+  ASSERT_TRUE(wait_for_row("BOUNDARY_A", std::chrono::milliseconds(8000)));
+
+  // A's flush drained the deque, its post-roll diverted direct writes, and no
+  // publisher exists any more: the buffer is empty. Confirming now used to be
+  // a warn-and-return no-op that left the fault with no recording at all.
+  capture.on_fault_confirmed("BOUNDARY_B");
+
+  ASSERT_TRUE(wait_for_row("BOUNDARY_B", std::chrono::milliseconds(8000)))
+      << "a fault confirmed right after the previous post-roll finalised must get a post-fault-only bag";
+  auto row_a = storage_->get_rosbag_file("BOUNDARY_A");
+  auto row_b = storage_->get_rosbag_file("BOUNDARY_B");
+  ASSERT_TRUE(row_a.has_value());
+  ASSERT_TRUE(row_b.has_value());
+  EXPECT_NE(row_b->file_path, row_a->file_path) << "the boundary fault opens its own recording, not the closed one";
+  EXPECT_TRUE(std::filesystem::exists(row_b->file_path));
+
+  // duration_sec honesty: the post-only recording spans ~duration_after_sec
+  // (0.5s window + executor lag), never the configured pre+post (2.5s).
+  EXPECT_GE(row_b->duration_sec, 0.4);
+  EXPECT_LE(row_b->duration_sec, 2.0) << "post-fault-only duration must reflect actual content, not config pre+post";
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, BurstFaultAttachesToThePostFaultOnlyRecording) {
+  // The post-fault-only recording enters the same post-roll state machine as a
+  // full one, so a further fault of the burst confirming inside its window
+  // attaches to it instead of being dropped or opening a third bag.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 2.0;
+  rosbag_config.duration_after_sec = 0.5;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_boundary_attach_probe");
+
+  capture.on_fault_confirmed("BOUNDARY_A");
+  ASSERT_TRUE(wait_for_row("BOUNDARY_A", std::chrono::milliseconds(8000)));
+
+  capture.on_fault_confirmed("BOUNDARY_B");  // empty buffer -> post-fault-only recording
+  capture.on_fault_confirmed("BOUNDARY_C");  // lands inside B's post-roll -> attaches
+
+  ASSERT_TRUE(wait_for_row("BOUNDARY_B", std::chrono::milliseconds(8000)));
+  auto row_b = storage_->get_rosbag_file("BOUNDARY_B");
+  auto row_c = storage_->get_rosbag_file("BOUNDARY_C");
+  ASSERT_TRUE(row_b.has_value());
+  ASSERT_TRUE(row_c.has_value()) << "a burst fault confirming inside the post-fault-only window lost its attachment";
+  EXPECT_EQ(row_c->file_path, row_b->file_path);
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, EmptyBufferWithNoPostFaultWindowGetsNoBag) {
+  // With duration_after_sec: 0 there is no post-fault window, so an empty
+  // buffer leaves nothing to record. Pinned: warn-and-return - no bag
+  // directory, no metadata row, no crash.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 2.0;
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  // No publisher at all: the buffer is empty at confirmation.
+  capture.on_fault_confirmed("NO_WINDOW");
+  spin_for(std::chrono::milliseconds(300));
+
+  EXPECT_FALSE(storage_->get_rosbag_file("NO_WINDOW").has_value());
+  EXPECT_EQ(count_bag_dirs(), 0u);
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, FullBagDurationReflectsActualContentNotConfiguredWindow) {
+  // The configured pre-fault window (10s) is far larger than the ~2s of data
+  // actually buffered. The stored duration_sec must report the real recorded
+  // span, not the configured duration_sec + duration_after_sec (10.5s).
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.5;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_duration_probe");
+
+  capture.on_fault_confirmed("SHORT_CONTENT");
+  ASSERT_TRUE(wait_for_row("SHORT_CONTENT", std::chrono::milliseconds(8000)));
+
+  auto row = storage_->get_rosbag_file("SHORT_CONTENT");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_GT(row->duration_sec, 0.0);
+  EXPECT_LE(row->duration_sec, 5.0) << "duration_sec must reflect the ~2.5s actually recorded, not config pre+post";
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, ImmediateFinalizeDurationReflectsActualContent) {
+  // Same honesty check for the duration_after_sec == 0 path, which finalises
+  // the bag synchronously inside on_fault_confirmed().
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_immediate_duration_probe");
+
+  capture.on_fault_confirmed("IMMEDIATE_CONTENT");
+
+  auto row = storage_->get_rosbag_file("IMMEDIATE_CONTENT");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_GT(row->duration_sec, 0.0);
+  EXPECT_LE(row->duration_sec, 5.0) << "duration_sec must reflect the ~2s actually buffered, not config duration_sec";
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, WriterOpenFailureNeverOpensAPostRollAndRecovers) {
+  // A real filesystem failure: a regular FILE where the storage directory is
+  // expected makes create_directories/Writer::open fail for any user. Both the
+  // buffered flush and the empty-buffer boundary path must degrade to a warn
+  // with no metadata row and no post-roll, and the state machine must serve
+  // the next fault normally once the path works again.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 2.0;
+  rosbag_config.duration_after_sec = 0.5;
+  const auto blocked = temp_dir_ / "blocked_storage";
+  {
+    std::ofstream f(blocked);
+    f << "not a directory";
+  }
+  rosbag_config.storage_path = blocked.string();
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_io_error_probe");
+
+  // Buffered flush hits the I/O error.
+  capture.on_fault_confirmed("IO_FAIL_FULL");
+  // Wait past duration_after_sec: a wrongly-opened post-roll would finalise
+  // and store a row for the fault.
+  spin_for(std::chrono::milliseconds(900));
+  EXPECT_FALSE(storage_->get_rosbag_file("IO_FAIL_FULL").has_value());
+
+  // Empty buffer at the boundary + broken path: the post-fault-only writer
+  // open fails. Never open a post-roll after an I/O failure.
+  capture.on_fault_confirmed("IO_FAIL_EMPTY");
+  spin_for(std::chrono::milliseconds(900));
+  EXPECT_FALSE(storage_->get_rosbag_file("IO_FAIL_EMPTY").has_value());
+
+  // Repair the path (now a directory) - later faults must capture normally.
+  std::filesystem::remove(blocked);
+  std::filesystem::create_directories(blocked);
+  fill_buffer("/rosbag_io_error_probe_2");
+  capture.on_fault_confirmed("IO_RECOVERED");
+  ASSERT_TRUE(wait_for_row("IO_RECOVERED", std::chrono::milliseconds(8000)))
+      << "an earlier I/O failure must not corrupt the state machine for a fault with a working path";
+  EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file("IO_RECOVERED")->file_path));
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, ZeroMessagePostFaultOnlyBagFinalizesCleanlyOnBothFormats) {
+  // A post-fault-only recording on a quiet system closes with zero messages.
+  // It must finalise cleanly on BOTH storage backends: metadata row stored,
+  // bag directory with metadata.yaml, and the inner data file the gateway's
+  // bulk-data download resolves (a .db3/.mcap next to it).
+  for (const std::string format : {"sqlite3", "mcap"}) {
+    auto rosbag_config = create_rosbag_config();
+    rosbag_config.duration_sec = 2.0;
+    rosbag_config.duration_after_sec = 0.5;
+    rosbag_config.format = format;
+    auto snapshot_config = create_snapshot_config();
+    RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+    capture.start();
+    // No publisher at all: the buffer is empty and the post-roll records nothing.
+    const std::string fault_code = "ZERO_MSG_" + format;
+    capture.on_fault_confirmed(fault_code);
+
+    ASSERT_TRUE(wait_for_row(fault_code, std::chrono::milliseconds(8000)))
+        << "zero-message post-fault-only bag did not finalise on " << format;
+    auto row = storage_->get_rosbag_file(fault_code);
+    ASSERT_TRUE(row.has_value());
+    EXPECT_EQ(row->format, format);
+    ASSERT_TRUE(std::filesystem::is_directory(row->file_path));
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(row->file_path) / "metadata.yaml"));
+    bool inner_data_file = false;
+    for (const auto & entry : std::filesystem::directory_iterator(row->file_path)) {
+      const auto ext = entry.path().extension().string();
+      if (ext == ".db3" || ext == ".mcap") {
+        inner_data_file = true;
+      }
+    }
+    EXPECT_TRUE(inner_data_file) << "no finalized storage file inside the zero-message bag on " << format;
+
+    capture.stop();
+  }
+}
+
 TEST_F(RosbagCaptureIntegrationTest, FaultClearedBeforeConfirmed) {
   auto rosbag_config = create_rosbag_config();
   auto snapshot_config = create_snapshot_config();
