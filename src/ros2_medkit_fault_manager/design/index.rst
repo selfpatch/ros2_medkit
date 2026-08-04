@@ -244,3 +244,78 @@ means heal on a single PASSED event); the node validates the
 merged per-entity config at startup, logs a warning, and falls back to safe defaults if not. When
 healing is disabled, any HEALED row left by a previous (healing-enabled) run is reclassified to
 CLEARED once at startup so it does not behave inconsistently under the latch.
+
+Rosbag Black-Box Recording
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``RosbagCapture`` is a single-writer black box: one ring buffer, one open bag writer and
+one post-fault window per fault manager. Everything below follows from that.
+
+Subscriptions feed a ``std::deque`` of serialised messages, pruned to ``duration_sec`` of
+history and to ``max_buffer_mb`` of RAM. Pruning is driven by message arrival, not by a
+timer, so a topic that stops publishing keeps its last window buffered rather than
+silently losing the final messages before it died.
+
+On confirmation the whole buffer is moved out in one step and written to a new bag. If
+``duration_after_sec > 0`` the writer stays open and the state machine enters the
+post-fault window: ``recording_post_fault_`` is set, a one-shot timer is armed, and from
+that point incoming messages bypass the buffer and are written straight to the open bag.
+When the timer fires (or ``stop()`` runs first), the recording is finalised: the writer
+closes and one metadata row is stored per fault the recording covers.
+
+.. plantuml::
+
+   @startuml
+   skinparam backgroundColor transparent
+   state "Buffering" as BUF
+   state "Post-fault window" as POST
+   state "Finalising" as FIN
+
+   [*] --> BUF : start()
+   BUF --> POST : confirm, buffer non-empty\n(flush + keep writer open)
+   BUF --> POST : confirm, buffer EMPTY\n(post-fault-only bag)
+   BUF --> BUF : confirm, duration_after_sec == 0\n(flush, close, store row)
+   POST --> POST : confirm inside the window\n(attach, share the bag)
+   POST --> FIN : timer expires / stop()
+   FIN --> BUF : rows stored, writer closed
+   @enduml
+
+The window boundary
+"""""""""""""""""""
+
+The interesting transition is the second one. Right after a window finalises the buffer
+is empty *by construction*: the flush that opened the recording drained it, and every
+message published during the window went into that bag instead of back into the buffer.
+A fault confirming in that gap - typically the next fault of the same burst - therefore
+has no pre-fault history to write.
+
+Before, ``flush_to_bag()`` returned an empty path and the confirmation was abandoned with
+a warning: no bag, no metadata row, no retry, and every later retrieval for that fault
+failed permanently. Now the empty buffer is distinguished from a write failure, and it
+opens a recording anyway - a post-fault-only bag. Because it is the ordinary post-roll
+state machine, attachment, entity scoping, auto-cleanup and quota accounting all behave
+as for any other recording.
+
+Two states stay deliberately empty-handed:
+
+- ``duration_after_sec == 0``: there is no window to record into and no history to write,
+  so the fault gets no bag.
+- an I/O failure (unwritable ``storage_path``, unusable storage backend): no post-roll is
+  opened on top of it, so no row is ever stored for a bag that does not exist.
+
+``flush_to_bag()`` reports ``kOk`` / ``kEmptyBuffer`` / ``kIoError`` rather than one
+overloaded empty-string return, and the writer-open block lives in ``open_bag_writer()``
+so it can run without any buffered messages.
+
+Honest durations
+""""""""""""""""
+
+``RosbagFileInfo::duration_sec`` is the recording's real wall-clock span, tracked from the
+timestamp of its oldest written message (or from the moment the writer opened, for a
+post-fault-only bag). Both storage paths used to hardcode the configured windows, which
+made a post-fault-only bag and a bag flushed from a half-filled buffer both claim a full
+pre-fault window. The start time is exchanged out inside the same
+``post_fault_timer_mutex_`` critical section that clears the recording guard, so a
+confirmation racing the finalise cannot have its own start time attributed to the bag
+being closed. Because the buffer is pruned only on arrival, the span can legitimately
+exceed ``duration_sec + duration_after_sec``.
