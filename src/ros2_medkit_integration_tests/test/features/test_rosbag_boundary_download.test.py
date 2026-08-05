@@ -55,7 +55,6 @@ DURATION_SEC = 2.0
 DURATION_AFTER_SEC = 0.5
 # Topic the test publishes; the only traffic the rosbag capture records.
 PROBE_TOPIC = '/e2e/boundary_probe'
-POST_ONLY_LOG_LINE = 'recording post-fault window only'
 # The demo node the faults are attributed to (its FQN is the fault source).
 APP_ENDPOINT = '/apps/lidar_sensor'
 SOURCE_FQN = '/perception/lidar/lidar_sensor'
@@ -63,7 +62,23 @@ FAULT_A = 'E2E_BOUNDARY_A'
 FAULT_B = 'E2E_BOUNDARY_B'
 # The demo node's own fault. It confirms shortly after startup and opens a
 # recording; the burst below must not overlap it (see the module docstring).
+# Nothing has ever been published on the only captured topic at that point, so
+# its recording is a zero-message post-fault-only bag - the artifact the config
+# docs promise is still listed and downloadable.
 LIDAR_OWN_FAULT = 'LIDAR_CALIBRATION_REQUIRED'
+
+
+def post_only_log_line(fault_code):
+    """
+    Return the log line the fault manager emits on the boundary path.
+
+    It must carry the fault code: ``proc_output.assertWaitFor`` scans all output
+    received so far, and the demo node's own fault takes the same branch long
+    before the burst starts, so a code-less pattern matches a stale line and can
+    never fail.
+    """
+    return f"fault '{fault_code}' - recording post-fault window only"
+
 
 # Bag storage for this test run, removed in the post-shutdown test.
 ROSBAG_STORAGE_PATH = tempfile.mkdtemp(prefix='rosbag_e2e_boundary_')
@@ -175,12 +190,21 @@ class TestRosbagBoundaryDownload(GatewayTestCase):
         # exists only once that recording finalised (rows are written at
         # finalize), so waiting for it is what guarantees the burst below runs
         # against an idle state machine instead of attaching to it.
-        desc_lidar = self._wait_for_bag_descriptor(LIDAR_OWN_FAULT, timeout=45.0)
+        desc_lidar = self._wait_for_bag_descriptor(LIDAR_OWN_FAULT, timeout=25.0)
         self.assertIsNotNone(
             desc_lidar,
             f"the demo node's own {LIDAR_OWN_FAULT} recording never finalised; "
             'the burst below would attach to it instead of exercising the '
             'window boundary')
+
+        # That recording is a zero-message post-fault-only bag: nothing has ever
+        # been published on the only captured topic. The config docs promise such
+        # a bag is still listed and downloadable, so pin it over HTTP rather than
+        # only at the fault manager's service.
+        empty_bag = self.get_raw(
+            f'{APP_ENDPOINT}/bulk-data/rosbags/{LIDAR_OWN_FAULT}', timeout=10)
+        self.assertEqual(empty_bag.content[:5], b'\x89MCAP',
+                         'a zero-message bag must still download as a valid mcap')
 
         # Fill the ring buffer, then go silent BEFORE reporting so no message
         # can slip into the buffer between A's finalize and B's flush.
@@ -189,21 +213,23 @@ class TestRosbagBoundaryDownload(GatewayTestCase):
 
         # A's descriptor appearing means its recording finalised (rows are
         # written at finalize); the ring buffer is empty by construction.
-        desc_a = self._wait_for_bag_descriptor(FAULT_A)
+        desc_a = self._wait_for_bag_descriptor(FAULT_A, timeout=15.0)
         self.assertIsNotNone(desc_a, 'fault A must get a full bag')
 
         # The boundary case: B confirms right after A's window closed.
         self._report_fault(FAULT_B)
 
-        # Wait until the post-fault-only recording opens, then resume
-        # publishing so B's bag has content during its window.
+        # Wait until B's OWN post-fault-only recording opens, then resume
+        # publishing so its window has content. The pattern carries the fault
+        # code deliberately: assertWaitFor scans everything received so far, and
+        # the demo node's fault logged the same sentence before this test began.
         proc_output.assertWaitFor(
-            expected_output=POST_ONLY_LOG_LINE, timeout=15.0,
+            expected_output=post_only_log_line(FAULT_B), timeout=10.0,
         )
         self._publish_for(1.0)
 
         # --- Bulk-data listing metadata describes the post-only bag ---
-        desc_b = self._wait_for_bag_descriptor(FAULT_B)
+        desc_b = self._wait_for_bag_descriptor(FAULT_B, timeout=15.0)
         self.assertIsNotNone(
             desc_b,
             'the boundary fault must get its own bag descriptor')
@@ -228,7 +254,7 @@ class TestRosbagBoundaryDownload(GatewayTestCase):
                  if s.get('type') == 'rosbag'),
                 None,
             ),
-            timeout=15.0,
+            timeout=10.0,
             interval=0.5,
         )
         self.assertIsNotNone(
@@ -241,12 +267,19 @@ class TestRosbagBoundaryDownload(GatewayTestCase):
         # --- Download through the gateway ---
         response = self.get_raw(
             f'{APP_ENDPOINT}/bulk-data/rosbags/{FAULT_B}',
-            timeout=30,
+            timeout=10,
         )
         self.assertIn('application/x-mcap',
                       response.headers.get('Content-Type', ''))
-        self.assertGreater(len(response.content), 0,
-                           'downloaded post-fault-only bag must not be empty')
+        self.assertEqual(response.content[:5], b'\x89MCAP')
+        # A non-empty payload proves nothing on its own - the zero-message bag
+        # downloaded at the top of this test is non-empty too (header + footer).
+        # B recorded a full second of a 20 Hz topic, so it must be the larger of
+        # the two by a wide margin.
+        self.assertGreater(
+            len(response.content), len(empty_bag.content),
+            "the boundary fault's bag is no bigger than a bag with no messages "
+            'in it, so its post-fault window was not recorded')
 
 
 @launch_testing.post_shutdown_test()

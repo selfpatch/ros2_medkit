@@ -43,7 +43,7 @@ import launch_testing.markers
 import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import GetRosbag, ReportFault
+from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ReportFault
 from std_msgs.msg import Float32
 
 
@@ -51,7 +51,17 @@ from std_msgs.msg import Float32
 DURATION_SEC = 2.0
 DURATION_AFTER_SEC = 0.5
 PROBE_TOPIC = '/boundary/telemetry'
-POST_ONLY_LOG_LINE = 'recording post-fault window only'
+
+
+def post_only_log_line(fault_code):
+    """
+    Return the log line the fault manager emits on the boundary path.
+
+    It carries the fault code because ``assertWaitFor`` scans everything
+    received so far: a code-less pattern would also match the line some earlier
+    fault logged, and the wait would return on a stale match.
+    """
+    return f"fault '{fault_code}' - recording post-fault window only"
 
 
 def get_coverage_env():
@@ -122,7 +132,7 @@ def generate_test_description(storage_format):
 
 
 class TestRosbagBoundary(unittest.TestCase):
-    """Post-fault window boundary tests (@verifies REQ_INTEROP_088)."""
+    """Post-fault window boundary tests."""
 
     @classmethod
     def setUpClass(cls):
@@ -141,10 +151,15 @@ class TestRosbagBoundary(unittest.TestCase):
         cls.get_rosbag_client = cls.node.create_client(
             GetRosbag, '/fault_manager/get_rosbag'
         )
+        cls.clear_fault_client = cls.node.create_client(
+            ClearFault, '/fault_manager/clear_fault'
+        )
         assert cls.report_fault_client.wait_for_service(timeout_sec=15.0), \
             'report_fault service not available'
         assert cls.get_rosbag_client.wait_for_service(timeout_sec=15.0), \
             'get_rosbag service not available'
+        assert cls.clear_fault_client.wait_for_service(timeout_sec=15.0), \
+            'clear_fault service not available'
 
         # Wait until the fault_manager's capture subscription on the probe
         # topic exists; before that, published messages are never buffered.
@@ -179,6 +194,11 @@ class TestRosbagBoundary(unittest.TestCase):
         request.source_id = '/boundary_test_driver'
         return self._call_service(self.report_fault_client, request)
 
+    def _clear_fault(self, fault_code):
+        request = ClearFault.Request()
+        request.fault_code = fault_code
+        return self._call_service(self.clear_fault_client, request)
+
     def _get_rosbag(self, fault_code):
         request = GetRosbag.Request()
         request.fault_code = fault_code
@@ -195,6 +215,27 @@ class TestRosbagBoundary(unittest.TestCase):
             response = self._get_rosbag(fault_code)
         return response
 
+    def _read_bag(self, bag_path, storage_format):
+        """
+        Return ``(topics, message_count)`` read from the finalised bag itself.
+
+        A row, a non-zero ``size_bytes`` and a downloadable payload are all
+        equally true of a bag containing no messages, so reading the bag is the
+        only assertion that can tell the two apart.
+        """
+        import rosbag2_py
+        reader = rosbag2_py.SequentialReader()
+        reader.open(
+            rosbag2_py.StorageOptions(uri=bag_path, storage_id=storage_format),
+            rosbag2_py.ConverterOptions('', ''),
+        )
+        topics = {t.name for t in reader.get_all_topics_and_types()}
+        count = 0
+        while reader.has_next():
+            reader.read_next()
+            count += 1
+        return topics, count
+
     def _publish_for(self, duration_sec, rate_hz=20.0):
         """Publish probe messages for *duration_sec*, then go silent."""
         msg = Float32()
@@ -209,12 +250,14 @@ class TestRosbagBoundary(unittest.TestCase):
     # Tests
     # ------------------------------------------------------------------
 
-    def test_01_boundary_fault_gets_post_fault_only_bag(self, proc_output):
+    def test_01_boundary_fault_gets_post_fault_only_bag(self, proc_output, storage_format):
         """
         A fault confirmed right after the previous window closes gets a bag.
 
         Also pins duration_sec honesty: the post-only row reports ~the
         post-fault window; the full row reports what it really holds.
+
+        @verifies REQ_INTEROP_088
         """
         # Fill the ring buffer, then go silent BEFORE reporting so no message
         # can slip into the buffer between A's finalize and B's flush.
@@ -235,7 +278,7 @@ class TestRosbagBoundary(unittest.TestCase):
         # Wait until the post-fault-only recording opens, then resume
         # publishing so B's bag has content during its window.
         proc_output.assertWaitFor(
-            expected_output=POST_ONLY_LOG_LINE, timeout=10.0,
+            expected_output=post_only_log_line('BOUNDARY_B'), timeout=10.0,
         )
         self._publish_for(1.0)
 
@@ -248,6 +291,18 @@ class TestRosbagBoundary(unittest.TestCase):
                             'the boundary fault opens its own recording')
         self.assertTrue(os.path.exists(bag_b.file_path))
         self.assertGreater(bag_b.size_bytes, 0)
+
+        # The claim the whole slice exists for: B's bag holds B's post-fault
+        # window. size_bytes and a served download are true of an empty bag too
+        # (test_02 produces exactly such a bag), so read the bag itself.
+        topics, count = self._read_bag(bag_b.file_path, storage_format)
+        self.assertIn(
+            PROBE_TOPIC, topics,
+            'the post-fault-only bag recorded no messages on the captured '
+            'topic - an empty black box is the failure this fixes')
+        self.assertGreater(
+            count, 0,
+            'the post-fault-only bag finalised empty: its window was not recorded')
 
         # duration_sec honesty (tolerance, not equality): the post-only bag
         # spans ~duration_after_sec plus executor lag - far below the old
@@ -282,6 +337,8 @@ class TestRosbagBoundary(unittest.TestCase):
         The recording closes with no messages at all; it must still finalise
         cleanly (metadata row + bag on disk) and GetRosbag must keep serving
         it - on both storage formats.
+
+        @verifies REQ_INTEROP_088
         """
         self._publish_for(DURATION_SEC + 0.5)
 
@@ -310,6 +367,17 @@ class TestRosbagBoundary(unittest.TestCase):
         inner = [f for f in contents if f.endswith('.db3') or f.endswith('.mcap')]
         self.assertTrue(inner,
                         f'no finalized storage file in zero-message bag: {contents}')
+
+        # This bag is supposed to be the empty one - pin that, so the content
+        # assertion in test_01 is known to discriminate rather than to be
+        # trivially true of every bag this suite produces.
+        _, count = self._read_bag(bag_b.file_path, storage_format)
+        self.assertEqual(count, 0, 'the silent window should have recorded nothing')
+
+        # It still reports the span the RECORDING was open, not a content span:
+        # a window during which nothing was published is still a window covered.
+        self.assertGreaterEqual(bag_b.duration_sec, 0.3)
+        self.assertLessEqual(bag_b.duration_sec, 1.5)
 
         # GetRosbag re-checks the file on disk and deletes stale rows;
         # succeeding again proves the reader tolerates the empty bag.
