@@ -727,10 +727,21 @@ Execute Operations
    ``/components/`` one.
 
 ``GET /api/v1/components/{id}/operations/{operation_id}/executions``
-   List all executions for an operation.
+   List all executions for an operation. Available on every entity type that
+   lists the operation - areas, components, apps and functions.
+
+   An operation id that is not an action has no executions and lists empty:
+   only ROS 2 actions produce a tracked execution.
 
 ``GET /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Get execution status and result.
+
+   Executions belong to the entity they were started on. Reading, updating or
+   cancelling one through a different entity's URI answers ``404`` even when
+   the execution id exists, and the listing above shows an entity only the
+   executions started through it. The same action reached through two entities
+   (an app and the function that aggregates it) therefore keeps two separate
+   execution collections.
 
    **Example Response (completed action):**
 
