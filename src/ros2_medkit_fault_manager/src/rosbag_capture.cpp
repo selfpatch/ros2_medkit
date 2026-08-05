@@ -45,14 +45,36 @@ std::string storage_plugin_hint(const std::string & format) {
   return "check the rosbag2 storage plugin installation";
 }
 
-/// Wall-clock seconds elapsed since @p started_at_ns, never negative. Zero when the
-/// caller has no start time, which is how a recording that produced no content at all
-/// reports itself rather than claiming the configured window.
-double span_sec_since(int64_t started_at_ns) {
-  if (started_at_ns <= 0) {
+/// Monotonic nanoseconds, for measuring how long something took.
+///
+/// Deliberately not the wall clock that timestamps messages: the wall clock can
+/// step backwards (NTP, a hypervisor resyncing a VM), and a recording's duration
+/// then comes out negative and is reported as zero. That is not hypothetical -
+/// it was observed here as a 220 ms backwards step inside a 0.5 s post-fault
+/// window, which made the finalise log a completion timestamp 220 ms earlier
+/// than the confirmation that opened the recording.
+int64_t steady_now_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+/// Seconds from @p started_at_steady_ns until now, never negative.
+///
+/// This is the span the RECORDING was open, not the span of its content. The two
+/// differ for a bag that stayed quiet, and the recording span is the one reported:
+/// "the black box covered these seconds and nothing was published" is the useful
+/// statement for an operator, an empty content span would be indistinguishable from
+/// a broken artifact, and only this definition is available to every path without
+/// timestamping each message in the post-roll write path. A post-fault-only bag
+/// therefore reports ~duration_after_sec whether or not anything arrived.
+///
+/// Zero is returned only when no start time was ever recorded - a defensive value,
+/// not the way an empty bag reports itself.
+double span_sec_since(int64_t started_at_steady_ns) {
+  if (started_at_steady_ns <= 0) {
     return 0.0;
   }
-  const double span = static_cast<double>(get_wall_clock_ns() - started_at_ns) / 1e9;
+  const double span = static_cast<double>(steady_now_ns() - started_at_steady_ns) / 1e9;
   return span > 0.0 ? span : 0.0;
 }
 
@@ -349,7 +371,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
         return;
       }
       bag_path = std::move(*opened);
-      recording_started_at_ns_.store(get_wall_clock_ns());
+      recording_started_at_ns_.store(steady_now_ns());
       RCLCPP_INFO(node_->get_logger(), "No pre-fault data buffered for fault '%s' - recording post-fault window only",
                   fault_code.c_str());
       break;
@@ -396,8 +418,12 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     info.fault_code = fault_code;
     info.file_path = bag_path;
     info.format = config_.format;
-    // What the bag holds, not what was configured: a buffer that had less than
-    // duration_sec of history would otherwise be advertised as a full window.
+    // The span the recording was open, not the configured window: a buffer that
+    // held less than duration_sec of history would otherwise be advertised as a
+    // full one. Exchanged without post_fault_timer_mutex_ here, unlike the finalize
+    // path, and safe for a different reason: no post-roll state was published for
+    // this recording, so no finalise can be running for it, and confirmations are
+    // serialised against each other by the node-level rosbag mutex.
     info.duration_sec = span_sec_since(recording_started_at_ns_.exchange(0));
     info.size_bytes = bag_size;
     info.created_at_ns = get_wall_clock_ns();
@@ -934,7 +960,6 @@ RosbagCapture::FlushResult RosbagCapture::flush_to_bag(const std::string & fault
     buffer_bytes_ = 0;
   }
 
-  const int64_t opened_at_ns = get_wall_clock_ns();
   auto opened = open_bag_writer(fault_code);
   if (!opened) {
     return {FlushStatus::kIoError, ""};
@@ -990,7 +1015,12 @@ RosbagCapture::FlushResult RosbagCapture::flush_to_bag(const std::string & fault
     // The recording starts at its oldest written message, not at "now minus the
     // configured pre-fault window": a buffer that never filled, or an entity filter
     // that matched nothing, must not make the stored row claim history it lacks.
-    recording_started_at_ns_.store(msg_count > 0 ? first_written_ns : opened_at_ns);
+    // That start is a wall-clock instant (message timestamps are wall-clock), so
+    // convert the history it represents into a monotonic start once, here, and
+    // measure forward from that - a later clock step cannot corrupt an offset
+    // already taken.
+    const int64_t history_ns = msg_count > 0 ? std::max<int64_t>(0, get_wall_clock_ns() - first_written_ns) : 0;
+    recording_started_at_ns_.store(steady_now_ns() - history_ns);
 
     RCLCPP_DEBUG(node_->get_logger(), "Flushed %zu messages to bag: %s", msg_count, bag_path.c_str());
 
@@ -1110,6 +1140,7 @@ void RosbagCapture::finalize_post_fault_recording() {
   std::string fault_code;
   std::string bag_path;
   int64_t started_at_ns = 0;
+  std::unique_ptr<rosbag2_cpp::Writer> closing_writer;
   {
     std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
     if (!recording_post_fault_.load()) {
@@ -1127,14 +1158,23 @@ void RosbagCapture::finalize_post_fault_recording() {
     // finalise opens its own recording the moment the guard drops, and would
     // otherwise overwrite the start time before this bag's row is built.
     started_at_ns = recording_started_at_ns_.exchange(0);
-  }
-
-  // Close the writer (messages were written directly during post-fault period)
-  {
+    // The writer has to change hands under that same lock, for the same reason.
+    // Clearing the guard is precisely what invites a boundary confirmation in, and
+    // it opens ITS writer into active_writer_; if this finalise were still to reach
+    // for writer_mutex_ afterwards it would destroy that writer, leaving the new
+    // recording to write through a null pointer - every message silently dropped -
+    // and still store a row for the empty bag it produced. Which is #574 again,
+    // now as a race and with a row that lies about it.
     std::lock_guard<std::mutex> wlock(writer_mutex_);
-    active_writer_.reset();
+    closing_writer = std::move(active_writer_);
     created_topics_.clear();
   }
+
+  // Close outside both locks. Flushing the bag and writing metadata.yaml is real
+  // I/O, and the writer is exclusively ours now, so nothing is gained by holding
+  // the post-roll state or the write path hostage while it finishes. It must,
+  // however, close BEFORE the size is measured below.
+  closing_writer.reset();
 
   // Calculate final size and store metadata
   size_t bag_size = calculate_bag_size(bag_path);
@@ -1180,7 +1220,16 @@ void RosbagCapture::finalize_post_fault_recording() {
                   bag_path.c_str(), static_cast<double>(bag_size) / (1024.0 * 1024.0), info.duration_sec,
                   attached.size());
     } catch (const std::exception & e) {
-      RCLCPP_WARN(node_->get_logger(), "Failed to store rosbag metadata for '%s': %s", bag_path.c_str(), e.what());
+      // Without a row nothing can ever reach this bag: retrieval is keyed by fault
+      // code, and quota accounting enumerates rows, so a kept directory would sit
+      // on disk unreachable and uncounted, and the next full storage would not even
+      // be able to evict it. Discard it for the same reason the all-cleared branch
+      // above does.
+      std::error_code ec;
+      std::filesystem::remove_all(bag_path, ec);
+      RCLCPP_WARN(node_->get_logger(),
+                  "Failed to store rosbag metadata for '%s' (%s); discarded the bag, nothing could reference it",
+                  bag_path.c_str(), e.what());
     }
   }
 

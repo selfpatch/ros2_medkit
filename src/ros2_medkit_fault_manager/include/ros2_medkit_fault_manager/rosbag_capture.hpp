@@ -277,20 +277,36 @@ class RosbagCapture {
   /// pointing at the same bag when it finalises.
   std::set<std::string> attached_fault_codes_;
   /// Protects post_fault_timer_, the recording_post_fault_ transitions and the
-  /// state above against concurrent access from on_fault_confirmed() (service
-  /// thread) and post_fault_timer_callback() / stop() (executor thread).
+  /// state above against concurrent access from on_fault_confirmed() (capture-pool
+  /// thread) and post_fault_timer_callback() / stop() (executor thread). The
+  /// node-level rosbag mutex serialises confirmations against each other but NOT
+  /// against the timer, so this lock is the only thing ordering the two.
+  ///
+  /// Lock order (no cycle; every edge below is one-directional):
+  ///   node rosbag mutex -> post_fault_timer_mutex_ -> capture_topics_mutex_
+  ///   node rosbag mutex -> post_fault_timer_mutex_ -> writer_mutex_
+  /// buffer_mutex_ is never held across another lock. The paths that take
+  /// capture_topics_mutex_ or writer_mutex_ on their own (the flush loop, the
+  /// post-roll write path) release each before taking the next, so they add no
+  /// reverse edge. Everything that hands the RECORDING over - the guard, the
+  /// start time, the writer - must happen inside one post_fault_timer_mutex_
+  /// critical section, or a confirmation racing a finalise ends up owning half of
+  /// the previous recording's state.
   std::mutex post_fault_timer_mutex_;
   rclcpp::TimerBase::SharedPtr post_fault_timer_;
   std::atomic<bool> recording_post_fault_{false};
 
-  /// Wall-clock start of the content in the open recording: the timestamp of its
-  /// oldest flushed message, or the moment the writer opened for a post-fault-only
-  /// bag. Read when the recording is finalised so duration_sec reports what the bag
-  /// actually spans instead of the configured window - a short buffer or a
-  /// post-fault-only bag would otherwise claim history it does not hold. Atomic and
-  /// exchanged inside the post_fault_timer_mutex_ critical section that clears the
-  /// recording guard, so a confirmation racing the finalise cannot have its own
-  /// start time attributed to the bag being closed.
+  /// When the open recording started, on the MONOTONIC clock: the moment the writer
+  /// opened for a post-fault-only bag, or that moment less the age of the oldest
+  /// flushed message for a full one. Read when the recording is finalised so
+  /// duration_sec reports the span the bag covers instead of the configured window -
+  /// a short buffer or a post-fault-only bag would otherwise claim history it does
+  /// not hold. Monotonic and not the wall clock that timestamps messages, because a
+  /// wall clock that steps backwards mid-window turns an elapsed time negative and
+  /// the duration is then reported as zero. Atomic and exchanged inside the
+  /// post_fault_timer_mutex_ critical section that clears the recording guard, so a
+  /// confirmation racing the finalise cannot have its own start time attributed to
+  /// the bag being closed.
   std::atomic<int64_t> recording_started_at_ns_{0};
 
   /// Active writer for current bag (kept open during post-fault recording)
