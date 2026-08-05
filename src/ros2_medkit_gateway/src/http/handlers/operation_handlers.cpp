@@ -786,9 +786,9 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
 // PUT /{entity}/operations/{op_id}/executions/{exec_id} - update execution
 // =============================================================================
 
-http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>>
+http::Result<std::pair<http::Accepted<dto::OperationExecution>, http::ResponseAttachments>>
 OperationHandlers::update_execution(const http::TypedRequest & req, const dto::ExecutionUpdateRequest & body) {
-  using SuccessPair = std::pair<dto::OperationExecution, http::ResponseAttachments>;
+  using SuccessPair = std::pair<http::Accepted<dto::OperationExecution>, http::ResponseAttachments>;
 
   auto id_result = read_entity_id(req);
   if (!id_result) {
@@ -844,8 +844,8 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
       exec_dto.status = "running";  // canceling is still "running" in SOVD terms
 
       http::ResponseAttachments att;
-      att.with_status(202).with_header("Location", location);
-      return SuccessPair{std::move(exec_dto), std::move(att)};
+      att.with_header("Location", location);
+      return SuccessPair{http::Accepted<dto::OperationExecution>{std::move(exec_dto)}, std::move(att)};
     }
     std::string error_msg;
     switch (result.return_code) {
