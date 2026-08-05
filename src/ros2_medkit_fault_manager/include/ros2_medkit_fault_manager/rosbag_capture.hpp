@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <map>
@@ -214,6 +215,19 @@ class RosbagCapture {
   /// Enforce storage limits by deleting oldest bags
   void enforce_storage_limits();
 
+  /// Start the post-fault window: re-arm the timer, creating it the first time.
+  ///
+  /// The timer is created once and re-armed, never replaced per recording. A timer
+  /// per recording had the confirming capture-pool worker creating one while the
+  /// executor thread destroyed the previous one, which mutates rcl's clock
+  /// jump-callback list from two threads - and the two coincide exactly in the
+  /// burst-at-the-boundary case this class exists to serve. The destruction side is
+  /// not ours to serialise: the executor holds the last reference in
+  /// `AnyExecutable::timer` and drops it after the callback returns, outside any
+  /// mutex we could take. Re-arming removes the second party instead of trying to
+  /// lock it. Caller must hold post_fault_timer_mutex_.
+  void arm_post_fault_timer(std::chrono::nanoseconds period);
+
   /// Timer callback for post-fault recording
   void post_fault_timer_callback();
 
@@ -240,6 +254,17 @@ class RosbagCapture {
   /// std::nullopt when usable, or the failure reason (never throws), so the caller
   /// can degrade gracefully instead of terminating the node.
   std::optional<std::string> default_storage_probe(const std::string & format) const;
+
+  /// Serialises the calls that MUTATE THE NODE - creating a timer or a
+  /// subscription, and destroying the ones we own. rclcpp node internals are not
+  /// thread-safe for concurrent entity creation or destruction (the rcutils_hash_map
+  /// class of race, issue 375), and this class touches them from three threads: the
+  /// capture-pool worker that confirms a fault, the executor thread that runs the
+  /// discovery and post-fault timers, and whichever thread calls start()/stop().
+  /// Same remedy as SnapshotCapture::node_ops_mutex_.
+  ///
+  /// Innermost in the lock order, and never held across bag I/O.
+  std::mutex node_ops_mutex_;
 
   /// Storage-backend probe (the default real probe, or a test override).
   StorageProbeFn storage_probe_;
@@ -285,6 +310,7 @@ class RosbagCapture {
   /// Lock order (no cycle; every edge below is one-directional):
   ///   node rosbag mutex -> post_fault_timer_mutex_ -> capture_topics_mutex_
   ///   node rosbag mutex -> post_fault_timer_mutex_ -> writer_mutex_
+  ///   node rosbag mutex -> post_fault_timer_mutex_ -> node_ops_mutex_
   /// buffer_mutex_ is never held across another lock. The paths that take
   /// capture_topics_mutex_ or writer_mutex_ on their own (the flush loop, the
   /// post-roll write path) release each before taking the next, so they add no

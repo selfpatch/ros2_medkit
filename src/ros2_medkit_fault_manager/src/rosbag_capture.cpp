@@ -239,11 +239,18 @@ void RosbagCapture::stop() {
 
   if (discovery_retry_timer_) {
     discovery_retry_timer_->cancel();
-    discovery_retry_timer_.reset();
+    {
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
+      discovery_retry_timer_.reset();
+    }
   }
 
-  // Clear subscriptions
-  subscriptions_.clear();
+  // Clear subscriptions. Destroying them mutates the node just as creating them
+  // does, so it takes the same lock.
+  {
+    std::lock_guard<std::mutex> lock(node_ops_mutex_);
+    subscriptions_.clear();
+  }
   subscribed_topics_.clear();
 
   // Clear buffer
@@ -397,10 +404,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
       current_bag_path_ = bag_path;
       attached_fault_codes_.clear();
       recording_post_fault_.store(true);
-      post_fault_timer_ =
-          node_->create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(duration), [this]() {
-            post_fault_timer_callback();
-          });
+      arm_post_fault_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
     }
 
     RCLCPP_DEBUG(node_->get_logger(), "Recording %.1fs more after fault confirmation", config_.duration_after_sec);
@@ -485,6 +489,7 @@ void RosbagCapture::init_subscriptions() {
   if ((dynamic_discovery_ || !pending_topics.empty()) && !discovery_retry_timer_) {
     pending_topics_ = pending_topics;
     discovery_retry_count_ = 0;
+    std::lock_guard<std::mutex> lock(node_ops_mutex_);
     discovery_retry_timer_ = node_->create_wall_timer(std::chrono::milliseconds(500), [this]() {
       discovery_retry_callback();
     });
@@ -511,7 +516,13 @@ bool RosbagCapture::try_subscribe_topic(const std::string & topic) {
       message_callback(topic, msg_type, msg);
     };
 
-    auto subscription = node_->create_generic_subscription(topic, msg_type, qos, callback);
+    // create_generic_subscription mutates the node; this runs from start() and from
+    // the executor's discovery timer, so it is serialised with the other node ops.
+    rclcpp::GenericSubscription::SharedPtr subscription;
+    {
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
+      subscription = node_->create_generic_subscription(topic, msg_type, qos, callback);
+    }
     subscriptions_.push_back(subscription);
     subscribed_topics_.insert(topic);
 
@@ -528,6 +539,7 @@ void RosbagCapture::discovery_retry_callback() {
   if (!running_.load()) {
     if (discovery_retry_timer_) {
       discovery_retry_timer_->cancel();
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
       discovery_retry_timer_.reset();
     }
     return;
@@ -560,14 +572,20 @@ void RosbagCapture::discovery_retry_callback() {
   if (pending_topics_.empty()) {
     RCLCPP_INFO(node_->get_logger(), "All topics subscribed after %d retries", discovery_retry_count_);
     discovery_retry_timer_->cancel();
-    discovery_retry_timer_.reset();
+    {
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
+      discovery_retry_timer_.reset();
+    }
   } else if (discovery_retry_count_ >= max_retries) {
     RCLCPP_WARN(node_->get_logger(), "Giving up on %zu topics after %d retries: ", pending_topics_.size(), max_retries);
     for (const auto & topic : pending_topics_) {
       RCLCPP_WARN(node_->get_logger(), "  - %s", topic.c_str());
     }
     discovery_retry_timer_->cancel();
-    discovery_retry_timer_.reset();
+    {
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
+      discovery_retry_timer_.reset();
+    }
     pending_topics_.clear();
   }
 }
@@ -1125,6 +1143,24 @@ void RosbagCapture::enforce_storage_limits() {
   }
 }
 
+void RosbagCapture::arm_post_fault_timer(std::chrono::nanoseconds period) {
+  // Re-arm rather than replace. rcl_timer_reset() restarts the period from now and
+  // clears the cancelled flag, so one timer serves every recording and no timer is
+  // ever destroyed while another is being created. See the header for why the
+  // destruction side could not simply be locked instead.
+  if (post_fault_timer_) {
+    post_fault_timer_->reset();
+    return;
+  }
+
+  // The one creation this class performs for this timer, serialised against the
+  // other node-mutating calls (the discovery timer, the capture subscriptions).
+  std::lock_guard<std::mutex> lock(node_ops_mutex_);
+  post_fault_timer_ = node_->create_wall_timer(period, [this]() {
+    post_fault_timer_callback();
+  });
+}
+
 void RosbagCapture::post_fault_timer_callback() {
   finalize_post_fault_recording();
 }
@@ -1147,8 +1183,9 @@ void RosbagCapture::finalize_post_fault_recording() {
       return;
     }
     if (post_fault_timer_) {
+      // Cancelled, not released: the timer outlives the recording and is re-armed
+      // by the next one. See arm_post_fault_timer().
       post_fault_timer_->cancel();
-      post_fault_timer_.reset();
     }
     recording_post_fault_.store(false);
     attached.swap(attached_fault_codes_);
