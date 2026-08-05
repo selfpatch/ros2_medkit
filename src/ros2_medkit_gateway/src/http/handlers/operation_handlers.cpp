@@ -26,6 +26,7 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
+#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
@@ -517,7 +518,11 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
     return tl::make_unexpected(lookup.error());
   }
   const auto & ops = lookup->ops;
-  const std::string id_field = (lookup->entity_type == "app") ? "app_id" : "component_id";
+  // `EntityInfo` already carries the right key for all four types; the previous
+  // "app_id if it is an app, else component_id" put `component_id` in the error
+  // params of every area and function caller whose goal was rejected, naming a
+  // field the caller never sent.
+  const std::string & id_field = entity_info.id_field;
 
   std::optional<ServiceInfo> service_info;
   std::optional<ActionInfo> action_info;
@@ -568,7 +573,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       // Rebuilding the path from an "app or else component" choice, as this
       // used to, handed an area or function caller a `/components/...` URI
       // that resolves to nothing.
-      const std::string location = req.path() + "/" + action_result.goal_id;
+      const std::string location = child_resource_path(req.path(), action_result.goal_id);
 
       http::ResponseAttachments att;
       att.with_location(location);
@@ -864,7 +869,8 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
       // API-prefixed, and already naming the collection the caller used. The
       // previous "/apps/ if the path mentions it, else /components/" rebuild
       // pointed area and function callers at a URI that resolves to nothing.
-      const std::string location = req.path();
+      // Canonicalised so the header does not echo a caller's trailing slash.
+      const std::string location = canonical_request_path(req.path());
 
       dto::OperationExecution exec_dto;
       exec_dto.id = execution_id;

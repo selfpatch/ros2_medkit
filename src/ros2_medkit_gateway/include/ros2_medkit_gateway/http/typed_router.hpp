@@ -130,7 +130,7 @@ class TypedRequest {
     return req_.has_header("X-Medkit-No-Fan-Out");
   }
 
-  /// Returns the request path (post-routing, post-prefix-strip). Handlers
+  /// Returns the request path (post-routing), API prefix included. Handlers
   /// occasionally need this to build a `Location` header for resources they
   /// just created via POST (e.g. `Location: <request-path>/<new-id>`). This
   /// is the only path-shaped read most handlers need; routes that need to
