@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <utility>
 
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -65,13 +66,15 @@ void LogBridgeNode::load_parameters() {
   // Default floor is WARN. WARN passes through each node's FaultReporter
   // LocalFilter (threshold/window debounce); ERROR/FATAL bypass it. Raise to 40
   // (ERROR) on chatty / constrained targets to cut volume.
-  const int floor = declare_parameter<int>("severity_floor", kLevelWarn);
+  // declare_parameter<int> yields int64_t, so clamp in that width first: a
+  // value past INT_MAX would otherwise truncate into range and pass the check.
+  const int64_t floor = declare_parameter<int>("severity_floor", kLevelWarn);
   // int -> uint8_t silently wraps; clamp so a bad value cannot pass everything.
   if (floor < 0 || floor > kLevelFatal) {
-    RCLCPP_WARN(get_logger(), "severity_floor=%d out of range [0,%u], clamping", floor,
+    RCLCPP_WARN(get_logger(), "severity_floor=%ld out of range [0,%u], clamping", static_cast<long>(floor),
                 static_cast<unsigned>(kLevelFatal));
   }
-  severity_floor_ = static_cast<uint8_t>(std::clamp(floor, 0, static_cast<int>(kLevelFatal)));
+  severity_floor_ = static_cast<uint8_t>(std::clamp<int64_t>(floor, 0, kLevelFatal));
   // Normalize the prefix so a non-conforming value cannot yield a fault_code
   // violating medkit's [A-Z0-9_] charset.
   code_prefix_ = to_upper_snake(declare_parameter<std::string>("code_prefix", "LOG"), 32);
@@ -80,10 +83,10 @@ void LogBridgeNode::load_parameters() {
   }
   exclude_nodes_ = declare_parameter<std::vector<std::string>>("exclude_nodes", std::vector<std::string>{});
   include_only_nodes_ = declare_parameter<std::vector<std::string>>("include_only_nodes", std::vector<std::string>{});
-  max_tracked_nodes_ = declare_parameter<int>("max_tracked_nodes", 512);
-  if (max_tracked_nodes_ < 1) {
-    max_tracked_nodes_ = 1;
-  }
+  // Same width caveat: clamp as int64_t so a value past INT_MAX cannot wrap
+  // into a small positive bound.
+  const int64_t tracked = declare_parameter<int>("max_tracked_nodes", 512);
+  max_tracked_nodes_ = static_cast<int>(std::clamp<int64_t>(tracked, 1, std::numeric_limits<int>::max()));
   report_cooldown_sec_ = declare_parameter<double>("report_cooldown_sec", 5.0);
   if (report_cooldown_sec_ < 0.0) {
     report_cooldown_sec_ = 0.0;
