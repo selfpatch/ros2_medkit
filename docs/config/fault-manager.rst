@@ -352,10 +352,14 @@ messages. It still finalises normally on both ``sqlite3`` and ``mcap``, is liste
 by the bulk-data endpoints and can be downloaded; only its payload is empty.
 
 **What ``duration_sec`` on a stored bag means.** The value returned by
-``~/get_rosbag`` and the gateway's bulk-data listing is the recording's *actual*
-span, not the configured windows. A post-fault-only bag therefore reports roughly
-``duration_after_sec``, and a bag flushed from a buffer that never filled reports
-what it holds. The span can also *exceed* ``duration_sec + duration_after_sec``:
+``~/get_rosbag`` and the gateway's bulk-data listing is the span the recording was
+open, not the configured windows. It is a *recording* span, not a *content* span:
+the zero-message bag above still reports its window rather than ``0.0``, because
+"the black box covered these seconds and nothing was published" is the useful
+statement and a bare zero would be indistinguishable from a broken artifact. A
+post-fault-only bag therefore reports roughly ``duration_after_sec``, and a bag
+flushed from a buffer that never filled reports the history it holds plus its
+window. The span can also *exceed* ``duration_sec + duration_after_sec``:
 the ring buffer is pruned only when a message arrives, so a topic that goes quiet
 keeps its last window buffered until the next confirmation flushes it. That is
 deliberate - a black box should keep the final messages of a topic that stopped

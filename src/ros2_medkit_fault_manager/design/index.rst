@@ -307,15 +307,48 @@ Two states stay deliberately empty-handed:
 overloaded empty-string return, and the writer-open block lives in ``open_bag_writer()``
 so it can run without any buffered messages.
 
+Handing a recording over
+""""""""""""""""""""""""
+
+Confirmations run on the capture pool and the post-fault timer runs on the executor. The
+node-level rosbag mutex serialises confirmations against each other but not against the
+timer, so ``post_fault_timer_mutex_`` is the only thing ordering the two - and clearing
+the recording guard is precisely the signal that lets the next confirmation open a bag of
+its own. Everything that belongs to the recording therefore changes hands inside one
+critical section: the guard, the start time and the writer. Releasing the guard first and
+reaching for ``writer_mutex_`` afterwards leaves a gap in which the incoming confirmation
+installs its writer and the outgoing finalise then destroys it, after which the new
+recording writes through a null pointer - every message dropped - and still stores a row
+for the empty bag it produced. The writer is only *closed* outside the locks, once it is
+exclusively the finalise's own, because flushing a bag is real I/O.
+
+The resulting order is ``node rosbag mutex -> post_fault_timer_mutex_ ->
+{capture_topics_mutex_, writer_mutex_}``, with ``buffer_mutex_`` never held across another
+lock. Paths that take the capture-topics or writer locks on their own release each before
+taking the next, so no reverse edge exists and the order is acyclic.
+
 Honest durations
 """"""""""""""""
 
-``RosbagFileInfo::duration_sec`` is the recording's real wall-clock span, tracked from the
-timestamp of its oldest written message (or from the moment the writer opened, for a
-post-fault-only bag). Both storage paths used to hardcode the configured windows, which
-made a post-fault-only bag and a bag flushed from a half-filled buffer both claim a full
-pre-fault window. The start time is exchanged out inside the same
-``post_fault_timer_mutex_`` critical section that clears the recording guard, so a
-confirmation racing the finalise cannot have its own start time attributed to the bag
-being closed. Because the buffer is pruned only on arrival, the span can legitimately
-exceed ``duration_sec + duration_after_sec``.
+``RosbagFileInfo::duration_sec`` is the wall-clock span the recording was open, tracked
+from the timestamp of its oldest written message (or from the moment the writer opened,
+for a post-fault-only bag). Both storage paths used to hardcode the configured windows,
+which made a post-fault-only bag and a bag flushed from a half-filled buffer both claim a
+full pre-fault window.
+
+It is a recording span, not a content span. A post-fault-only window during which nothing
+was published still reports its window: that statement is more useful to an operator than
+a zero indistinguishable from a broken artifact, and it is the only definition every path
+can produce without timestamping each message inside the post-roll write path, which runs
+under ``writer_mutex_`` in the hot path. Because the buffer is pruned only on arrival, the
+span can also legitimately exceed ``duration_sec + duration_after_sec``.
+
+If the metadata row cannot be stored, the bag is discarded rather than kept: retrieval is
+keyed by fault code and quota accounting enumerates rows, so a bag with no row would
+occupy disk that nothing can find and nothing can evict.
+
+Known interval: between the empty-buffer flush and the moment the recording guard is
+published, the writer is being created - directory creation plus a storage-backend open.
+Messages arriving in that interval take the buffering path rather than the new bag, so a
+post-fault-only recording can miss its first few milliseconds. They are not lost; they
+stay in the ring buffer and serve the next fault as pre-history.

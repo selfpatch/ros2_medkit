@@ -550,21 +550,27 @@ Two consequences worth knowing:
   the window (a quiet system, or a narrow ``topics`` filter). It still finalises
   and downloads normally on both storage formats; only the payload is empty.
 
-The stored ``duration_sec`` is the recording's real span, not the configured
-windows, so these bags are easy to tell apart:
+The stored ``duration_sec`` is the span the recording was open, not the configured
+windows, so the two kinds of bag are easy to tell apart:
 
 .. code-block:: bash
 
    ros2 service call /fault_manager/get_rosbag ros2_medkit_msgs/srv/GetRosbag \
      "{fault_code: 'BRAKE_PRESSURE_LOW'}"
-   # duration_sec ~= duration_after_sec  -> post-fault-only bag
-   # duration_sec ~= duration_sec + duration_after_sec -> full bag
+   # duration_sec ~= duration_after_sec -> post-fault-only bag
+   # anything longer                    -> the recording also holds pre-fault history
 
-The span can exceed ``duration_sec + duration_after_sec``: the ring buffer is
-pruned only when a message arrives, so a topic that stops publishing keeps its
-last window buffered until the next confirmation flushes it. That is intentional -
-the final messages before a topic died are exactly what a black box is for - and
-the reported duration reflects it.
+Note the second rule has no upper bound, deliberately. The span can exceed
+``duration_sec + duration_after_sec``: the ring buffer is pruned only when a
+message arrives, so a topic that stops publishing keeps its last window buffered
+until the next confirmation flushes it. That is intentional - the final messages
+before a topic died are exactly what a black box is for - and the reported
+duration reflects it.
+
+It is a *recording* span and not a *content* span: a post-fault-only bag whose
+window stayed quiet still reports its window rather than zero, because the useful
+statement is "the black box covered these seconds and nothing was published"
+rather than a bare ``0.0`` that would be indistinguishable from a broken artifact.
 
 Understanding lazy_start Mode
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
