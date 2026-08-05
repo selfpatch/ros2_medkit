@@ -26,7 +26,6 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
-#include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
@@ -542,9 +541,13 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       async_dto.id = action_result.goal_id;
       async_dto.status = "running";
 
-      const std::string base_path = (lookup->entity_type == "app") ? "/apps/" : "/components/";
-      const std::string location =
-          api_path(base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id);
+      // The execution is a child of the POST target, and `req.path()` already
+      // carries the API prefix, so this is the same absolute form every `href`
+      // uses - and it names the collection the caller actually addressed.
+      // Rebuilding the path from an "app or else component" choice, as this
+      // used to, handed an area or function caller a `/components/...` URI
+      // that resolves to nothing.
+      const std::string location = req.path() + "/" + action_result.goal_id;
 
       http::ResponseAttachments att;
       att.with_location(location);
@@ -834,9 +837,12 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   if (capability == "stop") {
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
     if (result.success && result.return_code == 0) {
-      const std::string base_path = req.path().find("/apps/") != std::string::npos ? "/apps/" : "/components/";
-      const std::string location =
-          api_path(base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id);
+      // The execution this PUT addressed *is* the resource whose status now
+      // tracks the request, so the request path is the `Location` - already
+      // API-prefixed, and already naming the collection the caller used. The
+      // previous "/apps/ if the path mentions it, else /components/" rebuild
+      // pointed area and function callers at a URI that resolves to nothing.
+      const std::string location = req.path();
 
       dto::OperationExecution exec_dto;
       exec_dto.id = execution_id;
