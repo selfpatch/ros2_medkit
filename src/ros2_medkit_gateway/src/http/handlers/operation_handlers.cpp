@@ -542,12 +542,12 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       async_dto.id = action_result.goal_id;
       async_dto.status = "running";
 
-      const std::string base_path = (lookup->entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
+      const std::string base_path = (lookup->entity_type == "app") ? "/apps/" : "/components/";
       const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
+          api_path(base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id);
 
       http::ResponseAttachments att;
-      att.with_header("Location", location);
+      att.with_location(location);
       // dto_alternate_status<ExecutionCreateAsync> == 202, so the framework
       // emits the 202 status without an explicit override here.
       return SuccessPair{ResultVariant{std::move(async_dto)}, std::move(att)};
@@ -834,17 +834,16 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   if (capability == "stop") {
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
     if (result.success && result.return_code == 0) {
-      const std::string base_path =
-          req.path().find("/apps/") != std::string::npos ? "/api/v1/apps/" : "/api/v1/components/";
+      const std::string base_path = req.path().find("/apps/") != std::string::npos ? "/apps/" : "/components/";
       const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
+          api_path(base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id);
 
       dto::OperationExecution exec_dto;
       exec_dto.id = execution_id;
       exec_dto.status = "running";  // canceling is still "running" in SOVD terms
 
       http::ResponseAttachments att;
-      att.with_header("Location", location);
+      att.with_location(location);
       return SuccessPair{http::Accepted<dto::OperationExecution>{std::move(exec_dto)}, std::move(att)};
     }
     std::string error_msg;

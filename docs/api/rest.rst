@@ -1225,7 +1225,13 @@ Download a specific bulk-data file.
 
 - ``Content-Type``: ``application/x-mcap`` (MCAP format) or ``application/x-sqlite3`` (db3)
 - ``Content-Disposition``: ``attachment; filename="FAULT_CODE.mcap"``
+- ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
+  provider, so a client may fetch part of the file
 - ``Access-Control-Expose-Headers``: ``Content-Disposition``
+
+A request carrying a satisfiable ``Range`` header is answered with **206
+Partial Content** and a ``Content-Range: bytes <start>-<end>/<total>`` header
+instead of ``200``; the body is the requested slice.
 
 **Example:**
 
@@ -1236,6 +1242,7 @@ Download a specific bulk-data file.
 **Response Codes:**
 
 - **200 OK**: File content
+- **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found
 
 Upload Bulk Data
@@ -1508,6 +1515,9 @@ Subscriptions are temporary - they do not survive server restart.
 ``POST /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
    Create a new cyclic subscription.
 
+   Response: **201 Created** with a ``Location`` header pointing to the new
+   subscription.
+
    **Applies to:** ``/apps``, ``/components``, ``/functions``
 
    **Request Body:**
@@ -1776,6 +1786,9 @@ Create Trigger
 
 ``POST /api/v1/{entity_type}/{entity_id}/triggers``
    Create a new condition-based trigger.
+
+   Response: **201 Created** with a ``Location`` header pointing to the new
+   trigger.
 
    **Request Body:**
 
@@ -2110,7 +2123,8 @@ way as every other endpoint.
    Create a rule. Required: ``data_name``, ``operator`` (``>``, ``<``, ``>=``,
    ``<=``, ``==``), ``threshold`` (number), ``fault_code``, ``severity``
    (``INFO``/``WARNING``/``ERROR``/``CRITICAL``). Optional: ``active``
-   (default ``true``). Returns ``201`` with the created rule.
+   (default ``true``). Returns ``201`` with the created rule and a ``Location``
+   header pointing to it.
 
    Validation: ``400`` for missing/invalid fields or a ``data_name`` the app
    does not expose (when enumerable); ``409`` when the ``fault_code`` is
