@@ -24,17 +24,33 @@ and asserts the guards the PR's safety actually rests on:
 - the bounded `executor_threads` value is actually applied (the gateway logs the
   thread count, so it is observable rather than merely set).
 
-Both checks read the gateway's own process output, so they are deterministic and
+It additionally sweeps the documented ``server.executor_threads`` clamp range
+``[1, 256]`` (issue #575): three extra gateways launch with the range floor,
+the range ceiling, and an out-of-range value, and each must log the resolved
+(clamped) count. Without the endpoint sweep, a regression in the clamp (or in
+the parameter read) would only surface for mid-range values.
+
+All checks read the gateways' own process output, so they are deterministic and
 do not depend on request timing.
 """
 
+import time
 import unittest
 
+from launch import LaunchDescription
 import launch_testing
+import launch_testing.actions
+import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    API_BASE_PATH,
+    get_test_port,
+    get_time_scale,
+    sanitizers_enabled,
+)
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
-from ros2_medkit_test_utils.launch_helpers import create_test_launch
+from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
 # Pool below the shipped budget: 2 < sse.max_clients(2) + cold_wait_cap(4) = 6.
 # executor_threads is set to a non-default value so the "applied" assertion is
@@ -43,15 +59,74 @@ HTTP_THREAD_POOL_SIZE = 2
 SSE_MAX_CLIENTS = 2
 EXECUTOR_THREADS = 3
 
+# Clamp sweep for server.executor_threads (documented range [1, 256]).
+# The out-of-range value must clamp to the nearest endpoint; 300 clamps to the
+# ceiling, so its expected log line differs from the floor gateway's and the
+# three assertions stay unambiguous even without per-process scoping.
+EXECUTOR_THREADS_FLOOR = 1
+EXECUTOR_THREADS_CEILING = 256
+EXECUTOR_THREADS_INVALID = 0  # below the floor -> must clamp to 1
+
+# The upper endpoint is exercised at its documented value in a normal build and
+# at a smaller one under a sanitizer. Not a convenience: a TSan-instrumented
+# gateway with 256 executor threads did not finish shutting down inside
+# launch_testing's grace period, so it was escalated SIGINT -> SIGTERM ->
+# SIGKILL and the suite reported exit code -9 for a gateway that had started,
+# logged its bound and served /health correctly. Unsanitized the same teardown
+# costs nothing measurable (the whole test runs in ~1.3 s), so the cost is
+# instrumentation, not the gateway.
+#
+# CONSEQUENCE, stated so nobody reads more coverage into a green sanitizer run
+# than it has: under a sanitizer this file does NOT pin the documented ceiling.
+# It pins that a large, genuinely multi-threaded executor is accepted and
+# serves. The ceiling itself is pinned by every normal build - jazzy, humble,
+# lyrical, coverage and Pixi all run this test unsanitized.
+SANITIZED_EXECUTOR_THREADS_CEILING = 16
+CEILING_UNDER_TEST = (
+    SANITIZED_EXECUTOR_THREADS_CEILING if sanitizers_enabled() else EXECUTOR_THREADS_CEILING
+)
+
 
 def generate_test_description():
-    return create_test_launch(
-        demo_nodes=[],          # no discovery needed - this is a config/log test
-        fault_manager=False,
-        gateway_params={
+    gateway_node = create_gateway_node(
+        extra_params={
             'server.http_thread_pool_size': HTTP_THREAD_POOL_SIZE,
             'server.executor_threads': EXECUTOR_THREADS,
             'sse.max_clients': SSE_MAX_CLIENTS,
+        },
+    )
+
+    # Clamp-endpoint gateways (issue #575): distinct node names and ports so
+    # they can share the launch. Only their startup logs are asserted.
+    gw_floor = create_gateway_node(
+        port=get_test_port(1),
+        name='gateway_threads_floor',
+        extra_params={'server.executor_threads': EXECUTOR_THREADS_FLOOR},
+    )
+    gw_ceiling = create_gateway_node(
+        port=get_test_port(2),
+        name='gateway_threads_ceiling',
+        extra_params={'server.executor_threads': CEILING_UNDER_TEST},
+    )
+    gw_invalid = create_gateway_node(
+        port=get_test_port(3),
+        name='gateway_threads_invalid',
+        extra_params={'server.executor_threads': EXECUTOR_THREADS_INVALID},
+    )
+
+    return (
+        LaunchDescription([
+            gateway_node,
+            gw_floor,
+            gw_ceiling,
+            gw_invalid,
+            launch_testing.actions.ReadyToTest(),
+        ]),
+        {
+            'gateway_node': gateway_node,
+            'gw_floor': gw_floor,
+            'gw_ceiling': gw_ceiling,
+            'gw_invalid': gw_invalid,
         },
     )
 
@@ -59,9 +134,9 @@ def generate_test_description():
 class TestThreadPoolStarvationGuard(GatewayTestCase):
     """An under-budget pool is flagged, and the executor bound is observable."""
 
-    MIN_EXPECTED_APPS = 0  # skip discovery waiting; the gateway only needs to start
+    MIN_EXPECTED_APPS = 0  # skip discovery waiting; the gateways only need to start
 
-    def test_startup_warns_when_pool_below_budget(self, proc_output):
+    def test_startup_warns_when_pool_below_budget(self, proc_output, gateway_node):
         """The gateway warns when http_thread_pool_size < max_clients + cold_wait_cap.
 
         Without this warning the misconfiguration is silent: a burst of SSE
@@ -69,10 +144,10 @@ class TestThreadPoolStarvationGuard(GatewayTestCase):
         operator-facing guard, so we assert it is actually emitted.
         """
         proc_output.assertWaitFor(
-            'is below sse.max_clients', timeout=15,
+            'is below sse.max_clients', process=gateway_node, timeout=15,
         )
 
-    def test_executor_thread_bound_is_applied(self, proc_output):
+    def test_executor_thread_bound_is_applied(self, proc_output, gateway_node):
         """The configured executor_threads value is honoured (and observable).
 
         The reviewer noted executor_threads was set in tests but never observed.
@@ -81,7 +156,62 @@ class TestThreadPoolStarvationGuard(GatewayTestCase):
         log a different number.
         """
         proc_output.assertWaitFor(
-            f'Main executor bounded to {EXECUTOR_THREADS} threads', timeout=15,
+            f'Main executor bounded to {EXECUTOR_THREADS} threads',
+            process=gateway_node, timeout=15,
+        )
+
+    def test_executor_threads_floor_applied(self, proc_output, gw_floor):
+        """The documented range floor (1) is accepted and applied as-is."""
+        proc_output.assertWaitFor(
+            'Main executor bounded to 1 threads', process=gw_floor, timeout=15,
+        )
+
+    def test_executor_threads_ceiling_applied(self, proc_output, gw_ceiling):
+        """The range ceiling is accepted and applied as-is.
+
+        `CEILING_UNDER_TEST` is the documented 256 in a normal build and a
+        smaller value under a sanitizer - see the constant for why.
+        """
+        proc_output.assertWaitFor(
+            f'Main executor bounded to {CEILING_UNDER_TEST} threads',
+            process=gw_ceiling, timeout=15,
+        )
+
+    def test_executor_threads_ceiling_gateway_serves_requests(self):
+        """The high-thread-count gateway actually serves, not just logs its bound.
+
+        Every other assertion in the clamp sweep reads a log line, so a
+        regression that logged the clamped count and then failed to bring the
+        executor up would stay green. One real request over HTTP pins that
+        the clamped value was applied to a working gateway.
+        """
+        url = f'http://localhost:{get_test_port(2)}{API_BASE_PATH}/health'
+        deadline = time.monotonic() + 30.0 * get_time_scale()
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(url, timeout=5 * get_time_scale())
+                if response.status_code == 200:
+                    self.assertEqual(response.json().get('status'), 'healthy')
+                    return
+                last_error = f'HTTP {response.status_code}: {response.text}'
+            except requests.RequestException as exc:
+                last_error = repr(exc)
+            time.sleep(0.5)
+        self.fail(
+            f'the executor_threads={CEILING_UNDER_TEST} gateway never served '
+            f'/health: {last_error}'
+        )
+
+    def test_executor_threads_invalid_clamps_to_floor(self, proc_output, gw_invalid):
+        """An out-of-range value (0) clamps to the floor instead of breaking.
+
+        0 would mean "all host cores" to rclcpp (footprint regression) or an
+        empty pool to a naive reader; the documented behaviour is a clamp to
+        the [1, 256] range, observable through the same startup log line.
+        """
+        proc_output.assertWaitFor(
+            'Main executor bounded to 1 threads', process=gw_invalid, timeout=15,
         )
 
 

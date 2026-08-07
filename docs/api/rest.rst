@@ -688,20 +688,91 @@ Execute Operations
    .. code-block:: json
 
       {
-        "execution_id": "abc123-def456",
-        "status": "succeeded",
-        "result": {"sequence": [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]},
-        "feedback": [
-          {"partial_sequence": [0, 1]},
-          {"partial_sequence": [0, 1, 1, 2, 3]}
-        ]
+        "status": "completed",
+        "capability": "execute",
+        "parameters": {"sequence": [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]},
+        "x-medkit": {
+          "goal_id": "abc123def456789a0b1c2d3e4f506172",
+          "ros2_status": "succeeded",
+          "ros2": {
+            "action": "/powertrain/engine/long_calibration",
+            "type": "example_interfaces/action/Fibonacci"
+          }
+        }
       }
+
+   ``status`` carries the SOVD execution status and is one of ``pending``,
+   ``running``, ``completed``, ``failed``. ``parameters`` carries the action's
+   most recent feedback.
+
+   .. note::
+
+      **Reading the outcome of a cancel.** ``status`` cannot express it on its
+      own: a cancelled goal and a goal that failed by itself both render as
+      ``failed``, and a goal that is still cancelling renders as ``running``.
+      ``x-medkit.ros2_status`` carries the underlying ROS 2 goal state
+      verbatim - ``accepted``, ``executing``, ``canceling``, ``succeeded``,
+      ``canceled``, ``aborted`` - and is the field to read when a
+      ``DELETE``/``PUT``-stop answered ``504`` and the outcome has to be
+      established by polling.
+
+``PUT /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
+   Send a control command to a running execution. ROS 2 actions implement the
+   SOVD ``stop`` capability (mapped to action cancel):
+
+   .. code-block:: json
+
+      {"capability": "stop"}
+
+   - **202:** Stop accepted - the goal is cancelling; ``Location`` points at
+     the execution status resource. Also returned when the cancel response
+     was lost but the action's status stream already shows the goal
+     cancelling.
+   - **400:** The action server rejected the stop
+     (``x-medkit-ros2-action-rejected``, ``return_code`` 1-3), or the
+     capability is unsupported (``freeze`` / ``reset`` / unknown -
+     ``invalid-parameter``)
+   - **404:** Execution not found
+   - **409:** ``execute`` on an already-running execution
+     (``precondition-not-fulfilled``)
+   - **500:** Transport failure while sending the cancel
+     (``x-medkit-ros2-action-unavailable``)
+   - **503:** Cancel service not available - the action server is gone
+     (``x-medkit-ros2-action-unavailable``)
+   - **504:** No response from the action server within the cancel budget and
+     the status stream does not show the goal cancelling: the outcome is
+     unknown - poll the execution status resource (``not-responding``)
 
 ``DELETE /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Cancel a running execution.
 
-   - **204:** Execution cancelled
-   - **404:** Execution not found
+   - **204:** Execution cancelled. Also returned when the cancel response was
+     lost but the action's status stream already shows the goal cancelling.
+   - **400:** The action server answered and rejected the cancel
+     (``x-medkit-ros2-action-rejected``, ``return_code`` 1-3). Note
+     ``return_code`` 2 means the *action server* no longer knows the goal
+     while the gateway still tracks it - the request will not start
+     succeeding on retry.
+   - **404:** Execution not found - the *gateway* no longer tracks it
+     (``resource-not-found``)
+   - **500:** Transport failure while sending the cancel
+     (``x-medkit-ros2-action-unavailable``)
+   - **503:** Cancel service not available - the action server is gone
+     (``x-medkit-ros2-action-unavailable``)
+   - **504:** No response from the action server within the cancel budget and
+     the status stream does not show the goal cancelling: the outcome is
+     unknown - poll the execution status resource (``not-responding``)
+
+.. note::
+
+   **Cancel budget.** Both routes above are bounded by
+   ``service_call_timeout_sec`` (default 10 s, clamped to 1-3600; see
+   :doc:`../config/server`) plus up to 2 s spent discovering the action's
+   cancel service, so the worst case a client should allow is
+   ``service_call_timeout_sec + 2 s``. Configuring a budget shorter than that
+   discovery wait does not shorten the discovery wait - a cancel issued before
+   the cancel service has been discovered still spends up to 2 s there before
+   the response wait starts.
 
 Lifecycle Endpoints
 -------------------
@@ -2485,6 +2556,10 @@ All error responses follow a consistent format:
 Common Error Codes
 ~~~~~~~~~~~~~~~~~~
 
+Standard SOVD codes appear in the response's ``error_code`` field.
+Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
+``error_code: "vendor-error"`` with the precise code in ``vendor_code``.
+
 .. list-table::
    :header-rows: 1
    :widths: 30 15 55
@@ -2492,28 +2567,33 @@ Common Error Codes
    * - Error Code
      - HTTP Status
      - Description
-   * - ``ERR_ENTITY_NOT_FOUND``
+   * - ``entity-not-found``
      - 404
      - The requested entity does not exist
-   * - ``ERR_RESOURCE_NOT_FOUND``
+   * - ``resource-not-found``
      - 404
      - The requested resource (topic, service, parameter) does not exist
-   * - ``ERR_INVALID_INPUT``
+   * - ``invalid-request``
      - 400
-     - Invalid request body or parameters
-   * - ``ERR_INVALID_ENTITY_ID``
+     - Invalid request body or missing required parameters
+   * - ``precondition-not-fulfilled``
+     - 409
+     - The resource's current state does not allow the request - e.g.
+       ``execute`` on an execution that is still running
+   * - ``invalid-parameter``
      - 400
-     - Entity ID contains invalid characters
-   * - ``ERR_OPERATION_FAILED``
+     - Invalid parameter value (including malformed entity IDs)
+   * - ``internal-error``
      - 500
-     - Operation failed during execution
-   * - ``ERR_TIMEOUT``
+     - Internal server error
+   * - ``not-responding``
      - 504
-     - Operation timed out
-   * - ``ERR_UNAUTHORIZED``
+     - The underlying ROS 2 entity did not respond in time; the outcome of
+       the request is unknown
+   * - ``unauthorized``
      - 401
      - Authentication required or token invalid
-   * - ``ERR_FORBIDDEN``
+   * - ``forbidden``
      - 403
      - Insufficient permissions for this operation
    * - ``x-medkit-plugin-error``

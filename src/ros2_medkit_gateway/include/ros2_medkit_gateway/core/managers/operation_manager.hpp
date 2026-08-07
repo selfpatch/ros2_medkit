@@ -124,6 +124,16 @@ class OperationManager {
                                                   const std::string & entity_id = "");
 
   /// Cancel a running action goal.
+  ///
+  /// PRECONDITION: the caller has already resolved `goal_id` through
+  /// get_tracked_goal() and taken `action_path` from the resulting
+  /// ActionGoalInfo. Both HTTP entry points do exactly that and answer 404
+  /// themselves when the lookup fails, so the only guard below that a
+  /// contract-respecting caller can trip is the tracked-goal re-check - and
+  /// only by racing the cleanup timer, which is why that one alone carries a
+  /// wire classification (CancelOutcome::kNotTracked -> 404). A malformed
+  /// goal_id cannot reach here at all: every key in the tracking map comes
+  /// from uuid_bytes_to_hex().
   ActionCancelResult cancel_action_goal(const std::string & action_path, const std::string & goal_id);
 
   /// Get the result of a completed action.
@@ -157,8 +167,25 @@ class OperationManager {
   /// the tracking map on the transport's executor thread.
   void subscribe_to_action_status(const std::string & action_path);
 
-  /// Unsubscribe from action status updates. Idempotent.
+  /// Unsubscribe from action status updates. Idempotent, and a no-op while
+  /// any goal for the path is still tracked.
+  ///
+  /// Postcondition (the property that matters, and the one that is testable):
+  /// on return, every path with a tracked goal has a live status stream. That
+  /// is stated as a postcondition rather than as atomicity on purpose - a goal
+  /// sent while the transport call is in flight does briefly race it, and this
+  /// method repairs that pair before returning instead of holding a lock
+  /// across rclcpp. A tracked goal without its status stream can never be
+  /// reconciled by the cancel-timeout path, so the repair is not optional.
   void unsubscribe_from_action_status(const std::string & action_path);
+
+  /// Resolved service / action call budget in seconds. Every service call and
+  /// every action RPC (send_goal, cancel_goal, get_result) is bounded by it,
+  /// so the value the gateway actually applies is observable rather than
+  /// merely configured.
+  int service_call_timeout_sec() const {
+    return service_call_timeout_sec_;
+  }
 
   /// Test-only helper: inject a fully-formed ActionGoalInfo directly into the
   /// tracking map. Used by unit tests to exercise paths (e.g. stuck-goal
@@ -182,6 +209,11 @@ class OperationManager {
   /// Track a new goal in the local map.
   void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type,
                   const std::string & entity_id);
+
+  /// True while at least one goal for `action_path` is tracked. Cheaper than
+  /// get_goals_for_action (no copy, no sort) and safe to call while holding
+  /// subscriptions_mutex_ - nothing takes goals_mutex_ before that one.
+  bool has_goals_for_action(const std::string & action_path) const;
 
   /// Propagate a goal status change observed via the action transport into
   /// the tracking map, firing the resource-change notifier on transitions.

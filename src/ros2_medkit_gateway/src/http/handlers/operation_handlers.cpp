@@ -205,6 +205,92 @@ ErrorInfo make_provider_error(const OperationProviderErrorInfo & info, const std
 
 }  // namespace
 
+namespace detail {
+
+/// Shared outcome mapping for the two cancel entry points (DELETE execution
+/// and PUT-stop) - issue #576:
+/// - kOk: success.
+/// - kTimeout: the CancelGoal response did not arrive, so the outcome is
+///   UNKNOWN, not a rejection. Reconcile against the tracked goal fed by the
+///   /_action/status stream: if the stream already shows CANCELING/CANCELED
+///   the cancellation is in fact happening -> success. Otherwise 504 +
+///   standard `not-responding` (SOVD: "no response from the underlying
+///   entity in time"). The tracked status is NOT written on this path - the
+///   status stream stays the authority.
+/// - kServiceUnavailable: 503 - the action server is gone; retry may help.
+/// - kTransportError: 500 - the request could not be delivered/parsed.
+/// - kErrorResponse: 400 + `x-medkit-ros2-action-rejected` - the server
+///   answered and definitively refused (return_code 1/2/3). This function is
+///   the ONLY place that words those three codes: the transport deliberately
+///   keeps no second copy, because only the HTTP layer knows whether the
+///   client asked to cancel or to stop, and two hand-maintained tables for
+///   the same protocol constants drift silently.
+/// - kNotTracked: 404 - the execution no longer exists (evicted between the
+///   handler's lookup and the manager's re-check); no request ever reached
+///   the action server, so an availability code would misdirect the operator.
+///
+/// @param verb "Cancel" or "Stop" - keeps each entry point's message wording.
+std::optional<CancelFailure> map_cancel_result(const ActionCancelResult & result, OperationManager & operation_mgr,
+                                               const std::string & execution_id, const char * verb) {
+  switch (result.outcome) {
+    case CancelOutcome::kOk:
+      return std::nullopt;
+    case CancelOutcome::kTimeout: {
+      auto tracked = operation_mgr.get_tracked_goal(execution_id);
+      if (tracked.has_value() &&
+          (tracked->status == ActionGoalStatus::CANCELING || tracked->status == ActionGoalStatus::CANCELED)) {
+        return std::nullopt;
+      }
+      std::string message =
+          std::string(verb) + " outcome unknown: the action server did not answer the cancel request in time. ";
+      // CANCELED already reconciled above, so a terminal status here means
+      // the goal finished on its own. Telling the client to watch for
+      // progress would describe something that cannot happen - say what the
+      // gateway already knows instead, in the vocabulary the resource being
+      // named actually answers in (`sovd_status_from_ros2`, not the raw ROS
+      // word: the execution resource never emits "succeeded"/"aborted").
+      if (tracked.has_value() &&
+          (tracked->status == ActionGoalStatus::SUCCEEDED || tracked->status == ActionGoalStatus::ABORTED)) {
+        message += "The execution status resource already reports the goal as " +
+                   sovd_status_from_ros2(tracked->status) + ", so there is nothing left to cancel.";
+      } else {
+        // `status` alone cannot express the answer the client is asking for -
+        // it renders CANCELED and ABORTED identically as "failed" - so name
+        // the field that can.
+        message += "Poll the execution status resource and read x-medkit.ros2_status to learn the goal's outcome.";
+      }
+      return CancelFailure{504, ERR_NOT_RESPONDING, std::move(message)};
+    }
+    case CancelOutcome::kServiceUnavailable:
+      return CancelFailure{503, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE,
+                           result.error_message.empty() ? "Cancel service not available" : result.error_message};
+    case CancelOutcome::kTransportError:
+      return CancelFailure{500, ERR_X_MEDKIT_ROS2_ACTION_UNAVAILABLE,
+                           result.error_message.empty() ? std::string(verb) + " failed" : result.error_message};
+    case CancelOutcome::kNotTracked:
+      return CancelFailure{404, ERR_RESOURCE_NOT_FOUND, "Execution not found"};
+    case CancelOutcome::kErrorResponse:
+      break;
+  }
+  std::string message;
+  switch (result.return_code) {
+    case 1:
+      message = std::string(verb) + " request rejected";
+      break;
+    case 2:
+      message = "Unknown execution ID";
+      break;
+    case 3:
+      message = "Execution already terminated";
+      break;
+    default:
+      message = result.error_message.empty() ? std::string(verb) + " failed" : result.error_message;
+  }
+  return CancelFailure{400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, std::move(message)};
+}
+
+}  // namespace detail
+
 // =============================================================================
 // GET /{entity}/operations - list operations
 // =============================================================================
@@ -542,9 +628,12 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       async_dto.id = action_result.goal_id;
       async_dto.status = "running";
 
-      const std::string base_path = (lookup->entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
-      const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
+      // The created execution is a sub-resource of the collection this POST
+      // targeted, so append the new id to the request path. Hand-building the
+      // prefix from an apps/components pair points areas and functions
+      // clients - the route is registered for all four entity types - into
+      // the components collection, and bypasses api_path() besides.
+      const std::string location = req.path() + "/" + action_result.goal_id;
 
       http::ResponseAttachments att;
       att.with_header("Location", location);
@@ -758,28 +847,19 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
   }
 
   auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
-  if (result.success && result.return_code == 0) {
+  auto failure = detail::map_cancel_result(result, *operation_mgr, execution_id, "Cancel");
+  if (!failure.has_value()) {
     return http::NoContent{};
   }
-  std::string error_msg;
-  switch (result.return_code) {
-    case 1:
-      error_msg = "Cancel request rejected";
-      break;
-    case 2:
-      error_msg = "Unknown execution ID";
-      break;
-    case 3:
-      error_msg = "Execution already terminated";
-      break;
-    default:
-      error_msg = result.error_message.empty() ? "Cancel failed" : result.error_message;
+  json params{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}};
+  // `return_code` only means something when the action server actually
+  // answered; carrying a hardcoded 0 on the timeout / unavailable / guard
+  // paths is exactly the ambiguity issue #576 is about.
+  if (result.outcome == CancelOutcome::kErrorResponse) {
+    params["return_code"] = result.return_code;
   }
-  return tl::make_unexpected(make_error(400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
-                                        json{{"entity_id", entity_id},
-                                             {"operation_id", operation_id},
-                                             {"execution_id", execution_id},
-                                             {"return_code", result.return_code}}));
+  return tl::make_unexpected(
+      make_error(failure->http_status, failure->error_code, failure->message, std::move(params)));
 }
 
 // =============================================================================
@@ -833,43 +913,54 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   // supported_capabilities hint.
   if (capability == "stop") {
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
-    if (result.success && result.return_code == 0) {
-      const std::string base_path =
-          req.path().find("/apps/") != std::string::npos ? "/api/v1/apps/" : "/api/v1/components/";
-      const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
+    auto failure = detail::map_cancel_result(result, *operation_mgr, execution_id, "Stop");
+    if (!failure.has_value()) {
+      // The execution resource IS the request target for PUT, so echo the
+      // requested path: the route is registered for apps, components, areas
+      // and functions alike, and a hand-built apps/components pair sends an
+      // areas client into the wrong collection.
+      const std::string & location = req.path();
+
+      // Render the tracked status rather than assuming "running": the
+      // reconcile set includes CANCELED, which GET reports as "failed", and
+      // a 202 body must not contradict the resource Location points at.
+      //
+      // If the goal is gone by now - the cleanup timer can evict it between
+      // the mapper's read and this one - then there is no status to render
+      // and the Location we would hand out answers 404. Say that instead of
+      // inventing "running", which would reproduce exactly the contradiction
+      // this branch removed.
+      auto tracked = operation_mgr->get_tracked_goal(execution_id);
+      if (!tracked.has_value()) {
+        return tl::make_unexpected(
+            make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+                       json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+      }
 
       dto::OperationExecution exec_dto;
       exec_dto.id = execution_id;
-      exec_dto.status = "running";  // canceling is still "running" in SOVD terms
+      exec_dto.status = sovd_status_from_ros2(tracked->status);
 
       http::ResponseAttachments att;
       att.with_status(202).with_header("Location", location);
       return SuccessPair{std::move(exec_dto), std::move(att)};
     }
-    std::string error_msg;
-    switch (result.return_code) {
-      case 1:
-        error_msg = "Stop request rejected";
-        break;
-      case 2:
-        error_msg = "Unknown execution ID";
-        break;
-      case 3:
-        error_msg = "Execution already terminated";
-        break;
-      default:
-        error_msg = result.error_message.empty() ? "Stop failed" : result.error_message;
+    json params{{"entity_id", entity_id},
+                {"operation_id", operation_id},
+                {"execution_id", execution_id},
+                {"capability", capability}};
+    if (result.outcome == CancelOutcome::kErrorResponse) {
+      params["return_code"] = result.return_code;
     }
-    return tl::make_unexpected(make_error(400, ERR_X_MEDKIT_ROS2_ACTION_REJECTED, error_msg,
-                                          json{{"entity_id", entity_id},
-                                               {"operation_id", operation_id},
-                                               {"execution_id", execution_id},
-                                               {"capability", capability}}));
+    return tl::make_unexpected(
+        make_error(failure->http_status, failure->error_code, failure->message, std::move(params)));
   }
   if (capability == "execute") {
+    // `precondition-not-fulfilled` is the SOVD standard code for "prerequisites
+    // not met" and is what the gateway already answers its lifecycle 409 with;
+    // `invalid-request` is not in the standard code list at all.
     return tl::make_unexpected(
-        make_error(409, ERR_INVALID_REQUEST,
+        make_error(409, ERR_PRECONDITION_NOT_FULFILLED,
                    "Cannot re-execute while operation is running. Cancel first, then start new execution.",
                    json{{"entity_id", entity_id},
                         {"operation_id", operation_id},

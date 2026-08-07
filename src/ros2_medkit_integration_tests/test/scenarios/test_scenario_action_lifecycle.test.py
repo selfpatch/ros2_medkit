@@ -26,7 +26,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_time_scale
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -146,14 +146,31 @@ class TestScenarioActionLifecycle(GatewayTestCase):
 
         # Cancel the execution. The client budget must exceed the gateway's: cancelling is
         # a service round-trip to the action server (up to 2s to find the service plus the
-        # cancel budget itself), so a 10s client timeout would surface a slow-but-successful
-        # cancel as an opaque ReadTimeout instead of the server's own diagnosable error.
+        # configured service_call_timeout_sec, default 10s), so a 10s client timeout would
+        # surface a slow-but-successful cancel as an opaque ReadTimeout instead of the
+        # server's own diagnosable error.
         response = self.delete_request(
             self._exec_endpoint(execution_id),
             timeout=25,
             expected_status=204,
         )
         self.assertEqual(len(response.content), 0)
+
+        # The /_action/status stream is the authority for the goal's state,
+        # and the accepted-cancel reply raced it: whichever of the two the
+        # gateway processed second used to win. When the stream's terminal
+        # frame lost that race the execution was pinned at "canceling"
+        # forever - no further frame is ever published - so this is the only
+        # place the defect is visible end to end. Any terminal state is fine
+        # (the goal may also have completed before the cancel landed); what
+        # must not happen is the execution never leaving a running state.
+        terminal = {'canceled', 'succeeded', 'aborted'}
+        self.poll_endpoint_until(
+            self._exec_endpoint(execution_id),
+            lambda d: d if (d.get('x-medkit') or {}).get('ros2_status') in terminal else None,
+            timeout=20.0 * get_time_scale(),
+            interval=0.3,
+        )
 
     def test_03_service_execution_returns_immediately(self):
         """Create a Trigger service execution, get immediate result.

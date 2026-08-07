@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_service_transport.hpp"
+#include "ros2_medkit_gateway/ros2_common/callback_groups.hpp"
 
 using namespace ros2_medkit_gateway;
 
@@ -38,8 +39,10 @@ class TestOperationManager : public ::testing::Test {
     // Use short timeout for tests to avoid long waits on nonexistent services.
     node_ = std::make_shared<rclcpp::Node>("test_operation_manager_node");
     discovery_manager_ = std::make_unique<DiscoveryManager>(node_.get());
-    service_transport_ = std::make_shared<ros2::Ros2ServiceTransport>(node_.get());
-    action_transport_ = std::make_shared<ros2::Ros2ActionTransport>(node_.get());
+    groups_ = ros2_common::create_gateway_callback_groups(*node_);
+    service_transport_ = std::make_shared<ros2::Ros2ServiceTransport>(node_.get(), groups_.rpc_reentrant);
+    action_transport_ =
+        std::make_shared<ros2::Ros2ActionTransport>(node_.get(), groups_.rpc_reentrant, groups_.action_status);
     operation_manager_ = std::make_unique<OperationManager>(service_transport_, action_transport_,
                                                             discovery_manager_.get(), /*timeout=*/1);
   }
@@ -52,7 +55,19 @@ class TestOperationManager : public ::testing::Test {
     node_.reset();
   }
 
+  /// True while a live `<action_path>/_action/status` subscription is
+  /// registered in the shared status callback group. Measures the stream the
+  /// cancel-timeout reconciliation depends on, not a bookkeeping flag.
+  bool has_live_status_subscription(const std::string & action_path) const {
+    const std::string status_topic = action_path + "/_action/status";
+    return groups_.action_status->find_subscription_ptrs_if(
+               [&status_topic](const rclcpp::SubscriptionBase::SharedPtr & sub) {
+                 return sub != nullptr && status_topic == sub->get_topic_name();
+               }) != nullptr;
+  }
+
   std::shared_ptr<rclcpp::Node> node_;
+  ros2_common::GatewayCallbackGroups groups_;
   std::unique_ptr<DiscoveryManager> discovery_manager_;
   std::shared_ptr<ros2::Ros2ServiceTransport> service_transport_;
   std::shared_ptr<ros2::Ros2ActionTransport> action_transport_;
@@ -418,6 +433,58 @@ TEST_F(TestOperationManager, test_subscribe_same_action_twice) {
 TEST_F(TestOperationManager, test_unsubscribe_without_subscribe) {
   // Unsubscribing without first subscribing should not throw
   EXPECT_NO_THROW(operation_manager_->unsubscribe_from_action_status("/never/subscribed"));
+}
+
+// A goal that is tracked for a path must always have a live status stream:
+// the cancel-timeout path decides 204-vs-504 by reconciling against it, and
+// cleanup decides to unsubscribe from a goal count it read earlier under a
+// different lock. This drives that exact interleaving without threads - the
+// emptiness observation, then a goal arriving, then the unsubscribe.
+TEST_F(TestOperationManager, test_unsubscribe_keeps_stream_for_a_goal_that_arrived_meanwhile) {
+  const std::string action_path = "/powertrain/engine/late_goal";
+
+  operation_manager_->subscribe_to_action_status(action_path);
+  ASSERT_TRUE(has_live_status_subscription(action_path));
+
+  // Cleanup's view: no goals left for this path.
+  ASSERT_TRUE(operation_manager_->get_goals_for_action(action_path).empty());
+
+  // A new goal is tracked and re-subscribes (a no-op - the path is still
+  // registered) before cleanup gets to the unsubscribe it already decided on.
+  ActionGoalInfo info;
+  info.goal_id = "0123456789abcdef0123456789abcdef";
+  info.action_path = action_path;
+  info.action_type = "example_interfaces/action/Fibonacci";
+  info.entity_id = "engine";
+  info.status = ActionGoalStatus::EXECUTING;
+  info.created_at = std::chrono::system_clock::now();
+  info.last_update = info.created_at;
+  operation_manager_->inject_tracked_goal_for_testing(std::move(info));
+  operation_manager_->subscribe_to_action_status(action_path);
+
+  operation_manager_->unsubscribe_from_action_status(action_path);
+
+  ASSERT_FALSE(operation_manager_->get_goals_for_action(action_path).empty());
+  EXPECT_TRUE(has_live_status_subscription(action_path))
+      << "a tracked goal lost its status stream - cancel reconciliation can never succeed for it";
+}
+
+// ==================== CANCEL GUARD CLASSIFICATION ====================
+
+// Of the three manager-side guards, only this one is reachable through the
+// contract: both HTTP entry points resolve the goal (and 404 themselves) and
+// pass the resolved action_path, and every tracked goal_id comes from
+// uuid_bytes_to_hex - so a malformed id never gets this far and the transport
+// is never null. What a caller CAN produce is the eviction race: it finds the
+// execution, the cleanup timer evicts it, and the unclassified guard tells
+// the client the action server is unavailable when the truthful answer is
+// "no such execution".
+TEST_F(TestOperationManager, test_cancel_action_goal_not_tracked_is_not_a_transport_error) {
+  auto result = operation_manager_->cancel_action_goal("/test/action", "00000000000000000000000000000000");
+
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.outcome, CancelOutcome::kTransportError)
+      << "an execution that is not tracked is not an action-transport failure";
 }
 
 int main(int argc, char ** argv) {

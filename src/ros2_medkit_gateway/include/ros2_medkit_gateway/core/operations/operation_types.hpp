@@ -53,10 +53,30 @@ struct ActionSendGoalResult {
   std::string error_message;
 };
 
+/// Outcome of a CancelGoal round-trip (issue #576). Distinguishes "the
+/// server answered" from "no answer arrived in time": a timed-out cancel has
+/// an UNKNOWN outcome (the request may well have been accepted) and must not
+/// be reported as a definitive rejection.
+enum class CancelOutcome : uint8_t {
+  kOk,                  ///< Server answered with return_code 0 (cancel accepted).
+  kTimeout,             ///< No response within the budget - outcome unknown.
+  kServiceUnavailable,  ///< cancel_goal service not discoverable (server gone).
+  kTransportError,      ///< Null response / unknown type / exception / precondition failure.
+  kErrorResponse,       ///< Server answered with return_code 1/2/3 (definitive).
+  /// The execution is not (or no longer) tracked - the cancel never left the
+  /// gateway. Reachable over HTTP when the cleanup timer evicts the goal
+  /// between the handler's lookup and the manager's own re-check; the
+  /// truthful answer is "no such execution", not "action server unavailable".
+  kNotTracked,
+};
+
 /// Result of canceling an action goal.
 struct ActionCancelResult {
-  bool success;
-  int8_t return_code;  ///< 0=accepted, 1=rejected, 2=unknown_id, 3=terminated
+  bool success = false;
+  int8_t return_code = 0;  ///< 0=accepted, 1=rejected, 2=unknown_id, 3=terminated
+  /// Defaults to kTransportError so any early-return path that forgets to
+  /// classify itself reads as a transport failure, never as a rejection.
+  CancelOutcome outcome = CancelOutcome::kTransportError;
   std::string error_message;
 };
 

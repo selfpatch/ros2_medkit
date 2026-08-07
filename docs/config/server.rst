@@ -166,6 +166,47 @@ Data Access Settings
      - After a node's parameter service fails to respond, subsequent requests
        return immediately with SERVICE_UNAVAILABLE for this duration.
        Set to 0 to disable. Range: 0-3600.
+   * - ``service_call_timeout_sec``
+     - int
+     - ``10``
+     - How long the gateway waits for a **response** to an operation RPC: a
+       ROS 2 service call (``POST .../executions`` on a service-backed
+       operation) and each of the three action RPCs - send goal, get result
+       and cancel. Values outside the range are clamped with a warning at
+       startup. Range: 1-3600.
+
+       It is not the whole wall-clock cost, because each RPC first waits for
+       its service to be discovered and the three do that differently:
+
+       .. list-table::
+          :header-rows: 1
+          :widths: 30 35 35
+
+          * - RPC
+            - Discovery wait
+            - Worst case in total
+          * - Service call
+            - none (bounded by the response wait)
+            - ``service_call_timeout_sec``
+          * - Action send goal
+            - up to ``service_call_timeout_sec``
+            - ``2 x service_call_timeout_sec``
+          * - Action get result
+            - up to 2 s, fixed
+            - ``service_call_timeout_sec + 2 s``
+          * - Action cancel
+            - up to 2 s, fixed
+            - ``service_call_timeout_sec + 2 s``
+
+       The last row is the *cancel budget* referenced by
+       ``DELETE .../executions/{id}`` and ``PUT .../executions/{id}`` (see
+       :doc:`../api/rest`): a cancel that gets no answer within the response
+       wait is reported as ``504 not-responding`` unless the action's status
+       stream already shows the goal cancelling. The 2 s discovery waits are
+       fixed and do not shrink with this parameter, so lowering it to the
+       minimum of 1 s does not make an undiscovered cancel or get-result
+       answer in under 2 s - size client timeouts off the "worst case in
+       total" column, not off the parameter alone.
 
 .. note::
 
@@ -338,7 +379,10 @@ read, so a mis-set parameter can never break request serving.
      - int
      - ``2``
      - Threads in the main rclcpp ``MultiThreadedExecutor``. Replaces rclcpp's
-       default (host cores, minimum 2). Clamped to ``[1, 256]``.
+       default (host cores, minimum 2). With two or more threads,
+       blocking-RPC responses (operation executions) are dispatched even
+       while other gateway callbacks run (see note below). Clamped to
+       ``[1, 256]``.
 
 **HTTP pool, keep-alive, and SSE.** Several things hold an HTTP pool worker:
 each active SSE stream (fault dashboard, cyclic subscriptions, trigger events -
@@ -361,14 +405,24 @@ connection reuse).
 
 **Executor threads.** The main executor delivers the gateway node's own
 callbacks (timers, graph events, log and fault subscriptions) and the
-service-response callbacks that complete operation/action RPC futures. These all
-run on the node's default, *mutually-exclusive* callback group, so they serialize
-through a single thread regardless of ``executor_threads`` - raising it buys no
-RPC-response parallelism. A small executor is safe because the blocking wait for
+service-response callbacks that complete operation/action RPC futures. The RPC
+response callbacks - the generic service clients behind ``/operations``
+executions and the per-action send_goal / get_result / cancel_goal client trio -
+run in a shared *reentrant* callback group, so with two or more executor threads
+a response is dispatched even while another gateway callback (for example a
+discovery refresh pass) is running: the default of ``2`` buys real RPC-response
+parallelism. Timers and the SSE-fault / trigger-fault / ``/rosout``
+subscriptions stay in the node's default, *mutually-exclusive* group by design -
+discovery refresh passes are serialized on purpose, and those subscriptions rely
+on in-order delivery. Per-action ``/_action/status`` subscriptions use a
+dedicated mutually-exclusive group of their own: ordered among themselves,
+decoupled from the default group. A single executor thread remains safe (a
+reentrant group does not *require* a second thread), and the blocking wait for
 an RPC runs on the cpp-httplib pool thread (a separate server thread), never on
 an executor thread, so it cannot deadlock the executor; the fault transport also
-uses its own private executor. Increase this only if the node's own callback load
-grows (for example very frequent graph churn).
+uses its own private executor. Raise this beyond ``2`` if many concurrent RPC
+responses must be dispatched in parallel or the node's own callback load grows
+(for example very frequent graph churn).
 
 Example (more SSE clients needs a larger pool and matching ``sse.max_clients``):
 

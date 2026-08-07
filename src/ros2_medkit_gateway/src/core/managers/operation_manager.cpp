@@ -297,45 +297,48 @@ ActionSendGoalResult OperationManager::send_component_action_goal(const std::str
   return send_action_goal(action_path, resolved_type, goal, entity_id);
 }
 
-namespace {
-/// Floor for the CancelGoal budget. Cancel is a service call to the action server plus that
-/// server's own handling, so it is bounded by the SERVER, not by us; a very small configured
-/// service timeout would otherwise report a live cancel as a failure. The configured
-/// service_call_timeout_sec still wins whenever it is larger, so lowering it keeps bounding
-/// cancel like every other call in this file.
-constexpr double kCancelGoalFloorSec = 15.0;
-}  // namespace
-
 ActionCancelResult OperationManager::cancel_action_goal(const std::string & action_path, const std::string & goal_id) {
   ActionCancelResult result;
   result.success = false;
   result.return_code = 0;
 
+  // Defence in depth only: per this method's documented precondition every
+  // goal_id in tracked_goals_ came from uuid_bytes_to_hex, so a caller that
+  // resolved the goal first cannot reach this branch. Left unclassified
+  // (kTransportError) deliberately - it has no wire contract to honour.
   if (!is_valid_uuid_hex(goal_id)) {
     result.error_message = "Invalid goal_id format: must be 32 hex characters";
     return result;
   }
 
+  // This one IS reachable through the contract: the caller resolved the goal,
+  // then the cleanup timer evicted it before this re-check. Answering
+  // "action server unavailable" would blame a healthy server for what is
+  // simply an execution that no longer exists.
   auto goal_info = get_tracked_goal(goal_id);
   if (!goal_info) {
+    result.outcome = CancelOutcome::kNotTracked;
     result.error_message = "Unknown goal_id - not tracked";
     return result;
   }
 
+  // Also defence in depth: the transport is a constructor dependency and the
+  // gateway always supplies one. A missing transport genuinely is a
+  // gateway-side transport failure, so the default classification fits.
   if (!action_transport_) {
     result.error_message = "ActionTransport not configured";
     return result;
   }
 
-  // A CancelGoal round-trip is a service call to the action server plus that server's own
-  // handling, so it is bounded by the SERVER, not by us. 5s was enough on an idle machine and
-  // not on a loaded one: under a busy CI container the request timed out and the cancel was
-  // reported as a vendor error while the goal had in fact been accepted for cancellation.
-  const auto cancel_timeout =
-      std::chrono::duration<double>(std::max(static_cast<double>(service_call_timeout_sec_), kCancelGoalFloorSec));
-  result = action_transport_->cancel_goal(action_path, goal_id, cancel_timeout);
+  // Cancel gets the same budget as every other action RPC. A timed-out
+  // cancel is no longer conflated with a rejection (issue #576): the
+  // transport reports it as CancelOutcome::kTimeout and the HTTP layer
+  // reconciles it against the /_action/status stream, so there is no need
+  // for the old 15s floor that papered over slow dispatch.
+  result =
+      action_transport_->cancel_goal(action_path, goal_id, std::chrono::duration<double>(service_call_timeout_sec_));
 
-  if (result.success && result.return_code == 0) {
+  if (result.outcome == CancelOutcome::kOk) {
     update_goal_status(goal_id, ActionGoalStatus::CANCELING);
   }
   return result;
@@ -402,6 +405,13 @@ std::vector<ActionGoalInfo> OperationManager::get_goals_for_action(const std::st
   return goals;
 }
 
+bool OperationManager::has_goals_for_action(const std::string & action_path) const {
+  std::lock_guard<std::mutex> lock(goals_mutex_);
+  return std::any_of(tracked_goals_.begin(), tracked_goals_.end(), [&action_path](const auto & entry) {
+    return entry.second.action_path == action_path;
+  });
+}
+
 std::optional<ActionGoalInfo> OperationManager::get_latest_goal_for_action(const std::string & action_path) const {
   auto goals = get_goals_for_action(action_path);
   if (goals.empty()) {
@@ -413,10 +423,25 @@ std::optional<ActionGoalInfo> OperationManager::get_latest_goal_for_action(const
 void OperationManager::update_goal_status(const std::string & goal_id, ActionGoalStatus status) {
   std::lock_guard<std::mutex> lock(goals_mutex_);
   auto it = tracked_goals_.find(goal_id);
-  if (it != tracked_goals_.end()) {
-    it->second.status = status;
-    it->second.last_update = std::chrono::system_clock::now();
+  if (it == tracked_goals_.end()) {
+    return;
   }
+  // A terminal state is final in the ROS 2 action protocol, and every caller
+  // of this method is an RPC completion (goal accepted -> EXECUTING, cancel
+  // accepted -> CANCELING, get_result -> reported status) that can land after
+  // the /_action/status stream has already delivered the terminal state. The
+  // guard lives here rather than at the cancel call site because the hazard
+  // is the same for all three: nothing ever corrects a backwards write - the
+  // server publishes no further status frame, so the goal would be reported
+  // as still running until the stuck-goal path force-evicts it with a false
+  // "action server crashed" warning. The stream stays the authority; it
+  // writes directly under this lock in on_status_callback and is deliberately
+  // not routed through here.
+  if (is_terminal_status(it->second.status)) {
+    return;
+  }
+  it->second.status = status;
+  it->second.last_update = std::chrono::system_clock::now();
 }
 
 void OperationManager::update_goal_feedback(const std::string & goal_id, const json & feedback) {
@@ -501,15 +526,47 @@ void OperationManager::unsubscribe_from_action_status(const std::string & action
   bool was_subscribed = false;
   {
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+    // cleanup_old_goals reads the goal count first and unsubscribes after, so
+    // a goal sent in between would keep a subscription that is about to be
+    // destroyed: tracked, but with no status stream. Since #576 the stream
+    // decides 204-vs-504 for a timed-out cancel, so re-check under the same
+    // lock that guards the erase and let a live goal veto the unsubscribe.
+    if (has_goals_for_action(action_path)) {
+      return;
+    }
     auto it = subscribed_paths_.find(action_path);
     if (it != subscribed_paths_.end()) {
       subscribed_paths_.erase(it);
       was_subscribed = true;
     }
   }
-  if (was_subscribed && action_transport_) {
-    action_transport_->unsubscribe_status(action_path);
+  if (!was_subscribed || !action_transport_) {
+    return;
   }
+  action_transport_->unsubscribe_status(action_path);
+
+  // The veto above only covers the decision, not the transport call: this
+  // runs with no lock held, so a goal sent meanwhile has already re-flagged
+  // the path and received a no-op from the transport (whose subscription was
+  // still alive at that instant) - and the call just above then destroyed it.
+  // The flag would keep subscribe_to_action_status short-circuiting forever,
+  // so repair the pair here instead: clear the flag and subscribe again.
+  //
+  // Deliberately NOT solved by holding subscriptions_mutex_ across the
+  // transport call. That would add a lock-order edge from our mutex into
+  // rclcpp's subscription create/destroy path, which neither this method nor
+  // subscribe_to_action_status has today. The residual window is one transport
+  // call wide and self-healing, and the status stream is TRANSIENT_LOCAL, so
+  // the fresh subscription is delivered the goal's latest status sample on
+  // match rather than waiting for the next publish.
+  if (!has_goals_for_action(action_path)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+    subscribed_paths_.erase(action_path);
+  }
+  subscribe_to_action_status(action_path);
 }
 
 void OperationManager::on_status_callback(const std::string & action_path, const std::string & goal_id,

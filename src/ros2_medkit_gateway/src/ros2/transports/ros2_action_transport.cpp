@@ -103,8 +103,12 @@ ActionGoalStatus from_status_byte(int8_t status) {
 
 }  // namespace
 
-Ros2ActionTransport::Ros2ActionTransport(rclcpp::Node * node)
-  : node_(node), serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>()) {
+Ros2ActionTransport::Ros2ActionTransport(rclcpp::Node * node, rclcpp::CallbackGroup::SharedPtr rpc_group,
+                                         rclcpp::CallbackGroup::SharedPtr status_group)
+  : node_(node)
+  , rpc_group_(std::move(rpc_group))
+  , status_group_(std::move(status_group))
+  , serializer_(std::make_shared<ros2_medkit_serialization::JsonSerializer>()) {
   RCLCPP_INFO(node_->get_logger(), "Ros2ActionTransport initialised (native serialization)");
 }
 
@@ -143,15 +147,17 @@ Ros2ActionTransport::ActionClientSet & Ros2ActionTransport::get_or_create_client
 
   std::string send_goal_service = action_path + "/_action/send_goal";
   std::string send_goal_type = ServiceActionTypes::get_action_send_goal_service_type(action_type);
-  clients.send_goal_client = compat::create_generic_service_client(node_, send_goal_service, send_goal_type);
+  clients.send_goal_client =
+      compat::create_generic_service_client(node_, send_goal_service, send_goal_type, rpc_group_);
 
   std::string get_result_service = action_path + "/_action/get_result";
   std::string get_result_type = ServiceActionTypes::get_action_get_result_service_type(action_type);
-  clients.get_result_client = compat::create_generic_service_client(node_, get_result_service, get_result_type);
+  clients.get_result_client =
+      compat::create_generic_service_client(node_, get_result_service, get_result_type, rpc_group_);
 
   std::string cancel_service = action_path + "/_action/cancel_goal";
   clients.cancel_goal_client =
-      compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal");
+      compat::create_generic_service_client(node_, cancel_service, "action_msgs/srv/CancelGoal", rpc_group_);
 
   RCLCPP_DEBUG(node_->get_logger(), "Created action clients for %s (type: %s)", action_path.c_str(),
                action_type.c_str());
@@ -249,6 +255,7 @@ ActionCancelResult Ros2ActionTransport::cancel_goal(const std::string & action_p
   ActionCancelResult result;
   result.success = false;
   result.return_code = 0;
+  result.outcome = CancelOutcome::kTransportError;
 
   try {
     // Cancel does not need an action_type to be valid; reuse cached clients
@@ -277,6 +284,7 @@ ActionCancelResult Ros2ActionTransport::cancel_goal(const std::string & action_p
         std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout.count(), 0.0) * 1000.0)};
 
     if (!clients.cancel_goal_client->wait_for_service(std::chrono::seconds(2))) {
+      result.outcome = CancelOutcome::kServiceUnavailable;
       result.error_message = "Cancel service not available";
       return result;
     }
@@ -294,6 +302,10 @@ ActionCancelResult Ros2ActionTransport::cancel_goal(const std::string & action_p
     if (future_status != std::future_status::ready) {
       clients.cancel_goal_client->remove_pending_request(future_and_id.request_id);
       ros2_medkit_serialization::destroy_ros_message(&ros_request);
+      // The response did not arrive in time: the cancel may well have been
+      // accepted server-side, so the outcome is UNKNOWN - callers must not
+      // treat this as a rejection (issue #576).
+      result.outcome = CancelOutcome::kTimeout;
       result.error_message = "Cancel request timed out";
       return result;
     }
@@ -315,24 +327,20 @@ ActionCancelResult Ros2ActionTransport::cancel_goal(const std::string & action_p
 
     result.success = true;
     result.return_code = static_cast<int8_t>(response.value("return_code", 0));
+    result.outcome = result.return_code == 0 ? CancelOutcome::kOk : CancelOutcome::kErrorResponse;
 
     if (result.return_code == 0) {
       RCLCPP_INFO(node_->get_logger(), "Cancel request accepted for goal: %s", goal_id.c_str());
     } else {
-      switch (result.return_code) {
-        case 1:
-          result.error_message = "Cancel request rejected";
-          break;
-        case 2:
-          result.error_message = "Unknown goal ID";
-          break;
-        case 3:
-          result.error_message = "Goal already terminated";
-          break;
-        default:
-          result.error_message = "Unknown cancel error";
-          break;
-      }
+      // Deliberately NOT a per-return_code message table: the client-facing
+      // wording for CancelGoal's documented codes 1-3 lives in exactly one
+      // place, `handlers::detail::map_cancel_result`, which alone knows
+      // whether the client asked to cancel or to stop. A second copy here
+      // would let a deleted mapper case silently change the wire message
+      // with every test still green. What remains is the fallback for a
+      // code the protocol does not define.
+      result.error_message =
+          "Cancel rejected by action server (return_code " + std::to_string(result.return_code) + ")";
     }
 
   } catch (const std::exception & e) {
@@ -440,8 +448,34 @@ void Ros2ActionTransport::subscribe_status(const std::string & action_path, Stat
     on_status_msg(action_path, msg);
   };
 
-  auto subscription =
-      node_->create_subscription<action_msgs::msg::GoalStatusArray>(status_topic, rclcpp::QoS(10).best_effort(), cb);
+  // Dispatch on the shared MutuallyExclusive status group (issue #575):
+  // in-order delivery per subscription is preserved, but status tracking is
+  // no longer serialized behind the node's default group.
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.callback_group = status_group_;
+  // Match the action protocol's own status profile: rcl_action declares
+  // KEEP_LAST(1) + RELIABLE + TRANSIENT_LOCAL
+  // (rcl_action/default_qos.h, rcl_action_qos_profile_status_default) for the
+  // server's publisher AND the client's subscription alike.
+  //
+  // Durability is the load-bearing part. The gateway subscribes only after
+  // the goal has been sent, so on the first goal for a path the action can
+  // reach a terminal state while this subscription is still matching. A
+  // VOLATILE reader is delivered nothing on match and the terminal frame is
+  // lost for good - no other code path re-reads a goal's status - which since
+  // #576 also means a timed-out cancel can never reconcile to 204. A
+  // TRANSIENT_LOCAL reader receives the writer's last sample on match, which
+  // is precisely the frame it missed.
+  //
+  // Cost of the reliable reader: with KEEP_LAST(1) the publisher overwrites
+  // rather than blocking, so a slow gateway cannot stall an action server
+  // indefinitely - the exposure is bounded by the writer's max_blocking_time
+  // plus retransmission traffic. Depth 1 can coalesce intermediate
+  // transitions (EXECUTING -> CANCELING -> CANCELED may arrive as CANCELED
+  // only); harmless here, because the tracking map stores the goal's current
+  // status and the cancel reconciliation accepts CANCELING or CANCELED.
+  auto subscription = node_->create_subscription<action_msgs::msg::GoalStatusArray>(
+      status_topic, rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(), cb, sub_options);
 
   status_subscriptions_[action_path] = subscription;
   RCLCPP_INFO(node_->get_logger(), "Subscribed to action status: %s", status_topic.c_str());
