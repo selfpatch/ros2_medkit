@@ -44,6 +44,20 @@ shift 2>/dev/null || true
 
 COMMON_ARGS=(--event-handlers console_direct+ --parallel-workers "$(nproc)" --return-code-on-test-failure)
 
+# Drop every result file from earlier runs before starting.
+#
+# `colcon test-result` at the end reports on whatever it finds under build/, and it
+# reads BOTH the ament xunit files and CTest's own Testing/<timestamp>/Test.xml
+# directories. A run that tests one package therefore reports the tallies of every
+# package tested since the last clean, and a preset that selects a handful of tests
+# still prints a total in the thousands. Deleting only the xunit files is not enough:
+# the CTest directories alone are enough to produce a total with no file on disk to
+# back it, which reads as a passing suite that never ran.
+if [ -d build ]; then
+  find build -name '*.xunit.xml' -delete
+  find build -type d -name 'Testing' -prune -exec rm -rf {} +
+fi
+
 # Run tests, capture exit code so we always show results even on failure.
 set +e
 case "$PRESET" in
