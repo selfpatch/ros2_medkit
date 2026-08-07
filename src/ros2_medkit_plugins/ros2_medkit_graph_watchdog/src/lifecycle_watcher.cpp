@@ -117,17 +117,41 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
     current_fqns.emplace(app.id, app.effective_fqn());
   }
 
-  // Drop nodes that are no longer managed. Erasing the entry drops the last strong ref
-  // to a Subscription created on node_, whose ~Subscription mutates node_'s topic
-  // registry and waitset - the same structures create_subscription touches. Take
-  // node_mutex_ then state->mutex here to mirror the creation-side lock order
-  // (node_mutex_ -> state->mutex); the callback only takes state->mutex, so this adds no
-  // inversion.
+  // Drop nodes that are no longer managed - and tracked ids whose BINDING moved. An
+  // entry's binding identity is (fqn, get_state path), both captured at first sighting:
+  // App::id alone is not it, because an id can survive a graph sweep while pointing at a
+  // DIFFERENT node (id assignment shifts under bare-name collisions). Keeping such an
+  // entry would keep enforcing the old node's label - and its old ~/transition_event
+  // subscription - against the new binding, so a moved binding is two events at once:
+  // the OLD binding departed (recorded under ITS fqn, same record and retention as a
+  // vanish), and the id is new again (erased here, so the selection below re-seeds it
+  // through the ordinary new-node path: fresh GetState, fresh subscription, fresh
+  // self-heal budget). Erasing the entry usually drops the LAST strong ref to a
+  // Subscription created on node_, whose ~Subscription mutates node_'s topic registry and
+  // waitset - the same structures create_subscription touches. Take node_mutex_ then
+  // state->mutex here to mirror the creation-side lock order (node_mutex_ ->
+  // state->mutex); the callback only takes state->mutex, so this adds no inversion.
+  //
+  // The scope of that serialisation, precisely: it covers the case where the erase itself
+  // runs the destructor. When the executor is still holding its own strong ref to an
+  // already-dispatched subscription, the erase only drops ours and ~Subscription runs
+  // later, on the executor thread, with node_mutex_ NOT held - possibly while this same
+  // update() is inside create_subscription below. No mutex taken on this thread can close
+  // that; only rclcpp/rmw's own internal synchronisation stands behind it. The lock is
+  // still worth taking (it covers the common path, and the creation side needs it against
+  // other tick-thread work), but it is not the guarantee the ordering rests on.
   {
     std::lock_guard<std::mutex> node_lock(*node_mutex_);
     std::lock_guard<std::mutex> state_lock(state_->mutex);
     for (auto it = state_->tracked.begin(); it != state_->tracked.end();) {
-      if (current_paths.find(it->first) == current_paths.end()) {
+      const auto path_it = current_paths.find(it->first);
+      bool drop = (path_it == current_paths.end());
+      if (!drop) {
+        const auto fqn_it = current_fqns.find(it->first);
+        drop = fqn_it == current_fqns.end() || fqn_it->second != it->second.fqn ||
+               path_it->second != it->second.get_state_path;
+      }
+      if (drop) {
         state_->recently_departed_[it->second.fqn] = {
             DepartedLifecycle{it->second.state_label, it->second.saw_transition, it->second.error_terminated}, tick};
         it = state_->tracked.erase(it);
@@ -145,6 +169,11 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
     std::string id;
     std::string path;
     bool is_new;
+    /// Tracked::label_epoch as it stood when this job was selected. The apply block below
+    /// compares it again: a ~/transition_event that landed while the (unlocked, blocking)
+    /// GetState was in flight is fresher than this job's answer, and applying the answer
+    /// anyway would undo an activation the watcher actually observed.
+    std::uint64_t label_epoch = 0;
   };
   std::vector<SeedJob> jobs;
   std::vector<std::pair<std::string, std::string>> new_nodes;  // (id, get_state_path)
@@ -155,7 +184,7 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
       if (it == state_->tracked.end()) {
         new_nodes.emplace_back(id, path);
         if (static_cast<int>(jobs.size()) < kMaxGetStateSeedsPerTick) {
-          jobs.push_back({id, path, true});
+          jobs.push_back({id, path, true, 0});
         }
       } else if (it->second.state_label != "active" && it->second.reseeds_remaining > 0 &&
                  static_cast<int>(jobs.size()) < kMaxGetStateSeedsPerTick) {
@@ -168,7 +197,7 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
         // expectation on it is silently never enforced), and one seeded non-active that then
         // activates inside the subscription's matching window keeps that label forever (every
         // fault suppressed, plus a permanent false GRAPH_NODE_INACTIVE).
-        jobs.push_back({id, path, false});
+        jobs.push_back({id, path, false, it->second.label_epoch});
       }
     }
   }
@@ -213,7 +242,7 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
       return;
     }
     auto sub = node_->create_subscription<lifecycle_msgs::msg::TransitionEvent>(
-        topic, qos, [weak_state, id](const lifecycle_msgs::msg::TransitionEvent::ConstSharedPtr & msg) {
+        topic, qos, [weak_state, id, get_state_path](const lifecycle_msgs::msg::TransitionEvent::ConstSharedPtr & msg) {
           auto shared = weak_state.lock();
           if (!shared) {
             return;  // watcher torn down; nothing to update
@@ -222,9 +251,29 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
           if (shared->shutdown_requested) {
             return;
           }
+          // The entry under `id` may no longer be the binding this subscription was
+          // created for: a moved binding erases + re-creates it, and the executor keeps
+          // its own strong ref to an already-dispatched subscription, so a message the
+          // OLD binding published can still arrive after the drop. Matching on the
+          // captured get_state path keeps that straggler out of a DIFFERENT binding's
+          // entry.
+          //
+          // What it cannot do is tell two incarnations of the SAME binding apart: a node
+          // that blinks out of one snapshot and returns, or is respawned under the same
+          // name, produces a fresh entry with an identical (fqn, get_state path) pair, and
+          // path equality passes. A straggler from the dead incarnation then lands in the
+          // fresh entry. Reaching that needs the executor to have collected the message
+          // before the erase and to run it after the re-create - at least one full tick
+          // in flight - and the fresh entry's own GetState re-seed corrects any non-active
+          // label it leaves behind. A stale "active" is the one that sticks, because the
+          // re-seed only selects non-active entries.
           auto it = shared->tracked.find(id);
-          if (it != shared->tracked.end()) {
+          if (it != shared->tracked.end() && it->second.get_state_path == get_state_path) {
             it->second.state_label = msg->goal_state.label;
+            // Marks this label as newer than any re-seed answer already in flight - see
+            // Tracked::label_epoch. Bumped for every event, including one that repeats the
+            // current label: what matters is that a read happened after the job was picked.
+            ++it->second.label_epoch;
             it->second.saw_transition = true;
             // `errorprocessing` on either end of the edge means this node took the error
             // branch. It is sticky for the node's whole tracked lifetime: ON_ERROR_FAILURE
@@ -242,12 +291,22 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
     tracked.state_label = (seed_it != seeded.end()) ? seed_it->second : "";
     // Captured at first sighting: current_fqns is built from the same snapshot pass
     // that produced current_paths, so an id here is always present in current_fqns too.
+    // Together, fqn + get_state_path are the binding identity the drop loop re-checks.
     const auto fqn_it = current_fqns.find(id);
     tracked.fqn = (fqn_it != current_fqns.end()) ? fqn_it->second : "";
+    tracked.get_state_path = get_state_path;
   }
 
   // Apply re-seed results to already-tracked nodes. Never overwrite a good cached label
-  // with an empty (failed/timed-out) seed.
+  // with an empty (failed/timed-out) seed - and never with a STALE one either: the read
+  // above ran with no lock held and blocks for as long as the remote takes, so a
+  // ~/transition_event delivered in that window is the fresher fact. That window is the
+  // bringup moment the re-seed exists for (the node is mid-transition by construction), and
+  // on the last attempt of the bounded budget the loser is permanent: a node that reached
+  // active while its seed was in flight would keep the pre-activation label until its next
+  // real transition, which is a false GRAPH_NODE_INACTIVE plus node_ok() suppressing every
+  // other fault for it. The epoch is compared, not the label, so an event that re-reports
+  // the same label still wins - the point is which read is newer, not which value.
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
     // Charge the self-heal budget only for reads that actually happened (see the selection
@@ -267,7 +326,7 @@ void LifecycleWatcher::update(const ros2_medkit_gateway::IntrospectionInput & sn
         continue;
       }
       auto it = state_->tracked.find(job.id);
-      if (it != state_->tracked.end()) {
+      if (it != state_->tracked.end() && it->second.label_epoch == job.label_epoch) {
         it->second.state_label = seed_it->second;
       }
     }
@@ -307,7 +366,10 @@ std::optional<DepartedLifecycle> LifecycleWatcher::departed_state_of(const std::
 
 void LifecycleWatcher::reset() {
   // Symmetric with subscription creation (node_mutex_ then state->mutex): clearing
-  // tracked_ drops the subs, and ~Subscription mutates node_'s topic registry.
+  // tracked_ drops OUR refs to the subs, and ~Subscription mutates node_'s topic registry.
+  // Same scope as the drop loop in update(): a subscription the executor has already
+  // dispatched outlives this and is destroyed on the executor thread without the lock, so
+  // what makes THAT safe is the weak_ptr in the callback (see SharedState), not this mutex.
   std::lock_guard<std::mutex> node_lock(*node_mutex_);
   std::lock_guard<std::mutex> state_lock(state_->mutex);
   state_->shutdown_requested = true;
@@ -324,6 +386,7 @@ void LifecycleWatcher::set_state_for_test(const std::string & app_id, const std:
   std::lock_guard<std::mutex> lock(state_->mutex);
   auto & tracked = state_->tracked[app_id];
   tracked.state_label = label;
+  ++tracked.label_epoch;  // the callback bumps this too: the seam has to age a re-seed the same way
   // This seam stands in for a live ~/transition_event round-trip, so it must record the same
   // thing that callback does: we WATCHED the node reach this label. Leaving saw_transition false
   // would make every shim-driven departure look like a node found already sitting in its final
