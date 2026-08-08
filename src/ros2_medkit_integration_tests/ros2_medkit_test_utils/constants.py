@@ -32,34 +32,48 @@ def get_test_port(offset=0):
     return DEFAULT_PORT + offset
 
 
+def _secondary_domains():
+    """Return the extra DDS domains this test was given, beyond its own.
+
+    The domain wrapper allocates them when the test starts and publishes them as
+    ``MEDKIT_SECONDARY_DOMAINS``; it holds every one of them, through an open
+    socket, for as long as the test runs. Absent (a test run by hand outside
+    CTest), there is nothing to fall back on that would be safe, so say so.
+    """
+    raw = os.environ.get('MEDKIT_SECONDARY_DOMAINS', '')
+    return [int(part) for part in raw.split(',') if part.strip()]
+
+
 def get_test_domain_id(offset=0):
     """Return a DDS domain ID for this test, optionally with an offset.
 
-    Each integration test gets a unique ``ROS_DOMAIN_ID`` from CMake
-    (stride of 1, range 130-219). For offset 0, returns the assigned
-    domain ID directly.
+    Every test gets a ``ROS_DOMAIN_ID`` of its own when it starts, from the
+    wrapper described in ``ROS2MedkitTestDomain.cmake``. For offset 0, returns
+    that domain.
 
-    For offset in 1..3 (multi-gateway tests needing extra DDS domains),
-    returns one of the three secondary domains 230, 231, 232 so each
-    offset produces a distinct domain. These three secondaries sit
-    outside the per-package allocation in
-    ``ROS2MedkitTestDomain.cmake`` and are shared across every
-    multi-gateway integration test; CTest serialises those tests via a
-    ``RESOURCE_LOCK`` (see ``CMakeLists.txt``) so two of them never
-    hold the same secondary domain simultaneously.
-
-    DDS max domain ID is 232 (UDP port formula: 7400 + 250 * domain_id).
-    Offsets above 3 would exceed that ceiling and are rejected up front.
+    Offsets above 0 are for multi-gateway tests that run a second or third
+    gateway at the same time. Those domains are allocated to this test alone -
+    ``DOMAINS <n>`` on its ``medkit_add_launch_test`` call is what asks for them -
+    so no other test can be on them while this one runs.
     """
     if offset == 0:
         return DEFAULT_DOMAIN_ID
-    if not 1 <= offset <= 3:
-        raise ValueError(
-            f'secondary DDS domain offset {offset} out of range 1..3 '
-            '(only domains 230-232 are available; DDS max is 232). '
-            'Add a new offset only after extending the allocation scheme.'
+    secondary = _secondary_domains()
+    if not secondary:
+        raise RuntimeError(
+            'MEDKIT_SECONDARY_DOMAINS is not set, so no secondary DDS domain can be '
+            'handed out. The domain wrapper sets it for a test registered with '
+            'DOMAINS greater than 1. To run this test by hand, run it through '
+            'medkit_run_with_domain.py --domains <n>, or set ROS_DOMAIN_ID and '
+            'MEDKIT_SECONDARY_DOMAINS yourself to domains nobody else is using.'
         )
-    return 229 + offset
+    if not 1 <= offset <= len(secondary):
+        raise ValueError(
+            f'secondary DDS domain offset {offset} out of range 1..{len(secondary)} '
+            f'(this test was given {secondary}). Raise DOMAINS on its '
+            'medkit_add_launch_test call in CMakeLists.txt before adding a new offset.'
+        )
+    return secondary[offset - 1]
 
 
 # Gateway startup

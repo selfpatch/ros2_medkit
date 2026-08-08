@@ -135,6 +135,93 @@ through `add_compile_options`, which CMake places after
 Do not move these into `CMAKE_CXX_FLAGS`, where the build type's flags would
 come last and win instead.
 
+### ROS2MedkitTestDomain
+
+Gives every test a `ROS_DOMAIN_ID` of its own, allocated when the test starts and held for
+exactly as long as the test runs.
+
+```cmake
+include(ROS2MedkitTestDomain)
+
+medkit_add_gtest(test_foo test/test_foo.cpp)
+medkit_add_gmock(test_baz test/test_baz.cpp)
+medkit_add_pytest_test(test_py test/test_py.py)
+medkit_add_launch_test(test_bar test/test_bar.test.py TIMEOUT 90)
+```
+
+There is no table, no per-package pool and no size to keep an eye on. Adding a test to a
+package is registering it, and nothing else.
+
+Each of those macros wraps the test's command in `medkit_domain_runner.py`, which replaces
+ament's `run_test.py`: it takes a domain, exports it, runs the test, and releases the domain
+when the test process ends - including when it is killed, because the release is the kernel
+closing a socket. The lock itself is `domain_coordinator.domain_id` from `ament_cmake_ros`,
+which binds a TCP socket on `32768 + domain`. Because it is an OS-level lock rather than a
+CTest property, it reaches across the separate `ctest` runs colcon starts per package, which
+is what a `RESOURCE_LOCK` never could.
+
+A test that needs several domains at once - a multi-gateway test running a second and a third
+gateway - asks for them with `DOMAINS <n>`. The first arrives as `ROS_DOMAIN_ID` and the rest
+as `MEDKIT_SECONDARY_DOMAINS`, which `ros2_medkit_test_utils.constants.get_test_domain_id`
+reads. All of them are held by that test alone.
+
+```cmake
+medkit_add_launch_test(test_peer_aggregation test/test_peer_aggregation.test.py DOMAINS 4)
+```
+
+For a test that builds its own command line and so cannot take an ament test runner, there is
+`medkit_add_wrapped_test(<name> [DOMAINS <n>] COMMAND <cmd...>)`, which puts
+`medkit_run_with_domain.py` in front of the command instead.
+
+Only domains **1-100 and 215-231** are drawn from. RTPS gives a domain the UDP slice
+`[7400 + 250 * d, 7400 + 250 * d + 249]`, and the kernel hands out ephemeral ports from
+`net.ipv4.ip_local_port_range` (32768-60999 by default), which covers domains 101-214. If an
+unrelated process is given one of those ports first, the node dies at startup with
+`failed to bind to ANY:<port>: address in use` and every case in the file fails at once.
+Domain 0 stays free because it is the ROS 2 default a developer shell uses, and 232 is
+dropped because its slice runs past 65535. The full derivation, per DDS implementation, is in
+`scripts/medkit_domain.py`.
+
+That is 117 domains. `scripts/test.sh` runs `colcon test` with `ctest -j $(nproc)` inside
+each package, so more tests than that can be in flight at once on a large machine; a test
+that finds the band full waits for a domain rather than failing, up to
+`MEDKIT_TEST_DOMAIN_WAIT` seconds (180 by default). What it never does is fall back to a
+literal or to domain 0.
+
+`MEDKIT_TEST_DOMAINS` is appended to the test's `ENVIRONMENT`, so a caller adding its own
+entries must use `set_property(TEST ... APPEND PROPERTY ENVIRONMENT ...)`. A plain
+`set_tests_properties(... PROPERTIES ENVIRONMENT ...)` afterwards drops it, and the check
+below says so.
+
+The failure this scheme has to guard against is silent: a test registered with plain
+`ament_add_gtest` or `add_launch_test` does not fail, it runs on domain 0 and sees every node
+on the machine. Two gates catch it, and neither has to be asked for:
+
+- `test_dds_domain_allocation`, registered in every package automatically by the extras hook
+  behind `find_package(ros2_medkit_cmake)`. It runs on the machine that *tests*, reads back
+  the generated CTest properties, and fails on any test whose command does not go through
+  the wrapper. Nothing in a package's `CMakeLists.txt` registers it, which is the point: a
+  gate a package has to opt into is a gate the next package will not have.
+- `test_dds_domain_coverage`, registered once by this package, which sweeps every package
+  build directory in the workspace and applies the same rule - including to packages that
+  never found `ros2_medkit_cmake` and so carry no gate of their own. A package with tests
+  and no gate is reported by name.
+
+A test that genuinely creates no ROS entities says so at its own call site:
+
+```cmake
+add_test(NAME core_only COMMAND $<TARGET_FILE:test_core_only>)
+set_tests_properties(core_only PROPERTIES LABELS "unit")
+medkit_test_needs_no_domain(core_only)   # after the LABELS assignment, which replaces
+```
+
+The package's own suite proves the parts that matter: that the band is what it says it is,
+that a port held by an unrelated process is stepped over rather than fatal, that an exhausted
+band is reported rather than downgraded, that excess holders wait and are served as domains
+free up, that a wrapper killed with `SIGKILL` frees its domain, and - with the control that
+makes the zero mean something - that two independently allocated ROS nodes hear nothing from
+each other while the same two on one domain hear each other fine.
+
 ## Usage
 
 In your package's `CMakeLists.txt`, before the first target:

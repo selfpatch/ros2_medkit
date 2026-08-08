@@ -94,6 +94,8 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
 
+  include(ROS2MedkitTestDomain)
+
   ament_add_gtest(test_beacon_validator test/test_beacon_validator.cpp)
   target_link_libraries(test_beacon_validator beacon_common_lib)
   medkit_target_dependencies(test_beacon_validator ros2_medkit_gateway)
@@ -106,6 +108,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_beacon_entity_mapper beacon_common_lib)
   medkit_target_dependencies(test_beacon_entity_mapper ros2_medkit_gateway)
   ros2_medkit_relax_vendor_warnings()
+  # No ROS middleware on the link line and none loaded at run time (these pass
+  # with RMW_IMPLEMENTATION pointing at a library that does not exist), so there
+  # is no DDS participant to isolate and a wrapper would be cost without cover.
+  medkit_test_needs_no_domain(test_beacon_validator)
+  medkit_test_needs_no_domain(test_beacon_hint_store)
+  medkit_test_needs_no_domain(test_beacon_entity_mapper)
+
 endif()
 
 ament_package()
