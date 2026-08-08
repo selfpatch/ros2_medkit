@@ -87,11 +87,9 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(PACKAGE ros2_medkit_topic_beacon)
-  medkit_add_domain_allocation_test()
 
   # Include plugin source in test (plugin is MODULE/dlopen, test instantiates directly)
-  ament_add_gtest(test_topic_beacon_plugin
+  medkit_add_gtest(test_topic_beacon_plugin
     test/test_topic_beacon_plugin.cpp
     src/topic_beacon_plugin.cpp
     TIMEOUT 30)
@@ -102,7 +100,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_topic_beacon_plugin
     nlohmann_json::nlohmann_json
     ros2_medkit_beacon_common::beacon_common_lib)
-  medkit_set_test_domain(test_topic_beacon_plugin)
   ros2_medkit_relax_vendor_warnings()
 endif()
 

@@ -96,10 +96,8 @@ if(BUILD_TESTING)
   unset(_gw_vendored)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(PACKAGE ros2_medkit_graph_provider)
-  medkit_add_domain_allocation_test()
 
-  ament_add_gtest(test_graph_provider_plugin
+  medkit_add_gtest(test_graph_provider_plugin
     test/test_graph_provider_plugin.cpp
     src/graph_provider_plugin.cpp
   )
@@ -117,7 +115,6 @@ if(BUILD_TESTING)
     cpp_httplib_target
     OpenSSL::SSL OpenSSL::Crypto
   )
-  medkit_set_test_domain(test_graph_provider_plugin)
   ros2_medkit_relax_vendor_warnings()
 endif()
 

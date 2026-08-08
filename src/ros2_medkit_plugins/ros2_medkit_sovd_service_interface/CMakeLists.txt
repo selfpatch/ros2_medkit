@@ -89,10 +89,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(PACKAGE ros2_medkit_sovd_service_interface)
-  medkit_add_domain_allocation_test()
 
-  ament_add_gtest(test_sovd_service_interface
+  medkit_add_gtest(test_sovd_service_interface
     test/test_sovd_service_interface.cpp
     src/sovd_service_interface.cpp
   )
@@ -107,7 +105,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_sovd_service_interface
     nlohmann_json::nlohmann_json
   )
-  medkit_set_test_domain(test_sovd_service_interface)
 endif()
 
 ament_package()

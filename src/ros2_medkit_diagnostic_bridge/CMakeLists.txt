@@ -97,14 +97,11 @@ if(BUILD_TESTING)
   ros2_medkit_clang_tidy()
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(PACKAGE ros2_medkit_diagnostic_bridge)
-  medkit_add_domain_allocation_test()
 
   # Unit tests
-  ament_add_gtest(test_diagnostic_bridge test/test_diagnostic_bridge.cpp)
+  medkit_add_gtest(test_diagnostic_bridge test/test_diagnostic_bridge.cpp)
   target_link_libraries(test_diagnostic_bridge diagnostic_bridge_lib)
   medkit_target_dependencies(test_diagnostic_bridge rclcpp diagnostic_msgs ros2_medkit_msgs)
-  medkit_set_test_domain(test_diagnostic_bridge)
 
   # Integration tests
   install(DIRECTORY test

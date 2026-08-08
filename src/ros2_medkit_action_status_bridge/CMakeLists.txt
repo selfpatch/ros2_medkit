@@ -89,13 +89,10 @@ if(BUILD_TESTING)
   ros2_medkit_clang_tidy()
 
   include(ROS2MedkitTestDomain)
-  medkit_init_test_domains(PACKAGE ros2_medkit_action_status_bridge)
-  medkit_add_domain_allocation_test()
 
-  ament_add_gtest(test_action_status_bridge test/test_action_status_bridge.cpp)
+  medkit_add_gtest(test_action_status_bridge test/test_action_status_bridge.cpp)
   target_link_libraries(test_action_status_bridge action_status_bridge_lib)
   medkit_target_dependencies(test_action_status_bridge rclcpp action_msgs ros2_medkit_msgs)
-  medkit_set_test_domain(test_action_status_bridge)
 
   # Integration test (launch_testing): fault_manager + bridge + synthetic status
   install(DIRECTORY test

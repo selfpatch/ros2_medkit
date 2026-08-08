@@ -62,10 +62,17 @@ if(BUILD_TESTING)
   endif()
 
   find_package(ament_cmake_gtest REQUIRED)
+
+  include(ROS2MedkitTestDomain)
   ament_add_gtest(test_fault_detection test/test_fault_detection.cpp)
   target_link_libraries(test_fault_detection ros2_medkit_fault_detection)
 
   ros2_medkit_relax_vendor_warnings()
+  # No ROS middleware on the link line and none loaded at run time (these pass
+  # with RMW_IMPLEMENTATION pointing at a library that does not exist), so there
+  # is no DDS participant to isolate and a wrapper would be cost without cover.
+  medkit_test_needs_no_domain(test_fault_detection)
+
 endif()
 
 ament_package()
