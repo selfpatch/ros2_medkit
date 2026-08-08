@@ -192,6 +192,27 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
   return x_medkit;
 }
 
+/// Look up a tracked action goal, and refuse it through any entity other than
+/// the one it was started on.
+///
+/// `ActionGoalInfo` carries the owning entity, so the check costs nothing -
+/// and without it a goal id is a global handle: an execution started on one
+/// app can be read, stopped and cancelled through a completely unrelated
+/// entity's URI, and `GET /apps/a/operations/x/executions/{id}` happily
+/// answers 200 for an execution belonging to a function. A caller that
+/// addresses the wrong entity gets the same "not found" it would get for a
+/// wrong id, which is the answer that keeps entity boundaries meaningful.
+tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(OperationManager * operation_mgr, const std::string & entity_id,
+                                                   const std::string & operation_id, const std::string & execution_id) {
+  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
+  if (goal_info.has_value() && goal_info->entity_id == entity_id) {
+    return *goal_info;
+  }
+  return tl::make_unexpected(
+      make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
+                 json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+}
+
 /// Map an `OperationProviderErrorInfo` (from the typed plugin ABI) into the
 /// SOVD `x-medkit-plugin-error` wire shape via `make_plugin_error`.
 ErrorInfo make_provider_error(const OperationProviderErrorInfo & info, const std::string & entity_id,
@@ -497,7 +518,11 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
     return tl::make_unexpected(lookup.error());
   }
   const auto & ops = lookup->ops;
-  const std::string id_field = (lookup->entity_type == "app") ? "app_id" : "component_id";
+  // `EntityInfo` already carries the right key for all four types; the previous
+  // "app_id if it is an app, else component_id" put `component_id` in the error
+  // params of every area and function caller whose goal was rejected, naming a
+  // field the caller never sent.
+  const std::string & id_field = entity_info.id_field;
 
   std::optional<ServiceInfo> service_info;
   std::optional<ActionInfo> action_info;
@@ -542,12 +567,16 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       async_dto.id = action_result.goal_id;
       async_dto.status = "running";
 
-      const std::string base_path = (lookup->entity_type == "app") ? "/api/v1/apps/" : "/api/v1/components/";
-      const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + action_result.goal_id;
+      // The execution is a child of the POST target, and `req.path()` already
+      // carries the API prefix, so this is the same absolute form every `href`
+      // uses - and it names the collection the caller actually addressed.
+      // Rebuilding the path from an "app or else component" choice, as this
+      // used to, handed an area or function caller a `/components/...` URI
+      // that resolves to nothing.
+      const std::string location = child_resource_path(req.path(), action_result.goal_id);
 
       http::ResponseAttachments att;
-      att.with_header("Location", location);
+      att.with_location(location);
       // dto_alternate_status<ExecutionCreateAsync> == 202, so the framework
       // emits the 202 status without an explicit override here.
       return SuccessPair{ResultVariant{std::move(async_dto)}, std::move(att)};
@@ -611,45 +640,52 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   }
   const std::string operation_id = *op_id_result;
 
-  if (auto vr = ctx_.validate_entity_id(entity_id); !vr) {
-    return tl::make_unexpected(make_error(400, ERR_INVALID_PARAMETER, "Invalid entity ID",
-                                          json{{"details", vr.error()}, {"entity_id", entity_id}}));
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  if (!entity_result) {
+    return tl::make_unexpected(flatten_validator_error(entity_result.error()));
   }
+  const auto entity_info = *entity_result;
 
+  // The route is mounted on all four entity types, so the lookup has to cover
+  // all four. It used to reach for the component cache and then the app cache
+  // and 404 otherwise, which made an area or a function report that the entity
+  // did not exist - immediately after the same entity listed the operation.
+  // `resolve_entity_operations` is the same lookup `list_operations` uses, so
+  // the two endpoints now agree on what an entity's operations are.
   const auto & cache = ctx_.node()->get_thread_safe_cache();
-  std::string namespace_path;
-  bool entity_found = false;
-
-  if (auto component = cache.get_component(entity_id)) {
-    namespace_path = component->namespace_path;
-    entity_found = true;
+  auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
+  if (!lookup) {
+    return tl::make_unexpected(lookup.error());
   }
-  if (!entity_found) {
-    if (auto app = cache.get_app(entity_id)) {
-      for (const auto & act : app->actions) {
-        if (act.name == operation_id) {
-          namespace_path = act.full_path.substr(0, act.full_path.rfind('/'));
-          entity_found = true;
-          break;
-        }
-      }
-    }
-  }
-  if (!entity_found) {
-    return tl::make_unexpected(
-        make_error(404, ERR_ENTITY_NOT_FOUND, "Entity not found", json{{"entity_id", entity_id}}));
-  }
-
-  const std::string action_path = namespace_path + "/" + operation_id;
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
-  auto goals = operation_mgr->get_goals_for_action(action_path);
 
   // Typed Collection<ExecutionId> - replaces the legacy ad-hoc
   // `{"items": [{"id": "..."}]}` JSON literal. The wire shape is identical
   // (per JsonWriter<Collection<ExecutionId>>::write) but the per-item schema
   // is now enforced by JsonReader<ExecutionId> on round-trip.
   dto::Collection<dto::ExecutionId> collection;
-  for (const auto & goal : goals) {
+
+  // Executions only exist for actions. Reading the goal's action path off the
+  // discovered ActionInfo is also what makes the aggregating entities work:
+  // the old `namespace_path + "/" + operation_id` guess never matched the real
+  // action path for a host component, whose namespace is not the action's.
+  std::string action_path;
+  for (const auto & act : lookup->ops.actions) {
+    if (act.name == operation_id) {
+      action_path = act.full_path;
+      break;
+    }
+  }
+  if (action_path.empty()) {
+    return collection;
+  }
+
+  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  for (const auto & goal : operation_mgr->get_goals_for_action(action_path)) {
+    // An action reachable through several entities is one action with one set
+    // of goals; each entity lists the executions started through it.
+    if (goal.entity_id != entity_id) {
+      continue;
+    }
     dto::ExecutionId item;
     item.id = goal.goal_id;
     collection.items.push_back(std::move(item));
@@ -686,11 +722,9 @@ http::Result<dto::OperationExecution> OperationHandlers::get_execution(const htt
   }
 
   auto * operation_mgr = ctx_.node()->get_operation_manager();
-  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
-  if (!goal_info.has_value()) {
-    return tl::make_unexpected(
-        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  auto goal_info = owned_goal(operation_mgr, entity_id, operation_id, execution_id);
+  if (!goal_info) {
+    return tl::make_unexpected(goal_info.error());
   }
 
   dto::OperationExecution exec_dto;
@@ -750,11 +784,9 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
   }
 
   auto * operation_mgr = ctx_.node()->get_operation_manager();
-  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
-  if (!goal_info.has_value()) {
-    return tl::make_unexpected(
-        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  auto goal_info = owned_goal(operation_mgr, entity_id, operation_id, execution_id);
+  if (!goal_info) {
+    return tl::make_unexpected(goal_info.error());
   }
 
   auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
@@ -786,9 +818,9 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
 // PUT /{entity}/operations/{op_id}/executions/{exec_id} - update execution
 // =============================================================================
 
-http::Result<std::pair<dto::OperationExecution, http::ResponseAttachments>>
+http::Result<std::pair<http::Accepted<dto::OperationExecution>, http::ResponseAttachments>>
 OperationHandlers::update_execution(const http::TypedRequest & req, const dto::ExecutionUpdateRequest & body) {
-  using SuccessPair = std::pair<dto::OperationExecution, http::ResponseAttachments>;
+  using SuccessPair = std::pair<http::Accepted<dto::OperationExecution>, http::ResponseAttachments>;
 
   auto id_result = read_entity_id(req);
   if (!id_result) {
@@ -821,11 +853,9 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   const std::string capability = body.capability;
 
   auto * operation_mgr = ctx_.node()->get_operation_manager();
-  auto goal_info = operation_mgr->get_tracked_goal(execution_id);
-  if (!goal_info.has_value()) {
-    return tl::make_unexpected(
-        make_error(404, ERR_RESOURCE_NOT_FOUND, "Execution not found",
-                   json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}}));
+  auto goal_info = owned_goal(operation_mgr, entity_id, operation_id, execution_id);
+  if (!goal_info) {
+    return tl::make_unexpected(goal_info.error());
   }
 
   // SOVD capabilities: execute, freeze, reset, stop. ROS 2 actions only
@@ -834,18 +864,21 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   if (capability == "stop") {
     auto result = operation_mgr->cancel_action_goal(goal_info->action_path, execution_id);
     if (result.success && result.return_code == 0) {
-      const std::string base_path =
-          req.path().find("/apps/") != std::string::npos ? "/api/v1/apps/" : "/api/v1/components/";
-      const std::string location =
-          base_path + entity_id + "/operations/" + operation_id + "/executions/" + execution_id;
+      // The execution this PUT addressed *is* the resource whose status now
+      // tracks the request, so the request path is the `Location` - already
+      // API-prefixed, and already naming the collection the caller used. The
+      // previous "/apps/ if the path mentions it, else /components/" rebuild
+      // pointed area and function callers at a URI that resolves to nothing.
+      // Canonicalised so the header does not echo a caller's trailing slash.
+      const std::string location = canonical_request_path(req.path());
 
       dto::OperationExecution exec_dto;
       exec_dto.id = execution_id;
       exec_dto.status = "running";  // canceling is still "running" in SOVD terms
 
       http::ResponseAttachments att;
-      att.with_status(202).with_header("Location", location);
-      return SuccessPair{std::move(exec_dto), std::move(att)};
+      att.with_location(location);
+      return SuccessPair{http::Accepted<dto::OperationExecution>{std::move(exec_dto)}, std::move(att)};
     }
     std::string error_msg;
     switch (result.return_code) {

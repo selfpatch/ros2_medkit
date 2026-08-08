@@ -37,7 +37,10 @@ from ros2_medkit_test_utils.constants import (
     get_test_port,
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
-from ros2_medkit_test_utils.launch_helpers import create_gateway_node
+from ros2_medkit_test_utils.launch_helpers import (
+    create_gateway_node,
+    graph_provider_params,
+)
 
 AUTH_PORT = get_test_port()
 AUTH_BASE_URL = f'http://127.0.0.1:{AUTH_PORT}{API_BASE_PATH}'
@@ -63,6 +66,11 @@ def generate_test_description():
                 'viewer:viewer_secret:viewer',
                 'configurator:configurator_secret:configurator',
             ],
+            # The auth-on half of the per-operation `security` pair. This is
+            # the only fixture in the suite with authentication enabled AND a
+            # plugin that describes a route, so it is the only place the
+            # published-requirement direction can be driven.
+            **graph_provider_params(),
         },
     )
 
@@ -93,6 +101,61 @@ class TestAuthenticationIntegration(GatewayTestCase):
         self.assertIn('auth', data)
         self.assertTrue(data['auth']['enabled'])
         self.assertEqual(data['auth']['algorithm'], 'HS256')
+
+    def test_02b_plugin_operation_states_what_this_gateway_enforces(self):
+        """A plugin's declared role reaches the document, and is then filtered.
+
+        The other half of this pair is
+        ``test_openapi_contract::test_no_operation_publishes_a_role_when_auth_is_off``:
+        the same gateway code, the same plugin, the opposite ``auth.enabled``.
+        Splitting it across two fixtures is not a convenience - a single
+        gateway has one value of ``auth.enabled``, and the whole point of the
+        rule is that the document follows it.
+
+        What this fixture pins is the *second* filter. The graph provider
+        declares ``admin`` on this route, and under ``require_auth_for: all``
+        that is what the document publishes and what the middleware demands.
+        This gateway runs ``write``, under which the middleware admits every
+        GET - measured, not assumed: the ``/docs`` fetch on the line below
+        carries no token and succeeds. So the honest published requirement here
+        is the empty one, and publishing ``admin`` would have promised a check
+        an anonymous caller does not meet.
+
+        The role-publishing direction has not been dropped; it moved to
+        ``test_auth_policy_contract.test.py``, which runs one gateway per
+        ``require_auth_for`` value and can therefore drive both answers for
+        this same operation.
+        """
+        spec = requests.get(f'{self.BASE_URL}/docs', timeout=10).json()
+        op = spec['paths'].get(
+            '/functions/{function_id}/x-medkit-graph', {}).get('get')
+        self.assertIsNotNone(
+            op, 'the graph provider route is not documented; the fixture must '
+                'load the plugin for this test to mean anything')
+        self.assertEqual(
+            op.get('security'), [],
+            'under require_auth_for=write the middleware admits every GET, so '
+            'the plugin route must publish the empty requirement')
+        # The scheme is defined either way - that is what lets a single
+        # operation name it - and its presence is the auth-on marker that
+        # survives a permissive policy.
+        self.assertIn(
+            'bearerAuth',
+            spec.get('components', {}).get('securitySchemes', {}))
+        # Anti-vacuous: `security: []` above must mean "this policy admits
+        # GETs", not "this gateway publishes no roles at all". The writes are
+        # checked under `write`, and they say so.
+        roles = {
+            tuple(req['bearerAuth'])
+            for item in spec['paths'].values()
+            for method, operation in item.items()
+            if method in ('post', 'put', 'patch', 'delete')
+            for req in operation.get('security', [])
+            if 'bearerAuth' in req
+        }
+        self.assertTrue(
+            roles, 'no write operation publishes a role; the document has '
+                   'stopped naming roles altogether')
 
     def test_03_authenticate_valid_credentials(self):
         """@verifies REQ_INTEROP_086 - Authentication with valid credentials."""

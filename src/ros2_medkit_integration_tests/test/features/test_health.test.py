@@ -21,6 +21,7 @@ is launched so the test starts quickly.
 
 """
 
+import re
 import unittest
 
 import launch_testing
@@ -128,6 +129,38 @@ class TestHealth(GatewayTestCase):
         self.assertIn('GET /api/v1/apps/{app_id}/operations', endpoints)
         self.assertIn('GET /api/v1/apps/{app_id}/configurations', endpoints)
 
+    def test_endpoint_list_names_each_route_once(self):
+        """The endpoints list names each mounted route exactly once.
+
+        It is the route registry's list, plus every route a loaded plugin
+        mounts straight onto the HTTP server, plus a short hand-written tail
+        for what is mounted outside both. Moving a route into the registry
+        without deleting its hand-written entry lists it twice.
+
+        Whether the list *agrees with the document* is a different question and
+        is checked in
+        ``test_openapi_contract.test.py::test_the_root_list_and_the_document_agree``;
+        this one only asks that nothing is named twice.
+
+        Compared with parameter *names* erased, not as literal strings. The
+        entry this was written for was spelled ``{entity-path}`` by hand and
+        ``{entity_path}`` by the registry, so a literal comparison would have
+        read the two copies as two different endpoints and passed. Erasing the
+        names is safe here because no two routes in this API differ only by a
+        parameter name - every pair differs in a literal segment - so a
+        collision after erasure is a duplicate and not a false positive.
+
+        @verifies REQ_INTEROP_010
+        """
+        endpoints = self.get_json('/')['endpoints']
+        erased = [re.sub(r'\{[^}]*\}', '{}', e) for e in endpoints]
+        duplicates = sorted({e for e in erased if erased.count(e) > 1})
+        self.assertEqual(
+            duplicates, [],
+            f'endpoints listed more than once (parameter names erased): {duplicates}')
+        self.assertIn('GET /api/v1/docs', endpoints)
+        self.assertIn('GET /api/v1/{entity_path}/docs', endpoints)
+
     def test_docs_endpoint(self):
         """GET /docs returns OpenAPI 3.1.0 spec.
 
@@ -193,12 +226,27 @@ class TestHealth(GatewayTestCase):
                     if '$ref' in resp:
                         has_schema = True
                     elif 'content' in resp:
-                        for ct in resp['content'].values():
+                        for media_type, ct in resp['content'].items():
                             if 'schema' in ct:
                                 has_schema = True
-                # SSE endpoints don't have JSON schema
-                summary = op.get('summary', '')
-                if 'SSE' in summary or 'stream' in summary.lower():
+                            # A non-JSON body is fully described by its media
+                            # type. `format: binary` is an OpenAPI 3.0 idiom
+                            # 3.1 dropped, and the SSE families put three
+                            # different shapes in `data:`, so there is nothing
+                            # truthful to put in a schema here - the absence is
+                            # the declaration. Deliberately keyed on the media
+                            # type and not on 'content' being present: a JSON
+                            # response still owes a schema, which is the
+                            # coverage this rule exists for.
+                            elif media_type != 'application/json':
+                                has_schema = True
+                # An operation that declares no 2xx at all cannot return a
+                # success body to describe - the data-categories / data-groups
+                # stubs declare only their 501. Deliberately narrow: an
+                # operation that DOES declare a 2xx still owes a schema, which
+                # is the coverage this rule exists for.
+                declared = op.get('responses', {})
+                if declared and not any(code.startswith('2') for code in declared):
                     has_schema = True
                 if not has_schema:
                     issues.append(f'{op_id}: no response schema')

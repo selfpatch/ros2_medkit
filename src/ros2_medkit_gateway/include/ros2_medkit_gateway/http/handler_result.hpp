@@ -67,6 +67,29 @@ static_assert(kValidatorVariantOrderingOk<void>, "ErrorInfo must be the first va
 template <class T>
 using ValidatorResult = tl::expected<T, std::variant<ErrorInfo, Forwarded>>;
 
+/// Carries a response's HTTP status in its type, so the route registry derives
+/// the declared status from the handler's signature and the document cannot
+/// drift from the wire.
+///
+/// Needed where the payload type does not imply the status on its own: a
+/// `dto::Trigger` is a 201 body when created and a 200 body when read, so the
+/// status cannot live on the DTO. Wrapping is what distinguishes the two.
+///
+/// The registry never introspects the wrapper - it asks
+/// `dto_alternate_status<T>` for the status and `status_payload_t<T>` for the
+/// schema, the serializer and the static assertions.
+template <class T>
+struct Created {
+  T value;
+};
+
+/// See Created. Declares 202 Accepted. `Accepted<NoContent>` is the shape for
+/// an asynchronous transition that returns no body.
+template <class T>
+struct Accepted {
+  T value;
+};
+
 /// Side-channel a handler can attach to its successful response when the
 /// default "200 OK + DTO body" is not enough. Examples:
 ///   - 201 Created with a `Location` header for POST creating a resource.
@@ -90,6 +113,23 @@ struct ResponseAttachments {
   ResponseAttachments & with_header(std::string name, std::string value) {
     headers.emplace_back(std::move(name), std::move(value));
     return *this;
+  }
+
+  /// Fluent setter for the `Location` header of a 201 / 202 response.
+  ///
+  /// `uri` is the absolute, API-prefixed path form every `href` in the
+  /// document already uses (`/api/v1/apps/x/triggers/7`). Build it with
+  /// `api_path(...)` when the handler assembles the target from parts, or pass
+  /// `req.path() + "/" + id` when the new resource is a child of the request
+  /// path - `TypedRequest::path()` is already prefixed. Never hand-roll the
+  /// `"/api/v1/"` literal: that is what let three different spellings of the
+  /// same URI accumulate across the handlers.
+  ///
+  /// The route registry declares this header on every derived 201 / 202, so a
+  /// handler that returns `Created<T>` / `Accepted<T>` without calling this
+  /// publishes a header it does not send.
+  ResponseAttachments & with_location(std::string uri) {
+    return with_header("Location", std::move(uri));
   }
 };
 

@@ -251,6 +251,15 @@ if(BUILD_TESTING)
   # polling budgets are similarly generous - widen both to match.
   set_tests_properties(test_graph_provider_stale PROPERTIES TIMEOUT 300)
   set_tests_properties(test_graph_provider_sse PROPERTIES TIMEOUT 300)
+
+  # test_auth_policy_contract launches three full-feature gateways, one per
+  # auth.require_auth_for value, and sends a real unauthenticated request at
+  # every operation each of them documents. That is the measurement - the
+  # published requirement is compared against what the middleware actually
+  # does - and it costs three startups plus several hundred requests, two of
+  # which wait out a fault-service timeout. It does not fit the default 120s
+  # feature timeout.
+  set_tests_properties(test_auth_policy_contract PROPERTIES TIMEOUT 300)
 endif()
 
 ament_package()

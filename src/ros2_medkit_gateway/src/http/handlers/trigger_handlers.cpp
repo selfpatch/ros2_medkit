@@ -113,7 +113,7 @@ TriggerHandlers::TriggerHandlers(HandlerContext & ctx, TriggerManager & trigger_
 // ---------------------------------------------------------------------------
 // POST - create trigger
 // ---------------------------------------------------------------------------
-http::Result<std::pair<dto::Trigger, http::ResponseAttachments>>
+http::Result<std::pair<http::Created<dto::Trigger>, http::ResponseAttachments>>
 TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreateRequest body) {
   auto id_result = read_entity_id(req);
   if (!id_result) {
@@ -336,8 +336,10 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
   auto event_source = build_event_source(*result);
   auto trigger_dto = trigger_info_to_dto(*result, event_source);
   http::ResponseAttachments att;
-  att.with_status(201);
-  return std::make_pair(std::move(trigger_dto), std::move(att));
+  // The trigger is a child of the POST target, and `req.path()` already carries
+  // the API prefix, so this is the same absolute form every `href` uses.
+  att.with_location(child_resource_path(req.path(), trigger_dto.id));
+  return std::make_pair(http::Created<dto::Trigger>{std::move(trigger_dto)}, std::move(att));
 }
 
 // ---------------------------------------------------------------------------

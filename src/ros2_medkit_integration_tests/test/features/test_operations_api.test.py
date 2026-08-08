@@ -28,7 +28,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -424,6 +424,158 @@ class TestOperationsApi(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
+
+    def test_rejected_goal_names_the_entity_field_the_caller_used(self):
+        """The error params key the caller's own entity type.
+
+        `id_field` was chosen the same "app or else component" way the Location
+        was, so a function whose goal was rejected got back
+        `{"component_id": "powertrain"}` - a field it never sent, on an entity
+        type that is not a component. The demo action rejects order > 50, which
+        is the cheapest way to reach the params.
+
+        @verifies REQ_INTEROP_035
+        """
+        self.wait_for_operation('/functions/powertrain', 'long_calibration')
+
+        resp = requests.post(
+            f'{self.BASE_URL}/functions/powertrain/operations'
+            '/long_calibration/executions',
+            json={'parameters': {'order': 99}}, timeout=15)
+        self.assertEqual(resp.status_code, 400, resp.text)
+
+        params = resp.json()['parameters']
+        self.assertEqual(params.get('function_id'), 'powertrain')
+        self.assertNotIn('component_id', params)
+
+    def test_execution_location_survives_a_trailing_slash(self):
+        """The same dead-URI trap as the scripts one, on the executions route.
+
+        `POST .../executions/` routes (every route regex ends `/?$`) and the
+        path is not normalised, so appending the goal id to it produced
+        `.../executions//<id>` - a `Location` no route can match.
+
+        @verifies REQ_INTEROP_035
+        """
+        self.wait_for_operation('/functions/powertrain', 'long_calibration')
+
+        resp = requests.post(
+            f'{self.BASE_URL}/functions/powertrain/operations'
+            '/long_calibration/executions/',
+            json={}, timeout=15)
+        self.assertEqual(resp.status_code, 202, resp.text)
+
+        location = resp.headers['Location']
+        self.assertEqual(
+            location,
+            f'{API_BASE_PATH}/functions/powertrain/operations/long_calibration'
+            f'/executions/{resp.json()["id"]}')
+
+        follow_url = self.BASE_URL + location[len(API_BASE_PATH):]
+        self.addCleanup(requests.delete, follow_url, timeout=10)
+        self.assertEqual(requests.get(follow_url, timeout=10).status_code, 200)
+
+    def test_async_execution_location_resolves(self):
+        """The 202 `Location` names the execution under the addressed collection.
+
+        The gateway used to build this header from a two-way "app or else
+        component" choice, so an execution started through `/functions/...` or
+        `/areas/...` was handed a `/components/...` URI that resolves to
+        nothing. The fixture discovers the `powertrain` function from the demo
+        nodes' namespace, and `long_calibration` is an action on it, so this
+        drives the branch that was wrong.
+
+        @verifies REQ_INTEROP_035
+        """
+        self.wait_for_operation('/functions/powertrain', 'long_calibration')
+
+        ops = self.get_json('/functions/powertrain/operations')['items']
+        actions = [o for o in ops if o.get('asynchronous_execution')]
+        self.assertTrue(actions, 'no action discovered on the function')
+
+        resp = requests.post(
+            f'{self.BASE_URL}/functions/powertrain/operations'
+            f'/{actions[0]["id"]}/executions',
+            json={}, timeout=15)
+        self.assertEqual(resp.status_code, 202, resp.text)
+
+        location = resp.headers.get('Location')
+        execution_id = resp.json()['id']
+        self.assertEqual(
+            location,
+            f'{API_BASE_PATH}/functions/powertrain/operations'
+            f'/{actions[0]["id"]}/executions/{execution_id}')
+
+        # The header is only worth anything if it resolves.
+        follow_url = self.BASE_URL + location[len(API_BASE_PATH):]
+        self.addCleanup(requests.delete, follow_url, timeout=10)
+        follow = requests.get(follow_url, timeout=10)
+        self.assertEqual(follow.status_code, 200, follow.text)
+
+    def test_executions_list_on_a_function(self):
+        """The executions collection exists on every entity that lists the action.
+
+        `/functions/{id}/operations/{op}/executions` used to 404 with
+        `entity-not-found` - the handler reached for the component cache and
+        then the app cache and gave up - immediately after the very same
+        function had listed that operation.
+
+        @verifies REQ_INTEROP_036
+        """
+        self.wait_for_operation('/functions/powertrain', 'long_calibration')
+        base = (f'{self.BASE_URL}/functions/powertrain/operations'
+                '/long_calibration/executions')
+
+        started = requests.post(base, json={}, timeout=15)
+        self.assertEqual(started.status_code, 202, started.text)
+        execution_id = started.json()['id']
+        self.addCleanup(requests.delete, f'{base}/{execution_id}', timeout=10)
+
+        listed = requests.get(base, timeout=10)
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertIn(execution_id, [i['id'] for i in listed.json()['items']])
+
+    def test_execution_is_scoped_to_the_entity_that_started_it(self):
+        """A goal id is not a global handle.
+
+        An execution started through one entity used to be readable, stoppable
+        and cancellable through any other entity's URI - the handler looked the
+        goal up by id alone and never asked who owned it. Everything the
+        collection endpoint lists for an entity must be exactly what its item
+        endpoints resolve.
+
+        @verifies REQ_INTEROP_036
+        """
+        self.wait_for_operation('/functions/powertrain', 'long_calibration')
+        owner = (f'{self.BASE_URL}/functions/powertrain/operations'
+                 '/long_calibration/executions')
+
+        started = requests.post(owner, json={'parameters': {'order': 40}}, timeout=15)
+        self.assertEqual(started.status_code, 202, started.text)
+        execution_id = started.json()['id']
+        self.addCleanup(requests.delete, f'{owner}/{execution_id}', timeout=10)
+
+        # The owning entity resolves it.
+        self.assertEqual(
+            requests.get(f'{owner}/{execution_id}', timeout=10).status_code, 200)
+
+        # A different entity does not - not for reads, stops or cancels.
+        intruder = (f'{self.BASE_URL}/apps/long_calibration/operations'
+                    '/long_calibration/executions')
+        self.assertEqual(
+            requests.get(f'{intruder}/{execution_id}', timeout=10).status_code, 404)
+        self.assertEqual(
+            requests.put(f'{intruder}/{execution_id}',
+                         json={'capability': 'stop'}, timeout=10).status_code, 404)
+        self.assertEqual(
+            requests.delete(f'{intruder}/{execution_id}', timeout=10).status_code, 404)
+        self.assertNotIn(
+            execution_id,
+            [i['id'] for i in requests.get(intruder, timeout=10).json()['items']])
+
+        # ... and the intruding cancel did not actually stop it.
+        still_there = requests.get(f'{owner}/{execution_id}', timeout=10)
+        self.assertEqual(still_there.status_code, 200, still_there.text)
 
     def test_create_execution_for_service(self):
         """POST /{entity}/operations/{op-id}/executions calls service and returns.

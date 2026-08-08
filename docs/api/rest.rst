@@ -13,6 +13,53 @@ All endpoints are prefixed with ``/api/v1``.
    :local:
    :depth: 2
 
+Client Request Headers
+----------------------
+
+Two headers a client may send are read across many endpoints rather than
+belonging to one. Both are optional, and both are declared per-operation in the
+generated OpenAPI document, so a generated client sees them on exactly the
+operations that read them.
+
+``X-Client-Id``
+   Identifies the calling client for :doc:`resource locking <locking>`. Read by
+   every lock-participating write - those operations also carry
+   ``x-medkit-lock-guarded: true`` and declare a ``409``, and
+   :ref:`locking-blocked-operations` lists them. While a lock protects an
+   entity's collection, only the client holding it may write; every other
+   caller, including one that sends no ``X-Client-Id``, is answered ``409``.
+   The lock endpoints themselves also read it: ``POST``/``PUT``/``DELETE``
+   ``/locks`` require it, and the two ``GET`` routes use it only to fill in the
+   ``owned`` field.
+
+   ``DELETE /api/v1/faults`` is the one route that reads it without ever
+   answering ``409``; it silently skips faults on entities locked by another
+   client and still answers ``204``. Nothing on the response reports the skip -
+   ``X-Medkit-Local-Only`` is about aggregated peers, not locks - so re-read the
+   entity's faults to see what survived.
+
+   Everything in this entry describes a gateway with ``locking.enabled`` on.
+   With it off the header is declared on the ``/locks`` endpoints only, since
+   those are the only routes that still read it; see :doc:`locking`.
+
+``X-Medkit-No-Fan-Out``
+   Answer from this gateway alone: do not query aggregated peers and do not
+   merge their items. Read by the **per-entity** resource-collection list
+   endpoints (data, operations, configurations, faults, logs) and by ``GET
+   /api/v1/version-info`` - exactly the operations that declare it in the
+   OpenAPI document.
+
+   The gateway sets it on its own outbound peer requests, which stops
+   bidirectional aggregation from recursing **on the routes that check it**.
+   The global ``GET /api/v1/faults`` does not check it, so it neither declares
+   the header nor honours it (see :ref:`the fan-out design note
+   <aggregation-fan-out>`).
+
+   **Presence-only.** The value is never read, so ``X-Medkit-No-Fan-Out:
+   false`` suppresses fan-out exactly like any other value. The OpenAPI schema
+   is a string rather than a boolean for that reason. Omit the header to get
+   the aggregated answer.
+
 Server Capabilities
 -------------------
 
@@ -197,9 +244,10 @@ Areas
    .. note::
 
       **ros2_medkit extension:** Areas support resource collections beyond the SOVD spec,
-      which only defines them for apps and components. Areas provide ``/data``, ``/operations``,
-      ``/configurations``, ``/faults``, ``/logs`` (namespace prefix aggregation), read-only
-      ``/bulk-data``, and ``/triggers``. See :ref:`sovd-compliance` for details.
+      which only defines them for apps and components. Areas provide ``/data``,
+      ``/data-categories``, ``/data-groups``, ``/operations``, ``/configurations``,
+      ``/faults``, ``/logs`` (namespace prefix aggregation), read-only ``/bulk-data``,
+      and ``/triggers``. See :ref:`sovd-compliance` for details.
 
 Components
 ~~~~~~~~~~
@@ -677,11 +725,28 @@ Execute Operations
         "status": "running"
       }
 
+   The ``202`` carries a ``Location`` header naming the new execution. It is
+   the request path plus the execution id, so it stays inside the collection
+   the caller addressed: a POST to ``/api/v1/functions/powertrain/...`` is
+   answered with a ``/api/v1/functions/powertrain/...`` execution URI, never a
+   ``/components/`` one.
+
 ``GET /api/v1/components/{id}/operations/{operation_id}/executions``
-   List all executions for an operation.
+   List all executions for an operation. Available on every entity type that
+   lists the operation - areas, components, apps and functions.
+
+   An operation id that is not an action has no executions and lists empty:
+   only ROS 2 actions produce a tracked execution.
 
 ``GET /api/v1/components/{id}/operations/{operation_id}/executions/{execution_id}``
    Get execution status and result.
+
+   Executions belong to the entity they were started on. Reading, updating or
+   cancelling one through a different entity's URI answers ``404`` even when
+   the execution id exists, and the listing above shows an entity only the
+   executions started through it. The same action reached through two entities
+   (an app and the function that aggregates it) therefore keeps two separate
+   execution collections.
 
    **Example Response (completed action):**
 
@@ -755,7 +820,12 @@ Request Transition
    ``configurator``.
 
    - **202:** Transition accepted (the ``Location`` header points to the status URI)
-   - **403:** Caller lacks the required role (``insufficient-access-rights``)
+   - **403:** Two different refusals share this status. The auth middleware
+     rejects a caller without the role above, ahead of the handler, in the
+     RFC 6749 shape (``{"error": "insufficient_scope", ...}``). The lifecycle
+     provider rejects the transition itself in the SOVD shape
+     (``{"error_code": "insufficient-access-rights", ...}``). Read
+     ``error`` vs ``error_code`` to tell them apart.
    - **404:** Entity not found
    - **409:** A precondition was not fulfilled (``precondition-not-fulfilled``)
    - **501:** No lifecycle provider is registered for the entity (``not-implemented``)
@@ -803,7 +873,9 @@ Manage ROS 2 node parameters.
 
    - **Content-Type:** application/json
    - **200:** Parameter updated
-   - **400:** Invalid value
+   - **400:** Invalid value - the node rejected it, or it cannot be converted to
+     the parameter's type at all (e.g. a mixed-type array). Both are the
+     caller's body, so both are ``400``, never ``500``.
    - **404:** Parameter not found
 
    **Example:**
@@ -977,14 +1049,33 @@ Query and manage faults.
    **Response codes:**
 
    - **200:** Fault details
-   - **404:** Fault not found, or reported by an app outside this entity's scope
+   - **400:** ``fault_code`` empty or longer than 256 characters
+   - **404:** Fault not found, reported by an app outside this entity's scope,
+     or declined by the fault manager
    - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
    - **204:** Fault cleared
-   - **404:** Fault not found, or reported by an app outside this entity's scope
+   - **400:** ``fault_code`` empty or longer than 256 characters
+   - **404:** Fault not found, reported by an app outside this entity's scope,
+     or declined by the fault manager
+   - **503:** Fault manager unavailable
+
+.. note::
+
+   ``503`` on these two routes means the fault manager did not answer - it is
+   absent, still starting, or timed out. A fault manager that answers and
+   declines the request is reported as ``404``, not ``503``: it is reachable
+   and healthy, and the request is what it would not serve. That covers a
+   ``fault_code`` it does not hold and one it will not accept - it restricts
+   codes to alphanumerics, underscore, hyphen and dot, a narrower set than the
+   ``maxLength`` the OpenAPI document publishes, so a short code containing
+   anything else is admitted by the gateway and answered ``404``.
+
+   Both nodes bound ``fault_code`` at the published 256 characters, so every
+   length the document admits reaches the fault manager.
 
 ``DELETE /api/v1/components/{id}/faults``
    Clear all faults for an entity.
@@ -1223,9 +1314,32 @@ Download a specific bulk-data file.
 
 **Response Headers:**
 
-- ``Content-Type``: ``application/x-mcap`` (MCAP format) or ``application/x-sqlite3`` (db3)
+- ``Content-Type``: the media type of the stored artifact - see below
 - ``Content-Disposition``: ``attachment; filename="FAULT_CODE.mcap"``
+- ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
+  provider, so a client may fetch part of the file
 - ``Access-Control-Expose-Headers``: ``Content-Disposition``
+
+**Media types.** The OpenAPI document declares
+``application/x-mcap``, ``application/x-sqlite3`` and
+``application/octet-stream`` for this response, followed by ``*/*``. That is
+not hedging: for the ``rosbags`` category the type is derived from the
+recorded storage format and is one of the three named types, but every other
+category serves back the media type recorded when the file was uploaded, which
+is chosen by the uploading client. Uploading a ``text/csv`` makes the download
+serve ``text/csv``. The named types are declared because they *are*
+derivable; ``*/*`` is declared because the rest genuinely is not.
+
+There is no response schema, for either status. The body is raw file content,
+and OpenAPI 3.1 has no way to say "bytes" - ``format: binary`` was an OpenAPI
+3.0 idiom that 3.1 dropped when it aligned with JSON Schema 2020-12. A
+schema-free media type entry is the accurate description.
+
+**Range requests.** A request carrying a ``Range`` header is answered with
+**206 Partial Content** and a ``Content-Range: bytes <start>-<end>/<total>``
+header instead of ``200``; the body is the requested slice. Several ranges in
+one request are answered as a single ``multipart/byteranges`` body, which is
+declared on the 206 only - the 200 can never carry it.
 
 **Example:**
 
@@ -1233,10 +1347,17 @@ Download a specific bulk-data file.
 
    curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
 
+   # One byte range
+   curl -H 'Range: bytes=0-1023' \
+     http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
+
 **Response Codes:**
 
 - **200 OK**: File content
+- **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found
+- **416 Range Not Satisfiable**: The ``Range`` header could not be parsed. Not
+  specific to this endpoint - see :ref:`rest-range-rejection`.
 
 Upload Bulk Data
 ~~~~~~~~~~~~~~~~
@@ -1508,6 +1629,9 @@ Subscriptions are temporary - they do not survive server restart.
 ``POST /api/v1/{entity_type}/{entity_id}/cyclic-subscriptions``
    Create a new cyclic subscription.
 
+   Response: **201 Created** with a ``Location`` header pointing to the new
+   subscription.
+
    **Applies to:** ``/apps``, ``/components``, ``/functions``
 
    **Request Body:**
@@ -1627,6 +1751,48 @@ Upload, manage, and execute diagnostic scripts on entities.
 Scripts are available on **Components** and **Apps** entity types.
 The feature must be enabled by setting ``scripts.scripts_dir`` in the gateway configuration.
 
+Script Error Statuses
+~~~~~~~~~~~~~~~~~~~~~
+
+Beyond the usual 400 / 404 / 500, and 501 on every script endpoint when no
+scripts backend is configured, each endpoint answers only what its own backend
+call can produce. With the built-in backend:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Endpoint
+     - Extra statuses
+   * - ``POST .../scripts`` (upload)
+     - **413** ``script-file-too-large`` - file over the configured size limit
+   * - ``DELETE .../scripts/{script_id}``
+     - **409** ``script-managed`` (manifest-owned, not editable) or
+       ``script-running``
+   * - ``POST .../scripts/{script_id}/executions``
+     - **429** ``script-concurrency-limit``
+   * - ``PUT .../executions/{execution_id}``
+     - **409** ``script-not-running``
+   * - ``DELETE .../executions/{execution_id}``
+     - **409** ``script-running``
+
+The listing and read endpoints (``GET .../scripts``,
+``GET .../scripts/{script_id}``, ``GET .../executions/{execution_id}``) add
+nothing to the blanket set.
+
+The 429 is the **script manager's** concurrency limit, not the HTTP rate
+limiter's: it is answered whether or not ``rate_limiting.enabled`` is set, and
+carries no ``Retry-After`` or ``X-RateLimit-*`` headers. See
+:ref:`rate-limiting` for the other 429. When the limiter is on, both can answer
+429 on the execution-start route and the document can only describe one: the
+route's own declaration wins, so that operation's 429 is documented as the
+script manager's, without the limiter's headers. The body shape is the same
+either way.
+
+``script-already-exists`` is defined for backends that maintain their own
+registry (a plugin with a SQLite store, say); the built-in backend generates
+ids and never returns it.
+
 Upload Script
 ~~~~~~~~~~~~~
 
@@ -1689,7 +1855,7 @@ Start Execution
       * - ``execution_type``
         - string
         - M
-        - When to run: ``now``, ``on_restart``, ``now_and_on_restart``, ``once_on_restart``
+        - When to run. The shipped backend accepts only ``now``; see the note below
       * - ``parameters``
         - object
         - O
@@ -1776,6 +1942,9 @@ Create Trigger
 
 ``POST /api/v1/{entity_type}/{entity_id}/triggers``
    Create a new condition-based trigger.
+
+   Response: **201 Created** with a ``Location`` header pointing to the new
+   trigger.
 
    **Request Body:**
 
@@ -1954,26 +2123,56 @@ Trigger Events (SSE Stream)
       Content-Type: text/event-stream
       Cache-Control: no-cache
 
-   **EventEnvelope format:**
+   **Frame format:**
 
-   Each event is delivered as an SSE ``data:`` frame containing a JSON
-   EventEnvelope:
+   Each event is one SSE frame carrying an ``id:`` field and a ``data:`` field
+   holding the JSON ``TriggerEventFrame``:
 
    .. code-block:: text
 
+      id: 1
       data: {"timestamp":"2026-03-19T10:30:00.250Z","payload":{"data":{"data":85.5}}}
 
-   When an error occurs during evaluation:
+   The id counts events on this connection from 1, and unlike the fault stream
+   this route does not read ``Last-Event-ID`` - so the id is a position within
+   one connection, not a replay cursor, and reconnecting restarts it at 1.
+
+   A brief disconnect does not by itself lose events. Each trigger holds a
+   queue of up to 100 pending events, filled as conditions fire whether or not
+   a client is attached, and drained on the next connection - so a multishot
+   trigger that is reconnected to promptly delivers what it buffered.
+
+   The queue is in memory and belongs to the trigger's lifetime, not to the
+   connection, so anything that ends or resets the trigger takes the queue with
+   it. Known cases: overflow past 100 discards the oldest; a single-shot
+   trigger terminates on firing, after which its stream answers ``404``; the
+   ``lifetime`` expiring discards the trigger's whole state; deleting the
+   trigger, or restarting the gateway, does the same. Restart loses the queue
+   even for a ``persistent`` trigger - persistence stores the trigger and its
+   last observed value, never its pending events. Treat the buffer as a
+   convenience across a reconnect, not as a delivery guarantee; if you need
+   one, poll the underlying resource rather than relying on the stream.
+
+   While no event is pending, the stream sends a comment line rather than a
+   frame, every 15 seconds:
 
    .. code-block:: text
 
-      data: {"timestamp":"2026-03-19T10:30:00.250Z","error":"Failed to read resource"}
+      :keepalive
 
-   **EventEnvelope fields:**
+   **TriggerEventFrame fields:**
 
    - ``timestamp`` (string) - ISO 8601 timestamp of when the event was generated
-   - ``payload`` (object) - The resource value that satisfied the condition (present on success)
-   - ``error`` (string) - Error description (present on failure, mutually exclusive with payload)
+   - ``payload`` (object) - The observed resource's value at the moment the
+     condition fired - the whole value, not the ``path`` sub-document the
+     condition was evaluated against
+
+   There is no ``error`` member. A trigger frame exists only because a
+   condition fired, so there is no failed-evaluation case to report; a
+   resource that cannot be read simply produces no frame. The *cyclic
+   subscription* stream is the one that reports a failed sample inline - see
+   ``SubscriptionEventFrame`` - and the two are easy to confuse because they
+   are otherwise the same shape.
 
    The stream closes when:
 
@@ -2086,8 +2285,15 @@ The routes are part of the generated OpenAPI spec (``/api/v1/docs``, tag
 ``FaultTriggers``), so generated clients and Swagger UI discover them the same
 way as every other endpoint.
 
+The engine runs only when ``fault_triggers.enabled`` is true *and* at least one
+plugin is loaded. Without it the routes stay mounted and answer ``501``
+(``not-implemented``) - the same shape the ``/updates`` and ``/triggers`` gates
+use, so a client can tell "this build has no threshold engine" apart from "no
+such app or rule".
+
 ``GET /api/v1/apps/{app_id}/fault-triggers``
-   List the app's rules.
+   List the app's rules. The owning app is the one in the path; it is not
+   repeated in the item, and neither is the engine's internal cross latch.
 
    .. code-block:: json
 
@@ -2095,7 +2301,6 @@ way as every other endpoint.
         "items": [
           {
             "id": "ftr_1",
-            "app_id": "tank_process",
             "data_name": "level",
             "operator": ">=",
             "threshold": 80.0,
@@ -2110,17 +2315,22 @@ way as every other endpoint.
    Create a rule. Required: ``data_name``, ``operator`` (``>``, ``<``, ``>=``,
    ``<=``, ``==``), ``threshold`` (number), ``fault_code``, ``severity``
    (``INFO``/``WARNING``/``ERROR``/``CRITICAL``). Optional: ``active``
-   (default ``true``). Returns ``201`` with the created rule.
+   (default ``true``). Returns ``201`` with the created rule and a ``Location``
+   header pointing to it.
 
-   Validation: ``400`` for missing/invalid fields or a ``data_name`` the app
-   does not expose (when enumerable); ``409`` when the ``fault_code`` is
-   already used by another rule - fault codes are global to the fault store,
-   so two rules sharing one would fight over the same fault.
+   Validation: ``400`` (``invalid-parameter``) for missing/invalid fields or a
+   ``data_name`` the app does not expose (when enumerable); ``404``
+   (``entity-not-found``) when the app itself was never discovered; ``409``
+   (``precondition-not-fulfilled``) when the ``fault_code`` is already used by
+   another rule - fault codes are global to the fault store, so two rules
+   sharing one would fight over the same fault.
 
 ``DELETE /api/v1/apps/{app_id}/fault-triggers/{trigger_id}``
    Remove a rule (``204``). A fault currently asserted by the rule is cleared;
    the correlation cascade is skipped so the clear stays scoped to the rule's
    own fault.
+
+.. _rate-limiting:
 
 Rate Limiting
 -------------
@@ -2159,7 +2369,7 @@ If a request exceeds the available tokens, it is rejected with an HTTP 429 statu
 .. code-block:: json
 
    {
-     "error_code": 429,
+     "error_code": "rate-limit-exceeded",
      "message": "Too many requests. Please retry after 10 seconds.",
      "parameters": {
        "retry_after": 10,
@@ -2168,14 +2378,79 @@ If a request exceeds the available tokens, it is rejected with an HTTP 429 statu
      }
    }
 
+.. _rest-authentication:
+
 Authentication Endpoints
 ------------------------
 
 JWT-based authentication with Role-Based Access Control (RBAC).
 
+The ``/auth/*`` endpoints, and the authentication middleware guarding every
+other route, answer errors in the RFC 6749 section 5.2 shape rather than the
+SOVD ``GenericError`` used everywhere else:
+
+.. code-block:: json
+
+   {
+     "error": "invalid_grant",
+     "error_description": "Refresh token is expired or unknown"
+   }
+
+``/auth/authorize`` and ``/auth/token`` accept the request body as either
+``application/json`` or ``application/x-www-form-urlencoded``, the encoding
+RFC 6749 clients default to. ``/auth/revoke`` accepts JSON only, and per
+RFC 7009 section 2.2 answers ``200`` whether or not the submitted token was
+valid - so it never returns ``401``.
+
+These three endpoints are the only ones the middleware lets through
+unauthenticated whatever ``require_auth_for`` says - a caller has to be able to
+obtain a token before it has one. They are also the only operations the served
+OpenAPI document publishes with an empty ``security: []`` requirement; every
+other operation names the role the gateway's permission table grants for its
+path, so ``GET /api/v1/docs`` is where a client reads which role an endpoint
+needs. See :ref:`rest-role-required` below.
+
 .. seealso::
 
    :doc:`/tutorials/authentication` for configuration details.
+
+.. _rest-role-required:
+
+Which role an endpoint needs
+----------------------------
+
+Every route declares its weakest permitted caller where it is registered, and
+that one declaration produces both the entries the middleware matches against
+and the ``security`` requirement published for the operation. The served
+document is therefore the reference: read
+``paths.<path>.<method>.security[0].bearerAuth[0]`` from
+``GET /api/v1/docs``.
+
+The shape of the assignment:
+
+* ``viewer`` - every ``GET`` the gateway itself serves, including the SSE
+  streams, the bulk-data downloads and the capability descriptions. Routes a
+  plugin mounts are the exception and are ``admin`` whatever their method (see
+  below).
+* ``operator`` - runtime writes: operation executions, clearing faults,
+  publishing data, locks, cyclic subscriptions, triggers, fault-trigger rules,
+  bulk-data upload and delete, starting and controlling script executions, and
+  the ``start`` / ``restart`` / ``force-restart`` lifecycle transitions.
+* ``configurator`` - changes to how the system is configured: configuration
+  writes and resets, log configuration, script upload and delete, the
+  ``/updates`` write verbs (register, prepare, execute, automated, delete -
+  reading an update or its status is ``viewer``), and the ``shutdown`` /
+  ``force-shutdown`` transitions.
+* ``admin`` - everything above, plus every route mounted outside the route
+  registry. That is what covers plugin-served routes, which no per-route
+  declaration describes; they publish ``admin`` and nothing weaker reaches
+  them.
+
+Enforcement fails closed - a path no entry matches is refused - so the
+published role is what the gateway demands rather than a separate claim about
+it. What is enforced at all is a deployment setting: with ``auth.enabled``
+false no role is published or checked, and with ``require_auth_for: write`` a
+``GET`` is served without a token even though its operation names a role.
 
 ``POST /api/v1/auth/authorize``
    Authenticate with client credentials.
@@ -2468,22 +2743,47 @@ the full field listing.
 Error Responses
 ---------------
 
-All error responses follow a consistent format:
+Every error carries the SOVD ``GenericError`` body - a flat object, not a
+nested ``error`` envelope:
 
 .. code-block:: json
 
    {
-     "error": {
-       "code": "ERR_ENTITY_NOT_FOUND",
-       "message": "Entity not found",
-       "details": {
-         "entity_id": "unknown_component"
-       }
+     "error_code": "entity-not-found",
+     "message": "Entity not found",
+     "parameters": {
+       "entity_id": "unknown_component"
      }
    }
 
+``error_code`` and ``message`` are always present. ``parameters`` is
+cause-specific and omitted when there is nothing to add.
+
+A vendor-specific failure carries a **fourth** key. The gateway rewrites
+``error_code`` to the sentinel ``vendor-error`` and moves the real
+``x-medkit-*`` code into ``vendor_code``, so a generic SOVD client sees a code
+it knows while the precise one stays available:
+
+.. code-block:: json
+
+   {
+     "error_code": "vendor-error",
+     "vendor_code": "x-medkit-gateway-shutdown",
+     "message": "Gateway is shutting down"
+   }
+
+Match on ``error_code``, and on ``vendor_code`` when ``error_code`` is
+``vendor-error``. Do not match on ``message`` - it is prose and changes.
+
+The ``/auth/*`` endpoints are the one exception: they answer RFC 6749
+section 5.2 ``{"error": "...", "error_description": "..."}`` instead, as does
+the authentication middleware on the 401 and 403 it returns ahead of any
+route. See :ref:`rest-authentication`.
+
 Common Error Codes
 ~~~~~~~~~~~~~~~~~~
+
+These are the values that appear in ``error_code`` on the wire.
 
 .. list-table::
    :header-rows: 1
@@ -2492,30 +2792,71 @@ Common Error Codes
    * - Error Code
      - HTTP Status
      - Description
-   * - ``ERR_ENTITY_NOT_FOUND``
+   * - ``entity-not-found``
      - 404
      - The requested entity does not exist
-   * - ``ERR_RESOURCE_NOT_FOUND``
+   * - ``resource-not-found``
      - 404
      - The requested resource (topic, service, parameter) does not exist
-   * - ``ERR_INVALID_INPUT``
+   * - ``operation-not-found``
+     - 404
+     - The named operation does not exist on this entity
+   * - ``invalid-request``
      - 400
-     - Invalid request body or parameters
-   * - ``ERR_INVALID_ENTITY_ID``
+     - Malformed request body (not valid JSON, or not an object). The same code
+       also appears below with a 409, on a lock acquire collision - read the
+       status, not the code alone, to tell the two apart.
+   * - ``invalid-parameter``
      - 400
-     - Entity ID contains invalid characters
-   * - ``ERR_OPERATION_FAILED``
-     - 500
-     - Operation failed during execution
-   * - ``ERR_TIMEOUT``
-     - 504
-     - Operation timed out
-   * - ``ERR_UNAUTHORIZED``
-     - 401
-     - Authentication required or token invalid
-   * - ``ERR_FORBIDDEN``
+     - A field or query parameter failed validation. ``parameters.parameter``
+       names the offending one.
+   * - ``collection-not-supported``
+     - 400
+     - This entity type does not serve the requested resource collection
+   * - ``precondition-not-fulfilled``
+     - 409
+     - The request conflicts with current state (e.g. a duplicate
+       ``fault_code`` on a fault-trigger rule)
+   * - ``lock-broken``
+     - 409
+     - A guarded write was refused because another client holds a lock on the
+       entity. ``parameters.lock_id`` names it.
+   * - ``invalid-request``
+     - 409
+     - The request conflicts with the current state of the resource. This is
+       **not** lock-specific - operations use it to refuse re-executing a
+       running operation, for instance - so do not assume lock semantics or a
+       lock-shaped ``parameters``. ``message`` identifies the conflict and
+       ``parameters`` varies with it. For the lock cases and what each one
+       carries, see :ref:`the lock refusal table <rest-lock-refusals>`. The
+       same code also appears with 400 for a malformed body - see the row
+       above.
+   * - ``insufficient-access-rights``
      - 403
-     - Insufficient permissions for this operation
+     - A lifecycle provider refused the transition (``AccessDenied``). Not a
+       lock error - the lock routes never emit this code.
+   * - ``forbidden``
+     - 403
+     - The caller is not the owner of the lock it tried to release or extend
+       (``LockManager``'s ``lock-not-owner``).
+   * - ``payload-too-large``
+     - 413
+     - Upload exceeds the configured size limit
+   * - ``not-implemented``
+     - 501
+     - The feature is not enabled, or no backend is configured for it
+   * - ``service-unavailable``
+     - 503
+     - A backing service (fault store, subscription manager) refused
+   * - ``rate-limit-exceeded``
+     - 429
+     - Client exceeded its request quota
+   * - ``internal-error``
+     - 500
+     - Unhandled failure. ``parameters.details`` carries the cause.
+   * - ``vendor-error``
+     - varies
+     - A vendor-specific failure; read ``vendor_code`` for the real code
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
@@ -2529,12 +2870,226 @@ Common Error Codes
      - Could not create the underlying ROS 2 subscription (rcl error during slot
        creation). Transient: retry once after a short backoff. Persistent failure
        usually indicates a publisher type mismatch or a missing IDL package.
+   * - ``x-medkit-resource-sample-failed``
+     - n/a
+     - A cyclic subscription's sampler could not read the resource on this
+       tick. Delivered inside the SSE frame's ``error`` object, never as an
+       HTTP status; the stream stays open and the next tick is retried.
    * - ``x-medkit-cold-wait-cap-exceeded``
      - 503
      - Too many concurrent /data callers are waiting on cold (publisher-but-no-data)
        topics. Retry with exponential backoff. ``params.cold_wait_cap`` carries the
        configured cap. Tune via ``data_provider.cold_wait_cap`` and
        ``data_provider.max_parallel_samples`` if this fires under normal load.
+   * - ``x-medkit-ros2-topic-unavailable``
+     - 404
+     - The data resource names a topic the ROS 2 graph does not currently have
+   * - ``x-medkit-ros2-service-unavailable``
+     - 500
+     - A ROS 2 service call backing an operation failed
+   * - ``x-medkit-ros2-action-rejected``
+     - 400
+     - A ROS 2 action server rejected the goal
+   * - ``x-medkit-ros2-action-unavailable``
+     - 500
+     - A ROS 2 action execution failed
+   * - ``x-medkit-ros2-parameter-read-only``
+     - 403
+     - The configuration parameter is declared read-only on the node
+   * - ``x-medkit-update-not-found``
+     - 404
+     - No update package with that id
+   * - ``x-medkit-update-already-exists``
+     - 400
+     - An update package with that id is already registered
+   * - ``x-medkit-update-in-progress``
+     - 409
+     - Another update is executing, or this one is being deleted
+   * - ``x-medkit-update-not-prepared``
+     - 400
+     - ``execute`` was called before ``prepare`` completed
+   * - ``x-medkit-update-not-automated``
+     - 400
+     - ``automated`` was requested on a package whose ``automated`` is false
+   * - ``x-medkit-script-already-exists``
+     - 409
+     - A script with that id already exists
+   * - ``x-medkit-managed-script``
+     - 409
+     - The script is manifest-managed and cannot be modified over REST
+   * - ``x-medkit-script-running``
+     - 409
+     - The script has a running execution and cannot be deleted
+   * - ``x-medkit-script-not-running``
+     - 409
+     - A control action was sent to an execution that is not running
+   * - ``x-medkit-concurrency-limit``
+     - 429
+     - The script backend's concurrent-execution limit was reached
+   * - ``x-medkit-script-too-large``
+     - 413
+     - The uploaded script exceeds the configured size limit
+   * - ``x-medkit-ros2-node-unavailable``
+     - 503
+     - The node backing a configuration read or write did not answer in time
+   * - ``x-medkit-invalid-resource-uri``
+     - 400
+     - A trigger or subscription ``resource`` URI does not parse
+   * - ``x-medkit-entity-mismatch``
+     - 400
+     - A trigger or subscription ``resource`` URI names a different entity than
+       the route it was posted to
+   * - ``x-medkit-collection-not-supported``
+     - 400
+     - The ``resource`` URI names a collection triggers and subscriptions
+       cannot observe
+   * - ``x-medkit-collection-not-available``
+     - 400
+     - The ``resource`` URI names a collection this entity does not serve
+   * - ``x-medkit-unsupported-protocol``
+     - 400
+     - The requested subscription ``protocol`` has no registered transport
+
+The table is kept complete by a check rather than by review:
+``scripts/check_error_codes_documented.py`` (ctest
+``gateway_error_codes_documented``) fails if any ``ERR_*`` declared in
+``error_codes.hpp`` and named anywhere in the gateway's sources, its headers,
+or an in-tree plugin is missing from **this table** - a mention elsewhere in
+this guide does not count. So the claim it backs is exactly: every error code
+this repository can put on the wire appears above.
+
+What that check does not reach, and this sentence therefore does not claim: a
+third-party plugin may raise codes declared nowhere in this repository, and the
+statuses and descriptions in the third column are read from the emitters by
+hand. One code is excluded by name in the script, with its reason -
+``x-medkit-internal-forwarded``, a framework sentinel the error writer returns
+on before rendering anything.
+
+Several codes are reached by more than one internal cause. Locking is where
+that matters most, because its outcomes are spread across five rows above;
+this is every refusal the lock routes can produce:
+
+.. _rest-lock-refusals:
+
+.. list-table:: Lock refusals, by internal cause
+   :header-rows: 1
+   :widths: 26 12 24 38
+
+   * - Internal cause
+     - Status
+     - ``error_code``
+     - Notes
+   * - ``lock-conflict``
+     - 409
+     - ``invalid-request``
+     - Entity already locked. Carries ``existing_lock_id``; retryable with
+       ``break_lock``
+   * - ``lock-not-breakable``
+     - 409
+     - ``invalid-request``
+     - What a ``break_lock`` retry returns when the held lock forbids it. Also
+       carries ``existing_lock_id``
+   * - ``lock-not-owner``
+     - 403
+     - ``forbidden``
+     - Releasing or extending a lock held by another client
+   * - ``lock-not-found``
+     - 404
+     - ``resource-not-found``
+     - No lock on the entity, or it has expired
+   * - ``invalid-expiration``
+     - 400
+     - ``invalid-parameter``
+     - Expiration or extension exceeding the configured maximum. The
+       non-positive branch never gets this far - the handler rejects it first
+       with its own ``invalid-parameter``
+   * - ``lock-required``
+     - 409
+     - ``invalid-request``
+     - The entity's manifest requires a lock for this collection and the caller
+       holds none. Carries ``details``, ``entity_id`` and ``collection``, and -
+       unlike the two rows above - **no** ``existing_lock_id``, because no lock
+       exists to name
+   * - (guarded write)
+     - 409
+     - ``lock-broken``
+     - A write refused because another client's lock covers the collection.
+       Always carries ``entity_id`` and ``collection``; carries ``lock_id`` only
+       when the blocking lock could be identified. Comes from the request
+       handler rather than from ``LockManager``
+
+Three refusals the manager can construct are shadowed by an earlier handler
+check and so do not reach a client in that form: ``lock-disabled`` (the lock
+routes answer ``501`` ``not-implemented`` before ``LockManager`` is consulted),
+unknown scope, and non-positive expiration (``LockHandlers`` validates both
+against the same vocabulary first and emits its own ``400``
+``invalid-parameter``, with ``parameters.invalid_scope`` naming the offending
+scope).
+
+On ``PUT`` / ``DELETE .../locks/{lock_id}`` the ``404`` a client normally meets
+is the handler's - it checks the lock exists and belongs to the entity before
+delegating, and its body carries ``lock_id`` and ``entity_id``. The manager's
+own parameter-free ``404`` is still reachable in the narrow window where the
+lock expires between those two lookups.
+
+.. _rest-range-rejection:
+
+Range Rejection (416)
+~~~~~~~~~~~~~~~~~~~~~
+
+Every operation in the OpenAPI document declares **416 Range Not Satisfiable**,
+including operations that have nothing to do with file downloads. This is not
+over-declaration. The HTTP layer parses the ``Range`` header before routing the
+request, so a syntactically invalid ``Range`` is rejected before any handler
+runs - on any path, including paths that do not exist:
+
+.. code-block:: bash
+
+   $ curl -i -H 'Range: furlongs=1-2' http://localhost:8080/api/v1/health
+   HTTP/1.1 416 Range Not Satisfiable
+
+The body is the usual ``GenericError`` shape, which is why the document
+declares it as such rather than as a body-less response: the HTTP layer itself
+writes 416 with an empty body, and the gateway's global error handler then
+fills any body-less error response with a ``GenericError``.
+
+Only the six bulk-data download routes declare a ``Range`` *request* parameter,
+because they are the only routes where sending one is useful. 416 is
+nevertheless reachable everywhere.
+
+416 is not the only status answered this way, and the ``error_code`` in the
+body it produces is a placeholder - see the next section.
+
+.. _rest-framework-error-bodies:
+
+Framework-Produced Error Bodies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some errors are answered by the HTTP layer itself, before any gateway handler
+runs and sometimes before routing. cpp-httplib produces these with an **empty
+body**, and the gateway's global error handler then fills any body-less error
+response with a ``GenericError`` so that clients always receive the same
+envelope. Statuses reaching a client this way include:
+
+- **400** - malformed request line or headers, or an unparseable
+  ``multipart/form-data`` boundary
+- **413** - a form-urlencoded payload over the built-in length cap
+- **414** - request URI too long
+- **416** - unparseable ``Range`` header (see :ref:`rest-range-rejection`)
+- **500** - an exception escaping a handler
+
+**The ``error_code`` on these bodies is a placeholder.** The global handler
+writes ``resource-not-found`` regardless of the actual status, because it runs
+after the fact and has no way to know why the HTTP layer rejected the request.
+So a 413 and a 416 both arrive carrying ``"error_code":
+"resource-not-found"``. (The 404 an unrouted request produces goes through the
+same path, where that code happens to be right - which is why the mismatch is
+easy to miss on the statuses above.)
+
+**Read the HTTP status, not the ``error_code``, whenever the status was not
+produced by a handler.** The codes listed under `Common Error Codes`_ are
+accurate only for errors the gateway itself raises. The ``parameters.status``
+field on these bodies repeats the real status, which is the reliable field.
 
 Plugin Entity Delegation
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2590,7 +3145,40 @@ use cases benefit.
 **Pragmatic Extensions:**
 
 The SOVD spec defines resource collections only for apps and components. ros2_medkit
-extends this to areas and functions where aggregation makes practical sense:
+extends this to areas and functions where aggregation makes practical sense.
+
+The matrix below transcribes ``EntityCapabilities::for_type``, which drives the
+collection check in ``validate_collection_access_typed``. It is **not** where
+the ``capabilities`` array of ``GET /{entity-type}/{id}`` comes from: that array
+is built from a second, independent list, the ``CapabilityBuilder::Capability``
+vector each handler in ``discovery_handlers.cpp`` assembles. The two surfaces
+overlap but are not the same set - the component array also carries ``status``,
+``subcomponents``, ``hosts`` and ``depends-on``, and the area array
+``subareas``, ``contains`` and ``components``, none of which are resource
+collections and so none of which appear in the table.
+
+Nor is it what an entity's ``/docs`` sub-document lists. That document is a
+projection of the routes the gateway registers (see `Capability Description
+(OpenAPI Docs)`_ below), so a collection appears there when a route answers it
+and not otherwise - the table cannot make it appear or disappear.
+
+The transcription is by hand. What is checked mechanically is the property the
+table exists to describe:
+``test_openapi_contract::test_every_advertised_collection_is_served`` takes the
+first discovered entity of each type, follows every non-templated ``href`` in
+its ``capabilities`` array **and** every path in its ``/docs`` sub-document that
+declares a ``GET`` against a live gateway, and fails on a 404 - so it covers
+both surfaces, including where they disagree. Paths with no ``GET`` are skipped
+because a 404 there says nothing: ``PUT /{type}/{id}/status/restart`` has no GET
+to answer. Its fixture discovers no areas, so the Areas column below is covered
+by the ``EntityCapabilities`` unit tests instead, which assert the per-type
+lists directly. ``501`` is a served answer, not a missing one: see
+``data-categories`` and ``data-groups`` below.
+
+Collections named by the SOVD standard that the gateway does **not** serve
+per entity - ``data-lists``, ``modes`` and ``communication-logs`` - are absent
+from the table and from every capability list. ``updates`` is server-scoped
+only (``/api/v1/updates``), never mounted under an entity.
 
 .. list-table:: Resource Collection Support Matrix
    :header-rows: 1
@@ -2607,6 +3195,18 @@ extends this to areas and functions where aggregation makes practical sense:
      - yes
      - yes
      - aggregated
+     - apps, components
+   * - data-categories
+     - 501
+     - 501
+     - 501
+     - 501
+     - apps, components
+   * - data-groups
+     - 501
+     - 501
+     - 501
+     - 501
      - apps, components
    * - operations
      - aggregated
@@ -2650,12 +3250,41 @@ extends this to areas and functions where aggregation makes practical sense:
      - yes
      - \-
      - apps, components
+   * - locks
+     - \-
+     - yes
+     - yes
+     - \-
+     - apps, components
    * - triggers
      - yes (x-medkit)
      - yes
      - yes
      - yes (x-medkit)
      - apps, components
+   * - fault-triggers
+     - \-
+     - \-
+     - yes (x-medkit)
+     - \-
+     - not in SOVD
+
+Three rows depend on configuration, and the two advertising surfaces answer
+differently, which is worth stating rather than leaving to be discovered:
+
+- ``locks``: the routes are always registered for components and apps and answer
+  ``501`` when there is no lock manager (``locking.enabled`` off). The
+  ``capabilities`` entry and the ``locks`` URI field follow the lock manager; the
+  ``/docs`` sub-document lists ``/locks`` unconditionally, because registration
+  is unconditional and the sub-document reports registrations.
+- ``scripts``: the same shape. ``ScriptManager`` is constructed unconditionally,
+  so all eight script routes are always registered for components and apps, and
+  they answer ``501`` until a backend exists - either a plugin
+  ``ScriptProvider`` or a non-empty ``scripts.scripts_dir``. The
+  ``capabilities`` entry follows the backend; the sub-document lists
+  ``/scripts`` unconditionally.
+- ``fault-triggers``: always registered and always advertised, for apps only;
+  with no fault-trigger engine running the routes answer ``501``.
 
 Other extensions beyond SOVD:
 
@@ -2740,30 +3369,150 @@ The gateway provides self-describing OpenAPI 3.1.0 capability descriptions at an
 of the API hierarchy. Append ``/docs`` to any valid path to receive a context-scoped
 OpenAPI spec describing the available operations at that level.
 
+How much of that description is derived from the handlers rather than asserted
+beside them - and, for each mechanism, what keeps the two from drifting apart -
+is set out in :doc:`/design/ros2_medkit_gateway/openapi_derivation`.
+
+Every scoped spec is a **projection of the root document**: the paths at or
+below the requested path, with the ids the request named substituted into the
+templates and the ``in: path`` parameters those substitutions answered removed.
+For a projected path, what a scoped spec says about an operation is what the
+root spec says about it - status codes, schemas, roles and all.
+
+Which prefixes resolve at all is narrower than which paths the gateway serves.
+``PathResolver`` recognises a fixed set of resource-collection keywords -
+``data``, ``data-categories``, ``data-groups``, ``operations``, ``faults``,
+``configurations``, ``logs``, ``bulk-data``, ``cyclic-subscriptions``,
+``triggers``, ``updates``, ``hosts`` - and nothing else. ``locks``, ``status``,
+``scripts`` and ``fault-triggers`` answer ``200`` on the collection and are
+advertised as URI fields on the entity detail response, but
+``<entity-path>/docs`` answers ``404`` for them. Read the root document for
+those.
+
+The concrete data and operation item paths described below are the one thing in
+a scoped spec that is *built* from the entity cache rather than projected. What
+they add is the path itself - one key per discovered topic, service and action,
+which SOVD asks for and one ``/data/{data_id}`` registration cannot give - and
+the ``x-sovd-*`` extensions that go with it.
+
+.. warning::
+
+   **They add no payload schema today, on any gateway.** All four sites that
+   build a ``TopicData`` push an empty type
+   (``thread_safe_entity_cache.cpp``), so a topic's ROS 2 type never reaches
+   this builder in any discovery mode. That is structural, not a property of
+   one fixture. The ``/data`` listing does resolve the type - it is under
+   ``x-medkit.ros2.type`` and ``x-medkit.type_info`` on each item - by a path
+   this projection does not use. Until that type is wired through, read the
+   listing for a topic's shape and treat these paths as addresses rather than
+   schemas.
+
+Everything else a built item says is copied from the projected route it sits
+beside, because the two are the *same route*: ``/apps/x/data/temperature`` is
+served by the handler registered at ``/apps/{app_id}/data/{data_id}``. Four
+things are copied - the declared ``security``, the responses, the
+``x-medkit-lock-guarded`` marker, and the non-path parameters (in practice
+``X-Client-Id``; the fan-out header is declared on collection *listing* routes,
+which are never an item's sibling). Path parameters are not, because a concrete
+path has no placeholder for them, and ``operationId`` is not, because it must
+stay unique across the document.
+
+So a built item declares the same ``401``/``403`` components the middleware
+actually answers with, the same ``416``, and the whole lock contract together -
+the ``409``, the marker and ``X-Client-Id``, which
+:ref:`locking <locking-blocked-operations>` treats as one declaration. It
+follows ``auth.require_auth_for`` and ``locking.enabled`` for the same reason:
+the projection does, and this is a copy of it.
+
+**Responses are copied too, including the 2xx.** The gateway envelopes every
+read - ``GET .../data/{data_id}`` answers ``DataValue``, ``GET
+.../operations/{operation_id}`` answers ``OperationDetail`` - so a body built
+from the ROS 2 message or service-response type would be a second,
+contradictory answer for one route rather than a more specific one. The request
+body is copied on the same terms: a built ``PUT`` publishes its own envelope
+only where the topic's type is known, and inherits ``$ref: DataWriteRequest``
+otherwise, which today is always.
+
+A built operation item carries a ``GET`` only. The gateway registers no
+``POST`` at ``/{entity}/operations/{operation_id}`` - execution is
+``POST /{entity}/operations/{operation_id}/executions``, which the projection
+publishes beside it - so a ``POST`` on the concrete path answers ``404``. The
+ROS service-response schema belongs to that execution result and is not
+published anywhere today.
+
+Both scopes work this way, and the generator has to know which it is in: a
+scoped spec substitutes the ids it was given into the path **keys**, so at
+``<entity>/data/docs`` the sibling is still ``/data/{data_id}`` while at
+``<entity>/data/<topic>/docs`` it has already become ``/data/<topic>``. A built
+item whose sibling is not found is discarded rather than published
+un-inherited. Where a projection sits at that key - specific-resource scope -
+the projection survives; where none does, the item is simply absent. That
+second case is reachable: a nested path such as
+``/areas/robot/components/robot-controller/data/temperature/docs`` projects
+nothing, and answers with empty ``paths``.
+
 ``GET /api/v1/docs``
    Returns the full OpenAPI spec for the gateway root, including all server-level
    endpoints, entity collections, and global resources.
 
 ``GET /api/v1/{entity-collection}/docs``
-   Returns a spec scoped to the entity collection (e.g., ``/apps/docs``,
-   ``/components/docs``). Includes collection listing and detail endpoints.
+   The subtree under the collection (e.g. ``/apps/docs``, ``/components/docs``):
+   the listing, the entity detail template, and everything below it.
 
 ``GET /api/v1/{entity-type}/{entity-id}/docs``
-   Returns a spec for a specific entity, including all resource collection
-   endpoints supported by that entity (data, operations, configurations, faults,
-   logs, bulk-data, cyclic-subscriptions, triggers).
+   The subtree under one entity, with its id substituted - the detail endpoint
+   and every resource route registered for that entity type. Templates deeper
+   than the entity (``{data_id}``, ``{fault_code}``) stay templated and keep
+   their parameters.
 
 ``GET /api/v1/{entity-type}/{entity-id}/{resource}/docs``
-   Returns a spec for a specific resource collection, with detailed schemas
-   for each resource item.
+   The subtree under one resource collection. For ``data`` and ``operations``
+   this also carries one concrete path per discovered topic / service / action,
+   whose payload schema is generated from the ROS 2 type - the one thing a route
+   registration cannot know, and the only part of any scoped spec that is not a
+   projection.
+
+Each scoped spec carries the ``components/schemas`` entries its own ``$ref``
+chains reach, not the full DTO set the root spec ships.
 
 **Features:**
 
-- Specs include SOVD extensions (``x-sovd-version``, ``x-sovd-data-category``)
-- Entity-level specs reflect actual capabilities from the runtime entity cache
-- Specs are cached per entity cache generation for performance
-- Plugin-registered vendor routes appear in path-scoped specs when the requested
-  path matches a plugin route prefix (not in the root spec)
+- Specs include SOVD extensions: ``x-sovd-version`` on every spec, and
+  ``x-sovd-data-category`` / ``x-sovd-name`` /
+  ``x-sovd-cyclic-subscription-supported`` on the concrete data and operation
+  item paths described above
+- Each operation declares exactly one success status, derived from the handler's
+  C++ return type. The few operations whose handler can genuinely answer with one
+  of several success shapes (``POST .../operations/{operation_id}/executions``,
+  ``DELETE .../faults/{fault_code}``,
+  ``DELETE .../configurations``) carry ``x-medkit-alternates: true`` and list every
+  alternative under its own status code. A generated client can therefore branch on
+  status only where that marker is present.
+- The concrete data and operation item paths in an entity-level or
+  resource-level spec come from the runtime entity cache, so they change as the
+  ROS 2 graph does
+- Specs are cached per entity cache generation for performance. The cache holds
+  each document serialized, not parsed, so what it costs in memory is close to
+  what the document costs on the wire; it is bounded both by entry count and by
+  total bytes, and is emptied whenever either bound is reached or the entity
+  cache generation changes. A document larger than the whole byte budget is
+  served but not cached. None of this is observable from a response: the two
+  ``/docs`` routes answer ``application/json`` with the same 2-space-indented
+  body whether it came from the cache or was just generated
+- The two ``/docs`` routes are themselves in the root spec, as
+  ``getCapabilityDescription`` (``/docs``) and ``getScopedCapabilityDescription``
+  (``/{entity_path}/docs``). The second one's ``entity_path`` parameter spans
+  several path segments - it is the whole prefix, e.g. ``apps/temp_sensor/data`` -
+  so a generated client must send its slashes unescaped.
+- Routes mounted by a loaded plugin are in the root spec too, provided the plugin
+  exports ``describe_plugin_routes`` (see :doc:`/tutorials/plugin-system`). They
+  carry ``x-medkit-plugin-served: true``, and the tag each one declares is added
+  to the document's global tag list. A plugin route whose path lies under a
+  scoped path appears in that scoped spec as well, for the same reason a
+  registry route does - both are projected from the same merged set. Where a
+  plugin describes a path the registry already holds, the registry's description
+  is the one published. A plugin that does not export the symbol serves routes
+  that appear nowhere in any spec.
 
 **Configuration:**
 

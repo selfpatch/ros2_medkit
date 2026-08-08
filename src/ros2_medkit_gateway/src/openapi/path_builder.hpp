@@ -16,7 +16,6 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
-#include <vector>
 
 #include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
@@ -26,43 +25,56 @@ namespace openapi {
 
 class SchemaBuilder;
 
-/// Builds OpenAPI 3.1.0 PathItem JSON objects for each resource type.
-/// Uses SchemaBuilder for response/request schemas and adds SOVD extensions.
+/// Builds the OpenAPI PathItem for one *discovered* resource - a single ROS 2
+/// topic, service or action.
+///
+/// What is left here after the `<entity-path>/docs` sub-documents became a
+/// projection of `RouteRegistry::to_openapi_paths()`: the route registry holds
+/// `/apps/{app_id}/data/{data_id}` with a payload schema that has to cover
+/// every topic at once, and it has no way to learn that *this* entity's
+/// `temperature` carries a `std_msgs/msg/Float32` or that a publish-only topic
+/// cannot be written. That comes from the entity cache, so these three
+/// builders do, and nothing else in this class does.
+///
+/// A path item built here is not a projection of anything, so it builds only
+/// what the entity cache knows and the registration cannot: the concrete path
+/// key, the `x-sovd-*` extensions, and a request body where the topic's ROS 2
+/// type is available. Everything else - the declared role, every response
+/// including the 2xx, the lock contract, the middleware statuses - is copied
+/// in afterwards from the projected sibling by
+/// `CapabilityGenerator::adopt_projected_framework`, because the built item
+/// and that sibling are the *same route*.
+///
+/// **`TopicData::type` is empty on every gateway today.** All four sites that
+/// build one push `{topic, "", direction}`
+/// (`thread_safe_entity_cache.cpp`), so the `!topic.type.empty()` branch below
+/// never runs outside unit tests and a built data item currently contributes
+/// its path and nothing else. That is worth knowing before adding to it.
+///
+/// Do not restate framework facts here, and do not build a response body: the
+/// gateway envelopes every read (`DataValue`, `OperationDetail`), so a body
+/// derived from the ROS type is a second, contradictory answer for one route -
+/// which is what these items used to publish, alongside an inline
+/// `GenericError` for a 401 the middleware answers in the RFC 6749 shape.
 class PathBuilder {
  public:
-  explicit PathBuilder(const SchemaBuilder & schema_builder, bool auth_enabled = false);
+  explicit PathBuilder(const SchemaBuilder & schema_builder);
 
-  // Entity collection paths (GET /areas, GET /components, etc.)
-  nlohmann::json build_entity_collection(const std::string & entity_type) const;
-
-  // Entity detail path (GET /areas/{id}, GET /apps/{id})
-  /// @param use_template If true, emit path parameter for {entity_id}. If false, assume concrete path.
-  nlohmann::json build_entity_detail(const std::string & entity_type, bool use_template = true) const;
-
-  // Resource collection paths
-  nlohmann::json build_data_collection(const std::string & entity_path, const std::vector<TopicData> & topics) const;
   nlohmann::json build_data_item(const std::string & entity_path, const TopicData & topic) const;
-  nlohmann::json build_operations_collection(const std::string & entity_path, const AggregatedOperations & ops) const;
   nlohmann::json build_operation_item(const std::string & entity_path, const ServiceInfo & service) const;
   nlohmann::json build_operation_item(const std::string & entity_path, const ActionInfo & action) const;
-  nlohmann::json build_configurations_collection(const std::string & entity_path) const;
-  nlohmann::json build_faults_collection(const std::string & entity_path) const;
-  nlohmann::json build_logs_collection(const std::string & entity_path) const;
-  nlohmann::json build_bulk_data_collection(const std::string & entity_path) const;
-  nlohmann::json build_cyclic_subscriptions_collection(const std::string & entity_path) const;
 
-  // SSE endpoints
-  nlohmann::json build_sse_endpoint(const std::string & path, const std::string & description) const;
-
-  // Common helpers
+  /// The handler-level 400/404/500 every item path carries.
+  ///
+  /// Deliberately *not* 401/403: those come from the auth middleware, which
+  /// decides per gateway configuration whether it answers at all and uses the
+  /// RFC 6749 body shape rather than the SOVD `GenericError` these carry.
+  /// `adopt_projected_framework` supplies them, together with 409, 416 and
+  /// anything else the templated sibling declares.
   nlohmann::json error_responses() const;
 
  private:
-  nlohmann::json build_path_param(const std::string & name, const std::string & description) const;
-  nlohmann::json build_query_params_for_collection() const;
-
   const SchemaBuilder & schema_builder_;
-  bool auth_enabled_;
 };
 
 }  // namespace openapi

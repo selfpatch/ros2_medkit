@@ -15,13 +15,11 @@
 #include <gtest/gtest.h>
 
 #include <string>
-#include <vector>
 
 #include "../src/openapi/path_builder.hpp"
 #include "../src/openapi/schema_builder.hpp"
 
 using ros2_medkit_gateway::ActionInfo;
-using ros2_medkit_gateway::AggregatedOperations;
 using ros2_medkit_gateway::ServiceInfo;
 using ros2_medkit_gateway::TopicData;
 using ros2_medkit_gateway::openapi::PathBuilder;
@@ -34,117 +32,6 @@ class PathBuilderTest : public ::testing::Test {
 };
 
 // =============================================================================
-// Entity collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, EntityCollectionHasGet) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_entity_collection("apps");
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"].contains("summary"));
-  EXPECT_TRUE(result["get"].contains("responses"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, EntityCollectionHasItemsSchema) {
-  // The response schema is now a $ref to the DTO-generated collection schema.
-  auto result = path_builder_.build_entity_collection("components");
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  ASSERT_TRUE(schema.contains("$ref")) << "Entity collection schema should be a $ref to the DTO collection type";
-  EXPECT_EQ(schema["$ref"], "#/components/schemas/ComponentList");
-}
-
-TEST_F(PathBuilderTest, EntityCollectionHasQueryParams) {
-  auto result = path_builder_.build_entity_collection("areas");
-  ASSERT_TRUE(result["get"].contains("parameters"));
-  auto & params = result["get"]["parameters"];
-  ASSERT_GE(params.size(), 2u);
-
-  // Check limit and offset parameters exist
-  bool has_limit = false;
-  bool has_offset = false;
-  for (const auto & p : params) {
-    if (p["name"] == "limit") {
-      has_limit = true;
-    }
-    if (p["name"] == "offset") {
-      has_offset = true;
-    }
-  }
-  EXPECT_TRUE(has_limit);
-  EXPECT_TRUE(has_offset);
-}
-
-TEST_F(PathBuilderTest, EntityCollectionHasErrorResponses) {
-  auto result = path_builder_.build_entity_collection("apps");
-  EXPECT_TRUE(result["get"]["responses"].contains("400"));
-  EXPECT_TRUE(result["get"]["responses"].contains("404"));
-  EXPECT_TRUE(result["get"]["responses"].contains("500"));
-}
-
-// =============================================================================
-// Entity detail tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, EntityDetailHasGet) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_entity_detail("apps");
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"].contains("summary"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, EntityDetailHasPathParam) {
-  auto result = path_builder_.build_entity_detail("components");
-  ASSERT_TRUE(result["get"].contains("parameters"));
-  auto & params = result["get"]["parameters"];
-  ASSERT_GE(params.size(), 1u);
-  EXPECT_EQ(params[0]["in"], "path");
-  EXPECT_TRUE(params[0]["required"].get<bool>());
-}
-
-TEST_F(PathBuilderTest, EntityDetailConcretePathOmitsParameters) {
-  // @verifies REQ_INTEROP_002
-  // When use_template=false (concrete entity path), no path parameters should be declared.
-  // OpenAPI 3.1.0 requires path params to match {placeholders} in the path key.
-  auto result = path_builder_.build_entity_detail("apps", false);
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_FALSE(result["get"].contains("parameters")) << "Concrete entity path should not declare path parameters";
-  EXPECT_TRUE(result["get"].contains("summary"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, EntityDetailTemplatePathHasParameters) {
-  // @verifies REQ_INTEROP_002
-  // Default (use_template=true) should still include path parameters
-  auto result = path_builder_.build_entity_detail("apps", true);
-  ASSERT_TRUE(result["get"].contains("parameters"));
-  EXPECT_EQ(result["get"]["parameters"][0]["name"], "app_id");
-  EXPECT_EQ(result["get"]["parameters"][0]["in"], "path");
-  EXPECT_TRUE(result["get"]["parameters"][0]["required"].get<bool>());
-}
-
-// =============================================================================
-// Data collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, DataCollectionHasGet) {
-  // @verifies REQ_INTEROP_002
-  std::vector<TopicData> topics = {{"temperature", "std_msgs/msg/Float32", "publish"},
-                                   {"command", "std_msgs/msg/String", "subscribe"}};
-  auto result = path_builder_.build_data_collection("apps/sensor", topics);
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, DataCollectionHasSovdExtension) {
-  std::vector<TopicData> topics;
-  auto result = path_builder_.build_data_collection("apps/sensor", topics);
-  EXPECT_TRUE(result.contains("x-sovd-data-category"));
-  EXPECT_EQ(result["x-sovd-data-category"], "currentData");
-}
-
-// =============================================================================
 // Data item tests
 // =============================================================================
 
@@ -153,7 +40,10 @@ TEST_F(PathBuilderTest, DataItemGetAlwaysPresent) {
   TopicData topic{"temperature", "std_msgs/msg/Float32", "publish"};
   auto result = path_builder_.build_data_item("apps/sensor", topic);
   ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
+  // No 200: the gateway answers the `DataValue` envelope, not the bare
+  // message, so the read body is the projected sibling's to state.
+  // `adopt_projected_framework` copies it in.
+  EXPECT_FALSE(result["get"]["responses"].contains("200"));
 }
 
 TEST_F(PathBuilderTest, DataItemPutForSubscribeTopic) {
@@ -187,55 +77,52 @@ TEST_F(PathBuilderTest, DataItemHasSovdExtensions) {
   EXPECT_EQ(result["x-sovd-name"], "temperature");
 }
 
-TEST_F(PathBuilderTest, DataItemSchemaFromRosType) {
-  TopicData topic{"temperature", "std_msgs/msg/Float32", "publish"};
-  auto result = path_builder_.build_data_item("apps/sensor", topic);
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  // std_msgs/msg/Float32 has a "data" field
-  EXPECT_EQ(schema["type"], "object");
-  EXPECT_TRUE(schema.contains("properties"));
-}
-
-// =============================================================================
-// Operations collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, OperationsCollectionHasGet) {
-  // @verifies REQ_INTEROP_002
-  AggregatedOperations ops;
-  ops.services.push_back({"calibrate", "/engine/calibrate", "std_srvs/srv/Trigger", std::nullopt});
-  auto result = path_builder_.build_operations_collection("apps/engine", ops);
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, OperationsCollectionResponseRefersToOperationList) {
-  // build_operations_collection now uses SchemaBuilder::ref("OperationList") - a $ref to
-  // the DTO-generated Collection<OperationItem> schema.
-  AggregatedOperations ops;
-  auto result = path_builder_.build_operations_collection("apps/engine", ops);
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  ASSERT_TRUE(schema.contains("$ref"));
-  EXPECT_EQ(schema["$ref"], "#/components/schemas/OperationList");
+TEST_F(PathBuilderTest, DataItemWriteBodyOmittedWhenTheTypeIsUnknown) {
+  // `TopicData::type` is empty on every gateway today - every construction site
+  // in `thread_safe_entity_cache.cpp` pushes `{topic, "", direction}` - so this
+  // is the branch production actually takes, and it had no coverage at all.
+  // With nothing to say beyond `DataWriteRequest`, the builder says nothing and
+  // the projected sibling's named `$ref` is inherited instead.
+  TopicData topic{"command", "", "subscribe"};
+  auto result = path_builder_.build_data_item("apps/actuator", topic);
+  ASSERT_TRUE(result.contains("put"));
+  EXPECT_FALSE(result["put"].contains("requestBody"));
+  // And the description does not render an empty type as "(type: )".
+  EXPECT_EQ(result["get"]["description"], "Read current value of topic command.");
 }
 
 // =============================================================================
 // Operation item (service) tests
 // =============================================================================
 
-TEST_F(PathBuilderTest, ServiceOperationHasGetAndPost) {
+TEST_F(PathBuilderTest, ServiceOperationHasGetOnly) {
   // @verifies REQ_INTEROP_002
   ServiceInfo service{"calibrate", "/engine/calibrate", "std_srvs/srv/Trigger", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/engine", service);
   ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("post"));
+  // The gateway registers no POST at `/{entity}/operations/{operation_id}` -
+  // execution is `POST .../{operation_id}/executions` - so publishing one here
+  // named an operation that answers 404.
+  EXPECT_FALSE(result.contains("post"));
+  // And no 200: `GET .../operations/{operation_id}` answers `OperationDetail`
+  // (`{"item": {...}}` on the wire), never the ROS service response. Building
+  // one from `from_ros_srv_response` put two contradictory bodies on one route.
+  EXPECT_FALSE(result["get"]["responses"].contains("200"));
 }
 
-TEST_F(PathBuilderTest, ServiceOperationPostHasRequestBody) {
-  ServiceInfo service{"calibrate", "/engine/calibrate", "std_srvs/srv/Trigger", std::nullopt};
-  auto result = path_builder_.build_operation_item("apps/engine", service);
-  ASSERT_TRUE(result["post"].contains("requestBody"));
-  EXPECT_TRUE(result["post"]["requestBody"]["required"].get<bool>());
+TEST_F(PathBuilderTest, DataItemPutBodyIsTheWriteEnvelopeNotTheBareMessage) {
+  // The handler reads `DataWriteRequest{type, data}`. Publishing the bare
+  // message schema was answered `400 "type: missing required field"` on the
+  // wire, so the shape - not merely the status set - has to match.
+  TopicData topic{"command", "std_msgs/msg/String", "subscribe"};
+  auto result = path_builder_.build_data_item("apps/actuator", topic);
+  auto schema = result["put"]["requestBody"]["content"]["application/json"]["schema"];
+  EXPECT_EQ(schema["type"], "object");
+  EXPECT_EQ(schema["required"], nlohmann::json::array({"type", "data"}));
+  EXPECT_EQ(schema["properties"]["type"]["const"], "std_msgs/msg/String");
+  // `data` carries what the bare schema used to sit at the top level.
+  EXPECT_EQ(schema["properties"]["data"]["type"], "object");
+  EXPECT_TRUE(schema["properties"]["data"].contains("properties"));
 }
 
 TEST_F(PathBuilderTest, ServiceOperationHasSovdName) {
@@ -254,12 +141,12 @@ TEST_F(PathBuilderTest, ServiceOperationNotAsynchronous) {
 // Operation item (action) tests
 // =============================================================================
 
-TEST_F(PathBuilderTest, ActionOperationHasGetAndPost) {
+TEST_F(PathBuilderTest, ActionOperationHasGetOnly) {
   // @verifies REQ_INTEROP_002
   ActionInfo action{"navigate", "/nav/navigate", "nav2_msgs/action/NavigateToPose", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/navigation", action);
   ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("post"));
+  EXPECT_FALSE(result.contains("post"));
 }
 
 TEST_F(PathBuilderTest, ActionOperationIsAsynchronous) {
@@ -269,163 +156,17 @@ TEST_F(PathBuilderTest, ActionOperationIsAsynchronous) {
   EXPECT_TRUE(result["x-sovd-asynchronous-execution"].get<bool>());
 }
 
-TEST_F(PathBuilderTest, ActionOperationPostReturns202) {
+TEST_F(PathBuilderTest, ActionOperationDeclaresNoResponseBodyOfItsOwn) {
   ActionInfo action{"navigate", "/nav/navigate", "nav2_msgs/action/NavigateToPose", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/navigation", action);
-  EXPECT_TRUE(result["post"]["responses"].contains("202"));
+  EXPECT_FALSE(result["get"]["responses"].contains("200"));
+  EXPECT_FALSE(result["get"]["responses"].contains("202"));
 }
 
 TEST_F(PathBuilderTest, ActionOperationHasSovdName) {
   ActionInfo action{"navigate", "/nav/navigate", "nav2_msgs/action/NavigateToPose", std::nullopt};
   auto result = path_builder_.build_operation_item("apps/navigation", action);
   EXPECT_EQ(result["x-sovd-name"], "navigate");
-}
-
-// =============================================================================
-// Configurations collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, ConfigurationsHasGetAndDelete) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_configurations_collection("apps/sensor");
-  ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("delete"));
-  EXPECT_FALSE(result.contains("put"));
-}
-
-TEST_F(PathBuilderTest, ConfigurationsGetReturnsConfigurationListRef) {
-  // build_configurations_collection now emits a $ref to ConfigurationList DTO schema.
-  auto result = path_builder_.build_configurations_collection("apps/sensor");
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  ASSERT_TRUE(schema.contains("$ref"));
-  EXPECT_EQ(schema["$ref"], "#/components/schemas/ConfigurationList");
-}
-
-TEST_F(PathBuilderTest, ConfigurationsDeleteHasSummary) {
-  auto result = path_builder_.build_configurations_collection("apps/sensor");
-  EXPECT_EQ(result["delete"]["summary"], "Delete all configuration parameters");
-}
-
-TEST_F(PathBuilderTest, ConfigurationsDeleteReturns204And207) {
-  auto result = path_builder_.build_configurations_collection("apps/sensor");
-  ASSERT_TRUE(result["delete"]["responses"].contains("204"));
-  ASSERT_TRUE(result["delete"]["responses"].contains("207"));
-  EXPECT_FALSE(result["delete"]["responses"].contains("200"));
-}
-
-// =============================================================================
-// Faults collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, FaultsHasGetAndDelete) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_faults_collection("apps/engine");
-  ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("delete"));
-  EXPECT_FALSE(result.contains("put"));
-}
-
-TEST_F(PathBuilderTest, FaultsGetReturnsFaultList) {
-  // build_faults_collection now emits a $ref to the registered FaultList DTO schema.
-  auto result = path_builder_.build_faults_collection("apps/engine");
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  // The schema is a $ref to FaultList, not an inline object.
-  ASSERT_TRUE(schema.contains("$ref"));
-  EXPECT_EQ(schema["$ref"], "#/components/schemas/FaultList");
-}
-
-TEST_F(PathBuilderTest, FaultsDeleteReturns204) {
-  auto result = path_builder_.build_faults_collection("apps/engine");
-  ASSERT_TRUE(result["delete"]["responses"].contains("204"));
-}
-
-// =============================================================================
-// Logs collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, LogsHasGet) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_logs_collection("apps/sensor");
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-TEST_F(PathBuilderTest, LogsHasLevelQueryParam) {
-  auto result = path_builder_.build_logs_collection("apps/sensor");
-  auto & params = result["get"]["parameters"];
-  bool has_level = false;
-  for (const auto & p : params) {
-    if (p["name"] == "level") {
-      has_level = true;
-    }
-  }
-  EXPECT_TRUE(has_level);
-}
-
-TEST_F(PathBuilderTest, LogsReturnsLogEntryListRef) {
-  // After DTO migration build_logs_collection emits a $ref to LogEntryList.
-  auto result = path_builder_.build_logs_collection("apps/sensor");
-  auto schema = result["get"]["responses"]["200"]["content"]["application/json"]["schema"];
-  ASSERT_TRUE(schema.contains("$ref"));
-  EXPECT_EQ(schema["$ref"], "#/components/schemas/LogEntryList");
-}
-
-// =============================================================================
-// Bulk data collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, BulkDataHasGet) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_bulk_data_collection("apps/sensor");
-  ASSERT_TRUE(result.contains("get"));
-  EXPECT_TRUE(result["get"]["responses"].contains("200"));
-}
-
-// =============================================================================
-// Cyclic subscriptions collection tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, CyclicSubscriptionsHasGetAndPost) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
-  ASSERT_TRUE(result.contains("get"));
-  ASSERT_TRUE(result.contains("post"));
-}
-
-TEST_F(PathBuilderTest, CyclicSubscriptionsPostHasRequestBody) {
-  // CyclicSubscriptionCreateRequest is now a DTO - request body schema is a $ref.
-  auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
-  ASSERT_TRUE(result["post"].contains("requestBody"));
-  auto req_schema = result["post"]["requestBody"]["content"]["application/json"]["schema"];
-  ASSERT_TRUE(req_schema.contains("$ref"));
-  EXPECT_EQ(req_schema["$ref"], "#/components/schemas/CyclicSubscriptionCreateRequest");
-}
-
-TEST_F(PathBuilderTest, CyclicSubscriptionsPostReturns201) {
-  auto result = path_builder_.build_cyclic_subscriptions_collection("apps/sensor");
-  EXPECT_TRUE(result["post"]["responses"].contains("201"));
-}
-
-// =============================================================================
-// SSE endpoint tests
-// =============================================================================
-
-TEST_F(PathBuilderTest, SseEndpointHasGet) {
-  // @verifies REQ_INTEROP_002
-  auto result = path_builder_.build_sse_endpoint("/events/faults", "Fault event stream");
-  ASSERT_TRUE(result.contains("get"));
-}
-
-TEST_F(PathBuilderTest, SseEndpointHasEventStreamContentType) {
-  auto result = path_builder_.build_sse_endpoint("/events/faults", "Fault event stream");
-  ASSERT_TRUE(result["get"]["responses"].contains("200"));
-  auto & content = result["get"]["responses"]["200"]["content"];
-  ASSERT_TRUE(content.contains("text/event-stream"));
-}
-
-TEST_F(PathBuilderTest, SseEndpointHasDescription) {
-  auto result = path_builder_.build_sse_endpoint("/events/faults", "Fault event stream");
-  EXPECT_EQ(result["get"]["summary"], "Fault event stream");
 }
 
 // =============================================================================
@@ -442,14 +183,16 @@ TEST_F(PathBuilderTest, ErrorResponsesWithoutAuth) {
   EXPECT_FALSE(errors.contains("403"));
 }
 
-TEST_F(PathBuilderTest, ErrorResponsesWithAuth) {
-  PathBuilder auth_builder(schema_builder_, true);
-  auto errors = auth_builder.error_responses();
-  EXPECT_TRUE(errors.contains("400"));
-  EXPECT_TRUE(errors.contains("404"));
-  EXPECT_TRUE(errors.contains("500"));
-  EXPECT_TRUE(errors.contains("401"));
-  EXPECT_TRUE(errors.contains("403"));
+TEST_F(PathBuilderTest, ErrorResponsesNeverCarryTheMiddlewareStatuses) {
+  // 401/403 are the auth middleware's, answered in the RFC 6749 shape and only
+  // where the policy enforces. This builder cannot know either, so it declares
+  // neither; `CapabilityGenerator::adopt_projected_framework` copies them in
+  // from the templated sibling, which does know.
+  auto errors = path_builder_.error_responses();
+  EXPECT_FALSE(errors.contains("401"));
+  EXPECT_FALSE(errors.contains("403"));
+  EXPECT_FALSE(errors.contains("409"));
+  EXPECT_FALSE(errors.contains("416"));
 }
 
 TEST_F(PathBuilderTest, ErrorResponsesUseGenericErrorSchema) {
