@@ -65,5 +65,14 @@ inline constexpr std::string_view kExecutionCapabilityValues[] = {"stop", "execu
 /// Lifecycle status (LifecycleStatusResponse.status).
 inline constexpr std::string_view kLifecycleStatusValues[] = {"ready", "notReady"};
 
+/// Fault-trigger comparison operator (FaultTriggerEngine::valid_operator).
+inline constexpr std::string_view kFaultTriggerOperatorValues[] = {">", "<", ">=", "<=", "=="};
+
+/// Fault-trigger severity (FaultTriggerEngine::valid_severity). Deliberately
+/// NOT kFaultSeverityLabelValues: the engine spells the middle level `WARNING`
+/// where a reported fault's label spells it `WARN`, so one table for both would
+/// document a value one of the two rejects.
+inline constexpr std::string_view kFaultTriggerSeverityValues[] = {"INFO", "WARNING", "ERROR", "CRITICAL"};
+
 }  // namespace dto
 }  // namespace ros2_medkit_gateway

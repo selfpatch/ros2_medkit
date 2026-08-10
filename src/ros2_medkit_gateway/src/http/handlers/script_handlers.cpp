@@ -84,7 +84,26 @@ ScriptHandlers::ScriptHandlers(HandlerContext & ctx, ScriptManager * script_mana
 }
 
 std::string ScriptHandlers::entity_type_from_path(const std::string & path) {
-  return (path.find("/components/") != std::string::npos) ? "components" : "apps";
+  // The collection the caller actually addressed, read back out of the routed
+  // request path (`/api/v1/<collection>/<id>/scripts/...`).
+  //
+  // The scripts routes are registered for apps and components only
+  // (`rest_server.cpp`, the `et_type_str == "apps" || == "components"` guard),
+  // so the previous "components if the path says so, else apps" choice happened
+  // to be right for every path that routes today. Reading the segment instead
+  // of choosing it means it stays right if that list grows - and until then it
+  // is one fewer place that has to be found and edited.
+  //
+  // The empty return below is a defensive fallback, not a supported answer: an
+  // unprefixed path cannot reach a handler, because routes are mounted under
+  // `API_BASE_PATH`. If it ever did, the caller would build `//<id>` from it.
+  static const std::string kPrefix = std::string(API_BASE_PATH) + "/";
+  if (path.compare(0, kPrefix.size(), kPrefix) != 0) {
+    return {};
+  }
+  const size_t start = kPrefix.size();
+  const size_t end = path.find('/', start);
+  return end == std::string::npos ? path.substr(start) : path.substr(start, end - start);
 }
 
 bool ScriptHandlers::is_valid_resource_id(const std::string & id) {
@@ -174,7 +193,7 @@ http::Result<dto::ScriptList> ScriptHandlers::list_scripts(const http::TypedRequ
 // POST /{entity}/scripts - multipart upload, 201 + Location
 // ---------------------------------------------------------------------------
 
-http::Result<std::pair<dto::ScriptUploadResponse, http::ResponseAttachments>>
+http::Result<std::pair<http::Created<dto::ScriptUploadResponse>, http::ResponseAttachments>>
 ScriptHandlers::upload_script(const http::TypedRequest & req, const http::MultipartBody & body) {
   if (!script_mgr_ || !script_mgr_->has_backend()) {
     return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
@@ -241,16 +260,18 @@ ScriptHandlers::upload_script(const http::TypedRequest & req, const http::Multip
       return tl::unexpected(script_backend_error(result.error()));
     }
 
-    auto entity_type_segment = entity_type_from_path(req.path());
-    auto script_path = api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + result->id);
+    // The script is a child of the POST target, and `req.path()` already
+    // carries the API prefix, so this is the same absolute form every `href`
+    // uses - and it names the collection the caller addressed.
+    const std::string script_path = child_resource_path(req.path(), result->id);
 
     dto::ScriptUploadResponse upload_resp;
     upload_resp.id = result->id;
     upload_resp.name = result->name;
 
     http::ResponseAttachments att;
-    att.with_status(201).with_header("Location", script_path);
-    return std::make_pair(std::move(upload_resp), std::move(att));
+    att.with_location(script_path);
+    return std::make_pair(http::Created<dto::ScriptUploadResponse>{std::move(upload_resp)}, std::move(att));
   } catch (const std::exception & e) {
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }
@@ -353,7 +374,7 @@ http::Result<http::NoContent> ScriptHandlers::delete_script(const http::TypedReq
 // POST /{entity}/scripts/{script_id}/executions - 202 + Location
 // ---------------------------------------------------------------------------
 
-http::Result<std::pair<dto::ScriptExecution, http::ResponseAttachments>>
+http::Result<std::pair<http::Accepted<dto::ScriptExecution>, http::ResponseAttachments>>
 ScriptHandlers::start_execution(const http::TypedRequest & req) {
   if (!script_mgr_ || !script_mgr_->has_backend()) {
     return tl::unexpected(make_error(501, ERR_NOT_IMPLEMENTED, "Scripts backend not configured"));
@@ -422,13 +443,12 @@ ScriptHandlers::start_execution(const http::TypedRequest & req) {
       return tl::unexpected(script_backend_error(result.error()));
     }
 
-    auto entity_type_segment = entity_type_from_path(req.path());
-    auto exec_path =
-        api_path("/" + entity_type_segment + "/" + entity_id + "/scripts/" + script_id + "/executions/" + result->id);
+    // Same as the upload above: the execution is a child of the POST target.
+    const std::string exec_path = child_resource_path(req.path(), result->id);
 
     http::ResponseAttachments att;
-    att.with_status(202).with_header("Location", exec_path);
-    return std::make_pair(execution_info_to_dto(*result), std::move(att));
+    att.with_location(exec_path);
+    return std::make_pair(http::Accepted<dto::ScriptExecution>{execution_info_to_dto(*result)}, std::move(att));
   } catch (const std::exception & e) {
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, e.what()));
   }

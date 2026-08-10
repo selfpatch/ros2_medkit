@@ -53,6 +53,18 @@ find_package(OpenSSL REQUIRED)
 # This enables the httplib::SSLServer class for HTTPS support
 add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 
+# Emitted-status recorder (include/ros2_medkit_gateway/http/detail/status_recorder.hpp).
+# Instruments make_error() and every registry-mounted route so
+# test_openapi_error_coverage can assert the OpenAPI document declares every
+# status the gateway actually serves. Directory scope and set before any
+# target is created, because make_error() is an inline function shared by 13
+# translation units - a per-target definition would give it two bodies and
+# break ODR. A shipped gateway compiles none of it: the Dockerfile builds with
+# -DBUILD_TESTING=OFF.
+if(BUILD_TESTING)
+  add_compile_definitions(MEDKIT_STATUS_RECORDER)
+endif()
+
 # Vendored header-only libraries (no network access on ROS build farm)
 # tl::expected v1.3.1 (CC0) - https://github.com/TartanLlama/expected
 add_library(tl_expected_iface INTERFACE)
@@ -349,6 +361,34 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   )
   set_tests_properties(gateway_plugin_header_purity PROPERTIES LABELS "linter")
+
+  # ─── Error-code documentation coverage ────────────────────────────────────
+  # Fails if any ERR_* with a non-test emitter is missing from the REST
+  # guide's error table. The table carries completeness claims that nothing
+  # else checks, and prose is the tier this branch found least durable.
+  #
+  # Interpreter found explicitly rather than relying on Python3_EXECUTABLE
+  # being set: it is a cache variable our build passes on the command line, so
+  # a configure without it would silently register an empty COMMAND.
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(
+    NAME gateway_error_codes_documented
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_error_codes_documented.py"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  set_tests_properties(gateway_error_codes_documented PROPERTIES LABELS "linter")
+
+  # ─── Design-document test citations ───────────────────────────────────────
+  # Fails if a design document names a test that no longer exists. The docs
+  # say which mechanism is enforced by which check, and they say it by naming
+  # the check; a rename in the test tree falsifies every such sentence at once
+  # and nothing else would notice.
+  add_test(
+    NAME gateway_doc_test_citations
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_doc_test_citations.py"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  set_tests_properties(gateway_doc_test_citations PROPERTIES LABELS "linter")
 
   # ─── gateway_core link-time smoke test ────────────────────────────────────
   # Compiles a translation unit including a sampling of core/ headers and
@@ -982,6 +1022,12 @@ if(BUILD_TESTING)
   # Capability generator tests (OpenAPI spec generation engine)
   medkit_add_gtest(test_capability_generator test/test_capability_generator.cpp)
   target_link_libraries(test_capability_generator gateway_ros2)
+
+  # Schema reachability tests (orphan detection over a finished document).
+  # gateway_core, not gateway_ros2: unreachable_schemas() takes a nlohmann::json
+  # and touches no ROS type, so it lives in the neutral layer.
+  ament_add_gtest(test_schema_reachability test/test_schema_reachability.cpp)
+  target_link_libraries(test_schema_reachability gateway_core)
 
   # Route registry tests (OpenAPI route registration and path conversion)
   medkit_add_gtest(test_route_registry test/test_route_registry.cpp)

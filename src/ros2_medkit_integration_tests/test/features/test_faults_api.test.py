@@ -135,6 +135,113 @@ class TestFaultsApi(GatewayTestCase):
         self.assertIn('parameters', data)
         self.assertEqual(data['parameters'].get('fault_code'), 'NONEXISTENT_FAULT')
 
+    def test_both_verbs_reject_an_oversized_fault_code(self):
+        """GET and DELETE both enforce the 256-character `fault_code` bound.
+
+        The OpenAPI document publishes `maxLength: 256` on every route carrying
+        `{fault_code}`, from one table keyed by the parameter name - so it
+        cannot distinguish a route whose handler checks from one whose handler
+        does not, and a bound belongs there only when every handler behind the
+        template rejects. Both verbs are driven so that precondition is tested
+        rather than assumed; the `config_id` half of the same table is covered
+        by `test_configuration_api.test.py`.
+
+        No lock is taken here on purpose. `clear_fault` measures the code
+        *after* `validate_lock_access`, so a competing lock would answer 409
+        before the length check is reached - a real ordering difference from
+        the configuration handlers, and not what this test is pinning.
+
+        @verifies REQ_INTEROP_013
+        @verifies REQ_INTEROP_015
+        """
+        oversized = 'F' * 257
+        url = f'{self.BASE_URL}/apps/lidar_sensor/faults/{oversized}'
+        for verb, call in (
+            ('GET', lambda: requests.get(url, timeout=10)),
+            ('DELETE', lambda: requests.delete(url, timeout=10)),
+        ):
+            with self.subTest(verb=verb):
+                response = call()
+                self.assertEqual(response.status_code, 400, f'{verb}: {response.text}')
+                self.assertIn('error_code', response.json())
+
+        # Control: a code the route serves normally still reaches the store, so
+        # the rejections above are the length gate rather than the route
+        # refusing every long-ish code.
+        inside = f'{self.BASE_URL}/apps/lidar_sensor/faults/{"F" * 64}'
+        self.assertEqual(requests.get(inside, timeout=10).status_code, 404)
+
+    def test_both_verbs_serve_a_fault_code_up_to_the_published_bound(self):
+        """Every length the document admits reaches the store and answers 404.
+
+        `maxLength: 256` is a promise that a code of 256 characters is a
+        well-formed request, so the only honest answer for one that names no
+        fault is 404. The bound is enforced in two nodes, and this pins that
+        they agree: the gateway gates at 256 (`fault_handlers.cpp`), and the
+        fault manager applies `kMaxFaultCodeLength` to the same value on the
+        GetFault and ClearFault services. When the two disagreed, the lengths
+        between the lower bound and 256 were refused by the fault manager and
+        surfaced as 503 - a value the published document calls valid answering
+        with a server error.
+
+        128 is driven alongside 129 deliberately: it was the fault manager's
+        old bound, so it passed while 129 did not, and keeping both makes a
+        regression to any lower bound visible as a split result rather than a
+        uniform failure.
+
+        @verifies REQ_INTEROP_013
+        @verifies REQ_INTEROP_015
+        """
+        for length in (128, 129, 255, 256):
+            url = f'{self.BASE_URL}/apps/lidar_sensor/faults/{"F" * length}'
+            for verb, call in (
+                ('GET', lambda u=url: requests.get(u, timeout=10)),
+                ('DELETE', lambda u=url: requests.delete(u, timeout=10)),
+            ):
+                with self.subTest(length=length, verb=verb):
+                    response = call()
+                    self.assertEqual(
+                        response.status_code, 404,
+                        f'{verb} at length {length}: {response.status_code} {response.text}'
+                    )
+
+    def test_a_refusal_from_the_fault_manager_is_not_a_server_error(self):
+        """A code the store declines answers 4xx, not 503.
+
+        The gateway published no `pattern` for `{fault_code}`, only a
+        `maxLength`, but the fault manager restricts the character set to
+        alphanumerics, underscore, hyphen and dot. So a short code containing
+        anything else is admitted by the gateway, reaches the fault manager,
+        and comes back refused - a refusal the gateway has to classify.
+
+        This is the same defect as the length disagreement but reached by a
+        different route, and it does not depend on any bound: the two nodes can
+        agree on `maxLength` exactly and this still fails. The classification
+        must therefore rest on which layer answered - the fault manager
+        declining a request is a condition of the request, whereas only a
+        fault manager that never answered at all is a server-side failure -
+        and not on reading the words in the message it returned.
+
+        @verifies REQ_INTEROP_013
+        @verifies REQ_INTEROP_015
+        """
+        # `~` is unreserved in a URL path, so it arrives at the handler intact,
+        # and it is outside the character set the fault manager accepts.
+        url = f'{self.BASE_URL}/apps/lidar_sensor/faults/F~F'
+        for verb, call in (
+            ('GET', lambda: requests.get(url, timeout=10)),
+            ('DELETE', lambda: requests.delete(url, timeout=10)),
+        ):
+            with self.subTest(verb=verb):
+                response = call()
+                self.assertLess(
+                    response.status_code, 500,
+                    f'{verb}: a refusal from the fault manager reported as '
+                    f'{response.status_code}: {response.text}'
+                )
+                self.assertEqual(response.status_code, 404, f'{verb}: {response.text}')
+                self.assertIn('error_code', response.json())
+
     def test_list_all_faults_globally(self):
         """GET /faults returns all faults across the system.
 

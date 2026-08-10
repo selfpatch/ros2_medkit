@@ -16,6 +16,9 @@
 
 #include "schema_builder.hpp"
 
+#include "ros2_medkit_gateway/dto/auth.hpp"
+#include "ros2_medkit_gateway/dto/schema_writer.hpp"
+
 namespace ros2_medkit_gateway {
 namespace openapi {
 
@@ -65,8 +68,9 @@ OpenApiSpecBuilder & OpenApiSpecBuilder::add_schemas(const nlohmann::json & sche
   return *this;
 }
 
-OpenApiSpecBuilder & OpenApiSpecBuilder::security_scheme(const std::string & name, const nlohmann::json & scheme) {
-  security_schemes_.push_back({name, scheme});
+OpenApiSpecBuilder & OpenApiSpecBuilder::security_scheme(const std::string & name, const nlohmann::json & scheme,
+                                                         bool document_level_requirement) {
+  security_schemes_.push_back({name, scheme, document_level_requirement});
   return *this;
 }
 
@@ -129,18 +133,81 @@ nlohmann::json OpenApiSpecBuilder::build() const {
   if (!spec["components"].contains("schemas") || !spec["components"]["schemas"].contains("GenericError")) {
     spec["components"]["schemas"]["GenericError"] = SchemaBuilder::generic_error();
   }
+  // Same for OAuth2Error: the Unauthorized / Forbidden component responses
+  // below reference it unconditionally, and a sub-page spec that never calls
+  // add_schemas() would otherwise ship a $ref pointing at nothing.
+  if (!spec["components"]["schemas"].contains("OAuth2Error")) {
+    spec["components"]["schemas"]["OAuth2Error"] = dto::SchemaWriter<dto::OAuth2Error>::schema();
+  }
   // Uses $ref to components/schemas/GenericError so the schema is defined once
   spec["components"]["responses"]["GenericError"]["description"] = "SOVD GenericError response";
   spec["components"]["responses"]["GenericError"]["content"]["application/json"]["schema"] =
       SchemaBuilder::ref("GenericError");
 
-  // 7. Security schemes (if any)
-  if (!security_schemes_.empty()) {
-    spec["security"] = nlohmann::json::array();
-    for (const auto & ss : security_schemes_) {
-      spec["components"]["securitySchemes"][ss.name] = ss.scheme;
-      spec["security"].push_back({{ss.name, nlohmann::json::array()}});
+  // 6b. Middleware-owned responses. 401/403/429 never reach a handler - the
+  // auth and rate-limit middleware answer them ahead of routing - so no route's
+  // return type can describe them and no `RouteEntry` can carry their headers.
+  // They are declared once here and referenced from every route the middleware
+  // guards.
+  auto & responses = spec["components"]["responses"];
+
+  // The RFC 6749 body the `/auth/*` handlers return. Referenced per-route by
+  // `add_error_ref` when the route's ErrorRenderer is kOAuth2Error, so the
+  // three OAuth2 endpoints stop claiming a SOVD GenericError they never emit.
+  responses["OAuth2Error"]["description"] = "RFC 6749 section 5.2 error response.";
+  responses["OAuth2Error"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OAuth2Error");
+
+  // AuthMiddleware answers 401 and 403 ahead of routing, on every route, and
+  // both serialise `AuthErrorResponse::to_json()` = {error, error_description}.
+  // That is the RFC 6749 shape, not the SOVD one - these pointed at
+  // GenericError only because no OAuth2Error schema existed to point at.
+  responses["Unauthorized"]["description"] = "Authentication is missing or the bearer token is invalid.";
+  responses["Unauthorized"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OAuth2Error");
+  responses["Unauthorized"]["headers"]["WWW-Authenticate"] = {
+      {"description", "Bearer challenge, e.g. `Bearer realm=\"ros2_medkit_gateway\", error=\"invalid_token\"`."},
+      {"schema", {{"type", "string"}}}};
+
+  responses["Forbidden"]["description"] = "The token is valid but lacks the scope this operation requires.";
+  responses["Forbidden"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("OAuth2Error");
+
+  // The rate limiter emits the SOVD GenericError shape, so unlike the two
+  // above this schema already matches the wire.
+  responses["RateLimited"]["description"] = "The client exceeded its request quota.";
+  responses["RateLimited"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("GenericError");
+  responses["RateLimited"]["headers"] = {
+      {"Retry-After", {{"description", "Seconds to wait before retrying."}, {"schema", {{"type", "string"}}}}},
+      {"X-RateLimit-Limit", {{"description", "Requests permitted per window."}, {"schema", {{"type", "string"}}}}},
+      {"X-RateLimit-Remaining",
+       {{"description", "Requests left in the current window."}, {"schema", {{"type", "string"}}}}},
+      {"X-RateLimit-Reset",
+       {{"description", "Unix timestamp at which the window resets."}, {"schema", {{"type", "string"}}}}}};
+
+  // 7. Security schemes (if any). A scheme registered without a
+  // document-level requirement still lands in `components/securitySchemes` -
+  // that is what lets a single operation name it - but adds no `security`
+  // entry, so the document does not claim every request needs a token.
+  //
+  // The callers key `document_level_requirement` on `auth.enabled` alone, and
+  // that is deliberate rather than the same over-broad key the per-operation
+  // requirement was corrected away from. This entry is the *default* for an
+  // operation that states nothing, and with auth on that default is right
+  // under every `require_auth_for`: a route registered without
+  // `requires_role()` or `public_route()` is one `AuthManager::
+  // check_authorization` fails closed on. It is also never the operative
+  // statement about a real operation, because
+  // `CapabilityGenerator::project_security_onto_enforcement` gives every
+  // operation an explicit requirement - a role or the empty list - before the
+  // document is served. Dropping it under `none` would gain nothing and would
+  // make a forgotten registration read as public.
+  for (const auto & ss : security_schemes_) {
+    spec["components"]["securitySchemes"][ss.name] = ss.scheme;
+    if (!ss.document_level_requirement) {
+      continue;
     }
+    if (!spec.contains("security")) {
+      spec["security"] = nlohmann::json::array();
+    }
+    spec["security"].push_back({{ss.name, nlohmann::json::array()}});
   }
 
   return spec;

@@ -27,7 +27,9 @@
 #include "ros2_medkit_gateway/dto/cyclic_subscriptions.hpp"
 #include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
+#include "ros2_medkit_gateway/dto/entity_capability.hpp"
 #include "ros2_medkit_gateway/dto/errors.hpp"
+#include "ros2_medkit_gateway/dto/fault_triggers.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
 #include "ros2_medkit_gateway/dto/lifecycle.hpp"
@@ -36,6 +38,7 @@
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/scripts.hpp"
+#include "ros2_medkit_gateway/dto/sse_frames.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
 #include "ros2_medkit_gateway/dto/updates.hpp"
 #include "ros2_medkit_gateway/dto/x_medkit.hpp"
@@ -47,11 +50,14 @@ namespace dto {
 /// (Phase 2/3) appends its types here. Order is irrelevant.
 using AllDtos =
     std::tuple<GenericError, DroppedItem, XMedkitRos2, XMedkitArea, XMedkitComponent, XMedkitApp, XMedkitFunction,
-               XMedkitCollection, AreaListItem, AreaDetail, ComponentListItem, ComponentDetail, AppListItem, AppDetail,
-               FunctionListItem, FunctionDetail, Collection<AreaListItem>, Collection<ComponentListItem>,
-               Collection<AppListItem>, Collection<FunctionListItem>, FaultListItem, Collection<FaultListItem>,
+               XMedkitCollection, EntityCapability, AreaListItem, AreaDetail, ComponentListItem, ComponentDetail,
+               AppListItem, AppDetail, FunctionListItem, FunctionDetail, Collection<AreaListItem>,
+               Collection<ComponentListItem>, Collection<AppListItem>, Collection<FunctionListItem>, FaultListItem,
+               Collection<FaultListItem, FaultListXMedkit>, Collection<FaultListItem, FaultListAggXMedkit>,
                FaultListXMedkit, FaultListAggXMedkit, FaultStatus, FaultItem, FaultEnvironmentData, FaultXMedkit,
-               FaultDetail, FaultListResult, FaultDetailResult, FaultClearResult, XMedkitOperationItem,
+               FaultDetail, FaultListResult, FaultDetailResult, FaultClearResult,
+               // Fault-trigger (threshold-rule) domain DTOs
+               FaultTriggerRule, FaultTriggerRuleCreateRequest, FaultTriggerRuleList, XMedkitOperationItem,
                XMedkitOperationExecution, OperationItem, Collection<OperationItem>, OperationDetail, OperationExecution,
                ExecutionId, Collection<ExecutionId>, ExecutionCreateRequest, ExecutionCreateAsync,
                ExecutionUpdateRequest, OperationExecutionResult,
@@ -59,9 +65,13 @@ using AllDtos =
                ConfigXMedkitItem, ConfigurationMetaData, ConfigListXMedkit,
                Collection<ConfigurationMetaData, ConfigListXMedkit>, ConfigValueXMedkit, ConfigurationReadValue,
                ConfigurationWriteRequest, ConfigurationDeleteResultItem, ConfigurationDeleteMultiStatus,
-               // Data domain DTOs
+               // Data domain DTOs. DataWriteResult is deliberately absent: it is the
+               // return type of the plugin-facing DataProvider::write_data ABI, and no
+               // route publishes it (PUT .../data/{id} answers with DataValue), so a
+               // schema for it would be a type every generated client carries and none
+               // can ever receive.
                XMedkitDataItem, DataItem, Collection<DataItem, DataListXMedkit>, DataListXMedkit, DataWriteRequest,
-               DataListResult, DataValue, DataWriteResult,
+               DataListResult, DataValue,
                // Lock domain DTOs
                Lock, Collection<Lock>, AcquireLockRequest, ExtendLockRequest,
                // Trigger domain DTOs
@@ -69,18 +79,20 @@ using AllDtos =
                // Cyclic subscription domain DTOs
                CyclicSubscription, Collection<CyclicSubscription>, CyclicSubscriptionCreateRequest,
                CyclicSubscriptionUpdateRequest,
+               // SSE frame DTOs - the JSON document inside a frame's `data:` field
+               SubscriptionEventFrame, TriggerEventFrame, FaultStreamXMedkit, FaultStreamEvent,
                // Bulk-data domain DTOs
                BulkDataCategoryList, BulkDataDescriptor, Collection<BulkDataDescriptor>,
                // Log domain DTOs
                LogContext, LogEntry, LogListXMedkit, Collection<LogEntry, LogListXMedkit>, LogConfiguration,
                // Script domain DTOs
-               ScriptMetadata, Collection<ScriptMetadata>, HateoasLinks, ScriptList, ScriptExecution,
-               ScriptUploadResponse, ScriptControlRequest,
+               ScriptMetadata, HateoasLinks, ScriptList, ScriptExecution, ScriptUploadResponse, ScriptControlRequest,
+               ScriptExecutionRequest,
                // Software update domain DTOs
                UpdateList, UpdateDetail, UpdateSubProgress, XMedkitUpdate, UpdateStatus, UpdateRegisterRequest,
                UpdateRegisterResponse,
                // Auth domain DTOs
-               AuthCredentials, AuthTokenResponse, AuthRevokeRequest, AuthRevokeResponse,
+               AuthCredentials, AuthTokenResponse, AuthRevokeRequest, AuthRevokeResponse, OAuth2Error,
                // Health / Root domain DTOs
                HealthDiscoveryLinking, HealthDiscovery, HealthAggregationWarning, Health, VersionInfoVendor,
                VersionInfoEntry, XMedkitVersionInfo, VersionInfo, RootCapabilities, RootAuth, RootTls, RootOverview,
