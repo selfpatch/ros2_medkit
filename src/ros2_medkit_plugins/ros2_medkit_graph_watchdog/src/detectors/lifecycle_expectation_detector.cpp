@@ -60,14 +60,26 @@ constexpr int kDefaultGrace = 5;
 // that reports a node on its very first not-active tick, with no warning and no default.
 //
 // The upper end used to be INT_MAX - 1, which is not a wide tolerance but an off switch with
-// no warning attached. `grace` bounds two things at once: how long a node may read not-active
-// before being reported, AND how long a node that LEFT the graph while not-active sits in the
-// tracker's pending set - during which GRAPH_NODE_INACTIVE's clear is withheld for every
-// node, so the fault can neither raise nor heal for anybody. At INT_MAX - 1 that is roughly
-// 24 days at the shipped cadence; five minutes is already an extravagant allowance for a
-// managed node to reach `active`, and it makes the worst-case withhold something an operator
-// can reason about. A deployment that genuinely needs longer wants a slower tick, not a
-// detector that is silent for weeks.
+// no warning attached. `grace` bounds how long a node that STAYS IN THE GRAPH may read
+// not-active before being reported, and how long a node that returns from a departure still
+// inactive takes to (re-)mature - both advance on present ticks, which this value directly
+// caps. At INT_MAX - 1 that is roughly 24 days at the shipped cadence either way; five minutes
+// is already an extravagant allowance for a managed node to reach `active`, and it makes the
+// worst-case PRESENT withhold something an operator can reason about. A deployment that
+// genuinely needs longer wants a slower tick, not a detector that is silent for weeks.
+//
+// Whether it also bounds a node that leaves the graph before its streak matures depends on
+// whether that node was ever ARMED (see LifecycleExpectationTracker's own class doc). For one
+// the reliability gate has armed at least once, `grace` does NOT bound it: absence holds a
+// below-grace streak rather than advancing it, so that entry sits in the tracker's pending
+// set for as long as the node stays gone, however long that is - GRAPH_NODE_DISAPPEARED can
+// report that departure instead, so nothing here needs to hurry it. That is not a new way to
+// withhold GRAPH_NODE_INACTIVE's clear for every OTHER node - the clear was already gated on
+// every required node's status being settled, so one node this indecisive already blocked it
+// before this bound existed. For a node that was NEVER armed - node_death only ever tracks a
+// node the gate has armed, so this is the one departure nothing else can report - `grace`
+// DOES still bound it: absence keeps advancing the streak too, so it matures within `grace` +
+// `absence_grace` + 1 ticks either way.
 constexpr std::int64_t kMaxGrace = 300;
 /// Consecutive ticks an entry must match ONLY unmanaged nodes before the typo warning
 /// fires. One transient tick is not evidence: discover_apps() wraps the per-node service
@@ -308,9 +320,40 @@ class LifecycleExpectationDetector : public Detector {
         if (state.has_value()) {
           entry_has_managed_match.insert(id);
         }
+        // Whether the gate says the presence detector OWNS this node's departure, for this
+        // SAME app.id. It is what node_death's tracking decision consults, not the whole of
+        // it: that detector applies its own filters first (peer-aggregated apps, apps that
+        // are not online, an empty fqn, ros2cli helper names - see node_death_detector.cpp),
+        // so a true answer here means the GATE would let it track this node, not that it
+        // will. Reading it from the one gate both detectors share on the same tick is what
+        // makes "armed" trustworthy rather than a guess: it is not derived from this node's
+        // own lifecycle label, it IS the fact the presence detector would itself consult if
+        // asked right now. The tracker needs it to tell a node the presence detector could
+        // someday report from one it structurally never can - see LifecycleExpectationTracker's
+        // own class doc. Deliberately NOT reliability_allows(): that one is permissive about a
+        // managed node whose lifecycle label has never been read, so taking its permission for
+        // ownership would switch this detector's absence path off for a node the presence class
+        // does not actually hold - either because the watcher has not finished asking about it,
+        // or because it asked, gave up, and then a label arrived and took the node back.
+        //
+        // kEarned only, and the two exclusions are for different reasons.
+        //
+        // A PROVISIONAL grant is deliberately not enough: the tracker latches this value for
+        // the node's whole life, and a provisional grant is the one node_death itself gives up
+        // the moment a real label arrives. Latching it here would leave this detector believing
+        // the presence class had a node it had already handed back - the same silence in the
+        // opposite direction.
+        //
+        // ANDed with is_online because node_death skips an app that is not online before it
+        // ever consults the gate, and the gate has no notion of online-ness: a manifest app
+        // whose node never started is armed, carries no lifecycle record, and would otherwise
+        // read as owned by a detector that will never look at it. The remaining filters
+        // node_death applies need no mirror here: a peer-aggregated app and one with no binding
+        // both have an empty fqn and are already skipped above.
+        const bool armed = app.is_online && presence_ownership(ctx.gate, app.id) == PresenceOwnership::kEarned;
         // One match per (entry, node): the tracker keys violations by NODE, so two
         // namesakes are both reported instead of one silently replacing the other.
-        matches.push_back(LifecycleMatch{id, fqn, state});
+        matches.push_back(LifecycleMatch{id, fqn, state, armed});
       }
     }
     std::set<std::string> matched_entries;
