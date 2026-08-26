@@ -896,7 +896,7 @@ Read and publish data from ROS 2 topics. Item ids follow
 
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+      curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
 
 ``PUT /api/v1/components/{id}/data/{topic_path}``
    Publish to a topic.
@@ -1630,7 +1630,7 @@ List available bulk-data categories for an entity. Returns the union of rosbag c
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/bulk-data
 
 **Response (200 OK):**
 
@@ -1651,7 +1651,7 @@ List all bulk-data items in a category for the entity.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
 
 **Response (200 OK):**
 
@@ -2910,7 +2910,7 @@ topic (push-based).
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
 
 **Response (200 OK):**
 
@@ -2965,7 +2965,7 @@ polling ROS 2 node parameters matching a configured prefix (pull-based).
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-param-beacon
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-param-beacon
 
 **Response (200 OK):**
 
