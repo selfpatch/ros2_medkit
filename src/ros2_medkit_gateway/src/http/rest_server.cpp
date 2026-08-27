@@ -239,7 +239,37 @@ void RESTServer::setup_pre_routing_handler() {
   // Set up pre-routing handler for CORS and Authentication
   // This handler runs before any route handler
   srv->set_pre_routing_handler([this](const httplib::Request & req, httplib::Response & res) {
-    // 1. Handle CORS (existing logic)
+    // 1. Authentication, before anything else can answer.
+    //
+    // Order matters and it used to be wrong. CORS preflight below answers an
+    // OPTIONS with 204, and the rate limiter answers with 429; both used to run
+    // first and both RETURN Handled, so on a gateway with require_auth_for
+    // "all" an anonymous caller could still get a real answer out of a
+    // protected route. That is two exemptions nobody declared, and they appear
+    // exactly when an operator enables CORS to let a browser talk to the box.
+    //
+    // Putting auth first costs a preflight its CORS headers when the caller has
+    // no credential, which is correct: a browser that cannot authenticate has
+    // no business being told what the box would have allowed.
+    if (auth_middleware_ && auth_middleware_->is_enabled()) {
+      auto auth_request = AuthMiddleware::from_httplib_request(req);
+      auto result = auth_middleware_->process(auth_request);
+
+      if (!result.allowed) {
+        // CORS headers on the refusal itself, so a browser sees a 401 rather
+        // than an opaque network error it cannot report to the user.
+        if (cors_config_.enabled) {
+          std::string origin = req.get_header_value("Origin");
+          if (!origin.empty() && is_origin_allowed(origin)) {
+            set_cors_headers(res, origin);
+          }
+        }
+        AuthMiddleware::apply_to_response(result, res);
+        return httplib::Server::HandlerResponse::Handled;
+      }
+    }
+
+    // 2. Handle CORS (existing logic)
     if (cors_config_.enabled) {
       std::string origin = req.get_header_value("Origin");
       bool origin_allowed = !origin.empty() && is_origin_allowed(origin);
@@ -278,18 +308,6 @@ void RESTServer::setup_pre_routing_handler() {
     }
 
     // 1. Handle CORS (existing logic)
-
-    // Handle Authentication if enabled
-    if (auth_middleware_ && auth_middleware_->is_enabled()) {
-      // Use AuthMiddleware to process the request
-      auto auth_request = AuthMiddleware::from_httplib_request(req);
-      auto result = auth_middleware_->process(auth_request);
-
-      if (!result.allowed) {
-        AuthMiddleware::apply_to_response(result, res);
-        return httplib::Server::HandlerResponse::Handled;
-      }
-    }
 
     return httplib::Server::HandlerResponse::Unhandled;
   });
