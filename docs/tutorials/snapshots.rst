@@ -32,18 +32,24 @@ configuration always overrides the zero-config fallback when present.
 .. note::
 
    By default, clearing a fault deletes its **value snapshots**, the per-topic
-   JSON captures this tutorial configures. A clear reaches the fault manager
-   either from the entity-scoped DELETE route, for example
-   ``DELETE /api/v1/apps/{app_id}/faults/{fault_code}`` (``components``,
-   ``areas`` and ``functions`` carry the same route, and there is no global
-   ``DELETE /api/v1/faults/{code}``), or from the ``~/clear_fault`` service. A
-   plugin whose device de-asserts an alarm calls that same service, so a device
-   going quiet clears the fault the way an operator does.
-   ``snapshots.retain_on_clear: true`` keeps the value snapshots across a clear,
-   and only those. The rosbag recording follows
-   ``snapshots.rosbag.auto_cleanup``, which deletes it on clear unless
-   ``snapshots.rosbag.max_bags_per_fault`` keeps a history, in which case that
-   cap governs the recording's retention instead.
+   JSON captures this tutorial configures. Every clear reaches storage the same
+   way, whatever asked for it: the per-fault
+   ``DELETE /api/v1/apps/{app_id}/faults/{fault_code}`` route (``components``,
+   ``areas`` and ``functions`` carry the same one, though there is no global
+   ``DELETE /api/v1/faults/{code}``), the bulk
+   ``DELETE /api/v1/apps/{app_id}/faults`` and ``DELETE /api/v1/faults``, the
+   ``~/clear_fault`` service, and the correlation cascade, which clears a root
+   cause's symptoms with no clear addressed to them. A plugin calls that same
+   service when its device de-asserts an alarm, so a device going quiet clears
+   the fault the way an operator does. Starting with healing disabled takes the
+   value snapshots of leftover HEALED rows as it reclassifies them, without a
+   clear at all. ``snapshots.retain_on_clear: true`` keeps the value snapshots
+   across all of it, and only those. The rosbag recording is not covered by that
+   setting. A clear deletes the recording under
+   ``snapshots.rosbag.auto_cleanup``, unless that is off or
+   ``snapshots.rosbag.max_bags_per_fault`` keeps a history. The cap then governs
+   retention, except at ``0`` (unlimited), where only
+   ``snapshots.rosbag.max_total_storage_mb`` bounds it.
 
 Quick Start
 -----------
