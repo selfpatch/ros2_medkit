@@ -15,9 +15,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
@@ -235,6 +239,8 @@ TEST_F(BulkDataHandlersTest, ARowWithNeitherIdNorPathIsDroppedRatherThanAdvertis
 }
 
 TEST_F(BulkDataHandlersTest, DistinctRecordingsEachReportTheirOwnSize) {
+  // The paths in these rows do not exist on this host, so each descriptor keeps
+  // the row's own figure - the fallback the sizing test below covers explicitly.
   const std::vector<json> rows{rosbag_row("A", "fault_A_1", 2048), rosbag_row("B", "fault_B_1", 4096)};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, {});
@@ -245,6 +251,101 @@ TEST_F(BulkDataHandlersTest, DistinctRecordingsEachReportTheirOwnSize) {
 
 TEST_F(BulkDataHandlersTest, NoRowsYieldsNoDescriptors) {
   EXPECT_TRUE(handlers::detail::fold_rosbag_rows_into_descriptors({}, {}).empty());
+}
+
+// === Descriptor size vs served bytes ===
+// A rosbag2 bag is a directory: one storage file plus metadata.yaml. The
+// download resolves the storage file and streams that alone, so the descriptor
+// has to be sized on the same file. The fault manager's stored figure is the
+// directory total, which is the recording's disk footprint and larger than the
+// transfer. Reporting it made every listing overstate the download.
+
+class RosbagBagDirectoryTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    bag_dir_ = std::filesystem::temp_directory_path() /
+               ("bulkdata_bag_test_" + std::to_string(getpid()) + "_" + std::to_string(counter_++));
+    std::filesystem::create_directories(bag_dir_);
+    write_file(bag_dir_ / "recording_0.db3", std::string(4096, 'x'));
+    write_file(bag_dir_ / "metadata.yaml", std::string(311, 'y'));
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove_all(bag_dir_, ec);
+  }
+
+  static void write_file(const std::filesystem::path & path, const std::string & content) {
+    std::ofstream out(path, std::ios::binary);
+    out << content;
+  }
+
+  // What the fault manager stores: every regular file under the bag directory.
+  uint64_t directory_total() const {
+    uint64_t total = 0;
+    for (const auto & entry : std::filesystem::recursive_directory_iterator(bag_dir_)) {
+      if (entry.is_regular_file()) {
+        total += static_cast<uint64_t>(entry.file_size());
+      }
+    }
+    return total;
+  }
+
+  std::filesystem::path bag_dir_;
+  static int counter_;
+};
+
+int RosbagBagDirectoryTest::counter_ = 0;
+
+TEST_F(RosbagBagDirectoryTest, DescriptorSizeIsTheBytesTheDownloadServesNotTheBagDirectoryTotal) {
+  // The two operations download() performs to fill Content-Length: resolve the
+  // bag directory to its storage file, then take that file's size.
+  const std::string served_path = BulkDataHandlers::resolve_rosbag_file_path(bag_dir_.string());
+  ASSERT_EQ(served_path, (bag_dir_ / "recording_0.db3").string());
+  const auto served_bytes = static_cast<uint64_t>(std::filesystem::file_size(served_path));
+
+  // Not vacuous: the directory holds metadata.yaml as well, so the stored figure
+  // and the served figure are genuinely different numbers.
+  ASSERT_GT(directory_total(), served_bytes);
+
+  // The row carries the directory total, which is what the fault manager stores.
+  const json row{{"fault_code", "MOTOR_OVERHEAT"},
+                 {"recording_id", bag_dir_.filename().string()},
+                 {"file_path", bag_dir_.string()},
+                 {"format", "sqlite3"},
+                 {"duration_sec", 6.0},
+                 {"size_bytes", directory_total()}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  EXPECT_EQ(descriptors[0].size, served_bytes) << "the listing must promise the bytes the download sends";
+  EXPECT_NE(descriptors[0].size, directory_total()) << "metadata.yaml is not served, so it must not be counted";
+}
+
+TEST_F(RosbagBagDirectoryTest, ServedBytesIsUnknownRatherThanZeroWhenTheBagIsNotVisible) {
+  // Positive control for the absence below: the same helper does answer for a
+  // bag it can see, so a nullopt is the missing bag and not a broken helper.
+  ASSERT_TRUE(handlers::detail::rosbag_served_bytes(bag_dir_.string()).has_value());
+
+  EXPECT_FALSE(handlers::detail::rosbag_served_bytes("").has_value());
+  EXPECT_FALSE(handlers::detail::rosbag_served_bytes((bag_dir_ / "no_such_bag").string()).has_value());
+
+  // An empty bag directory resolves to no storage file at all.
+  const auto empty_bag = bag_dir_ / "empty_bag";
+  std::filesystem::create_directories(empty_bag);
+  EXPECT_FALSE(handlers::detail::rosbag_served_bytes(empty_bag.string()).has_value());
+}
+
+TEST_F(RosbagBagDirectoryTest, AnUnreachableBagKeepsTheStoredFigureRatherThanReportingZero) {
+  const json row{{"fault_code", "MOTOR_OVERHEAT"},
+                 {"recording_id", "fault_MOTOR_OVERHEAT_1738664999000"},
+                 {"file_path", (bag_dir_ / "gone").string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 35943}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  EXPECT_EQ(descriptors[0].size, 35943u);
 }
 
 // === Shared timestamp utility tests ===
