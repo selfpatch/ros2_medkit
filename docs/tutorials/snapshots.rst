@@ -201,20 +201,33 @@ and may predate the confirmation by the length of the outage; the entry's
 payload includes one, ``source_timestamp`` (the payload's own timestamp)
 alongside ``captured_at``.
 
+With ``entity_freeze_frame.storage.path`` set, a captured frame survives a
+gateway restart: it is reloaded at start and served exactly as it was
+captured, with its original ``captured_at`` and no ``capture_origin`` marker.
+Set the path to a file on a volume that outlives the container, or leave it
+empty and the frames go next to the trigger store
+(``triggers.storage.path``); with neither set they are process memory only and
+a restart loses them.
+
 Faults that are already confirmed when the gateway starts are caught up at
 startup: the gateway lists the confirmed faults and captures a frame for each
-plugin-backed one, so a device standing in fault across a gateway restart
-still gets a frame. Catch-up frames carry ``"capture_origin": "startup"`` in
-their ``x-medkit`` block because their values were read at gateway start, not
-when the fault confirmed (which may be long before, since the fault manager
+plugin-backed one that does not already have a stored frame, so a device
+standing in fault across a gateway restart still gets a frame, and one whose
+frame was already taken keeps the values from its own confirm edge instead of
+today's. Catch-up frames carry ``"capture_origin": "startup"`` in their
+``x-medkit`` block because their values were read at gateway start, not when
+the fault confirmed (which may be long before, since the fault manager
 persists faults); ``captured_at`` always stamps the moment the values were
-read. Frames without the marker were captured on the confirm edge. Disable
-with:
+read. Frames without the marker were captured on the confirm edge, and a
+reloaded frame keeps whichever marker it was captured with. Disable with:
 
 .. code-block:: bash
 
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
      -p entity_freeze_frame.enabled:=false
+
+A plugin entity keeps exactly one frame per fault: a re-confirm re-samples the
+plugin and replaces it, on disk as in memory.
 
 A plugin entity's values are not a ROS message, so ``topic`` and
 ``message_type`` are empty on these frames. ``x-medkit.source`` names the

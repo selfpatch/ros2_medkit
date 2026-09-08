@@ -384,6 +384,19 @@ Configure how the gateway connects to the fault manager services and event topic
        values, marked ``connected: false`` in the snapshot's ``x-medkit`` block.
        Explicit snapshot config in the fault manager always wins when present.
        Only active when plugins are loaded.
+   * - ``entity_freeze_frame.storage.path``
+     - string
+     - ``""``
+     - SQLite file the captured frames are persisted in, so a restart serves the
+       values frozen at fault time instead of re-reading the plant. When empty,
+       the frames go in ``entity_freeze_frames.db`` next to
+       ``triggers.storage.path``; with that empty too they stay in memory and are
+       lost on restart. A reloaded frame keeps its original ``captured_at`` and
+       its ``capture_origin``, and the startup catch-up then runs only for faults
+       that have no stored frame. The retained-frame bound of 256 faults counts
+       reloaded and freshly captured frames together, dropping the oldest first,
+       and a frame whose fault the fault manager no longer holds at all is
+       dropped at startup.
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default

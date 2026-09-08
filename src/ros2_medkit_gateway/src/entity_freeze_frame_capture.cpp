@@ -14,8 +14,10 @@
 
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 
@@ -45,12 +47,20 @@ std::string string_field(const nlohmann::json & item, const char * field) {
 
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                                                    DataProviderResolver resolver, RouteDataFetcher route_fetcher,
-                                                   size_t max_faults, StandingFaultLister standing_lister)
+                                                   size_t max_faults, StandingFaultLister standing_lister,
+                                                   std::shared_ptr<EntityFreezeFrameStore> store,
+                                                   KnownFaultCodeLister known_code_lister)
   : resolver_(std::move(resolver))
   , route_fetcher_(std::move(route_fetcher))
   , logger_(node->get_logger())
   , max_faults_(max_faults > 0 ? max_faults : 1)
-  , standing_lister_(std::move(standing_lister)) {
+  , standing_lister_(std::move(standing_lister))
+  , store_(std::move(store))
+  , known_code_lister_(std::move(known_code_lister)) {
+  // Before anything can serve or capture: a frame taken before the last
+  // shutdown is the one the operator is owed, and the catch-up must see it so
+  // it re-reads only the faults that have none.
+  load_persisted_frames();
   // Resolve the topic from the gateway node (it owns fault_manager.namespace);
   // the subscription itself is created on the executor's dedicated _sub node so
   // it never races rcl's hash-map on the main node (issue #375).
@@ -102,6 +112,204 @@ EntityFreezeFrameCapture::frames_for(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = frames_.find(fault_code);
   return it != frames_.end() ? it->second : std::vector<Frame>{};
+}
+
+StoredEntityFreezeFrame EntityFreezeFrameCapture::to_stored(const std::string & fault_code, const Frame & frame) {
+  StoredEntityFreezeFrame row;
+  row.fault_code = fault_code;
+  row.entity_id = frame.entity_id;
+  row.frame = nlohmann::json::object();
+  row.frame["values"] = frame.values;
+  // Written only when the capture had them, so the reload reproduces the
+  // frame's own "reported nothing" as absence rather than as a null.
+  if (frame.connected.has_value()) {
+    row.frame["connected"] = *frame.connected;
+  }
+  if (!frame.source_timestamp.is_null()) {
+    row.frame["source_timestamp"] = frame.source_timestamp;
+  }
+  row.captured_at_ns = frame.captured_at_ns;
+  row.source = frame.source;
+  row.capture_origin = frame.startup_catchup ? kCaptureOriginStartup : "";
+  return row;
+}
+
+std::optional<EntityFreezeFrameCapture::Frame>
+EntityFreezeFrameCapture::from_stored(const StoredEntityFreezeFrame & row) {
+  if (row.entity_id.empty() || !row.frame.is_object()) {
+    return std::nullopt;
+  }
+  const auto values = row.frame.find("values");
+  if (values == row.frame.end()) {
+    return std::nullopt;
+  }
+  Frame frame;
+  frame.entity_id = row.entity_id;
+  frame.values = *values;
+  frame.captured_at_ns = row.captured_at_ns;
+  frame.source = row.source;
+  // Reloading must not launder a catch-up frame into a confirm-edge one: its
+  // captured_at is still a gateway start, so the marker still belongs on it.
+  frame.startup_catchup = row.capture_origin == kCaptureOriginStartup;
+  const auto connected = row.frame.find("connected");
+  if (connected != row.frame.end() && connected->is_boolean()) {
+    frame.connected = connected->get<bool>();
+  }
+  const auto source_timestamp = row.frame.find("source_timestamp");
+  if (source_timestamp != row.frame.end()) {
+    frame.source_timestamp = *source_timestamp;
+  }
+  return frame;
+}
+
+void EntityFreezeFrameCapture::persist_frames_locked(const std::string & fault_code,
+                                                     const std::vector<Frame> & frames) {
+  if (!store_) {
+    return;
+  }
+  std::vector<StoredEntityFreezeFrame> rows;
+  rows.reserve(frames.size());
+  for (const auto & frame : frames) {
+    rows.push_back(to_stored(fault_code, frame));
+  }
+  auto written = store_->replace_frames(fault_code, rows);
+  if (!written && !store_write_warned_) {
+    // One line for the life of the process: a read-only or full volume would
+    // otherwise log once per confirm, and the frames still work in memory.
+    store_write_warned_ = true;
+    RCLCPP_WARN(logger_, "Entity freeze-frame store write failed, frames are process-local until restart: %s",
+                written.error().c_str());
+  }
+}
+
+void EntityFreezeFrameCapture::erase_persisted_locked(const std::string & fault_code) {
+  if (!store_) {
+    return;
+  }
+  auto erased = store_->erase_frames(fault_code);
+  if (!erased && !store_write_warned_) {
+    store_write_warned_ = true;
+    RCLCPP_WARN(logger_, "Entity freeze-frame store delete failed: %s", erased.error().c_str());
+  }
+}
+
+void EntityFreezeFrameCapture::load_persisted_frames() {
+  if (!store_) {
+    return;
+  }
+  auto rows = store_->load_all();
+  if (!rows) {
+    RCLCPP_WARN(logger_, "Entity freeze-frame store unreadable, starting with no reloaded frames: %s",
+                rows.error().c_str());
+    return;
+  }
+
+  std::unordered_map<std::string, std::vector<Frame>> loaded;
+  std::unordered_map<std::string, int64_t> newest;
+  size_t unreadable = 0;
+  for (const auto & row : *rows) {
+    auto frame = from_stored(row);
+    if (!frame) {
+      ++unreadable;
+      continue;
+    }
+    auto it = newest.find(row.fault_code);
+    if (it == newest.end()) {
+      newest.emplace(row.fault_code, row.captured_at_ns);
+    } else {
+      it->second = std::max(it->second, row.captured_at_ns);
+    }
+    loaded[row.fault_code].push_back(std::move(*frame));
+  }
+
+  // Oldest code first, so the retained-frame bound drops what a restart can
+  // least afford to keep rather than what it just read.
+  std::vector<std::string> codes;
+  codes.reserve(loaded.size());
+  for (const auto & entry : loaded) {
+    codes.push_back(entry.first);
+  }
+  std::sort(codes.begin(), codes.end(), [&newest](const std::string & a, const std::string & b) {
+    if (newest.at(a) != newest.at(b)) {
+      return newest.at(a) < newest.at(b);
+    }
+    return a < b;
+  });
+  const size_t over_cap = codes.size() > max_faults_ ? codes.size() - max_faults_ : 0;
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (size_t i = 0; i < codes.size(); ++i) {
+    const auto & code = codes[i];
+    if (i < over_cap) {
+      // Past the bound: drop the rows too, or every start re-reads frames it
+      // can never serve and the file grows without one.
+      erase_persisted_locked(code);
+      continue;
+    }
+    insertion_order_.push_back(code);
+    frames_[code] = std::move(loaded[code]);
+    reloaded_codes_.insert(code);
+  }
+  if (!frames_.empty()) {
+    RCLCPP_INFO(logger_, "Entity freeze-frame: reloaded frames for %zu fault(s) from the store", frames_.size());
+  }
+  if (over_cap > 0) {
+    RCLCPP_WARN(logger_,
+                "Entity freeze-frame store held %zu fault(s) beyond the retained-frame bound of %zu; "
+                "the oldest were dropped",
+                over_cap, max_faults_);
+  }
+  if (unreadable > 0) {
+    RCLCPP_WARN(logger_, "Entity freeze-frame store: %zu unreadable row(s) skipped", unreadable);
+  }
+}
+
+void EntityFreezeFrameCapture::prune_frames_for_unknown_faults(const std::function<bool()> & should_abort) {
+  if (!known_code_lister_) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (reloaded_codes_.empty()) {
+      return;
+    }
+  }
+  std::optional<std::unordered_set<std::string>> known;
+  try {
+    known = known_code_lister_(should_abort);
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger_, "Entity freeze-frame prune skipped: known-fault lister threw: %s", e.what());
+    return;
+  } catch (...) {
+    RCLCPP_WARN(logger_, "Entity freeze-frame prune skipped: known-fault lister threw");
+    return;
+  }
+  if (!known) {
+    return;  // could not ask: "cannot tell" must never read as "the fault is gone"
+  }
+
+  size_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = reloaded_codes_.begin(); it != reloaded_codes_.end();) {
+      if (known->count(*it) != 0) {
+        ++it;  // reported in any status, cleared included: the frame stays
+        continue;
+      }
+      const std::string code = *it;
+      it = reloaded_codes_.erase(it);
+      frames_.erase(code);
+      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), code),
+                             insertion_order_.end());
+      erase_persisted_locked(code);
+      ++dropped;
+    }
+  }
+  if (dropped > 0) {
+    RCLCPP_INFO(logger_,
+                "Entity freeze-frame: dropped %zu reloaded frame(s) for fault(s) the fault manager no longer holds",
+                dropped);
+  }
 }
 
 nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann::json & content) {
@@ -288,7 +496,7 @@ void EntityFreezeFrameCapture::wait_for_events_publisher(const std::function<boo
 }
 
 void EntityFreezeFrameCapture::capture_standing_faults() {
-  if (!standing_lister_) {
+  if (!standing_lister_ && !known_code_lister_) {
     return;
   }
   const auto should_abort = [this] {
@@ -306,13 +514,21 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   // than on a thread of its own: this thread is joined by the destructor, and
   // should_abort is what lets that join interrupt the wait.
   std::vector<StandingFault> standing;
-  try {
-    standing = standing_lister_(should_abort);
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw: %s", e.what());
-    return;
-  } catch (...) {
-    RCLCPP_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw");
+  if (standing_lister_) {
+    try {
+      standing = standing_lister_(should_abort);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw: %s", e.what());
+      return;
+    } catch (...) {
+      RCLCPP_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw");
+      return;
+    }
+  }
+  // Runs after the lister has already waited the fault services out, so the
+  // extra query costs a round trip rather than a second startup stall.
+  prune_frames_for_unknown_faults(should_abort);
+  if (!standing_lister_ || should_abort()) {
     return;
   }
   // Codes with a confirm already queued belong to the drain loop: capturing
@@ -327,7 +543,18 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
       queued_codes.insert(queued->fault.fault_code);
     }
   }
-  size_t framed = 0;
+  // Frames reloaded from the store already answer for their faults, and the
+  // bound counts them: they are not budget this catch-up gets to spend twice.
+  std::unordered_set<std::string> already_framed;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    already_framed.reserve(frames_.size());
+    for (const auto & entry : frames_) {
+      already_framed.insert(entry.first);
+    }
+  }
+  size_t framed = already_framed.size();
+  size_t captured = 0;
   size_t over_cap = 0;
   for (const auto & fault : standing) {
     if (should_abort()) {
@@ -337,6 +564,13 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
       continue;
     }
     if (queued_codes.count(fault.fault_code) != 0) {
+      continue;
+    }
+    // The stored frame is the one from this fault's own confirm edge. Re-reading
+    // the plant now would replace it with today's values under a "startup"
+    // marker, which is exactly what persisting the frame is here to stop. Sits
+    // before the bound check so a reloaded frame spends no catch-up budget.
+    if (already_framed.count(fault.fault_code) != 0) {
       continue;
     }
     if (framed >= max_faults_) {
@@ -349,6 +583,7 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     event.fault.reporting_sources = fault.reporting_sources;
     if (capture_for_event(event, /*startup_catchup=*/true)) {
       ++framed;
+      ++captured;
     }
   }
   if (over_cap > 0) {
@@ -357,8 +592,8 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
                 "bound of %zu",
                 over_cap, max_faults_);
   }
-  if (framed > 0) {
-    RCLCPP_INFO(logger_, "Entity freeze-frame: captured %zu fault(s) that were already confirmed at startup", framed);
+  if (captured > 0) {
+    RCLCPP_INFO(logger_, "Entity freeze-frame: captured %zu fault(s) that were already confirmed at startup", captured);
   }
 }
 
@@ -432,11 +667,23 @@ bool EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::Fa
   if (frames_.find(fault_code) == frames_.end()) {
     insertion_order_.push_back(fault_code);
     while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
-      frames_.erase(insertion_order_.front());
+      const std::string evicted = insertion_order_.front();
+      frames_.erase(evicted);
       insertion_order_.pop_front();
+      // The store follows the map out: an evicted frame that stayed on disk
+      // would come back on the next start and the bound would mean nothing
+      // across restarts.
+      reloaded_codes_.erase(evicted);
+      erase_persisted_locked(evicted);
     }
   }
+  // A capture on this fault's own edge supersedes whatever was reloaded for it,
+  // so the code is no longer a candidate for the reloaded-frame prune.
+  reloaded_codes_.erase(fault_code);
   frames_[fault_code] = std::move(frames);
+  // Under the same lock as the map, so the file and what is being served
+  // cannot disagree about what was frozen.
+  persist_frames_locked(fault_code, frames_[fault_code]);
 
   RCLCPP_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s'", fault_code.c_str());
   return true;

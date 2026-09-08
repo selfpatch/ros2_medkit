@@ -18,15 +18,19 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
@@ -38,6 +42,8 @@ using ros2_medkit_gateway::DataProvider;
 using ros2_medkit_gateway::DataProviderError;
 using ros2_medkit_gateway::DataProviderErrorInfo;
 using ros2_medkit_gateway::EntityFreezeFrameCapture;
+using ros2_medkit_gateway::InMemoryEntityFreezeFrameStore;
+using ros2_medkit_gateway::StoredEntityFreezeFrame;
 using ros2_medkit_gateway::handlers::FaultHandlers;
 using ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor;
 using ros2_medkit_msgs::msg::Fault;
@@ -674,6 +680,324 @@ TEST_F(EntityFreezeFrameCaptureTest, OldestFaultEvictedPastMaxFaults) {
   EXPECT_TRUE(capture.frames_for("PLC_EVICT_A").empty());  // FIFO-evicted
   EXPECT_FALSE(capture.frames_for("PLC_EVICT_B").empty());
   EXPECT_FALSE(capture.frames_for("PLC_EVICT_C").empty());
+}
+
+// ===========================================================================
+// Persistence: the frame outlives the process, so a restart serves what was
+// frozen at fault time instead of re-reading the plant as it is now.
+// ===========================================================================
+
+namespace {
+
+/// One stored row, shaped as the capture writes them.
+StoredEntityFreezeFrame make_stored_row(const std::string & fault_code, const std::string & entity_id,
+                                        int64_t captured_at_ns, double level = 7.0,
+                                        const std::string & capture_origin = "") {
+  StoredEntityFreezeFrame row;
+  row.fault_code = fault_code;
+  row.entity_id = entity_id;
+  row.frame = json{{"values", {{"level", level}}}, {"connected", false}, {"source_timestamp", "2026-09-08T17:51:40Z"}};
+  row.captured_at_ns = captured_at_ns;
+  row.source = EntityFreezeFrameCapture::kSourceXPlcDataRoute;
+  row.capture_origin = capture_origin;
+  return row;
+}
+
+/// Route fetcher that serves a fixed level and records which entities it read,
+/// so a test can prove the plant was NOT re-read for a fault that already has
+/// a frame.
+class CountingRouteFetcher {
+ public:
+  explicit CountingRouteFetcher(double level) : level_(level) {
+  }
+
+  std::optional<json> operator()(const std::string & entity_id) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      reads_[entity_id] += 1;
+    }
+    return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level_}}})}};
+  }
+
+  int reads(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = reads_.find(entity_id);
+    return it == reads_.end() ? 0 : it->second;
+  }
+
+ private:
+  double level_;
+  std::mutex mutex_;
+  std::map<std::string, int> reads_;
+};
+
+}  // namespace
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, CaptureWritesTheFrameThroughToTheStore) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      nullptr, 256, nullptr, store);
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_PERSIST", {"plc_app"})));
+  const auto served = capture.frames_for("PLC_PERSIST");
+  ASSERT_EQ(served.size(), 1u);
+
+  auto rows = store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_EQ((*rows)[0].fault_code, "PLC_PERSIST");
+  EXPECT_EQ((*rows)[0].entity_id, "plc_app");
+  EXPECT_EQ((*rows)[0].captured_at_ns, served[0].captured_at_ns);
+  EXPECT_EQ((*rows)[0].frame["values"], served[0].values);
+  EXPECT_EQ((*rows)[0].source, EntityFreezeFrameCapture::kSourceDataProvider);
+  EXPECT_EQ((*rows)[0].capture_origin, "");  // captured on the confirm edge
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, ReConfirmOverwritesTheStoredRow) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      nullptr, 256, nullptr, store);
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_RECONFIRM", {"plc_app"})));
+
+  // The store must follow the map: today's semantics are one frame per fault,
+  // so a stale row would resurrect the previous occurrence's values on restart.
+  provider_->set_temperature(99.0);
+  const auto reconfirm = make_confirmed_event("PLC_RECONFIRM", {"plc_app"});
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  bool overwritten = false;
+  while (std::chrono::steady_clock::now() < deadline && !overwritten) {
+    publisher_->publish(reconfirm);
+    std::this_thread::sleep_for(20ms);
+    auto rows = store->load_all();
+    overwritten = rows.has_value() && rows->size() == 1u &&
+                  std::abs((*rows)[0].frame["values"].value("temperature", 0.0) - 99.0) < 1e-9;
+  }
+  EXPECT_TRUE(overwritten);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameIsServedExactlyAsItWasCaptured) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  json first_wire;
+  int64_t captured_at_ns = 0;
+  {
+    CountingRouteFetcher fetcher(41.0);
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&fetcher](const std::string & entity_id) {
+          return fetcher(entity_id);
+        },
+        256, nullptr, store);
+    ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_RESTART", {"route_plc_app"})));
+    const auto frames = capture.frames_for("PLC_RESTART");
+    ASSERT_EQ(frames.size(), 1u);
+    captured_at_ns = frames[0].captured_at_ns;
+    first_wire = FaultHandlers::merge_entity_freeze_frames(json{{"snapshots", json::array()}}, frames);
+  }
+
+  // A second gateway life on the same store, with the plant now reading
+  // something else entirely: the served frame must still be the frozen one.
+  CountingRouteFetcher moved_on(999.0);
+  EntityFreezeFrameCapture restarted(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [&moved_on](const std::string & entity_id) {
+        return moved_on(entity_id);
+      },
+      256, nullptr, store);
+
+  const auto reloaded = restarted.frames_for("PLC_RESTART");
+  ASSERT_EQ(reloaded.size(), 1u);
+  EXPECT_EQ(reloaded[0].captured_at_ns, captured_at_ns);
+  EXPECT_FALSE(reloaded[0].startup_catchup);
+  const auto second_wire = FaultHandlers::merge_entity_freeze_frames(json{{"snapshots", json::array()}}, reloaded);
+  EXPECT_EQ(second_wire, first_wire);  // byte for byte, marker included
+  ASSERT_EQ(second_wire["snapshots"].size(), 1u);
+  EXPECT_FALSE(second_wire["snapshots"][0].contains("capture_origin"));
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, CatchUpSkipsAReloadedCodeAndFramesOneWithoutARow) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  ASSERT_TRUE(
+      store->replace_frames("PLC_HAS_FRAME", {make_stored_row("PLC_HAS_FRAME", "route_stored_app", 4242)}).has_value());
+
+  CountingRouteFetcher fetcher(7.0);
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [&fetcher](const std::string & entity_id) {
+        return fetcher(entity_id);
+      },
+      256,
+      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+        return {{"PLC_HAS_FRAME", {"route_stored_app"}}, {"PLC_NO_FRAME", {"route_fresh_app"}}};
+      },
+      store);
+
+  // Positive control on the same harness: a standing fault with no stored row
+  // still gets its startup frame, so an empty PLC_HAS_FRAME below would be a
+  // broken catch-up rather than a working skip.
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (capture.frames_for("PLC_NO_FRAME").empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  const auto fresh = capture.frames_for("PLC_NO_FRAME");
+  ASSERT_EQ(fresh.size(), 1u);
+  EXPECT_TRUE(fresh[0].startup_catchup);
+
+  const auto stored = capture.frames_for("PLC_HAS_FRAME");
+  ASSERT_EQ(stored.size(), 1u);
+  EXPECT_EQ(stored[0].captured_at_ns, 4242);  // the frozen moment, not this start
+  EXPECT_FALSE(stored[0].startup_catchup);
+  EXPECT_EQ(fetcher.reads("route_stored_app"), 0);  // the plant was never re-read for it
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, ReloadDropsAFaultTheManagerNoLongerHoldsAndKeepsAClearedOne) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  ASSERT_TRUE(store->replace_frames("PLC_GONE", {make_stored_row("PLC_GONE", "route_a", 100)}).has_value());
+  ASSERT_TRUE(store->replace_frames("PLC_CLEARED", {make_stored_row("PLC_CLEARED", "route_b", 200)}).has_value());
+
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      nullptr, 256,
+      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+        return {};  // nothing standing: only the reload and the prune run
+      },
+      store,
+      // The fault manager reports the cleared fault and knows nothing of the
+      // other: its own store was replaced under ours.
+      [](const std::function<bool()> &) -> std::optional<std::unordered_set<std::string>> {
+        return std::unordered_set<std::string>{"PLC_CLEARED"};
+      });
+
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (!capture.frames_for("PLC_GONE").empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  EXPECT_TRUE(capture.frames_for("PLC_GONE").empty());
+  // A cleared fault keeps its frame: the gateway's retention across a clear is
+  // exactly what persisting it is meant to preserve.
+  EXPECT_FALSE(capture.frames_for("PLC_CLEARED").empty());
+  auto rows = store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_EQ((*rows)[0].fault_code, "PLC_CLEARED");
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AnUnanswerableKnownFaultListerDropsNothing) {
+  // Absence assertion, controlled by the test above: the same seeding with a
+  // lister that CAN answer drops PLC_GONE, so "nothing dropped" here is the
+  // "could not tell" rule and not a prune that never runs.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  ASSERT_TRUE(store->replace_frames("PLC_GONE", {make_stored_row("PLC_GONE", "route_a", 100)}).has_value());
+  ASSERT_TRUE(store->replace_frames("PLC_CLEARED", {make_stored_row("PLC_CLEARED", "route_b", 200)}).has_value());
+
+  std::atomic<bool> asked{false};
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      nullptr, 256,
+      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+        return {};
+      },
+      store,
+      [&asked](const std::function<bool()> &) -> std::optional<std::unordered_set<std::string>> {
+        asked.store(true);
+        return std::nullopt;  // fault manager unreachable
+      });
+
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (!asked.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  ASSERT_TRUE(asked.load());
+  std::this_thread::sleep_for(300ms);  // would be enough for a prune to land
+  EXPECT_FALSE(capture.frames_for("PLC_GONE").empty());
+  EXPECT_FALSE(capture.frames_for("PLC_CLEARED").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, TheRetainedFrameBoundCountsReloadedFrames) {
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  ASSERT_TRUE(store->replace_frames("PLC_LOADED_A", {make_stored_row("PLC_LOADED_A", "route_a", 100)}).has_value());
+  ASSERT_TRUE(store->replace_frames("PLC_LOADED_B", {make_stored_row("PLC_LOADED_B", "route_b", 200)}).has_value());
+
+  const auto standing = [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+    return {{"PLC_FRESH", {"route_fresh"}}};
+  };
+  CountingRouteFetcher fetcher(7.0);
+  const auto route = [&fetcher](const std::string & entity_id) {
+    return fetcher(entity_id);
+  };
+  const auto no_provider = [](const std::string &) -> DataProvider * {
+    return nullptr;
+  };
+
+  {
+    // Bound of 2, already met by the two reloaded frames: catching PLC_FRESH up
+    // would FIFO-evict one of them, so it is refused instead.
+    EntityFreezeFrameCapture capped(node_.get(), *sub_exec_, no_provider, route, /*max_faults=*/2, standing, store);
+    std::this_thread::sleep_for(1s);  // enough for an uncapped catch-up to land
+    EXPECT_TRUE(capped.frames_for("PLC_FRESH").empty());
+    EXPECT_FALSE(capped.frames_for("PLC_LOADED_A").empty());
+    EXPECT_FALSE(capped.frames_for("PLC_LOADED_B").empty());
+  }
+
+  // Positive control on the same harness: one more slot and the same catch-up
+  // frames it.
+  EntityFreezeFrameCapture roomy(node_.get(), *sub_exec_, no_provider, route, /*max_faults=*/3, standing, store);
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (roomy.frames_for("PLC_FRESH").empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  EXPECT_FALSE(roomy.frames_for("PLC_FRESH").empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AnEvictedFaultLosesItsStoredRowToo) {
+  // Otherwise the bound holds only within a process: an evicted frame would
+  // come back on the next start and the file would grow without a limit.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      nullptr, /*max_faults=*/1, nullptr, store);
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_FIRST", {"plc_app"})));
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_SECOND", {"plc_app"})));
+
+  auto rows = store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_EQ((*rows)[0].fault_code, "PLC_EVICT_SECOND");
 }
 
 TEST(ContentHasLiveData, GatesOnItemsNotOnTheLinkFlag) {
