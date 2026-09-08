@@ -1499,7 +1499,8 @@ Query and manage faults.
    **Extended Data Records:**
 
    The ``environment_data.extended_data_records`` object carries the fault's
-   occurrence timestamps, taken from ``Fault.msg`` (see :doc:`messages`):
+   occurrence timestamps, which are ``Fault.msg``'s ``first_occurred`` and
+   ``last_occurred`` under their REST names (see :doc:`messages`):
 
    - ``first_occurrence``: when the current occurrence started, reset when a
      FAILED event reactivates a CLEARED fault, so it moves with
