@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -121,6 +122,25 @@ std::string rosbag_recording_id(const std::string & file_path) {
   return p.filename().string();
 }
 
+std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
+  if (bag_path.empty()) {
+    return std::nullopt;
+  }
+  // The same two steps `download()` performs, in the same order and through the
+  // same resolver, so the size a client is promised cannot drift from the size
+  // it is sent. Changing which file a recording resolves to changes both.
+  const std::string resolved = BulkDataHandlers::resolve_rosbag_file_path(bag_path);
+  if (resolved.empty()) {
+    return std::nullopt;
+  }
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(resolved, ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  return static_cast<uint64_t>(size);
+}
+
 std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
                                                      const std::string & requested_id) {
   if (rosbag_data.contains("fault_codes") && rosbag_data["fault_codes"].is_array()) {
@@ -206,7 +226,14 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    entry.size_bytes = row.value("size_bytes", uint64_t{0});
+    // What the download route will actually send, measured on the file it
+    // resolves. The stored figure is the bag directory's total, which is the
+    // recording's footprint against the disk quota and not its transfer size -
+    // it counts metadata.yaml, which the download does not serve. Keep the
+    // stored figure only when the bag is not visible from this process: it is
+    // then the only number available, and listing a zero would describe the
+    // recording as empty rather than as unmeasured.
+    entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
     entry.fault_codes.push_back(fault_code);
@@ -491,7 +518,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // URL is not the segment the client sent.
     filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
 
-    // Rosbag2 emits a directory layout - resolve the inner db3/mcap file.
+    // Rosbag2 emits a directory layout - resolve the inner db3/mcap file. Only
+    // that file is served, and metadata.yaml stays on the gateway host. The listing
+    // sizes its descriptor through detail::rosbag_served_bytes, which resolves
+    // the same way, so the Content-Length below is the number it advertised.
     actual_path = resolve_rosbag_file_path(file_path);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
