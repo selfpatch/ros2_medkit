@@ -881,7 +881,8 @@ is the same service an operator's
 `DELETE /api/v1/apps/{app_id}/faults/{fault_code}` ends up calling, so a device
 de-assert is a clear like any other. It drops the fault's value snapshots unless
 `snapshots.retain_on_clear` is set, and its rosbag recording unless
-`snapshots.rosbag.max_bags_per_fault` keeps a history.
+`snapshots.rosbag.auto_cleanup` is off or `snapshots.rosbag.max_bags_per_fault`
+keeps a history.
 
 ## Key Design Decisions
 
