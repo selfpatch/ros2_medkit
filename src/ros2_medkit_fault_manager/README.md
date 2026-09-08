@@ -52,7 +52,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
-- **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
+- **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
 - **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
