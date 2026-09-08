@@ -31,9 +31,19 @@ configuration always overrides the zero-config fallback when present.
 
 .. note::
 
-   By default, snapshots are deleted when a fault is cleared via the
-   ``DELETE /api/v1/faults/{code}`` endpoint or ``~/clear_fault`` service.
-   Set ``snapshots.retain_on_clear: true`` to keep them across clears.
+   By default, clearing a fault deletes its **value snapshots**, the per-topic
+   JSON captures this tutorial configures. A clear reaches the fault manager
+   either from the entity-scoped DELETE route, for example
+   ``DELETE /api/v1/apps/{app_id}/faults/{fault_code}`` (``components``,
+   ``areas`` and ``functions`` carry the same route, and there is no global
+   ``DELETE /api/v1/faults/{code}``), or from the ``~/clear_fault`` service. A
+   plugin whose device de-asserts an alarm calls that same service, so a device
+   going quiet clears the fault the way an operator does.
+   ``snapshots.retain_on_clear: true`` keeps the value snapshots across a clear,
+   and only those. The rosbag recording follows
+   ``snapshots.rosbag.auto_cleanup``, which deletes it on clear unless
+   ``snapshots.rosbag.max_bags_per_fault`` keeps a history, in which case that
+   cap governs the recording's retention instead.
 
 Quick Start
 -----------
@@ -360,7 +370,7 @@ Troubleshooting
 
 **Empty topics object in response**
 
-- The fault may have been cleared (snapshots are deleted on clear unless
+- The fault may have been cleared (value snapshots are deleted on clear unless
   ``snapshots.retain_on_clear`` is enabled)
 - No topics were configured for this fault code
 - All configured topics timed out or exceeded size limit
@@ -380,7 +390,10 @@ Rosbag Capture (Time-Window Recording)
 
 In addition to JSON snapshots, you can enable **rosbag capture** for "black box"
 style recording. This continuously buffers messages in memory and flushes them
-to a bag file when a fault is confirmed.
+to a bag file when a fault is confirmed. The recording is deleted when the fault
+is cleared, unless ``snapshots.rosbag.auto_cleanup`` is off or
+``snapshots.rosbag.max_bags_per_fault`` keeps a history, which takes over the
+retention decision.
 
 **Key differences from JSON snapshots:**
 

@@ -192,6 +192,8 @@ rosbag:
   # Auto-cleanup bag files when fault is cleared (default: true)
   # When true, bag files are deleted when ClearFault is called
   # When false, bag files persist until manually deleted or storage limit hit
+  # No effect once max_bags_per_fault is anything other than 1: a configured
+  # history governs retention instead, and an acknowledgement leaves it alone
   auto_cleanup: true
 
 # =============================================================================
