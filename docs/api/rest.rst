@@ -1772,6 +1772,12 @@ recording therefore reports its size once. One fault code can appear on several
 descriptors, one per occurrence it kept, told apart by ``creation_date``, which
 is the time that recording was made.
 
+``size`` is the number of bytes the download route below puts on the wire for
+that descriptor, so a client can size a buffer or a progress bar from the
+listing. For a rosbag that is the bag's single storage file (``.mcap`` or
+``.db3``), which is the only file the download serves. The bag directory also
+holds ``metadata.yaml``, and those bytes are not part of the transfer.
+
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
 

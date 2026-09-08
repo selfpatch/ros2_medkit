@@ -980,12 +980,13 @@ Faults represent errors or warnings reported by system components. The gateway p
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
-- `GET /api/v1/faults/{fault_code}/snapshots` - Get topic snapshots captured when fault was confirmed
-- `GET /api/v1/faults/{fault_code}/snapshots/bag` - Download rosbag file for fault (if rosbag capture enabled)
 - `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
 - `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
-- `GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots` - Get snapshots for a component's fault
 - `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
+
+Snapshots are not a separate endpoint. A fault response carries them inline in
+`environment_data.snapshots[]`, and a rosbag recording is downloaded through the
+bulk-data endpoints (`GET /api/v1/{entity-path}/bulk-data/rosbags/{id}`).
 
 #### GET /api/v1/faults
 
@@ -1103,79 +1104,12 @@ curl http://localhost:8080/api/v1/components/nav2_controller/faults
 }
 ```
 
-#### GET /api/v1/faults/{fault_code}/snapshots
+#### Snapshots
 
-Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for debugging purposes.
-
-**Query Parameters:**
-- `topic` - (optional) Filter by specific topic name
-
-**Example:**
-```bash
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
-```
-
-**Response (200 OK):**
-```json
-{
-  "fault_code": "MOTOR_OVERHEAT",
-  "captured_at": 1735830000.123,
-  "topics": {
-    "/joint_states": {
-      "message_type": "sensor_msgs/msg/JointState",
-      "data": {"name": ["joint1"], "position": [1.57]}
-    },
-    "/cmd_vel": {
-      "message_type": "geometry_msgs/msg/Twist",
-      "data": {"linear": {"x": 0.5}, "angular": {"z": 0.1}}
-    }
-  }
-}
-```
-
-**Response (200 OK - No snapshots):**
-```json
-{
-  "fault_code": "MOTOR_OVERHEAT",
-  "topics": {}
-}
-```
-
-**Response (404 Not Found):**
-```json
-{
-  "error": "Fault not found",
-  "fault_code": "NONEXISTENT_FAULT"
-}
-```
-
-#### GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots
-
-Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component.
-
-**Query Parameters:**
-- `topic` - (optional) Filter by specific topic name
-
-**Example:**
-```bash
-curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
-```
-
-**Response (200 OK):**
-```json
-{
-  "component_id": "motor_controller",
-  "fault_code": "MOTOR_OVERHEAT",
-  "captured_at": 1735830000.123,
-  "topics": {
-    "/motor/temperature": {
-      "message_type": "sensor_msgs/msg/Temperature",
-      "data": {"temperature": 85.5, "variance": 0.1}
-    }
-  }
-}
-```
+Snapshots captured when a fault transitioned to CONFIRMED are returned inline
+with the fault itself, in `environment_data.snapshots[]` of
+`GET /api/v1/{entity-path}/faults/{fault_code}`. There is no separate snapshot
+endpoint.
 
 **Snapshot Configuration:**
 
@@ -1214,45 +1148,18 @@ default_topics:
   - /diagnostics
 ```
 
-#### GET /api/v1/faults/{fault_code}/snapshots/bag
+#### Rosbag Recordings
 
-Download the rosbag file associated with a fault. This endpoint is only available when rosbag capture is enabled in FaultManager.
+Rosbag capture provides "black box" style recording - a ring buffer continuously
+records configured topics, and when a fault is confirmed the buffer is flushed to
+a bag file. This captures system state both **before and after** fault
+confirmation.
 
-Rosbag capture provides "black box" style recording - a ring buffer continuously records configured topics, and when a fault is confirmed, the buffer is flushed to a bag file. This allows capturing system state both **before and after** fault confirmation.
-
-**Example:**
-```bash
-# Download rosbag archive
-curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
-
-# Or save with custom filename
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
-```
-
-**Response (200 OK):**
-- For directory-based bags (default rosbag2 format): compressed tar.gz archive containing the full bag directory with metadata.yaml and all storage segments
-- Content-Type: `application/gzip`
-- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_20260124_153045.tar.gz"`
-
-The archive can be extracted and played directly with `ros2 bag play`.
-
-**Response (404 Not Found - Fault or rosbag not found):**
-```json
-{
-  "error": "Rosbag not found",
-  "fault_code": "MOTOR_OVERHEAT",
-  "details": "No rosbag file associated with this fault"
-}
-```
-
-**Response (404 Not Found - Rosbag file deleted):**
-```json
-{
-  "error": "Rosbag file not found",
-  "fault_code": "MOTOR_OVERHEAT",
-  "details": "File was deleted or moved"
-}
-```
+A recording is listed and downloaded through the bulk-data endpoints:
+`GET /api/v1/{entity-path}/bulk-data/rosbags` for the descriptors and
+`GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}` for the bytes. The
+download serves the bag's single storage file (`.mcap` or `.db3`), and the
+descriptor `size` is that file's length.
 
 **Rosbag Configuration:**
 
