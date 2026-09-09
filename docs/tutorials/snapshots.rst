@@ -211,9 +211,11 @@ reports as ``connected: false``.
 A fault reported by a component rather than by an app (a bridge reports loss of
 comms under the PLC runtime component's own id, and a component holds no data
 values itself) is framed from the apps that component hosts instead, one entry
-per hosted app, named after the app and none for the component. Those entries
-follow the rules above like any other plugin-backed frame, ``connected`` and
-``source_timestamp`` included.
+per hosted app that has values to read, named after the app and none for the
+component. An app that only hosts alarms has no data of its own, so it
+contributes no entry either, and a component hosting nothing but such apps
+gets no frame at all. Those entries follow the rules above like any other
+plugin-backed frame, ``connected`` and ``source_timestamp`` included.
 
 With ``entity_freeze_frame.storage.path`` set, a captured frame survives a
 gateway restart: it is reloaded at start and served exactly as it was

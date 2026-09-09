@@ -797,6 +797,52 @@ TEST_F(EntityFreezeFrameCaptureTest, ComponentFramesHostedAppsThroughTheirDataPr
 }
 
 /// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AlarmOnlyHostedAppContributesNoFrame) {
+  // Not every hosted app has values. An App that exists only to host alarm
+  // events (an event_alarms entry, or the auto_alarms fallback) is registered
+  // under the component but owns no data points, so no DataProvider resolves
+  // for it and its x-plc-data route answers 404. It contributes nothing, and
+  // the count is what says so: one frame, from the app that does have values.
+  std::atomic<int> alarm_app_reads{0};
+  StaticContentDataProvider load_provider(
+      "load_process", json{{"items", json::array({{{"id", "level"}, {"name", "Level"}, {"value", 42.0}}})}});
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [&load_provider](const std::string & entity_id) -> DataProvider * {
+        // has_data() is false for an alarm-only app, so the manager hands back
+        // no provider for it, exactly as it hands back none for the component.
+        return entity_id == "load_process" ? &load_provider : nullptr;
+      },
+      [&alarm_app_reads](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id == "plc_runtime_alarms") {
+          alarm_app_reads.fetch_add(1);
+        }
+        // The component's route answers 400 and the alarm-only app's answers
+        // 404 (no data mapped), both of which reach the capture as nullopt.
+        return std::nullopt;
+      },
+      // store / known_code_lister: this fixture does not persist.
+      256, nullptr, nullptr, nullptr,
+      [](const std::string & source_id) -> std::vector<std::string> {
+        return source_id == "plc_runtime" ? std::vector<std::string>{"load_process", "plc_runtime_alarms"}
+                                          : std::vector<std::string>{};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST_ALARM_HOST", {"plc_runtime"})));
+
+  const auto frames = capture.frames_for("PLC_COMMS_LOST_ALARM_HOST");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  EXPECT_EQ(frames[0].values["level"], 42.0);
+  for (const auto & frame : frames) {
+    EXPECT_NE(frame.entity_id, "plc_runtime_alarms");
+  }
+  // The alarm-only app was read and yielded nothing, rather than never being
+  // reached: without this a resolver that dropped it would pass too.
+  EXPECT_GT(alarm_app_reads.load(), 0);
+}
+
+/// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, ComponentWithOwnProviderKeepsItsSingleFrame) {
   // A component that serves its own values is unchanged: one entry, read from
   // its DataProvider, and no descent into what it hosts. The hosted resolver
