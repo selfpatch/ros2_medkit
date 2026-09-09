@@ -703,6 +703,45 @@ StoredEntityFreezeFrame make_stored_row(const std::string & fault_code, const st
   return row;
 }
 
+/// Store that counts what the capture asks of it, so a test can pin the ORDER
+/// of a replacement. A stale frame must be swapped out by one write, never
+/// erased first and re-taken afterwards if the plant happens to answer.
+class CountingEntityFreezeFrameStore : public ros2_medkit_gateway::EntityFreezeFrameStore {
+ public:
+  tl::expected<void, std::string> replace_frames(const std::string & fault_code,
+                                                 const std::vector<StoredEntityFreezeFrame> & frames) override {
+    replaces_.fetch_add(1);
+    return inner_.replace_frames(fault_code, frames);
+  }
+
+  tl::expected<void, std::string> erase_frames(const std::string & fault_code) override {
+    erases_.fetch_add(1);
+    return inner_.erase_frames(fault_code);
+  }
+
+  tl::expected<std::vector<StoredEntityFreezeFrame>, std::string> load_all() override {
+    return inner_.load_all();
+  }
+
+  /// Forget the writes the test itself made while seeding.
+  void reset_counts() {
+    replaces_.store(0);
+    erases_.store(0);
+  }
+
+  int replaces() const {
+    return replaces_.load();
+  }
+  int erases() const {
+    return erases_.load();
+  }
+
+ private:
+  InMemoryEntityFreezeFrameStore inner_;
+  std::atomic<int> replaces_{0};
+  std::atomic<int> erases_{0};
+};
+
 /// Route fetcher that serves a fixed level and records which entities it read,
 /// so a test can prove the plant was NOT re-read for a fault that already has
 /// a frame.
@@ -1007,10 +1046,44 @@ namespace {
 /// standing lister reports the fault with `first_occurred_ns`, which is what
 /// decides whether the stored frame belongs to the occurrence being served.
 struct ReoccurrenceHarness {
-  std::shared_ptr<InMemoryEntityFreezeFrameStore> store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  std::shared_ptr<CountingEntityFreezeFrameStore> store = std::make_shared<CountingEntityFreezeFrameStore>();
   CountingRouteFetcher plant{99.0};
   static constexpr int64_t kStoredAtNs = 1'000'000'000'000'000'000;
 };
+
+/// Route fetcher whose entity never answers: the plugin-unreachable shape, and
+/// the one the whole feature exists for (a restart while the link is down).
+class UnreachableRouteFetcher {
+ public:
+  std::optional<json> operator()(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reads_[entity_id] += 1;
+    return std::nullopt;
+  }
+
+  int reads(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = reads_.find(entity_id);
+    return it == reads_.end() ? 0 : it->second;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::map<std::string, int> reads_;
+};
+
+/// Standing lister reporting one fault whose occurrence began after the frame
+/// the store holds for it.
+EntityFreezeFrameCapture::StandingFaultLister reoccurred_lister(const std::string & code,
+                                                                const std::vector<std::string> & sources) {
+  return [code, sources](const std::function<bool()> &) {
+    EntityFreezeFrameCapture::StandingFault fault;
+    fault.fault_code = code;
+    fault.reporting_sources = sources;
+    fault.first_occurred_ns = ReoccurrenceHarness::kStoredAtNs + 60'000'000'000;
+    return std::vector<EntityFreezeFrameCapture::StandingFault>{fault};
+  };
+}
 
 }  // namespace
 
@@ -1023,6 +1096,7 @@ TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromAnEarlierOccurrenceIsReRe
   ASSERT_TRUE(
       h.store->replace_frames("PLC_REOCCUR", {make_stored_row("PLC_REOCCUR", "route_stored_app", h.kStoredAtNs, 10.0)})
           .has_value());
+  h.store->reset_counts();
 
   EntityFreezeFrameCapture capture(
       node_.get(), *sub_exec_,
@@ -1032,15 +1106,7 @@ TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromAnEarlierOccurrenceIsReRe
       [&h](const std::string & entity_id) {
         return h.plant(entity_id);
       },
-      256,
-      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
-        EntityFreezeFrameCapture::StandingFault fault;
-        fault.fault_code = "PLC_REOCCUR";
-        fault.reporting_sources = {"route_stored_app"};
-        fault.first_occurred_ns = ReoccurrenceHarness::kStoredAtNs + 60'000'000'000;  // a minute after the frame
-        return std::vector<EntityFreezeFrameCapture::StandingFault>{fault};
-      },
-      h.store);
+      256, reoccurred_lister("PLC_REOCCUR", {"route_stored_app"}), h.store);
 
   const auto deadline = std::chrono::steady_clock::now() + 15s;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -1061,6 +1127,99 @@ TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromAnEarlierOccurrenceIsReRe
   ASSERT_EQ(rows->size(), 1u);
   EXPECT_DOUBLE_EQ((*rows)[0].frame["values"].value("level", 0.0), 99.0);  // replaced on disk too
   EXPECT_EQ((*rows)[0].capture_origin, "startup");
+
+  // The order, not just the outcome: the plant is read first and the row is
+  // then swapped by ONE write. Erasing first and re-taking afterwards leaves
+  // the fault with nothing whenever the entity cannot answer, which is exactly
+  // the case this feature is for.
+  EXPECT_EQ(h.store->erases(), 0);
+  EXPECT_EQ(h.store->replaces(), 1);
+  EXPECT_EQ(h.plant.reads("route_stored_app"), 1);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AStaleFrameWhoseEntityCannotBeReReadIsDroppedWithAWarning) {
+  // The headline case: the gateway restarts while the PLC link is down, and the
+  // fault re-confirmed in the meantime. The stored frame is from the previous
+  // occurrence so it must not be served, and the re-read cannot replace it, so
+  // the fault ends with no frame. That is a real loss of evidence and the log
+  // is the only place the operator can learn about it.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  UnreachableRouteFetcher plant;
+  ASSERT_TRUE(store
+                  ->replace_frames("PLC_LINK_DOWN", {make_stored_row("PLC_LINK_DOWN", "route_stored_app",
+                                                                     ReoccurrenceHarness::kStoredAtNs, 10.0)})
+                  .has_value());
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        256, reoccurred_lister("PLC_LINK_DOWN", {"route_stored_app"}), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && plant.reads("route_stored_app") == 0) {
+      std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(300ms);             // let the drop that follows the failed read land
+    EXPECT_GE(plant.reads("route_stored_app"), 1);  // the re-read WAS attempted
+    EXPECT_TRUE(capture.frames_for("PLC_LINK_DOWN").empty());
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  auto rows = store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_TRUE(rows->empty());  // and the row is gone, not left to be served
+  EXPECT_NE(logs.find("PLC_LINK_DOWN"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("route_stored_app"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("no freeze-frame"), std::string::npos) << logs;
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AStaleFrameWhoseFaultNamesNoEntityIsDroppedWithAWarning) {
+  // The two eligibility tests have to agree. A standing fault with no reporting
+  // sources is stale to the comparison and unreadable to the catch-up, so it is
+  // a re-read that cannot even be attempted, and it gets the same treatment and
+  // the same line rather than disappearing quietly.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  CountingRouteFetcher plant{99.0};
+  ASSERT_TRUE(store
+                  ->replace_frames("PLC_NO_ENTITY", {make_stored_row("PLC_NO_ENTITY", "route_stored_app",
+                                                                     ReoccurrenceHarness::kStoredAtNs, 10.0)})
+                  .has_value());
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        256, reoccurred_lister("PLC_NO_ENTITY", {}), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && !capture.frames_for("PLC_NO_ENTITY").empty()) {
+      std::this_thread::sleep_for(20ms);
+    }
+    EXPECT_TRUE(capture.frames_for("PLC_NO_ENTITY").empty());
+    EXPECT_EQ(plant.reads("route_stored_app"), 0);  // nothing to read, and none was invented
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  auto rows = store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_TRUE(rows->empty());
+  EXPECT_NE(logs.find("PLC_NO_ENTITY"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("no entity to read"), std::string::npos) << logs;
 }
 
 /// @verifies REQ_INTEROP_088

@@ -284,15 +284,26 @@ class EntityFreezeFrameCapture {
   /// without a known-code lister, or when the lister cannot answer.
   void prune_frames_for_unknown_faults(const std::function<bool()> & should_abort);
 
-  /// Drop reloaded frames that belong to an earlier occurrence of their fault:
-  /// the fault cleared and confirmed again while the gateway was down, so the
-  /// stored frame holds the previous incident's values and serving it unmarked
-  /// would present them as this occurrence's. Dropping the row makes the
-  /// catch-up treat the fault as unframed, so it re-reads the plugin now and
-  /// marks the result `startup`, which is what an unframed standing fault has
-  /// always got. Only reloaded codes are eligible: a frame this process
-  /// captured is by definition this occurrence's.
-  void drop_reloaded_frames_from_earlier_occurrences(const std::vector<StandingFault> & standing);
+  /// Reloaded codes whose stored frame belongs to an EARLIER occurrence of
+  /// their fault: it cleared and confirmed again while the gateway was down, so
+  /// the frame holds the previous incident's values and serving it unmarked
+  /// would present them as this occurrence's.
+  ///
+  /// Read-only on purpose. The row stays until a re-read has actually been
+  /// tried, so a fault whose entity answers gets its frame replaced rather than
+  /// deleted and then not re-taken. It is dropped only by drop_stale_frame(),
+  /// after the attempt failed. Only reloaded codes are eligible: a frame this
+  /// process captured is by definition this occurrence's.
+  std::unordered_set<std::string> stale_reloaded_codes(const std::vector<StandingFault> & standing) const;
+
+  /// Last resort for a stale-occurrence code the catch-up could not re-read:
+  /// erase it from memory and from the store, and say so. Keeping it would
+  /// serve the previous incident's values unmarked, which is the defect this
+  /// path exists to fix, so the frame goes. Never silently, though: the
+  /// operator is losing evidence and only the log can tell them.
+  /// @p entities names the reporting sources that were tried (empty when the
+  /// fault named none), @p reason why no frame could be taken.
+  void drop_stale_frame(const std::string & fault_code, const std::string & entities, const char * reason);
 
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;

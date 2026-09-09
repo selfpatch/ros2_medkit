@@ -43,6 +43,19 @@ std::string string_field(const nlohmann::json & item, const char * field) {
   return it != item.end() && it->is_string() ? it->get<std::string>() : std::string();
 }
 
+/// Reporting sources as one comma-separated string, for a log line that has to
+/// name the entities an operator would go and look at.
+std::string join_sources(const std::vector<std::string> & sources) {
+  std::string joined;
+  for (const auto & source : sources) {
+    if (!joined.empty()) {
+      joined += ", ";
+    }
+    joined += source;
+  }
+  return joined;
+}
+
 }  // namespace
 
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
@@ -312,46 +325,52 @@ void EntityFreezeFrameCapture::prune_frames_for_unknown_faults(const std::functi
   }
 }
 
-void EntityFreezeFrameCapture::drop_reloaded_frames_from_earlier_occurrences(
-    const std::vector<StandingFault> & standing) {
-  size_t dropped = 0;
+std::unordered_set<std::string>
+EntityFreezeFrameCapture::stale_reloaded_codes(const std::vector<StandingFault> & standing) const {
+  std::unordered_set<std::string> stale;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (reloaded_codes_.empty()) {
+    return stale;
+  }
+  for (const auto & fault : standing) {
+    if (fault.first_occurred_ns <= 0 || reloaded_codes_.count(fault.fault_code) == 0) {
+      continue;
+    }
+    const auto entry = frames_.find(fault.fault_code);
+    if (entry == frames_.end()) {
+      continue;
+    }
+    // The newest of the code's frames dates the stored capture: they are all
+    // written by one capture, so if even that one predates the occurrence the
+    // whole set belongs to an incident that has since been cleared.
+    int64_t newest = 0;
+    for (const auto & frame : entry->second) {
+      newest = std::max(newest, frame.captured_at_ns);
+    }
+    if (fault.first_occurred_ns <= newest) {
+      continue;  // same occurrence: the stored frame is the one to serve
+    }
+    stale.insert(fault.fault_code);
+  }
+  return stale;
+}
+
+void EntityFreezeFrameCapture::drop_stale_frame(const std::string & fault_code, const std::string & entities,
+                                                const char * reason) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (reloaded_codes_.empty()) {
-      return;
-    }
-    for (const auto & fault : standing) {
-      if (fault.first_occurred_ns <= 0 || reloaded_codes_.count(fault.fault_code) == 0) {
-        continue;
-      }
-      const auto entry = frames_.find(fault.fault_code);
-      if (entry == frames_.end()) {
-        continue;
-      }
-      // The newest of the code's frames dates the stored capture: they are all
-      // written by one capture, so if even that one predates the occurrence the
-      // whole set belongs to an incident that has since been cleared.
-      int64_t newest = 0;
-      for (const auto & frame : entry->second) {
-        newest = std::max(newest, frame.captured_at_ns);
-      }
-      if (fault.first_occurred_ns <= newest) {
-        continue;  // same occurrence: the stored frame is the one to serve
-      }
-      frames_.erase(entry);
-      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault.fault_code),
-                             insertion_order_.end());
-      reloaded_codes_.erase(fault.fault_code);
-      erase_persisted_locked(fault.fault_code);
-      ++dropped;
-    }
+    frames_.erase(fault_code);
+    insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
+                           insertion_order_.end());
+    reloaded_codes_.erase(fault_code);
+    erase_persisted_locked(fault_code);
   }
-  if (dropped > 0) {
-    RCLCPP_INFO(logger_,
-                "Entity freeze-frame: %zu reloaded frame(s) belong to an earlier occurrence of their fault and were "
-                "dropped; the catch-up re-reads those entities",
-                dropped);
-  }
+  // The operator is losing evidence here. Keeping the frame would serve the
+  // previous incident's values as this one's, so it goes, but never silently.
+  RCLCPP_WARN(logger_,
+              "Entity freeze-frame for fault '%s': the stored frame is from an earlier occurrence and entity '%s' "
+              "could not be re-read (%s). The stored frame was discarded, so this occurrence has no freeze-frame.",
+              fault_code.c_str(), entities.c_str(), reason);
 }
 
 nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann::json & content) {
@@ -438,8 +457,14 @@ EntityFreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json &
     const auto first_occurred = item.find("first_occurred");
     if (first_occurred != item.end() && first_occurred->is_number()) {
       const double seconds = first_occurred->get<double>();
-      if (seconds > 0.0) {
-        fault.first_occurred_ns = static_cast<int64_t>(seconds * 1e9);
+      // The range is checked on the nanosecond product, before the cast: a
+      // double outside int64's range makes the conversion undefined, and a
+      // NaN fails every comparison so it lands here too. Untrusted input on
+      // this path is a malformed or hostile reply, not just a stale clock.
+      const double nanoseconds = seconds * 1e9;
+      constexpr double kMaxRepresentableNs = 9.2e18;  // below int64 max, with room for the ulp
+      if (nanoseconds > 0.0 && nanoseconds < kMaxRepresentableNs) {
+        fault.first_occurred_ns = static_cast<int64_t>(nanoseconds);
       }
     }
     standing.push_back(std::move(fault));
@@ -584,10 +609,6 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   if (!standing_lister_ || should_abort()) {
     return;
   }
-  // Before anything reads frames_ as "already answered for": a fault that
-  // cleared and confirmed again while the gateway was down must not be served
-  // the previous incident's values.
-  drop_reloaded_frames_from_earlier_occurrences(standing);
   // Codes with a confirm already queued belong to the drain loop: capturing
   // them here too would read the plugin twice for one confirm.
   std::unordered_set<std::string> queued_codes;
@@ -600,27 +621,54 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
       queued_codes.insert(queued->fault.fault_code);
     }
   }
+  // Reloaded frames from an occurrence that has since been cleared and
+  // re-confirmed. Identified here, still on disk: whether the row goes is
+  // decided below, by whether the re-read could replace it.
+  const auto stale = stale_reloaded_codes(standing);
   // Frames reloaded from the store already answer for their faults, and the
   // bound counts them: they are not budget this catch-up gets to spend twice.
+  // A stale one answers for nothing, so it counts as absent while it is being
+  // re-read and its replacement takes the slot it already held.
   std::unordered_set<std::string> already_framed;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     already_framed.reserve(frames_.size());
     for (const auto & entry : frames_) {
-      already_framed.insert(entry.first);
+      if (stale.count(entry.first) == 0) {
+        already_framed.insert(entry.first);
+      }
     }
   }
   size_t framed = already_framed.size();
   size_t captured = 0;
+  size_t re_read = 0;
+  size_t discarded = 0;
   size_t over_cap = 0;
   for (const auto & fault : standing) {
     if (should_abort()) {
       return;
     }
-    if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
+    if (fault.fault_code.empty()) {
       continue;
     }
-    if (queued_codes.count(fault.fault_code) != 0) {
+    const bool is_stale = stale.count(fault.fault_code) != 0;
+    // Every path below that gives up on a stale code has to drop its row: the
+    // whole point of calling it stale is that serving it unmarked is wrong.
+    if (fault.reporting_sources.empty()) {
+      // The drop test and the re-read test must agree on this, or a fault with
+      // no entity is stale to one and invisible to the other, and its row
+      // survives to be served.
+      if (is_stale) {
+        drop_stale_frame(fault.fault_code, "", "the fault reports no entity to read");
+        ++discarded;
+      }
+      continue;
+    }
+    // A stale code jumps the queued-confirm skip. That skip exists so one
+    // confirm costs one plugin read, but here the alternative is leaving a
+    // frame from a dead occurrence in place on the chance the drain loop
+    // succeeds. One extra read is the cheaper mistake.
+    if (!is_stale && queued_codes.count(fault.fault_code) != 0) {
       continue;
     }
     // The stored frame is the one from this fault's own confirm edge. Re-reading
@@ -632,15 +680,29 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     }
     if (framed >= max_faults_) {
       ++over_cap;  // storing more would FIFO-evict this catch-up's own frames
+      if (is_stale) {
+        drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources),
+                         "the retained-frame bound was already reached");
+        ++discarded;
+      }
       continue;
     }
     ros2_medkit_msgs::msg::FaultEvent event;
     event.event_type = ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED;
     event.fault.fault_code = fault.fault_code;
     event.fault.reporting_sources = fault.reporting_sources;
+    // capture_for_event replaces the code's frames and its rows as one
+    // delete-then-insert, so a successful re-read swaps the stale frame out
+    // without a window in which the fault has none.
     if (capture_for_event(event, /*startup_catchup=*/true)) {
       ++framed;
       ++captured;
+      if (is_stale) {
+        ++re_read;
+      }
+    } else if (is_stale) {
+      drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources), "the entity served no usable values");
+      ++discarded;
     }
   }
   if (over_cap > 0) {
@@ -651,6 +713,12 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   }
   if (captured > 0) {
     RCLCPP_INFO(logger_, "Entity freeze-frame: captured %zu fault(s) that were already confirmed at startup", captured);
+  }
+  if (re_read > 0 || discarded > 0) {
+    RCLCPP_INFO(logger_,
+                "Entity freeze-frame: %zu reloaded frame(s) from an earlier occurrence re-read, %zu discarded with no "
+                "replacement",
+                re_read, discarded);
   }
 }
 
