@@ -668,6 +668,134 @@ TEST_F(EntityFreezeFrameCaptureTest, DisconnectedDataProviderWithLastKnownValues
 }
 
 /// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, ComponentWithoutProviderFramesFromItsHostedEntities) {
+  // The loss-of-comms fault is reported by the PLC runtime component, which
+  // reads nothing of its own: it exports no DataProvider and the x-plc-data
+  // route answers for apps only. The apps it hosts still serve their last
+  // known values, so the frame comes from them - one entry per hosted app,
+  // named after the app, and none for the component.
+  std::atomic<int> component_reads{0};
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;  // neither the component nor its apps export one
+      },
+      [&component_reads](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id == "plc_runtime") {
+          component_reads.fetch_add(1);
+          return std::nullopt;  // the route is app-only; a component gets an error
+        }
+        if (entity_id == "load_process") {
+          return json{{"connected", false},
+                      {"items", json::array({{{"name", "level"}, {"value", 42.0}}})},
+                      {"timestamp", 1234567890}};
+        }
+        if (entity_id == "aux_process") {
+          return json{{"connected", false}, {"items", json::array({{{"name", "flow"}, {"value", 7.5}}})}};
+        }
+        return std::nullopt;
+      },
+      // store / known_code_lister: this fixture does not persist.
+      256, nullptr, nullptr, nullptr,
+      [](const std::string & source_id) -> std::vector<std::string> {
+        return source_id == "plc_runtime" ? std::vector<std::string>{"load_process", "aux_process"}
+                                          : std::vector<std::string>{};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST_HOSTED", {"plc_runtime"})));
+
+  const auto frames = capture.frames_for("PLC_COMMS_LOST_HOSTED");
+  // Both hosted apps, and no entry for the component itself (nothing to read).
+  ASSERT_EQ(frames.size(), 2u);
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  EXPECT_EQ(frames[0].values["level"], 42.0);
+  ASSERT_TRUE(frames[0].connected.has_value());
+  EXPECT_FALSE(*frames[0].connected);
+  EXPECT_EQ(frames[0].source_timestamp, 1234567890);
+  EXPECT_EQ(frames[0].source, EntityFreezeFrameCapture::kSourceXPlcDataRoute);
+  EXPECT_EQ(frames[1].entity_id, "aux_process");
+  EXPECT_EQ(frames[1].values["flow"], 7.5);
+  ASSERT_TRUE(frames[1].connected.has_value());
+  EXPECT_FALSE(*frames[1].connected);
+  EXPECT_EQ(frames[1].source, EntityFreezeFrameCapture::kSourceXPlcDataRoute);
+  // The component was read first. Hosting is the fallback, not the first move.
+  EXPECT_GT(component_reads.load(), 0);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, ComponentWithOwnProviderKeepsItsSingleFrame) {
+  // A component that serves its own values is unchanged: one entry, read from
+  // its DataProvider, and no descent into what it hosts. The hosted resolver
+  // here names an entity the route fetcher would gladly serve, so a wrong
+  // descent shows up as a second frame rather than as nothing at all.
+  StaticContentDataProvider comp_provider(
+      "plc_runtime", json{{"connected", false}, {"items", json::array({{{"id", "uptime"}, {"value", 900}}})}});
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [&comp_provider](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_runtime" ? &comp_provider : nullptr;
+      },
+      [](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id != "load_process") {
+          return std::nullopt;
+        }
+        return json{{"connected", false}, {"items", json::array({{{"name", "level"}, {"value", 42.0}}})}};
+      },
+      // store / known_code_lister: this fixture does not persist.
+      256, nullptr, nullptr, nullptr,
+      [](const std::string &) -> std::vector<std::string> {
+        return {"load_process"};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST_OWN_DATA", {"plc_runtime"})));
+
+  const auto own = capture.frames_for("PLC_COMMS_LOST_OWN_DATA");
+  ASSERT_EQ(own.size(), 1u);
+  EXPECT_EQ(own[0].entity_id, "plc_runtime");
+  EXPECT_EQ(own[0].values["uptime"], 900);
+  EXPECT_EQ(own[0].source, EntityFreezeFrameCapture::kSourceDataProvider);
+
+  // Positive control on this same capture: a source that reads nothing DOES
+  // descend into what it hosts, so the single frame above is the provider
+  // winning, not the hosted path being inert.
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST_NO_DATA", {"other_runtime"})));
+  const auto hosted = capture.frames_for("PLC_COMMS_LOST_NO_DATA");
+  ASSERT_EQ(hosted.size(), 1u);
+  EXPECT_EQ(hosted[0].entity_id, "load_process");
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AppFaultKeepsItsSingleOwnFrame) {
+  // An app fault is untouched by the hosted fallback: the app reads its own
+  // values, so the resolver's answer (an entity the route fetcher serves)
+  // must not add a second frame.
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [this](const std::string & entity_id) -> DataProvider * {
+        return entity_id == "plc_app" ? provider_.get() : nullptr;
+      },
+      [](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id != "load_process") {
+          return std::nullopt;
+        }
+        return json{{"connected", false}, {"items", json::array({{{"name", "level"}, {"value", 42.0}}})}};
+      },
+      // store / known_code_lister: this fixture does not persist.
+      256, nullptr, nullptr, nullptr,
+      [](const std::string &) -> std::vector<std::string> {
+        return {"load_process"};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_APP_OWN_FRAME", {"plc_app"})));
+
+  const auto frames = capture.frames_for("PLC_APP_OWN_FRAME");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "plc_app");
+  EXPECT_DOUBLE_EQ(frames[0].values.value("temperature", 0.0), 42.5);
+  EXPECT_EQ(frames[0].source, EntityFreezeFrameCapture::kSourceDataProvider);
+}
+
+/// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, OldestFaultEvictedPastMaxFaults) {
   EntityFreezeFrameCapture capture(
       node_.get(), *sub_exec_,

@@ -199,7 +199,11 @@ for that fault (explicit config wins). When the entity reports its link down
 and may predate the confirmation by the length of the outage; the entry's
 ``x-medkit`` block then carries ``connected: false`` and, when the plugin's
 payload includes one, ``source_timestamp`` (the payload's own timestamp)
-alongside ``captured_at``.
+alongside ``captured_at``. A fault reported by a component rather than by an
+app (a bridge reports loss of comms under the PLC runtime component's own id,
+and a component holds no data values itself) is framed from the apps that
+component hosts instead, one entry per hosted app, named after the app and
+carrying the same ``connected: false`` and ``source_timestamp`` provenance.
 
 With ``entity_freeze_frame.storage.path`` set, a captured frame survives a
 gateway restart: it is reloaded at start and served exactly as it was

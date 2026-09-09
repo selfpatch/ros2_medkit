@@ -66,9 +66,11 @@ EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_com
                                                    DataProviderResolver resolver, RouteDataFetcher route_fetcher,
                                                    size_t max_faults, StandingFaultLister standing_lister,
                                                    std::shared_ptr<EntityFreezeFrameStore> store,
-                                                   KnownFaultCodeLister known_code_lister)
+                                                   KnownFaultCodeLister known_code_lister,
+                                                   HostedEntitiesResolver hosted_resolver)
   : resolver_(std::move(resolver))
   , route_fetcher_(std::move(route_fetcher))
+  , hosted_resolver_(std::move(hosted_resolver))
   , logger_(node->get_logger())
   , max_faults_(max_faults > 0 ? max_faults : 1)
   , standing_lister_(std::move(standing_lister))
@@ -786,39 +788,68 @@ void EntityFreezeFrameCapture::capture_worker() {
   }
 }
 
+std::optional<EntityFreezeFrameCapture::Frame>
+EntityFreezeFrameCapture::capture_from_entity(const std::string & entity_id, const std::string & fault_code) {
+  DataProvider * provider = resolver_ ? resolver_(entity_id) : nullptr;
+  if (provider == nullptr) {
+    // No DataProvider: the owning plugin may still serve live values through
+    // its own x-plc-data route (the commercial PLC bridges). For non-plugin
+    // (ROS) sources the fetcher resolves no owner and returns nullopt.
+    if (!route_fetcher_) {
+      return std::nullopt;
+    }
+    return capture_via_route(entity_id, fault_code);
+  }
+
+  // list_data is expected to serve from the plugin's latest polled values
+  // (cheap); plugin code still gets exception-guarded like every other
+  // provider call site.
+  try {
+    auto result = provider->list_data(entity_id);
+    if (!result) {
+      log_fallback_failure_once(fault_code, "list_data('" + entity_id + "') failed: " + result.error().message);
+      return std::nullopt;
+    }
+    return frame_from_content(entity_id, fault_code, result->content, kSourceDataProvider);
+  } catch (const std::exception & e) {
+    log_fallback_failure_once(fault_code, "plugin threw for entity '" + entity_id + "': " + e.what());
+  }
+  return std::nullopt;
+}
+
 bool EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::FaultEvent & event,
                                                  bool startup_catchup) {
   const std::string & fault_code = event.fault.fault_code;
 
   std::vector<Frame> frames;
   for (const auto & source : event.fault.reporting_sources) {
-    DataProvider * provider = resolver_ ? resolver_(source) : nullptr;
-    if (provider == nullptr) {
-      // No DataProvider: the owning plugin may still serve live values through
-      // its own x-plc-data route (the commercial PLC bridges). For non-plugin
-      // (ROS) sources the fetcher resolves no owner and returns nullopt.
-      if (route_fetcher_) {
-        if (auto frame = capture_via_route(source, fault_code)) {
-          frames.push_back(std::move(*frame));
-        }
-      }
+    if (auto frame = capture_from_entity(source, fault_code)) {
+      frames.push_back(std::move(*frame));
       continue;
     }
-
-    // list_data is expected to serve from the plugin's latest polled values
-    // (cheap); plugin code still gets exception-guarded like every other
-    // provider call site.
+    if (!hosted_resolver_) {
+      continue;
+    }
+    // The source read nothing of its own. A PLC runtime component is the case
+    // this exists for: the bridge reports loss of comms under the component's
+    // id, the component holds no data values, and the apps it hosts are still
+    // serving the last values they read before the link died. Frame those
+    // instead, one entry each - the component itself gets none, there is
+    // nothing on it to read.
+    std::vector<std::string> hosted;
     try {
-      auto result = provider->list_data(source);
-      if (!result) {
-        log_fallback_failure_once(fault_code, "list_data('" + source + "') failed: " + result.error().message);
-        continue;
+      hosted = hosted_resolver_(source);
+    } catch (const std::exception & e) {
+      log_fallback_failure_once(fault_code, "hosted-entity lookup threw for '" + source + "': " + e.what());
+      continue;
+    }
+    for (const auto & hosted_id : hosted) {
+      if (hosted_id == source) {
+        continue;  // already tried as the source itself, never re-read it
       }
-      if (auto frame = frame_from_content(source, fault_code, result->content, kSourceDataProvider)) {
+      if (auto frame = capture_from_entity(hosted_id, fault_code)) {
         frames.push_back(std::move(*frame));
       }
-    } catch (const std::exception & e) {
-      log_fallback_failure_once(fault_code, "plugin threw for entity '" + source + "': " + e.what());
     }
   }
 
