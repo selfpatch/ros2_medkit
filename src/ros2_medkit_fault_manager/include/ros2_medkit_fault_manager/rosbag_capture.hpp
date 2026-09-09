@@ -487,4 +487,36 @@ class RosbagCapture {
   bool dynamic_discovery_{false};
 };
 
+/// Bytes a client receives when it downloads the recording at @p bag_path.
+///
+/// A recording occupies a directory and is served as a single file. Those are two
+/// different quantities and the fault manager needs both. ``RosbagFileInfo::size_bytes``
+/// is the directory total, because that is what the recording costs against
+/// ``max_total_storage_mb`` and what eviction frees. This is the other one: the storage
+/// file the download hands over, which is what a caller sizing a buffer or a progress
+/// bar needs. Reporting the total in its place overstated every download by
+/// ``metadata.yaml``, and on a short recording that is around a tenth of the transfer.
+///
+/// The file is the one ``metadata.yaml`` names in ``relative_file_paths``, read through
+/// the same library that wrote it, so this answers with the bag's own record of its
+/// contents rather than by guessing from a file extension.
+///
+/// Falls back to @p stored_total_bytes, never to zero, when no single served file can
+/// be named:
+/// - no ``metadata.yaml``, or one that cannot be read or parsed.
+/// - ``relative_file_paths`` naming other than exactly one file. Past
+///   ``max_bag_size_mb`` rosbag2 splits a recording across several storage files, and
+///   then no single number describes the download at all.
+/// - a named file that cannot be stat'd.
+///
+/// None of those is an error worth logging. A pre-metadata bag and a split bag are
+/// both normal, this runs once per reported row on every request, and the fallback is
+/// a real measurement of the recording rather than a failure sentinel. A zero would
+/// not be: it would describe the recording as empty.
+///
+/// @param bag_path Bag directory as stored in ``RosbagFileInfo::file_path``
+/// @param stored_total_bytes The stored directory total, used as the fallback
+/// @return Size of the served storage file, or @p stored_total_bytes
+size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_bytes);
+
 }  // namespace ros2_medkit_fault_manager
