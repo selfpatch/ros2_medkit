@@ -708,7 +708,7 @@ void FaultManagerNode::handle_get_snapshots(
   }
   result["topics"] = topics_json;
 
-  // Include rosbag info if available
+  // No download_url: rosbags are addressed per entity by the gateway.
   std::optional<RosbagFileInfo> rosbag_info;
   try {
     rosbag_info = storage_->get_rosbag_file(request->fault_code);
@@ -724,7 +724,6 @@ void FaultManagerNode::handle_get_snapshots(
     rosbag_json["duration_sec"] = rosbag_info->duration_sec;
     rosbag_json["size_bytes"] = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
     rosbag_json["format"] = rosbag_info->format;
-    rosbag_json["download_url"] = "/api/v1/faults/" + request->fault_code + "/snapshots/bag";
     result["rosbag"] = rosbag_json;
   } else {
     result["rosbag"] = {{"available", false}};
