@@ -312,6 +312,48 @@ void EntityFreezeFrameCapture::prune_frames_for_unknown_faults(const std::functi
   }
 }
 
+void EntityFreezeFrameCapture::drop_reloaded_frames_from_earlier_occurrences(
+    const std::vector<StandingFault> & standing) {
+  size_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (reloaded_codes_.empty()) {
+      return;
+    }
+    for (const auto & fault : standing) {
+      if (fault.first_occurred_ns <= 0 || reloaded_codes_.count(fault.fault_code) == 0) {
+        continue;
+      }
+      const auto entry = frames_.find(fault.fault_code);
+      if (entry == frames_.end()) {
+        continue;
+      }
+      // The newest of the code's frames dates the stored capture: they are all
+      // written by one capture, so if even that one predates the occurrence the
+      // whole set belongs to an incident that has since been cleared.
+      int64_t newest = 0;
+      for (const auto & frame : entry->second) {
+        newest = std::max(newest, frame.captured_at_ns);
+      }
+      if (fault.first_occurred_ns <= newest) {
+        continue;  // same occurrence: the stored frame is the one to serve
+      }
+      frames_.erase(entry);
+      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault.fault_code),
+                             insertion_order_.end());
+      reloaded_codes_.erase(fault.fault_code);
+      erase_persisted_locked(fault.fault_code);
+      ++dropped;
+    }
+  }
+  if (dropped > 0) {
+    RCLCPP_INFO(logger_,
+                "Entity freeze-frame: %zu reloaded frame(s) belong to an earlier occurrence of their fault and were "
+                "dropped; the catch-up re-reads those entities",
+                dropped);
+  }
+}
+
 nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann::json & content) {
   if (!content.contains("items") || !content["items"].is_array()) {
     return content;
@@ -387,6 +429,17 @@ EntityFreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json &
     for (const auto & src : *sources) {
       if (src.is_string()) {
         fault.reporting_sources.push_back(src.get<std::string>());
+      }
+    }
+    // Seconds on the wire (fault_msg_conversions), nanoseconds here so it can
+    // be compared with a frame's captured_at_ns without converting per row.
+    // Anything that is not a positive number leaves it at 0, which reads as
+    // "the reply did not say" and never costs a stored frame.
+    const auto first_occurred = item.find("first_occurred");
+    if (first_occurred != item.end() && first_occurred->is_number()) {
+      const double seconds = first_occurred->get<double>();
+      if (seconds > 0.0) {
+        fault.first_occurred_ns = static_cast<int64_t>(seconds * 1e9);
       }
     }
     standing.push_back(std::move(fault));
@@ -531,6 +584,10 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   if (!standing_lister_ || should_abort()) {
     return;
   }
+  // Before anything reads frames_ as "already answered for": a fault that
+  // cleared and confirmed again while the gateway was down must not be served
+  // the previous incident's values.
+  drop_reloaded_frames_from_earlier_occurrences(standing);
   // Codes with a confirm already queued belong to the drain loop: capturing
   // them here too would read the plugin twice for one confirm.
   std::unordered_set<std::string> queued_codes;

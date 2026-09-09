@@ -1000,6 +1000,112 @@ TEST_F(EntityFreezeFrameCaptureTest, AnEvictedFaultLosesItsStoredRowToo) {
   EXPECT_EQ((*rows)[0].fault_code, "PLC_EVICT_SECOND");
 }
 
+namespace {
+
+/// A capture whose store already holds one frame for PLC_REOCCUR, taken at
+/// `stored_at_ns` with level 10.0, against a plant that now reads 99.0. The
+/// standing lister reports the fault with `first_occurred_ns`, which is what
+/// decides whether the stored frame belongs to the occurrence being served.
+struct ReoccurrenceHarness {
+  std::shared_ptr<InMemoryEntityFreezeFrameStore> store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  CountingRouteFetcher plant{99.0};
+  static constexpr int64_t kStoredAtNs = 1'000'000'000'000'000'000;
+};
+
+}  // namespace
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromAnEarlierOccurrenceIsReReadAndMarkedStartup) {
+  // The fault cleared and confirmed again while the gateway was down, so the
+  // stored frame holds the PREVIOUS incident's values. Serving it unmarked
+  // would present last week's numbers as this occurrence's.
+  ReoccurrenceHarness h;
+  ASSERT_TRUE(
+      h.store->replace_frames("PLC_REOCCUR", {make_stored_row("PLC_REOCCUR", "route_stored_app", h.kStoredAtNs, 10.0)})
+          .has_value());
+
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [&h](const std::string & entity_id) {
+        return h.plant(entity_id);
+      },
+      256,
+      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+        EntityFreezeFrameCapture::StandingFault fault;
+        fault.fault_code = "PLC_REOCCUR";
+        fault.reporting_sources = {"route_stored_app"};
+        fault.first_occurred_ns = ReoccurrenceHarness::kStoredAtNs + 60'000'000'000;  // a minute after the frame
+        return std::vector<EntityFreezeFrameCapture::StandingFault>{fault};
+      },
+      h.store);
+
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto now = capture.frames_for("PLC_REOCCUR");
+    if (!now.empty() && std::abs(now[0].values.value("level", 0.0) - 99.0) < 1e-9) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  const auto served = capture.frames_for("PLC_REOCCUR");
+  ASSERT_EQ(served.size(), 1u);
+  EXPECT_DOUBLE_EQ(served[0].values.value("level", 0.0), 99.0);  // this occurrence, not the last one
+  EXPECT_TRUE(served[0].startup_catchup);                        // read at start, so it says so
+  EXPECT_GT(served[0].captured_at_ns, ReoccurrenceHarness::kStoredAtNs);
+
+  auto rows = h.store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_DOUBLE_EQ((*rows)[0].frame["values"].value("level", 0.0), 99.0);  // replaced on disk too
+  EXPECT_EQ((*rows)[0].capture_origin, "startup");
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromTheSameOccurrenceIsKeptUnmarked) {
+  // Control for the test above on the same harness: the fault never cleared, so
+  // its first_occurred predates the frame and the stored values are the ones
+  // this occurrence froze. Re-reading the plant here is the whole defect.
+  ReoccurrenceHarness h;
+  ASSERT_TRUE(
+      h.store->replace_frames("PLC_REOCCUR", {make_stored_row("PLC_REOCCUR", "route_stored_app", h.kStoredAtNs, 10.0)})
+          .has_value());
+
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [](const std::string &) -> DataProvider * {
+        return nullptr;
+      },
+      [&h](const std::string & entity_id) {
+        return h.plant(entity_id);
+      },
+      256,
+      [](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
+        EntityFreezeFrameCapture::StandingFault fault;
+        fault.fault_code = "PLC_REOCCUR";
+        fault.reporting_sources = {"route_stored_app"};
+        fault.first_occurred_ns = ReoccurrenceHarness::kStoredAtNs - 60'000'000'000;  // a minute before the frame
+        return std::vector<EntityFreezeFrameCapture::StandingFault>{fault};
+      },
+      h.store);
+
+  std::this_thread::sleep_for(1s);  // enough for a catch-up read to land
+  const auto served = capture.frames_for("PLC_REOCCUR");
+  ASSERT_EQ(served.size(), 1u);
+  EXPECT_DOUBLE_EQ(served[0].values.value("level", 0.0), 10.0);
+  EXPECT_EQ(served[0].captured_at_ns, ReoccurrenceHarness::kStoredAtNs);
+  EXPECT_FALSE(served[0].startup_catchup);
+  EXPECT_EQ(h.plant.reads("route_stored_app"), 0);  // the plant was never re-read
+
+  auto rows = h.store->load_all();
+  ASSERT_TRUE(rows.has_value());
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_DOUBLE_EQ((*rows)[0].frame["values"].value("level", 0.0), 10.0);  // row untouched
+  EXPECT_EQ((*rows)[0].captured_at_ns, ReoccurrenceHarness::kStoredAtNs);
+}
+
 TEST(ContentHasLiveData, GatesOnItemsNotOnTheLinkFlag) {
   using Capture = EntityFreezeFrameCapture;
   EXPECT_TRUE(Capture::content_has_live_data(
@@ -1079,6 +1185,30 @@ TEST(StandingFaultsFromListReply, ParsesWellFormedReply) {
   EXPECT_EQ((*standing)[0].reporting_sources, (std::vector<std::string>{"a", "b"}));
   EXPECT_EQ((*standing)[1].fault_code, "F2");
   EXPECT_TRUE((*standing)[1].reporting_sources.empty());
+}
+
+TEST(StandingFaultsFromListReply, FirstOccurredIsReadInSecondsAndKeptInNanoseconds) {
+  // The wire carries seconds (fault_msg_conversions), the comparison against a
+  // frame's captured_at_ns needs nanoseconds. Anything that is not a positive
+  // number leaves 0, which the caller reads as "cannot tell" and never lets
+  // cost a stored frame.
+  const json data = {
+      {"faults",
+       json::array({json{{"fault_code", "SECONDS"},
+                         {"reporting_sources", json::array({"a"})},
+                         {"first_occurred", 1788948705.5}},
+                    json{{"fault_code", "ABSENT"}, {"reporting_sources", json::array({"a"})}},
+                    json{{"fault_code", "NOT_A_NUMBER"},
+                         {"reporting_sources", json::array({"a"})},
+                         {"first_occurred", "yesterday"}},
+                    json{{"fault_code", "ZERO"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 0}}})}};
+  const auto standing = EntityFreezeFrameCapture::standing_faults_from_list_reply(data);
+  ASSERT_TRUE(standing.has_value());
+  ASSERT_EQ(standing->size(), 4u);
+  EXPECT_EQ((*standing)[0].first_occurred_ns, 1788948705500000000);
+  EXPECT_EQ((*standing)[1].first_occurred_ns, 0);
+  EXPECT_EQ((*standing)[2].first_occurred_ns, 0);
+  EXPECT_EQ((*standing)[3].first_occurred_ns, 0);
 }
 
 TEST(StandingFaultsFromListReply, RepliesNotShapedLikeListFaultsYieldNullopt) {

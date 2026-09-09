@@ -396,7 +396,9 @@ Configure how the gateway connects to the fault manager services and event topic
        that have no stored frame. The retained-frame bound of 256 faults counts
        reloaded and freshly captured frames together, dropping the oldest first,
        and a frame whose fault the fault manager no longer holds at all is
-       dropped at startup.
+       dropped at startup. A frame belonging to an occurrence that has since
+       been cleared and confirmed again is re-read at startup and marked
+       ``capture_origin: startup`` rather than served as the current one.
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default

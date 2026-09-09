@@ -207,7 +207,11 @@ captured, with its original ``captured_at`` and no ``capture_origin`` marker.
 Set the path to a file on a volume that outlives the container, or leave it
 empty and the frames go next to the trigger store
 (``triggers.storage.path``); with neither set they are process memory only and
-a restart loses them.
+a restart loses them. A plugin entity keeps exactly one frame per fault: a
+re-confirm re-samples the plugin and replaces it, on disk as in memory, and a
+re-confirm the gateway was down for is re-read at startup and marked
+``capture_origin: startup``, so a new occurrence never serves the previous
+one's values.
 
 Faults that are already confirmed when the gateway starts are caught up at
 startup: the gateway lists the confirmed faults and captures a frame for each
@@ -225,9 +229,6 @@ reloaded frame keeps whichever marker it was captured with. Disable with:
 
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
      -p entity_freeze_frame.enabled:=false
-
-A plugin entity keeps exactly one frame per fault: a re-confirm re-samples the
-plugin and replaces it, on disk as in memory.
 
 A plugin entity's values are not a ROS message, so ``topic`` and
 ``message_type`` are empty on these frames. ``x-medkit.source`` names the

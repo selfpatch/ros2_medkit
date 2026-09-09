@@ -119,6 +119,15 @@ class EntityFreezeFrameCapture {
   struct StandingFault {
     std::string fault_code;
     std::vector<std::string> reporting_sources;
+    /// When THIS occurrence of the fault started, from the list reply's
+    /// `first_occurred` (seconds on the wire, nanoseconds here). The
+    /// fault_manager resets it only when a CLEARED fault reactivates, so it is
+    /// what tells a stored frame from a previous occurrence apart from one
+    /// belonging to the occurrence being served now. `last_occurred` cannot do
+    /// this: it moves on every report, so a fault that keeps failing would look
+    /// re-occurred at every restart. 0 when the reply did not report it, which
+    /// reads as "cannot tell" and keeps the stored frame.
+    int64_t first_occurred_ns{0};
   };
 
   /// Lists the faults that are already confirmed when this object starts, so
@@ -274,6 +283,16 @@ class EntityFreezeFrameCapture {
   /// cleared included, are kept: a cleared fault keeps its frame. Does nothing
   /// without a known-code lister, or when the lister cannot answer.
   void prune_frames_for_unknown_faults(const std::function<bool()> & should_abort);
+
+  /// Drop reloaded frames that belong to an earlier occurrence of their fault:
+  /// the fault cleared and confirmed again while the gateway was down, so the
+  /// stored frame holds the previous incident's values and serving it unmarked
+  /// would present them as this occurrence's. Dropping the row makes the
+  /// catch-up treat the fault as unframed, so it re-reads the plugin now and
+  /// marks the result `startup`, which is what an unframed standing fault has
+  /// always got. Only reloaded codes are eligible: a frame this process
+  /// captured is by definition this occurrence's.
+  void drop_reloaded_frames_from_earlier_occurrences(const std::vector<StandingFault> & standing);
 
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;
