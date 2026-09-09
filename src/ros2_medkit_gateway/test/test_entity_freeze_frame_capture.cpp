@@ -668,12 +668,19 @@ TEST_F(EntityFreezeFrameCaptureTest, DisconnectedDataProviderWithLastKnownValues
 }
 
 /// @verifies REQ_INTEROP_088
-TEST_F(EntityFreezeFrameCaptureTest, ComponentWithoutProviderFramesFromItsHostedEntities) {
-  // The loss-of-comms fault is reported by the PLC runtime component, which
-  // reads nothing of its own: it exports no DataProvider and the x-plc-data
-  // route answers for apps only. The apps it hosts still serve their last
-  // known values, so the frame comes from them - one entry per hosted app,
-  // named after the app, and none for the component.
+TEST_F(EntityFreezeFrameCaptureTest, ComponentFramesFromItsHostedEntitiesViaRoute) {
+  // The route-path flavour: the resolver below returns nullptr for EVERY
+  // entity, so the component and both hosted apps are read through the
+  // x-plc-data fetcher. That payload reports the link flag and its own
+  // timestamp, which is why the frames here carry them. A bridge whose apps
+  // do export a DataProvider takes the other path and carries neither - see
+  // ComponentFramesHostedAppsThroughTheirDataProviders, which is the shipped
+  // OPC UA shape.
+  //
+  // Common to both: the loss-of-comms fault is reported by the PLC runtime
+  // component, which reads nothing of its own, so the frames come from the
+  // apps it hosts - one entry per hosted app, named after the app, and none
+  // for the component.
   std::atomic<int> component_reads{0};
   EntityFreezeFrameCapture capture(
       node_.get(), *sub_exec_,
@@ -720,6 +727,73 @@ TEST_F(EntityFreezeFrameCaptureTest, ComponentWithoutProviderFramesFromItsHosted
   EXPECT_EQ(frames[1].source, EntityFreezeFrameCapture::kSourceXPlcDataRoute);
   // The component was read first. Hosting is the fallback, not the first move.
   EXPECT_GT(component_reads.load(), 0);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, ComponentFramesHostedAppsThroughTheirDataProviders) {
+  // The shipped OPC UA shape, and the reason a frame's link flag cannot be
+  // promised: an app with node-map entries is data-bearing, so the gateway's
+  // resolver hands back the plugin's DataProvider for it and nullptr for the
+  // component (which has no data points of its own). list_data returns items
+  // and nothing else, so the frames name their path and their capture time
+  // and carry no link flag, even though the same values fetched over the
+  // x-plc-data route would report connected: false - which the fetcher below
+  // does, and which the provider path deliberately never consults.
+  StaticContentDataProvider load_provider(
+      "load_process", json{{"items", json::array({{{"id", "level"}, {"name", "Level"}, {"value", 42.0}},
+                                                  {{"id", "status_word"}, {"name", "Status Word"}, {"value", 5}}})}});
+  StaticContentDataProvider aux_provider(
+      "aux_process", json{{"items", json::array({{{"id", "flow"}, {"name", "Flow"}, {"value", 7.5}}})}});
+  EntityFreezeFrameCapture capture(
+      node_.get(), *sub_exec_,
+      [&load_provider, &aux_provider](const std::string & entity_id) -> DataProvider * {
+        if (entity_id == "load_process") {
+          return &load_provider;
+        }
+        if (entity_id == "aux_process") {
+          return &aux_provider;
+        }
+        return nullptr;  // the component holds no data points, so no provider
+      },
+      [](const std::string & entity_id) -> std::optional<json> {
+        if (entity_id == "plc_runtime") {
+          return std::nullopt;  // the route is app-only, a component gets an error
+        }
+        // Reachable only if the provider path is skipped: the same values the
+        // route would serve, link flag included.
+        return json{{"connected", false},
+                    {"items", json::array({{{"name", "level"}, {"value", 42.0}}})},
+                    {"timestamp", 1234567890}};
+      },
+      // store / known_code_lister: this fixture does not persist.
+      256, nullptr, nullptr, nullptr,
+      [](const std::string & source_id) -> std::vector<std::string> {
+        return source_id == "plc_runtime" ? std::vector<std::string>{"load_process", "aux_process"}
+                                          : std::vector<std::string>{};
+      });
+
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST_PROVIDER", {"plc_runtime"})));
+
+  const auto frames = capture.frames_for("PLC_COMMS_LOST_PROVIDER");
+  ASSERT_EQ(frames.size(), 2u);
+
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  EXPECT_EQ(frames[0].values["level"], 42.0);
+  EXPECT_EQ(frames[0].values["status_word"], 5);
+  EXPECT_EQ(frames[0].source, EntityFreezeFrameCapture::kSourceDataProvider);
+  EXPECT_EQ(frames[0].source, "plugin_data_provider");
+  EXPECT_GT(frames[0].captured_at_ns, 0);
+  // What the docs may not promise: list_data reports no link flag and no
+  // timestamp, so neither reaches x-medkit. Adding them to the plugin's
+  // list_data payload is a separate change - every list_data consumer reads it.
+  EXPECT_FALSE(frames[0].connected.has_value());
+  EXPECT_TRUE(frames[0].source_timestamp.is_null());
+
+  EXPECT_EQ(frames[1].entity_id, "aux_process");
+  EXPECT_EQ(frames[1].values["flow"], 7.5);
+  EXPECT_EQ(frames[1].source, EntityFreezeFrameCapture::kSourceDataProvider);
+  EXPECT_FALSE(frames[1].connected.has_value());
+  EXPECT_TRUE(frames[1].source_timestamp.is_null());
 }
 
 /// @verifies REQ_INTEROP_088

@@ -153,12 +153,14 @@ class EntityFreezeFrameCapture {
       std::function<std::optional<std::unordered_set<std::string>>(const std::function<bool()> & should_abort)>;
 
   /// Resolves a reporting source that read nothing of its own to the entities
-  /// it hosts, in the order they should be framed. The case this exists for is
-  /// the PLC runtime component: a loss-of-comms fault is reported under the
-  /// component's own id, the component serves no data values (no DataProvider,
-  /// and the x-plc-data route is app-only), and the apps it hosts still serve
-  /// their last known values. Returns an empty list for a source that hosts
-  /// nothing. Called from the internal capture thread.
+  /// it hosts. The case this exists for is the PLC runtime component: a
+  /// loss-of-comms fault is reported under the component's own id, the
+  /// component serves no data values (no DataProvider, and the x-plc-data
+  /// route is app-only), and the apps it hosts still serve their last known
+  /// values. Frames are stored in the order the resolver yields, which the
+  /// gateway's resolver takes from a std::set and is therefore alphabetical.
+  /// Returns an empty list for a source that hosts nothing. Called from the
+  /// internal capture thread.
   using HostedEntitiesResolver = std::function<std::vector<std::string>(const std::string & source_id)>;
 
   /**

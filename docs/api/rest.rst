@@ -1506,14 +1506,17 @@ Query and manage faults.
      (``plugin_data_provider`` for the owning plugin's DataProvider,
      ``plugin_x_plc_data_route`` for its ``x-plc-data`` route). These values
      are not a ROS message, so ``topic`` and ``message_type`` are empty and
-     ``source`` is the only field saying where the numbers came from. For a
-     plugin-backed entity that reports its link down, the values are the
-     plugin's last known ones and may predate the confirmation by the length of
-     the outage. Such entries carry ``connected`` (the payload's link flag,
-     ``false`` for the loss-of-comms case) and ``source_timestamp`` (the
-     payload's own timestamp, verbatim) in ``x-medkit``, both only when the
-     plugin's payload reports them. ``captured_at`` always dates the capture,
-     not the values.
+     ``source`` is the only field saying where the numbers came from. An entity
+     frame's ``name`` is the entity whose values it holds, which for a fault
+     reported by a component is not the component: a component holds no data
+     values, so its frames are named after the apps it hosts, one per app and
+     none for the component itself. For a plugin-backed entity that reports its
+     link down, the values are the plugin's last known ones and may predate the
+     confirmation by the length of the outage. Such entries carry ``connected``
+     (the payload's link flag, ``false`` for the loss-of-comms case) and
+     ``source_timestamp`` (the payload's own timestamp, verbatim) in
+     ``x-medkit``, both only when the plugin's payload reports them.
+     ``captured_at`` always dates the capture, not the values.
    - ``rosbag``: Recording file available via bulk-data endpoint
 
    **Response codes:**
