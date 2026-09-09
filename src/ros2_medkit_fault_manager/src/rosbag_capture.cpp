@@ -30,6 +30,8 @@
 #include <mutex>
 #include <optional>
 #include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <set>
 #include <sstream>
@@ -1325,6 +1327,12 @@ std::string RosbagCapture::generate_bag_path(const std::string & fault_code) con
   return base_path + "/" + bag_directory_name(fault_code, timestamp);
 }
 
+// The recording's footprint, and the figure stored on its rows. It is what the
+// recording costs against max_total_storage_mb and what evicting it frees, so it
+// counts everything in the directory including metadata.yaml and every file of a
+// split. rosbag_served_bytes() below is the other measurement of the same
+// recording, the one the API reports, and the two are deliberately different
+// numbers - see its comment for which question each answers.
 size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   size_t total_size = 0;
 
@@ -1343,6 +1351,46 @@ size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   }
 
   return total_size;
+}
+
+// The bytes a download of this recording actually transfers, which is the one
+// storage file the bulk-data route hands over. calculate_bag_size() above answers
+// the storage question (what the recording costs on disk) and this one answers the
+// client's question (what is about to arrive). Reporting the footprint in place of
+// the transfer is what made every listing overstate its own download by
+// metadata.yaml. Keeping them separate is what lets the quota stay honest while the
+// API does.
+//
+// The served file is read out of the bag's own metadata.yaml rather than guessed
+// from a file extension, so a bag that names something unexpected is still described
+// by its own record. See the header for every fallback and why none of them logs.
+size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_bytes) {
+  try {
+    rosbag2_storage::MetadataIo metadata_io;
+    if (!metadata_io.metadata_file_exists(bag_path)) {
+      return stored_total_bytes;
+    }
+
+    const rosbag2_storage::BagMetadata metadata = metadata_io.read_metadata(bag_path);
+    // Exactly one, or there is no single served file to measure. Zero means a bag
+    // that recorded nothing addressable. More than one means a split, where the
+    // download hands over one segment and the rest are unreachable through it - a
+    // defect of the download route, not something a size can paper over.
+    if (metadata.relative_file_paths.size() != 1) {
+      return stored_total_bytes;
+    }
+
+    const std::filesystem::path storage_file = std::filesystem::path(bag_path) / metadata.relative_file_paths.front();
+    std::error_code ec;
+    const auto served = std::filesystem::file_size(storage_file, ec);
+    if (ec) {
+      return stored_total_bytes;
+    }
+    return static_cast<size_t>(served);
+  } catch (const std::exception &) {
+    // read_metadata throws on a metadata.yaml that cannot be read or parsed.
+    return stored_total_bytes;
+  }
 }
 
 std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes) {

@@ -1778,6 +1778,19 @@ listing. For a rosbag that is the bag's single storage file (``.mcap`` or
 ``.db3``), which is the only file the download serves. The bag directory also
 holds ``metadata.yaml``, and those bytes are not part of the transfer.
 
+.. _rest-recording-size-rule:
+
+**One recording, one size.** The descriptor ``size`` here, the
+``environment_data.snapshots[].size_bytes`` a fault reports for the same
+recording, and the ``Content-Length`` of its download are the same number, and
+that number is the storage file. A recording also has a footprint on the
+gateway host, which is larger because the directory holds ``metadata.yaml`` as
+well. That figure is what the recording spends against its storage quota and is
+not reported by the API. The one case where the two coincide is a recording
+split across several storage files, past the configured maximum bag size: the
+download can hand over only one of them, no single file describes the transfer,
+and the API reports the recording's total instead.
+
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
 

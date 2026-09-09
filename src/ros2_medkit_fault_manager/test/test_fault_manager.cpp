@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
@@ -26,12 +27,15 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <std_msgs/msg/float64.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
@@ -1549,6 +1553,74 @@ TEST_F(FreezeFrameRetentionTest, GetFaultServesRetainedFreezeFrameAfterClear) {
   auto parsed = nlohmann::json::parse(snapshot.data);
   ASSERT_TRUE(parsed.contains("/ff_pressure"));
   EXPECT_DOUBLE_EQ(parsed["/ff_pressure"]["data"].get<double>(), 91.25);
+}
+
+// A rosbag snapshot advertises a download, so the size beside it has to be the size
+// of that download. The row keeps the recording's directory total for the storage
+// quota. This checks the service reports the served file instead, which is the
+// wiring the helper's own unit tests in test_rosbag_capture cannot see.
+TEST_F(FaultEventPublishingTest, GetFaultReportsARecordingsServedBytesNotItsFootprint) {
+  const auto bag_dir = std::filesystem::temp_directory_path() /
+                       ("get_fault_served_" + std::to_string(::getpid()) + "_" + std::to_string(::time(nullptr)));
+  std::filesystem::create_directories(bag_dir);
+
+  const std::string storage_file = "recording_0.db3";
+  {
+    std::ofstream out(bag_dir / storage_file, std::ios::binary);
+    out << std::string(8192, 'x');
+  }
+  rosbag2_storage::BagMetadata metadata;
+  metadata.storage_identifier = "sqlite3";
+  metadata.relative_file_paths = {storage_file};
+  metadata.duration = std::chrono::nanoseconds(0);
+  metadata.starting_time = std::chrono::time_point<std::chrono::high_resolution_clock>(std::chrono::nanoseconds(0));
+  metadata.message_count = 0;
+  rosbag2_storage::MetadataIo().write_metadata(bag_dir.string(), metadata);
+
+  size_t footprint = 0;
+  for (const auto & entry : std::filesystem::recursive_directory_iterator(bag_dir)) {
+    if (entry.is_regular_file()) {
+      footprint += static_cast<size_t>(entry.file_size());
+    }
+  }
+  const auto served = static_cast<size_t>(std::filesystem::file_size(bag_dir / storage_file));
+  ASSERT_GT(footprint, served) << "metadata.yaml did not land, so there is nothing to tell apart";
+
+  ASSERT_TRUE(call_report_fault("SERVED_BYTES_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
+
+  ros2_medkit_fault_manager::RosbagFileInfo info;
+  info.fault_code = "SERVED_BYTES_FAULT";
+  info.file_path = bag_dir.string();
+  info.recording_id = ros2_medkit_fault_manager::rosbag_recording_id(info.file_path);
+  info.format = "sqlite3";
+  info.duration_sec = 5.0;
+  // What the capture stores: the whole directory, which is what the quota spends.
+  info.size_bytes = footprint;
+  info.created_at_ns = 1738664999000000000;
+  fault_manager_->get_storage_for_test().store_rosbag_file(info);
+
+  auto response = call_get_fault("SERVED_BYTES_FAULT");
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->success);
+
+  const ros2_medkit_msgs::msg::Snapshot * rosbag_snapshot = nullptr;
+  for (const auto & snapshot : response->environment_data.snapshots) {
+    if (snapshot.type == ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG) {
+      rosbag_snapshot = &snapshot;
+      break;
+    }
+  }
+  ASSERT_NE(rosbag_snapshot, nullptr) << "the stored recording was not reported at all";
+  EXPECT_EQ(rosbag_snapshot->size_bytes, served) << "the snapshot must state the bytes a download transfers";
+  EXPECT_NE(rosbag_snapshot->size_bytes, footprint) << "the directory total is the quota's figure, not the API's";
+
+  // The row itself is untouched: the quota still sees the whole recording.
+  auto row = fault_manager_->get_storage().get_rosbag_file("SERVED_BYTES_FAULT");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_EQ(row->size_bytes, footprint) << "reporting must not have rewritten what the quota counts";
+
+  std::error_code ec;
+  std::filesystem::remove_all(bag_dir, ec);
 }
 
 // snapshots.max_per_fault and snapshots.retain_on_clear are independent settings.
