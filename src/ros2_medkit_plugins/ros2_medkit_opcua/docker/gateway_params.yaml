@@ -12,3 +12,10 @@ ros2_medkit_gateway:
       allowed_origins: ["*"]
     plugins: ["opcua"]
     plugins.opcua.poll_interval_ms: 1000
+    # Freeze-frames for the PLC entities are written next to the rest of the
+    # gateway's state, so a restart serves the values frozen when the fault
+    # confirmed instead of re-reading the PLC as it is now. The directory is
+    # the one the start / test scripts already create.
+    entity_freeze_frame:
+      storage:
+        path: "/var/lib/ros2_medkit/entity_freeze_frames.db"
