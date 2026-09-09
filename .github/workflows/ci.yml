@@ -489,8 +489,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          # gpg is required by codecov/codecov-action@v5 dependency check
-          apt-get install -y lcov ros-jazzy-test-msgs gpg
+          apt-get install -y lcov ros-jazzy-test-msgs
           source /opt/ros/jazzy/setup.bash
           for attempt in 1 2 3; do rosdep update && break; [ "$attempt" = 3 ] && exit 1; echo "rosdep update attempt $attempt failed, retrying" >&2; sleep 5; done
           rosdep install --from-paths src --ignore-src -r -y
