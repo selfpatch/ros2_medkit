@@ -17,18 +17,13 @@ jobs:
   format-lint:
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -38,14 +33,6 @@ jobs:
       # fails here in under a second instead of at the end of the coverage job.
       - name: Every C++ package opts into coverage instrumentation
         run: ./scripts/check_coverage_packages.sh --static-only
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install dependencies
         run: |
@@ -104,18 +91,13 @@ jobs:
   clang-tidy:
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -123,14 +105,6 @@ jobs:
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache and clang-tidy
         run: apt-get install -y ccache clang-tidy
@@ -243,7 +217,7 @@ jobs:
   sanitizer-asan:
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
       # Bind-mount the runner's large temp disk. The ASan+UBSan build tree
       # measured ~27 GB before the sanitizer module started passing -g1; the
       # post -g1 size has not been measured on a real run yet, so treat that
@@ -263,21 +237,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -404,7 +365,7 @@ jobs:
   sanitizer-tsan:
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
       # See sanitizer-asan: the instrumented RelWithDebInfo build tree does not
       # fit the container overlay on small GitHub runners, so build on /mnt.
       volumes:
@@ -417,21 +378,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -551,7 +499,7 @@ jobs:
             cmake_sanitizer: tsan
             ccache_size: 1.5G
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
       # See sanitizer-asan: the instrumented build tree does not fit the
       # container overlay on small GitHub runners, so build on /mnt.
       volumes:
@@ -564,21 +512,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache

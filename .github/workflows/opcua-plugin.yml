@@ -40,11 +40,11 @@ jobs:
       matrix:
         include:
           - ros_distro: humble
-            os_image: ubuntu:jammy
+            os_image: ros:humble-ros-base
           - ros_distro: jazzy
-            os_image: ubuntu:noble
+            os_image: ros:jazzy-ros-base
           - ros_distro: lyrical
-            os_image: ubuntu:resolute
+            os_image: ros:lyrical-ros-base
     continue-on-error: ${{ matrix.ros_distro == 'lyrical' }}
     container:
       image: ${{ matrix.os_image }}
@@ -53,21 +53,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 ${{ matrix.ros_distro }}
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: ${{ matrix.ros_distro }}
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -324,27 +311,14 @@ jobs:
     # skipping with CTest code 77.
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache
