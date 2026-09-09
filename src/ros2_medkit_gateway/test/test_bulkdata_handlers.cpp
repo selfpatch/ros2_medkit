@@ -349,7 +349,11 @@ TEST_F(RosbagBagDirectoryTest, ServedBytesIsUnknownRatherThanZeroWhenTheBagIsNot
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes("").has_value());
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes((bag_dir_ / "no_such_bag").string()).has_value());
 
-  // An empty bag directory resolves to no storage file at all.
+  // A directory with no metadata.yaml and no storage file in it. The metadata
+  // gate is what declines here, before the resolver is reached: the bag does not
+  // say how many storage files it holds, so this side will not guess one. The
+  // resolver would also find nothing, but that is no longer what the test turns
+  // on.
   const auto empty_bag = bag_dir_ / "empty_bag";
   std::filesystem::create_directories(empty_bag);
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes(empty_bag.string()).has_value());
@@ -393,6 +397,69 @@ TEST_F(RosbagBagDirectoryTest, ASplitRecordingIsListedAtTheRowsFigureNotAtOneSeg
 
   // The helper declines rather than guessing, which is what makes the fallback fire.
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes(split_dir.string()).has_value());
+}
+
+TEST_F(RosbagBagDirectoryTest, ABareStorageFileIsItsOwnRecordingAndIsSizedAsSuch) {
+  // A row's file_path can be the storage file itself rather than a bag
+  // directory. The resolver has always accepted that and the download serves it,
+  // so the listing has to size it too. A bare file has no metadata.yaml beside it
+  // under that name, so consulting the metadata first made the helper decline
+  // every such row - harmless while the row carries a figure to fall back on, and
+  // a recording listed at zero the moment one does not.
+  const auto bare_file = bag_dir_ / "standalone_recording.db3";
+  write_file(bare_file, std::string(7168, 'z'));
+  const uint64_t bare_size = std::filesystem::file_size(bare_file);
+
+  EXPECT_EQ(handlers::detail::rosbag_served_bytes(bare_file.string()), bare_size);
+
+  const json row{{"fault_code", "BARE_FILE_FAULT"},
+                 {"recording_id", "standalone_recording.db3"},
+                 {"file_path", bare_file.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 1}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  EXPECT_EQ(descriptors[0].size, bare_size) << "a bare storage file is measured, not declined";
+  EXPECT_NE(descriptors[0].size, 1u) << "and the row's figure is not what was reported";
+}
+
+TEST_F(RosbagBagDirectoryTest, TheMetadataNamesTheStorageFileRatherThanDirectoryOrder) {
+  // A stray .db3 beside the recording - a leftover segment, a copy - used to be
+  // servable and sizeable in place of the real one, because the resolver took
+  // whichever file the directory iterator yielded first. The fault manager sizes
+  // relative_file_paths.front() (rosbag_capture.cpp, rosbag_served_bytes), so the
+  // two sides reported different numbers for the same directory. The bag's own
+  // metadata is the tie-break on both sides now.
+  const auto strays = bag_dir_ / "with_stray";
+  std::filesystem::create_directories(strays);
+  write_file(strays / "recording_0.db3", std::string(4096, 'a'));
+  write_file(strays / "recording_1.db3", std::string(65536, 'b'));
+  write_metadata(strays, {"recording_0.db3"});
+
+  const uint64_t named_size = std::filesystem::file_size(strays / "recording_0.db3");
+  const uint64_t stray_size = std::filesystem::file_size(strays / "recording_1.db3");
+  ASSERT_NE(named_size, stray_size) << "the two files are the same size, so nothing is being told apart";
+
+  // The download resolves the named file, so the bytes on the wire are its bytes.
+  EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(strays.string()), (strays / "recording_0.db3").string());
+  EXPECT_EQ(handlers::detail::rosbag_served_bytes(strays.string()), named_size);
+
+  const json row{{"fault_code", "STRAY_FAULT"},
+                 {"recording_id", "with_stray"},
+                 {"file_path", strays.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 999999}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  // 4096 is also what the fault manager's own helper answers for this directory
+  // shape, which is the point of reading the same field on both sides. Its
+  // behaviour is pinned by ReportsTheStorageFileNotTheDirectoryTotal in
+  // test_rosbag_capture.cpp.
+  EXPECT_EQ(descriptors[0].size, named_size) << "the listing must report the file the bag names";
+  EXPECT_EQ(descriptors[0].size, 4096u) << "and that is the number the fault manager reports too";
+  EXPECT_NE(descriptors[0].size, stray_size) << "directory order must not decide which file a recording is";
 }
 
 // A bag directory this process cannot walk must cost its own row and nothing
@@ -453,8 +520,9 @@ TEST_F(UnreadableBagTest, AnUnreadableBagCostsItsOwnRowAndNotTheListing) {
   ASSERT_TRUE(symlink_created_) << "could not create the symlink loop, so nothing is being tested";
   // The loop really is refused by the filesystem, whatever uid this runs as.
   std::error_code probe_ec;
-  std::filesystem::is_directory(loop_, probe_ec);
+  const bool loop_is_a_directory = std::filesystem::is_directory(loop_, probe_ec);
   ASSERT_TRUE(static_cast<bool>(probe_ec)) << "the symlink loop resolved, so it is not an unreadable bag";
+  ASSERT_FALSE(loop_is_a_directory) << "a path that errored cannot also be a readable directory";
 
   const uint64_t readable_served = std::filesystem::file_size(readable_ / "recording_0.db3");
 

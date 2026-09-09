@@ -700,6 +700,28 @@ TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) 
   EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
 }
 
+TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
+  // A leftover segment or a copy sitting beside the recording must not change
+  // which file is measured. The metadata names one file and that is the file.
+  //
+  // This is also the fault manager's half of a cross-package agreement: the
+  // gateway sizes the same directory shape through its own resolver, and its
+  // TheMetadataNamesTheStorageFileRatherThanDirectoryOrder asserts the same
+  // 4096. Directory order decided the gateway's answer until it read this field
+  // too, and the two sides reported different sizes for one recording.
+  ServedBytesBag bag("stray");
+  const std::string named = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_1.db3", 65536);
+  bag.write_metadata({named});
+  const size_t stored_total = bag.directory_total();
+
+  const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
+  EXPECT_EQ(reported, bag.file_size_of(named));
+  EXPECT_EQ(reported, 4096u) << "the same number the gateway's listing reports for this shape";
+  EXPECT_NE(reported, bag.file_size_of("recording_1.db3")) << "the stray file is not the recording";
+  EXPECT_NE(reported, stored_total);
+}
+
 TEST(RosbagServedBytesTest, ASplitRecordingFallsBackToTheStoredTotal) {
   // Past max_bag_size_mb rosbag2 splits a recording across several storage files.
   // The download hands over one of them, so no single file is "the" transfer and the

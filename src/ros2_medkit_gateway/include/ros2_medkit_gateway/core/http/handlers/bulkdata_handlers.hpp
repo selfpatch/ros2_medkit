@@ -108,13 +108,26 @@ class BulkDataHandlers {
    * @brief Resolve rosbag file path from storage path.
    *
    * Rosbag2 creates a directory containing the actual db3/mcap file.
-   * This function resolves the directory to the actual file path.
+   * This function resolves the directory to the actual file path. A path that is
+   * already a regular file is returned unchanged.
    *
-   * The single place that decides which bytes a recording IS. `download()`
-   * streams the file this returns and reports its length. The listing sizes
-   * its descriptor from the same file through `detail::rosbag_served_bytes`.
-   * Both must move together, which is why this is reachable from outside the
-   * class rather than a private helper of the download path.
+   * The single place that decides which bytes a recording IS, which is why it is
+   * reachable from outside the class rather than being a private helper of the
+   * download path. `download()` streams the file this returns and reports its
+   * length, and `detail::rosbag_served_bytes` sizes the listing through it, so a
+   * change to which file a recording resolves to moves both at once.
+   *
+   * That does not make the two numbers equal in every case, and since the split
+   * fix it deliberately does not. For a recording held in one storage file the
+   * listing resolves through here and reports exactly what the download sends.
+   * For a recording split across several files the listing does not come through
+   * here at all: it carries the recording's total from the fault manager while
+   * this route still hands over one file, and the gap is what tells a client the
+   * transfer is partial. See the size rule in ``docs/api/rest.rst``.
+   *
+   * When the bag's own ``metadata.yaml`` names exactly one storage file and that
+   * file exists, that is the file. Otherwise the directory is scanned for the
+   * first ``.db3`` or ``.mcap`` in whatever order it yields.
    *
    * @param path Path to rosbag (can be file or directory)
    * @return Resolved file path, or empty string if not found
@@ -217,7 +230,9 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * @brief Bytes a rosbag download puts on the wire for one recording.
  *
  * Answers only for a recording held in a single storage file, which is the only
- * shape where one number describes the transfer.
+ * shape where one number describes the transfer. That is a bag directory whose
+ * ``metadata.yaml`` names one file, or a @p bag_path that is itself a storage
+ * file, which is one by definition and carries no metadata to consult.
  * ``BulkDataHandlers::resolve_rosbag_file_path`` picks that file and the
  * download streams it alone, so the length a client is told to expect is that
  * file's length and nothing else. Reporting the bag directory's total instead
@@ -239,7 +254,8 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * row of a listing, and an error here is one unreadable recording, not a failed
  * request for the entity's other recordings.
  *
- * @param bag_path Bag path as stored by the fault manager (directory or file)
+ * @param bag_path Bag path as stored by the fault manager. A bag directory, or
+ *                 a bare storage file, which both answer
  * @return The single storage file's size, or nullopt when there is not exactly
  *         one, or when this process cannot see it
  */

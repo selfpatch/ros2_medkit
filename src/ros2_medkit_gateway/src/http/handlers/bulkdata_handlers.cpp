@@ -65,6 +65,53 @@ tl::expected<EntityPathInfo, ErrorInfo> parse_path(const http::TypedRequest & re
   return *info;
 }
 
+/// The storage files the bag at @p bag_path recorded, named by its own
+/// ``metadata.yaml`` in ``relative_file_paths``.
+///
+/// This is the bag's own record of what it contains, and it is what the fault
+/// manager reads for the same decisions (through
+/// ``rosbag2_storage::MetadataIo``). Reading it here rather than inferring the
+/// answer from what happens to sit in the directory is what keeps the two sides
+/// agreeing about one recording. The gateway already links yaml-cpp, so this
+/// costs no new dependency. It does not link rosbag2_storage, which is why the
+/// field is read directly instead of through MetadataIo.
+///
+/// nullopt when the metadata is missing, unreadable, or not the shape rosbag2
+/// writes - all of which mean the same thing to a caller, that the bag will not
+/// say and the directory has to be inspected instead.
+std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::string & bag_path) {
+  const std::filesystem::path metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(metadata_path, ec)) {
+    return std::nullopt;
+  }
+  try {
+    const YAML::Node root = YAML::LoadFile(metadata_path.string());
+    if (!root.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node info = root["rosbag2_bagfile_information"];
+    if (!info || !info.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node paths = info["relative_file_paths"];
+    if (!paths || !paths.IsSequence()) {
+      return std::nullopt;
+    }
+    std::vector<std::string> names;
+    names.reserve(paths.size());
+    for (const auto & entry : paths) {
+      if (!entry.IsScalar()) {
+        return std::nullopt;
+      }
+      names.push_back(entry.as<std::string>());
+    }
+    return names;
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
+
 }  // namespace
 
 BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
@@ -108,6 +155,27 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
   if (!std::filesystem::is_directory(path, ec)) {
     return "";
   }
+
+  // Ask the bag first. When its metadata names exactly one storage file and that
+  // file is there, that is the file, and directory order does not get a vote.
+  // Iterating instead returned whichever .db3 or .mcap the directory happened to
+  // yield first, so a stray file beside the recording - a leftover segment, a
+  // copy - could be served and sized in place of the real one, while the fault
+  // manager, which sizes relative_file_paths.front(), reported the other. Same
+  // question, same evidence, on both sides now.
+  //
+  // Several names is a split recording and is deliberately left to the loop
+  // below: the download's choice of segment there is a separate question from
+  // this one. No metadata, unreadable metadata, or a named file that is not on
+  // disk all fall through as well, because then the bag has not answered.
+  if (const auto names = rosbag_relative_file_paths(path); names && names->size() == 1) {
+    const std::filesystem::path named = std::filesystem::path(path) / names->front();
+    std::error_code named_ec;
+    if (std::filesystem::is_regular_file(named, named_ec) && !named_ec) {
+      return named.string();
+    }
+  }
+
   std::filesystem::directory_iterator it(path, ec);
   if (ec) {
     return "";
@@ -144,55 +212,13 @@ std::string rosbag_recording_id(const std::string & file_path) {
   return p.filename().string();
 }
 
-namespace {
-
-/// How many storage files the bag at @p bag_path recorded, according to its own
-/// ``metadata.yaml``.
-///
-/// Decided from the metadata rather than by counting ``.db3`` / ``.mcap`` entries
-/// on disk for one reason: the fault manager decides the same question the same
-/// way (`rosbag_served_bytes` there reads `relative_file_paths` through
-/// `rosbag2_storage::MetadataIo`), and the two API surfaces have to agree on
-/// whether a given recording is split. Counting files on disk would disagree the
-/// moment a segment of a split were deleted - the directory would then hold one
-/// file and this side would call the recording whole while the fault manager
-/// still called it split. The gateway already links yaml-cpp, so reading the
-/// metadata costs no new dependency. It does not link rosbag2_storage, which is
-/// why the field is read directly instead of through MetadataIo.
-///
-/// nullopt when the metadata is missing, unreadable or not the shape rosbag2
-/// writes - all of which mean the same thing here, that this side cannot tell.
-std::optional<std::size_t> rosbag_storage_file_count(const std::string & bag_path) {
-  const std::filesystem::path metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(metadata_path, ec)) {
-    return std::nullopt;
-  }
-  try {
-    const YAML::Node root = YAML::LoadFile(metadata_path.string());
-    if (!root.IsMap()) {
-      return std::nullopt;
-    }
-    const YAML::Node info = root["rosbag2_bagfile_information"];
-    if (!info || !info.IsMap()) {
-      return std::nullopt;
-    }
-    const YAML::Node paths = info["relative_file_paths"];
-    if (!paths || !paths.IsSequence()) {
-      return std::nullopt;
-    }
-    return paths.size();
-  } catch (const std::exception &) {
-    return std::nullopt;
-  }
-}
-
-}  // namespace
-
 std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   if (bag_path.empty()) {
     return std::nullopt;
   }
+
+  std::error_code path_ec;
+  const bool is_storage_file = std::filesystem::is_regular_file(bag_path, path_ec) && !path_ec;
 
   // Only a recording held in a single storage file has a size the download can
   // be measured by. Past the configured maximum bag size rosbag2 splits a
@@ -204,9 +230,18 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   // figure, which since the fault manager began sending served bytes IS that
   // answer: the storage file for a whole recording, the directory total for a
   // split one.
-  const auto storage_files = rosbag_storage_file_count(bag_path);
-  if (!storage_files || *storage_files != 1) {
-    return std::nullopt;
+  //
+  // A bag_path that is itself a regular file IS the one storage file, and asking
+  // its metadata is meaningless because a file has no metadata.yaml beside it
+  // under that name. The path can be one: the resolver has always accepted a
+  // bare file, and the download serves it. Checking the count first made the
+  // helper decline every such row, and a row that carried no figure would then
+  // have been listed at zero.
+  if (!is_storage_file) {
+    const auto names = rosbag_relative_file_paths(bag_path);
+    if (!names || names->size() != 1) {
+      return std::nullopt;
+    }
   }
 
   // The same two steps `download()` performs, in the same order and through the
@@ -605,9 +640,15 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
 
     // Rosbag2 emits a directory layout - resolve the inner db3/mcap file. Only
-    // that file is served, and metadata.yaml stays on the gateway host. The listing
-    // sizes its descriptor through detail::rosbag_served_bytes, which resolves
-    // the same way, so the Content-Length below is the number it advertised.
+    // that file is served, and metadata.yaml stays on the gateway host.
+    //
+    // For a recording held in one storage file, which is the normal case, the
+    // listing resolved this same path through detail::rosbag_served_bytes and the
+    // Content-Length below is the number it advertised. For a recording split
+    // across several files the two deliberately differ: the listing carries the
+    // recording's total, this route hands over one file, and the descriptor size
+    // exceeding Content-Length is how a client can tell the transfer is partial.
+    // See the size rule in docs/api/rest.rst.
     actual_path = resolve_rosbag_file_path(file_path);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
