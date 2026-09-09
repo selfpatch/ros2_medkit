@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - ros_distro: humble
-            os_image: ubuntu:jammy
+            os_image: ros:humble-ros-base
           - ros_distro: lyrical
-            os_image: ubuntu:resolute
+            os_image: ros:lyrical-ros-base
     container:
       image: ${{ matrix.os_image }}
       # A container gets 64 MB of /dev/shm by default, which is Docker's number and
@@ -39,21 +39,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 ${{ matrix.ros_distro }}
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: ${{ matrix.ros_distro }}
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -169,15 +156,15 @@ jobs:
       matrix:
         include:
           - ros_distro: humble
-            os_image: ubuntu:jammy
+            os_image: ros:humble-ros-base
             # build-and-test compiles the same sources with the same flags on this
             # distro, so its cache is the superset this job restores from.
             ccache_prefix: ccache-humble-
           - ros_distro: lyrical
-            os_image: ubuntu:resolute
+            os_image: ros:lyrical-ros-base
             ccache_prefix: ccache-lyrical-
           - ros_distro: jazzy
-            os_image: ubuntu:noble
+            os_image: ros:jazzy-ros-base
             # ccache-jazzy-test-, not ccache-jazzy-. The shorter prefix also matches
             # ccache-jazzy-asan-, -tsan-, -lint- and -tidy-, and restore-keys takes the
             # most recently created match, so it would restore whichever other Jazzy job
@@ -198,21 +185,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 ${{ matrix.ros_distro }}
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: ${{ matrix.ros_distro }}
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -312,7 +286,7 @@ jobs:
   jazzy-test:
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
       # A container gets 64 MB of /dev/shm by default, which is Docker's number and
       # not a considered one. Fast DDS puts a 512 KB segment plus port files there
       # per participant - measured at ~0.65 MB - and a participant killed rather
@@ -330,21 +304,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache
@@ -484,7 +445,7 @@ jobs:
     # and a job-level kill stops every remaining step, `if: always()` included, so
     # there is nothing a guard could report.
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base
       # A container gets 64 MB of /dev/shm by default, which is Docker's number and
       # not a considered one. Fast DDS puts a 512 KB segment plus port files there
       # per participant - measured at ~0.65 MB - and a participant killed rather
@@ -498,21 +459,8 @@ jobs:
         shell: bash
 
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Pre-install ROS 2 apt source
-        uses: ./.github/actions/ros-apt-source
-
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: jazzy
 
       - name: Install ccache
         run: apt-get install -y ccache
