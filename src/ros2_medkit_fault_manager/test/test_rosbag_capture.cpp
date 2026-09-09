@@ -617,14 +617,14 @@ class ServedBytesBag {
     size_t total = 0;
     for (const auto & entry : std::filesystem::recursive_directory_iterator(dir_)) {
       if (entry.is_regular_file()) {
-        total += static_cast<size_t>(entry.file_size());
+        total += entry.file_size();
       }
     }
     return total;
   }
 
   size_t file_size_of(const std::string & name) const {
-    return static_cast<size_t>(std::filesystem::file_size(dir_ / name));
+    return std::filesystem::file_size(dir_ / name);
   }
 
   const std::filesystem::path & dir() const {
