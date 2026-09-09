@@ -1138,6 +1138,38 @@ class SelectiveRouteFetcher {
   std::map<std::string, int> reads_;
 };
 
+/// Route fetcher whose named entity fails its first N calls and answers after
+/// that: a link that comes back between two reads inside one catch-up.
+class FlakyRouteFetcher {
+ public:
+  FlakyRouteFetcher(double level, std::string flaky, int failures)
+    : level_(level), flaky_(std::move(flaky)), failures_left_(failures) {
+  }
+
+  std::optional<json> operator()(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reads_[entity_id] += 1;
+    if (entity_id == flaky_ && failures_left_ > 0) {
+      --failures_left_;
+      return std::nullopt;
+    }
+    return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level_}}})}};
+  }
+
+  int reads(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = reads_.find(entity_id);
+    return it == reads_.end() ? 0 : it->second;
+  }
+
+ private:
+  double level_;
+  std::string flaky_;
+  int failures_left_;
+  std::mutex mutex_;
+  std::map<std::string, int> reads_;
+};
+
 /// Fault codes present in the store, sorted, for a whole-store assertion.
 std::vector<std::string> stored_codes(const std::shared_ptr<InMemoryEntityFreezeFrameStore> & store) {
   auto rows = store->load_all();
@@ -1442,7 +1474,7 @@ TEST_F(EntityFreezeFrameCaptureTest, AFailedStaleReReadFreesItsSlotForAFaultWith
     EXPECT_TRUE(fresh[0].startup_catchup);
 
     EXPECT_EQ(plant.reads("route_keep"), 0);
-    EXPECT_GE(plant.reads("route_stale"), 1);  // it WAS asked before being dropped
+    EXPECT_EQ(plant.reads("route_stale"), 1);  // asked once before being dropped, never twice
     EXPECT_EQ(plant.reads("route_new"), 1);
   }
   const auto logs = testing::internal::GetCapturedStderr();
@@ -1451,6 +1483,97 @@ TEST_F(EntityFreezeFrameCaptureTest, AFailedStaleReReadFreesItsSlotForAFaultWith
   EXPECT_NE(logs.find("PLC_STALE"), std::string::npos) << logs;
   EXPECT_NE(logs.find("route_stale"), std::string::npos) << logs;
   EXPECT_NE(logs.find("no freeze-frame"), std::string::npos) << logs;
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AStaleCodeIsAskedOnceEvenWithASlotToSpare) {
+  // Three slots for three faults, so nothing competes and the bound never
+  // speaks. A stale code whose entity cannot answer is dropped, which leaves a
+  // fault with no frame and a free slot: exactly the shape in which a second
+  // pass would go back and block on the same dead entity all over again.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  seed_bound_probe(store);
+  SelectiveRouteFetcher plant(99.0, {"route_stale"});
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        /*max_faults=*/3, listed_faults(bound_probe_standing()), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && capture.frames_for("PLC_NEW").empty()) {
+      std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(500ms);  // enough for a second pass at route_stale to land
+
+    EXPECT_EQ(plant.reads("route_stale"), 1);  // one blocking read per catch-up, whatever the capacity
+    EXPECT_EQ(plant.reads("route_keep"), 0);
+    EXPECT_EQ(plant.reads("route_new"), 1);
+    EXPECT_TRUE(capture.frames_for("PLC_STALE").empty());  // dropped, and it stays dropped
+    ASSERT_EQ(capture.frames_for("PLC_KEEP").size(), 1u);
+    EXPECT_EQ(capture.frames_for("PLC_KEEP")[0].captured_at_ns, kKeepAtNs);
+    ASSERT_EQ(capture.frames_for("PLC_NEW").size(), 1u);
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(stored_codes(store), (std::vector<std::string>{"PLC_KEEP", "PLC_NEW"}));
+  EXPECT_NE(logs.find("PLC_STALE"), std::string::npos) << logs;
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AStaleCodeThatWouldAnswerOnASecondAskIsStillOnlyAskedOnce) {
+  // The entity fails once and would answer if asked again. Asking again is what
+  // must not happen: the warning has already told the operator the frame was
+  // discarded and this occurrence has none, so a frame appearing anyway would
+  // make the log a lie, the summary would count a discard that did not stick,
+  // and the slot freed by the drop would go back to the code that just lost it
+  // instead of to the fault still waiting for one.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  seed_bound_probe(store);
+  FlakyRouteFetcher plant(99.0, "route_stale", /*failures=*/1);
+  // STALE first in the reply, so nothing else can reach the bound before it.
+  auto standing = bound_probe_standing();
+  std::swap(standing[0], standing[1]);
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        /*max_faults=*/2, listed_faults(standing), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && capture.frames_for("PLC_NEW").empty()) {
+      std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(500ms);
+
+    EXPECT_EQ(plant.reads("route_stale"), 1);
+    EXPECT_TRUE(capture.frames_for("PLC_STALE").empty()) << "the discarded frame came back";
+    ASSERT_EQ(capture.frames_for("PLC_KEEP").size(), 1u);
+    EXPECT_EQ(capture.frames_for("PLC_KEEP")[0].captured_at_ns, kKeepAtNs);
+    ASSERT_EQ(capture.frames_for("PLC_NEW").size(), 1u) << "the freed slot did not reach the waiting fault";
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(stored_codes(store), (std::vector<std::string>{"PLC_KEEP", "PLC_NEW"}));
+  EXPECT_NE(logs.find("PLC_STALE"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("no freeze-frame"), std::string::npos) << logs;
+  // The summary has to describe what actually happened, not what was attempted.
+  EXPECT_NE(logs.find("0 reloaded frame(s) from an earlier occurrence re-read, 1 discarded"), std::string::npos)
+      << logs;
 }
 
 TEST(ContentHasLiveData, GatesOnItemsNotOnTheLinkFlag) {
@@ -1550,9 +1673,15 @@ TEST(StandingFaultsFromListReply, FirstOccurredIsReadInSecondsAndKeptInNanosecon
                          {"first_occurred", "yesterday"}},
                     json{{"fault_code", "ZERO"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 0}},
                     // Past what int64 holds once multiplied out, so the cast
-                    // itself is undefined. On x86-64 it lands on INT64_MIN,
-                    // which is below every captured_at and would look like
-                    // "this fault re-occurred", discarding a good frame.
+                    // itself is undefined. What the platform then hands back
+                    // decides the behaviour, which is the whole problem. On
+                    // x86-64 it is INT64_MIN, which the non-positive check in
+                    // stale_reloaded_codes happens to reject, so the frame
+                    // survives by luck. A saturating target hands back a large
+                    // POSITIVE value instead, which passes that check and sits
+                    // above every captured_at, so the fault reads as re-occurred
+                    // and a good frame is discarded. The range guard is what
+                    // makes the outcome the same on both.
                     json{{"fault_code", "HUGE"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 1e19}},
                     json{{"fault_code", "INFINITE"},
                          {"reporting_sources", json::array({"a"})},

@@ -643,6 +643,13 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   // and while these codes are counted as absent a bare code admitted against
   // that under-count would FIFO-evict a live frame that is still wanted. So the
   // stale codes are settled first, and only then is the real occupancy known.
+  //
+  // Every code this pass touches is recorded, replaced or dropped alike. A
+  // replaced one is back in frames_ and pass 2 would skip it anyway, but a
+  // dropped one is not, and without this pass 2 would see a fault with no frame
+  // and a free slot and ask the same unreachable entity a second time. One
+  // blocking plugin read per catch-up per fault, and no more.
+  std::unordered_set<std::string> settled;
   for (const auto & fault : standing) {
     if (should_abort()) {
       return;
@@ -659,9 +666,11 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
       // with no entity is stale to one and invisible to the other, and its row
       // survives to be served.
       drop_stale_frame(fault.fault_code, "", "the fault reports no entity to read");
+      settled.insert(fault.fault_code);
       ++discarded;
       continue;
     }
+    settled.insert(fault.fault_code);
     ros2_medkit_msgs::msg::FaultEvent event;
     event.event_type = ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED;
     event.fault.fault_code = fault.fault_code;
@@ -674,7 +683,7 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
       ++re_read;
     } else {
       drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources), "the entity served no usable values");
-      ++discarded;  // the slot it held is now free for the pass below
+      ++discarded;  // the slot it held is now free for the NEXT fault, not for this one again
     }
   }
 
@@ -709,9 +718,15 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     }
     // The stored frame is the one from this fault's own confirm edge. Re-reading
     // the plant now would replace it with today's values under a "startup"
-    // marker, which is exactly what persisting the frame is here to stop. This
-    // also covers a stale code the pass above just replaced.
-    if (already_framed.count(fault.fault_code) != 0) {
+    // marker, which is exactly what persisting the frame is here to stop.
+    //
+    // `settled` is the other half of that: pass 1 has already had its one go at
+    // every stale code, and a code it dropped is absent from frames_ precisely
+    // because its entity could not answer. Asking again in the same catch-up
+    // would be a second blocking read of an entity that just failed, and if it
+    // answered this time the fault would end up holding a frame the warning has
+    // already said it discarded.
+    if (already_framed.count(fault.fault_code) != 0 || settled.count(fault.fault_code) != 0) {
       continue;
     }
     if (framed >= max_faults_) {
