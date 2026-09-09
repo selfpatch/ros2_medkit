@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -63,6 +65,85 @@ tl::expected<EntityPathInfo, ErrorInfo> parse_path(const http::TypedRequest & re
   return *info;
 }
 
+/// The storage files the bag at @p bag_path recorded, named by its own
+/// ``metadata.yaml`` in ``relative_file_paths``.
+///
+/// This is the bag's own record of what it contains, and it is the same field the
+/// fault manager reads for the same decisions. The same YAML parser underneath,
+/// two decoders: ``rosbag2_storage::MetadataIo`` decodes the whole document into a
+/// ``BagMetadata``, this reads one sequence out of it. The two agree for every
+/// document both decoders accept, which is what keeps the sides describing one
+/// recording alike. The gateway already links yaml-cpp, so this costs no new
+/// dependency, and it does not link rosbag2_storage, which is why the field is
+/// read here directly.
+///
+/// nullopt when the metadata is missing, unreadable, or not the shape rosbag2
+/// writes - all of which mean the same thing to a caller, that the bag will not
+/// say and the directory has to be inspected instead.
+std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::string & bag_path) {
+  const std::filesystem::path metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(metadata_path, ec)) {
+    return std::nullopt;
+  }
+  try {
+    const YAML::Node root = YAML::LoadFile(metadata_path.string());
+    if (!root.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node info = root["rosbag2_bagfile_information"];
+    if (!info || !info.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node paths = info["relative_file_paths"];
+    if (!paths || !paths.IsSequence()) {
+      return std::nullopt;
+    }
+    std::vector<std::string> names;
+    names.reserve(paths.size());
+    for (const auto & entry : paths) {
+      if (!entry.IsScalar()) {
+        return std::nullopt;
+      }
+      names.push_back(entry.as<std::string>());
+    }
+    return names;
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
+
+/// The file @p relative_name names inside the bag at @p bag_path, when that is
+/// a name this side will follow: a direct child of the bag directory carrying a
+/// storage extension, which is what rosbag2 writes.
+///
+/// The containment test is the point. ``std::filesystem::path`` concatenation
+/// lets an absolute name replace the directory outright (``bag / "/etc/passwd"``
+/// is ``/etc/passwd``) and a ``..`` name climb out of it, so without this a
+/// metadata.yaml would choose which file on the host the download hands over
+/// and advertises a length for. The extension test keeps the same rule the
+/// directory scan applies to every other candidate.
+///
+/// nullopt when the name is not one of those. Callers treat that exactly as a
+/// bag that named nothing: the resolver scans the directory, the size helper
+/// declines.
+std::optional<std::filesystem::path> rosbag_named_storage_file(const std::string & bag_path,
+                                                               const std::string & relative_name) {
+  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
+  if (!bag.has_filename()) {
+    bag = bag.parent_path();  // tolerate a trailing slash
+  }
+  const std::filesystem::path named = (bag / relative_name).lexically_normal();
+  if (named.parent_path() != bag) {
+    return std::nullopt;
+  }
+  const std::string ext = named.extension().string();
+  if (ext != ".db3" && ext != ".mcap") {
+    return std::nullopt;
+  }
+  return named;
+}
+
 }  // namespace
 
 BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
@@ -87,21 +168,64 @@ std::vector<std::string> BulkDataHandlers::download_media_types() {
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
+  // Every filesystem call below takes the std::error_code overload, and that is
+  // load-bearing. This runs once per row of a bulk-data
+  // listing. With the throwing overloads one unreadable bag directory (EACCES),
+  // or one removed by quota eviction between the is_directory test and the walk
+  // (ENOENT), threw out of list(), which has no catch anywhere in its chain, and
+  // the request answered 500: a single bag nobody could read took every other
+  // recording of that entity out of the listing with it. Here a bag this process
+  // cannot read is an empty answer, not a failed request.
+  std::error_code ec;
+
   // If it's a regular file, return as-is
-  if (std::filesystem::is_regular_file(path)) {
+  if (std::filesystem::is_regular_file(path, ec)) {
     return path;
   }
 
   // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
-  if (std::filesystem::is_directory(path)) {
-    for (const auto & entry : std::filesystem::directory_iterator(path)) {
-      if (entry.is_regular_file()) {
-        auto ext = entry.path().extension().string();
-        // Look for db3 (sqlite3 format) or mcap files
-        if (ext == ".db3" || ext == ".mcap") {
-          return entry.path().string();
-        }
+  if (!std::filesystem::is_directory(path, ec)) {
+    return "";
+  }
+
+  // Ask the bag first. When its metadata names exactly one storage file and that
+  // file is there, that is the file, and directory order does not get a vote.
+  // Iterating instead returns whichever .db3 or .mcap the directory happens to
+  // yield first, so a stray file beside the recording - a leftover segment, a
+  // copy - can be served and sized in place of the real one, while the fault
+  // manager, which sizes the single file it names (a split falls back to the
+  // stored total), reports the other. Both sides read the same field.
+  //
+  // Several names is a split recording and is deliberately left to the loop
+  // below: the download's choice of segment there is a separate question from
+  // this one. No metadata, unreadable metadata, a name this side will not follow
+  // and a named file that is not on disk all fall through as well, because then
+  // the bag has not answered.
+  if (const auto names = rosbag_relative_file_paths(path); names && names->size() == 1) {
+    if (const auto named = rosbag_named_storage_file(path, names->front())) {
+      std::error_code named_ec;
+      if (std::filesystem::is_regular_file(*named, named_ec) && !named_ec) {
+        return named->string();
       }
+    }
+  }
+
+  std::filesystem::directory_iterator it(path, ec);
+  if (ec) {
+    return "";
+  }
+  for (const std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
+    if (ec) {
+      return "";
+    }
+    std::error_code entry_ec;
+    if (!it->is_regular_file(entry_ec) || entry_ec) {
+      continue;
+    }
+    auto ext = it->path().extension().string();
+    // Look for db3 (sqlite3 format) or mcap files
+    if (ext == ".db3" || ext == ".mcap") {
+      return it->path().string();
     }
   }
 
@@ -126,6 +250,40 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   if (bag_path.empty()) {
     return std::nullopt;
   }
+
+  std::error_code path_ec;
+  const bool is_storage_file = std::filesystem::is_regular_file(bag_path, path_ec) && !path_ec;
+
+  // Only a recording held in a single storage file has a size the download can
+  // be measured by. Past the configured maximum bag size rosbag2 splits a
+  // recording across several files and the download route hands over one of
+  // them, so no single file is "the" transfer, and the fault manager reports the
+  // recording's total for that shape. On nullopt the descriptor keeps the row's
+  // figure, which since the fault manager began sending served bytes IS that
+  // answer: the storage file for a whole recording, the directory total for a
+  // split one.
+  //
+  // Which file a single-file recording is held in comes from the bag's own
+  // metadata, and the size follows that file and no other. A named file that is
+  // absent leaves no answer here, the shape the fault manager answers with the
+  // stored total for. The resolver falls through to directory order there so the
+  // download still has something to hand over; that fallback does not make a
+  // stray file the recording's size.
+  //
+  // A bag_path that is itself a regular file IS the one storage file, and asking
+  // its metadata is meaningless because a file has no metadata.yaml beside it
+  // under that name. The path can be one: the resolver accepts a bare file and
+  // the download serves it, so the count gate sits behind the is_storage_file
+  // test - in front of it, every such row would be declined here and listed at
+  // zero.
+  std::optional<std::vector<std::string>> names;
+  if (!is_storage_file) {
+    names = rosbag_relative_file_paths(bag_path);
+    if (!names || names->size() != 1) {
+      return std::nullopt;
+    }
+  }
+
   // The same two steps `download()` performs, in the same order and through the
   // same resolver, so the size a client is promised cannot drift from the size
   // it is sent. Changing which file a recording resolves to changes both.
@@ -133,6 +291,17 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   if (resolved.empty()) {
     return std::nullopt;
   }
+
+  // The measurement stands only when the file resolved IS the file the bag
+  // named, through the same containment rule the resolver applied, so the two
+  // cannot disagree about which names are followable.
+  if (!is_storage_file) {
+    const auto named = rosbag_named_storage_file(bag_path, names->front());
+    if (!named || std::filesystem::path(resolved).lexically_normal() != *named) {
+      return std::nullopt;
+    }
+  }
+
   std::error_code ec;
   const auto size = std::filesystem::file_size(resolved, ec);
   if (ec) {
@@ -226,13 +395,15 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    // What the download route will actually send, measured on the file it
-    // resolves. The stored figure is the bag directory's total, which is the
-    // recording's footprint against the disk quota and not its transfer size -
-    // it counts metadata.yaml, which the download does not serve. Keep the
-    // stored figure only when the bag is not visible from this process: it is
-    // then the only number available, and listing a zero would describe the
-    // recording as empty rather than as unmeasured.
+    // What the download route will actually send, measured here on the file it
+    // resolves. The row's figure is the fault manager's own answer to the same
+    // question: the storage file for a recording held in one file, the bag
+    // directory's total for one split across several, and the total again for a
+    // bag whose metadata it could not read. Measuring locally is what keeps the
+    // listing and the download from drifting apart on this host. Falling back to
+    // the row is what keeps a recording this process cannot see - a peer's bag,
+    // an unreadable directory, a split - described by the side that can. A zero in
+    // its place would describe the recording as empty.
     entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
@@ -519,9 +690,18 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
 
     // Rosbag2 emits a directory layout - resolve the inner db3/mcap file. Only
-    // that file is served, and metadata.yaml stays on the gateway host. The listing
-    // sizes its descriptor through detail::rosbag_served_bytes, which resolves
-    // the same way, so the Content-Length below is the number it advertised.
+    // that file is served, and metadata.yaml stays on the gateway host.
+    //
+    // For a recording whose metadata names its single storage file and that file
+    // is present, which is the normal case, the listing resolved this same path
+    // through detail::rosbag_served_bytes and the Content-Length below is the
+    // number it advertised. When the bag names no file this side will follow -
+    // no metadata, a split, a name that escapes the directory, a named file that
+    // is gone - the descriptor carries the total the fault manager stored while
+    // this route still hands over whatever the directory holds, so the two
+    // deliberately differ and the descriptor size exceeding Content-Length is how
+    // a client can tell the transfer is not the whole recording. See the size
+    // rule in docs/api/rest.rst.
     actual_path = resolve_rosbag_file_path(file_path);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
