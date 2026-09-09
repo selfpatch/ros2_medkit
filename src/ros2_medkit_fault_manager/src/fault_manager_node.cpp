@@ -1493,7 +1493,17 @@ void FaultManagerNode::handle_get_snapshots(
   }
   result["topics"] = topics_json;
 
-  // Include rosbag info if available
+  // Include rosbag info if available.
+  //
+  // No download URL. This payload used to carry one built as
+  // /api/v1/faults/{code}/snapshots/bag, a route that no longer exists and answers
+  // 404, so the field described a download nobody could perform. It is not replaced
+  // here either: a recording is addressed under its entity
+  // (/api/v1/{entity-type}/{id}/bulk-data/rosbags/{recording_id}), and the entity
+  // type is a fact of the gateway's discovery model that the fault manager does not
+  // hold. Any URL built here would be a guess at one of four prefixes. The gateway
+  // resolves the entity itself and builds that URI from the recording id it gets on
+  // the GetFault snapshot entries, which is the one place the mapping is known.
   auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
   if (rosbag_info) {
     nlohmann::json rosbag_json;
@@ -1501,7 +1511,6 @@ void FaultManagerNode::handle_get_snapshots(
     rosbag_json["duration_sec"] = rosbag_info->duration_sec;
     rosbag_json["size_bytes"] = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
     rosbag_json["format"] = rosbag_info->format;
-    rosbag_json["download_url"] = "/api/v1/faults/" + request->fault_code + "/snapshots/bag";
     result["rosbag"] = rosbag_json;
   } else {
     result["rosbag"] = {{"available", false}};
