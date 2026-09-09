@@ -1158,8 +1158,17 @@ confirmation.
 A recording is listed and downloaded through the bulk-data endpoints:
 `GET /api/v1/{entity-path}/bulk-data/rosbags` for the descriptors and
 `GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}` for the bytes. The
-download serves the bag's single storage file (`.mcap` or `.db3`), and the
-descriptor `size` is that file's length.
+download serves one storage file, verbatim, named `<recording_id>.<format>`
+(`.mcap` or `.sqlite3`). It is not an archive and it does not include the bag's
+`metadata.yaml`.
+
+For a recording held in a single storage file, which is the normal case, the
+descriptor `size` is that file's length and therefore the length of the
+download. A recording that grew past `snapshots.rosbag.max_bag_size_mb` is split
+across several storage files and the download hands over only one of them. The
+descriptor then reports the recording's total, so `size` exceeds the download's
+`Content-Length`. See [the size rule](../../docs/api/rest.rst) in the REST API
+reference for the full statement.
 
 **Rosbag Configuration:**
 
@@ -1187,16 +1196,27 @@ ros2 run ros2_medkit_fault_manager fault_manager_node \
 ```
 
 **Playback downloaded rosbag:**
+
+The downloaded file is a bag in itself. Point `ros2 bag` straight at it, with no
+unpacking step and no `--storage` flag - rosbag2 reads the storage id out of the
+file, so the same two commands work for `.mcap` and for `.sqlite3`.
+
 ```bash
-# Extract the downloaded archive
-tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
+# Inspect the downloaded file
+ros2 bag info fault_MOTOR_OVERHEAT_1738664999000.mcap
 
-# Play back the bag
-ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
-
-# Inspect bag contents
-ros2 bag info fault_MOTOR_OVERHEAT_1735830000/
+# Play it back
+ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.mcap
 ```
+
+```bash
+# The same, for a recording captured with snapshots.rosbag.format: sqlite3
+ros2 bag info fault_MOTOR_OVERHEAT_1738664999000.sqlite3
+ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.sqlite3
+```
+
+A lone storage file needs no `metadata.yaml` beside it: both commands read the
+topics, the message count and the duration out of the file itself.
 
 **Differences from JSON Snapshots:**
 

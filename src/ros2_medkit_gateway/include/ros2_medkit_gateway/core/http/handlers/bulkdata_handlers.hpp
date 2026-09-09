@@ -216,21 +216,32 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
 /**
  * @brief Bytes a rosbag download puts on the wire for one recording.
  *
- * ``BulkDataHandlers::resolve_rosbag_file_path`` picks the single storage file
- * inside the bag directory and the download streams that file alone, so the
- * length a client is told to expect is that file's length and nothing else.
+ * Answers only for a recording held in a single storage file, which is the only
+ * shape where one number describes the transfer.
+ * ``BulkDataHandlers::resolve_rosbag_file_path`` picks that file and the
+ * download streams it alone, so the length a client is told to expect is that
+ * file's length and nothing else. Reporting the bag directory's total instead
+ * overstated every download by ``metadata.yaml`` - on a short recording, by
+ * around a tenth of the transfer - and a client sizing a buffer or a progress
+ * bar from the listing never reached the end.
  *
- * The fault manager's stored ``size_bytes`` answers a different question. It
- * walks the whole bag directory, because it is the figure the recording's disk
- * quota is spent against, and the directory also holds ``metadata.yaml``.
- * Reporting that figure as the descriptor size overstated every download by the
- * metadata file - on a short recording, by around a tenth of the transfer - and
- * a client sizing a buffer or a progress bar from the listing never reached the
- * end. The listing therefore states what the download serves, measured on the
- * file the download resolves, and leaves the quota figure to the quota.
+ * Returns nullopt for anything else, and the caller then keeps the row's own
+ * figure. That covers a bag this process cannot see or read at all, and it
+ * covers a recording split across several storage files past the configured
+ * maximum bag size: the download hands over one segment, so no single file is
+ * the transfer, and answering with whichever segment the resolver reached first
+ * advertised a split recording at the size of one part of it. The row's figure
+ * is the fault manager's answer to the same question, decided from the same
+ * ``metadata.yaml``, so deferring to it keeps the two API surfaces agreeing on
+ * one recording.
+ *
+ * Never throws and never reports a filesystem error upwards. It runs once per
+ * row of a listing, and an error here is one unreadable recording, not a failed
+ * request for the entity's other recordings.
  *
  * @param bag_path Bag path as stored by the fault manager (directory or file)
- * @return The resolved file's size, or nullopt when this process cannot see it
+ * @return The single storage file's size, or nullopt when there is not exactly
+ *         one, or when this process cannot see it
  */
 std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
 

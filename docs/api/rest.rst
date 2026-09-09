@@ -1774,9 +1774,10 @@ is the time that recording was made.
 
 ``size`` is the number of bytes the download route below puts on the wire for
 that descriptor, so a client can size a buffer or a progress bar from the
-listing. For a rosbag that is the bag's single storage file (``.mcap`` or
-``.db3``), which is the only file the download serves. The bag directory also
-holds ``metadata.yaml``, and those bytes are not part of the transfer.
+listing. For a rosbag held in a single storage file, which is the normal case,
+that is the file (``.mcap`` or ``.sqlite3``) and it is the only file the
+download serves. The bag directory also holds ``metadata.yaml``, and those bytes
+are not part of the transfer.
 
 .. _rest-recording-size-rule:
 
@@ -1790,6 +1791,13 @@ not reported by the API. The one case where the two coincide is a recording
 split across several storage files, past the configured maximum bag size: the
 download can hand over only one of them, no single file describes the transfer,
 and the API reports the recording's total instead.
+
+For that split case the three numbers stop agreeing, and deliberately so. The
+descriptor ``size`` and the nested ``size_bytes`` report the recording's total
+while the download's ``Content-Length`` is the one storage file it hands over,
+so ``size`` exceeds ``Content-Length``. That gap is the signal: a client that
+compares the two can tell the transfer it just made is a part of the recording
+rather than the whole of it, which no single reported number could express.
 
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
@@ -1806,6 +1814,8 @@ Download a specific bulk-data file.
   a pre-#620 fault-code URL is not the segment the client sent, and the format
   is the one persisted at capture time (``mcap`` or ``sqlite3``). For every
   other category it is the stored item's own name, e.g. ``report.zip``.
+- ``Content-Length``: the served file's length. For how it relates to the
+  descriptor ``size`` of the same recording, see :ref:`rest-recording-size-rule`
 - ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
   provider, so a client may fetch part of the file
 - ``Access-Control-Expose-Headers``: ``Content-Disposition``

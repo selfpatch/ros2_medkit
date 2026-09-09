@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -87,21 +89,41 @@ std::vector<std::string> BulkDataHandlers::download_media_types() {
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
+  // Every filesystem call below takes the std::error_code overload, and that is
+  // load-bearing rather than style. This runs once per row of a bulk-data
+  // listing. With the throwing overloads one unreadable bag directory (EACCES),
+  // or one removed by quota eviction between the is_directory test and the walk
+  // (ENOENT), threw out of list(), which has no catch anywhere in its chain, and
+  // the request answered 500: a single bag nobody could read took every other
+  // recording of that entity out of the listing with it. Here a bag this process
+  // cannot read is an empty answer, not a failed request.
+  std::error_code ec;
+
   // If it's a regular file, return as-is
-  if (std::filesystem::is_regular_file(path)) {
+  if (std::filesystem::is_regular_file(path, ec)) {
     return path;
   }
 
   // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
-  if (std::filesystem::is_directory(path)) {
-    for (const auto & entry : std::filesystem::directory_iterator(path)) {
-      if (entry.is_regular_file()) {
-        auto ext = entry.path().extension().string();
-        // Look for db3 (sqlite3 format) or mcap files
-        if (ext == ".db3" || ext == ".mcap") {
-          return entry.path().string();
-        }
-      }
+  if (!std::filesystem::is_directory(path, ec)) {
+    return "";
+  }
+  std::filesystem::directory_iterator it(path, ec);
+  if (ec) {
+    return "";
+  }
+  for (const std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
+    if (ec) {
+      return "";
+    }
+    std::error_code entry_ec;
+    if (!it->is_regular_file(entry_ec) || entry_ec) {
+      continue;
+    }
+    auto ext = it->path().extension().string();
+    // Look for db3 (sqlite3 format) or mcap files
+    if (ext == ".db3" || ext == ".mcap") {
+      return it->path().string();
     }
   }
 
@@ -122,10 +144,71 @@ std::string rosbag_recording_id(const std::string & file_path) {
   return p.filename().string();
 }
 
+namespace {
+
+/// How many storage files the bag at @p bag_path recorded, according to its own
+/// ``metadata.yaml``.
+///
+/// Decided from the metadata rather than by counting ``.db3`` / ``.mcap`` entries
+/// on disk for one reason: the fault manager decides the same question the same
+/// way (`rosbag_served_bytes` there reads `relative_file_paths` through
+/// `rosbag2_storage::MetadataIo`), and the two API surfaces have to agree on
+/// whether a given recording is split. Counting files on disk would disagree the
+/// moment a segment of a split were deleted - the directory would then hold one
+/// file and this side would call the recording whole while the fault manager
+/// still called it split. The gateway already links yaml-cpp, so reading the
+/// metadata costs no new dependency. It does not link rosbag2_storage, which is
+/// why the field is read directly instead of through MetadataIo.
+///
+/// nullopt when the metadata is missing, unreadable or not the shape rosbag2
+/// writes - all of which mean the same thing here, that this side cannot tell.
+std::optional<std::size_t> rosbag_storage_file_count(const std::string & bag_path) {
+  const std::filesystem::path metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(metadata_path, ec)) {
+    return std::nullopt;
+  }
+  try {
+    const YAML::Node root = YAML::LoadFile(metadata_path.string());
+    if (!root.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node info = root["rosbag2_bagfile_information"];
+    if (!info || !info.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node paths = info["relative_file_paths"];
+    if (!paths || !paths.IsSequence()) {
+      return std::nullopt;
+    }
+    return paths.size();
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
+
+}  // namespace
+
 std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   if (bag_path.empty()) {
     return std::nullopt;
   }
+
+  // Only a recording held in a single storage file has a size the download can
+  // be measured by. Past the configured maximum bag size rosbag2 splits a
+  // recording across several files and the download route hands over one of
+  // them, so no single file is "the" transfer. Answering with the segment the
+  // resolver happened to reach first advertised a split recording at the size of
+  // one part of it, and disagreed with the fault manager, which reports the
+  // recording's total for a split. On nullopt the descriptor keeps the row's
+  // figure, which since the fault manager began sending served bytes IS that
+  // answer: the storage file for a whole recording, the directory total for a
+  // split one.
+  const auto storage_files = rosbag_storage_file_count(bag_path);
+  if (!storage_files || *storage_files != 1) {
+    return std::nullopt;
+  }
+
   // The same two steps `download()` performs, in the same order and through the
   // same resolver, so the size a client is promised cannot drift from the size
   // it is sent. Changing which file a recording resolves to changes both.
@@ -226,13 +309,16 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    // What the download route will actually send, measured on the file it
-    // resolves. The stored figure is the bag directory's total, which is the
-    // recording's footprint against the disk quota and not its transfer size -
-    // it counts metadata.yaml, which the download does not serve. Keep the
-    // stored figure only when the bag is not visible from this process: it is
-    // then the only number available, and listing a zero would describe the
-    // recording as empty rather than as unmeasured.
+    // What the download route will actually send, measured here on the file it
+    // resolves. The row's figure is the fault manager's own answer to the same
+    // question: the storage file for a recording held in one file, the bag
+    // directory's total for one split across several, and the total again for a
+    // bag whose metadata it could not read. Measuring locally is what keeps the
+    // listing and the download from drifting apart on this host. Falling back to
+    // the row is what keeps a recording this process cannot see - a peer's bag,
+    // an unreadable directory, a split - described by the side that can. Listing
+    // a zero instead would describe the recording as empty rather than as
+    // unmeasured here.
     entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;

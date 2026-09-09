@@ -267,7 +267,7 @@ class RosbagBagDirectoryTest : public ::testing::Test {
                ("bulkdata_bag_test_" + std::to_string(getpid()) + "_" + std::to_string(counter_++));
     std::filesystem::create_directories(bag_dir_);
     write_file(bag_dir_ / "recording_0.db3", std::string(4096, 'x'));
-    write_file(bag_dir_ / "metadata.yaml", std::string(311, 'y'));
+    write_metadata(bag_dir_, {"recording_0.db3"});
   }
 
   void TearDown() override {
@@ -280,12 +280,31 @@ class RosbagBagDirectoryTest : public ::testing::Test {
     out << content;
   }
 
+  /// A ``metadata.yaml`` in the shape rosbag2 writes, naming @p storage_files in
+  /// ``relative_file_paths``. Only the fields this code reads are filled in, but
+  /// the nesting is the real one: the helper looks up
+  /// ``rosbag2_bagfile_information.relative_file_paths``, so a flat document
+  /// would pass a test that production data fails.
+  static void write_metadata(const std::filesystem::path & dir, const std::vector<std::string> & storage_files) {
+    std::string yaml =
+        "rosbag2_bagfile_information:\n"
+        "  version: 9\n"
+        "  storage_identifier: sqlite3\n"
+        "  message_count: 0\n"
+        "  relative_file_paths:\n";
+    for (const auto & file : storage_files) {
+      yaml += "    - " + file + "\n";
+    }
+    yaml += "  ros_distro: jazzy\n";
+    write_file(dir / "metadata.yaml", yaml);
+  }
+
   // What the fault manager stores: every regular file under the bag directory.
   uint64_t directory_total() const {
     uint64_t total = 0;
     for (const auto & entry : std::filesystem::recursive_directory_iterator(bag_dir_)) {
       if (entry.is_regular_file()) {
-        total += static_cast<uint64_t>(entry.file_size());
+        total += entry.file_size();
       }
     }
     return total;
@@ -302,7 +321,7 @@ TEST_F(RosbagBagDirectoryTest, DescriptorSizeIsTheBytesTheDownloadServesNotTheBa
   // bag directory to its storage file, then take that file's size.
   const std::string served_path = BulkDataHandlers::resolve_rosbag_file_path(bag_dir_.string());
   ASSERT_EQ(served_path, (bag_dir_ / "recording_0.db3").string());
-  const auto served_bytes = static_cast<uint64_t>(std::filesystem::file_size(served_path));
+  const uint64_t served_bytes = std::filesystem::file_size(served_path);
 
   // Not vacuous: the directory holds metadata.yaml as well, so the stored figure
   // and the served figure are genuinely different numbers.
@@ -334,6 +353,170 @@ TEST_F(RosbagBagDirectoryTest, ServedBytesIsUnknownRatherThanZeroWhenTheBagIsNot
   const auto empty_bag = bag_dir_ / "empty_bag";
   std::filesystem::create_directories(empty_bag);
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes(empty_bag.string()).has_value());
+}
+
+TEST_F(RosbagBagDirectoryTest, ASplitRecordingIsListedAtTheRowsFigureNotAtOneSegment) {
+  // Past the configured maximum bag size rosbag2 splits a recording across
+  // several storage files. The download route hands over whichever one the
+  // resolver reaches first, so no single file is the transfer, and sizing the
+  // descriptor by that file advertised a split recording at the size of one part
+  // of it. The fault manager reports the recording's total for a split, and the
+  // two API surfaces have to agree on one recording.
+  const auto split_dir = bag_dir_ / "split";
+  std::filesystem::create_directories(split_dir);
+  write_file(split_dir / "split_0.db3", std::string(16384, 'a'));
+  write_file(split_dir / "split_1.db3", std::string(53248, 'b'));
+  write_metadata(split_dir, {"split_0.db3", "split_1.db3"});
+
+  uint64_t split_total = 0;
+  for (const auto & entry : std::filesystem::recursive_directory_iterator(split_dir)) {
+    if (entry.is_regular_file()) {
+      split_total += entry.file_size();
+    }
+  }
+  const uint64_t first_segment = std::filesystem::file_size(split_dir / "split_0.db3");
+  const uint64_t second_segment = std::filesystem::file_size(split_dir / "split_1.db3");
+
+  // The row carries what the fault manager reports for a split: the total.
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999000"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"duration_sec", 6.0},
+                 {"size_bytes", split_total}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  EXPECT_EQ(descriptors[0].size, split_total) << "a split recording keeps the figure the fault manager reported";
+  EXPECT_NE(descriptors[0].size, first_segment) << "one segment is not the recording";
+  EXPECT_NE(descriptors[0].size, second_segment) << "and neither is the other";
+
+  // The helper declines rather than guessing, which is what makes the fallback fire.
+  EXPECT_FALSE(handlers::detail::rosbag_served_bytes(split_dir.string()).has_value());
+}
+
+// A bag directory this process cannot walk must cost its own row and nothing
+// else. The resolver used the throwing filesystem overloads, so one EACCES or
+// ENOENT threw out of the listing handler, which has no catch in its chain, and
+// the whole request answered 500 - every recording of the entity gone because of
+// one unreadable directory.
+//
+// The trigger is a symlink loop rather than a 0000 directory because it has to
+// be refused for any uid, and these tests do not run under one uid. In CI they
+// run as root: the workflow's jobs declare a plain `container:` with no `user:`
+// key, and that runs as uid 0. Locally they run as uid 1000. Root ignores mode
+// bits, so a 0000 directory is readable in CI and a test built on one would pass
+// there without the failure it claims to reproduce. ELOOP is refused for every
+// uid alike, so this case means the same thing in both places.
+class UnreadableBagTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    root_ = std::filesystem::temp_directory_path() /
+            ("bulkdata_unreadable_" + std::to_string(getpid()) + "_" + std::to_string(counter_++));
+    std::filesystem::create_directories(root_);
+
+    // Readable control bag: one storage file, real metadata.
+    readable_ = root_ / "readable_bag";
+    std::filesystem::create_directories(readable_);
+    {
+      std::ofstream out(readable_ / "recording_0.db3", std::ios::binary);
+      out << std::string(2048, 'x');
+    }
+    {
+      std::ofstream out(readable_ / "metadata.yaml", std::ios::binary);
+      out << "rosbag2_bagfile_information:\n  version: 9\n  relative_file_paths:\n    - recording_0.db3\n";
+    }
+
+    // Unreadable bag: a symlink pointing at itself. Every filesystem query on it
+    // fails with ELOOP, for root as much as for anyone else.
+    loop_ = root_ / "loop_bag";
+    std::error_code ec;
+    std::filesystem::create_symlink(loop_, loop_, ec);
+    symlink_created_ = !ec;
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+  }
+
+  std::filesystem::path root_;
+  std::filesystem::path readable_;
+  std::filesystem::path loop_;
+  bool symlink_created_{false};
+  static int counter_;
+};
+
+int UnreadableBagTest::counter_ = 0;
+
+TEST_F(UnreadableBagTest, AnUnreadableBagCostsItsOwnRowAndNotTheListing) {
+  ASSERT_TRUE(symlink_created_) << "could not create the symlink loop, so nothing is being tested";
+  // The loop really is refused by the filesystem, whatever uid this runs as.
+  std::error_code probe_ec;
+  std::filesystem::is_directory(loop_, probe_ec);
+  ASSERT_TRUE(static_cast<bool>(probe_ec)) << "the symlink loop resolved, so it is not an unreadable bag";
+
+  const uint64_t readable_served = std::filesystem::file_size(readable_ / "recording_0.db3");
+
+  const std::vector<json> rows{
+      json{{"fault_code", "READABLE"},
+           {"recording_id", "fault_READABLE_1"},
+           {"file_path", readable_.string()},
+           {"format", "sqlite3"},
+           {"size_bytes", 999999}},
+      json{{"fault_code", "UNREADABLE"},
+           {"recording_id", "fault_UNREADABLE_1"},
+           {"file_path", loop_.string()},
+           {"format", "sqlite3"},
+           {"size_bytes", 4242}},
+  };
+
+  // The listing answers, and answers with BOTH recordings.
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, {});
+  ASSERT_EQ(descriptors.size(), 2u) << "an unreadable bag removed another recording from the listing";
+  EXPECT_EQ(descriptors[0].id, "fault_READABLE_1");
+  EXPECT_EQ(descriptors[0].size, readable_served) << "the readable bag is still measured locally";
+  EXPECT_EQ(descriptors[1].id, "fault_UNREADABLE_1");
+  EXPECT_EQ(descriptors[1].size, 4242u) << "the unreadable bag keeps the figure its row carried";
+
+  // These two are the assertions that actually pin the throwing overloads, and the
+  // listing assertion above is defence in depth rather than the guard. Order is
+  // why: rosbag_served_bytes reads the bag's metadata before it resolves any file,
+  // and an unreadable bag has no readable metadata either, so it returns nullopt
+  // before the resolver is ever reached. download() has no such gate in front of
+  // it - it calls the resolver directly - so the resolver's own refusal to throw
+  // is what that route depends on, and it is asserted here directly.
+  EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_served_bytes(loop_.string()).has_value()); });
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(loop_.string()), ""); });
+}
+
+// The second shape: a directory whose mode denies everyone. This one does test
+// something under uid 1000, where it runs today, and cannot under uid 0, where CI
+// runs it. It probes first and skips with the uid rather than passing on a
+// permission that was never actually denied.
+TEST_F(UnreadableBagTest, AModeZeroDirectoryIsAlsoDeclinedRatherThanThrown) {
+  const auto locked = root_ / "locked_bag";
+  std::filesystem::create_directories(locked);
+  {
+    std::ofstream out(locked / "recording_0.db3", std::ios::binary);
+    out << std::string(1024, 'x');
+  }
+  std::error_code ec;
+  std::filesystem::permissions(locked, std::filesystem::perms::none, ec);
+  ASSERT_FALSE(static_cast<bool>(ec)) << "could not drop the directory's permissions";
+
+  std::error_code probe_ec;
+  std::filesystem::directory_iterator probe(locked, probe_ec);
+  if (!probe_ec) {
+    std::filesystem::permissions(locked, std::filesystem::perms::owner_all, ec);
+    GTEST_SKIP() << "running as uid " << ::getuid() << ", which ignores mode bits, so a 0000 directory is readable. "
+                 << "The symlink-loop case above is the one that covers every uid";
+  }
+
+  EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_served_bytes(locked.string()).has_value()); });
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(locked.string()), ""); });
+
+  std::filesystem::permissions(locked, std::filesystem::perms::owner_all, ec);
 }
 
 TEST_F(RosbagBagDirectoryTest, AnUnreachableBagKeepsTheStoredFigureRatherThanReportingZero) {
