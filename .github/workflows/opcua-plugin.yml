@@ -249,10 +249,19 @@ jobs:
       - name: Run alarm integration suite
         run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_alarm_tests.sh
 
+      # Same fixture and the same Dockerfile as the step above, so the images
+      # come out of that step's layer cache. Asserts that a loss-of-comms fault
+      # reported by the PLC runtime component carries a freeze-frame from the
+      # app that component hosts. No other suite reads a fault's
+      # environment_data, so none of them can see that frame go missing.
+      - name: Run loss-of-comms freeze-frame scenario
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_comms_lost_frame_test.sh
+
       - name: Dump container logs on failure
         if: failure()
         run: |
-          for c in alarm-test-server alarm-test-gateway; do
+          for c in alarm-test-server alarm-test-gateway \
+                   comms-lost-frame-server comms-lost-frame-gateway; do
             echo "=== ${c} logs ==="
             docker logs "${c}" 2>&1 | tail -80 || true
           done

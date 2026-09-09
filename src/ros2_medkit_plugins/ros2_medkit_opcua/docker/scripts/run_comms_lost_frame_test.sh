@@ -18,8 +18,11 @@
 # frozen row from a coincidence: nothing can read it back once the server is
 # gone.
 #
-# The alarm and discovery scenarios both keep their server alive, so neither
-# can see this.
+# Why no existing suite catches this: run_integration_tests.sh keeps its server
+# up throughout, and while run_alarm_tests.sh does stop its server once (to
+# prove the client re-subscribes afterwards) it asserts only on fault status
+# transitions. No suite here reads a fault's environment_data at all, so a
+# fault detail that lost its freeze-frame looks exactly like one that kept it.
 
 set -euo pipefail
 
