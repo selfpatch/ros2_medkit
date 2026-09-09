@@ -1815,7 +1815,8 @@ Download a specific bulk-data file.
   is the one persisted at capture time (``mcap`` or ``sqlite3``). For every
   other category it is the stored item's own name, e.g. ``report.zip``.
 - ``Content-Length``: the served file's length. For how it relates to the
-  descriptor ``size`` of the same recording, see :ref:`rest-recording-size-rule`
+  descriptor ``size`` of the same recording, see
+  :ref:`One recording, one size <rest-recording-size-rule>`
 - ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
   provider, so a client may fetch part of the file
 - ``Access-Control-Expose-Headers``: ``Content-Disposition``
