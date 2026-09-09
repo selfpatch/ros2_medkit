@@ -36,6 +36,10 @@ constexpr size_t kMaxLoggedFaultCodes = 1024;
 /// the standing-fault snapshot; past it the catch-up proceeds best-effort.
 constexpr std::chrono::seconds kEventsMatchTimeout{10};
 
+/// How many over-the-bound fault codes the truncation warning names before it
+/// stops. Enough for an operator to act on, short of a 256-code log line.
+constexpr size_t kMaxNamedOverCapCodes = 10;
+
 /// Read a string field totally: json::value() throws type_error.302 when the
 /// key is present but not a string, and plugin content is untrusted.
 std::string string_field(const nlohmann::json & item, const char * field) {
@@ -625,66 +629,37 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
   // re-confirmed. Identified here, still on disk: whether the row goes is
   // decided below, by whether the re-read could replace it.
   const auto stale = stale_reloaded_codes(standing);
-  // Frames reloaded from the store already answer for their faults, and the
-  // bound counts them: they are not budget this catch-up gets to spend twice.
-  // A stale one answers for nothing, so it counts as absent while it is being
-  // re-read and its replacement takes the slot it already held.
-  std::unordered_set<std::string> already_framed;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    already_framed.reserve(frames_.size());
-    for (const auto & entry : frames_) {
-      if (stale.count(entry.first) == 0) {
-        already_framed.insert(entry.first);
-      }
-    }
-  }
-  size_t framed = already_framed.size();
+
   size_t captured = 0;
   size_t re_read = 0;
   size_t discarded = 0;
   size_t over_cap = 0;
+
+  // ---- Pass 1: the stale codes, in place ----------------------------------
+  // Each already owns a slot in frames_, and capture_for_event evicts only when
+  // the code is new to the map, so a re-read can neither exceed the
+  // retained-frame bound nor push anyone else out. That makes the bound check
+  // wrong here in both directions. It would refuse a read that costs nothing,
+  // and while these codes are counted as absent a bare code admitted against
+  // that under-count would FIFO-evict a live frame that is still wanted. So the
+  // stale codes are settled first, and only then is the real occupancy known.
   for (const auto & fault : standing) {
     if (should_abort()) {
       return;
     }
-    if (fault.fault_code.empty()) {
+    if (fault.fault_code.empty() || stale.count(fault.fault_code) == 0) {
       continue;
     }
-    const bool is_stale = stale.count(fault.fault_code) != 0;
-    // Every path below that gives up on a stale code has to drop its row: the
-    // whole point of calling it stale is that serving it unmarked is wrong.
-    if (fault.reporting_sources.empty()) {
-      // The drop test and the re-read test must agree on this, or a fault with
-      // no entity is stale to one and invisible to the other, and its row
-      // survives to be served.
-      if (is_stale) {
-        drop_stale_frame(fault.fault_code, "", "the fault reports no entity to read");
-        ++discarded;
-      }
-      continue;
-    }
-    // A stale code jumps the queued-confirm skip. That skip exists so one
+    // A stale code also jumps the queued-confirm skip. That skip exists so one
     // confirm costs one plugin read, but here the alternative is leaving a
     // frame from a dead occurrence in place on the chance the drain loop
     // succeeds. One extra read is the cheaper mistake.
-    if (!is_stale && queued_codes.count(fault.fault_code) != 0) {
-      continue;
-    }
-    // The stored frame is the one from this fault's own confirm edge. Re-reading
-    // the plant now would replace it with today's values under a "startup"
-    // marker, which is exactly what persisting the frame is here to stop. Sits
-    // before the bound check so a reloaded frame spends no catch-up budget.
-    if (already_framed.count(fault.fault_code) != 0) {
-      continue;
-    }
-    if (framed >= max_faults_) {
-      ++over_cap;  // storing more would FIFO-evict this catch-up's own frames
-      if (is_stale) {
-        drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources),
-                         "the retained-frame bound was already reached");
-        ++discarded;
-      }
+    if (fault.reporting_sources.empty()) {
+      // The staleness test and the re-read test must agree on this, or a fault
+      // with no entity is stale to one and invisible to the other, and its row
+      // survives to be served.
+      drop_stale_frame(fault.fault_code, "", "the fault reports no entity to read");
+      ++discarded;
       continue;
     }
     ros2_medkit_msgs::msg::FaultEvent event;
@@ -695,21 +670,74 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     // delete-then-insert, so a successful re-read swaps the stale frame out
     // without a window in which the fault has none.
     if (capture_for_event(event, /*startup_catchup=*/true)) {
+      ++captured;
+      ++re_read;
+    } else {
+      drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources), "the entity served no usable values");
+      ++discarded;  // the slot it held is now free for the pass below
+    }
+  }
+
+  // ---- Pass 2: the faults that have no frame at all ------------------------
+  // Occupancy is read after the stale pass, so it is what frames_ really holds:
+  // every stale code has by now been replaced in place or dropped. A bare code
+  // is therefore admitted only against a slot that is genuinely free, and the
+  // FIFO inside capture_for_event can only reach codes that are neither stale
+  // nor mid-re-read.
+  std::vector<std::string> over_cap_codes;
+  std::unordered_set<std::string> already_framed;
+  size_t framed = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    already_framed.reserve(frames_.size());
+    for (const auto & entry : frames_) {
+      already_framed.insert(entry.first);
+    }
+    framed = frames_.size();
+  }
+  for (const auto & fault : standing) {
+    if (should_abort()) {
+      return;
+    }
+    if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
+      continue;
+    }
+    // Codes with a confirm already queued belong to the drain loop: capturing
+    // them here too would read the plugin twice for one confirm.
+    if (queued_codes.count(fault.fault_code) != 0) {
+      continue;
+    }
+    // The stored frame is the one from this fault's own confirm edge. Re-reading
+    // the plant now would replace it with today's values under a "startup"
+    // marker, which is exactly what persisting the frame is here to stop. This
+    // also covers a stale code the pass above just replaced.
+    if (already_framed.count(fault.fault_code) != 0) {
+      continue;
+    }
+    if (framed >= max_faults_) {
+      ++over_cap;  // storing more would FIFO-evict a frame that is still wanted
+      // Named, not just counted: "3 faults went unframed" leaves an operator
+      // with no way to tell which fault details are missing their context.
+      if (over_cap_codes.size() < kMaxNamedOverCapCodes) {
+        over_cap_codes.push_back(fault.fault_code);
+      }
+      continue;
+    }
+    ros2_medkit_msgs::msg::FaultEvent event;
+    event.event_type = ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED;
+    event.fault.fault_code = fault.fault_code;
+    event.fault.reporting_sources = fault.reporting_sources;
+    if (capture_for_event(event, /*startup_catchup=*/true)) {
       ++framed;
       ++captured;
-      if (is_stale) {
-        ++re_read;
-      }
-    } else if (is_stale) {
-      drop_stale_frame(fault.fault_code, join_sources(fault.reporting_sources), "the entity served no usable values");
-      ++discarded;
     }
   }
   if (over_cap > 0) {
     RCLCPP_WARN(logger_,
                 "Entity freeze-frame startup catch-up truncated: %zu standing fault(s) beyond the retained-frame "
-                "bound of %zu",
-                over_cap, max_faults_);
+                "bound of %zu, so they have no freeze-frame: %s%s",
+                over_cap, max_faults_, join_sources(over_cap_codes).c_str(),
+                over_cap > over_cap_codes.size() ? ", ..." : "");
   }
   if (captured > 0) {
     RCLCPP_INFO(logger_, "Entity freeze-frame: captured %zu fault(s) that were already confirmed at startup", captured);

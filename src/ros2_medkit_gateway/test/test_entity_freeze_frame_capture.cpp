@@ -14,16 +14,19 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -1085,6 +1088,88 @@ EntityFreezeFrameCapture::StandingFaultLister reoccurred_lister(const std::strin
   };
 }
 
+/// Standing lister over an explicit list, so a test can fix the reply's order
+/// and each fault's occurrence start independently.
+EntityFreezeFrameCapture::StandingFaultLister
+listed_faults(std::vector<EntityFreezeFrameCapture::StandingFault> faults) {
+  return [faults](const std::function<bool()> &) {
+    return faults;
+  };
+}
+
+EntityFreezeFrameCapture::StandingFault standing_fault(const std::string & code, const std::vector<std::string> & srcs,
+                                                       int64_t first_occurred_ns) {
+  EntityFreezeFrameCapture::StandingFault fault;
+  fault.fault_code = code;
+  fault.reporting_sources = srcs;
+  fault.first_occurred_ns = first_occurred_ns;
+  return fault;
+}
+
+/// Route fetcher that answers for every entity except the named ones, so one
+/// entity out of several can be the unreachable one.
+class SelectiveRouteFetcher {
+ public:
+  SelectiveRouteFetcher(double level, std::set<std::string> unreachable)
+    : level_(level), unreachable_(std::move(unreachable)) {
+  }
+
+  std::optional<json> operator()(const std::string & entity_id) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      reads_[entity_id] += 1;
+    }
+    if (unreachable_.count(entity_id) != 0) {
+      return std::nullopt;
+    }
+    return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level_}}})}};
+  }
+
+  int reads(const std::string & entity_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = reads_.find(entity_id);
+    return it == reads_.end() ? 0 : it->second;
+  }
+
+ private:
+  double level_;
+  std::set<std::string> unreachable_;
+  std::mutex mutex_;
+  std::map<std::string, int> reads_;
+};
+
+/// Fault codes present in the store, sorted, for a whole-store assertion.
+std::vector<std::string> stored_codes(const std::shared_ptr<InMemoryEntityFreezeFrameStore> & store) {
+  auto rows = store->load_all();
+  std::vector<std::string> codes;
+  if (rows) {
+    for (const auto & row : *rows) {
+      codes.push_back(row.fault_code);
+    }
+  }
+  std::sort(codes.begin(), codes.end());
+  return codes;
+}
+
+// The bound probe both tests below run. Two slots, one live reloaded frame
+// (PLC_KEEP, the older of the two so it is the FIFO front), one stale reloaded
+// frame (PLC_STALE) and one standing fault with no frame at all (PLC_NEW).
+constexpr int64_t kKeepAtNs = ReoccurrenceHarness::kStoredAtNs;
+constexpr int64_t kStaleAtNs = ReoccurrenceHarness::kStoredAtNs + 10'000'000'000;
+
+std::vector<EntityFreezeFrameCapture::StandingFault> bound_probe_standing() {
+  return {standing_fault("PLC_NEW", {"route_new"}, kStaleAtNs + 30'000'000'000),
+          standing_fault("PLC_STALE", {"route_stale"}, kStaleAtNs + 60'000'000'000),  // after its frame, so stale
+          standing_fault("PLC_KEEP", {"route_keep"}, kKeepAtNs - 60'000'000'000)};    // before its frame, so live
+}
+
+void seed_bound_probe(const std::shared_ptr<InMemoryEntityFreezeFrameStore> & store) {
+  ASSERT_TRUE(
+      store->replace_frames("PLC_KEEP", {make_stored_row("PLC_KEEP", "route_keep", kKeepAtNs, 10.0)}).has_value());
+  ASSERT_TRUE(
+      store->replace_frames("PLC_STALE", {make_stored_row("PLC_STALE", "route_stale", kStaleAtNs, 11.0)}).has_value());
+}
+
 }  // namespace
 
 /// @verifies REQ_INTEROP_088
@@ -1265,6 +1350,109 @@ TEST_F(EntityFreezeFrameCaptureTest, AReloadedFrameFromTheSameOccurrenceIsKeptUn
   EXPECT_EQ((*rows)[0].captured_at_ns, ReoccurrenceHarness::kStoredAtNs);
 }
 
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AStaleReReadAtTheBoundNeverCostsALiveFrame) {
+  // Two slots, both taken by reloaded frames, and a third standing fault with
+  // none. The stale one owns its slot and its replacement cannot exceed the
+  // bound, so it must be re-read in place. The bare one has no slot, so it goes
+  // unframed - and must not be let in against an occupancy that counts the
+  // stale code as absent, because the FIFO would then evict PLC_KEEP, which is
+  // a live frame for a fault that is still standing.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  seed_bound_probe(store);
+  SelectiveRouteFetcher plant(99.0, {});
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        /*max_faults=*/2, listed_faults(bound_probe_standing()), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && plant.reads("route_stale") == 0) {
+      std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(500ms);  // enough for an unbounded pass to admit PLC_NEW
+
+    const auto keep = capture.frames_for("PLC_KEEP");
+    ASSERT_EQ(keep.size(), 1u) << "the live reloaded frame was evicted";
+    EXPECT_DOUBLE_EQ(keep[0].values.value("level", 0.0), 10.0);
+    EXPECT_EQ(keep[0].captured_at_ns, kKeepAtNs);
+    EXPECT_FALSE(keep[0].startup_catchup);
+
+    const auto stale = capture.frames_for("PLC_STALE");
+    ASSERT_EQ(stale.size(), 1u);
+    EXPECT_DOUBLE_EQ(stale[0].values.value("level", 0.0), 99.0);  // re-read in place
+    EXPECT_TRUE(stale[0].startup_catchup);
+    EXPECT_GT(stale[0].captured_at_ns, kStaleAtNs);
+
+    EXPECT_TRUE(capture.frames_for("PLC_NEW").empty());  // no slot for it
+
+    EXPECT_EQ(plant.reads("route_keep"), 0);   // a live frame is never re-read
+    EXPECT_EQ(plant.reads("route_stale"), 1);  // the stale one is, exactly once
+    EXPECT_EQ(plant.reads("route_new"), 0);    // refused before the plugin was touched
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(stored_codes(store), (std::vector<std::string>{"PLC_KEEP", "PLC_STALE"}));
+  EXPECT_NE(logs.find("PLC_NEW"), std::string::npos) << logs;  // the truncation names it
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(EntityFreezeFrameCaptureTest, AFailedStaleReReadFreesItsSlotForAFaultWithNoFrame) {
+  // Same probe, but the stale code's entity cannot answer. Its row is dropped,
+  // which genuinely frees a slot, so the bare fault now fits - and PLC_KEEP is
+  // still not the one that pays for it.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  seed_bound_probe(store);
+  SelectiveRouteFetcher plant(99.0, {"route_stale"});
+
+  testing::internal::CaptureStderr();
+  {
+    EntityFreezeFrameCapture capture(
+        node_.get(), *sub_exec_,
+        [](const std::string &) -> DataProvider * {
+          return nullptr;
+        },
+        [&plant](const std::string & entity_id) {
+          return plant(entity_id);
+        },
+        /*max_faults=*/2, listed_faults(bound_probe_standing()), store);
+
+    const auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (std::chrono::steady_clock::now() < deadline && capture.frames_for("PLC_NEW").empty()) {
+      std::this_thread::sleep_for(20ms);
+    }
+
+    const auto keep = capture.frames_for("PLC_KEEP");
+    ASSERT_EQ(keep.size(), 1u) << "the live reloaded frame was evicted";
+    EXPECT_EQ(keep[0].captured_at_ns, kKeepAtNs);
+    EXPECT_FALSE(keep[0].startup_catchup);
+
+    EXPECT_TRUE(capture.frames_for("PLC_STALE").empty());  // dropped, not served
+
+    const auto fresh = capture.frames_for("PLC_NEW");
+    ASSERT_EQ(fresh.size(), 1u) << "the freed slot was not reused";
+    EXPECT_TRUE(fresh[0].startup_catchup);
+
+    EXPECT_EQ(plant.reads("route_keep"), 0);
+    EXPECT_GE(plant.reads("route_stale"), 1);  // it WAS asked before being dropped
+    EXPECT_EQ(plant.reads("route_new"), 1);
+  }
+  const auto logs = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(stored_codes(store), (std::vector<std::string>{"PLC_KEEP", "PLC_NEW"}));
+  EXPECT_NE(logs.find("PLC_STALE"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("route_stale"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("no freeze-frame"), std::string::npos) << logs;
+}
+
 TEST(ContentHasLiveData, GatesOnItemsNotOnTheLinkFlag) {
   using Capture = EntityFreezeFrameCapture;
   EXPECT_TRUE(Capture::content_has_live_data(
@@ -1360,14 +1548,32 @@ TEST(StandingFaultsFromListReply, FirstOccurredIsReadInSecondsAndKeptInNanosecon
                     json{{"fault_code", "NOT_A_NUMBER"},
                          {"reporting_sources", json::array({"a"})},
                          {"first_occurred", "yesterday"}},
-                    json{{"fault_code", "ZERO"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 0}}})}};
+                    json{{"fault_code", "ZERO"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 0}},
+                    // Past what int64 holds once multiplied out, so the cast
+                    // itself is undefined. On x86-64 it lands on INT64_MIN,
+                    // which is below every captured_at and would look like
+                    // "this fault re-occurred", discarding a good frame.
+                    json{{"fault_code", "HUGE"}, {"reporting_sources", json::array({"a"})}, {"first_occurred", 1e19}},
+                    json{{"fault_code", "INFINITE"},
+                         {"reporting_sources", json::array({"a"})},
+                         {"first_occurred", std::numeric_limits<double>::infinity()}},
+                    json{{"fault_code", "NAN_SECONDS"},
+                         {"reporting_sources", json::array({"a"})},
+                         {"first_occurred", std::numeric_limits<double>::quiet_NaN()}}})}};
   const auto standing = EntityFreezeFrameCapture::standing_faults_from_list_reply(data);
   ASSERT_TRUE(standing.has_value());
-  ASSERT_EQ(standing->size(), 4u);
+  ASSERT_EQ(standing->size(), 7u);
+  EXPECT_EQ((*standing)[0].fault_code, "SECONDS");
   EXPECT_EQ((*standing)[0].first_occurred_ns, 1788948705500000000);
-  EXPECT_EQ((*standing)[1].first_occurred_ns, 0);
-  EXPECT_EQ((*standing)[2].first_occurred_ns, 0);
-  EXPECT_EQ((*standing)[3].first_occurred_ns, 0);
+  EXPECT_EQ((*standing)[1].first_occurred_ns, 0);  // absent
+  EXPECT_EQ((*standing)[2].first_occurred_ns, 0);  // not a number
+  EXPECT_EQ((*standing)[3].first_occurred_ns, 0);  // zero
+  EXPECT_EQ((*standing)[4].fault_code, "HUGE");
+  EXPECT_EQ((*standing)[4].first_occurred_ns, 0);
+  EXPECT_EQ((*standing)[5].fault_code, "INFINITE");
+  EXPECT_EQ((*standing)[5].first_occurred_ns, 0);
+  EXPECT_EQ((*standing)[6].fault_code, "NAN_SECONDS");
+  EXPECT_EQ((*standing)[6].first_occurred_ns, 0);
 }
 
 TEST(StandingFaultsFromListReply, RepliesNotShapedLikeListFaultsYieldNullopt) {
