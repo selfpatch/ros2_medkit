@@ -28,9 +28,10 @@ Scope of these tests:
    ``/apps`` quickly - the load-bearing assertion that proves the
    graph-event refactor is working.
 
-The gateway runs with a long ``refresh_interval_ms`` (30 s) so any
-detection well under that window must come from the graph-event poll
-rather than the safety backstop.
+The gateway runs with ``refresh_interval_ms`` at its maximum (60 s), and the
+spawn case checks that it finished inside the window before the first sweep,
+so the detection it observes must come from the graph-event poll rather than
+the safety backstop.
 
 Kill-detection latency is intentionally not asserted: rclcpp's
 graph-event for a departing participant fires only after the executor
