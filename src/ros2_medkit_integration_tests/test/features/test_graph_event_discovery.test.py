@@ -91,21 +91,26 @@ LATE_NODE_KEY = 'pressure_sensor'
 # instrumented work, so the budget scales with the sanitizer factor.
 SPAWN_DETECTION_TIMEOUT = 15.0 * get_time_scale()
 
-# How long after the gateway first answered /health the spawn case may still
-# measure. A measurement inside this budget is one no backstop sweep could have
+# How long after the launch description was generated the spawn case may still
+# measure. launch_testing builds the description in this process and only then
+# starts the launch service that forks the gateway, and the gateway arms its
+# backstop timer during its own initialisation, so the timer is armed strictly
+# after that anchor and its first sweep cannot come earlier than
+# BACKSTOP_INTERVAL_MS past it: a wall timer fires late, never early. A
+# detection measured inside this budget is therefore one no sweep could have
 # served, which is what makes the bound below a statement about the graph-event
-# path. The window is derived: the backstop timer is armed during gateway
-# initialisation, ahead of start_rest_server(), whose wait for the REST server
-# to accept connections is bounded at 5 s, and the test base class then polls
-# /health every 0.5 s. So of the 60 s backstop interval about 54 s are still
-# ahead of the first sweep once /health answers, and 50 leaves a margin for
-# scheduling slack.
+# path. The gateway's own startup only widens the window; 50 keeps the
+# assertion 10 s clear of the 60 s edge.
 #
 # This budget deliberately does NOT scale with MEDKIT_TEST_TIME_SCALE. It is
 # bounded by the gateway's own backstop interval, which the scale factor does
 # not stretch; scaling the budget would let the measurement drift past the
 # first sweep, and the assertion would stop being about the graph-event path.
 PRE_BACKSTOP_BUDGET_SEC = 50.0
+
+# Taken when generate_test_description() runs, before launch forks the gateway.
+# See PRE_BACKSTOP_BUDGET_SEC for why this is the reference point.
+_LAUNCH_DESCRIBED_AT = None
 
 # The latency of the graph-event path itself, measured from process spawn. It
 # cannot be sub-second: the gateway coalesces graph events behind
@@ -121,6 +126,9 @@ INITIAL_DETECTION_TIMEOUT = 30.0 * get_time_scale()
 
 
 def generate_test_description():
+    global _LAUNCH_DESCRIBED_AT
+    _LAUNCH_DESCRIBED_AT = time.monotonic()
+
     gateway_node = create_gateway_node(
         extra_params={
             'refresh_interval_ms': BACKSTOP_INTERVAL_MS,
@@ -180,10 +188,6 @@ class TestGraphEventDiscovery(GatewayTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        # Reference point for PRE_BACKSTOP_BUDGET_SEC: the gateway has answered
-        # /health by the time the base class returns, so initialisation - and
-        # with it the backstop timer - started a moment earlier.
-        cls._health_at = time.monotonic()
         cls._extra_proc = None
 
     @classmethod
@@ -275,10 +279,10 @@ class TestGraphEventDiscovery(GatewayTestCase):
             # Establish what was measured before bounding it. Past this budget
             # a backstop sweep could have served the detection, and then the
             # bound below would be reporting on the wrong mechanism.
-            since_health = time.monotonic() - type(self)._health_at
+            since_launch = time.monotonic() - _LAUNCH_DESCRIBED_AT
             self.assertLess(
-                since_health, PRE_BACKSTOP_BUDGET_SEC,
-                f'detection landed {since_health:.3f}s after the gateway came up, '
+                since_launch, PRE_BACKSTOP_BUDGET_SEC,
+                f'detection landed {since_launch:.3f}s after the launch was described, '
                 f'past the {PRE_BACKSTOP_BUDGET_SEC}s window in which no backstop '
                 f'sweep can have run ({BACKSTOP_INTERVAL_MS}ms backstop), so this '
                 f'run cannot say what triggered the refresh',
