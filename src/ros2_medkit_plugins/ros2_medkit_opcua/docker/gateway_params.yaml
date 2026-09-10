@@ -22,8 +22,11 @@ ros2_medkit_gateway:
     # same directory, so the fault and the frame it points at cross a restart
     # together. A frame without its fault is unreachable, the fault detail
     # route is what serves it. The test scripts start their own containers
-    # without a volume and keep both inside the container, which is all a
-    # single-run suite needs.
+    # without a volume, so the frames stay inside the container and go with it.
+    # run_integration_tests.sh and test_all.sh run no fault manager, so there is
+    # no "faults.db" there at all, and the suites that do start one
+    # (run_alarm_tests.sh, run_discovery_race_test.sh) leave it in the container
+    # too. That is all a single-run suite needs.
     entity_freeze_frame:
       storage:
         path: "/var/lib/ros2_medkit/entity_freeze_frames.db"

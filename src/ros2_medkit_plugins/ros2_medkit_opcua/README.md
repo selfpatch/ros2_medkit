@@ -882,9 +882,9 @@ bash scripts/stop.sh
 ROS domain, started before `gateway_node` and waited on until
 `/fault_manager/report_fault` is advertised. That is the other half of the
 "Alarm-to-Fault Bridge" below: the plugin detects the alarm, the fault manager
-is what holds the fault, so without one every `/faults` route answers 503 and
-the demo can show live PLC values but never a fault. Its log is inside the
-container:
+is what holds the fault. Without one `GET /api/v1/faults` answers 503 and the
+per-entity list comes back empty, so the demo can show live PLC values but
+never a fault. Its log is inside the container:
 
 ```bash
 docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log
