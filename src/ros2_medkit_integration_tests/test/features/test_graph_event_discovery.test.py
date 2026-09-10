@@ -112,12 +112,14 @@ PRE_BACKSTOP_BUDGET_SEC = 50.0
 # See PRE_BACKSTOP_BUDGET_SEC for why this is the reference point.
 _LAUNCH_DESCRIBED_AT = None
 
-# The latency of the graph-event path itself, measured from process spawn. It
-# cannot be sub-second: the gateway coalesces graph events behind
-# discovery.refresh_debounce_ms, 1000 ms by default, and a spawn that arrives
-# mid-window waits for the next one, so detection lands on a multiple of the
-# debounce. Measured on a developer machine with the default settings, the
-# spread is roughly 1 s to 3.6 s. The budget scales with the sanitizer factor.
+# The latency of the graph-event path itself, measured from process spawn. The
+# gateway coalesces graph events behind discovery.refresh_debounce_ms, 1000 ms
+# by default: the first event after a quiet period is serviced at the next
+# 100 ms tick, and every event inside the window that follows waits for the
+# window to end. A node coming up raises several events in a row, so its
+# detection typically lands one window after its first event. Measured on a
+# developer machine with the default settings, the spread is roughly 1 s to
+# 3.6 s. The budget scales with the sanitizer factor.
 GRAPH_EVENT_MAX_LATENCY_SEC = 10.0 * get_time_scale()
 
 # Initial discovery shares the budget with full gateway startup, so it scales
