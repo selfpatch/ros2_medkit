@@ -21,7 +21,9 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -41,6 +43,7 @@
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/core/sqlite_entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace std::chrono_literals;
@@ -232,6 +235,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Zero-config freeze-frames for plugin-backed entities (opt-out)
   declare_parameter("entity_freeze_frame.enabled", true);
+  declare_parameter("entity_freeze_frame.storage.path", "");
 
   // Locking parameters
   declare_parameter("locking.enabled", true);
@@ -1871,6 +1875,7 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
   if (!get_parameter("entity_freeze_frame.enabled").as_bool() || !plugin_mgr_ || !plugin_mgr_->has_plugins()) {
     return;
   }
+  auto frame_store = open_entity_freeze_frame_store();
   entity_freeze_frame_capture_ = std::make_unique<EntityFreezeFrameCapture>(
       this, exec,
       [this](const std::string & entity_id) {
@@ -1927,7 +1932,69 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
           RCLCPP_INFO(get_logger(), "Standing-fault freeze-frame catch-up: no confirmed faults at startup");
         }
         return std::move(*parsed);
+      },
+      std::move(frame_store),
+      // Every code the fault manager still holds, in any status. Frames for
+      // faults it no longer has (its own store was replaced under ours) are
+      // dropped; nullopt means it could not be asked, and then nothing is.
+      [this](const std::function<bool()> & should_abort) -> std::optional<std::unordered_set<std::string>> {
+        if (!fault_service_transport_ || should_abort()) {
+          return std::nullopt;
+        }
+        // Non-blocking: the standing-fault lister has already waited the
+        // services out, so a miss here means they are genuinely absent and
+        // the reply would say nothing about what still exists.
+        if (!fault_service_transport_->is_available()) {
+          return std::nullopt;
+        }
+        auto result = fault_service_transport_->list_faults("", true, true, true, true, true, false);
+        if (!result.success) {
+          return std::nullopt;
+        }
+        const auto faults = result.data.find("faults");
+        if (faults == result.data.end() || !faults->is_array()) {
+          return std::nullopt;
+        }
+        std::unordered_set<std::string> codes;
+        for (const auto & item : *faults) {
+          if (item.is_object()) {
+            const auto code = item.find("fault_code");
+            if (code != item.end() && code->is_string()) {
+              codes.insert(code->get<std::string>());
+            }
+          }
+        }
+        return codes;
       });
+}
+
+std::shared_ptr<EntityFreezeFrameStore> GatewayNode::open_entity_freeze_frame_store() {
+  // An explicit path wins. With none, the frames go next to the trigger store,
+  // which is where an operator already points a persistent volume; with no
+  // trigger store either there is nowhere to put them and they stay in memory,
+  // as they were before the store existed.
+  std::string path = get_parameter("entity_freeze_frame.storage.path").as_string();
+  if (path.empty()) {
+    const std::string trigger_path = get_parameter("triggers.storage.path").as_string();
+    if (trigger_path.empty()) {
+      RCLCPP_INFO(get_logger(),
+                  "Entity freeze-frames are not persisted (no entity_freeze_frame.storage.path and no "
+                  "triggers.storage.path); they are lost on restart");
+      return nullptr;
+    }
+    path = (std::filesystem::path(trigger_path).parent_path() / "entity_freeze_frames.db").string();
+  }
+  try {
+    auto store = std::make_shared<SqliteEntityFreezeFrameStore>(path);
+    RCLCPP_INFO(get_logger(), "Entity freeze-frames persisted in %s", path.c_str());
+    return store;
+  } catch (const std::exception & e) {
+    // A store the gateway cannot open must not stop it from capturing: the
+    // frames stay in memory, exactly as they did before persistence existed.
+    RCLCPP_ERROR(get_logger(), "Entity freeze-frame store '%s' could not be opened, frames stay in memory: %s",
+                 path.c_str(), e.what());
+    return nullptr;
+  }
 }
 
 EntityFreezeFrameCapture * GatewayNode::get_entity_freeze_frame_capture() const {
