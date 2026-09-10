@@ -18,13 +18,9 @@ Storage
 
    fault_manager:
      ros__parameters:
-       storage_type: "sqlite"              # Storage backend: "sqlite" or "memory" or "postgres"
+       storage_type: "sqlite"              # Storage backend: "sqlite" or "memory" or "postgres" 
        database_path: "/var/lib/ros2_medkit/faults.db"  # Path for sqlite storage
-       database_url: "" # The url supports the following two patterns:
-                        # Pattern 1: "postgresql://user:password@localhost:5432/ros2_medkit_faults_database"
-                        # Pattern 2: "host=localhost port=5432 dbname=rosmedkit_faults_database user=user password=password"
-                        # The recommended way to configure the connection is to use the PostgreSQL environment variables `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` and `PGDATABASE`
-                        # This ensures that the connection info cannot leak through ROS parameters
+       database_url: "postgresql://user:password@localhost:5432/ros2_medkit_faults_database"  # URL for postgres storage (alternatively:  "host=localhost port=5432 dbname=ros2_medkit_faults_database user=user password=password")
 
 .. list-table::
    :header-rows: 1
@@ -40,8 +36,8 @@ Storage
      - ``/var/lib/ros2_medkit/faults.db``
      - File path for SQLite database. Directory must exist and be writable.
    * - ``database_url``
-     - ````
-     - Connection URL for PostgreSQL database. The PostgreSQL server must be running with the appropriate user and password. The recommended way to configure the connection is to use the PostgreSQL environment variables `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` and `PGDATABASE`
+     - ``postgresql://user:password@localhost:5432/ros2_medkit_faults_database``
+     - Connection URL for PostgreSQL database. The PostgreSQL server must be running with the appropriate user and password.
 
 Debounce Settings
 ~~~~~~~~~~~~~~~~~
