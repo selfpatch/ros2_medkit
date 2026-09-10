@@ -523,7 +523,17 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
   }
 
   if (storage_type_ == "postgres") {
-    RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage: %s", database_url_.c_str());
+    std::string redacted_database_url = database_url_;
+
+    // Handle URL style: user:password@host
+    std::regex url_regex(R"((://[^:/@]+:)([^@]+)(@))");
+    redacted_database_url = std::regex_replace(redacted_database_url, url_regex, "$1***$3");
+
+    // Handle parameter style: password=value
+    std::regex param_regex(R"(password=([^\s]+))");
+    redacted_database_url = std::regex_replace(redacted_database_url, param_regex, "password=***");
+    RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage (with redacted password): %s",
+                redacted_database_url.c_str());
     return std::make_unique<PgFaultStorage>(database_url_);
   }
 

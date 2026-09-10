@@ -97,7 +97,7 @@ void PgFaultStorage::initialize_schema() {
         capture_id BIGINT NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_snapshots_fault_code ON snapshots(fault_code);
-      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic))");
+      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);)");
 
     // Create freeze_frames table: one compact JSON dict of captured topic values per fault
     // code. Unlike snapshots, freeze frames are keyed by fault_code and are NOT removed on
@@ -345,7 +345,7 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
       "first_occurred_ns FROM faults WHERE fault_code = $1",
       fault_code);
 
-  if (res.affected_rows() > 0) {
+  if (!res.empty()) {
     // Fault exists - update it
     int existing_severity = res[0]["severity"].as<int>();
     int64_t existing_count = res[0]["occurrence_count"].as<int64_t>();
@@ -544,7 +544,7 @@ std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std:
         "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
         "reporting_sources, last_passed_ns FROM faults WHERE fault_code = $1",
         fault_code);
-    if (res.affected_rows() == 0) {
+    if (res.empty()) {
       tx.commit();
       return std::nullopt;
     }
@@ -650,7 +650,7 @@ bool PgFaultStorage::contains(const std::string & fault_code) const {
   try {
     auto res = tx.exec_params("SELECT 1 FROM faults WHERE fault_code = $1 LIMIT 1", fault_code);
     tx.commit();
-    return res.affected_rows() > 0;
+    return !res.empty();
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("contains PostgreSQL error: ") + e.what());
@@ -744,12 +744,12 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
       auto res =
           tx.exec_params("SELECT MAX(capture_id) AS max_capture_id FROM snapshots WHERE fault_code = $1", fault_code);
       int64_t newest_capture = 0;
-      if (res.affected_rows() > 0) {
-        newest_capture = res[0]["max_capture"].as<int64_t>();
+      if (!res.empty()) {
+        newest_capture = res[0]["max_capture_id"].as<int64_t>();
       }
       while (true) {
         auto count_res = tx.exec_params("SELECT COUNT(*) AS sz FROM snapshots WHERE fault_code = $1", fault_code);
-        if (count_res.affected_rows() == 0 || count_res[0]["sz"].as<size_t>() <= max_snapshots_per_fault_) {
+        if (count_res.empty() || count_res[0]["sz"].as<size_t>() <= max_snapshots_per_fault_) {
           break;
         }
         auto trim_res = tx.exec_params(
@@ -784,9 +784,11 @@ std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & faul
     // capture_id before the timestamp: the rows of one capture are written seconds
     // apart under load and their timestamps interleave with a neighbouring capture's,
     // so ordering by time alone splits a set the reader then cannot regroup.
+    if (!topic_filter.empty()) {
+      sql += " AND TOPIC = $2";
+    }
     sql += " ORDER BY capture_id DESC, captured_at_ns DESC";
-    auto res = topic_filter.empty() ? tx.exec_params(sql, fault_code)
-                                    : tx.exec_params(sql + " AND topic = $2", fault_code, topic_filter);
+    auto res = topic_filter.empty() ? tx.exec_params(sql, fault_code) : tx.exec_params(sql, fault_code, topic_filter);
     tx.commit();
     for (const auto & r : res) {
       SnapshotData snapshot;
@@ -931,7 +933,7 @@ std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & 
   try {
     auto res = tx.exec_params(
         "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
-        " severity, source_id, resulting_status FROM near_misses WHERE fault_code = $1 "
+        "severity, source_id, resulting_status FROM near_misses WHERE fault_code = $1 "
         "ORDER BY id ASC",
         fault_code);
 
@@ -1144,7 +1146,7 @@ size_t PgFaultStorage::delete_rosbag_recording(const std::string & recording_id)
       for (const auto & r : res) {
         paths.insert(r["file_path"].as<std::string>());
       }
-      removed = res.affected_rows() > 0;
+      removed = static_cast<size_t>(res.affected_rows());
       tx.commit();
     } catch (const std::exception & e) {
       tx.abort();
@@ -1290,7 +1292,8 @@ bool PgFaultStorage::path_referenced(const std::string & file_path) const {
   try {
     auto res = tx.exec_params("SELECT COUNT(*) FROM rosbag_files WHERE file_path = $1", file_path);
     tx.commit();
-    return res.affected_rows();
+    return !res.empty() && res[0]["count"].as<int64_t>() > 0;
+    ;
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("path_referenced PostgreSQL error: ") + e.what());
