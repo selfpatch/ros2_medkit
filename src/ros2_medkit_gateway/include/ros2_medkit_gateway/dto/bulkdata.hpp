@@ -56,13 +56,18 @@ inline constexpr std::string_view dto_name<BulkDataCategoryList> = "BulkDataCate
 //   name            - human-readable filename / label (required)
 //   mimetype        - MIME type of the file (required)
 //   size            - byte count the download route serves for this item
-//                     (required). For a rosbag that is the bag's single
-//                     storage file, not the bag directory's total
+//                     (required). For a rosbag held in one storage file that is
+//                     the file, not the bag directory's total. For one split
+//                     across several it is the whole recording, so it exceeds
+//                     what the download sends, which is one storage file
 //   creation_date   - ISO 8601 timestamp string (required)
 //   description     - optional human-readable description
-//   x-medkit        - optional open vendor extension object; for rosbags:
-//                     {fault_code, duration_sec, format}; for user uploads:
-//                     arbitrary metadata JSON object set by the uploader.
+//   x-medkit        - optional open vendor extension object. For rosbags:
+//                     {fault_codes, duration_sec, format, recording_id,
+//                     storage_files}, the last of which is how many storage
+//                     files the recording's metadata names and is omitted when
+//                     that metadata cannot be read. For user uploads: an arbitrary
+//                     metadata JSON object set by the uploader.
 // =============================================================================
 struct BulkDataDescriptor {
   std::string id;
