@@ -127,16 +127,29 @@ class BulkDataHandlers {
    * transfer is partial, alongside ``x-medkit.storage_files`` in the descriptor.
    * See the size rule in ``docs/api/rest.rst``.
    *
-   * The bag's own ``metadata.yaml`` decides: the first file it names in
-   * ``relative_file_paths`` that is on disk is the answer. That order is the
-   * capture order, so for a split recording the first name is where the
-   * recording begins and a client that fetches one gets its start rather than an
-   * arbitrary slice. A name that is not on disk is skipped, because quota
-   * eviction and a half-copied bag both leave metadata naming a file that is
-   * gone and the route would answer 500 on a recording whose other segments are
-   * readable. Only when the bag will not say - no metadata, unreadable metadata,
-   * or not one named file present - is the directory scanned for the first
-   * ``.db3`` or ``.mcap`` in whatever order it yields.
+   * The bag's own ``metadata.yaml`` decides, and when it has decided nothing
+   * else gets a vote. The answer is the first file named in
+   * ``relative_file_paths`` that is on disk. That order is the capture order, so
+   * for a split recording the first name is where the recording begins and a
+   * client that fetches one gets its start rather than an arbitrary slice. A
+   * name that is not on disk is skipped, because a half-copied bag leaves
+   * metadata naming a file that is gone and failing the request there would cost
+   * a recording whose other segments are readable. A name that is absolute or
+   * climbs through ``..`` is skipped as well: it would resolve outside the bag
+   * directory and put a file that is not part of the recording on the wire.
+   *
+   * When the bag named files and none of them is on disk the answer is the empty
+   * string. Falling through to the directory there served whatever ``.db3`` or
+   * ``.mcap`` sat beside the recording, under this recording's id and against a
+   * ``storage_files`` count the served file is not a member of.
+   *
+   * Only when the bag will not say what it holds - no ``metadata.yaml``, one
+   * this process cannot read or parse, or a ``relative_file_paths`` naming
+   * nothing - is the directory scanned for the first ``.db3`` or ``.mcap`` in
+   * whatever order it yields. That is the same set of shapes
+   * ``detail::rosbag_storage_file_count`` declines, which is the invariant: the
+   * count and the served file are both read from the metadata, or both from the
+   * directory, never one from each.
    *
    * @param path Path to rosbag (can be file or directory)
    * @return Resolved file path, or empty string if not found
@@ -251,11 +264,19 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * reason, and a client holding one segment has no way to learn that the rest of
  * the recording exists. A ``1`` says the transfer was the whole recording.
  *
- * nullopt when the bag will not say - no metadata, unreadable metadata, or not
- * the shape rosbag2 writes - and the field is then omitted from the descriptor
- * rather than defaulted. Counting the directory's ``.db3`` / ``.mcap`` files
- * instead would count a stray beside the recording, and defaulting to one would
- * claim a recording is whole on the evidence of nothing.
+ * nullopt when the bag will not say - no metadata, unreadable metadata, not the
+ * shape rosbag2 writes, or a ``relative_file_paths`` naming nothing - and the
+ * field is then omitted from the descriptor rather than defaulted. Counting the
+ * directory's ``.db3`` / ``.mcap`` files instead would count a stray beside the
+ * recording, and defaulting to one would claim a recording is whole on the
+ * evidence of nothing. A list naming nothing is declined rather than reported as
+ * zero for the same reason: the recording is not empty, the bag did not answer.
+ *
+ * The set of shapes declined here is exactly the set on which
+ * ``BulkDataHandlers::resolve_rosbag_file_path`` falls back to the directory, so
+ * the count and the served file are read from the metadata together or from the
+ * directory together. A count taken from one source describing a file chosen by
+ * the other is the state this pairing exists to make unreachable.
  *
  * Never throws, for the same reason as the two helpers around it: it runs once
  * per row of a listing, and one unreadable recording must not cost the entity's

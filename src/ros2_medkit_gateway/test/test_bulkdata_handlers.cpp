@@ -285,15 +285,25 @@ class RosbagBagDirectoryTest : public ::testing::Test {
   /// the nesting is the real one: the helper looks up
   /// ``rosbag2_bagfile_information.relative_file_paths``, so a flat document
   /// would pass a test that production data fails.
+  ///
+  /// An empty @p storage_files is written as the flow-style ``[]``, which is an
+  /// empty sequence. A block sequence with no items under it is a YAML *null*
+  /// instead, and a null is refused one step earlier than an empty list is, by
+  /// the shape check rather than by the count, so a test built on one passes
+  /// without ever reaching the rule it names.
   static void write_metadata(const std::filesystem::path & dir, const std::vector<std::string> & storage_files) {
     std::string yaml =
         "rosbag2_bagfile_information:\n"
         "  version: 9\n"
         "  storage_identifier: sqlite3\n"
-        "  message_count: 0\n"
-        "  relative_file_paths:\n";
-    for (const auto & file : storage_files) {
-      yaml += "    - " + file + "\n";
+        "  message_count: 0\n";
+    if (storage_files.empty()) {
+      yaml += "  relative_file_paths: []\n";
+    } else {
+      yaml += "  relative_file_paths:\n";
+      for (const auto & file : storage_files) {
+        yaml += "    - " + file + "\n";
+      }
     }
     yaml += "  ros_distro: jazzy\n";
     write_file(dir / "metadata.yaml", yaml);
@@ -602,8 +612,8 @@ TEST_F(RosbagBagDirectoryTest, ASplitRecordingSkipsAFirstSegmentThatIsNoLongerOn
 
 TEST_F(RosbagBagDirectoryTest, ASplitRecordingWithNoSegmentLeftResolvesToNothing) {
   // Nothing to hand over, and the download route turns an empty resolution into
-  // its 500. The count still answers, because the metadata is readable and it is
-  // the recording's own record of what it held.
+  // its scoped error. The count still answers, because the metadata is readable
+  // and it is the recording's own record of what it held.
   const auto split_dir = bag_dir_ / "split_all_gone";
   std::filesystem::create_directories(split_dir);
   write_metadata(split_dir, {"recording_0.db3", "recording_1.db3"});
@@ -622,6 +632,129 @@ TEST_F(RosbagBagDirectoryTest, ASplitRecordingWithNoSegmentLeftResolvesToNothing
   ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
   EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 2);
   EXPECT_EQ(descriptors[0].size, 4242u) << "an unmeasurable recording keeps the figure its row carried";
+}
+
+// === A readable metadata is the whole answer, the directory is not consulted ===
+// The directory walk exists for a bag that will not say what it holds. Reaching
+// it after the bag HAS said, because none of the names it gave is on disk, put a
+// file the recording never named on the wire under that recording's id and under
+// a storage_files the served file is not one of. What a client received was then
+// neither the recording nor an error, and nothing in the response said so.
+
+TEST_F(RosbagBagDirectoryTest, ASplitRecordingWithNoSegmentLeftDoesNotServeAStrayBesideIt) {
+  // Several names, none on disk, a stray storage file beside them. The stray is
+  // a .db3, so the directory walk would reach it, and it is not one of the two
+  // files the metadata names.
+  const auto split_dir = bag_dir_ / "split_gone_with_stray";
+  std::filesystem::create_directories(split_dir);
+  write_file(split_dir / "stray.db3", std::string(8192, 's'));
+  write_metadata(split_dir, {"recording_0.db3", "recording_1.db3"});
+  ASSERT_FALSE(std::filesystem::exists(split_dir / "recording_0.db3"));
+  ASSERT_FALSE(std::filesystem::exists(split_dir / "recording_1.db3"));
+  ASSERT_EQ(first_in_directory_order(split_dir), split_dir / "stray.db3")
+      << "the directory walk cannot reach the stray, so nothing is being told apart";
+
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(split_dir.string()), ""); })
+      << "a file the recording never named must not be served in its place";
+
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999004"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 4242}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 2) << "the count is still what the metadata names";
+  EXPECT_EQ(descriptors[0].size, 4242u) << "and the row's figure is kept, not the stray's size";
+}
+
+TEST_F(RosbagBagDirectoryTest, AWholeRecordingWhoseOnlyFileIsGoneDoesNotServeAStrayBesideIt) {
+  // One name, not on disk, a stray storage file beside it. The same rule as the
+  // several-name case above, on the shape that reaches a user first, because a
+  // recording held in one file is the normal case.
+  const auto gone_dir = bag_dir_ / "single_gone_with_stray";
+  std::filesystem::create_directories(gone_dir);
+  write_file(gone_dir / "stray.db3", std::string(8192, 's'));
+  write_metadata(gone_dir, {"recording_0.db3"});
+  ASSERT_FALSE(std::filesystem::exists(gone_dir / "recording_0.db3"));
+  ASSERT_EQ(first_in_directory_order(gone_dir), gone_dir / "stray.db3");
+
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(gone_dir.string()), ""); })
+      << "a file the recording never named must not be served in its place";
+
+  const json row{{"fault_code", "GONE_FAULT"},
+                 {"recording_id", "single_gone_with_stray"},
+                 {"file_path", gone_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 777}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 1);
+  EXPECT_EQ(descriptors[0].size, 777u) << "the listing keeps the row's figure rather than measuring the stray";
+}
+
+TEST_F(RosbagBagDirectoryTest, AnEmptyStorageFileListIsTreatedAsABagThatWillNotSay) {
+  // A metadata that names nothing (`relative_file_paths: []`). That is a bag
+  // which did not answer, not a bag holding zero files: there is a storage file
+  // in the directory. Counting it at zero would describe the recording as empty,
+  // which is the value the count exists to avoid, so the field is omitted and the
+  // directory walk answers, exactly as for metadata that cannot be read at all.
+  const auto empty_list_dir = bag_dir_ / "empty_list";
+  std::filesystem::create_directories(empty_list_dir);
+  write_file(empty_list_dir / "recording_0.db3", std::string(3072, 'e'));
+  write_metadata(empty_list_dir, {});
+
+  EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(empty_list_dir.string()),
+            (empty_list_dir / "recording_0.db3").string())
+      << "an empty list is not an answer, so the directory is still consulted";
+  EXPECT_FALSE(handlers::detail::rosbag_storage_file_count(empty_list_dir.string()).has_value())
+      << "a bag that named nothing must not be counted at zero";
+
+  const json row{{"fault_code", "EMPTY_LIST"},
+                 {"recording_id", "empty_list"},
+                 {"file_path", empty_list_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 555}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  EXPECT_FALSE(descriptors[0].x_medkit->contains("storage_files")) << "omitted, not zero";
+}
+
+TEST_F(RosbagBagDirectoryTest, ANameThatLeavesTheBagDirectoryIsSkipped) {
+  // A name that climbs out of the bag directory, and a name that is absolute.
+  // The names come out of a file on disk and are joined onto the bag path, so a
+  // name that climbs out of the directory, or replaces it outright by being
+  // absolute, would resolve to a file outside the recording and the download
+  // would stream it. Both are skipped, and with no other named file present that
+  // leaves nothing to serve.
+  const auto escape_dir = bag_dir_ / "escape";
+  std::filesystem::create_directories(escape_dir);
+  const auto outside = bag_dir_ / "outside_target.db3";
+  write_file(outside, std::string(6144, 'o'));
+  ASSERT_TRUE(std::filesystem::exists(outside)) << "the escape target has to exist, or nothing is being told apart";
+
+  write_metadata(escape_dir, {"../outside_target.db3"});
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(escape_dir.string()), ""); })
+      << "a relative name that climbs out of the bag must not be served";
+
+  write_metadata(escape_dir, {outside.string()});
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(escape_dir.string()), ""); })
+      << "an absolute name replaces the bag path outright and must not be served";
+
+  // Positive control on the same harness: the same file, named the way rosbag2
+  // names one, is served. So the two refusals above are the escape being
+  // refused and not the resolver failing to find anything at all.
+  write_file(escape_dir / "recording_0.db3", std::string(1024, 'r'));
+  write_metadata(escape_dir, {"recording_0.db3"});
+  EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(escape_dir.string()), (escape_dir / "recording_0.db3").string());
 }
 
 TEST_F(RosbagBagDirectoryTest, StorageFileCountIsOneForAWholeRecordingAndAbsentWhenTheBagWillNotSay) {
@@ -815,6 +948,10 @@ TEST_F(UnreadableBagTest, AnUnreadableBagCostsItsOwnRowAndNotTheListing) {
   // is what that route depends on, and it is asserted here directly.
   EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_served_bytes(loop_.string()).has_value()); });
   EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(loop_.string()), ""); });
+  // The count reaches the filesystem on its own, before any metadata is read, to
+  // decide whether the path is a bare storage file. It runs on the same row of
+  // the same listing, so it has to decline an unreadable bag the same way.
+  EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_storage_file_count(loop_.string()).has_value()); });
 }
 
 // The second shape: a directory whose mode denies everyone. This one does test
@@ -842,6 +979,7 @@ TEST_F(UnreadableBagTest, AModeZeroDirectoryIsAlsoDeclinedRatherThanThrown) {
 
   EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_served_bytes(locked.string()).has_value()); });
   EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(locked.string()), ""); });
+  EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_storage_file_count(locked.string()).has_value()); });
 
   std::filesystem::permissions(locked, std::filesystem::perms::owner_all, ec);
 }

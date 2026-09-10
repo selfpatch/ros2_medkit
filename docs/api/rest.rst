@@ -1804,12 +1804,16 @@ and the API reports the recording's total instead.
 in several storage files rather than one. Three things are then true at once,
 and they are meant to be read together:
 
-- the download hands over the **first** storage file of the recording, the one
-  its own metadata names first, which is where the recording starts. Which file
-  that is does not depend on the host's filesystem and does not change between
-  two requests for the same recording,
-- ``x-medkit.storage_files`` says **how many** storage files there are, so a
-  client can tell it received a part and know how many parts the recording has,
+- the download hands over the **first storage file the recording's own metadata
+  names that is on disk**. Normally that is the first segment, where the
+  recording starts. A named segment that is missing from disk is skipped in
+  favour of the next one that is there, and when none of them is on disk the
+  download fails rather than serving some other file that happens to sit in the
+  bag directory. Which file is served does not depend on the host's filesystem
+  and does not change between two requests for the same recording,
+- ``x-medkit.storage_files`` says **how many storage files the metadata names**,
+  so a client can tell it received a part and know how many parts the recording
+  was recorded in,
 - ``size`` stays the **whole recording**, as does the nested
   ``environment_data.snapshots[].size_bytes``, while the download's
   ``Content-Length`` is that one file, so ``size`` exceeds ``Content-Length``.

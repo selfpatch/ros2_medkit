@@ -112,6 +112,30 @@ std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::st
   }
 }
 
+/// Does @p name, joined onto the bag directory, stay inside it?
+///
+/// The names come out of a ``metadata.yaml`` on disk and are joined onto the bag
+/// path, so they are input rather than a constant. An absolute name replaces the
+/// bag path outright, because that is what ``operator/`` does with an absolute
+/// right-hand side, and a name climbing through ``..`` walks out of the
+/// directory. Either way the resolver would return a path outside the recording
+/// and the download would stream that file under the recording's id.
+///
+/// rosbag2 writes plain basenames here, so nothing legitimate is refused. This
+/// is about what a bag directory that is not what it claims can name.
+bool rosbag_name_stays_in_bag(const std::string & name) {
+  const std::filesystem::path candidate(name);
+  if (candidate.is_absolute() || candidate.has_root_name()) {
+    return false;
+  }
+  for (const auto & part : candidate) {
+    if (part == "..") {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
@@ -176,19 +200,36 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
   // ``x-medkit.storage_files`` in the descriptor is what tells that client the
   // rest of the recording exists (see rosbag_storage_file_count).
   //
-  // A name that is not on disk is skipped rather than returned: quota eviction
-  // and a half-copied bag both leave metadata naming a file that is gone, and
-  // resolving to it would answer 500 for a recording whose other segments are
-  // readable. When the bag says nothing at all - no metadata, unreadable
-  // metadata, or not one named file present - the walk below is the fallback.
-  if (const auto names = rosbag_relative_file_paths(path); names) {
+  // A name that is not on disk is skipped rather than returned: a half-copied
+  // bag leaves metadata naming a file that is gone, and resolving to it would
+  // fail the request for a recording whose other segments are readable.
+  //
+  // When the bag HAS named files and none of them is on disk, the answer is
+  // nothing. The directory is deliberately not consulted then: it is the same
+  // question the bag already answered, and reaching past that answer served
+  // whatever .db3 or .mcap happened to sit beside the recording - a stray, a
+  // copy, a segment of a different bag - under this recording's id, and counted
+  // in ``x-medkit.storage_files`` a list the served file is not a member of. A
+  // client received neither the recording nor an error, and nothing in the
+  // response said which. Empty is honest: the listing keeps the row's own figure
+  // and the download answers its own error.
+  //
+  // The walk below is for a bag that will not say what it holds at all: no
+  // metadata, metadata this process cannot read or parse, or a list naming
+  // nothing (see rosbag_storage_file_count, which declines the same shapes).
+  // Metadata decides both the count and the served file, or neither does.
+  if (const auto names = rosbag_relative_file_paths(path); names && !names->empty()) {
     for (const auto & name : *names) {
+      if (!rosbag_name_stays_in_bag(name)) {
+        continue;
+      }
       const std::filesystem::path named = std::filesystem::path(path) / name;
       std::error_code named_ec;
       if (std::filesystem::is_regular_file(named, named_ec) && !named_ec) {
         return named.string();
       }
     }
+    return "";
   }
 
   std::filesystem::directory_iterator it(path, ec);
@@ -244,8 +285,14 @@ std::optional<std::size_t> rosbag_storage_file_count(const std::string & bag_pat
   // walk would count strays beside the recording, and a bag this process cannot
   // read would count zero, which reads as an empty recording rather than as an
   // unread one.
+  //
+  // A list naming nothing is that same zero by another route, so it is declined
+  // here rather than reported: the recording is not empty, the bag simply did
+  // not say what it holds. The resolver treats that shape identically and falls
+  // back to the directory, which keeps the invariant that the count and the
+  // served file come from the metadata together or from the directory together.
   const auto names = rosbag_relative_file_paths(bag_path);
-  if (!names) {
+  if (!names || names->empty()) {
     return std::nullopt;
   }
   return names->size();

@@ -1165,9 +1165,11 @@ download serves one storage file, verbatim, named `<recording_id>.<format>`
 For a recording held in a single storage file, which is the normal case, the
 descriptor `size` is that file's length and therefore the length of the
 download. A recording that grew past `snapshots.rosbag.max_bag_size_mb` is split
-across several storage files, and then the download hands over the first of
-them, `x-medkit.storage_files` says how many there are, and `size` stays the
-whole recording, so it exceeds the download's `Content-Length`. See
+across several storage files, and then the download hands over the first one the
+recording's own metadata names that is on disk (a named file missing from disk is
+skipped, and if none is there the download fails rather than serving another
+file), `x-medkit.storage_files` says how many the metadata names, and `size`
+stays the whole recording, so it exceeds the download's `Content-Length`. See
 [the size rule](../../docs/api/rest.rst) in the REST API reference for the full
 statement.
 
