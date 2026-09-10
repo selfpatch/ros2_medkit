@@ -841,11 +841,12 @@ class PeerRecoveryTest(unittest.TestCase):
             return answer
 
         response = _poll(served, timeout=RECOVERY_TIMEOUT)
-        self.assertIsNotNone(
-            response,
-            f"a read of {PEER_DECLARED_APP} never carried the member's sample after "
-            f'its peer came back; last answer was {self._aggregate_read_of_peer_topic().text}',
-        )
+        if response is None:
+            last = self._aggregate_read_of_peer_topic()
+            self.fail(
+                f"a read of {PEER_DECLARED_APP} never carried the member's sample after "
+                f'its peer came back; last answer was {last.text}'
+            )
 
         body = response.json()
         self.assertEqual(
@@ -883,8 +884,10 @@ class PeerRecoveryTest(unittest.TestCase):
         # The poll above waits the member's subscription warm, which is what a
         # first read after recovery has to do. Once it is warm a read carries
         # the sample on the spot: the gateway holds the latest one and answers
-        # from it. A read that comes back empty here is not a cold-start
-        # transient, it is a member that serves nothing until asked twice.
+        # from it. This is the first read after the one the poll accepted -
+        # the failure path above is the only other reader, and it never runs
+        # here - so an empty body is not a cold-start transient, it is a
+        # member that serves nothing until asked twice.
         warm = self._aggregate_read_of_peer_topic()
         self.assertEqual(warm.status_code, 200, warm.text)
         warm_body = warm.json()
