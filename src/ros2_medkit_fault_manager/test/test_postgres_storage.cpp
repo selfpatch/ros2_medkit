@@ -66,7 +66,7 @@ class PgFaultStorageTest : public ::testing::Test {
     try {
       db_conn_ = std::make_unique<pqxx::connection>(base_conn_info());
     } catch (const std::exception & e) {
-      GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+      GTEST_SKIP() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
     }
 
     {
@@ -280,8 +280,26 @@ TEST_F(PgFaultStorageTest, PassedEventDoesNotAdvanceLastOccurred) {
   EXPECT_EQ(rclcpp::Time(fault->last_passed).nanoseconds(), passed_at.nanoseconds());
 }
 
-// NOTE: skipping test ReopenRepairsLastOccurredInflatedByOldPassedBug for older database schema since PostgreSQL
-// integration came after it
+TEST_F(PgFaultStorageTest, ReopenRepairsLastOccurredInflatedByOldPassedBug) {
+  // Rows written by releases that advanced last_occurred_ns on PASSED events are
+  // inflated, and a latched CONFIRMED fault that never fails again would keep the
+  // wrong timestamp forever. Opening the storage must repair them from
+  // last_failed_ns.
+  // NOTE: This should not be possible in the PostgreSQL implementation since it was introduced after the fix
+  const rclcpp::Time failed_at(1000, 0, RCL_SYSTEM_TIME);
+  storage_->report_fault_event("FAULT_MIG", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               failed_at, default_config());
+  storage_.reset();
+
+  // Simulate the old bug: a PASSED event at t=9000s re-dated the row.
+  exec_raw("UPDATE faults SET last_occurred_ns = 9000000000000 WHERE fault_code = 'FAULT_MIG'");
+
+  storage_ = std::make_unique<PgFaultStorage>(conn_info_);
+
+  auto fault = storage_->get_fault("FAULT_MIG");
+  ASSERT_TRUE(fault.has_value());
+  EXPECT_EQ(rclcpp::Time(fault->last_occurred).nanoseconds(), failed_at.nanoseconds());
+}
 
 TEST_F(PgFaultStorageTest, GetClearedFaults) {
   rclcpp::Clock clock;
@@ -1346,7 +1364,9 @@ TEST_F(PgFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
   // bytes charged against the quota, which sums rows.
   const auto bag_dir = temp_root_ / "failing_delete_bag";
   std::filesystem::create_directories(bag_dir);
-  { std::ofstream(bag_dir / "payload.mcap") << "data"; }
+  {
+    std::ofstream(bag_dir / "payload.mcap") << "data";
+  }
 
   storage_->store_rosbag_file(make_rosbag("DELETE_FAILS", bag_dir.string(), 1000, 4));
 
