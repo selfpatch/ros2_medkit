@@ -825,16 +825,28 @@ class PeerRecoveryTest(unittest.TestCase):
             'test_04 must watch this URL fail before test_07 can claim it recovered',
         )
 
+        # A 200 is not yet an answer here. The member re-subscribes when its
+        # peer comes back, and until its first sample arrives the read is a
+        # well-formed 'metadata_only' body with no payload - the same state
+        # case 1 waits through on the healthy peer. The budget below is what
+        # covers the gap; reading once and calling the empty body a failure
+        # makes the case race the publisher.
         def served():
             answer = self._aggregate_read_of_peer_topic()
-            return answer if answer.status_code == 200 else None
+            if answer.status_code != 200:
+                return None
+            payload = answer.json()
+            if payload.get('x-medkit', {}).get('status') != 'data' or not payload.get('data'):
+                return None
+            return answer
 
         response = _poll(served, timeout=RECOVERY_TIMEOUT)
-        self.assertIsNotNone(
-            response,
-            f'a read of {PEER_DECLARED_APP} never recovered after its peer came back; '
-            f'last answer was {self._aggregate_read_of_peer_topic().text}',
-        )
+        if response is None:
+            last = self._aggregate_read_of_peer_topic()
+            self.fail(
+                f"a read of {PEER_DECLARED_APP} never carried the member's sample after "
+                f'its peer came back; last answer was {last.text}'
+            )
 
         body = response.json()
         self.assertEqual(
@@ -867,6 +879,24 @@ class PeerRecoveryTest(unittest.TestCase):
             sorted(body['data'].keys()), self._peer_payload_keys,
             f'the recovered payload is not shaped like the one the same read '
             f'returned before the outage: {body}',
+        )
+
+        # The poll above waits the member's subscription warm, which is what a
+        # first read after recovery has to do. Once it is warm a read carries
+        # the sample on the spot: the gateway holds the latest one and answers
+        # from it. This read follows one that carried the sample, so an empty
+        # body here is not a cold-start transient, it is a member that goes
+        # back to serving nothing between reads.
+        warm = self._aggregate_read_of_peer_topic()
+        self.assertEqual(warm.status_code, 200, warm.text)
+        warm_body = warm.json()
+        self.assertEqual(
+            warm_body.get('x-medkit', {}).get('status'), 'data',
+            f'a second read of the recovered member came back without data: {warm_body}',
+        )
+        self.assertTrue(
+            warm_body.get('data'),
+            f'a second read of the recovered member carried an empty payload: {warm_body}',
         )
 
     def test_08_the_retained_declaration_does_not_linger_beside_the_live_copy(self):

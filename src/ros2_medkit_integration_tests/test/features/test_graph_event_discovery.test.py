@@ -28,9 +28,10 @@ Scope of these tests:
    ``/apps`` quickly - the load-bearing assertion that proves the
    graph-event refactor is working.
 
-The gateway runs with a long ``refresh_interval_ms`` (30 s) so any
-detection well under that window must come from the graph-event poll
-rather than the safety backstop.
+The gateway runs with ``refresh_interval_ms`` at its maximum (60 s), and the
+spawn case checks that it finished inside the window before the first sweep,
+so the detection it observes must come from the graph-event poll rather than
+the safety backstop.
 
 Kill-detection latency is intentionally not asserted: rclcpp's
 graph-event for a departing participant fires only after the executor
@@ -55,6 +56,7 @@ import launch_testing.actions
 from ros2_medkit_test_utils.constants import (
     ALLOWED_EXIT_CODES,
     DEFAULT_DOMAIN_ID,
+    get_time_scale,
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import (
@@ -65,8 +67,14 @@ from ros2_medkit_test_utils.launch_helpers import (
 )
 
 
-# Long backstop so any sub-backstop detection must come from graph events.
-BACKSTOP_INTERVAL_MS = 30000
+# The gateway's maximum accepted backstop interval, and it has to be the
+# maximum. The backstop timer is created during gateway initialisation and its
+# phase relative to a mid-run spawn is arbitrary, so a case that only measures
+# elapsed time cannot tell a graph-event refresh from a backstop sweep that
+# happened to land nearby. Pushing the FIRST sweep as far out as the parameter
+# allows lets the spawn case finish inside a window where no sweep has run yet;
+# PRE_BACKSTOP_BUDGET_SEC below is what keeps it inside that window.
+BACKSTOP_INTERVAL_MS = 60000
 
 # Demo nodes launched at startup.
 INITIAL_NODES = ['temp_sensor', 'rpm_sensor']
@@ -78,22 +86,51 @@ LATE_NODE_KEY = 'pressure_sensor'
 #
 # Spawn detection is bounded by:
 #   process exec + rclcpp init + DDS announce + 100 ms poll + refresh_cache.
-# 5 s is comfortable; well under the 30 s backstop, so a pass proves the
-# graph-event poll fired the refresh.
-SPAWN_DETECTION_TIMEOUT = 5.0
+# The poll sits above the latency bound below, so a detection that arrives late
+# reports the time it took instead of a bare timeout. Every term in that sum is
+# instrumented work, so the budget scales with the sanitizer factor.
+SPAWN_DETECTION_TIMEOUT = 15.0 * get_time_scale()
 
-# Graph-event-driven detection should land in under a second; allow
-# generous CI jitter headroom but still well below the backstop. A
-# detection above this bound proves the backstop, not the graph event,
-# triggered the refresh - which is the regression this test exists to
-# catch.
-GRAPH_EVENT_MAX_LATENCY_SEC = 2.0
+# How long after the launch description was generated the spawn case may still
+# measure. launch_testing builds the description in this process and only then
+# starts the launch service that forks the gateway, and the gateway arms its
+# backstop timer during its own initialisation, so the timer is armed strictly
+# after that anchor and its first sweep cannot come earlier than
+# BACKSTOP_INTERVAL_MS past it: a wall timer fires late, never early. A
+# detection measured inside this budget is therefore one no sweep could have
+# served, which is what makes the bound below a statement about the graph-event
+# path. The gateway's own startup only widens the window; 50 keeps the
+# assertion 10 s clear of the 60 s edge.
+#
+# This budget deliberately does NOT scale with MEDKIT_TEST_TIME_SCALE. It is
+# bounded by the gateway's own backstop interval, which the scale factor does
+# not stretch; scaling the budget would let the measurement drift past the
+# first sweep, and the assertion would stop being about the graph-event path.
+PRE_BACKSTOP_BUDGET_SEC = 50.0
 
-# Initial discovery shares the budget with full gateway startup.
-INITIAL_DETECTION_TIMEOUT = 30.0
+# Taken when generate_test_description() runs, before launch forks the gateway.
+# See PRE_BACKSTOP_BUDGET_SEC for why this is the reference point.
+_LAUNCH_DESCRIBED_AT = None
+
+# The latency of the graph-event path itself, measured from process spawn. The
+# gateway coalesces graph events behind discovery.refresh_debounce_ms, 1000 ms
+# by default: the first event after a quiet period is serviced at the next
+# 100 ms tick, and every event inside the window that follows waits for the
+# window to end. A node coming up raises several events in a row, so its
+# detection typically lands one window after its first event. Measured on a
+# developer machine with the default settings, the spread is roughly 1 s to
+# 3.6 s. The budget scales with the sanitizer factor.
+GRAPH_EVENT_MAX_LATENCY_SEC = 10.0 * get_time_scale()
+
+# Initial discovery shares the budget with full gateway startup, so it scales
+# with the sanitizer factor.
+INITIAL_DETECTION_TIMEOUT = 30.0 * get_time_scale()
 
 
 def generate_test_description():
+    global _LAUNCH_DESCRIBED_AT
+    _LAUNCH_DESCRIBED_AT = time.monotonic()
+
     gateway_node = create_gateway_node(
         extra_params={
             'refresh_interval_ms': BACKSTOP_INTERVAL_MS,
@@ -185,8 +222,29 @@ class TestGraphEventDiscovery(GatewayTestCase):
             stderr=subprocess.DEVNULL,
         )
 
+    def _assert_before_first_sweep(self, what):
+        """Establish what a detection measured, before anything is bounded.
+
+        Past PRE_BACKSTOP_BUDGET_SEC a backstop sweep could have served the
+        detection, and a bound on it would then be reporting on the wrong
+        mechanism.
+        """
+        since_launch = time.monotonic() - _LAUNCH_DESCRIBED_AT
+        self.assertLess(
+            since_launch, PRE_BACKSTOP_BUDGET_SEC,
+            f'{what} landed {since_launch:.3f}s after the launch was described, '
+            f'past the {PRE_BACKSTOP_BUDGET_SEC}s window in which no backstop '
+            f'sweep can have run ({BACKSTOP_INTERVAL_MS}ms backstop), so this '
+            f'run cannot say what triggered the refresh',
+        )
+
     def test_initial_discovery_picks_up_startup_nodes(self):
-        """Both startup demo nodes must be visible in /apps."""
+        """Both startup demo nodes must be visible in /apps.
+
+        The nodes come up after the gateway's own initial discovery, so a
+        refresh has to pick them up. The window check is what makes this a
+        statement about the graph-event path.
+        """
         for key in INITIAL_NODES:
             _, ros_name, _ = DEMO_NODE_REGISTRY[key]
             data = self.poll_endpoint_until(
@@ -198,6 +256,7 @@ class TestGraphEventDiscovery(GatewayTestCase):
                 timeout=INITIAL_DETECTION_TIMEOUT,
                 interval=0.1,
             )
+            self._assert_before_first_sweep(f'startup discovery of {ros_name}')
             app_ids = [app.get('id', '') for app in data.get('items', [])]
             self.assertTrue(
                 any(ros_name in app_id for app_id in app_ids),
@@ -207,9 +266,10 @@ class TestGraphEventDiscovery(GatewayTestCase):
     def test_new_node_detected_via_graph_event(self):
         """Spawning a node mid-run must propagate within the spawn budget.
 
-        ``BACKSTOP_INTERVAL_MS`` is 30 s; detection within
-        ``SPAWN_DETECTION_TIMEOUT`` (5 s) therefore proves the refresh
-        was triggered by a graph event, not the safety-backstop sweep.
+        The case runs before the first backstop sweep and checks that it did,
+        so the refresh it observes can only have come from a graph event. The
+        measured time starts at process spawn, so it also carries the node's
+        own startup and the gateway's event debounce.
         """
         # Make sure the initial graph is fully settled before spawning.
         for key in INITIAL_NODES:
@@ -240,10 +300,11 @@ class TestGraphEventDiscovery(GatewayTestCase):
                 interval=0.1,
             )
             elapsed = time.monotonic() - spawn_time
+            self._assert_before_first_sweep('spawn detection')
             self.assertLess(
                 elapsed, GRAPH_EVENT_MAX_LATENCY_SEC,
-                f'Spawn detection took {elapsed:.3f}s - expected sub-second '
-                f'via graph-event poll, not backstop-driven '
+                f'Spawn detection took {elapsed:.3f}s - expected the '
+                f'graph-event poll to serve it, not the backstop sweep '
                 f'({BACKSTOP_INTERVAL_MS}ms backstop configured)',
             )
             app_ids = [app.get('id', '') for app in data.get('items', [])]
