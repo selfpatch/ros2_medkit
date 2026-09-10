@@ -55,6 +55,7 @@ import launch_testing.actions
 from ros2_medkit_test_utils.constants import (
     ALLOWED_EXIT_CODES,
     DEFAULT_DOMAIN_ID,
+    get_time_scale,
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import (
@@ -85,26 +86,37 @@ LATE_NODE_KEY = 'pressure_sensor'
 # Spawn detection is bounded by:
 #   process exec + rclcpp init + DDS announce + 100 ms poll + refresh_cache.
 # The poll sits above the latency bound below, so a detection that arrives late
-# reports the time it took instead of a bare timeout.
-SPAWN_DETECTION_TIMEOUT = 15.0
+# reports the time it took instead of a bare timeout. Every term in that sum is
+# instrumented work, so the budget scales with the sanitizer factor.
+SPAWN_DETECTION_TIMEOUT = 15.0 * get_time_scale()
 
 # How long after the gateway first answered /health the spawn case may still
-# measure. The first backstop sweep runs BACKSTOP_INTERVAL_MS after gateway
-# initialisation, which precedes that first answer by well under a second, so a
-# measurement inside this budget is one no sweep could have served. That is what
-# makes the bound below a statement about the graph-event path.
-PRE_BACKSTOP_BUDGET_SEC = 30.0
+# measure. A measurement inside this budget is one no backstop sweep could have
+# served, which is what makes the bound below a statement about the graph-event
+# path. The window is derived: the backstop timer is armed during gateway
+# initialisation, ahead of start_rest_server(), whose wait for the REST server
+# to accept connections is bounded at 5 s, and the test base class then polls
+# /health every 0.5 s. So of the 60 s backstop interval about 54 s are still
+# ahead of the first sweep once /health answers, and 50 leaves a margin for
+# scheduling slack.
+#
+# This budget deliberately does NOT scale with MEDKIT_TEST_TIME_SCALE. It is
+# bounded by the gateway's own backstop interval, which the scale factor does
+# not stretch; scaling the budget would let the measurement drift past the
+# first sweep, and the assertion would stop being about the graph-event path.
+PRE_BACKSTOP_BUDGET_SEC = 50.0
 
 # The latency of the graph-event path itself, measured from process spawn. It
 # cannot be sub-second: the gateway coalesces graph events behind
 # discovery.refresh_debounce_ms, 1000 ms by default, and a spawn that arrives
 # mid-window waits for the next one, so detection lands on a multiple of the
 # debounce. Measured on a developer machine with the default settings, the
-# spread is roughly 1 s to 3.6 s.
-GRAPH_EVENT_MAX_LATENCY_SEC = 10.0
+# spread is roughly 1 s to 3.6 s. The budget scales with the sanitizer factor.
+GRAPH_EVENT_MAX_LATENCY_SEC = 10.0 * get_time_scale()
 
-# Initial discovery shares the budget with full gateway startup.
-INITIAL_DETECTION_TIMEOUT = 30.0
+# Initial discovery shares the budget with full gateway startup, so it scales
+# with the sanitizer factor.
+INITIAL_DETECTION_TIMEOUT = 30.0 * get_time_scale()
 
 
 def generate_test_description():
