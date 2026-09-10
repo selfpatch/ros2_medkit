@@ -3,12 +3,20 @@
 # Usage: from the ros2_medkit repo root, run
 #     bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/start.sh
 #
+# The gateway container also runs a fault_manager_node, so an alarm the PLC
+# raises becomes a fault the SOVD API serves instead of a 503.
+#
 # The gateway's state (entity freeze frames, faults.db, rosbags) is kept on the
 # named volume below, so it survives stop.sh and a later start.sh. Purge it with
 #     docker volume rm ros2-medkit-opcua-state
 set -eo pipefail
 
 STATE_VOLUME="${OPCUA_DEMO_STATE_VOLUME:-ros2-medkit-opcua-state}"
+
+# Printed by the gateway container once fault_manager_node has advertised its
+# services, and grepped for below. The container is where the wait happens, this
+# is how the host learns the outcome.
+FM_READY_MARKER="fault_manager ready: /fault_manager/report_fault"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$(dirname "$SCRIPT_DIR")"
@@ -56,6 +64,42 @@ docker run -d --name gateway --network plc-demo -p 8080:8080 \
       mkdir -p /var/lib/ros2_medkit/rosbags /config
       echo 'manifest_version: \"1.0\"' > /config/manifest.yaml
       source /opt/ros/jazzy/setup.bash && source /root/ws/install/setup.bash
+      # A fault manager runs beside the gateway, in the same container and on
+      # the same ROS domain. Without one the alarms the OPC-UA plugin detects
+      # have nowhere to go: /api/v1/faults answers 503 and the demo can show
+      # live PLC values but never a fault. It is started before gateway_node so
+      # its services are advertised before the plugin calls
+      # /fault_manager/report_fault.
+      #
+      # database_path is passed explicitly rather than left to the default: it
+      # has to land on /var/lib/ros2_medkit, the named volume, so faults.db
+      # outlives the container the way the entity freeze frames already do.
+      # Rosbag capture is opt-in and stays off here. storage_path names the
+      # same volume, so a recording lands there whenever it is switched on.
+      ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+        -p database_path:=/var/lib/ros2_medkit/faults.db \
+        -p snapshots.rosbag.storage_path:=/var/lib/ros2_medkit/rosbags \
+        > /var/lib/ros2_medkit/fault_manager.log 2>&1 &
+      # Poll for the service instead of sleeping a fixed time: 'ros2 service
+      # list' is the cheapest ROS-native availability signal, and a fixed sleep
+      # is either too short on a loaded machine or wasted time on a fast one.
+      # Running the poll before gateway_node is what makes it mean anything.
+      # 'ros2 service list' also reports a name that only a client has opened,
+      # and the gateway opens clients for exactly these services, so the same
+      # check made after the gateway is up would pass with nothing serving it.
+      for _ in \$(seq 1 50); do
+        if ros2 service list 2>/dev/null | grep -q '/fault_manager/report_fault'; then
+          break
+        fi
+        sleep 0.2
+      done
+      if ! ros2 service list 2>/dev/null | grep -q '/fault_manager/report_fault'; then
+        echo 'ERROR: fault_manager_node did not advertise /fault_manager/report_fault within 10s.' >&2
+        echo 'Last lines of /var/lib/ros2_medkit/fault_manager.log:' >&2
+        tail -n 20 /var/lib/ros2_medkit/fault_manager.log >&2 || true
+        exit 1
+      fi
+      echo '$FM_READY_MARKER'
       PLUGIN_PATH=\$(find /root/ws/install -name 'libros2_medkit_opcua_plugin.so' | head -1)
       ros2 run ros2_medkit_gateway gateway_node \
         --ros-args --params-file /config/gateway_params.yaml \
@@ -63,6 +107,32 @@ docker run -d --name gateway --network plc-demo -p 8080:8080 \
         -p discovery.mode:=hybrid \
         -p discovery.manifest_path:=/config/manifest.yaml \
         -p discovery.manifest_strict_validation:=false"
+
+echo "Fault manager starting..."
+fm_ready=0
+for _ in $(seq 1 60); do
+    # Substring match rather than a pipe into grep -q: grep -q closes the pipe
+    # on the first hit, and under `set -o pipefail` the SIGPIPE'd `docker logs`
+    # would turn a found marker into a failed test.
+    if [[ "$(docker logs gateway 2>&1)" == *"$FM_READY_MARKER"* ]]; then
+        fm_ready=1
+        echo "  Fault manager ready (log: /var/lib/ros2_medkit/fault_manager.log)"
+        break
+    fi
+    # The container exits when the wait above timed out. Stop polling for a
+    # marker that can no longer arrive and report it below.
+    if [ -z "$(docker ps -q --filter 'name=^gateway$')" ]; then
+        break
+    fi
+    sleep 1
+done
+if [ "$fm_ready" -eq 0 ]; then
+    echo "ERROR: the fault manager never advertised /fault_manager/report_fault." >&2
+    echo "The demo needs it: without it the alarms the PLC raises are dropped and" >&2
+    echo "/api/v1/faults answers 503. Gateway container log:" >&2
+    docker logs gateway 2>&1 | tail -20 >&2
+    exit 1
+fi
 
 echo "Gateway starting..."
 
@@ -76,6 +146,8 @@ for _ in $(seq 1 30); do
         echo "Stop:  bash scripts/stop.sh"
         echo "Tests: bash scripts/run_integration_tests.sh"
         echo "State: volume '$STATE_VOLUME' (kept across stop/start)"
+        echo "Faults: fault_manager_node runs in the gateway container"
+        echo "        (log: docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log)"
         exit 0
     fi
     sleep 2

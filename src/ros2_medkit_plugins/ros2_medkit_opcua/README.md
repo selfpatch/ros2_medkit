@@ -862,11 +862,14 @@ The plugin ships a self-contained OpenPLC tank demo in `docker/` that exercises 
 ```bash
 cd src/ros2_medkit_plugins/ros2_medkit_opcua/docker
 
-# Start OpenPLC + gateway (builds everything)
+# Start OpenPLC + gateway + fault manager (builds everything)
 bash scripts/start.sh
 
 # Manual testing
 curl -s http://localhost:8080/api/v1/apps/tank_process/x-plc-data | jq .
+
+# The faults the PLC's alarms raise
+curl -s http://localhost:8080/api/v1/apps/tank_process/faults | jq .
 
 # Automated tests (16 assertions)
 bash scripts/run_integration_tests.sh
@@ -875,9 +878,22 @@ bash scripts/run_integration_tests.sh
 bash scripts/stop.sh
 ```
 
+`start.sh` runs a `fault_manager_node` inside the gateway container, on the same
+ROS domain, started before `gateway_node` and waited on until
+`/fault_manager/report_fault` is advertised. That is the other half of the
+"Alarm-to-Fault Bridge" below: the plugin detects the alarm, the fault manager
+is what holds the fault, so without one every `/faults` route answers 503 and
+the demo can show live PLC values but never a fault. Its log is inside the
+container:
+
+```bash
+docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log
+```
+
 `start.sh` mounts the named volume `ros2-medkit-opcua-state` at
 `/var/lib/ros2_medkit`, so the gateway's state survives `stop.sh` and the next
-`start.sh`: the entity freeze frames, `faults.db` and the rosbags. That is what
+`start.sh`: the entity freeze frames, `faults.db`, and the rosbags when
+black-box capture is enabled (it is opt-in and off by default). That is what
 lets a fault raised before the stop still serve the values frozen when it
 confirmed, with its original `captured_at` and no `x-medkit.capture_origin`,
 rather than a fresh read of the PLC as it is after the restart. `stop.sh`
