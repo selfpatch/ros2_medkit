@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Downloading a rosbag recording that is split across several storage files, past ``snapshots.rosbag.max_bag_size_mb``, now hands over the first of them - the one the recording's own ``metadata.yaml`` names first, which is where the recording starts - instead of whichever ``.db3`` or ``.mcap`` the gateway host's directory listing happened to yield first. Which segment a client received was previously decided by the filesystem and could differ between two requests for the same recording. The rosbag descriptor gains ``x-medkit.storage_files``, the number of storage files the recording holds, so a client can tell a whole recording from one part of a split one. It is omitted when the gateway cannot read the recording's metadata, so an absent field means "not known here" rather than "one". The descriptor ``size`` is unchanged and still reports the whole recording for a split, which is why it exceeds the download's ``Content-Length``.
+
 0.7.0 (2026-08-27)
 ------------------
 * Rosbag bulk-data is addressed by recording id instead of fault code, so a fault holding several recordings can expose each one. ``GET /{entity}/bulk-data/rosbags`` now emits one descriptor per recording rather than one per fault - a burst that shares a bag used to appear as several entries each reporting the full bag size - and the covered faults move into ``x-medkit.fault_codes`` (was the scalar ``x-medkit.fault_code``). Old URLs keep working: an id that is not a recording is resolved as a fault code and serves that fault's newest recording, which is what it returned before. Authorization is unchanged in effect - a download is allowed when any fault the recording covers is in the entity's source scope, which is exactly the set that could reach it previously (`#623 <https://github.com/selfpatch/ros2_medkit/pull/623>`_, `#620 <https://github.com/selfpatch/ros2_medkit/issues/620>`_)

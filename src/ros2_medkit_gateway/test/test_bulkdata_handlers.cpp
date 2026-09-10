@@ -299,6 +299,30 @@ class RosbagBagDirectoryTest : public ::testing::Test {
     write_file(dir / "metadata.yaml", yaml);
   }
 
+  /// The storage file the directory-order fallback inside
+  /// ``resolve_rosbag_file_path`` reaches first: the first regular ``.db3`` or
+  /// ``.mcap`` the directory yields. Empty when the directory holds none.
+  ///
+  /// The split tests use this to choose a metadata order that cannot coincide
+  /// with the directory's. Which file a directory yields first is the
+  /// filesystem's own business - it is neither creation order nor lexical order
+  /// on the overlay these tests run on - so a test that writes down an expected
+  /// answer and hopes it differs from directory order proves nothing on the run
+  /// where the two agree. Asking at run time makes "the bag's own order decides"
+  /// falsifiable everywhere.
+  static std::filesystem::path first_in_directory_order(const std::filesystem::path & dir) {
+    for (const auto & entry : std::filesystem::directory_iterator(dir)) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+      const auto ext = entry.path().extension().string();
+      if (ext == ".db3" || ext == ".mcap") {
+        return entry.path();
+      }
+    }
+    return {};
+  }
+
   // What the fault manager stores: every regular file under the bag directory.
   uint64_t directory_total() const {
     uint64_t total = 0;
@@ -460,6 +484,241 @@ TEST_F(RosbagBagDirectoryTest, TheMetadataNamesTheStorageFileRatherThanDirectory
   EXPECT_EQ(descriptors[0].size, named_size) << "the listing must report the file the bag names";
   EXPECT_EQ(descriptors[0].size, 4096u) << "and that is the number the fault manager reports too";
   EXPECT_NE(descriptors[0].size, stray_size) << "directory order must not decide which file a recording is";
+}
+
+// === A split recording: which segment is downloaded, and how many there are ===
+// Past the configured maximum bag size rosbag2 splits a recording across several
+// storage files. The download hands over one of them, and that used to be
+// whichever the directory iterator yielded first - a segment from the middle of
+// the recording as readily as its start, decided by nothing a client could see
+// or predict. The recording's own metadata.yaml lists its segments in capture
+// order, so the first name in it is where the recording starts, and that is the
+// file to hand over. The count goes into the descriptor because a client holding
+// one segment has no other way to learn that more of the recording exists.
+
+TEST_F(RosbagBagDirectoryTest, ASplitRecordingResolvesToTheFirstSegmentTheMetadataNames) {
+  // Three segments, and the one the metadata names first is chosen so that
+  // neither of the rules this one replaces can reach it: it is not the file the
+  // directory yields first, and it is not the lexically smallest. So a resolver
+  // that walks the directory, and a resolver that sorts, both have to fail here.
+  const auto split_dir = bag_dir_ / "split_ordered";
+  std::filesystem::create_directories(split_dir);
+  const std::vector<std::filesystem::path> segments{split_dir / "recording_0.db3", split_dir / "recording_1.db3",
+                                                    split_dir / "recording_2.db3"};
+  write_file(segments[0], std::string(16384, 'a'));
+  write_file(segments[1], std::string(53248, 'b'));
+  write_file(segments[2], std::string(32768, 'c'));
+  // Written before the order is read, and rewritten in place afterwards, so
+  // adding metadata.yaml cannot move the entries the answer was read from.
+  write_metadata(split_dir, {"recording_0.db3"});
+
+  const auto directory_first = first_in_directory_order(split_dir);
+  ASSERT_FALSE(directory_first.empty()) << "no storage file in the directory, so nothing is being told apart";
+  const auto & lexically_first = segments.front();
+
+  std::filesystem::path metadata_first;
+  for (const auto & segment : segments) {
+    if (segment != directory_first && segment != lexically_first) {
+      metadata_first = segment;
+      break;
+    }
+  }
+  ASSERT_FALSE(metadata_first.empty()) << "three segments always leave one that is neither";
+
+  std::vector<std::string> names{metadata_first.filename().string()};
+  for (const auto & segment : segments) {
+    if (segment != metadata_first) {
+      names.push_back(segment.filename().string());
+    }
+  }
+  write_metadata(split_dir, names);
+
+  EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(split_dir.string()), metadata_first.string())
+      << "the download must hand over the segment the recording names first, not the one the directory offers";
+
+  uint64_t split_total = 0;
+  for (const auto & entry : std::filesystem::recursive_directory_iterator(split_dir)) {
+    if (entry.is_regular_file()) {
+      split_total += entry.file_size();
+    }
+  }
+  const uint64_t first_named = std::filesystem::file_size(metadata_first);
+
+  // The row carries what the fault manager reports for a split: the total.
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999000"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"duration_sec", 6.0},
+                 {"size_bytes", split_total}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files")) << "a split recording must say how many files it has";
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 3) << "the count is what the bag's own metadata names";
+  EXPECT_EQ(descriptors[0].size, split_total) << "a split recording is still listed at the whole recording's size";
+  EXPECT_NE(descriptors[0].size, first_named) << "the segment on the wire is not the recording";
+}
+
+TEST_F(RosbagBagDirectoryTest, ASplitRecordingSkipsAFirstSegmentThatIsNoLongerOnDisk) {
+  // Quota eviction and a half-copied bag both leave metadata naming a file that
+  // is gone. Resolving to a path that does not exist answers 500 for a recording
+  // whose remaining segments are readable, so the first name that IS on disk is
+  // served instead. The survivor named first is again the one the directory does
+  // not yield first, so directory order cannot produce this answer either.
+  const auto split_dir = bag_dir_ / "split_first_gone";
+  std::filesystem::create_directories(split_dir);
+  const std::filesystem::path evicted = split_dir / "recording_0.db3";
+  write_file(split_dir / "recording_1.db3", std::string(24576, 'c'));
+  write_file(split_dir / "recording_2.db3", std::string(40960, 'd'));
+  write_metadata(split_dir, {"recording_1.db3"});
+  ASSERT_FALSE(std::filesystem::exists(evicted)) << "the first segment has to be missing";
+
+  const auto directory_first = first_in_directory_order(split_dir);
+  ASSERT_FALSE(directory_first.empty());
+  const std::filesystem::path survivor =
+      directory_first == split_dir / "recording_1.db3" ? split_dir / "recording_2.db3" : split_dir / "recording_1.db3";
+
+  write_metadata(split_dir,
+                 {evicted.filename().string(), survivor.filename().string(), directory_first.filename().string()});
+
+  EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(split_dir.string()), survivor.string())
+      << "a named segment that is not on disk cannot be the one served, and the directory does not get the vote";
+
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999001"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 99999}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 3)
+      << "the count is what the recording holds, not what survived on disk";
+}
+
+TEST_F(RosbagBagDirectoryTest, ASplitRecordingWithNoSegmentLeftResolvesToNothing) {
+  // Nothing to hand over, and the download route turns an empty resolution into
+  // its 500. The count still answers, because the metadata is readable and it is
+  // the recording's own record of what it held.
+  const auto split_dir = bag_dir_ / "split_all_gone";
+  std::filesystem::create_directories(split_dir);
+  write_metadata(split_dir, {"recording_0.db3", "recording_1.db3"});
+
+  EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(split_dir.string()), ""); });
+
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999002"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", 4242}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 2);
+  EXPECT_EQ(descriptors[0].size, 4242u) << "an unmeasurable recording keeps the figure its row carried";
+}
+
+TEST_F(RosbagBagDirectoryTest, StorageFileCountIsOneForAWholeRecordingAndAbsentWhenTheBagWillNotSay) {
+  // One has to be stated rather than left out, because an absent field already
+  // means something else here: that this side could not read the recording's
+  // metadata at all. A client cannot tell "one file" from "unknown" if both are
+  // silence.
+  const json whole_row{{"fault_code", "MOTOR_OVERHEAT"},
+                       {"recording_id", bag_dir_.filename().string()},
+                       {"file_path", bag_dir_.string()},
+                       {"format", "sqlite3"},
+                       {"size_bytes", directory_total()}};
+
+  const auto whole = handlers::detail::fold_rosbag_rows_into_descriptors({whole_row}, {});
+  ASSERT_EQ(whole.size(), 1u);
+  ASSERT_TRUE(whole[0].x_medkit.has_value());
+  ASSERT_TRUE(whole[0].x_medkit->contains("storage_files")) << "a whole recording states its one file";
+  EXPECT_EQ((*whole[0].x_medkit)["storage_files"], 1);
+
+  // A bare storage file is one storage file by definition, and has no
+  // metadata.yaml beside it under that name to consult.
+  const auto bare_file = bag_dir_ / "standalone.db3";
+  write_file(bare_file, std::string(2048, 'z'));
+  const json bare_row{{"fault_code", "BARE"},
+                      {"recording_id", "standalone.db3"},
+                      {"file_path", bare_file.string()},
+                      {"format", "sqlite3"},
+                      {"size_bytes", 1}};
+  const auto bare = handlers::detail::fold_rosbag_rows_into_descriptors({bare_row}, {});
+  ASSERT_EQ(bare.size(), 1u);
+  ASSERT_TRUE(bare[0].x_medkit.has_value());
+  ASSERT_TRUE(bare[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*bare[0].x_medkit)["storage_files"], 1);
+
+  // No metadata to read: the field is omitted rather than guessed at one. The
+  // assertions above are the positive control for this absence - the same helper
+  // on the same harness does emit the field when the bag answers.
+  const auto silent_dir = bag_dir_ / "no_metadata";
+  std::filesystem::create_directories(silent_dir);
+  write_file(silent_dir / "recording_0.db3", std::string(1024, 'q'));
+  const json silent_row{{"fault_code", "SILENT"},
+                        {"recording_id", "no_metadata"},
+                        {"file_path", silent_dir.string()},
+                        {"format", "sqlite3"},
+                        {"size_bytes", 1024}};
+  const auto silent = handlers::detail::fold_rosbag_rows_into_descriptors({silent_row}, {});
+  ASSERT_EQ(silent.size(), 1u);
+  ASSERT_TRUE(silent[0].x_medkit.has_value());
+  EXPECT_FALSE(silent[0].x_medkit->contains("storage_files")) << "a bag that will not say must not be counted at one";
+}
+
+TEST_F(RosbagBagDirectoryTest, TheDownloadAndTheListingAgreeOnWhichSegmentIsServed) {
+  // download() resolves the row's file_path through
+  // BulkDataHandlers::resolve_rosbag_file_path and reports that file's length as
+  // Content-Length. The call below is that one, with that argument, so the two
+  // sides cannot answer differently for one recording. What is pinned here is
+  // the pair: the transfer is the recording's first segment while the descriptor
+  // keeps the whole recording's size, and the gap between them is what a client
+  // reads as "this is a part".
+  const auto split_dir = bag_dir_ / "split_agreement";
+  std::filesystem::create_directories(split_dir);
+  write_file(split_dir / "recording_0.db3", std::string(16384, 'a'));
+  write_file(split_dir / "recording_1.db3", std::string(53248, 'b'));
+  write_metadata(split_dir, {"recording_0.db3"});
+
+  const auto directory_first = first_in_directory_order(split_dir);
+  ASSERT_FALSE(directory_first.empty());
+  const std::filesystem::path metadata_first =
+      directory_first == split_dir / "recording_0.db3" ? split_dir / "recording_1.db3" : split_dir / "recording_0.db3";
+  write_metadata(split_dir, {metadata_first.filename().string(), directory_first.filename().string()});
+
+  uint64_t split_total = 0;
+  for (const auto & entry : std::filesystem::recursive_directory_iterator(split_dir)) {
+    if (entry.is_regular_file()) {
+      split_total += entry.file_size();
+    }
+  }
+
+  const std::string served_path = BulkDataHandlers::resolve_rosbag_file_path(split_dir.string());
+  ASSERT_EQ(served_path, metadata_first.string());
+  std::error_code ec;
+  const uint64_t content_length = std::filesystem::file_size(served_path, ec);
+  ASSERT_FALSE(static_cast<bool>(ec));
+
+  const json row{{"fault_code", "SPLIT_FAULT"},
+                 {"recording_id", "fault_SPLIT_FAULT_1738664999003"},
+                 {"file_path", split_dir.string()},
+                 {"format", "sqlite3"},
+                 {"size_bytes", split_total}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors({row}, {});
+  ASSERT_EQ(descriptors.size(), 1u);
+  EXPECT_EQ(content_length, std::filesystem::file_size(metadata_first)) << "the transfer is that segment, whole";
+  EXPECT_GT(descriptors[0].size, content_length) << "size exceeding Content-Length is how a client sees a split";
+  ASSERT_TRUE(descriptors[0].x_medkit.has_value());
+  ASSERT_TRUE(descriptors[0].x_medkit->contains("storage_files"));
+  EXPECT_EQ((*descriptors[0].x_medkit)["storage_files"], 2) << "and the count tells it how many there were";
 }
 
 // A bag directory this process cannot walk must cost its own row and nothing
