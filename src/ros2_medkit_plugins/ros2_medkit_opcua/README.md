@@ -903,6 +903,20 @@ the gateway adopts it without a restart:
 bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_discovery_race_test.sh
 ```
 
+A third scenario covers the freeze-frame a loss-of-comms fault carries. It
+connects, writes a distinctive value, kills the server, and asserts that the
+fault the bridge reports under the PLC runtime component carries that
+pre-outage value in a frame named after the app that component hosts. The
+distinctive value is what makes the assertion mean something, because nothing
+can read it back once the server is gone. Neither scenario above can see this:
+the OpenPLC suite keeps its server up for the whole run, and the discovery race
+does take its server away but asserts on what discovery names the component,
+not on what a fault carries. Neither reads a fault's `environment_data` at all.
+
+```bash
+bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_comms_lost_frame_test.sh
+```
+
 ### Test Coverage
 
 | Category | Tests | What it validates |

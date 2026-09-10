@@ -49,6 +49,11 @@ namespace ros2_medkit_gateway {
  * that entity's current data values (DataProvider::list_data, which serves
  * from the plugin's latest polled values) at fault time.
  *
+ * A reporting source that holds no data values of its own - the PLC runtime
+ * component a bridge reports loss of comms under - is framed from the entities
+ * it hosts instead (HostedEntitiesResolver), one frame per hosted app. That
+ * fallback runs only when the source itself read nothing.
+ *
  * The frames are merged into the fault detail's environment_data.snapshots
  * only when the fault_manager captured no freeze-frame itself - a configured
  * freeze-frame always wins, while a rosbag-only capture does not suppress the
@@ -147,6 +152,17 @@ class EntityFreezeFrameCapture {
   using KnownFaultCodeLister =
       std::function<std::optional<std::unordered_set<std::string>>(const std::function<bool()> & should_abort)>;
 
+  /// Resolves a reporting source that read nothing of its own to the entities
+  /// it hosts. The case this exists for is the PLC runtime component: a
+  /// loss-of-comms fault is reported under the component's own id, the
+  /// component serves no data values (no DataProvider, and the x-plc-data
+  /// route is app-only), and the apps it hosts still serve their last known
+  /// values. Frames are stored in the order the resolver yields, which the
+  /// gateway's resolver takes from a std::set and is therefore alphabetical.
+  /// Returns an empty list for a source that hosts nothing. Called from the
+  /// internal capture thread.
+  using HostedEntitiesResolver = std::function<std::vector<std::string>(const std::string & source_id)>;
+
   /**
    * @param node ROS 2 node used to resolve the fault-events topic name and logger
    * @param exec shared subscription executor; the fault-events subscription is
@@ -163,12 +179,15 @@ class EntityFreezeFrameCapture {
    * @param known_code_lister reports the fault codes the fault_manager still
    *        holds, so reloaded frames for faults that are gone can be dropped;
    *        null keeps every reloaded frame
+   * @param hosted_resolver source-to-hosted-entities resolver, consulted only
+   *        for a reporting source that read nothing itself; may be null
    */
   EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                            DataProviderResolver resolver, RouteDataFetcher route_fetcher = nullptr,
                            size_t max_faults = 256, StandingFaultLister standing_lister = nullptr,
                            std::shared_ptr<EntityFreezeFrameStore> store = nullptr,
-                           KnownFaultCodeLister known_code_lister = nullptr);
+                           KnownFaultCodeLister known_code_lister = nullptr,
+                           HostedEntitiesResolver hosted_resolver = nullptr);
 
   ~EntityFreezeFrameCapture();
 
@@ -251,6 +270,11 @@ class EntityFreezeFrameCapture {
   /// Returns nullopt when the route yields nothing usable.
   std::optional<Frame> capture_via_route(const std::string & entity_id, const std::string & fault_code);
 
+  /// Read one entity's current values: its plugin DataProvider first, the
+  /// x-plc-data route when the owning plugin exports none. nullopt when the
+  /// entity reads nothing usable. Runs on capture_thread_.
+  std::optional<Frame> capture_from_entity(const std::string & entity_id, const std::string & fault_code);
+
   /// Log a fallback failure once per fault code (faults re-confirm on every
   /// clear/re-report cycle; one line per code is enough for an operator).
   void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
@@ -308,6 +332,7 @@ class EntityFreezeFrameCapture {
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;
   RouteDataFetcher route_fetcher_;
+  HostedEntitiesResolver hosted_resolver_;
   rclcpp::Logger logger_;
   const size_t max_faults_;
 

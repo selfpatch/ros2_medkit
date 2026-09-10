@@ -1965,6 +1965,28 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
           }
         }
         return codes;
+      },
+      // A protocol bridge reports loss of comms under the PLC runtime
+      // component's own id, and a component holds no data values of its own -
+      // the values live in the apps it hosts, which keep serving what they
+      // last read. Resolve those through the same helper `/components/<id>/
+      // faults` scopes by, so the frame comes from exactly the sources that
+      // endpoint attributes to the component. The component's own id is in
+      // that set (an external component owns its bare id) and is dropped: it
+      // is the entity that had nothing to read in the first place.
+      [this](const std::string & source_id) -> std::vector<std::string> {
+        const auto & cache = get_thread_safe_cache();
+        auto entity = cache.find_entity(source_id);
+        if (!entity || entity->type != SovdEntityType::COMPONENT) {
+          return {};
+        }
+        std::vector<std::string> hosted;
+        for (const auto & fqn : faults::resolve_entity_source_fqns(cache, entity->type, source_id)) {
+          if (fqn != source_id) {
+            hosted.push_back(fqn);
+          }
+        }
+        return hosted;
       });
 }
 

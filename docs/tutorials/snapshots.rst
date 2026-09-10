@@ -196,10 +196,26 @@ values) when the fault confirms, and merges them into the fault detail's
 after the entity - unless the fault manager already captured a freeze-frame
 for that fault (explicit config wins). When the entity reports its link down
 (the loss-of-comms case), the frozen values are the plugin's last known ones
-and may predate the confirmation by the length of the outage; the entry's
-``x-medkit`` block then carries ``connected: false`` and, when the plugin's
-payload includes one, ``source_timestamp`` (the payload's own timestamp)
-alongside ``captured_at``.
+and may predate the confirmation by the length of the outage. The entry's
+``x-medkit`` block then carries ``connected`` (``false`` for that case) and
+``source_timestamp`` (the payload's own timestamp) alongside ``captured_at``,
+both only when the plugin's payload reports them. A frame carries whatever the
+path that read it returned, and the two paths do not return the same fields: a
+frame read through a plugin's ``DataProvider`` always names ``source`` and
+``captured_at`` but may carry neither of the other two, while the same values
+fetched over an ``x-plc-data`` route carry what that route reports. The OPC UA
+plugin's ``list_data`` reports no link flag and no timestamp today, so frames
+taken through it carry neither, even during an outage its ``x-plc-data`` route
+reports as ``connected: false``.
+
+A fault reported by a component rather than by an app (a bridge reports loss of
+comms under the PLC runtime component's own id, and a component holds no data
+values itself) is framed from the apps that component hosts instead, one entry
+per hosted app that has values to read, named after the app and none for the
+component. An app that only hosts alarms has no data of its own, so it
+contributes no entry either, and a component hosting nothing but such apps
+gets no frame at all. Those entries follow the rules above like any other
+plugin-backed frame, ``connected`` and ``source_timestamp`` included.
 
 With ``entity_freeze_frame.storage.path`` set, a captured frame survives a
 gateway restart: it is reloaded at start and served exactly as it was
