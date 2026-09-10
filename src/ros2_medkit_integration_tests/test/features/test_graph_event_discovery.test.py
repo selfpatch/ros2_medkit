@@ -222,8 +222,29 @@ class TestGraphEventDiscovery(GatewayTestCase):
             stderr=subprocess.DEVNULL,
         )
 
+    def _assert_before_first_sweep(self, what):
+        """Establish what a detection measured, before anything is bounded.
+
+        Past PRE_BACKSTOP_BUDGET_SEC a backstop sweep could have served the
+        detection, and a bound on it would then be reporting on the wrong
+        mechanism.
+        """
+        since_launch = time.monotonic() - _LAUNCH_DESCRIBED_AT
+        self.assertLess(
+            since_launch, PRE_BACKSTOP_BUDGET_SEC,
+            f'{what} landed {since_launch:.3f}s after the launch was described, '
+            f'past the {PRE_BACKSTOP_BUDGET_SEC}s window in which no backstop '
+            f'sweep can have run ({BACKSTOP_INTERVAL_MS}ms backstop), so this '
+            f'run cannot say what triggered the refresh',
+        )
+
     def test_initial_discovery_picks_up_startup_nodes(self):
-        """Both startup demo nodes must be visible in /apps."""
+        """Both startup demo nodes must be visible in /apps.
+
+        The nodes come up after the gateway's own initial discovery, so a
+        refresh has to pick them up. The window check is what makes this a
+        statement about the graph-event path.
+        """
         for key in INITIAL_NODES:
             _, ros_name, _ = DEMO_NODE_REGISTRY[key]
             data = self.poll_endpoint_until(
@@ -235,6 +256,7 @@ class TestGraphEventDiscovery(GatewayTestCase):
                 timeout=INITIAL_DETECTION_TIMEOUT,
                 interval=0.1,
             )
+            self._assert_before_first_sweep(f'startup discovery of {ros_name}')
             app_ids = [app.get('id', '') for app in data.get('items', [])]
             self.assertTrue(
                 any(ros_name in app_id for app_id in app_ids),
@@ -278,17 +300,7 @@ class TestGraphEventDiscovery(GatewayTestCase):
                 interval=0.1,
             )
             elapsed = time.monotonic() - spawn_time
-            # Establish what was measured before bounding it. Past this budget
-            # a backstop sweep could have served the detection, and then the
-            # bound below would be reporting on the wrong mechanism.
-            since_launch = time.monotonic() - _LAUNCH_DESCRIBED_AT
-            self.assertLess(
-                since_launch, PRE_BACKSTOP_BUDGET_SEC,
-                f'detection landed {since_launch:.3f}s after the launch was described, '
-                f'past the {PRE_BACKSTOP_BUDGET_SEC}s window in which no backstop '
-                f'sweep can have run ({BACKSTOP_INTERVAL_MS}ms backstop), so this '
-                f'run cannot say what triggered the refresh',
-            )
+            self._assert_before_first_sweep('spawn detection')
             self.assertLess(
                 elapsed, GRAPH_EVENT_MAX_LATENCY_SEC,
                 f'Spawn detection took {elapsed:.3f}s - expected the '
