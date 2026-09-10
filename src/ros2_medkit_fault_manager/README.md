@@ -62,8 +62,9 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` or `"memory"` |
+| `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` or `"memory"` or `"postgres"` |
 | `database_path` | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file |
+| `database_url` | string | `"postgresql://user:password@localhost:5432/ros2_medkit_faults_database"` | Connection URL to the PostgreSQL database |
 | `confirmation_threshold` | int | `-1` | Counter value at which faults are confirmed |
 | `healing_enabled` | bool | `false` | Enable automatic healing via PASSED events |
 | `healing_threshold` | int | `3` | Counter value at which faults are healed |
@@ -134,6 +135,8 @@ format used by black-box capture (`snapshots.rosbag.format`, see Rosbag Capture 
 **SQLite (default)**: Faults are persisted to disk and survive node restarts. Uses WAL mode for optimal performance.
 
 **Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
+
+**PostgreSQL**: Faults are persisted to disk and survive node restarts. Needs an external PostgreSQL server.
 
 ## Near-Miss Series
 
