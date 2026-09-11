@@ -177,7 +177,7 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
 
       auto & codes = pending_cluster.fault_codes;
       codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
-      pending_it->second.fault_severities.erase(fault_code);
+      pending_cluster.fault_severities.erase(fault_code);
 
       if (codes.empty()) {
         pending_it = pending_clusters_.erase(pending_it);
@@ -186,46 +186,7 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
 
       // Reassign representative if the cleared fault was the representative
       if (pending_cluster.representative_code == fault_code) {
-        for (const auto & rule : config_.rules) {
-          if (rule.id == pending_it->first) {
-            switch (rule.representative) {
-              case Representative::FIRST: {
-                auto & sevs = pending_it->second.fault_severities;
-                const std::string & first_code = codes.front();
-                pending_cluster.representative_code = first_code;
-                auto sev_it = sevs.find(first_code);
-                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
-                break;
-              }
-              case Representative::HIGHEST_SEVERITY: {
-                auto & sevs = pending_it->second.fault_severities;
-                std::string best_code = codes.front();
-                int best_rank = -1;
-                for (const auto & code : codes) {
-                  auto sev_it = sevs.find(code);
-                  int rank = (sev_it != sevs.end()) ? severity_rank(sev_it->second) : 0;
-                  if (rank > best_rank) {
-                    best_rank = rank;
-                    best_code = code;
-                  }
-                }
-                pending_cluster.representative_code = best_code;
-                auto best_sev_it = sevs.find(best_code);
-                pending_cluster.representative_severity = (best_sev_it != sevs.end()) ? best_sev_it->second : "";
-                break;
-              }
-              case Representative::MOST_RECENT: {
-                auto & sevs = pending_it->second.fault_severities;
-                const std::string & most_recent_code = codes.back();
-                pending_cluster.representative_code = most_recent_code;
-                auto sev_it = sevs.find(most_recent_code);
-                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
-                break;
-              }
-            }
-            break;
-          }
-        }
+        promote_representative(pending_cluster);
       }
 
       ++pending_it;
@@ -237,18 +198,18 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
       auto & active_cluster = active_it->second;
       auto & codes = active_cluster.fault_codes;
       codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
+      active_cluster.fault_severities.erase(fault_code);
 
       if (codes.empty()) {
         active_clusters_.erase(active_it);
       } else if (active_cluster.representative_code == fault_code) {
-        // Sync representative from pending cluster (already updated above)
-        for (const auto & [rule_id, pending] : pending_clusters_) {
-          if (pending.data.cluster_id == cluster_id) {
-            active_cluster.representative_code = pending.data.representative_code;
-            active_cluster.representative_severity = pending.data.representative_severity;
-            break;
-          }
-        }
+        // Promoted from the ACTIVE cluster's own members rather than copied from the
+        // pending twin, because the twin is gone once its window closes
+        // (cleanup_expired drops it while the active cluster stays). Copied from a
+        // twin that is not there, the representative keeps naming the acknowledged
+        // fault, and every remaining member is then hidden by a cluster whose
+        // representative can never be reported again.
+        promote_representative(active_cluster);
       }
     }
 
@@ -287,14 +248,108 @@ std::vector<std::string> CorrelationEngine::end_planned_stop() {
     auto it = muted_faults_.find(fault_code);
     // A rule's overlay is not the stop's to lift: that fault stays muted, and
     // stays unannounced, for as long as the rule holds it.
-    if (it != muted_faults_.end() && it->second.by_planned_stop) {
-      muted_faults_.erase(it);
+    if (it == muted_faults_.end() || !it->second.by_planned_stop) {
+      continue;
+    }
+
+    // The stop's entry goes whatever else is true: the cycle it owned is over.
+    const bool held_by_cluster = cluster_hides(fault_code);
+    muted_faults_.erase(it);
+
+    // A cluster rule outranks the stop, because it is the narrower promise: the
+    // stop says "not now", the cluster says "this burst is one line, ever".
+    // Announcing every owned member would fire, in one wave, exactly the storm
+    // the rule exists to fold into a single alarm. Nothing is written in the
+    // stop's place: the cluster suppresses the fault's events through the verdict
+    // it reaches on each report, which is how it hides a member with no stop in
+    // force, and a remembered copy of that verdict would outlive the membership
+    // and the representative it was taken from.
+    if (!held_by_cluster) {
       released.push_back(fault_code);
     }
   }
   planned_stop_owned_.clear();
 
   return released;
+}
+
+bool CorrelationEngine::cluster_hides(const std::string & fault_code) const {
+  auto cluster_it = fault_to_cluster_.find(fault_code);
+  if (cluster_it == fault_to_cluster_.end()) {
+    return false;
+  }
+
+  // An ACTIVE cluster is one that reached min_count. min_count gates FORMATION, not
+  // the hiding: once formed, the cluster folds its members into the representative
+  // until every one of them is acknowledged and the cluster dissolves. A cluster that
+  // never formed is a handful of separate faults matching the same pattern.
+  auto active_it = active_clusters_.find(cluster_it->second);
+  if (active_it == active_clusters_.end()) {
+    return false;
+  }
+
+  const ClusterData & cluster = active_it->second;
+  if (fault_code == cluster.representative_code) {
+    return false;  // the representative is the line the cluster shows
+  }
+
+  // Membership is read from the ACTIVE cluster, not from fault_to_cluster_, which is
+  // written on every join including one to a pending twin that is below min_count -
+  // active_clusters_ is only refreshed when the burst reaches the threshold. A fault
+  // that joined a twin two members short maps to a formed cluster it is not part of;
+  // it is a fault of its own, announced and updated like any other.
+  if (std::find(cluster.fault_codes.begin(), cluster.fault_codes.end(), fault_code) == cluster.fault_codes.end()) {
+    return false;
+  }
+
+  const CorrelationRule * rule = find_rule(cluster.rule_id);
+  return rule != nullptr && rule->show_as_single;
+}
+
+const CorrelationRule * CorrelationEngine::find_rule(const std::string & rule_id) const {
+  for (const auto & rule : config_.rules) {
+    if (rule.id == rule_id) {
+      return &rule;
+    }
+  }
+  return nullptr;
+}
+
+void CorrelationEngine::promote_representative(ClusterData & cluster) {
+  if (cluster.fault_codes.empty()) {
+    return;
+  }
+
+  const CorrelationRule * rule = find_rule(cluster.rule_id);
+  const Representative policy = rule != nullptr ? rule->representative : Representative::FIRST;
+  const auto & severities = cluster.fault_severities;
+  auto severity_of = [&severities](const std::string & code) {
+    auto it = severities.find(code);
+    return it != severities.end() ? it->second : std::string{};
+  };
+
+  std::string promoted = cluster.fault_codes.front();
+  switch (policy) {
+    case Representative::FIRST:
+      break;
+    case Representative::MOST_RECENT:
+      promoted = cluster.fault_codes.back();
+      break;
+    case Representative::HIGHEST_SEVERITY: {
+      int best_rank = -1;
+      for (const auto & code : cluster.fault_codes) {
+        const int rank = severity_rank(severity_of(code));
+        if (rank > best_rank) {
+          best_rank = rank;
+          promoted = code;
+        }
+      }
+      break;
+    }
+  }
+
+  cluster.representative_code = promoted;
+  cluster.representative_severity = severity_of(promoted);
 }
 
 bool CorrelationEngine::planned_stop_active() const {
@@ -558,7 +613,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
       pending.data.representative_code = fault_code;
       pending.data.representative_severity = severity;
       pending.data.fault_codes.push_back(fault_code);
-      pending.fault_severities[fault_code] = severity;
+      pending.data.fault_severities[fault_code] = severity;
       pending.data.first_at = now_system;
       pending.data.last_at = now_system;
 
@@ -581,15 +636,12 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
       // Already in cluster - ensure consistent muting for duplicates
       ProcessFaultResult result;
       result.cluster_id = cluster.cluster_id;
-      if (rule.show_as_single && fault_code != cluster.representative_code &&
-          cluster.fault_codes.size() >= rule.min_count) {
-        result.should_mute = true;
-      }
+      result.should_mute = cluster_hides(fault_code);
       return result;
     }
 
     cluster.fault_codes.push_back(fault_code);
-    pending.fault_severities[fault_code] = severity;
+    cluster.fault_severities[fault_code] = severity;
     cluster.last_at = now_system;
     fault_to_cluster_[fault_code] = cluster.cluster_id;
 
@@ -640,9 +692,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
       }
 
       // Mute non-representative faults
-      if (rule.show_as_single && fault_code != cluster.representative_code) {
-        result.should_mute = true;
-      }
+      result.should_mute = cluster_hides(fault_code);
     }
 
     return result;

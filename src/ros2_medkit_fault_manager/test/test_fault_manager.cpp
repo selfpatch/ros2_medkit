@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -1062,7 +1063,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     std::string events_topic = ns + "/fault_manager/events";
     auto qos = rclcpp::QoS(100).reliable().durability_volatile();
     event_subscription_ =
-        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::SharedPtr msg) {
+        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::ConstSharedPtr & msg) {
           received_events_.push_back(*msg);
         });
 
@@ -1208,7 +1209,7 @@ TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
 
   // Wait for event to arrive (polling, robust under CPU contention)
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CONFIRMED was published
@@ -1223,7 +1224,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report a new fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_WARN, "/test_node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1232,7 +1233,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report same fault again - should trigger EVENT_UPDATED
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_ERROR, "/test_node2"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_UPDATED was published (severity/sources changed; still one occurrence)
@@ -1246,7 +1247,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_3", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1255,7 +1256,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Clear the fault
   ASSERT_TRUE(call_clear_fault("TEST_FAULT_3"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CLEARED was published
@@ -1282,7 +1283,7 @@ class HealingFaultEventPublishingTest : public FaultEventPublishingTest {
 TEST_F(HealingFaultEventPublishingTest, HealPublishesClearedEventSoStreamConsumersSeeTheEnd) {
   ASSERT_TRUE(call_report_fault("HEAL_ME", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   received_events_.clear();
 
@@ -1325,7 +1326,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 
   ASSERT_TRUE(call_report_fault("TEST_FAULT_4", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto after = fault_manager_->now();
@@ -1341,7 +1342,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
   ASSERT_TRUE(call_report_fault("FULL_DATA_TEST", Fault::SEVERITY_CRITICAL, "/sensor/temperature"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   ASSERT_EQ(received_events_.size(), 1u);
@@ -1364,7 +1365,7 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
 
   ASSERT_TRUE(call_report_fault("WALL_CLOCK_TEST", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto wall_after = std::chrono::system_clock::now();
@@ -1392,7 +1393,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExpectedFault) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("GET_FAULT_TEST", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Get fault via service
@@ -1416,7 +1417,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
   // Report a fault
   ASSERT_TRUE(call_report_fault("ENV_DATA_TEST", Fault::SEVERITY_WARN, "/sensor/temp"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto response = call_get_fault("ENV_DATA_TEST");
@@ -1436,7 +1437,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   // Report fault twice to have first and last occurrence timestamps differ
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node2"));
   ASSERT_TRUE(spin_until([this]() {
@@ -1484,7 +1485,7 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   // Report faults from a different entity
   ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Query faults for non-existent entity
@@ -3073,13 +3074,16 @@ class PlannedStopServiceTest : public ::testing::Test {
         test_node_->create_client<ros2_medkit_msgs::srv::SetPlannedStop>(ns + "/fault_manager/set_planned_stop");
     get_client_ =
         test_node_->create_client<ros2_medkit_msgs::srv::GetPlannedStop>(ns + "/fault_manager/get_planned_stop");
+    report_client_ = test_node_->create_client<ros2_medkit_msgs::srv::ReportFault>(ns + "/fault_manager/report_fault");
     ASSERT_TRUE(set_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(get_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(report_client_->wait_for_service(std::chrono::seconds(5)));
   }
 
   void TearDown() override {
     set_client_.reset();
     get_client_.reset();
+    report_client_.reset();
     test_node_.reset();
     fault_manager_.reset();
   }
@@ -3116,10 +3120,25 @@ class PlannedStopServiceTest : public ::testing::Test {
     return *future.get();
   }
 
+  /// One FAILED report over the real service. The fixture's confirmation
+  /// threshold is -1, so a single call confirms the fault.
+  ros2_medkit_msgs::srv::ReportFault::Response report_failed(const std::string & fault_code) {
+    auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
+    request->fault_code = fault_code;
+    request->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED;
+    request->severity = Fault::SEVERITY_ERROR;
+    request->description = "planned stop ownership test";
+    request->source_id = "/test_source";
+    auto future = report_client_->async_send_request(request);
+    EXPECT_TRUE(spin_until_future_ready(future));
+    return *future.get();
+  }
+
   std::shared_ptr<FaultManagerNode> fault_manager_;
   std::shared_ptr<rclcpp::Node> test_node_;
   rclcpp::Client<ros2_medkit_msgs::srv::SetPlannedStop>::SharedPtr set_client_;
   rclcpp::Client<ros2_medkit_msgs::srv::GetPlannedStop>::SharedPtr get_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_client_;
 };
 
 /// The same fixture, with a store that records the order of the release.
@@ -3142,12 +3161,12 @@ TEST_F(PlannedStopReleaseOrderTest, TheOwnershipFlagsAreClearedAfterTheAnnouncem
   ASSERT_NE(recorder_, nullptr);
   ASSERT_TRUE(set_stop(true, "line 3 maintenance", "shift_lead").success);
 
-  // A confirmed fault the stop owns, put in place directly: this test is about the
-  // order of the switch-off's own calls.
+  // A confirmed fault the stop owns, put in place through the store directly: this test
+  // is about the order of the switch-off's own calls, not about the report path.
   auto & storage = fault_manager_->get_storage_for_test();
   storage.report_fault_event("ORDER_OWNED", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "order test",
-                             "/src", fault_manager_->now(), storage.get_debounce_config());
-  storage.set_planned_stop_owned("ORDER_OWNED", true);
+                             "/src", fault_manager_->now(), storage.get_debounce_config(),
+                             /*planned_stop_active=*/true);
   fault_manager_->restore_planned_stop_ownership_for_test("ORDER_OWNED");
 
   recorder_->calls.clear();
@@ -3160,6 +3179,26 @@ TEST_F(PlannedStopReleaseOrderTest, TheOwnershipFlagsAreClearedAfterTheAnnouncem
   ASSERT_NE(cleared, calls.end()) << "the switch-off never released the ownership flags";
   EXPECT_LT(read - calls.begin(), cleared - calls.begin())
       << "the flags were cleared before the announcement, so a crash in between would lose it";
+}
+
+// The handler has to hand the store the switch, or a cycle that starts inside the stop
+// is confirmed and unowned: no switch-off releases it, no startup recognises it as
+// interrupted, and its later reports announce updates mid-stop. The store is the only
+// writer of the flag, so the report returning with it set is the whole path.
+TEST_F(PlannedStopServiceTest, TheReportItselfRecordsTheStopsOwnership) {
+  ASSERT_TRUE(set_stop(true, "line 3 maintenance", "shift_lead").success);
+
+  ASSERT_TRUE(report_failed("PS_OWNED_BY_REPORT").accepted);
+
+  const auto owned = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_NE(std::find(owned.begin(), owned.end(), "PS_OWNED_BY_REPORT"), owned.end())
+      << "the report returned with the fault unowned, so the handler withheld the switch";
+
+  // A fault raised after the withdrawal belongs to nobody.
+  ASSERT_TRUE(set_stop(false, "plant back up", "shift_lead").success);
+  ASSERT_TRUE(report_failed("PS_AFTER_THE_STOP").accepted);
+  const auto after = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_EQ(std::find(after.begin(), after.end(), "PS_AFTER_THE_STOP"), after.end());
 }
 
 /// The same fixture, with a store that refuses to record the declaration.

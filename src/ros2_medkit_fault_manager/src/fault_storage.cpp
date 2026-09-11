@@ -121,7 +121,8 @@ void InMemoryFaultStorage::update_status(FaultState & state, const DebounceConfi
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                               const std::string & description, const std::string & source_id,
-                                              const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                              const rclcpp::Time & timestamp, const DebounceConfig & config,
+                                              bool planned_stop_active) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
@@ -155,6 +156,13 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     if (is_near_miss(true, state.status)) {
       record_near_miss(state, config, severity, source_id, timestamp);
     }
+
+    // A new fault is always the start of a cycle. The flag is set with the rest of the state,
+    // under the one lock, because the two backends have to make the same fault owned by the same
+    // report: which faults a switch-off releases must not depend on which store a deployment
+    // picked. Nothing here outlives the process, so this is parity with the durable backend's
+    // transaction rather than a crash window being closed.
+    state.planned_stop_owned = planned_stop_active;
 
     faults_.emplace(fault_code, std::move(state));
     return true;
@@ -194,6 +202,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     if (is_near_miss(true, state.status)) {
       record_near_miss(state, config, severity, source_id, timestamp);
     }
+    // A fault raised again after being cleared starts a new cycle.
+    if (planned_stop_active) {
+      state.planned_stop_owned = true;
+    }
     return true;  // Reactivation treated as new occurrence for event publishing
   }
 
@@ -205,6 +217,15 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   state.debounce_counter = clamp_debounce_counter(state.debounce_counter, config);
 
   if (is_failed) {
+    // A failure out of HEALED starts a cycle: the heal published the fault's end, so the
+    // confirmation that follows is fresh news. A repeat report of a condition that is already up
+    // is the same cycle and takes nothing, so no report ever lowers the flag. It is lowered
+    // elsewhere: by acknowledgement (clear_fault), by the healed-to-cleared reclassification, and
+    // by the switch-off (clear_planned_stop_owned).
+    if (planned_stop_active && state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
+      state.planned_stop_owned = true;
+    }
+
     // last_occurred tracks occurrences only. A PASSED event is the fault ENDING, not
     // occurring; bumping it there makes a long-stale CONFIRMED fault look freshly
     // active to operators. The PASSED instant is kept in last_passed_time.
@@ -877,14 +898,6 @@ std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared() {
   }
 
   return reclassified;
-}
-
-void InMemoryFaultStorage::set_planned_stop_owned(const std::string & fault_code, bool owned) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto it = faults_.find(fault_code);
-  if (it != faults_.end()) {
-    it->second.planned_stop_owned = owned;
-  }
 }
 
 std::vector<std::string> InMemoryFaultStorage::get_planned_stop_owned() const {

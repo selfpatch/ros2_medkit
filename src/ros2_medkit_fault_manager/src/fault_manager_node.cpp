@@ -908,10 +908,22 @@ void FaultManagerNode::handle_report_fault(
   // TODO(#276): warn when different entities resolve different configs for the same fault_code
   auto resolved_config = resolve_config(request->source_id);
 
-  // Report the fault event (use wall clock time, not sim time, for proper timestamps)
+  // Report the fault event (use wall clock time, not sim time, for proper timestamps).
+  //
+  // Ownership is persisted, not inferred: the switch-off, and a restart, both read it back from
+  // the store rather than comparing timestamps. The switch travels WITH the report, so the store
+  // writes the flag inside the transaction that writes the fault row.
+  //
+  // The cycle boundary is therefore decided twice: in the store for the persisted flag, and again
+  // below for the engine's in-process set. Both read the same two facts - whether the report was a
+  // new occurrence, and the status the fault held before it - so they are one formula evaluated in
+  // two places. They cannot drift apart because this handler is the only writer of either, and the
+  // node's services run one at a time on the single-threaded executor rclcpp::spin() gives it
+  // (main.cpp), with no callback group taking any of them off that thread.
   const rclcpp::Time event_time = get_wall_clock_time();
-  bool is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
-                                             request->description, request->source_id, event_time, resolved_config);
+  bool is_new =
+      storage_->report_fault_event(request->fault_code, request->event_type, request->severity, request->description,
+                                   request->source_id, event_time, resolved_config, planned_stop_.active);
 
   response->accepted = true;
 
@@ -936,12 +948,6 @@ void FaultManagerNode::handle_report_fault(
                                              std::chrono::steady_clock::now(), cycle_started);
 
       should_mute = correlation_result.should_mute;
-
-      // Ownership is persisted, not inferred: the switch-off, and a restart, both
-      // read it back from the store rather than comparing timestamps.
-      if (planned_stop_.active && cycle_started) {
-        storage_->set_planned_stop_owned(request->fault_code, true);
-      }
 
       if (correlation_result.is_root_cause) {
         RCLCPP_DEBUG(get_logger(), "Fault %s identified as root cause (rule=%s)", request->fault_code.c_str(),

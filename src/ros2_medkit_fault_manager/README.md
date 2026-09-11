@@ -68,12 +68,21 @@ the pseudo root cause `PLANNED_STOP`, so it is absent from the default
 `~/list_faults` response, counted in `muted_count`, and listed under
 `muted_faults` when `include_muted` is set.
 
-**Ownership is the truth, and it is persisted.** The flag lives on the fault row in
-the store, not in the process, so a restart reads back exactly which cycles the
-stop owns - no timestamp comparison, which a clock step would break and which
-cannot tell a rule's mute from the stop's. The mute is derived from ownership: an
-owned fault is muted unless a rule's mute overlays it, and when that overlay ends
-the fault is muted by the stop again.
+**Ownership is the truth, and it is persisted.** A flag on the fault row records it,
+so a restart reads back exactly which cycles the stop owns - no timestamp
+comparison, which a clock step would break and which cannot tell a rule's mute from
+the stop's. It is written by the report that starts the cycle, in the same store
+call and the same transaction, so there is no moment at which a cycle that STARTED
+inside a stop exists unowned - a moment a crash would turn into a confirmed fault
+that no switch-off releases and no restart recognises. (The cycle a fault was
+already in when the stop was declared is never owned; the fault itself becomes owned
+if it heals and fails again inside the stop. See below.) The mute is derived from
+ownership: an owned fault is muted unless a rule's mute overlays it, and when that
+overlay ends the fault is muted by the stop again.
+
+While the process runs, the engine keeps the same set in memory and the switch-off
+works from it. The stored flags are the durable copy: they are what a startup reads
+back, and they are dropped once the switch-off has announced what it released.
 
 **Only a cycle that starts inside the stop.** A fault that was already up when the
 stop was declared keeps its place in the fault list. Reporters are level-triggered
@@ -93,20 +102,61 @@ that is acknowledged, publishes it as any muted fault does. Consumers therefore 
 the end of a fault whose start they never heard - that is the existing muting
 contract, not something the switch changes.
 
-**Withdrawing releases the survivors.** Every fault the stop alone was muting and
-that is still active is unmuted, and each one that is CONFIRMED publishes a single
-`EVENT_CONFIRMED` - that confirmation happened behind the mute and was never
-announced, while the condition it reports still stands on the machine. A fault
-still short of confirmation announces nothing (there is nothing yet to announce),
-and one acknowledged during the stop announces nothing either.
+**Withdrawing unmutes, and separately announces.** Two different things happen, and
+they do not cover the same faults.
 
-**Correlation rules and the stop compose.** A rule's mute is an *overlay* on an
-owned fault, not a transfer: while the rule holds it, the withdrawal leaves it
-alone, and when the rule lets go - its root cause acknowledged, its window closed,
-its cluster expired - the fault goes back to being muted by the stop. A fault whose
-cycle started before the stop is not owned at all, so the stop neither hides it nor
-releases it. This holds for cluster rules as well as hierarchical ones, even though
-the cluster path never writes a mute entry of its own.
+*Unmuted* is every fault the stop owns whose entry in the muted list is the stop's
+own. A fault a hierarchical rule has since claimed keeps that rule's entry and stays
+muted; everything else the stop owned leaves the muted list, `muted_count` included.
+
+*Announced* is the subset of those that is CONFIRMED and that no live cluster is
+hiding: each publishes a single `EVENT_CONFIRMED`, because that confirmation
+happened behind the mute and was never heard, while the condition it reports still
+stands on the machine. A fault still short of confirmation announces nothing (there
+is nothing yet to announce), and one acknowledged during the stop announces nothing
+either. A cluster-hidden member is therefore unmuted and NOT announced - it leaves
+the muted list and goes on being folded into its cluster's line.
+
+**Correlation rules and the stop compose, and the rule outranks it.** A hierarchical
+rule's mute is an *overlay* on an owned fault, not a transfer: while the rule holds
+it, the withdrawal leaves it alone, and when the rule lets go - which means its root
+cause being acknowledged, the one path that drops a symptom's entry - the fault goes
+back to being muted by the stop. A rule whose window has closed keeps its entry
+until then. A fault whose cycle started before the stop is not owned at all, so the
+stop neither hides it nor releases it.
+
+Cluster rules take the same precedence, and they take it without an entry of their
+own: a cluster hides a member by suppressing that member's events on every report,
+not by writing it into the muted list. So at the switch-off a member an active
+`show_as_single` cluster still hides is simply not announced - the stop's entry
+goes and nothing is written in its place. Releasing them all would fire, in one
+wave, the storm the rule exists to show as a single line.
+
+Afterwards the burst is indistinguishable from one that never met a planned stop in
+the muted list, in `muted_count`, in the cluster listing and in the audit log. It is
+NOT indistinguishable in the event stream, and that is the point of the switch: a
+confirmation that happened inside the stop and behind a cluster is never announced,
+where the same fault outside a stop would have been announced if it confirmed before
+its cluster reached `min_count`. What the stop withheld, it withholds for good.
+
+Which member is announced at the switch-off: the representative, if the stop owned
+its cycle. A representative whose cycle predates the stop was announced when it
+confirmed and is not announced again. Members that joined an active cluster during
+the stop stay hidden by it afterwards, and the one promoted when the representative
+is acknowledged is heard from again from that point on.
+
+`min_count` gates whether a cluster FORMS, not how long it hides. Once formed, a
+cluster folds its members into the representative until the last of them is
+acknowledged and the cluster dissolves - a burst that shrinks back below the
+threshold does not start announcing its members again. A cluster that never reached
+`min_count`, or one configured without `show_as_single`, hides nobody, so every
+member of it is released as usual.
+
+**The cluster hold does not survive a restart.** Ownership is persisted; cluster
+membership is not. A cluster only holds faults it formed from reports this process
+saw, so if the stop spanned a reboot the switch-off releases and announces every
+fault the store says the stop owns, cluster or no cluster. Persisting cluster state
+is not part of this.
 
 **Both transitions are audited** - when the audit log is on. `audit_log.enabled`
 is `false` by default, and with it off the switch writes no audit row at all. With

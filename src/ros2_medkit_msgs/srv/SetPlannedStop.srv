@@ -26,12 +26,29 @@
 # A muted fault is published exactly as a rule-muted symptom is: its EVENT_CONFIRMED and
 # EVENT_UPDATED are withheld, whichever kind of report produced them, while an
 # EVENT_CLEARED - the fault healing, or being acknowledged - is published as usual.
-# Withdrawing the stop releases every fault it owns, and publishes one EVENT_CONFIRMED
-# for each that is CONFIRMED, because that confirmation was never announced.
+# Withdrawing the stop does two things that do not cover the same faults. It UNMUTES
+# every fault it owns whose `muted_faults` entry is the stop's own, so a fault a
+# hierarchical rule has since claimed stays muted and everything else leaves
+# `muted_count`. It ANNOUNCES the subset of those that is CONFIRMED and that no live
+# cluster is hiding, one EVENT_CONFIRMED each, because that confirmation was never
+# announced.
 #
-# A correlation rule muting an owned fault OVERLAYS the stop rather than taking the
+# A hierarchical rule muting an owned fault OVERLAYS the stop rather than taking the
 # fault from it: while the rule holds the fault the withdrawal leaves it alone, and when
-# the rule lets go the fault is the stop's again.
+# its root cause is acknowledged the fault is the stop's again.
+#
+# An auto-cluster rule hides without an overlay - it suppresses a non-representative
+# member's events on each report and writes no `muted_faults` entry - and the withdrawal
+# honours that too: a member an ACTIVE `show_as_single` cluster still hides is unmuted
+# and NOT announced, with no entry left in the stop's place. Afterwards the burst matches
+# one that never met a planned stop in `muted_faults`, in the counts, in the cluster
+# listing and in the audit log, but NOT in the event stream: a confirmation that fell
+# inside the stop and behind a cluster is never announced. The member announced is the
+# representative, when the stop owned its cycle. `min_count` decides whether a cluster
+# forms, not how long it hides: a formed cluster holds the members it formed with until
+# the last is acknowledged, while a fault that joins it below the threshold is not one of
+# them and is announced like any fault of its own. Cluster membership is not persisted,
+# so a stop that spanned a restart announces every fault the store says it owns.
 #
 # With `storage_type: sqlite` the declaration survives a restart of the fault manager,
 # and so does its ownership of the cycles that started inside it; the in-memory backend

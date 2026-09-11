@@ -83,6 +83,10 @@ struct ClusterData {
   std::string representative_code;
   std::string representative_severity;
   std::vector<std::string> fault_codes;
+  /// Severity of each member, keyed by fault code. Carried on the cluster rather than
+  /// beside it so a cluster that outlives the window it formed in can still name the
+  /// member a highest-severity rule would promote.
+  std::map<std::string, std::string> fault_severities;
   std::chrono::system_clock::time_point first_at;
   std::chrono::system_clock::time_point last_at;
 };
@@ -203,6 +207,21 @@ class CorrelationEngine {
   /// Write the planned stop's mute entry for one owned fault. Caller holds mutex_.
   void mute_as_planned_stop(const std::string & fault_code);
 
+  /// Whether an ACTIVE cluster is currently folding this fault into its representative:
+  /// the fault belongs to a cluster that reached min_count, the rule says
+  /// `show_as_single`, and the fault is not the representative. A verdict, not an entry -
+  /// the cluster path writes nothing to `muted_faults_`, it suppresses the fault's event
+  /// on each report. The single place that decides it, so the report path and the
+  /// planned stop's switch-off cannot answer differently. Caller holds mutex_.
+  bool cluster_hides(const std::string & fault_code) const;
+
+  /// The configured rule with this id, or nullptr. Caller holds mutex_.
+  const CorrelationRule * find_rule(const std::string & rule_id) const;
+
+  /// Name the member the cluster's rule would pick as representative, from the members
+  /// the cluster currently has. A no-op on an empty cluster. Caller holds mutex_.
+  void promote_representative(ClusterData & cluster);
+
   /// Check if fault matches a root cause pattern in any hierarchical rule
   /// @return Rule ID if matched, empty optional otherwise
   std::optional<std::string> try_as_root_cause(const std::string & fault_code);
@@ -248,7 +267,6 @@ class CorrelationEngine {
   struct PendingCluster {
     ClusterData data;
     std::chrono::steady_clock::time_point steady_first_at;
-    std::map<std::string, std::string> fault_severities;  ///< fault_code -> severity
   };
 
   /// Pending clusters being formed (rule_id -> cluster data)

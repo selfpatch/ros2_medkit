@@ -64,10 +64,12 @@ CONFIRMATION_THRESHOLD = -2
 SOURCE_ID = '/test_node'
 CAPTURE_TOPIC = '/test/temperature'
 
-# Two rules. The hierarchical one mutes MOTOR_PS_* while ESTOP_PS_001 stands; the
+# Three rules. The hierarchical one mutes MOTOR_PS_* while ESTOP_PS_001 stands; the
 # auto-cluster one claims VALVE_PS_* faults without ever writing them into the mute
-# map, which is the case a planned stop's own entry has to survive. Both windows are
-# long enough that no test can lose the correlation to its own pacing.
+# map, which is the case a planned stop's own entry has to survive. The second cluster
+# rule needs four members, which is what makes a burst reachable that has shrunk two
+# short of forming again. All windows are long enough that no test can lose the
+# correlation to its own pacing.
 CORRELATION_RULES = """
 correlation:
   enabled: true
@@ -78,6 +80,8 @@ correlation:
       codes: ["VALVE_PS_*"]
     ps_pump_errors:
       codes: ["PUMP_PS_*"]
+    ps_storm4_errors:
+      codes: ["STORM4_PS_*"]
   rules:
     - id: ps_estop_cascade
       name: "E-Stop Cascade"
@@ -105,6 +109,15 @@ correlation:
       match:
         - pattern: ps_valve_errors
       min_count: 2
+      window_ms: 60000
+      show_as_single: true
+      representative: first
+    - id: ps_storm4
+      name: "Four Valve Storm"
+      mode: auto_cluster
+      match:
+        - pattern: ps_storm4_errors
+      min_count: 4
       window_ms: 60000
       show_as_single: true
       representative: first
@@ -695,8 +708,8 @@ class TestPlannedStop(unittest.TestCase):
         self._set_stop(False, reason='done', declared_by='maintenance')
         self.assertEqual(0, self._count_events(code, FaultEvent.EVENT_CONFIRMED))
 
-    def test_a_cluster_rule_does_not_orphan_the_stops_mute(self):
-        """A cluster claims the mute without owning it, so the stop still releases."""
+    def test_a_cluster_still_hiding_a_fault_keeps_it_at_the_switch_off(self):
+        """The cluster shows one line for the burst, and the switch-off honours it."""
         first = 'VALVE_PS_A'
         second = 'VALVE_PS_B'
 
@@ -718,12 +731,74 @@ class TestPlannedStop(unittest.TestCase):
 
         self._set_stop(False, reason='swap done', declared_by='maintenance')
 
+        # The representative is released and announced once.
         self._wait_until(
-            lambda: all(code in self._codes_in_default_list() for code in (first, second)),
-            'a fault a cluster rule claimed was orphaned in the mute map')
-        for code in (first, second):
-            self.assertIsNone(self._muted_entry(code))
-            self.assertEqual(1, self._count_events(code, FaultEvent.EVENT_CONFIRMED))
+            lambda: first in self._codes_in_default_list(),
+            'the cluster representative was orphaned in the mute map')
+        self.assertIsNone(self._muted_entry(first))
+        self.assertEqual(1, self._count_events(first, FaultEvent.EVENT_CONFIRMED))
+
+        # The symptom is not announced, and the stop leaves nothing of its own behind
+        # on it either. A cluster hides a member by suppressing the member's events on
+        # every report, never by an entry in the muted list, so after the switch-off
+        # this burst looks exactly like one that never met a planned stop.
+        self.assertIsNone(self._muted_entry(second),
+                          'the switch-off left an entry the cluster never writes')
+        self.assertIn(second, self._codes_in_default_list())
+        self.assertEqual(0, self._count_events(second, FaultEvent.EVENT_CONFIRMED),
+                         'both symptoms of one cluster were announced at the switch-off')
+
+        # Still hidden: the cluster swallows the non-representative's next report.
+        types_before = self._event_types(second)
+        self._report(second)
+        self._get_fault(second)  # a round trip through the same single-threaded node
+        time.sleep(0.5)
+        self.assertEqual(types_before, self._event_types(second),
+                         'the cluster stopped hiding its member once the stop ended')
+
+        # Acknowledging the representative promotes the member, and a promoted
+        # representative is the line the cluster shows: it is heard from again.
+        self.assertTrue(self._clear(first).success)
+        self._report(second)
+        self._wait_until(
+            lambda: FaultEvent.EVENT_UPDATED in self._event_types(second),
+            'the promoted representative stayed silent')
+
+    def test_a_fault_joining_a_cluster_below_min_count_is_not_folded_into_it(self):
+        """A cluster folds the members it formed with; a later joiner is a fault of its own."""
+        formed = ['STORM4_PS_A', 'STORM4_PS_B', 'STORM4_PS_C', 'STORM4_PS_D']
+        joiner = 'STORM4_PS_E'
+        representative = formed[0]
+
+        for code in formed:
+            self._confirm(code)
+        self._wait_until(
+            lambda: self._count_events(representative, FaultEvent.EVENT_CONFIRMED) == 1,
+            'the cluster representative was never announced')
+        # Only the member whose confirmation landed once the cluster had formed is
+        # hidden. The ones that confirmed on the way to min_count were announced
+        # before there was a cluster to fold them into, stop or no stop.
+        self.assertEqual(0, self._count_events(formed[3], FaultEvent.EVENT_CONFIRMED),
+                         'the member that confirmed inside the formed cluster was announced')
+
+        # Two acknowledgements leave the burst two members short of forming again.
+        for code in formed[2:]:
+            self.assertTrue(self._clear(code).success)
+
+        # The joiner maps to the formed cluster through the pending twin, but it is not
+        # one of the members that cluster shows as a single line.
+        self._confirm(joiner)
+        self._wait_until(
+            lambda: self._count_events(joiner, FaultEvent.EVENT_CONFIRMED) == 1,
+            'a fault that joined a cluster below min_count was folded into it and never announced')
+
+        # And it keeps being heard from, which is what a fault outside any cluster does.
+        self._report(joiner)
+        self._wait_until(
+            lambda: self._count_events(joiner, FaultEvent.EVENT_UPDATED) >= 1,
+            'a fault that joined below min_count went silent after its first announcement')
+        self.assertIsNone(self._muted_entry(joiner))
+        self.assertIn(joiner, self._codes_in_default_list())
 
     def test_the_last_declaration_is_readable_after_the_withdrawal(self):
         """The reason survives the withdrawal, with the time the stop ended."""

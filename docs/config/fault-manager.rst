@@ -666,17 +666,60 @@ when muted entries are requested. A fault that was already up when the stop was
 declared is left alone - its confirmation has already been announced, and reporters
 re-send FAILED for as long as the condition holds.
 
-Ownership is a flag on the fault row, so it survives a restart and is what the
-switch-off releases. The mute is derived from it: a correlation rule muting an owned
-fault overlays the stop rather than taking the fault from it, the withdrawal leaves
-a rule-held fault alone, and when the rule lets go - root cause acknowledged, window
-closed, cluster expired - the fault is muted by the stop again.
+Ownership is a flag on the fault row, written by the report that starts the cycle
+and in the same transaction, so it survives a restart. While the manager runs, the
+engine holds its own copy of that set and the switch-off works from it; the stored
+flags are what a startup reads back, and they are dropped once the switch-off has
+announced what it released. The mute is derived from ownership: a hierarchical rule
+muting an owned fault overlays the stop rather than taking the fault from it, the
+withdrawal leaves a rule-held fault alone, and when the rule lets go - which means
+its root cause being acknowledged, the one path that drops a symptom's entry - the
+fault is muted by the stop again. A rule whose window has closed keeps its entry
+until then.
+
+A rule outranks the stop at the switch-off as well. A fault an active
+``show_as_single`` cluster still hides is not announced, and nothing is written in
+the stop's place: a cluster hides a member by suppressing that member's events on
+every report, never by an entry in the muted list.
+
+Afterwards the burst is indistinguishable from one that never met a planned stop in
+the muted list, in ``muted_count``, in the cluster listing and in the audit log. It
+is NOT indistinguishable in the event stream, which is the point of the switch: a
+confirmation that fell inside the stop and behind a cluster is never announced,
+where the same fault outside a stop would have been announced if it confirmed before
+its cluster reached ``min_count``. What the stop withheld, it withholds for good.
+
+The representative is announced if the stop owned its cycle; one whose cycle
+predates the stop was announced when it confirmed and is not announced again;
+members that joined the cluster during the stop stay hidden by it afterwards, and
+the one promoted when the representative is acknowledged is heard from again from
+that point on. A fault that joins a cluster whose membership has since fallen below
+``min_count`` is not one of the members that cluster shows as a single line: it is
+announced and updated like any fault of its own.
+
+``min_count`` gates whether a cluster FORMS, not how long it hides: once formed, a
+cluster folds its members into the representative until the last of them is
+acknowledged and it dissolves, so a burst that shrinks back below the threshold does
+not start announcing its members again. A cluster that never reached ``min_count``,
+or one configured without ``show_as_single``, hides nobody and its members are
+released as usual.
+
+The cluster hold does not survive a restart. Ownership is persisted and cluster
+membership is not, so a cluster only holds faults it formed from reports the running
+process saw. If the stop spanned a reboot, the switch-off releases and announces
+every fault the store says the stop owns, cluster or no cluster.
 
 A muted fault is published exactly as a rule-muted symptom is: ``EVENT_CONFIRMED``
 and ``EVENT_UPDATED`` are withheld whichever kind of report produced them, while
 ``EVENT_CLEARED`` - the fault healing, or being acknowledged - is published as
-usual. Withdrawing the stop releases every fault it owns and publishes one
-confirmation event for each of those that is CONFIRMED.
+usual.
+
+Withdrawing the stop does two things that do not cover the same faults. It *unmutes*
+every fault the stop owns whose muted-list entry is the stop's own, so a fault a
+hierarchical rule has since claimed stays muted and everything else leaves
+``muted_count``. It *announces* the subset of those that is CONFIRMED and that no
+live cluster is hiding, one ``EVENT_CONFIRMED`` each. A cluster-hidden member is
+therefore unmuted and not announced.
 
 ``~/get_planned_stop`` keeps serving the declaration after the withdrawal, with
 ``ended_at`` stamped, so the reason stays readable once the plant is back up. A

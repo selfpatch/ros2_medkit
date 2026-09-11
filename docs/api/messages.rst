@@ -327,11 +327,24 @@ when ``include_muted`` is set. A cycle that started before the stop is untouched
 
 Publication matches a rule-muted symptom exactly: ``EVENT_CONFIRMED`` and
 ``EVENT_UPDATED`` are withheld whichever kind of report produced them,
-``EVENT_CLEARED`` is published as usual. Withdrawing the stop releases every fault
-it owns and publishes one ``EVENT_CONFIRMED`` per released fault that is CONFIRMED;
-a fault a correlation rule is muting stays muted and is not announced, and returns
-to the stop's mute if the rule lets go while the stop is still on. The audit records
-exist only when ``audit_log.enabled`` is set, which it is not by default.
+``EVENT_CLEARED`` is published as usual.
+
+Withdrawing the stop does two things that do not cover the same faults. It *unmutes*
+every fault it owns whose entry is the stop's own - a fault a hierarchical rule has
+since claimed stays muted, and returns to the stop's mute if that rule's root cause
+is acknowledged while the stop is still on. It *announces* the subset of those that
+is CONFIRMED and that no live cluster is hiding, one ``EVENT_CONFIRMED`` each.
+
+An auto-cluster rule hides a non-representative member without an entry of its own -
+it suppresses that member's events on each report - so such a member is unmuted and
+NOT announced, with nothing written in the stop's place. Afterwards the burst matches
+one that never met a planned stop in ``muted_faults``, in the counts, in the cluster
+listing and in the audit log, but not in the event stream: a confirmation that fell
+inside the stop and behind a cluster is never announced. What is announced is the
+representative, when the stop owned its cycle. Cluster membership is not persisted,
+so a stop that spanned a restart announces every fault the store says it owns. The
+audit records exist only when ``audit_log.enabled`` is set, which it is not by
+default.
 
 See :doc:`/config/fault-manager` for the configuration that decides whether the
 declaration survives a restart and whether the transitions are audited.

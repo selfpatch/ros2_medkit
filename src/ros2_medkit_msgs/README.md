@@ -166,12 +166,19 @@ condition holds, and that fault's confirmation has already been announced.
 
 Publication matches a rule-muted symptom exactly: `EVENT_CONFIRMED` and `EVENT_UPDATED`
 are withheld whichever kind of report produced them, `EVENT_CLEARED` is published as
-usual. Withdrawing the stop releases every fault it owns and publishes one
-`EVENT_CONFIRMED` for each of those that is CONFIRMED. A correlation rule muting an owned
-fault overlays the stop rather than taking the fault from it. A request asking for the state the switch is already in succeeds, changes
-nothing, and writes no audit record; a request the store cannot record answers
-`success: false` and changes nothing. Audit records exist only when `audit_log.enabled`
-is set, which it is not by default.
+usual. Withdrawing the stop *unmutes* every fault it owns whose entry is the stop's own -
+a fault a hierarchical rule has since claimed stays muted - and *announces* the subset of
+those that is CONFIRMED and that no live cluster is hiding, one `EVENT_CONFIRMED` each. An
+auto-cluster rule hides a non-representative member with no entry at all, by suppressing
+that member's events on each report, so such a member is unmuted and not announced, and
+what is announced is the representative. Afterwards the burst matches one that never met a
+planned stop in the muted list, the counts and the audit log, but not in the event stream:
+a confirmation that fell inside the stop and behind a cluster is never announced. Cluster
+membership is not persisted, so a stop that spanned a restart announces every fault the
+store says it owns. A request asking for the state the switch is already in succeeds,
+changes nothing, and writes no audit record; a request the store cannot record answers
+`success: false` and changes nothing. Audit records exist only when `audit_log.enabled` is
+set, which it is not by default.
 
 ### GetPlannedStop.srv
 

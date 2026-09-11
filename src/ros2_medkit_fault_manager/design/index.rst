@@ -284,11 +284,31 @@ publishes ``EVENT_CLEARED`` at the heal and the confirmation that follows is
 therefore fresh news. ``occurrence_count`` keeps its own, narrower definition.
 
 **Ownership is the fact; the mute is derived from it.** The stop owns a fault
-CYCLE, and that ownership is a flag on the fault row in the store - not a set in the
-process, and not a timestamp comparison. Everything else follows: an owned fault is
+CYCLE, and the durable record of that is a flag on the fault row in the store -
+not a timestamp comparison. The report that starts the cycle carries it: the store
+is told whether a stop is in force, decides inside the same transaction whether
+this report started a cycle, and writes the flag with the row. Recorded by a call
+that follows the report instead, there is a window in which a fault has confirmed
+inside a stop and is not owned, and a process that dies there comes back to a
+confirmed fault that no switch-off releases, that no startup recognises as
+interrupted, and whose next report announces an update mid-stop.
+
+The engine keeps the same set in the process (``planned_stop_owned_``) and that is
+what a running switch-off works from; the stored flags are what a STARTUP reads
+back, and ``clear_planned_stop_owned`` drops them once the switch-off has announced
+what it released. Several paths move each of them - the report takes a cycle, the
+constructor restores from the store, an acknowledgement and the switch-off give it
+up - and they stay in step because every one of them runs on the node's single
+thread: ``rclcpp::spin()`` in ``main.cpp``, no callback group off it, so no two of
+them are ever in flight at once.
+
+Everything else follows: an owned fault is
 muted unless a rule's mute overlays it, and the moment the overlay ends the engine
-re-asserts the stop's mute (``reassert_planned_stop_mutes``, called from
-``process_clear`` and from ``cleanup_expired``). A rule therefore borrows a fault
+re-asserts the stop's mute (``reassert_planned_stop_mutes``). An overlay ends in one
+place only - ``process_clear`` on the root cause, which erases its symptoms' entries.
+A window closing does not: ``cleanup_expired`` drops pending root causes and pending
+clusters and never touches ``muted_faults_``, so it calls the re-assert to cover the
+ownership set rather than to hand anything back. A rule therefore borrows a fault
 rather than taking it, which is what makes the two features compose in both
 directions: the withdrawal leaves a rule-held fault muted, and a rule that lets go
 mid-stop hands the fault back instead of dropping it out of the stop for good.
@@ -339,6 +359,48 @@ the event stream ever heard it, and the condition still stands on the machine.
 What is withheld is exactly what a rule-muted symptom withholds - ``EVENT_CONFIRMED``
 and ``EVENT_UPDATED`` - while ``EVENT_CLEARED`` is published as usual, so a fault
 that heals or is acknowledged inside the stop still reports its end.
+
+**A rule outranks the stop at the switch-off, clusters included.** A hierarchical
+rule holds its symptom through the withdrawal because its mute entry is there to
+see. A cluster's ``show_as_single`` is different: it sets ``should_mute`` on the
+report and writes no entry, so an owned member carries the stop's entry and would be
+released with everything else - announcing, in one wave, exactly the storm the rule
+exists to fold into a single alarm. The release therefore asks the cluster the same
+question the report path asks (``cluster_hides``: an ACTIVE cluster, a
+``show_as_single`` rule, and not the representative) and, when the answer is yes,
+erases the stop's entry without announcing the fault and without writing anything in
+its place.
+
+A cluster-attributed entry there would be wrong in two ways. It is a remembered
+answer to a question whose inputs keep moving -
+membership and the representative both change - so acknowledging the representative
+afterwards leaves the promoted member hidden behind an entry naming a fault that is
+gone, with nothing but clearing it to remove the entry. And it makes ``muted_count``
+and the default fault list depend on whether a stop happened to be in force earlier,
+for a cluster that is otherwise identical, because a cluster writes no entry at any
+other time. ``cluster_hides`` is a verdict, asked fresh on every report and once
+more at the release; it is never stored.
+
+Ownership ends either way. What is announced is the representative, if the stop
+owned its cycle. ``min_count`` gates whether a cluster FORMS, not how long it hides:
+a formed cluster holds its members until the last one is acknowledged and it
+dissolves, so a burst that shrinks below the threshold keeps hiding. A cluster that
+never reached ``min_count``, or one whose rule groups without hiding, has no verdict
+to outrank the stop with, and every member of it is released.
+
+Promotion has to read the ACTIVE cluster, not the pending twin. ``cleanup_expired``
+drops the pending cluster when its window closes and keeps the active one, so once
+the window is behind the burst the active cluster is the only record of who is left.
+Promoting from a twin that is no longer there leaves ``representative_code`` naming
+the acknowledged fault, and every remaining member is then hidden by a cluster whose
+representative can never be reported again - at the switch-off nobody is released.
+The member severities therefore live on ``ClusterData`` rather than beside the
+pending cluster, so a highest-severity rule can still name a replacement.
+
+**The cluster hold does not survive a restart.** Ownership is persisted; cluster
+membership is not, and persisting it is a separate feature this does not build. A
+cluster only holds faults it formed from reports the running process saw, so a stop
+that spanned a reboot releases and announces every fault the store says it owns.
 
 The switch is a service rather than a parameter because it carries a reason and a
 declarer and produces an audit record, none of which a parameter can do; and it is

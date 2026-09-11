@@ -731,26 +731,30 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
 
 bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                             const std::string & description, const std::string & source_id,
-                                            const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                            const rclcpp::Time & timestamp, const DebounceConfig & config,
+                                            bool planned_stop_active) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Only a FAILED report can write two rows, and only those two have to land together: written as
-  // separate autocommit statements, a failure on the second would leave the debounce counter
+  // Only a FAILED report can write more than one row, and those rows have to land together: written
+  // as separate autocommit statements, a failure on the second would leave the debounce counter
   // already advanced, so the caller's retry would advance it a second time and the near miss it
-  // retried for would still be missing from the series.
+  // retried for would still be missing from the series. The planned stop's ownership of a cycle is
+  // in the same transaction for the same reason, one step stronger: a cycle that confirms inside a
+  // stop and is not owned is a fault the switch-off never releases.
   //
-  // A PASSED report writes one row at most and never appends a near miss, so it keeps the plain
-  // autocommit path. BEGIN IMMEDIATE takes the writer lock up front, which would make a heal
-  // heartbeat - including one that turns out to write nothing at all - contend for that lock and
-  // fail with SQLITE_BUSY where before it could not.
+  // A PASSED report writes one row at most, never appends a near miss and never starts a cycle, so
+  // it keeps the plain autocommit path. BEGIN IMMEDIATE takes the writer lock up front, which would
+  // make a heal heartbeat - including one that turns out to write nothing at all - contend for that
+  // lock and fail with SQLITE_BUSY where before it could not.
   if (event_type != EventType::EVENT_FAILED) {
-    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config);
+    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config,
+                                     planned_stop_active);
   }
 
   exec_or_throw("BEGIN IMMEDIATE");
   try {
-    const bool is_new_occurrence =
-        report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config);
+    const bool is_new_occurrence = report_fault_event_locked(fault_code, event_type, severity, description, source_id,
+                                                             timestamp, config, planned_stop_active);
     exec_or_throw("COMMIT");
     return is_new_occurrence;
   } catch (...) {
@@ -759,9 +763,18 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   }
 }
 
+void SqliteFaultStorage::mark_planned_stop_owned_locked(const std::string & fault_code) {
+  SqliteStatement stmt(db_, "UPDATE faults SET planned_stop_owned = 1 WHERE fault_code = ?");
+  stmt.bind_text(1, fault_code);
+  if (stmt.step() != SQLITE_DONE) {
+    throw std::runtime_error(std::string("Failed to mark fault as owned by the planned stop: ") + sqlite3_errmsg(db_));
+  }
+}
+
 bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                                    const std::string & description, const std::string & source_id,
-                                                   const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                                   const rclcpp::Time & timestamp, const DebounceConfig & config,
+                                                   bool planned_stop_active) {
   int64_t timestamp_ns = timestamp.nanoseconds();
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
@@ -903,6 +916,16 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
       }
     }
 
+    // The cycle boundary the planned stop marks, decided inside the same transaction as the row it
+    // belongs to. A reactivation out of CLEARED starts one, and so does a failure out of HEALED -
+    // the heal published the fault's end, so the confirmation that follows is fresh news. A repeat
+    // report of a condition that is already up is the same cycle: it neither takes ownership nor
+    // drops the ownership an earlier report took.
+    if (planned_stop_active && is_failed &&
+        (is_reactivation || current_status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED)) {
+      mark_planned_stop_owned_locked(fault_code);
+    }
+
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
   }
 
@@ -947,6 +970,11 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
 
   if (is_near_miss(true, initial_status)) {
     record_near_miss_locked(fault_code, timestamp_ns, initial_counter, config, severity, source_id, initial_status);
+  }
+
+  // A new fault is always the start of a cycle.
+  if (planned_stop_active) {
+    mark_planned_stop_owned_locked(fault_code);
   }
 
   return true;  // New fault created
@@ -1386,18 +1414,6 @@ PlannedStopState SqliteFaultStorage::get_planned_stop() const {
   state.since_ns = stmt.column_int64(3);
   state.ended_at_ns = stmt.column_int64(4);
   return state;
-}
-
-void SqliteFaultStorage::set_planned_stop_owned(const std::string & fault_code, bool owned) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  SqliteStatement stmt(db_, "UPDATE faults SET planned_stop_owned = ? WHERE fault_code = ?");
-  stmt.bind_int(1, owned ? 1 : 0);
-  stmt.bind_text(2, fault_code);
-
-  if (stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to record planned-stop ownership: ") + sqlite3_errmsg(db_));
-  }
 }
 
 std::vector<std::string> SqliteFaultStorage::get_planned_stop_owned() const {
