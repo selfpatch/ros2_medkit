@@ -1500,7 +1500,10 @@ Query and manage faults.
 
    The ``environment_data.extended_data_records`` object carries the fault's
    occurrence timestamps, which are ``Fault.msg``'s ``first_occurred`` and
-   ``last_occurred`` under their REST names (see :doc:`messages`):
+   ``last_occurred`` (see :doc:`messages`). The list route serves the same
+   instants as ``first_occurred`` and ``last_occurred`` in epoch seconds; only
+   this detail route renames them and formats them as ISO-8601 UTC with
+   millisecond precision:
 
    - ``first_occurrence``: when the current occurrence started, reset when a
      FAILED event reactivates a CLEARED fault, so it moves with
