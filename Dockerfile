@@ -81,6 +81,23 @@ COPY src/ros2_medkit_plugins/ ${COLCON_WS}/src/ros2_medkit_plugins/
 # This was previously masked by Docker layer cache hits on CI; cold builds
 # always failed.
 #
+# The OPC-UA plugin in this image carries no controller write path:
+# MEDKIT_OPCUA_READ_ONLY=ON is stated on the colcon line, because this image is
+# what a diagnostic box runs on a plant network and the CMake option's default
+# is not a property anything can check. The flag gets a colcon pass of its own
+# because only one package declares it: passed to the whole workspace, every
+# other package reports it as a manually-specified variable nobody used, and
+# that stderr would bury a real one. The build type is stated on the same line:
+# a fresh configure of this package otherwise takes whatever default its
+# FetchContent dependencies put in the cache, and Release is what the plugin's
+# other build sites compile with.
+#
+# The test at the end guards the split. colcon accepts an unknown name in
+# --packages-skip and in --packages-select with a warning and exit 0, so a
+# renamed or moved package would leave the first pass building the plugin at the
+# option's default and the second pass building nothing, with this RUN still
+# succeeding. The object has to exist where the second pass installs it.
+#
 # rosbag2_storage_mcap stays skip-keyed here even though fault_manager now
 # exec_depends on it: this stage compiles with -DBUILD_TESTING=OFF against
 # rosbag2_cpp/rosbag2_storage (the plugin interface, already resolvable
@@ -97,7 +114,13 @@ RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths src --ignore-src -r -y \
       --skip-keys='ament_cmake_clang_format ament_cmake_clang_tidy ament_cmake_flake8 test_msgs sqlite3 libcpp-httplib-dev rosbag2_storage_mcap' && \
     rm -rf /var/lib/apt/lists/* && \
-    colcon build --cmake-args -DBUILD_TESTING=OFF"
+    colcon build --cmake-args -DBUILD_TESTING=OFF \
+      --packages-skip ros2_medkit_opcua && \
+    source install/setup.bash && \
+    colcon build --packages-select ros2_medkit_opcua \
+      --cmake-args -DBUILD_TESTING=OFF -DMEDKIT_OPCUA_READ_ONLY=ON \
+        -DCMAKE_BUILD_TYPE=Release && \
+    test -f install/ros2_medkit_opcua/lib/ros2_medkit_opcua/libros2_medkit_opcua_plugin.so"
 
 # ============================================================================
 # Stage 2: Runtime

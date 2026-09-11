@@ -16,7 +16,7 @@ Follows the same plugin pattern as `ros2_medkit_graph_provider`: implements `Gat
   stack (see [Read-only and write-capable builds](#read-only-and-write-capable-builds))
 - In a write-capable build, allows writing setpoints via `x-plc-operations` with
   type-aware coercion and range validation
-- Reports the connection state and poll metrics via `x-plc-status`
+- Reports the connection state, poll metrics and the build's write surface via `x-plc-status`
 - Maps threshold-based PLC alarms to SOVD faults on the owning entity
 - Optionally publishes numeric PLC values to ROS 2 `std_msgs/Float32` topics
 
@@ -192,7 +192,7 @@ A write-capable build restores everything above; nothing else differs.
 | GET | `/apps/{id}/x-plc-data` | All OPC-UA values for entity (with units, types, timestamps) |
 | GET | `/apps/{id}/x-plc-data/{name}` | Single data point value |
 | POST | `/apps/{id}/x-plc-operations/set_{name}` | Write value to PLC (`{"value": 75.0}`) - write-capable build only; not registered otherwise |
-| GET | `/components/{id}/x-plc-status` | Connection state, poll stats, active alarms |
+| GET | `/components/{id}/x-plc-status` | Connection state, poll stats, active alarms, and `write_capable` - the write surface of the plugin object itself |
 
 ### Standard SOVD (provided by gateway)
 
@@ -242,12 +242,18 @@ GET /api/v1/components/openplc_runtime/x-plc-status
   "endpoint_url": "opc.tcp://openplc:4840/openplc/opcua",
   "server_description": "OpenPLC Runtime",
   "mode": "poll",
+  "write_capable": false,
   "poll_count": 142,
   "error_count": 0,
   "node_count": 5,
   "active_alarms": []
 }
 ```
+
+`write_capable` is the build, not a setting: `false` in the default read-only
+build, `true` only in one built with `-DMEDKIT_OPCUA_READ_ONLY=OFF`. An absent
+`x-plc-operations` capability alone does not say this, because a write-capable
+build whose node map marks nothing writable shows the same absence.
 
 ## Finding Node IDs on your PLC
 
@@ -952,13 +958,13 @@ bash scripts/stop.sh
 | Category | read-only | write-capable | What it validates |
 |----------|-----------|---------------|-------------------|
 | Entity discovery | 5 | 5 | Areas, components, apps from PLC node map |
-| PLC connection | 2 | 2 | OPC-UA connected, zero errors |
+| PLC connection | 3 | 3 | OPC-UA connected, zero errors, and `write_capable` matching the image's build |
 | Live data | 3 | 3 | Tank level, temperature, pressure have values |
 | Advertised write surface | 2 | 2 | x-plc-operations capability and the set_* operation, absent / present |
 | Write control | 6 | 3 | read-only: the vendor route 404s, the SOVD write is refused with the vendor code and a message naming the build property, and both tags read back unchanged on the PLC. write-capable: pump speed and valve position written, pump speed read back |
-| Error handling | 3 | 3 | Unknown entity, unknown operation, invalid JSON |
+| Error handling | 8 | 8 | Both variants, one case per layer: an unknown entity on the vendor data route is 404 `entity-not-found`, from the plugin handler's own call into the gateway's entity validator, and a malformed body on `PUT /data` is 400 `invalid-request` from the gateway's data handler, which parses the body before delegating the write. read-only: an unknown data point read back as the plugin's own 404, and a write to an unknown point refused as the build before any lookup. write-capable: the vendor route names the operation it could not find, and parses the body itself |
 | SOVD /data | 2 | 2 | The standard data collection serves the same points |
-| **Total** | **23** | **20** | |
+| **Total** | **29** | **26** | |
 
 ## Security
 

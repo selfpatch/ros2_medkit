@@ -34,13 +34,16 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push Docker image
+            # Pushed by digest, under no tag. The image exporter is what builds
+            # the provenance attestation that travels with the image, and a
+            # digest is not a name anything resolves, so nothing is published
+            # until the tag step below runs.
+            - name: Build and push by digest
+              id: build
               uses: docker/build-push-action@v6
               with:
                   context: .
-                  push: true
                   build-args: ROS_DISTRO=${{ matrix.ros_distro }}
-                  tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}:latest
                   cache-from: type=gha,scope=${{ matrix.ros_distro }}
                   # mode=min, not max: max exports every intermediate build
                   # stage, which for three distros held ~3.1 GB of the repo's
@@ -62,3 +65,39 @@ jobs:
                   # needs.
                   cache-to: type=gha,mode=min,scope=${{ matrix.ros_distro }}
                   platforms: linux/amd64
+                  # Push by digest; the tag step below names what passes the
+                  # inspection.
+                  outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }},push-by-digest=true,name-canonical=true,push=true
+
+            # The artifact inspected here is the digest the step above pushed,
+            # pulled back from the registry by that digest, and it is the same
+            # digest the tag step below points :latest at - no rebuild and no
+            # cache hit sits between what is checked and what is published. The
+            # OPC-UA plugin the image carries must have no controller write
+            # path, and the symbol table of the .so inside it is what settles
+            # that.
+            #
+            # A digest that fails here is never tagged. It stays in the registry
+            # as an untagged blob, reachable only by a digest nothing publishes.
+            - name: Inspect the plugin object in the pushed image
+              run: |
+                  set -euo pipefail
+                  img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
+                  docker pull "$img"
+                  so=$(docker run --rm --entrypoint sh "$img" -c \
+                    'find /home/medkit/ws/install -name libros2_medkit_opcua_plugin.so | head -1')
+                  [ -n "$so" ] || { echo "no OPC-UA plugin object in $img" >&2; exit 1; }
+                  cid=$(docker create "$img")
+                  docker cp "$cid:$so" "$RUNNER_TEMP/plugin-from-image.so"
+                  docker rm -v "$cid" >/dev/null
+                  python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
+                    "$RUNNER_TEMP/plugin-from-image.so" --expect read-only
+                  rm -f "$RUNNER_TEMP/plugin-from-image.so"
+
+            # :latest is created from the inspected digest, so the tag resolves
+            # to the artifact the step above read, attestation manifest and all.
+            - name: Tag the inspected digest
+              run: |
+                  docker buildx imagetools create \
+                    -t ${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}:latest \
+                    ${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
