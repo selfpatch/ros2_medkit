@@ -907,7 +907,7 @@ TEST_F(CorrelationEngineTest, EndingPlannedStopUnmutesWhatItMuted) {
   engine.process_fault("PUMP_SEAL_LEAK", "WARNING");
   EXPECT_EQ(2u, engine.get_muted_count());
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   EXPECT_FALSE(engine.planned_stop_active());
   std::sort(unmuted.begin(), unmuted.end());
   ASSERT_EQ(2u, unmuted.size());
@@ -922,11 +922,11 @@ TEST_F(CorrelationEngineTest, EndingPlannedStopWithNothingMutedReturnsNothing) {
   CorrelationEngine engine(create_hierarchical_config());
 
   engine.begin_planned_stop();
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   EXPECT_TRUE(unmuted.empty());
 
   // Ending a stop that is already off changes nothing either.
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
   EXPECT_FALSE(engine.planned_stop_active());
 }
 
@@ -934,7 +934,7 @@ TEST_F(CorrelationEngineTest, AFaultReportedAfterTheStopEndsIsNotMuted) {
   CorrelationEngine engine(create_hierarchical_config());
 
   engine.begin_planned_stop();
-  engine.end_planned_stop();
+  engine.end_planned_stop().to_announce;
 
   auto result = engine.process_fault("VALVE_STUCK", "ERROR");
   EXPECT_FALSE(result.should_mute);
@@ -955,7 +955,7 @@ TEST_F(CorrelationEngineTest, EndingPlannedStopLeavesARuleMutedSymptomMuted) {
   EXPECT_TRUE(symptom.should_mute);
   EXPECT_EQ("estop_cascade", symptom.rule_id);
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   EXPECT_EQ(1u, unmuted.size());
   EXPECT_EQ("ESTOP_001", unmuted[0]);
 
@@ -985,7 +985,7 @@ TEST_F(CorrelationEngineTest, ARuleTakingOverAStopMutedFaultKeepsItMuted) {
   EXPECT_TRUE(second.should_mute);
   EXPECT_EQ("estop_cascade", second.rule_id);
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   EXPECT_EQ(1u, unmuted.size());
   EXPECT_EQ("ESTOP_001", unmuted[0]);
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL"));
@@ -1003,7 +1003,7 @@ TEST_F(CorrelationEngineTest, ClearingDuringAStopTakesTheFaultOutOfTheMute) {
   EXPECT_EQ(0u, engine.get_muted_count());
 
   // Nothing survives to be unmuted, so the switch-off announces nothing.
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
 }
 
 TEST_F(CorrelationEngineTest, ClearingARootCauseDuringAStopDropsItsStopMutedSymptoms) {
@@ -1020,7 +1020,7 @@ TEST_F(CorrelationEngineTest, ClearingARootCauseDuringAStopDropsItsStopMutedSymp
   EXPECT_FALSE(engine.is_muted("MOTOR_COMM_FL"));
 
   // Both codes left the mute with the clear; the switch-off has nothing to say.
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
 }
 
 TEST_F(CorrelationEngineTest, PlannedStopMutesWithoutAnyRulesConfigured) {
@@ -1031,7 +1031,7 @@ TEST_F(CorrelationEngineTest, PlannedStopMutesWithoutAnyRulesConfigured) {
   EXPECT_TRUE(result.should_mute);
   EXPECT_TRUE(engine.is_muted("VALVE_STUCK"));
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size());
   EXPECT_EQ("VALVE_STUCK", unmuted[0]);
 }
@@ -1054,7 +1054,7 @@ TEST_F(CorrelationEngineTest, AStillActiveReReportIsNotTakenByTheStop) {
                                      /*cycle_started=*/false);
   EXPECT_FALSE(result.should_mute);
   EXPECT_FALSE(engine.is_muted("PUMP_SEAL_LEAK"));
-  EXPECT_TRUE(engine.end_planned_stop().empty()) << "the stop released a fault it never muted";
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty()) << "the stop released a fault it never muted";
 }
 
 TEST_F(CorrelationEngineTest, ACycleStartingInsideTheStopIsTakenByIt) {
@@ -1066,7 +1066,7 @@ TEST_F(CorrelationEngineTest, ACycleStartingInsideTheStopIsTakenByIt) {
   EXPECT_TRUE(result.should_mute);
   EXPECT_TRUE(engine.is_muted("PUMP_SEAL_LEAK"));
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size());
   EXPECT_EQ("PUMP_SEAL_LEAK", unmuted[0]);
 }
@@ -1085,7 +1085,7 @@ TEST_F(CorrelationEngineTest, AStillActiveReReportDoesNotReleaseAStopMute) {
   EXPECT_TRUE(again.should_mute);
   EXPECT_TRUE(engine.is_muted("VALVE_STUCK"));
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size());
   EXPECT_EQ("VALVE_STUCK", unmuted[0]);
 }
@@ -1112,7 +1112,7 @@ TEST_F(CorrelationEngineTest, ARuleMuteOverlaysTheStopsWithoutReplacingOwnership
   ASSERT_EQ(1u, muted.size());
   EXPECT_EQ("estop_cascade", muted[0].rule_id) << "the stop overwrote a rule's mute";
 
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL"));
 }
 
@@ -1141,7 +1141,7 @@ TEST_F(CorrelationEngineTest, TheClusterKeepsHidingTheSymptomWhenTheStopEnds) {
   // The switch-off releases the representative and no more: releasing the rest
   // would announce, in one wave, the burst the cluster exists to fold into a
   // single line.
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size()) << "the stop announced a fault the cluster is still hiding";
   EXPECT_EQ("VALVE_A", unmuted[0]) << "the representative is what the cluster shows";
 
@@ -1164,7 +1164,7 @@ TEST_F(CorrelationEngineTest, EveryNonRepresentativeOfALiveClusterIsHeldAtTheSwi
     engine.process_fault(code, "ERROR", t0, /*cycle_started=*/true);
   }
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size()) << "a burst of four announced more than the one line the cluster shows";
   EXPECT_EQ("VALVE_A", unmuted[0]);
   EXPECT_EQ(0u, engine.get_muted_count());
@@ -1188,7 +1188,7 @@ TEST_F(CorrelationEngineTest, AClusterBehavesTheSameAfterAStopAsItDoesWithoutOne
     engine.process_fault("VALVE_A", "ERROR", t0, /*cycle_started=*/true);
     engine.process_fault("VALVE_B", "ERROR", t0 + 10ms, /*cycle_started=*/true);
     if (with_stop) {
-      engine.end_planned_stop();
+      engine.end_planned_stop().to_announce;
     }
 
     std::vector<int> observed;
@@ -1220,7 +1220,7 @@ TEST_F(CorrelationEngineTest, AClusterShortOfMinCountHidesNothingAtTheSwitchOff)
   // min_count is 2, so one member is not a cluster and hides nobody.
   engine.process_fault("VALVE_A", "ERROR", t0, /*cycle_started=*/true);
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size()) << "a cluster that never formed withheld a confirmation";
   EXPECT_EQ("VALVE_A", unmuted[0]);
   EXPECT_EQ(0u, engine.get_muted_count());
@@ -1252,7 +1252,7 @@ correlation:
   engine.process_fault("VALVE_B", "ERROR", t0 + 10ms, /*cycle_started=*/true);
 
   // A cluster that groups without hiding has no verdict to outrank the stop with.
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   std::sort(unmuted.begin(), unmuted.end());
   ASSERT_EQ(2u, unmuted.size()) << "a cluster that hides nobody withheld a confirmation";
   EXPECT_EQ("VALVE_A", unmuted[0]);
@@ -1294,7 +1294,7 @@ TEST_F(CorrelationEngineTest, AShrunkenActiveClusterStillHoldsItsMemberAtTheSwit
 
   engine.process_clear("VALVE_C");
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size()) << "a cluster below min_count announced its whole burst";
   EXPECT_EQ("VALVE_A", unmuted[0]);
   EXPECT_TRUE(engine.process_fault("VALVE_B", "ERROR", t0 + 30ms, /*cycle_started=*/false).should_mute);
@@ -1316,7 +1316,7 @@ TEST_F(CorrelationEngineTest, AcknowledgingTheRepresentativeAfterItsWindowClosed
   engine.cleanup_expired();
   engine.process_clear("VALVE_A");
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size()) << "the cluster kept naming the acknowledged fault, so nobody was released";
   EXPECT_EQ("VALVE_B", unmuted[0]) << "the promoted representative is the one the switch-off announces";
   EXPECT_EQ(0u, engine.get_muted_count());
@@ -1374,7 +1374,7 @@ TEST_F(CorrelationEngineTest, ReleasingOneFaultTakesOnlyTheStopsOwnMute) {
   engine.release_planned_stop_ownership("MOTOR_COMM_FL");
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL"));
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size());
   EXPECT_EQ("ESTOP_001", unmuted[0]);
 }
@@ -1393,7 +1393,7 @@ TEST_F(CorrelationEngineTest, RestoredOwnershipBehavesLikeOwnershipTakenLive) {
   const auto muted = engine.get_muted_faults();
   EXPECT_EQ(CorrelationEngine::kPlannedStopRootCause, muted[0].root_cause_code);
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   std::sort(unmuted.begin(), unmuted.end());
   ASSERT_EQ(2u, unmuted.size());
   EXPECT_EQ("PUMP_SEAL_LEAK", unmuted[0]);
@@ -1434,7 +1434,7 @@ TEST_F(CorrelationEngineTest, AnOwnedFaultReturnsToTheStopsMuteWhenARuleReleases
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL")) << "the symptom fell out of the stop when the rule let go";
   EXPECT_EQ(CorrelationEngine::kPlannedStopRuleId, rule_id_of("MOTOR_COMM_FL"));
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   ASSERT_EQ(1u, unmuted.size());
   EXPECT_EQ("MOTOR_COMM_FL", unmuted[0]);
 }
@@ -1457,7 +1457,11 @@ TEST_F(CorrelationEngineTest, ARuleThatStopsMatchingLeavesTheFaultMuted) {
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL"));
 }
 
-TEST_F(CorrelationEngineTest, AClusterMemberStaysMutedWhenTheClusterWindowExpires) {
+// The stop keeps its own entry on a member whose cluster window has lapsed, so the
+// member is still reported as muted while the stop stands. What it is no longer is
+// HIDDEN BY THE CLUSTER: the lapsed report started a burst of its own, so the
+// switch-off announces both faults, not just the representative.
+TEST_F(CorrelationEngineTest, AClusterMemberWhoseWindowLapsedIsAnnouncedAtTheSwitchOff) {
   CorrelationEngine engine(create_cluster_config());
 
   auto t0 = std::chrono::steady_clock::now();
@@ -1466,15 +1470,46 @@ TEST_F(CorrelationEngineTest, AClusterMemberStaysMutedWhenTheClusterWindowExpire
   engine.process_fault("VALVE_B", "ERROR", t0 + 10ms, /*cycle_started=*/true);
   ASSERT_TRUE(engine.is_muted("VALVE_B"));
 
-  // The cluster's window closes; the stop still owns both cycles.
+  // The periodic sweep drops the lapsed pending cluster; the stop still owns both
+  // cycles and is still what mutes them.
   engine.cleanup_expired();
   auto repeat = engine.process_fault("VALVE_B", "ERROR", t0 + 120000ms, /*cycle_started=*/false);
-  EXPECT_TRUE(repeat.should_mute);
+  EXPECT_TRUE(repeat.should_mute) << "the stop's own entry stopped muting the fault";
   EXPECT_TRUE(engine.is_muted("VALVE_B"));
 
-  auto unmuted = engine.end_planned_stop();
-  std::sort(unmuted.begin(), unmuted.end());
-  ASSERT_EQ(2u, unmuted.size());
+  auto announced = engine.end_planned_stop().to_announce;
+  std::sort(announced.begin(), announced.end());
+  ASSERT_EQ(2u, announced.size()) << "the lapsed member was withheld by a burst it is no longer part of";
+  EXPECT_EQ("VALVE_A", announced[0]);
+  EXPECT_EQ("VALVE_B", announced[1]);
+}
+
+// A cluster hides the reports that fall inside its window. A report after the window
+// is a new burst - try_auto_cluster drops the lapsed pending cluster and starts one
+// with this fault as its own representative - so the fault is no longer folded into
+// the old line, and the switch-off announces it like any owned fault. That is the
+// cluster's own contract rather than anything the stop does: with no stop in force
+// the same late report publishes an update.
+TEST_F(CorrelationEngineTest, AReportAfterTheClusterWindowStartsANewBurstAndIsAnnounced) {
+  auto announced_when_the_member_repeats_at = [this](std::chrono::milliseconds offset) {
+    CorrelationEngine engine(create_cluster_config());  // window_ms 60000, min_count 2
+    auto t0 = std::chrono::steady_clock::now();
+    engine.begin_planned_stop();
+    engine.process_fault("VALVE_A", "ERROR", t0, /*cycle_started=*/true);
+    engine.process_fault("VALVE_B", "ERROR", t0 + 10ms, /*cycle_started=*/true);
+    engine.process_fault("VALVE_B", "ERROR", t0 + offset, /*cycle_started=*/false);
+    auto announced = engine.end_planned_stop().to_announce;
+    std::sort(announced.begin(), announced.end());
+    return announced;
+  };
+
+  // Inside the window the cluster is still folding B into A's line.
+  const std::vector<std::string> representative_only{"VALVE_A"};
+  EXPECT_EQ(representative_only, announced_when_the_member_repeats_at(20ms));
+
+  // Past it, B's report is a burst of its own and B is announced too.
+  const std::vector<std::string> both{"VALVE_A", "VALVE_B"};
+  EXPECT_EQ(both, announced_when_the_member_repeats_at(120000ms));
 }
 
 TEST_F(CorrelationEngineTest, OwnershipSurvivesARuleOverlayAndIsReadableBack) {
@@ -1503,7 +1538,7 @@ TEST_F(CorrelationEngineTest, AFaultWhoseCycleStartedBeforeTheStopIsNeverOwned) 
   engine.process_fault("MOTOR_COMM_FL", "ERROR", t0 + 20ms, /*cycle_started=*/false);
 
   EXPECT_TRUE(engine.planned_stop_owned_codes().empty());
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
   EXPECT_TRUE(engine.is_muted("MOTOR_COMM_FL")) << "the rule's mute was collateral damage";
 }
 
@@ -1517,7 +1552,7 @@ TEST_F(CorrelationEngineTest, ClearingAnOwnedFaultEndsTheStopsOwnershipOfIt) {
   engine.process_clear("VALVE_STUCK");
   EXPECT_TRUE(engine.planned_stop_owned_codes().empty());
   EXPECT_FALSE(engine.is_muted("VALVE_STUCK"));
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
 }
 
 TEST_F(CorrelationEngineTest, AutoClearedSymptomsLeaveTheStopsOwnership) {
@@ -1535,7 +1570,7 @@ TEST_F(CorrelationEngineTest, AutoClearedSymptomsLeaveTheStopsOwnership) {
   // Both cycles ended with the acknowledgement, so neither is the stop's any more.
   EXPECT_TRUE(engine.planned_stop_owned_codes().empty());
   EXPECT_FALSE(engine.is_muted("MOTOR_COMM_FL"));
-  EXPECT_TRUE(engine.end_planned_stop().empty());
+  EXPECT_TRUE(engine.end_planned_stop().to_announce.empty());
 }
 
 // `fault_to_cluster_` is written on every join, including a join to a PENDING cluster
@@ -1579,7 +1614,7 @@ TEST_F(CorrelationEngineTest, AFaultJoiningAClusterBelowMinCountIsReleasedAtTheS
   engine.process_clear("VALVE_D");
   engine.process_fault("VALVE_E", "ERROR", t0 + 10ms, /*cycle_started=*/true);
 
-  auto unmuted = engine.end_planned_stop();
+  auto unmuted = engine.end_planned_stop().to_announce;
   std::sort(unmuted.begin(), unmuted.end());
   ASSERT_EQ(2u, unmuted.size()) << "the fault that joined below min_count was withheld by a cluster it is not in";
   EXPECT_EQ("VALVE_A", unmuted[0]) << "the representative";
@@ -1611,13 +1646,14 @@ TEST_F(CorrelationEngineTest, ARestartReleasesEveryOwnedFaultIncludingOnesAClust
     after_restart.restore_planned_stop_ownership(code);
   }
 
-  auto unmuted = after_restart.end_planned_stop();
+  auto unmuted = after_restart.end_planned_stop().to_announce;
   std::sort(unmuted.begin(), unmuted.end());
   ASSERT_EQ(2u, unmuted.size()) << "a restart is expected to release the whole burst; the cluster is gone with the "
                                    "process that formed it";
   EXPECT_EQ("VALVE_A", unmuted[0]);
   EXPECT_EQ("VALVE_B", unmuted[1]);
 }
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

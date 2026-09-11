@@ -690,24 +690,33 @@ where the same fault outside a stop would have been announced if it confirmed be
 its cluster reached ``min_count``. What the stop withheld, it withholds for good.
 
 The representative is announced if the stop owned its cycle; one whose cycle
-predates the stop was announced when it confirmed and is not announced again;
-members that joined the cluster during the stop stay hidden by it afterwards, and
-the one promoted when the representative is acknowledged is heard from again from
-that point on. A fault that joins a cluster whose membership has since fallen below
-``min_count`` is not one of the members that cluster shows as a single line: it is
-announced and updated like any fault of its own.
+predates the stop was announced when it confirmed and is not announced again; a
+member the cluster is still hiding stays hidden, and the one promoted when the
+representative is acknowledged is heard from again from that point on. A fault that
+joins a cluster whose membership has since fallen below ``min_count`` is not one of
+the members that cluster shows as a single line: it is announced and updated like
+any fault of its own.
+
+*Still hiding* is bounded by the rule's ``window_ms``. A cluster hides the reports
+that fall inside its window; a report after it starts a new burst, with the lapsed
+cluster dropped and the reporting fault as the representative of a fresh one, so
+that fault is no longer folded into the old line and the switch-off announces it
+like any owned fault. This is the cluster's own behaviour, not the stop's: with no
+stop in force the same late report publishes an update.
 
 ``min_count`` gates whether a cluster FORMS, not how long it hides: once formed, a
-cluster folds its members into the representative until the last of them is
-acknowledged and it dissolves, so a burst that shrinks back below the threshold does
-not start announcing its members again. A cluster that never reached ``min_count``,
+cluster folds into the representative the members it formed with, for as long as its
+window holds them, until the last of them is acknowledged and it dissolves, so a
+burst that shrinks back below the threshold does not start announcing its members
+again. A cluster that never reached ``min_count``,
 or one configured without ``show_as_single``, hides nobody and its members are
 released as usual.
 
 The cluster hold does not survive a restart. Ownership is persisted and cluster
 membership is not, so a cluster only holds faults it formed from reports the running
-process saw. If the stop spanned a reboot, the switch-off releases and announces
-every fault the store says the stop owns, cluster or no cluster.
+process saw. If the stop spanned a reboot, the switch-off releases every fault the
+store says the stop owns and announces the CONFIRMED ones among them, cluster or no
+cluster.
 
 A muted fault is published exactly as a rule-muted symptom is: ``EVENT_CONFIRMED``
 and ``EVENT_UPDATED`` are withheld whichever kind of report produced them, while

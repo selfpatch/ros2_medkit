@@ -341,10 +341,12 @@ NOT announced, with nothing written in the stop's place. Afterwards the burst ma
 one that never met a planned stop in ``muted_faults``, in the counts, in the cluster
 listing and in the audit log, but not in the event stream: a confirmation that fell
 inside the stop and behind a cluster is never announced. What is announced is the
-representative, when the stop owned its cycle. Cluster membership is not persisted,
-so a stop that spanned a restart announces every fault the store says it owns. The
-audit records exist only when ``audit_log.enabled`` is set, which it is not by
-default.
+representative, when the stop owned its cycle. A cluster hides only the reports that
+fall inside its ``window_ms``; one after that starts a new burst, and the fault is
+announced at the switch-off like any owned fault. Cluster membership is not
+persisted, so a stop that spanned a restart releases every fault the store says it
+owns and announces the CONFIRMED ones among them. The audit records exist only when
+``audit_log.enabled`` is set, which it is not by default.
 
 See :doc:`/config/fault-manager` for the configuration that decides whether the
 declaration survives a restart and whether the transitions are audited.

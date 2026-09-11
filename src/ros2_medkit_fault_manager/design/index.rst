@@ -298,17 +298,22 @@ what a running switch-off works from; the stored flags are what a STARTUP reads
 back, and ``clear_planned_stop_owned`` drops them once the switch-off has announced
 what it released. Several paths move each of them - the report takes a cycle, the
 constructor restores from the store, an acknowledgement and the switch-off give it
-up - and they stay in step because every one of them runs on the node's single
-thread: ``rclcpp::spin()`` in ``main.cpp``, no callback group off it, so no two of
-them are ever in flight at once.
+up - and they stay in step because every one of THOSE runs on the node's single
+thread: the constructor before anything is spinning, and the rest as service
+callbacks under the ``rclcpp::spin()`` in ``main.cpp``, none of them on a callback
+group of its own, so no two are ever in flight at once. (The node does create a
+callback group elsewhere - ``SnapshotCapture`` drains one on a thread of its own -
+but nothing on it reads or writes either set.)
 
 Everything else follows: an owned fault is
 muted unless a rule's mute overlays it, and the moment the overlay ends the engine
-re-asserts the stop's mute (``reassert_planned_stop_mutes``). An overlay ends in one
-place only - ``process_clear`` on the root cause, which erases its symptoms' entries.
-A window closing does not: ``cleanup_expired`` drops pending root causes and pending
-clusters and never touches ``muted_faults_``, so it calls the re-assert to cover the
-ownership set rather than to hand anything back. A rule therefore borrows a fault
+re-asserts the stop's mute (``reassert_planned_stop_mutes``). An overlay ends when a
+cycle ends, which is ``process_clear`` in all three of its forms: on the root cause,
+which erases its symptoms' entries; on the symptom itself; and on a symptom the
+auto-clear loop takes with its root cause. A window closing is not one of them:
+``cleanup_expired`` drops pending root causes and pending clusters and never touches
+``muted_faults_``, so it calls the re-assert to cover the ownership set rather than
+to hand anything back. A rule therefore borrows a fault
 rather than taking it, which is what makes the two features compose in both
 directions: the withdrawal leaves a rule-held fault muted, and a rule that lets go
 mid-stop hands the fault back instead of dropping it out of the stop for good.

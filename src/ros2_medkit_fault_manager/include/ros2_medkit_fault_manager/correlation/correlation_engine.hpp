@@ -74,6 +74,18 @@ struct MutedFaultData {
   bool by_planned_stop{false};
 };
 
+/// What withdrawing a planned stop did. The two are not the same set: every fault the
+/// stop alone was muting loses that entry, while one a live cluster is still hiding is
+/// unmuted without being announced, because the cluster goes on folding it into its
+/// representative's line.
+struct EndPlannedStopResult {
+  /// Fault codes whose suppressed confirmation the caller should publish now.
+  std::vector<std::string> to_announce;
+
+  /// How many faults left the muted list, `to_announce` included.
+  size_t unmuted{0};
+};
+
 /// Information about an active cluster (for ListFaults response)
 struct ClusterData {
   std::string cluster_id;
@@ -167,11 +179,11 @@ class CorrelationEngine {
   void begin_planned_stop();
 
   /// Withdraw the planned stop and release the faults it alone was muting.
-  /// A fault a rule has since claimed keeps that rule's mute and is NOT
-  /// returned; nor is one that was cleared while the stop was on.
-  /// @return the fault codes this call unmuted, so the caller can announce the
-  ///         confirmations that were never published
-  std::vector<std::string> end_planned_stop();
+  /// A fault a hierarchical rule has since claimed keeps that rule's mute and is
+  /// neither unmuted nor announced; nor is one that was cleared while the stop was on.
+  /// A fault a live cluster is hiding is unmuted but not announced.
+  /// @return what was unmuted and what to announce; see EndPlannedStopResult
+  EndPlannedStopResult end_planned_stop();
 
   /// Whether a planned stop is currently declared.
   bool planned_stop_active() const;

@@ -237,13 +237,13 @@ void CorrelationEngine::begin_planned_stop() {
   planned_stop_active_ = true;
 }
 
-std::vector<std::string> CorrelationEngine::end_planned_stop() {
+EndPlannedStopResult CorrelationEngine::end_planned_stop() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   planned_stop_active_ = false;
 
-  std::vector<std::string> released;
-  released.reserve(planned_stop_owned_.size());
+  EndPlannedStopResult result;
+  result.to_announce.reserve(planned_stop_owned_.size());
   for (const auto & fault_code : planned_stop_owned_) {
     auto it = muted_faults_.find(fault_code);
     // A rule's overlay is not the stop's to lift: that fault stays muted, and
@@ -255,6 +255,7 @@ std::vector<std::string> CorrelationEngine::end_planned_stop() {
     // The stop's entry goes whatever else is true: the cycle it owned is over.
     const bool held_by_cluster = cluster_hides(fault_code);
     muted_faults_.erase(it);
+    ++result.unmuted;
 
     // A cluster rule outranks the stop, because it is the narrower promise: the
     // stop says "not now", the cluster says "this burst is one line, ever".
@@ -265,12 +266,12 @@ std::vector<std::string> CorrelationEngine::end_planned_stop() {
     // force, and a remembered copy of that verdict would outlive the membership
     // and the representative it was taken from.
     if (!held_by_cluster) {
-      released.push_back(fault_code);
+      result.to_announce.push_back(fault_code);
     }
   }
   planned_stop_owned_.clear();
 
-  return released;
+  return result;
 }
 
 bool CorrelationEngine::cluster_hides(const std::string & fault_code) const {

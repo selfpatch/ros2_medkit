@@ -1260,14 +1260,18 @@ void FaultManagerNode::handle_set_planned_stop(
     return;
   }
 
-  const auto unmuted = correlation_engine_->end_planned_stop();
+  const auto withdrawal = correlation_engine_->end_planned_stop();
 
   // The switch-off is the moment those faults become news. A CONFIRMED one was
   // never announced - the confirmation happened behind the mute - so publish it
   // now, once, or the alarm standing on the controller is invisible to every
   // consumer of the stream. PREFAILED has nothing to announce yet, and a HEALED
   // one already published its end.
-  const size_t announced = announce_released(unmuted);
+  //
+  // Announcing covers fewer faults than unmuting: a member a live cluster is still
+  // hiding leaves the muted list here and goes on being folded into its
+  // representative's line, so it is counted as unmuted and never announced.
+  const size_t announced = announce_released(withdrawal.to_announce);
 
   // The flags go LAST. A crash between the declaration write and this point
   // leaves owned faults behind an ENDED declaration, which the next startup
@@ -1282,7 +1286,7 @@ void FaultManagerNode::handle_set_planned_stop(
 
   response->message = "Planned stop withdrawn";
   RCLCPP_INFO(get_logger(), "Planned stop withdrawn by '%s': unmuted %zu fault(s), announced %zu confirmation(s)",
-              request->declared_by.c_str(), unmuted.size(), announced);
+              request->declared_by.c_str(), withdrawal.unmuted, announced);
 }
 
 void FaultManagerNode::handle_get_planned_stop(

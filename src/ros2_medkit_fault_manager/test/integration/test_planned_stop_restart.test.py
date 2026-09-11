@@ -41,15 +41,20 @@ from ros2_medkit_msgs.srv import GetFault, GetPlannedStop, ListFaults, ReportFau
 STORAGE_DIR = tempfile.mkdtemp(prefix='planned_stop_restart_')
 DATABASE_PATH = os.path.join(STORAGE_DIR, 'faults.db')
 CORRELATION_PATH = os.path.join(STORAGE_DIR, 'correlation.yaml')
+THRESHOLDS_PATH = os.path.join(STORAGE_DIR, 'entity_thresholds.yaml')
 
-# A rule whose mute is NOT persisted anywhere, so a restart is where the
-# difference between "the stop owns this cycle" and "a rule is muting it" shows.
+# Two rules whose state is NOT persisted anywhere, so a restart is where the
+# difference between "the stop owns this cycle" and "a rule is holding it" shows. The
+# cluster is the harder of the two: it hides a member with no entry at all, and the
+# replacement process has no cluster to hide anything with.
 CORRELATION_RULES = """
 correlation:
   enabled: true
   patterns:
     restart_motor_errors:
       codes: ["MOTOR_RESTART_*"]
+    restart_valve_errors:
+      codes: ["VALVE_RESTART_*"]
   rules:
     - id: restart_estop_cascade
       mode: hierarchical
@@ -60,6 +65,21 @@ correlation:
       window_ms: 60000
       mute_symptoms: true
       auto_clear_with_root: false
+    - id: restart_valve_storm
+      mode: auto_cluster
+      match:
+        - pattern: restart_valve_errors
+      min_count: 2
+      window_ms: 60000
+      show_as_single: true
+      representative: first
+"""
+
+# One source whose faults take three FAILED reports to confirm, so a single report
+# leaves a fault the stop owns and that has nothing to announce yet.
+ENTITY_THRESHOLDS = """
+/slow_node:
+  confirmation_threshold: -3
 """
 
 RULE_ROOT_CODE = 'ESTOP_RESTART_001'
@@ -70,6 +90,10 @@ DECLARED_BY = 'plant_manager'
 BEFORE_CODE = 'PS_RESTART_BEFORE'
 SECOND_BEFORE_CODE = 'PS_RESTART_BEFORE_TWO'
 AFTER_CODE = 'PS_RESTART_AFTER'
+CLUSTER_REPRESENTATIVE = 'VALVE_RESTART_A'
+CLUSTER_MEMBER = 'VALVE_RESTART_B'
+PREFAILED_CODE = 'PS_RESTART_PREFAILED'
+SLOW_SOURCE = '/slow_node'
 
 
 def get_coverage_env():
@@ -95,6 +119,8 @@ def generate_test_description():
     """Launch a fault manager that launch brings back after it is killed."""
     with open(CORRELATION_PATH, 'w') as handle:
         handle.write(CORRELATION_RULES)
+    with open(THRESHOLDS_PATH, 'w') as handle:
+        handle.write(ENTITY_THRESHOLDS)
 
     fault_manager_env = get_coverage_env()
     fault_manager_env['ROS_LOCALHOST_ONLY'] = '1'
@@ -110,6 +136,7 @@ def generate_test_description():
             'database_path': DATABASE_PATH,
             'confirmation_threshold': -1,
             'correlation.config_file': CORRELATION_PATH,
+            'entity_thresholds.config_file': THRESHOLDS_PATH,
             'snapshots.enabled': False,
             'snapshots.rosbag.enabled': False,
         }],
@@ -205,14 +232,29 @@ class TestPlannedStopSurvivesRestart(unittest.TestCase):
             rclpy.spin_once(self.node, timeout_sec=0.05)
         raise AssertionError(message)
 
-    def _report(self, fault_code):
+    def _report(self, fault_code, source_id='/test_node'):
         request = ReportFault.Request()
         request.fault_code = fault_code
         request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_ERROR
         request.description = 'restart test fault'
-        request.source_id = '/test_node'
+        request.source_id = source_id
         return self._call(self.report_client, request)
+
+    def _clusters(self):
+        request = ListFaults.Request()
+        request.filter_by_severity = False
+        request.severity = 0
+        request.statuses = []
+        request.include_muted = True
+        request.include_clusters = True
+        return self._call(self.list_client, request).clusters
+
+    def _status_of(self, fault_code):
+        request = GetFault.Request()
+        request.fault_code = fault_code
+        response = self._call(self.get_client, request)
+        return response.fault.status if response.success else ''
 
     def _set_stop(self, active, *, reason='', declared_by=''):
         request = SetPlannedStop.Request()
@@ -262,10 +304,25 @@ class TestPlannedStopSurvivesRestart(unittest.TestCase):
 
         self._report(BEFORE_CODE)
         self._report(SECOND_BEFORE_CODE)
+
+        # A cluster formed inside the stop. Its membership lives in the process, so
+        # this is what a restart cannot bring back.
+        self._report(CLUSTER_REPRESENTATIVE)
+        self._report(CLUSTER_MEMBER)
+        self._wait_until(lambda: len(self._clusters()) == 1,
+                         'the cluster rule never formed a cluster')
+        self.assertEqual(CLUSTER_REPRESENTATIVE, self._clusters()[0].representative_code)
+
+        # And a fault the stop owns that has nothing to announce: one FAILED report
+        # from a source whose threshold needs three.
+        self._report(PREFAILED_CODE, source_id=SLOW_SOURCE)
+        self.assertEqual(Fault.STATUS_PREFAILED, self._status_of(PREFAILED_CODE))
+
+        owned_before_the_restart = (BEFORE_CODE, SECOND_BEFORE_CODE, CLUSTER_REPRESENTATIVE,
+                                    CLUSTER_MEMBER, PREFAILED_CODE)
         muted_before = self._muted_codes()
-        self.assertIn(BEFORE_CODE, muted_before)
-        self.assertIn(SECOND_BEFORE_CODE, muted_before)
-        for code in (BEFORE_CODE, SECOND_BEFORE_CODE):
+        for code in owned_before_the_restart:
+            self.assertIn(code, muted_before)
             self.assertEqual(0, self._count_events(code, FaultEvent.EVENT_CONFIRMED),
                              'a fault the stop marked was announced anyway')
 
@@ -297,8 +354,13 @@ class TestPlannedStopSurvivesRestart(unittest.TestCase):
         # stand in for one the restore was supposed to find.
         restored = self._muted_codes()
         self.assertEqual(
-            {BEFORE_CODE, SECOND_BEFORE_CODE}, set(restored),
+            set(owned_before_the_restart), set(restored),
             'the restart restored something other than exactly the faults the stop owned')
+
+        # The cluster is gone with the process that formed it. Nothing persists
+        # membership, and nothing rebuilds it from the store.
+        self.assertEqual([], list(self._clusters()),
+                         'a cluster came back from a restart, which nothing persists')
         # The rule's mute is not persisted, so it is gone after the restart - and the
         # stop must not have adopted a cycle that started before it was declared.
         self.assertNotIn(RULE_SYMPTOM_CODE, restored)
@@ -331,13 +393,25 @@ class TestPlannedStopSurvivesRestart(unittest.TestCase):
         self.assertGreater(final_state.ended_at.sec, 0)
         self.assertIn(AFTER_CODE, self._confirmed_codes())
 
-        # Every fault the stop was holding - across the restart - is released and
-        # announced exactly once.
-        for code in (BEFORE_CODE, SECOND_BEFORE_CODE, AFTER_CODE):
+        # Every CONFIRMED fault the stop was holding - across the restart - is released
+        # and announced exactly once. The cluster member included: the cluster that was
+        # folding it into one line did not survive the restart, so after a reboot the
+        # switch-off announces the whole burst.
+        announced_codes = (BEFORE_CODE, SECOND_BEFORE_CODE, AFTER_CODE,
+                           CLUSTER_REPRESENTATIVE, CLUSTER_MEMBER)
+        for code in announced_codes:
             self._wait_until(
                 lambda code=code: self._count_events(code, FaultEvent.EVENT_CONFIRMED) == 1,
                 f'{code} was never announced at the switch-off')
             self.assertIn(code, self._confirmed_codes())
+
+        # Released is not announced. A fault the stop owned that never reached
+        # CONFIRMED has nothing to announce, so it leaves the muted list silently and
+        # goes on debouncing.
+        self.assertNotIn(PREFAILED_CODE, self._muted_codes())
+        self.assertEqual(0, self._count_events(PREFAILED_CODE, FaultEvent.EVENT_CONFIRMED),
+                         'a fault still short of confirmation was announced at the switch-off')
+        self.assertEqual(Fault.STATUS_PREFAILED, self._status_of(PREFAILED_CODE))
 
         self.assertEqual(
             0, self._count_events(RULE_SYMPTOM_CODE, FaultEvent.EVENT_CONFIRMED),
@@ -345,9 +419,10 @@ class TestPlannedStopSurvivesRestart(unittest.TestCase):
 
         # A second frame arriving late would still be a double announcement.
         self._spin_for(3.0)
-        for code in (BEFORE_CODE, SECOND_BEFORE_CODE, AFTER_CODE):
+        for code in announced_codes:
             self.assertEqual(1, self._count_events(code, FaultEvent.EVENT_CONFIRMED),
                              f'{code} was announced more than once')
+        self.assertEqual(0, self._count_events(PREFAILED_CODE, FaultEvent.EVENT_CONFIRMED))
 
 
 @launch_testing.post_shutdown_test()

@@ -141,22 +141,31 @@ its cluster reached `min_count`. What the stop withheld, it withholds for good.
 
 Which member is announced at the switch-off: the representative, if the stop owned
 its cycle. A representative whose cycle predates the stop was announced when it
-confirmed and is not announced again. Members that joined an active cluster during
-the stop stay hidden by it afterwards, and the one promoted when the representative
-is acknowledged is heard from again from that point on.
+confirmed and is not announced again. A member the cluster is still hiding stays
+hidden, and the one promoted when the representative is acknowledged is heard from
+again from that point on.
+
+*Still hiding* is bounded by the rule's `window_ms`. A cluster hides the reports that
+fall inside its window; a report after it is a new burst - the lapsed cluster is
+dropped and the reporting fault becomes the representative of a fresh one - so that
+fault is no longer folded into the old line, and the switch-off announces it like any
+owned fault. Nothing about the stop causes this: with no stop in force the same late
+report publishes an update.
 
 `min_count` gates whether a cluster FORMS, not how long it hides. Once formed, a
-cluster folds its members into the representative until the last of them is
-acknowledged and the cluster dissolves - a burst that shrinks back below the
-threshold does not start announcing its members again. A cluster that never reached
-`min_count`, or one configured without `show_as_single`, hides nobody, so every
-member of it is released as usual.
+cluster folds into the representative the members it formed with, for as long as its
+window holds them, until the last of them is acknowledged and it dissolves - a burst
+that shrinks back below the threshold does not start announcing its members again,
+and a fault that JOINS below the threshold was never one of them and is announced and
+updated like any fault of its own. A cluster that never reached `min_count`, or one
+configured without `show_as_single`, hides nobody, so every member of it is released
+as usual.
 
 **The cluster hold does not survive a restart.** Ownership is persisted; cluster
 membership is not. A cluster only holds faults it formed from reports this process
-saw, so if the stop spanned a reboot the switch-off releases and announces every
-fault the store says the stop owns, cluster or no cluster. Persisting cluster state
-is not part of this.
+saw, so if the stop spanned a reboot the switch-off releases every fault the store
+says the stop owns and announces the CONFIRMED ones among them, cluster or no
+cluster. Persisting cluster state is not part of this.
 
 **Both transitions are audited** - when the audit log is on. `audit_log.enabled`
 is `false` by default, and with it off the switch writes no audit row at all. With

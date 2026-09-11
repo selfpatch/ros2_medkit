@@ -45,10 +45,15 @@
 # listing and in the audit log, but NOT in the event stream: a confirmation that fell
 # inside the stop and behind a cluster is never announced. The member announced is the
 # representative, when the stop owned its cycle. `min_count` decides whether a cluster
-# forms, not how long it hides: a formed cluster holds the members it formed with until
-# the last is acknowledged, while a fault that joins it below the threshold is not one of
-# them and is announced like any fault of its own. Cluster membership is not persisted,
-# so a stop that spanned a restart announces every fault the store says it owns.
+# forms, not how long it hides: a formed cluster holds the members it formed with for as
+# long as its `window_ms` covers their reports, until the last is acknowledged, while a
+# fault that joins it below the threshold is not one of them and is announced like any
+# fault of its own. A report that arrives after the window starts a new burst, so that
+# fault is no longer folded into the old line and the switch-off announces it like any
+# owned fault - the same thing the cluster does with no stop in force, where that late
+# report publishes an update. Cluster membership is not persisted, so a stop that spanned
+# a restart releases every fault the store says it owns and announces the CONFIRMED ones
+# among them.
 #
 # With `storage_type: sqlite` the declaration survives a restart of the fault manager,
 # and so does its ownership of the cycles that started inside it; the in-memory backend
