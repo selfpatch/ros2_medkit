@@ -35,9 +35,9 @@ jobs:
                   password: ${{ secrets.GITHUB_TOKEN }}
 
             # Pushed by digest, under no tag. The image exporter is what builds
-            # the provenance attestation that travels with the image, and a
-            # digest is not a name anything resolves, so nothing is published
-            # until the tag step below runs.
+            # the provenance attestation that travels with the image, and
+            # nothing tags this digest until the tag step below runs, so an
+            # image that fails the inspection is never named.
             - name: Build and push by digest
               id: build
               uses: docker/build-push-action@v6
@@ -78,10 +78,11 @@ jobs:
             # that.
             #
             # A digest that fails here is never tagged. It stays in the registry
-            # as an untagged blob, reachable only by a digest nothing publishes.
+            # as an untagged blob, reachable only by a digest no tag points at.
             - name: Inspect the plugin object in the pushed image
               run: |
                   set -euo pipefail
+                  trap 'rm -f "$RUNNER_TEMP/plugin-from-image.so"' EXIT
                   img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
                   docker pull "$img"
                   so=$(docker run --rm --entrypoint sh "$img" -c \
@@ -92,7 +93,6 @@ jobs:
                   docker rm -v "$cid" >/dev/null
                   python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
                     "$RUNNER_TEMP/plugin-from-image.so" --expect read-only
-                  rm -f "$RUNNER_TEMP/plugin-from-image.so"
 
             # :latest is created from the inspected digest, so the tag resolves
             # to the artifact the step above read, attestation manifest and all.

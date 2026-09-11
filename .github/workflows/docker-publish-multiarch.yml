@@ -92,10 +92,11 @@ jobs:
             #
             # The merge job needs this one, so a digest that fails here never
             # reaches a tag. It does stay in the registry as an untagged blob,
-            # reachable only by a digest nothing publishes.
+            # reachable only by a digest no tag points at.
             - name: Inspect the plugin object in the pushed image
               run: |
                   set -euo pipefail
+                  trap 'rm -f "$RUNNER_TEMP/plugin-from-image.so"' EXIT
                   img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
                   docker pull "$img"
                   so=$(docker run --rm --entrypoint sh "$img" -c \
@@ -106,7 +107,6 @@ jobs:
                   docker rm -v "$cid" >/dev/null
                   python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
                     "$RUNNER_TEMP/plugin-from-image.so" --expect read-only
-                  rm -f "$RUNNER_TEMP/plugin-from-image.so"
 
             - name: Export digest
               run: |
