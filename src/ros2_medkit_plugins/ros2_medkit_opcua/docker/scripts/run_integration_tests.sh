@@ -37,6 +37,26 @@ assert() {
     fi
 }
 
+# One request, both halves of the answer: HTTP_CODE is the status line, RESP the
+# payload. An assertion that reads only the payload cannot tell a refusal from a
+# route that is not registered, because both carry an error object.
+request() {
+    local method="$1" url="$2" data="${3-}"
+    local out
+    if [ -n "$data" ]; then
+        out=$(curl -s -w '\n%{http_code}' -X "$method" "$url" \
+            -H "Content-Type: application/json" -d "$data")
+    else
+        out=$(curl -s -w '\n%{http_code}' -X "$method" "$url")
+    fi
+    HTTP_CODE="${out##*$'\n'}"
+    RESP="${out%$'\n'*}"
+}
+
+status_is() {
+    [ "$HTTP_CODE" = "$1" ] && echo true || echo false
+}
+
 echo -e "${YELLOW}=== OpenPLC Tank Demo Integration Tests (${VARIANT} image) ===${NC}\n"
 
 # 1. Wait for gateway + PLC entities
@@ -67,6 +87,14 @@ echo -e "\n${YELLOW}3. PLC Connection Status${NC}"
 STATUS=$(curl -s "$API/components/openplc_runtime/x-plc-status")
 assert "PLC connected" "$(echo "$STATUS" | jq '.connected' 2>/dev/null)"
 assert "Zero errors" "$(echo "$STATUS" | jq '.error_count == 0' 2>/dev/null)"
+# The build the image carries, read from the wire. The absent x-plc-operations
+# capability below is also what a write-capable build with no writable point
+# shows, so the marker is what distinguishes them.
+if [ "$VARIANT" = "read-only" ]; then
+    assert "write_capable false" "$(echo "$STATUS" | jq '.write_capable == false' 2>/dev/null)"
+else
+    assert "write_capable true" "$(echo "$STATUS" | jq '.write_capable == true' 2>/dev/null)"
+fi
 
 # 4. Live Data
 echo -e "\n${YELLOW}4. Live Data${NC}"
@@ -150,11 +178,51 @@ fi
 
 # 8. Error Handling
 echo -e "\n${YELLOW}8. Error Handling${NC}"
-assert "404 unknown entity" "$(curl -s "$API/apps/nonexistent/x-plc-data" | jq 'has("error_code")' 2>/dev/null)"
-assert "404 unknown operation" "$(curl -s -X POST "$API/apps/tank_process/x-plc-operations/nonexistent" -H "Content-Type: application/json" -d '{"value":1}' | jq 'has("error_code")' 2>/dev/null)"
-assert "400 invalid JSON" "$(curl -s -X POST "$API/apps/fill_pump/x-plc-operations/set_pump_speed" -H "Content-Type: application/json" -d 'bad' | jq 'has("error_code")' 2>/dev/null)"
+# Two answers that do not depend on the write surface, so they are identical in
+# both variants, and each comes from a different layer. The vendor data route is
+# a GET, registered either way, and its handler validates the entity through the
+# gateway's plugin context before it reads the node map. The malformed body never
+# reaches the plugin at all: the gateway's own data handler parses the body and
+# rejects it before delegating the write.
+request GET "$API/apps/nonexistent/x-plc-data"
+assert "unknown entity on the vendor data route is 404 (got $HTTP_CODE)" "$(status_is 404)"
+assert "that 404 is entity-not-found" \
+    "$(echo "$RESP" | jq '.error_code == "entity-not-found"' 2>/dev/null)"
 
-# 8. Standard SOVD Data Endpoint (DataProvider integration)
+request PUT "$API/apps/fill_pump/data/pump_speed" 'bad'
+assert "malformed body on PUT data is 400 (got $HTTP_CODE)" "$(status_is 400)"
+assert "malformed body is the gateway's invalid-request, before the plugin" \
+    "$(echo "$RESP" | jq '.error_code == "invalid-request"' 2>/dev/null)"
+
+if [ "$VARIANT" = "read-only" ]; then
+    # The plugin's own answers, on the two SOVD data verbs this build serves:
+    # a read of an absent point, and a write of one.
+    request GET "$API/apps/tank_process/data/nonexistent"
+    assert "GET unknown data point is 404 (got $HTTP_CODE)" "$(status_is 404)"
+    assert "that 404 is the plugin's own error" \
+        "$(echo "$RESP" | jq '.vendor_code == "x-medkit-plugin-error"' 2>/dev/null)"
+
+    # The refusal precedes the lookup, so an unknown point answers the build
+    # rather than reporting whether that point exists.
+    request PUT "$API/apps/fill_pump/data/nonexistent" '{"value": 1}'
+    assert "PUT unknown data point is refused as the build: 501 (got $HTTP_CODE)" "$(status_is 501)"
+    assert "that refusal names MEDKIT_OPCUA_READ_ONLY" \
+        "$(echo "$RESP" | jq '.message | test("MEDKIT_OPCUA_READ_ONLY")' 2>/dev/null)"
+else
+    # The vendor write route is registered here, so it answers for itself: it
+    # names the operation it could not find, and it parses the body itself.
+    request POST "$API/apps/tank_process/x-plc-operations/nonexistent" '{"value":1}'
+    assert "unknown operation is 404 (got $HTTP_CODE)" "$(status_is 404)"
+    assert "that 404 is resource-not-found naming the operation" \
+        "$(echo "$RESP" | jq '.error_code == "resource-not-found" and (.message | test("nonexistent"))' 2>/dev/null)"
+
+    request POST "$API/apps/fill_pump/x-plc-operations/set_pump_speed" 'bad'
+    assert "malformed body on the vendor route is 400 (got $HTTP_CODE)" "$(status_is 400)"
+    assert "that 400 is invalid-request" \
+        "$(echo "$RESP" | jq '.error_code == "invalid-request"' 2>/dev/null)"
+fi
+
+# 9. Standard SOVD Data Endpoint (DataProvider integration)
 # NOTE: alarm trigger/clear tests are not feasible with the OpenPLC tank demo
 # because the IEC 61131-3 simulation program continuously recalculates
 # TankLevel from pump/drain physics. Direct writes to TankLevel are

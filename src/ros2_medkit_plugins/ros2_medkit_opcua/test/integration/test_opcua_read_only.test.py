@@ -389,6 +389,17 @@ def run_node_map_leg(workdir, env, plugin, server_port, manifest, read_only):
         if read_only:
             check(wait_log(log, BUILD_PROPERTY, deadline=5),
                   f'the gateway log names {BUILD_PROPERTY} for the ignored writable: true')
+
+        # 9. The positive marker on x-plc-status. An absent x-plc-operations
+        #    capability is also what a write-capable build with nothing writable
+        #    looks like, so the build itself has to be readable from the wire.
+        #    Compared with `is`, so a missing field reads as a failure in both
+        #    variants rather than as the read-only answer.
+        _status, plc_status = http(f'{base}/components/{COMPONENT}/x-plc-status')
+        check(isinstance(plc_status, dict)
+              and plc_status.get('write_capable') is (not read_only),
+              f'x-plc-status reports write_capable={not read_only} '
+              f'(got {(plc_status or {}).get("write_capable")!r})')
     finally:
         terminate(gw)
 

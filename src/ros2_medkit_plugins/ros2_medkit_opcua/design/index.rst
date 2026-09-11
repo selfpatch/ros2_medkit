@@ -160,6 +160,10 @@ binary.
 - No entity registers the ``x-plc-operations`` capability, ``list_operations``
   emits no ``set_<name>`` entry, and ``get_routes`` does not register the write
   route.
+- ``x-plc-status`` carries ``write_capable``, taken from the same macro, so the
+  property is readable from the wire as a positive statement. The absence of the
+  ``x-plc-operations`` capability is not one: a write-capable build whose node map
+  marks no point writable advertises exactly the same absence.
 - ``write_data`` and the value-write half of ``execute_operation`` return 501 as
   their first statement, before any node lookup, with a message naming the build
   property. SOVD spells "the entity does not support this" as 501 (fault

@@ -1026,6 +1026,10 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   j["endpoint_url"] = client_->endpoint_url();
   j["server_description"] = client_->server_description();
   j["mode"] = poller_->using_subscriptions() ? "subscription" : "poll";
+  // The write surface of the object, not of the configuration. An absent
+  // x-plc-operations capability is also what a write-capable build with no
+  // writable point looks like, so the build itself is reported.
+  j["write_capable"] = MEDKIT_OPCUA_READ_ONLY == 0;
   j["poll_count"] = snap.poll_count;
   j["error_count"] = snap.error_count;
   j["node_count"] = node_map_.entries().size();

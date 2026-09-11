@@ -86,6 +86,32 @@ jobs:
                   # Push each arch by digest; the merge job creates and tags the manifest list.
                   outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }},push-by-digest=true,name-canonical=true,push=true
 
+            # The artifact inspected here is the digest the step above pushed,
+            # which is the one the merge job stitches into the manifest list and
+            # tags: it is pulled back from the registry by that digest, so no
+            # cache hit or rebuild sits between what is checked and what is
+            # published. The OPC-UA plugin the image carries must have no
+            # controller write path, and the symbol table of the .so inside it
+            # is what settles that.
+            #
+            # The merge job needs this one, so a digest that fails here never
+            # reaches a tag. It does stay in the registry as an untagged blob,
+            # reachable only by a digest nothing publishes.
+            - name: Inspect the plugin object in the pushed image
+              run: |
+                  set -euo pipefail
+                  img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
+                  docker pull "$img"
+                  so=$(docker run --rm --entrypoint sh "$img" -c \
+                    'find /home/medkit/ws/install -name libros2_medkit_opcua_plugin.so | head -1')
+                  [ -n "$so" ] || { echo "no OPC-UA plugin object in $img" >&2; exit 1; }
+                  cid=$(docker create "$img")
+                  docker cp "$cid:$so" "$RUNNER_TEMP/plugin-from-image.so"
+                  docker rm -v "$cid" >/dev/null
+                  python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
+                    "$RUNNER_TEMP/plugin-from-image.so" --expect read-only
+                  rm -f "$RUNNER_TEMP/plugin-from-image.so"
+
             - name: Export digest
               run: |
                   mkdir -p /tmp/digests
