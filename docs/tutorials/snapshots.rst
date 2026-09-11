@@ -39,9 +39,16 @@ configuration always overrides the zero-config fallback when present.
    ``DELETE /api/v1/faults/{code}``), the bulk
    ``DELETE /api/v1/apps/{app_id}/faults`` and ``DELETE /api/v1/faults``, the
    ``~/clear_fault`` service, and the correlation cascade, which clears a root
-   cause's symptoms with no clear addressed to them. A plugin calls that same
-   service when its device de-asserts an alarm, so a device going quiet clears
-   the fault the way an operator does. Starting with healing disabled takes the
+   cause's symptoms with no clear addressed to them. The OPC UA plugin calls
+   that same service when a threshold alarm de-asserts, so a value going back
+   in range clears the fault the way an operator does; a native AlarmCondition
+   clears that way only once the operator has acknowledged it (and confirmed
+   it, unless ``require_confirm_for_clear`` is off), and stays CONFIRMED until
+   then. A plugin that de-asserts with a PASSED report instead, as the graph
+   watchdog does, goes through debounce and healing, and nothing on that path
+   deletes the snapshots: with ``healing_enabled`` the fault heals once its
+   counter reaches ``healing_threshold``, without it (the default) it stays
+   CONFIRMED, and its snapshots stay either way. Starting with healing disabled takes the
    value snapshots of leftover HEALED rows as it reclassifies them, without a
    clear at all. ``snapshots.retain_on_clear: true`` keeps the value snapshots
    across all of it, and only those. The rosbag recording is not covered by that
