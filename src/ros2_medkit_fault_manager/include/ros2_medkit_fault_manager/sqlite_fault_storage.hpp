@@ -150,9 +150,9 @@ class SqliteFaultStorage : public FaultStorage {
                                  const rclcpp::Time & timestamp, const DebounceConfig & config,
                                  bool planned_stop_active);
 
-  /// Mark the fault's current cycle as the planned stop's. Caller holds mutex_ and has already
-  /// written the fault row inside the same transaction.
-  void mark_planned_stop_owned_locked(const std::string & fault_code);
+  /// Record whether the fault's current cycle is the planned stop's. Caller holds mutex_ and has
+  /// already written the fault row inside the same transaction.
+  void set_planned_stop_owned_locked(const std::string & fault_code, bool owned);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.

@@ -202,10 +202,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     if (is_near_miss(true, state.status)) {
       record_near_miss(state, config, severity, source_id, timestamp);
     }
-    // A fault raised again after being cleared starts a new cycle.
-    if (planned_stop_active) {
-      state.planned_stop_owned = true;
-    }
+    // A fault raised again after being cleared starts a new cycle, which is the stop's only
+    // if one is in force.
+    state.planned_stop_owned = planned_stop_active;
     return true;  // Reactivation treated as new occurrence for event publishing
   }
 
@@ -218,12 +217,14 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
 
   if (is_failed) {
     // A failure out of HEALED starts a cycle: the heal published the fault's end, so the
-    // confirmation that follows is fresh news. A repeat report of a condition that is already up
-    // is the same cycle and takes nothing, so no report ever lowers the flag. It is lowered
-    // elsewhere: by acknowledgement (clear_fault), by the healed-to-cleared reclassification, and
-    // by the switch-off (clear_planned_stop_owned).
-    if (planned_stop_active && state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
-      state.planned_stop_owned = true;
+    // confirmation that follows is fresh news. Ownership belongs to the cycle, so a cycle that
+    // starts with no stop in force is nobody's and the flag comes down with it - left standing it
+    // would name a cycle the declaration never saw. A repeat report of a condition that is already
+    // up is the same cycle and touches the flag either way. It is also lowered by acknowledgement
+    // (clear_fault), by the healed-to-cleared reclassification, and by the switch-off
+    // (clear_planned_stop_owned).
+    if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
+      state.planned_stop_owned = planned_stop_active;
     }
 
     // last_occurred tracks occurrences only. A PASSED event is the fault ENDING, not

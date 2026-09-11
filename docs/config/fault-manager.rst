@@ -656,6 +656,13 @@ Two configuration choices decide how much the switch can do:
        / ``planned_stop_ended`` under the ``__audit__`` fault code, with that
        transition's own reason and declarer. Recorded even under
        ``audit_log.transitions: confirmed_only``.
+   * - ``planned_stop.interrupted_release_wait_sec``
+     - ``5.0``
+     - How long a startup that inherits an unfinished release waits for a
+       subscriber on the events topic before announcing anyway. Accepted range is
+       ``[0, 300]``; anything else, NaN included, falls back to the default with a
+       warning. ``0`` announces on the first tick whether or not anyone is
+       listening. See the paragraph on interrupted releases below.
 
 While the stop stands, it owns every fault cycle that *starts*: a new fault, one
 raised again after being cleared, or one that fails again after healing. An owned
@@ -729,6 +736,22 @@ hierarchical rule has since claimed stays muted and everything else leaves
 ``muted_count``. It *announces* the subset of those that is CONFIRMED and that no
 live cluster is hiding, one ``EVENT_CONFIRMED`` each. A cluster-hidden member is
 therefore unmuted and not announced.
+
+A withdrawal writes the declaration, announces, and drops the ownership flags last,
+so a process that dies in between leaves faults owned by a declaration that is
+already over. The next startup finishes that release, but not from its constructor: a
+publisher that young has matched no subscriber, so the confirmations would go into an
+empty topic while the flags behind them came down. The release is captured at startup
+and delivered as soon as the events topic has a subscriber, or after
+``planned_stop.interrupted_release_wait_sec`` with none - a release that never
+completes leaves the flags set for every later startup to inherit and the faults
+behind them marked, which is worse than an event nobody heard. Ownership is re-read
+from the store at delivery, and a flag belongs to a cycle: a fault that heals and
+fails again with no stop in force has it taken down by the report that starts that
+cycle, so the release cannot announce a confirmation the report path already
+published. A stop declared while the release is still waiting takes it over instead of
+forcing it out - the pending faults stay flagged, become that stop's to hold, and are
+announced by its own switch-off.
 
 ``~/get_planned_stop`` keeps serving the declaration after the withdrawal, with
 ``ended_at`` stamped, so the reason stays readable once the plant is back up. A

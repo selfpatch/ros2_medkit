@@ -763,11 +763,12 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   }
 }
 
-void SqliteFaultStorage::mark_planned_stop_owned_locked(const std::string & fault_code) {
-  SqliteStatement stmt(db_, "UPDATE faults SET planned_stop_owned = 1 WHERE fault_code = ?");
-  stmt.bind_text(1, fault_code);
+void SqliteFaultStorage::set_planned_stop_owned_locked(const std::string & fault_code, bool owned) {
+  SqliteStatement stmt(db_, "UPDATE faults SET planned_stop_owned = ? WHERE fault_code = ?");
+  stmt.bind_int(1, owned ? 1 : 0);
+  stmt.bind_text(2, fault_code);
   if (stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to mark fault as owned by the planned stop: ") + sqlite3_errmsg(db_));
+    throw std::runtime_error(std::string("Failed to record planned-stop ownership: ") + sqlite3_errmsg(db_));
   }
 }
 
@@ -918,12 +919,15 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
 
     // The cycle boundary the planned stop marks, decided inside the same transaction as the row it
     // belongs to. A reactivation out of CLEARED starts one, and so does a failure out of HEALED -
-    // the heal published the fault's end, so the confirmation that follows is fresh news. A repeat
-    // report of a condition that is already up is the same cycle: it neither takes ownership nor
-    // drops the ownership an earlier report took.
-    if (planned_stop_active && is_failed &&
-        (is_reactivation || current_status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED)) {
-      mark_planned_stop_owned_locked(fault_code);
+    // the heal published the fault's end, so the confirmation that follows is fresh news.
+    //
+    // Ownership belongs to a CYCLE, so a cycle that starts with no stop in force is nobody's and
+    // the flag comes down with the same write that starts it. Left standing, it would name a cycle
+    // the dead declaration never saw, and an interrupted release would announce a confirmation the
+    // report path has already published. A repeat report of a condition that is already up is the
+    // same cycle: it neither takes ownership nor drops it.
+    if (is_failed && (is_reactivation || current_status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED)) {
+      set_planned_stop_owned_locked(fault_code, planned_stop_active);
     }
 
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
@@ -972,9 +976,10 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
     record_near_miss_locked(fault_code, timestamp_ns, initial_counter, config, severity, source_id, initial_status);
   }
 
-  // A new fault is always the start of a cycle.
+  // A new fault is always the start of a cycle. The row is inserted unowned, so only a stop in
+  // force has anything to write here.
   if (planned_stop_active) {
-    mark_planned_stop_owned_locked(fault_code);
+    set_planned_stop_owned_locked(fault_code, true);
   }
 
   return true;  // New fault created

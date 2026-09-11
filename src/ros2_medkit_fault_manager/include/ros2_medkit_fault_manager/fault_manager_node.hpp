@@ -102,6 +102,20 @@ class FaultManagerNode : public rclcpp::Node {
     audit_transition(transition, fault, "test", 0);
   }
 
+  /// Test-only: whether a release this process inherited is still waiting to be
+  /// announced. False once it has been delivered or taken over by a new stop, and
+  /// false from the start when there was nothing to finish.
+  bool interrupted_release_pending_for_test() const {
+    return interrupted_release_timer_ != nullptr;
+  }
+
+  /// Test-only: the wait this node settled on for an inherited release, after the
+  /// range check. Declared on every boot, so it is readable whether or not this
+  /// process inherited anything.
+  double interrupted_release_wait_sec_for_test() const {
+    return interrupted_release_wait_sec_;
+  }
+
   /// Test-only: register the planned stop's ownership of a fault in the engine,
   /// the way startup does when it reads the flags back.
   void restore_planned_stop_ownership_for_test(const std::string & fault_code) {
@@ -193,11 +207,25 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param config SnapshotConfig to populate with loaded values
   void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
 
-  /// Finish a switch-off a previous process did not: announce the faults still
-  /// owned by a declaration that is already withdrawn, and drop exactly their
-  /// flags. Runs from the constructor, before this node has a service or a timer
-  /// that could declare a new stop underneath it.
+  /// Take on a switch-off a previous process did not finish: capture the faults
+  /// still owned by a declaration that is already withdrawn, and arm the timer that
+  /// delivers them. Runs from the constructor; nothing is published here, because a
+  /// publisher milliseconds old has matched no subscriber and the confirmations
+  /// would go into an empty topic.
   void finish_interrupted_release();
+
+  /// Announce and release what finish_interrupted_release() captured, then disarm.
+  /// Idempotent: a second call with nothing pending does nothing.
+  ///
+  /// Ownership is re-read from the store rather than trusted from the capture, so a
+  /// fault acknowledged in between is not announced and its flag is not touched.
+  void deliver_interrupted_release();
+
+  /// Hand a pending release to a stop being declared now: disarm, and register the
+  /// captured codes with the engine so the new declaration owns them. Their flags
+  /// stay set, so the new stop's switch-off releases and announces them like any
+  /// other fault it owns. Idempotent.
+  void fold_interrupted_release_into_new_stop();
 
   /// Publish EVENT_CONFIRMED for each of these faults that is CONFIRMED, which is
   /// what releasing a fault from the planned stop means to a consumer of the
@@ -313,6 +341,29 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Timer for periodic cleanup of expired correlation data
   rclcpp::TimerBase::SharedPtr correlation_cleanup_timer_;
+
+  /// Armed when this process inherits an unfinished release, and the flag that says
+  /// one is pending: non-null means captured but not yet announced. It polls for a
+  /// subscriber on the events topic and fires the delivery at the first one, or when
+  /// interrupted_release_deadline_ passes with none.
+  ///
+  /// Its callback holds the node by raw `this`, which is safe because of how the node
+  /// is run rather than because of anything the timer does: main.cpp spins it on one
+  /// thread and destroys it after spin() returns, so no tick can be in flight when
+  /// the destructor cancels. Under a multi-threaded executor or a component container
+  /// that cancel does not join a tick already running on another thread, and the
+  /// capture would have to become a weak handle.
+  rclcpp::TimerBase::SharedPtr interrupted_release_timer_;
+
+  /// The fault codes that release captured, in the state the store had them at
+  /// startup. Re-checked against the store before anything is announced.
+  std::vector<std::string> interrupted_release_codes_;
+
+  /// When the wait for a subscriber gives up and publishes anyway.
+  std::chrono::steady_clock::time_point interrupted_release_deadline_;
+
+  /// How long that wait may last, from planned_stop.interrupted_release_wait_sec.
+  double interrupted_release_wait_sec_{5.0};
 
   /// Publisher for fault events (SSE streaming via gateway)
   rclcpp::Publisher<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr event_publisher_;

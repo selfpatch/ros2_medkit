@@ -56,6 +56,18 @@ namespace {
 /// value.
 constexpr size_t kMaxFaultCodeLength = 256;
 
+/// Upper bound on how long a startup waits for a subscriber before finishing an
+/// inherited planned-stop release anyway. Five minutes: long enough for any
+/// consumer that is coming up alongside the manager, short enough that a stuck
+/// release is an operational annoyance rather than a fault list that never
+/// un-marks itself.
+constexpr double kMaxInterruptedWaitSec = 300.0;
+
+/// How often that wait looks for a subscriber. A poll rather than a matched-event
+/// callback, because rclcpp offers no publisher-side match event here and the whole
+/// wait is seconds long.
+constexpr std::chrono::milliseconds kInterruptedReleasePollInterval{100};
+
 /// Validate fault_code format
 /// @param fault_code The fault code to validate
 /// @return Empty string if valid, error message if invalid
@@ -155,6 +167,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options, std::uni
   // static_cast<int64_t>(auto_confirm_after_sec * 1e9), which is undefined once
   // the product leaves the int64 range.
   constexpr double kMaxAutoConfirmSec = 9.0e9;
+  // Written as the positive test and negated: every comparison against NaN is false,
+  // so "below or above" would let a NaN through. clang-tidy's
+  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+  // back; leave this as it is.
   if (!(std::isfinite(auto_confirm_after_sec_) && auto_confirm_after_sec_ >= 0.0 &&
         auto_confirm_after_sec_ <= kMaxAutoConfirmSec)) {
     RCLCPP_WARN(get_logger(), "auto_confirm_after_sec must be a finite value in [0, %.1e], got %.2f. Disabling.",
@@ -164,6 +180,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options, std::uni
 
   // Capture cooldown parameters (gates both snapshot and rosbag capture)
   snapshot_recapture_cooldown_sec_ = declare_parameter<double>("snapshots.recapture_cooldown_sec", 60.0);
+  // Written as the positive test and negated: every comparison against NaN is false,
+  // so "below or above" would let a NaN through. clang-tidy's
+  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+  // back; leave this as it is.
   if (!(std::isfinite(snapshot_recapture_cooldown_sec_) && snapshot_recapture_cooldown_sec_ >= 0.0)) {
     RCLCPP_WARN(get_logger(), "snapshots.recapture_cooldown_sec should be >= 0, got %.2f. Disabling.",
                 snapshot_recapture_cooldown_sec_);
@@ -256,6 +276,22 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options, std::uni
 
   // Create event publisher for SSE streaming
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
+
+  // Declared on every boot, not only on the one that inherits a release: a parameter
+  // that exists only in the failure case is invisible to parameter tooling, and a
+  // typo'd override sits unread until the boot where it would have mattered.
+  interrupted_release_wait_sec_ = declare_parameter<double>("planned_stop.interrupted_release_wait_sec", 5.0);
+  // Written as the positive test and negated: every comparison against NaN is false,
+  // so "below or above" would let a NaN through. clang-tidy's
+  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+  // back; leave this as it is.
+  if (!(std::isfinite(interrupted_release_wait_sec_) && interrupted_release_wait_sec_ >= 0.0 &&
+        interrupted_release_wait_sec_ <= kMaxInterruptedWaitSec)) {
+    RCLCPP_WARN(get_logger(),
+                "planned_stop.interrupted_release_wait_sec must be a finite value in [0, %.0f], got %.2f. Using 5.0",
+                kMaxInterruptedWaitSec, interrupted_release_wait_sec_);
+    interrupted_release_wait_sec_ = 5.0;
+  }
 
   // A planned stop outlives the process that declared it, so the declaration and
   // the cycles it owns are read back from the store rather than started fresh.
@@ -452,6 +488,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options, std::uni
   correlation_engine_ = create_correlation_engine();
 
   auto cleanup_interval_sec = declare_parameter<double>("correlation.cleanup_interval_sec", 5.0);
+  // Written as the positive test and negated: every comparison against NaN is false,
+  // so "below or above" would let a NaN through. clang-tidy's
+  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+  // back; leave this as it is.
   if (!(std::isfinite(cleanup_interval_sec) && cleanup_interval_sec > 0.0)) {
     RCLCPP_WARN(get_logger(), "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
                 cleanup_interval_sec);
@@ -527,36 +567,96 @@ void FaultManagerNode::finish_interrupted_release() {
     return;  // the declaration still stands; nothing was left half-released
   }
 
-  const auto owned = storage_->get_planned_stop_owned();
-  if (owned.empty()) {
-    return;
+  interrupted_release_codes_ = storage_->get_planned_stop_owned();
+  if (interrupted_release_codes_.empty()) {
+    return;  // nothing to finish, so nothing is armed
   }
 
   // Faults owned by a declaration that is already withdrawn: the previous process
   // died between writing the withdrawal and dropping the flags, so these
-  // confirmations were suppressed and announced by nobody. Finish the job.
+  // confirmations were suppressed and announced by nobody. Finishing the job means
+  // publishing them, and a publication made from this constructor is published into
+  // nothing: the events topic is volatile, the publisher is milliseconds old, and no
+  // subscriber has matched it. So the work is captured here and delivered from a
+  // timer that waits for a subscriber to appear.
   //
-  // Synchronously, here, before this node has a service or a timer that could run:
-  // deferring it opens a window in which an operator declares a NEW stop and new
-  // cycles become owned by it, and the deferred work would then announce a fault
-  // the new stop is holding and drop its flag. A publication this early may reach
-  // no subscriber - the events topic is volatile and nothing has matched a
-  // publisher this young - and that is the same accepted loss as any other
-  // publication made at startup. The released faults are in the default fault list
-  // either way, which is where an operator looks after a restart.
+  // The wait is bounded because a release that never completes is worse than one
+  // nobody hears: the flags stay set, every later startup inherits the same release,
+  // and the faults behind them stay marked. At the bound it publishes anyway.
   RCLCPP_WARN(get_logger(),
               "%zu fault(s) are still owned by a planned stop that was already withdrawn - a previous run did not "
-              "finish releasing them. Releasing them now.",
-              owned.size());
-  const size_t announced = announce_released(owned);
-  // Exactly what was captured above: a flag written after that capture belongs to
-  // a declaration this release knows nothing about.
-  const size_t released = storage_->clear_planned_stop_owned(owned);
+              "finish releasing them. Releasing them once a subscriber is listening, or in %.1fs, whichever is first.",
+              interrupted_release_codes_.size(), interrupted_release_wait_sec_);
+
+  interrupted_release_deadline_ =
+      std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                             std::chrono::duration<double>(interrupted_release_wait_sec_));
+  // `this` by raw pointer: the node owns the timer, so a shared_ptr capture would
+  // make the node own itself. See the member's declaration for what makes that safe.
+  interrupted_release_timer_ = create_wall_timer(kInterruptedReleasePollInterval, [this]() {
+    const bool someone_is_listening = event_publisher_->get_subscription_count() > 0;
+    if (someone_is_listening || std::chrono::steady_clock::now() >= interrupted_release_deadline_) {
+      deliver_interrupted_release();
+    }
+  });
+}
+
+void FaultManagerNode::fold_interrupted_release_into_new_stop() {
+  if (!interrupted_release_timer_) {
+    return;
+  }
+  interrupted_release_timer_->cancel();
+  interrupted_release_timer_.reset();
+
+  // The flags stay where they are. A declaration made while the release was still
+  // waiting takes those cycles on rather than forcing them out to whoever happens to
+  // be listening at that instant, which may be nobody: the engine is given them the
+  // way a startup under a standing declaration is given them, and the new stop's own
+  // switch-off announces them with everything else it owns.
+  for (const auto & fault_code : interrupted_release_codes_) {
+    correlation_engine_->restore_planned_stop_ownership(fault_code);
+  }
+  RCLCPP_INFO(get_logger(), "A new planned stop took on %zu fault(s) left owned by the previous one",
+              interrupted_release_codes_.size());
+  interrupted_release_codes_.clear();
+}
+
+void FaultManagerNode::deliver_interrupted_release() {
+  if (!interrupted_release_timer_) {
+    return;
+  }
+  interrupted_release_timer_->cancel();
+  interrupted_release_timer_.reset();
+
+  // Ownership as the store has it NOW, intersected with what the capture held: a
+  // fault acknowledged while the wait ran is over and has nothing to announce, and
+  // its flag is already down.
+  const auto owned_now = storage_->get_planned_stop_owned();
+  std::vector<std::string> still_owned;
+  still_owned.reserve(interrupted_release_codes_.size());
+  for (const auto & fault_code : interrupted_release_codes_) {
+    if (std::find(owned_now.begin(), owned_now.end(), fault_code) != owned_now.end()) {
+      still_owned.push_back(fault_code);
+    }
+  }
+  interrupted_release_codes_.clear();
+
+  const size_t announced = announce_released(still_owned);
+  // Exactly what the capture held and the store still owns: a flag written after
+  // that capture belongs to a declaration this release knows nothing about.
+  const size_t released = storage_->clear_planned_stop_owned(still_owned);
   RCLCPP_INFO(get_logger(), "Finished an interrupted planned-stop release: released %zu fault(s), announced %zu",
               released, announced);
 }
 
 FaultManagerNode::~FaultManagerNode() {
+  // The release timer reads the store and the publisher, both of which this
+  // destructor is about to take apart, so it is stopped before anything else.
+  if (interrupted_release_timer_) {
+    interrupted_release_timer_->cancel();
+    interrupted_release_timer_.reset();
+  }
+
   // Join capture workers FIRST so no worker is mid-capture when rosbag tears
   // down. RosbagCapture::stop() is not a barrier against an in-flight
   // on_fault_confirmed() (it clears subscriptions/buffers without serializing
@@ -1250,6 +1350,12 @@ void FaultManagerNode::handle_set_planned_stop(
   planned_stop_ = next;
 
   if (request->active) {
+    // A release this process inherited is handed to the new declaration before it
+    // takes effect. Left waiting, its codes would sit flagged under a stop that does
+    // not own them, and that stop's switch-off would drop the flags with the rest and
+    // lose the confirmations behind them.
+    fold_interrupted_release_into_new_stop();
+
     correlation_engine_->begin_planned_stop();
     audit_planned_stop(kTransitionPlannedStopStarted, planned_stop_, request->reason, request->declared_by,
                        transition_at_ns);
@@ -1419,6 +1525,10 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
 
   // Validate timeout_sec (must be positive)
   config.timeout_sec = declare_parameter<double>("snapshots.timeout_sec", 1.0);
+  // Written as the positive test and negated: every comparison against NaN is false,
+  // so "below or above" would let a NaN through. clang-tidy's
+  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+  // back; leave this as it is.
   if (!(std::isfinite(config.timeout_sec) && config.timeout_sec > 0.0)) {
     RCLCPP_WARN(get_logger(), "snapshots.timeout_sec must be positive, got %.2f. Using default 1.0s",
                 config.timeout_sec);
@@ -1456,6 +1566,10 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   config.rosbag.enabled = declare_parameter<bool>("snapshots.rosbag.enabled", false);
   if (config.rosbag.enabled) {
     config.rosbag.duration_sec = declare_parameter<double>("snapshots.rosbag.duration_sec", 5.0);
+    // Written as the positive test and negated: every comparison against NaN is false,
+    // so "below or above" would let a NaN through. clang-tidy's
+    // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+    // back; leave this as it is.
     if (!(std::isfinite(config.rosbag.duration_sec) && config.rosbag.duration_sec > 0.0)) {
       RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_sec must be positive, got %.2f. Using default 5.0s",
                   config.rosbag.duration_sec);
@@ -1463,6 +1577,10 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
     }
 
     config.rosbag.duration_after_sec = declare_parameter<double>("snapshots.rosbag.duration_after_sec", 1.0);
+    // Written as the positive test and negated: every comparison against NaN is false,
+    // so "below or above" would let a NaN through. clang-tidy's
+    // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts that
+    // back; leave this as it is.
     if (!(std::isfinite(config.rosbag.duration_after_sec) && config.rosbag.duration_after_sec >= 0.0)) {
       RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_after_sec must be non-negative, got %.2f. Using 0.0s",
                   config.rosbag.duration_after_sec);

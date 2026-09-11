@@ -26,12 +26,14 @@ The kill is real (SIGTERM, launch respawns the node); the crash *point* is
 simulated by editing the store while the manager is down, which is exactly the
 state such a crash leaves behind.
 
-The recovery runs in the constructor, before this node has a service or a timer,
-so its announcement may reach no subscriber - nothing has matched a publisher that
-is milliseconds old. That loss is accepted, so the assertions here are on what
-survives it: the manager's own log line, the ownership flags being gone, and the
-released faults being back in the default fault list. What the recovery must NEVER
-do is announce or release a fault owned by a stop declared after it.
+The subject is the ANNOUNCEMENT. A subscriber that was listening before the
+replacement process started has to receive the confirmation the dead process
+suppressed, so this test subscribes once in setUpClass - before the manager is ever
+launched - and asserts the event arrives at that subscriber. The second phase drops
+the subscription and asserts the other direction: with nobody listening the release
+still completes once its bounded wait elapses, which the store and the manager's own
+log line show. What the recovery must NEVER do is announce or release a fault owned
+by a stop declared after it.
 """
 
 import os
@@ -65,6 +67,11 @@ OWNED_CODES = ('PS_INTERRUPTED_ONE', 'PS_INTERRUPTED_TWO')
 # Re-raised under a NEW stop declared right after the recovery.
 REUSED_CODE = OWNED_CODES[0]
 NEW_STOP_CODE = 'PS_AFTER_RECOVERY'
+# Owned by a second interrupted release, finished with nobody listening.
+UNHEARD_CODE = 'PS_INTERRUPTED_UNHEARD'
+# Reported after the release, so a subscriber that hears this one but not the
+# released faults has matched the publisher and still missed the announcement.
+CONTROL_CODE = 'PS_INTERRUPTED_CONTROL'
 
 # Long enough that the test can edit the store between the kill and the
 # replacement opening it.
@@ -314,15 +321,30 @@ class TestInterruptedRelease(unittest.TestCase):
             'the fault manager was never restarted')
         self._connect()
 
-        # A stop declared right after the restart owns its own cycles. Declared
-        # FIRST, before this test waits for anything: a recovery that runs later
-        # than the constructor would be inside this window, which is exactly the
-        # window in which it can announce and unflag a fault the NEW stop holds.
+        # The confirmations the dead process suppressed reach the subscriber that was
+        # listening before the replacement started. This is the whole point of
+        # finishing the release: an alarm standing on the machine that no consumer of
+        # the event stream has ever heard.
+        for code in OWNED_CODES:
+            self._wait_until(
+                lambda code=code: self._count_events(code, FaultEvent.EVENT_CONFIRMED) == 1,
+                f'{code} was released without its confirmation reaching a subscriber that '
+                'was listening before the node started')
+
+        # The control: a fault reported afterwards is announced too, so a run where
+        # the released faults were heard is not a run where everything was heard.
+        self._report(CONTROL_CODE)
+        self._wait_until(
+            lambda: self._count_events(CONTROL_CODE, FaultEvent.EVENT_CONFIRMED) == 1,
+            'the events topic never delivered anything to this subscriber')
+
+        # A stop declared after the recovery owns its own cycles, and the recovery
+        # must not reach across into them.
         self.assertTrue(self._set_stop(True, reason='second shutdown',
                                        declared_by='night_shift').success)
 
-        # Whatever the recovery did or did not manage to announce, nothing more may
-        # be announced for this code while the new stop holds its new cycle.
+        # Nothing more may be announced for this code while the new stop holds its
+        # new cycle.
         announced_before = self._count_events(REUSED_CODE, FaultEvent.EVENT_CONFIRMED)
 
         # A NEW cycle of a code the previous release captured: acknowledge it, then
@@ -334,9 +356,8 @@ class TestInterruptedRelease(unittest.TestCase):
             lambda: {REUSED_CODE, NEW_STOP_CODE} <= set(self._muted_entries()),
             'the new stop did not take the cycles that started under it')
 
-        # Startup finishes the interrupted release, and says so itself - the one
-        # instrument a publication made before anyone has matched the publisher
-        # cannot take away.
+        # The manager says what it finished, which is what the second phase below
+        # has to read when there is no subscriber to ask.
         expected = ('Finished an interrupted planned-stop release: '
                     f'released {len(OWNED_CODES)} fault(s)')
         proc_output.assertWaitFor(expected_output=expected, process='fault_manager_node-1',
@@ -377,6 +398,49 @@ class TestInterruptedRelease(unittest.TestCase):
                              f'{code} was not released by its own switch-off')
         self.assertEqual(0, self._owned_flag_count())
         self.assertFalse(self._call(self.get_stop_client, GetPlannedStop.Request()).active)
+
+        self._release_with_nobody_listening(fault_manager_node, proc_output)
+
+    def _release_with_nobody_listening(self, fault_manager_node, proc_output):
+        """
+        Finish a release with nobody listening, which the bound is there for.
+
+        With the subscription gone there is nobody to wait for, so the release has to
+        finish on its own once the bound elapses. An event into an empty topic is
+        better than a flag that never clears: a flag left set makes every later
+        startup try the same release again, and the faults behind it stay marked.
+        """
+        self.assertTrue(self._set_stop(True, reason='third shutdown',
+                                       declared_by='night_shift').success)
+        self._report(UNHEARD_CODE)
+        self._wait_until(lambda: UNHEARD_CODE in self._muted_codes(),
+                         'the fault was never marked by the third stop')
+
+        self.node.destroy_subscription(self._event_sub)
+        type(self)._event_sub = None
+
+        original_pid = fault_manager_node.process_details['pid']
+        os.kill(original_pid, signal.SIGTERM)
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and self._process_is_running(original_pid):
+            time.sleep(0.1)
+        self.assertFalse(self._process_is_running(original_pid))
+
+        self.assertEqual(1, self._withdraw_declaration_in_the_store())
+
+        self._wait_until(
+            lambda: fault_manager_node.process_details is not None
+            and fault_manager_node.process_details['pid'] != original_pid,
+            'the fault manager was never restarted for the second phase')
+        self._connect()
+
+        proc_output.assertWaitFor(
+            expected_output='Finished an interrupted planned-stop release: released 1 fault(s)',
+            process='fault_manager_node-1', timeout=60, stream='stderr')
+        self._wait_until(lambda: self._owned_flag_count() == 0,
+                         'the ownership flag survived a release nobody was listening to')
+        self.assertIn(UNHEARD_CODE, self._confirmed_codes())
+        self.assertNotIn(UNHEARD_CODE, self._muted_codes())
 
     @staticmethod
     def _owned_flag_count():

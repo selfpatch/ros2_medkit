@@ -196,7 +196,25 @@ no file behind it and starts every process with no declaration and no ownership.
 writes the declaration first, announces the confirmations it was holding back, and
 drops the ownership flags last. A process that dies in between leaves faults owned
 by a declaration that is already over; the next startup recognises exactly that,
-announces them once a consumer is listening, and clears the flags.
+announces them, and clears the flags.
+
+The announcement waits for somebody to hear it. A publisher created during startup
+has matched no subscriber yet, so the confirmations would go into an empty topic and
+the flags behind them would come down all the same - the fault would be released and
+never heard from. The manager therefore captures the release at startup and delivers
+it from a timer, as soon as the events topic has a subscriber. The wait is bounded by
+`planned_stop.interrupted_release_wait_sec` (default 5 s): at the bound it publishes
+anyway, because a release that never completes is worse than one nobody hears - the
+flags stay set, every later startup inherits the same release, and the faults behind
+them stay marked. Ownership is re-read from the store at delivery, so a fault
+acknowledged while the wait ran is not announced; and because a flag belongs to a
+cycle, a fault that heals and fails again with no stop in force has the flag taken
+down by the report that starts that cycle, so it is announced once by the report path
+and not again by the release.
+
+A stop declared while the release is still waiting takes it over rather than forcing
+it out: the pending faults stay flagged and become that stop's to hold, and its own
+switch-off announces them with everything else it owns.
 
 **Over SOVD.** The gateway maps a node's services to operations on its App entity,
 so an operator reaches the switch without any new route:

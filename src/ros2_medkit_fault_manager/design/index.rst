@@ -346,16 +346,41 @@ between leaves faults owned by a declaration that is already over, which is a st
 the next startup recognises: it announces them and clears the flags of exactly
 those faults. Clearing first would have turned a crash into permanent silence.
 
-The recovery runs synchronously in the constructor, before the node has a service
-or a timer. Deferring it - waiting for a subscriber to match, say - opens a window
-in which an operator declares a NEW stop over the same services and new cycles
-become owned by it; the deferred work then announces a fault the new stop is
-holding and, if it clears ownership wholesale rather than the set it captured,
-drops that fault's flag too. Running early costs an announcement that may reach no
-subscriber, because nothing has matched a publisher that is milliseconds old and
-the events topic is volatile. That is the same accepted loss as every other
-publication made at startup, and the released faults are in the default fault list
-regardless.
+The recovery is CAPTURED in the constructor and DELIVERED from a timer. Publishing
+in the constructor publishes into nothing: the events topic is volatile, the
+publisher is milliseconds old, and no subscriber has matched it - so the
+confirmations are dropped while the flags behind them come down, which is the one
+outcome the ordering above exists to prevent. ``finish_interrupted_release`` records
+the owned codes and arms a wall timer; the timer polls
+``event_publisher_->get_subscription_count()`` every 100 ms and calls
+``deliver_interrupted_release`` at the first subscriber, or when
+``planned_stop.interrupted_release_wait_sec`` has elapsed with none. At the bound it
+publishes anyway: a flag that never clears makes every later startup inherit the same
+release and leaves the faults behind it marked, which is worse than an event nobody
+heard.
+
+Delivery re-reads ownership from the store and keeps only the captured codes the
+store still owns, so a fault acknowledged during the wait is neither announced nor
+touched. Ownership is a fact about a CYCLE, so the store takes the flag down itself
+when a report starts a new cycle for that code with no stop in force - the same write
+that sets it when one is. Without that, a fault that healed and failed again would be
+announced twice: once by the report path, which sees no mute, and once more by the
+delivery, which still saw the flag on a cycle the dead declaration never owned.
+
+A stop declared while the release is still pending does not force it out. The release
+FOLDS into the new declaration: ``handle_set_planned_stop`` cancels the timer and
+hands the captured codes to the engine the way a startup under a standing declaration
+does (``restore_planned_stop_ownership``), leaving their flags where they are. The new
+stop then owns those cycles and its own switch-off releases and announces them with
+everything else it owns. Delivering instead would publish into whatever was listening
+at that instant, which is exactly the empty topic the deferral exists to avoid.
+
+The timer holds ``this`` by raw pointer rather than a shared handle, so the node does
+not own itself, and the destructor cancels it before the store and the publisher it
+reads are taken apart. That cancel is sufficient because ``main.cpp`` spins the node on
+one thread and destroys it after ``spin()`` returns: no tick can be in flight. Under a
+multi-threaded executor or a component container it would not be, and the capture would
+have to become a weak handle.
 
 Withdrawing releases the rest and publishes ``EVENT_CONFIRMED`` once for each
 released fault that is CONFIRMED. That republication is the point of marking

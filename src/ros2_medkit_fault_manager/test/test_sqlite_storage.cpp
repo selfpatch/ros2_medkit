@@ -2749,6 +2749,27 @@ void expect_planned_stop_cycle_boundary(ros2_medkit_fault_manager::FaultStorage 
   storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
                              clock.now(), config, /*planned_stop_active=*/true);
   EXPECT_EQ(both, owned_codes()) << "a fault that failed again after healing was not owned";
+
+  // Ownership belongs to the cycle, so the same boundary with NO stop in force takes
+  // the flag down: the next cycle is nobody's, and a flag left standing would name a
+  // cycle the declaration never saw.
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  auto healed_inside = storage.get_fault("PS_INSIDE");
+  ASSERT_TRUE(healed_inside.has_value());
+  ASSERT_EQ(Fault::STATUS_HEALED, healed_inside->status);
+  EXPECT_EQ(both, owned_codes()) << "a PASSED report dropped the ownership of a cycle it did not end";
+
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  const std::vector<std::string> outside_only{"PS_OUTSIDE"};
+  EXPECT_EQ(outside_only, owned_codes()) << "a cycle that started with no stop in force kept the old flag";
+
+  // And a fault raised again after being acknowledged, still with no stop in force.
+  ASSERT_TRUE(storage.clear_fault("PS_OUTSIDE"));
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  EXPECT_TRUE(owned_codes().empty()) << "a reactivation with no stop in force was owned by one";
 }
 
 }  // namespace
