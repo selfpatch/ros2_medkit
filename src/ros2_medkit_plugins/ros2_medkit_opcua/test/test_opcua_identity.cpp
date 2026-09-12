@@ -682,6 +682,47 @@ struct ScopedRclcpp {
   ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
 };
 
+// Spins an executor on its own thread and guarantees cancel -> join on every
+// exit path. A gtest ASSERT_* returns from the middle of the test body, so a
+// bare std::thread would be destroyed while still joinable, and that calls
+// std::terminate: the run ends in SIGABRT and the assertion message that says
+// what actually failed never reaches the report.
+class ScopedExecutorSpin {
+ public:
+  explicit ScopedExecutorSpin(rclcpp::executors::MultiThreadedExecutor & executor)
+    : executor_(executor), thread_([&executor]() {
+      executor.spin();
+    }) {
+  }
+
+  ~ScopedExecutorSpin() {
+    stop();
+  }
+
+  // Idempotent, so a test can end the spin at the point it wants the executor
+  // quiet and still be covered on the paths that never get there.
+  void stop() {
+    if (stopped_) {
+      return;
+    }
+    stopped_ = true;
+    executor_.cancel();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  ScopedExecutorSpin(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin(ScopedExecutorSpin &&) = delete;
+  ScopedExecutorSpin & operator=(ScopedExecutorSpin &&) = delete;
+
+ private:
+  rclcpp::executors::MultiThreadedExecutor & executor_;
+  std::thread thread_;
+  bool stopped_{false};
+};
+
 // The plugin only builds its fault-service clients when the context hands it a
 // real node, which is what makes the ClearFault request observable on the wire.
 class RealNodePluginContext : public FakePluginContext {
@@ -730,9 +771,7 @@ TEST_F(OpcuaIdentityE2ETest, ConnectTimeCommsLostClearSkipsTheCorrelationCascade
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.add_node(fault_manager);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
+  ScopedExecutorSpin spin(executor);
 
   const std::string yaml_path = write_minimal_node_map();
   OpcuaPlugin plugin;
@@ -760,10 +799,7 @@ TEST_F(OpcuaIdentityE2ETest, ConnectTimeCommsLostClearSkipsTheCorrelationCascade
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  executor.cancel();
-  if (spin_thread.joinable()) {
-    spin_thread.join();
-  }
+  spin.stop();
   plugin.shutdown();
   std::remove(yaml_path.c_str());
 
@@ -811,9 +847,7 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.add_node(fault_manager);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
+  ScopedExecutorSpin spin(executor);
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -864,10 +898,7 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  executor.cancel();
-  if (spin_thread.joinable()) {
-    spin_thread.join();
-  }
+  spin.stop();
   plugin.shutdown();
 
   const auto device_clear_skips = clear_for(alarm_code);
