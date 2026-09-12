@@ -41,13 +41,18 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
+#include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -682,6 +687,101 @@ struct ScopedRclcpp {
   ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
 };
 
+// Spins an executor on its own thread and guarantees cancel -> join on every
+// exit path. A gtest ASSERT_* returns from the middle of the test body, so a
+// bare std::thread would be destroyed while still joinable, and that calls
+// std::terminate: the run ends in SIGABRT and the assertion message that says
+// what actually failed never reaches the report.
+class ScopedExecutorSpin {
+ public:
+  using CancelFn = std::function<void()>;
+
+  // The cancel is injectable so a test can make it fail. A callable rather than
+  // a virtual override on a derived executor because rclcpp::Executor::cancel()
+  // is virtual on jazzy and later but NOT on humble, where a subclass's
+  // cancel() would neither compile with `override` nor be the one called
+  // through a base reference.
+  explicit ScopedExecutorSpin(rclcpp::executors::MultiThreadedExecutor & executor, CancelFn cancel = nullptr)
+    : executor_(executor)
+    , cancel_(cancel ? std::move(cancel) : CancelFn([this]() {
+      executor_.cancel();
+    }))
+    , thread_([this]() {
+      executor_.spin();
+      spin_returned_.store(true);
+    }) {
+  }
+
+  ~ScopedExecutorSpin() {
+    // A destructor is implicitly noexcept, and both cancel() and join() can
+    // throw, so an escape here would be the std::terminate this class exists
+    // to prevent. Swallowing is right in a destructor: by this point the test
+    // has either passed or recorded its failure, and that verdict is what the
+    // run has to report.
+    try {
+      stop();
+    } catch (const std::exception & e) {
+      std::cerr << "ScopedExecutorSpin teardown failed: " << e.what() << "\n";
+    } catch (...) {
+      std::cerr << "ScopedExecutorSpin teardown failed\n";
+    }
+  }
+
+  // Idempotent, so a test can end the spin at the point it wants the executor
+  // quiet and still be covered on the paths that never get there.
+  //
+  // The join is unconditional on the cancel's outcome. cancel() throws if the
+  // guard condition cannot be triggered, and letting that skip the join would
+  // move the terminate from this class's destructor - where the catch above can
+  // report it - into the std::thread member's destructor, which no catch here
+  // can reach: ~std::thread calls std::terminate on a joinable thread. The
+  // flag goes last so a failed teardown leaves the object willing to try again.
+  void stop() {
+    if (stopped_) {
+      return;
+    }
+    // cancel() refuses with an exception while the executor is not spinning,
+    // and a cancel that lands before spin() has begun is simply lost - the
+    // thread then spins for good and the join below never returns. So the
+    // cancel is re-issued until the spin function has actually returned, which
+    // only the spin thread can report.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!spin_returned_.load()) {
+      try {
+        cancel_();
+      } catch (const std::exception &) {
+        // Not spinning yet, or the guard condition could not be triggered. The
+        // next attempt is what resolves either case.
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        std::cerr << "ScopedExecutorSpin: executor still spinning after 10s of cancel attempts\n";
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (thread_.joinable()) {
+      // Nothing is left to try if this throws: the thread stays joinable and
+      // its own destructor ends the process. That is a clean abort with a
+      // reason, which is the honest outcome - detaching instead would leave a
+      // live executor thread running against nodes about to be destroyed.
+      thread_.join();
+    }
+    stopped_ = true;
+  }
+
+  ScopedExecutorSpin(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin(ScopedExecutorSpin &&) = delete;
+  ScopedExecutorSpin & operator=(ScopedExecutorSpin &&) = delete;
+
+ private:
+  rclcpp::executors::MultiThreadedExecutor & executor_;
+  CancelFn cancel_;
+  std::atomic<bool> spin_returned_{false};
+  std::thread thread_;
+  bool stopped_{false};
+};
+
 // The plugin only builds its fault-service clients when the context hands it a
 // real node, which is what makes the ClearFault request observable on the wire.
 class RealNodePluginContext : public FakePluginContext {
@@ -697,6 +797,34 @@ class RealNodePluginContext : public FakePluginContext {
 };
 
 }  // namespace
+
+// A cancel() that throws must not cost the join. If it does, the guard's thread
+// member is destroyed while joinable and ~std::thread calls std::terminate, so
+// this test does not fail - it takes the whole binary down with SIGABRT, which
+// is why it asserts on having reached the end at all.
+TEST(ScopedExecutorSpinTest, AThrowingCancelStillJoinsTheThread) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("scoped_spin_throwing_cancel");
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+
+  {
+    // Fails the way rclcpp documents cancel() can - the guard condition cannot
+    // be triggered - after actually stopping the spin, so what is under test is
+    // the join and not a hang. Injected rather than overridden: cancel() is not
+    // virtual on every distro this builds on.
+    ScopedExecutorSpin spin(executor, [&executor]() {
+      executor.cancel();
+      throw std::runtime_error("cancel failed");
+    });
+    // stop() contains the throw itself, so the explicit teardown a test does at
+    // the point it wants the executor quiet stays usable.
+    EXPECT_NO_THROW(spin.stop());
+  }
+
+  executor.remove_node(node);
+  SUCCEED() << "the guard joined its thread despite cancel() throwing";
+}
 
 // The connect-time clear, read off the wire. clear_comms_lost_on_connect() is
 // only reachable through a connect that SUCCEEDS, so it needs the live fixture,
@@ -730,9 +858,7 @@ TEST_F(OpcuaIdentityE2ETest, ConnectTimeCommsLostClearSkipsTheCorrelationCascade
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.add_node(fault_manager);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
+  ScopedExecutorSpin spin(executor);
 
   const std::string yaml_path = write_minimal_node_map();
   OpcuaPlugin plugin;
@@ -760,10 +886,7 @@ TEST_F(OpcuaIdentityE2ETest, ConnectTimeCommsLostClearSkipsTheCorrelationCascade
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  executor.cancel();
-  if (spin_thread.joinable()) {
-    spin_thread.join();
-  }
+  spin.stop();
   plugin.shutdown();
   std::remove(yaml_path.c_str());
 
@@ -811,9 +934,7 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.add_node(fault_manager);
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
+  ScopedExecutorSpin spin(executor);
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -864,10 +985,7 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  executor.cancel();
-  if (spin_thread.joinable()) {
-    spin_thread.join();
-  }
+  spin.stop();
   plugin.shutdown();
 
   const auto device_clear_skips = clear_for(alarm_code);
