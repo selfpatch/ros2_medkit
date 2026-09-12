@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/http/warning_codes.hpp"
+#include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include <algorithm>
 
@@ -182,9 +183,21 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
     result.linked_apps.push_back(linked_app);
   }
 
-  // Find orphan nodes (runtime apps not matching any manifest app)
+  // Find orphan nodes (runtime apps not matching any manifest app).
+  //
+  // The gateway's own in-process helper nodes are skipped. They are not
+  // entities and the app filter removes them, so reporting them here would
+  // tell the operator to declare, in the manifest, nodes that can never
+  // become apps - and the 'error' policy words that report as an instruction
+  // ("Declare them in the manifest"). An empty self FQN, which is what a
+  // linker constructed without a node has, matches nothing and leaves this
+  // behaviour exactly as it was.
+  const std::string self_fqn = node_ != nullptr ? node_->get_fully_qualified_name() : std::string();
   for (const auto & rt_app : runtime_apps) {
     if (rt_app.bound_fqn.has_value() && matched_nodes.find(rt_app.bound_fqn.value()) == matched_nodes.end()) {
+      if (is_own_gateway_helper_node(rt_app.bound_fqn.value(), self_fqn)) {
+        continue;
+      }
       result.orphan_nodes.push_back(rt_app.bound_fqn.value());
     }
   }
