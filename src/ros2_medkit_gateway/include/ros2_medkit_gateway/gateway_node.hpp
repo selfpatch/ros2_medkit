@@ -520,6 +520,14 @@ class GatewayNode : public rclcpp::Node {
  * Exact matches only. A prefix test would also claim a genuine peer named
  * `<fqn>_monitor` or `<fqn>2`, and dropping a real node is the worse error.
  *
+ * Two FQN spellings are recognised, because the three creation sites do not
+ * agree on the namespace: the subscription node is created with the gateway's
+ * own namespace, while the fault-client and lifecycle-reader nodes are created
+ * from the gateway's node NAME alone and so take the process default. A
+ * node-specific namespace remap on the gateway (`-r <gateway>:__ns:=/x`) moves
+ * the gateway and the subscription node and leaves the other two behind, which
+ * is why those two are also matched as `/<name><suffix>`.
+ *
  * @param node_fqn Fully qualified node name to test ("/ns/node")
  * @param self_fqn The gateway node's own FQN. An empty value matches nothing
  */
@@ -543,10 +551,15 @@ bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string 
  * @param apps App vector to filter in place
  * @param peer_routing_table Maps entity_id -> peer_name for remote entities
  * @param self_fqn The gateway node's own FQN. Empty disables the helper check
+ * @param dropped_declared_apps Optional sink for "<app id> -> <node fqn>" of
+ *        every app removed by the helper rule whose source is not runtime
+ *        discovery. Removing a declared entity silently would override the
+ *        manifest without saying so, and this function has no logger
  * @return Number of apps removed
  */
 size_t filter_internal_node_apps(std::vector<App> & apps,
                                  const std::unordered_map<std::string, std::string> & peer_routing_table,
-                                 const std::string & self_fqn);
+                                 const std::string & self_fqn,
+                                 std::vector<std::string> * dropped_declared_apps = nullptr);
 
 }  // namespace ros2_medkit_gateway
