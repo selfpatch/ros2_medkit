@@ -524,10 +524,14 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     return async_ptr->id;
   }
 
-  ActionGoalInfo get_tracked_goal_or_fail(const std::string & execution_id) {
+  // Returns the optional rather than dereferencing it: a non-fatal expectation
+  // followed by an unconditional `*goal_info` turns a missing goal into
+  // undefined behaviour instead of a failure anyone can read. The caller
+  // ASSERTs, which is what stops the test.
+  std::optional<ActionGoalInfo> get_tracked_goal_or_fail(const std::string & execution_id) {
     auto goal_info = gateway_node_->get_operation_manager()->get_tracked_goal(execution_id);
     EXPECT_TRUE(goal_info.has_value());
-    return *goal_info;
+    return goal_info;
   }
 
   CorsConfig cors_{};
@@ -978,7 +982,15 @@ TEST_F(OperationHandlersFixtureTest, GetOperationResolvesAQualifiedIdToItsMember
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocation) {
-  const auto execution_id = create_action_execution(20);
+  // The fixture server pushes one sequence element per 100 ms tick and succeeds
+  // at the requested length, so the order sets how long the goal stays
+  // cancellable: 20 finishes on its own in under two seconds, which a loaded or
+  // instrumented runner can spend on the create plus the cancel round trip, and
+  // the goal is then SUCCEEDED with nothing left to stop. 50 is the largest
+  // order handle_goal accepts and buys about five seconds, which is the whole
+  // point of asking for it - the assertions below are about an accepted stop,
+  // not about how fast the machine is.
+  const auto execution_id = create_action_execution(50);
   ASSERT_FALSE(execution_id.empty());
 
   auto raw_req =
@@ -989,7 +1001,9 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocati
   body.capability = "stop";
 
   auto result = handlers_->update_execution(typed, body);
-  auto goal_info = get_tracked_goal_or_fail(execution_id);
+  auto tracked = get_tracked_goal_or_fail(execution_id);
+  ASSERT_TRUE(tracked.has_value());
+  const auto & goal_info = *tracked;
 
   if (result.has_value()) {
     const auto & exec = result.value().first.value;
