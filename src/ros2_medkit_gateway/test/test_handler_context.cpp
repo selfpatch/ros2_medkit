@@ -1142,6 +1142,62 @@ TEST(FilterInternalNodeAppsTest, ReportsOnlyDeclaredAppsItDropsAsHelpers) {
   EXPECT_EQ(dropped_declared[0], "plc_bridge -> /ros2_medkit_gateway_fault_clients");
 }
 
+TEST(IsOwnGatewayHelperNodeTest, RecognizesAForeignRootHelperAsPlumbing) {
+  // Two gateways, both left at the default node name, one moved into a
+  // namespace: the namespaced one's root-dwelling helpers and the root one's
+  // are the SAME literal FQN, because both are built from the same node name in
+  // the same namespace. Nothing in the name can tell them apart, so a
+  // helper-named node in the root namespace is treated as plumbing whichever
+  // process created it. That is the deliberate trade: the alternative is
+  // serving and counting one's own helper nodes in every namespaced
+  // deployment, and a node named "<gateway>_fault_clients" is plumbing in
+  // either case - what it is does not depend on who owns it.
+  const std::string self_fqn = "/subsystem_a/ros2_medkit_gateway";
+  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+
+  // The subscription node is the one case the name DOES settle: it always
+  // follows its gateway's namespace, so a root-namespace one is another
+  // process's and stays visible.
+  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_sub", self_fqn));
+
+  // A foreign gateway's own node is never plumbing, in any namespace.
+  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_c/ros2_medkit_gateway", self_fqn));
+
+  // A differently NAMED gateway's helpers are not ours: the bare name has to
+  // match, so the rule does not reach across to a peer that was renamed.
+  EXPECT_FALSE(is_own_gateway_helper_node("/other_gateway_fault_clients", self_fqn));
+}
+
+TEST(RememberDroppedDeclaredAppsTest, ReportsTheSetOnceUntilItChanges) {
+  // The condition is a static misconfiguration and the caller runs on every
+  // refresh, so the same set must be reported once, not once per second.
+  std::set<std::string> remembered;
+
+  const std::vector<std::string> one{"plc_bridge -> /ros2_medkit_gateway_fault_clients"};
+  EXPECT_TRUE(remember_dropped_declared_apps(one, remembered));
+  EXPECT_FALSE(remember_dropped_declared_apps(one, remembered));
+  EXPECT_FALSE(remember_dropped_declared_apps(one, remembered));
+
+  // A changed set is news again.
+  const std::vector<std::string> two{"plc_bridge -> /ros2_medkit_gateway_fault_clients",
+                                     "aux_bridge -> /ros2_medkit_gateway_sub"};
+  EXPECT_TRUE(remember_dropped_declared_apps(two, remembered));
+  EXPECT_FALSE(remember_dropped_declared_apps(two, remembered));
+
+  // Order is not a change: the caller builds this list from a vector whose
+  // order follows discovery, which is not stable between refreshes.
+  const std::vector<std::string> two_reordered{"aux_bridge -> /ros2_medkit_gateway_sub",
+                                               "plc_bridge -> /ros2_medkit_gateway_fault_clients"};
+  EXPECT_FALSE(remember_dropped_declared_apps(two_reordered, remembered));
+
+  // Clearing says nothing, but it is remembered, so the same set coming back
+  // is reported again rather than staying silent for the life of the process.
+  EXPECT_FALSE(remember_dropped_declared_apps({}, remembered));
+  EXPECT_TRUE(remember_dropped_declared_apps(one, remembered));
+}
+
 TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
   // The same split at the level callers see: two of the three helpers of a
   // namespaced gateway live in the root namespace, and without them being

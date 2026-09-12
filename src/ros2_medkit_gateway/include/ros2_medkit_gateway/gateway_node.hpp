@@ -18,6 +18,7 @@
 #include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -440,6 +441,9 @@ class GatewayNode : public rclcpp::Node {
   // One-shot WARN when entity_cache capacity is exceeded (grew on first refresh after reserve).
   // Cleared only at construction time; never reset so the WARN fires at most once per run.
   bool warned_cache_grow_{false};
+  /// Declared apps the helper-node rule last warned about, so a static
+  /// misconfiguration is reported when it appears or changes, not every refresh.
+  std::set<std::string> warned_helper_bound_apps_;
 
   // Graph-change-driven discovery refresh.
   //
@@ -528,6 +532,18 @@ class GatewayNode : public rclcpp::Node {
  * the gateway and the subscription node and leaves the other two behind, which
  * is why those two are also matched as `/<name><suffix>`.
  *
+ * CONTRACT, and the cost of that second spelling: a helper-named node in the
+ * root namespace is treated as plumbing whichever gateway created it. Two
+ * gateways that keep the default node name and differ only in namespace build
+ * the same literal `/<name>_fault_clients` and
+ * `/<name>_lifecycle_state_reader`, so the name cannot say whose it is, and
+ * each will claim the other's. What it is does not depend on who owns it -
+ * those nodes carry nothing to diagnose in either process - and the
+ * alternative is that every namespaced gateway serves and counts its own
+ * plumbing. The subscription node is exempt: it always follows its gateway's
+ * namespace, so a root-namespace one is provably another process's and stays
+ * visible.
+ *
  * @param node_fqn Fully qualified node name to test ("/ns/node")
  * @param self_fqn The gateway node's own FQN. An empty value matches nothing
  */
@@ -557,6 +573,21 @@ bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string 
  *        manifest without saying so, and this function has no logger
  * @return Number of apps removed
  */
+/**
+ * @brief Remember which declared apps were dropped, and say whether that changed
+ *
+ * The condition this gates is a static misconfiguration, while the caller runs
+ * on every graph event and on the refresh cadence, so warning per call would
+ * repeat the same line for the life of the process. Returns true only when the
+ * set differs from the remembered one and is not empty; the remembered set is
+ * updated either way, so a condition that clears and returns is reported again.
+ *
+ * @param dropped App ids (with their bound FQNs) dropped by the helper rule
+ * @param remembered In/out: the set the caller last warned about
+ * @return true when the caller should warn
+ */
+bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
+
 size_t filter_internal_node_apps(std::vector<App> & apps,
                                  const std::unordered_map<std::string, std::string> & peer_routing_table,
                                  const std::string & self_fqn,
