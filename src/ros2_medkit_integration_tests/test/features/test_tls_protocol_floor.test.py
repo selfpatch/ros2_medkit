@@ -147,18 +147,17 @@ def _handshake(port, version, client_cert=None, client_key=None, timeout=20):
         return False
     out = (proc.stdout + proc.stderr).decode(errors='replace')
 
-    # "Cipher is <name>" is NOT proof that the handshake completed, and reading
-    # it that way is how an earlier version of this file reported mutual TLS as
-    # broken when it was working. Under TLS 1.2 the cipher suite is agreed
-    # before the client certificate is examined, so a server that then rejects
-    # the certificate still leaves a cipher name in the output, followed by a
-    # fatal alert. Verified by hand against this gateway: a client with no
-    # certificate printed "Cipher is ECDHE-RSA-AES256-GCM-SHA384" AND
-    # "sslv3 alert handshake failure", while curl against the same endpoint got
-    # no HTTP response at all.
+    # "Cipher is <name>" is not proof that the handshake completed. Under TLS
+    # 1.2 the cipher suite is agreed before the client certificate is examined,
+    # so a server that then rejects the certificate still leaves a cipher name
+    # in the output, followed by a fatal alert: a client with no certificate
+    # against this gateway prints "Cipher is ECDHE-RSA-AES256-GCM-SHA384" AND
+    # "sslv3 alert handshake failure", while curl on the same endpoint gets no
+    # HTTP response at all.
     #
-    # So a fatal alert is the signal, and "Cipher is (NONE)" covers the case
-    # where the version itself was refused before any suite was picked.
+    # The fatal alert is therefore the signal, and "Cipher is (NONE)" covers
+    # the case where the version itself was refused before any suite was
+    # picked.
     if 'Cipher is (NONE)' in out:
         return False
     if re.search(r'alert (handshake failure|protocol version|certificate|unknown ca)', out):

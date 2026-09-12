@@ -331,10 +331,10 @@ void RESTServer::setup_pre_routing_handler() {
       // Treat this as a named exemption alongside /auth/, not as an oversight.
       // A real preflight carries Access-Control-Request-Method; the browser
       // sends it to ask whether the method it is about to use is allowed.
-      // Requiring it keeps the exemption to the case that genuinely cannot
-      // authenticate. Without that check a plain anonymous OPTIONS with an
-      // allowed Origin took the same early return, which widens a narrow,
-      // necessary exemption into "OPTIONS is public".
+      // Requiring it is what keeps the exemption to the case that genuinely
+      // cannot authenticate: matching on the method and the origin alone would
+      // let a plain anonymous OPTIONS take this early return, which is
+      // "OPTIONS is public" rather than "a preflight is public".
       if (req.method == "OPTIONS" && req.has_header("Access-Control-Request-Method")) {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
