@@ -2512,12 +2512,20 @@ void GatewayNode::refresh_cache() {
       if (removed > 0) {
         RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix or own helper node)", removed);
       }
-      for (const auto & dropped : dropped_declared_apps) {
-        RCLCPP_WARN(get_logger(),
-                    "Declared app '%s' is bound to one of this gateway's own in-process helper nodes and is not "
-                    "served. Those nodes carry no parameters, services or actions to diagnose. Bind the app to the "
-                    "node you meant, or drop the declaration.",
-                    dropped.c_str());
+      // Warn on the set, not on the refresh. The condition is a static
+      // misconfiguration - an app declared against a helper node stays declared
+      // - while this function runs on every graph event and again on the
+      // backstop cadence, which the integration fixtures set to one second. The
+      // same one-shot discipline as the entity-cache WARN below, widened to
+      // re-fire when the set of offending apps actually changes.
+      if (remember_dropped_declared_apps(dropped_declared_apps, warned_helper_bound_apps_)) {
+        for (const auto & dropped : dropped_declared_apps) {
+          RCLCPP_WARN(get_logger(),
+                      "Declared app '%s' is bound to one of this gateway's own in-process helper nodes and is not "
+                      "served. Those nodes carry no parameters, services or actions to diagnose. Bind the app to the "
+                      "node you meant, or drop the declaration.",
+                      dropped.c_str());
+        }
       }
     }
 
@@ -2611,6 +2619,17 @@ void GatewayNode::stop_rest_server() {
   if (server_thread_ && server_thread_->joinable()) {
     server_thread_->join();
   }
+}
+
+bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered) {
+  std::set<std::string> current(dropped.begin(), dropped.end());
+  if (current == remembered) {
+    return false;
+  }
+  remembered = std::move(current);
+  // An empty set is remembered so the condition clearing and coming back warns
+  // again, but there is nothing to say about no apps at all.
+  return !remembered.empty();
 }
 
 size_t filter_internal_node_apps(std::vector<App> & apps,
