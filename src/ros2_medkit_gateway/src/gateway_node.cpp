@@ -1597,12 +1597,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 }
 
-bool is_own_gateway_node(const std::string & node_fqn, const std::string & self_fqn) {
+bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn) {
   if (self_fqn.empty() || node_fqn.empty()) {
     return false;
-  }
-  if (node_fqn == self_fqn) {
-    return true;
   }
   // The helper nodes the gateway creates inside its own process, each named
   // after this node plus a fixed suffix. Where each one is set:
@@ -1630,7 +1627,10 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
       fqn += "/";
     }
     fqn += name;
-    if (is_own_gateway_node(fqn, self_fqn)) {
+    // The gateway is not a peer of itself, and neither are the helper nodes it
+    // runs in its own process: a gateway alone on the graph has zero peers,
+    // which is what raises the empty-graph warning.
+    if (fqn == self_fqn || is_own_gateway_helper_node(fqn, self_fqn)) {
       continue;
     }
     ++count;
@@ -2594,13 +2594,16 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
       if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
         original_id = original_id.substr(prefix.size());
       }
-    } else if (is_own_gateway_node(app.effective_fqn(), self_fqn)) {
-      // A local app bound to one of this gateway's own nodes. Those names do
-      // not start with '_' ("<gateway>_sub", "<gateway>_fault_clients", ...),
-      // so only the FQN test catches them, and without it the gateway
-      // advertises its own plumbing as diagnosable apps. Remote entities are
-      // skipped deliberately: a peer's helper nodes carry the same FQNs and are
-      // the peer's own filter's business.
+    } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
+      // A local app bound to one of this gateway's own helper nodes. Those
+      // names do not start with '_' ("<gateway>_sub",
+      // "<gateway>_fault_clients", ...), so only the FQN test catches them, and
+      // without it the gateway advertises its own plumbing as diagnosable apps.
+      // The gateway's own node is deliberately not covered: its ROS parameters
+      // are served as that App's configurations, so callers reach them at
+      // /apps/<gateway>/configurations. Remote entities are skipped too - a
+      // peer's helper nodes carry the same FQNs and are the peer's own filter's
+      // business.
       return true;
     }
     // ROS 2 internal nodes use _ prefix convention
