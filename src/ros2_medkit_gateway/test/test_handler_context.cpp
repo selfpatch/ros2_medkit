@@ -1024,11 +1024,12 @@ App bound_app(const std::string & id, const std::string & fqn) {
 
 }  // namespace
 
-TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodes) {
+TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodesButKeepsItsOwnNode) {
   // The gateway creates "<self>_sub", "<self>_fault_clients" and
   // "<self>_lifecycle_state_reader" in its own process. None starts with '_',
   // so runtime introspection returns them as ordinary apps and the gateway ends
-  // up listing its own plumbing as diagnosable.
+  // up listing its own plumbing as diagnosable. Its own node is a different
+  // case and stays: its ROS parameters are served as that App's configurations.
   const std::string self_fqn = "/ros2_medkit_gateway";
   std::vector<App> apps{
       bound_app("ros2_medkit_gateway", self_fqn),
@@ -1047,12 +1048,13 @@ TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodes) {
   std::unordered_map<std::string, std::string> routing;
   auto removed = filter_internal_node_apps(apps, routing, self_fqn);
 
-  EXPECT_EQ(removed, 4u);
+  EXPECT_EQ(removed, 3u);
   std::set<std::string> remaining;
   for (const auto & app : apps) {
     remaining.insert(app.id);
   }
-  EXPECT_EQ(remaining, (std::set<std::string>{"other_gateway_sub", "ros2_medkit_gateway_monitor", "fault_manager"}));
+  EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway_sub", "ros2_medkit_gateway_monitor",
+                                              "fault_manager"}));
 }
 
 TEST(FilterInternalNodeAppsTest, LeavesPeerHelperNodesToThePeer) {
@@ -1070,22 +1072,25 @@ TEST(FilterInternalNodeAppsTest, LeavesPeerHelperNodesToThePeer) {
   ASSERT_EQ(apps.size(), 1u);
 }
 
-TEST(IsOwnGatewayNodeTest, MatchesSelfAndHelpersExactlyAndNothingElse) {
+TEST(IsOwnGatewayHelperNodeTest, MatchesTheThreeHelperSuffixesExactlyAndNothingElse) {
   const std::string self_fqn = "/ros2_medkit_gateway";
-  EXPECT_TRUE(is_own_gateway_node(self_fqn, self_fqn));
-  EXPECT_TRUE(is_own_gateway_node(self_fqn + "_sub", self_fqn));
-  EXPECT_TRUE(is_own_gateway_node(self_fqn + "_fault_clients", self_fqn));
-  EXPECT_TRUE(is_own_gateway_node(self_fqn + "_lifecycle_state_reader", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_sub", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_lifecycle_state_reader", self_fqn));
+
+  // The gateway's own node is not a helper: it carries the parameters SOVD
+  // serves as configurations, so it stays a diagnosable App.
+  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, self_fqn));
 
   // Prefix neighbours are genuine peers, not ours.
-  EXPECT_FALSE(is_own_gateway_node(self_fqn + "_monitor", self_fqn));
-  EXPECT_FALSE(is_own_gateway_node(self_fqn + "2", self_fqn));
-  EXPECT_FALSE(is_own_gateway_node("/other" + self_fqn + "_sub", self_fqn));
-  EXPECT_FALSE(is_own_gateway_node("/fault_manager", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn + "_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn + "2", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/other" + self_fqn + "_sub", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/fault_manager", self_fqn));
 
   // An unknown self FQN must claim nothing rather than everything.
-  EXPECT_FALSE(is_own_gateway_node(self_fqn, ""));
-  EXPECT_FALSE(is_own_gateway_node("", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, ""));
+  EXPECT_FALSE(is_own_gateway_helper_node("", self_fqn));
 }
 
 // =============================================================================
