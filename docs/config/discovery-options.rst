@@ -124,6 +124,20 @@ four together; a remap naming the gateway alone
 subscription node and leaves the other two in the default namespace. Both
 spellings are recognised, so the rule holds either way.
 
+.. note::
+
+   A node named ``<gateway>_fault_clients`` or
+   ``<gateway>_lifecycle_state_reader`` in the **root** namespace is treated as
+   plumbing whichever gateway created it. Two gateways that keep the default
+   node name and differ only in namespace produce the same fully qualified name
+   for those two nodes, so the name cannot say whose they are, and each gateway
+   will filter the other's. They carry nothing to diagnose in either process,
+   and the alternative is that a namespaced gateway lists and counts its own
+   plumbing. Give each gateway its own node name (``-r __node:=gateway_a``, as
+   :doc:`../tutorials/multi-instance` does) when several run on one ROS graph
+   and you want each one's nodes distinguishable. The subscription node is not
+   affected: it always follows its gateway's namespace.
+
 A manifest- or plugin-declared App bound to one of these nodes is not served,
 and the gateway logs a warning naming it: bind the App to the node you meant,
 or drop the declaration.
