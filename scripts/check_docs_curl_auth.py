@@ -107,7 +107,7 @@ def gateway_paths(command):
             if path == API_PREFIX or path.startswith(API_PREFIX + '/')]
 
 
-def offenders_in(path, text):
+def offenders_in(text):
     """Return (line, command) for every unauthenticated gateway request."""
     lines = text.splitlines()
     marked_until = -1
@@ -150,6 +150,13 @@ def block_end(lines, marker_line, indent):
 
 
 def main():
+    if __doc__ is None:
+        # Docstrings are stripped under `python -OO`, and this script's usage
+        # text plus the marker documentation a failure points a reader at both
+        # live in the module docstring. Refuse rather than run degraded.
+        raise SystemExit(
+            f'{Path(__file__).name}: docstrings are stripped in this '
+            'interpreter (-OO); run it without optimisation')
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         '--root', default=str(Path(__file__).parent.parent.resolve()),
@@ -159,7 +166,7 @@ def main():
 
     total = 0
     for path in documented_files(root):
-        for number, command in offenders_in(path, path.read_text(encoding='utf-8')):
+        for number, command in offenders_in(path.read_text(encoding='utf-8')):
             total += 1
             print(f'{path.relative_to(root)}:{number}: no Authorization header: '
                   f'{command[:120]}')
