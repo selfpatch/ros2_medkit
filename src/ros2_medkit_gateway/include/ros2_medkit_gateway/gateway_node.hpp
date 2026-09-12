@@ -498,17 +498,24 @@ class GatewayNode : public rclcpp::Node {
 };
 
 /**
- * @brief Is this node FQN the gateway's own, rather than a diagnosable peer?
+ * @brief Is this node FQN one of the helper nodes the gateway runs in-process?
  *
- * True for the gateway node itself and for the helper nodes it creates inside
- * its own process: the subscription executor's `<fqn>_sub`, the fault-service
+ * True for the subscription executor's `<fqn>_sub`, the fault-service
  * transport's `<fqn>_fault_clients`, and the lifecycle reader's
  * `<fqn>_lifecycle_state_reader`. None of these begins with '_', so the ROS 2
  * hidden-node convention does not cover them and the gateway would otherwise
- * count them as peers and list them as diagnosable Apps - reporting on itself.
+ * list its own plumbing as diagnosable Apps. They carry no parameters and no
+ * services of their own, so there is nothing to diagnose on them.
  *
- * A fault_manager node sharing the process is NOT ours: it is a separate,
- * diagnosable component and stays visible.
+ * False for the gateway node itself. The gateway IS a diagnosable App: its ROS
+ * parameters are served as that App's configurations, and callers read and
+ * write them at `/apps/<gateway>/configurations`. Excluding it would remove the
+ * only entity carrying, for instance, `aggregation.peer_auth_header`, and would
+ * make two gateways watching one graph disagree about that graph, because each
+ * would hide a different node.
+ *
+ * A fault_manager node sharing the process is NOT ours either: it is a
+ * separate, diagnosable component and stays visible.
  *
  * Exact matches only. A prefix test would also claim a genuine peer named
  * `<fqn>_monitor` or `<fqn>2`, and dropping a real node is the worse error.
@@ -516,7 +523,7 @@ class GatewayNode : public rclcpp::Node {
  * @param node_fqn Fully qualified node name to test ("/ns/node")
  * @param self_fqn The gateway node's own FQN. An empty value matches nothing
  */
-bool is_own_gateway_node(const std::string & node_fqn, const std::string & self_fqn);
+bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn);
 
 /**
  * @brief Filter ROS 2 internal nodes from an app list
@@ -526,14 +533,16 @@ bool is_own_gateway_node(const std::string & node_fqn, const std::string & self_
  * before checking for the underscore prefix, using the routing table for precise
  * prefix detection.
  *
- * Also removes local apps bound to one of the gateway's own nodes
- * (is_own_gateway_node), which the underscore rule cannot see. The test is on
- * the bound node FQN, and only for apps with no routing-table entry: a peer's
- * helper nodes are the peer's business and are left to the peer's own filter.
+ * Also removes local apps bound to one of the gateway's in-process helper nodes
+ * (is_own_gateway_helper_node), which the underscore rule cannot see. The
+ * gateway's own node is NOT removed - it is a diagnosable App whose ROS
+ * parameters are served as its configurations. The test is on the bound node
+ * FQN, and only for apps with no routing-table entry: a peer's helper nodes are
+ * the peer's business and are left to the peer's own filter.
  *
  * @param apps App vector to filter in place
  * @param peer_routing_table Maps entity_id -> peer_name for remote entities
- * @param self_fqn The gateway node's own FQN. Empty disables the self check
+ * @param self_fqn The gateway node's own FQN. Empty disables the helper check
  * @return Number of apps removed
  */
 size_t filter_internal_node_apps(std::vector<App> & apps,
