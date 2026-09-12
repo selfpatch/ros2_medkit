@@ -1586,10 +1586,10 @@ struct ReportedBag {
 
     for (const auto & entry : std::filesystem::recursive_directory_iterator(dir)) {
       if (entry.is_regular_file()) {
-        footprint += static_cast<size_t>(entry.file_size());
+        footprint += entry.file_size();
       }
     }
-    served = static_cast<size_t>(std::filesystem::file_size(dir / storage_file));
+    served = std::filesystem::file_size(dir / storage_file);
   }
 
   ~ReportedBag() {
