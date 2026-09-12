@@ -927,7 +927,7 @@ Example:
          clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin", "viewer:REPLACE_WITH_STRONG_SECRET:viewer"]
 
 Opening a route to uncredentialed callers
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Under ``require_auth_for: "all"`` the only routes answered without a credential
 are ``/api/v1/auth/*``, because authentication cannot bootstrap through a door
