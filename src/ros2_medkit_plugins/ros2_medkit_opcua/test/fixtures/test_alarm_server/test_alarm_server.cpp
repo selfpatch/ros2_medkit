@@ -28,6 +28,7 @@
 #include <open62541/server_config_default.h>
 #include <open62541/types_generated.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -43,7 +44,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <utility>
 
 namespace {
@@ -636,10 +636,11 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     if (cmd == "quit") {
       g_running = false;
       std::cout << "OK quit" << std::endl;
-      // The reader is parked in getline; closing its descriptor is what ends
-      // it, so the join below returns instead of waiting for a writer that has
-      // been told the server is going away.
-      ::close(STDIN_FILENO);
+      // Only the server loop stops here. What ends the reader is EOF, which
+      // the writer produces by closing its end of the pipe - close(2) on this
+      // process's own descriptor does not release a reader already parked in
+      // read(2). So the join below waits for the caller to let go of stdin,
+      // which AlarmServer::stop() does before it signals the server.
       return;
     }
     // ``set <NodeName> <int>`` writes a polled Int32 variable (StatusWord /
@@ -856,8 +857,16 @@ int main(int argc, char ** argv) {
   // callback, and a command is how a test makes the alarm it is waiting for
   // happen.
   UA_StatusCode rc = UA_Server_run_startup(server);
+  if (rc != UA_STATUSCODE_GOOD) {
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << std::endl;
+  }
   while (rc == UA_STATUSCODE_GOOD && g_running) {
-    UA_Server_run_iterate(server, false);
+    // The return is how long the server may idle until its next scheduled
+    // callback, not a status: open62541 reports no mid-run failure through it,
+    // and UA_Server_run did not either - its own return is run_shutdown's. It
+    // does bound the pause below, which is otherwise kept small so a queued
+    // command is never held back by a server that has nothing to do.
+    const UA_UInt16 idle_ms = UA_Server_run_iterate(server, false);
     for (;;) {
       std::string line;
       {
@@ -870,18 +879,15 @@ int main(int argc, char ** argv) {
       }
       execute_command(server, ns, line);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<UA_UInt16>(idle_ms, 1, 2)));
   }
   if (rc == UA_STATUSCODE_GOOD) {
     rc = UA_Server_run_shutdown(server);
+    if (rc != UA_STATUSCODE_GOOD) {
+      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << std::endl;
+    }
   }
   g_running = false;
-  // The exit code is 1 for every bad status, so print the status itself:
-  // otherwise a server that ends on its own leaves the driving test with a
-  // closed stdin pipe and no reason anywhere.
-  if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run rc=" << UA_StatusCode_name(rc) << std::endl;
-  }
   if (reader.joinable()) {
     reader.join();
   }
