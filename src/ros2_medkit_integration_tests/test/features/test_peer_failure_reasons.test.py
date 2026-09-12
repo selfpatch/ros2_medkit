@@ -59,7 +59,6 @@ from ros2_medkit_test_utils.constants import (
     DISCOVERY_TIMEOUT,
     get_test_domain_id,
     get_test_port,
-    get_time_scale,
 )
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
@@ -81,7 +80,9 @@ PEER_PARAM_TIMEOUT_SEC = 6.0
 TIGHT_METADATA_MS = 800
 PATIENT_METADATA_MS = 20000
 
-TIMEOUT = DISCOVERY_TIMEOUT * get_time_scale()
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale; applying the
+# scale again would square it.
+TIMEOUT = DISCOVERY_TIMEOUT
 
 PEER_COMPONENT = 'remote-ecu'
 UNRESPONSIVE_APP = 'remote_unresponsive_param'
@@ -249,21 +250,32 @@ class PeerFailureReasonsTest(unittest.TestCase):
         # spends the aggregator's whole metadata budget. So a reason is readable
         # only once the fan-out is in the answer, and this waits for that on the
         # discovery budget, which is what it is waiting for.
-        deadline = time.time() + DISCOVERY_TIMEOUT
+        deadline = time.time() + TIMEOUT
         ext = {}
-        while True:
-            response = requests.get(_config_url(base_url), timeout=timeout)
+        response = None
+        last_error = None
+        while time.time() < deadline:
+            try:
+                response = requests.get(_config_url(base_url), timeout=timeout)
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                time.sleep(DISCOVERY_INTERVAL)
+                continue
             self.assertEqual(
                 response.status_code, 200,
                 f'a fanned-out listing whose peer failed must still answer 200: '
                 f'{response.status_code} {response.text[:400]}')
             ext = response.json().get('x-medkit', {})
-            if ext.get('partial') or time.time() >= deadline:
+            if ext.get('partial'):
                 break
             time.sleep(DISCOVERY_INTERVAL)
+        if response is None:
+            raise AssertionError(
+                f'no response arrived from {base_url} within {TIMEOUT:.0f}s: {last_error}')
         self.assertTrue(
             ext.get('partial'),
-            f'no answer admitted it was partial within {DISCOVERY_TIMEOUT:.0f}s: {ext}')
+            f'no answer admitted it was partial within {TIMEOUT:.0f}s: {ext}' +
+            (f' (last request error: {last_error})' if last_error else ''))
         # R4: the existing key keeps its existing shape.
         self.assertEqual(
             ext.get('failed_peers'), ['remote_gateway'],
