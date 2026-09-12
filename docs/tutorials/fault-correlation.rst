@@ -159,9 +159,15 @@ Quick Start
 
 3. **Query faults with correlation data:**
 
+   .. note::
+
+      The gateway ships closed, so every request below needs a
+      credential. Exchange a client id and secret for ``$TOKEN`` at
+      ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
    .. code-block:: bash
 
-      curl "http://localhost:8080/api/v1/faults?include_muted=true"
+      curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/v1/faults?include_muted=true"
 
 Configuration Reference
 -----------------------
@@ -310,7 +316,7 @@ Querying Correlation Data
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults
 
 Response always includes:
 
@@ -327,7 +333,7 @@ Response always includes:
 
 .. code-block:: bash
 
-   curl "http://localhost:8080/api/v1/faults?include_muted=true"
+   curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/v1/faults?include_muted=true"
 
 .. code-block:: javascript
 
@@ -348,7 +354,7 @@ Response always includes:
 
 .. code-block:: bash
 
-   curl "http://localhost:8080/api/v1/faults?include_clusters=true"
+   curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/v1/faults?include_clusters=true"
 
 .. code-block:: javascript
 
@@ -373,7 +379,7 @@ Response always includes:
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/faults/ESTOP_001
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/ESTOP_001
 
 .. code-block:: json
 

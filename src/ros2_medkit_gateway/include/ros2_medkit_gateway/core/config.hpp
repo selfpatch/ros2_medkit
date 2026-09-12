@@ -26,7 +26,9 @@ namespace ros2_medkit_gateway {
  * When enabled, the gateway will start an HTTPS server instead of HTTP.
  */
 struct TlsConfig {
-  /// Whether TLS is enabled (default: false for backward compatibility)
+  /// Whether TLS is enabled. False here is the value a default-constructed
+  /// TlsConfig carries, not the posture the gateway ships: the shipped
+  /// config/gateway_params.yaml sets server.tls.enabled true.
   bool enabled{false};
 
   /// Path to PEM-encoded certificate file

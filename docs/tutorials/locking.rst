@@ -49,7 +49,7 @@ Lock the ``configurations`` and ``operations`` collections on a component for
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/components/motor_controller/locks \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/locks \
      -H "Content-Type: application/json" \
      -H "X-Client-Id: $CLIENT_ID" \
      -d '{
@@ -79,7 +79,7 @@ response until the lock is released or expires.
 .. code-block:: bash
 
    # This succeeds because we hold the lock
-   curl -X PUT http://localhost:8080/api/v1/components/motor_controller/configurations/max_speed \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/configurations/max_speed \
      -H "Content-Type: application/json" \
      -H "X-Client-Id: $CLIENT_ID" \
      -d '{"data": 1500}'
@@ -90,7 +90,7 @@ If the work takes longer than expected, extend the lock before it expires:
 
 .. code-block:: bash
 
-   curl -X PUT http://localhost:8080/api/v1/components/motor_controller/locks/lock_1 \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/locks/lock_1 \
      -H "Content-Type: application/json" \
      -H "X-Client-Id: $CLIENT_ID" \
      -d '{"lock_expiration": 600}'
@@ -106,7 +106,7 @@ When done, release the lock so other clients can proceed:
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/components/motor_controller/locks/lock_1 \
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/locks/lock_1 \
      -H "X-Client-Id: $CLIENT_ID"
 
 Response: ``204 No Content``
@@ -117,7 +117,7 @@ Check what locks exist on an entity:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components/motor_controller/locks \
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/locks \
      -H "X-Client-Id: $CLIENT_ID"
 
 The ``owned`` field in each lock item indicates whether the requesting client

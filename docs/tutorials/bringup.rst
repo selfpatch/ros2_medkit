@@ -75,10 +75,16 @@ no further wiring. Report a fault against any node on your stack:
 
 Then query the gateway and the black-box:
 
+.. note::
+
+   The gateway ships closed, so every request below needs a
+   credential. Exchange a client id and secret for ``$TOKEN`` at
+   ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
 .. code-block:: bash
 
    # The fault is visible via the gateway REST API
-   curl http://127.0.0.1:8080/api/v1/faults
+   curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/faults
 
    # A non-empty black-box bag was captured at confirmation
    ros2 service call /fault_manager/get_rosbag ros2_medkit_msgs/srv/GetRosbag \

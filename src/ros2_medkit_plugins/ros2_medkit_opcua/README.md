@@ -440,10 +440,11 @@ In a write-capable build the plugin auto-registers `acknowledge_fault` and
 `confirm_fault` operations on every entity that has at least one `event_alarms`
 entry. The default read-only build offers neither and refuses both - see
 [Read-only and write-capable builds](#read-only-and-write-capable-builds).
-Invoke them with:
+Invoke them with (the gateway ships closed, so `$TOKEN` is a token exchanged
+for a client id and secret at `POST /api/v1/auth/authorize`):
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/apps/tank_process/operations/acknowledge_fault/executions \
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/tank_process/operations/acknowledge_fault/executions \
      -H 'Content-Type: application/json' \
      -d '{"fault_code":"PLC_OVERPRESSURE","comment":"operator on radio"}'
 ```
@@ -939,7 +940,7 @@ bash scripts/start.sh
 MEDKIT_OPCUA_VARIANT=write-capable bash scripts/start.sh
 
 # Manual testing
-curl -s http://localhost:8080/api/v1/apps/tank_process/x-plc-data | jq .
+curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/apps/tank_process/x-plc-data | jq .
 
 # Automated tests against a running pair
 bash scripts/run_integration_tests.sh

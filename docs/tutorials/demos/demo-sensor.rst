@@ -107,16 +107,16 @@ Query sensor data via REST API:
 .. code-block:: bash
 
    # Get LiDAR scan
-   curl http://localhost:8080/api/v1/apps/lidar-sim/data/scan | jq '.ranges[:5]'
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/data/scan | jq '.ranges[:5]'
 
    # Get IMU data
-   curl http://localhost:8080/api/v1/apps/imu-sim/data/imu | jq '.linear_acceleration'
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/imu-sim/data/imu | jq '.linear_acceleration'
 
    # Get GPS fix
-   curl http://localhost:8080/api/v1/apps/gps-sim/data/fix | jq '{lat: .latitude, lon: .longitude}'
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/gps-sim/data/fix | jq '{lat: .latitude, lon: .longitude}'
 
    # Get camera image info
-   curl http://localhost:8080/api/v1/apps/camera-sim/data/image | jq '{width, height, encoding}'
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/camera-sim/data/image | jq '{width, height, encoding}'
 
 Managing Configurations
 -----------------------
@@ -128,13 +128,13 @@ View and modify sensor parameters:
 .. code-block:: bash
 
    # List all LiDAR configurations
-   curl http://localhost:8080/api/v1/apps/lidar-sim/configurations | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations | jq
 
    # Get specific parameter
-   curl http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev | jq
 
    # Change scan rate
-   curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/scan_rate \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/scan_rate \
      -H "Content-Type: application/json" \
      -d '{"data": 20.0}'
 
@@ -176,10 +176,10 @@ faults at runtime using provided scripts:
 .. code-block:: bash
 
    # List all system faults
-   curl http://localhost:8080/api/v1/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults
 
    # Get faults for specific sensor
-   curl http://localhost:8080/api/v1/apps/lidar-sim/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/faults
 
 **Manual fault injection via API:**
 
@@ -188,15 +188,15 @@ You can also inject faults by setting parameters directly:
 .. code-block:: bash
 
    # Increase noise level
-   curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
      -H "Content-Type: application/json" -d '{"data": 0.5}'
 
    # Enable NaN injection
-   curl -X PUT http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
      -H "Content-Type: application/json" -d '{"data": true}'
 
    # Increase failure probability
-   curl -X PUT http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
      -H "Content-Type: application/json" -d '{"data": 0.3}'
 
 Stopping the Demo

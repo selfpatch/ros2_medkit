@@ -88,9 +88,15 @@ The demo uses a **manifest-based configuration** to organize entities into logic
 
 Querying via API:
 
+.. note::
+
+   The gateway ships closed, so every request below needs a
+   credential. Exchange a client id and secret for ``$TOKEN`` at
+   ``POST /api/v1/auth/authorize`` - see :doc:`../authentication`.
+
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/areas | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas | jq
 
 .. figure:: /_static/images/13_curl_areas_turtlebot3.png
    :alt: Areas response
@@ -116,13 +122,13 @@ Query data via REST API:
 .. code-block:: bash
 
    # List all apps
-   curl http://localhost:8080/api/v1/apps | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps | jq
 
    # Get specific topic from AMCL localization
-   curl http://localhost:8080/api/v1/apps/amcl/data | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/data | jq
 
    # Get specific topic from controller server
-   curl http://localhost:8080/api/v1/apps/controller-server/data | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/controller-server/data | jq
 
 .. figure:: /_static/images/06_topic_data_view.png
    :alt: Topic data view
@@ -148,10 +154,10 @@ You can also interact with the navigation stack via API:
 .. code-block:: bash
 
    # List operations on BT Navigator
-   curl http://localhost:8080/api/v1/apps/bt-navigator/operations | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/bt-navigator/operations | jq
 
    # List operations on Controller Server
-   curl http://localhost:8080/api/v1/apps/controller-server/operations | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/controller-server/operations | jq
 
 Managing Parameters
 -------------------
@@ -163,13 +169,13 @@ View and modify parameters:
 .. code-block:: bash
 
    # List all configurations for AMCL
-   curl http://localhost:8080/api/v1/apps/amcl/configurations | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/configurations | jq
 
    # Get specific parameter
-   curl http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time | jq
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time | jq
 
    # Change parameter value
-   curl -X PUT http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time \
      -H "Content-Type: application/json" \
      -d '{"value": false}'
 
@@ -199,7 +205,7 @@ The demo includes fault injection scripts to test diagnostic capabilities:
    ./check-faults.sh
 
    # Or query via API
-   curl http://localhost:8080/api/v1/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults
 
 .. figure:: /_static/images/18_faults_injected_dashboard.png
    :alt: Faults dashboard

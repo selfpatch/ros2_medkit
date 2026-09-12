@@ -46,7 +46,7 @@ Quick Example
 
    .. code-block:: bash
 
-      curl -X POST http://localhost:8080/api/v1/components/main-computer/scripts \
+      curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/main-computer/scripts \
         -F "file=@check_disk.sh" \
         -F 'metadata={"name": "Disk Check", "description": "Check disk usage and health"}'
 
@@ -60,7 +60,7 @@ Quick Example
 
    .. code-block:: bash
 
-      curl -X POST http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions \
+      curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions \
         -H "Content-Type: application/json" \
         -d '{"execution_type": "now"}'
 
@@ -82,7 +82,7 @@ Quick Example
 
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions/exec_1717123500_0
+      curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions/exec_1717123500_0
 
    Response when finished:
 
@@ -107,10 +107,10 @@ Quick Example
    .. code-block:: bash
 
       # Delete the execution record
-      curl -X DELETE http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions/exec_1717123500_0
+      curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0/executions/exec_1717123500_0
 
       # Delete the uploaded script
-      curl -X DELETE http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0
+      curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/main-computer/scripts/script_1717123456_0
 
 Script Formats
 --------------

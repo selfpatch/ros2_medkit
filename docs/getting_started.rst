@@ -40,7 +40,10 @@ Open three terminals. In each, source your workspace:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway gateway.launch.py
+   ros2 launch ros2_medkit_gateway gateway.launch.py \
+     tls_enabled:=false \
+     jwt_secret:=change-me-to-at-least-32-characters-long \
+     auth_clients:=demo:demo-secret:admin
 
 You should see:
 
@@ -122,6 +125,50 @@ Required if you want to test the Faults API.
    The ``~/.ros2_medkit/`` directory must exist before starting the fault manager.
    SQLite will create the database file automatically.
 
+.. important::
+
+   The gateway ships **closed**: ``auth.enabled`` is true and
+   ``require_auth_for`` is ``all``, so every route below needs a credential and
+   the gateway will not start without a signing secret. That is deliberate - a
+   gateway that booted open is one nobody notices. The two arguments above are
+   a throwaway development credential; a real deployment injects them from its
+   own secret store.
+
+   Get a token once and reuse it for every command on this page:
+
+   .. code-block:: bash
+
+      TOKEN=$(curl -s http://localhost:8080/api/v1/auth/authorize \
+        -H 'Content-Type: application/json' \
+        -d '{"grant_type":"client_credentials","client_id":"demo","client_secret":"demo-secret"}' \
+        | jq -r .access_token)
+
+   ``tls_enabled:=false`` is what keeps the rest of this page on ``http://``.
+   TLS is on in the shipped config and the gateway will not start without a
+   certificate, so a first run either turns it off, as here, or supplies one:
+   run ``scripts/generate_dev_certs.sh ./certs`` and pass
+   ``cert_file:=./certs/cert.pem key_file:=./certs/key.pem``. Turn it off only
+   on a host nothing else can reach. See :doc:`tutorials/https` for a real
+   certificate.
+
+   ``POST /api/v1/auth/authorize`` takes the ``client_credentials`` grant;
+   ``/auth/token`` is the refresh endpoint and takes ``refresh_token``.
+
+   ``/api/v1/auth/*`` is the only exemption. ``GET /api/v1/health`` is not
+   exempt: a caller with no credential gets 401, which is what a container
+   supervisor or a browser UI probing it will see. A deployment that wants an
+   unauthenticated probe names the route itself::
+
+      auth:
+        public_routes: ["GET /api/v1/health"]
+
+   An anonymous caller on a route opened that way gets liveness only -
+   ``status``, ``timestamp`` and ``x-medkit-reduced: true`` - because the full
+   body names entities and ROS nodes.
+
+   To run without authentication - only on a host nothing else can reach -
+   pass ``auth_enabled:=false``.
+
 .. admonition:: ✅ Checkpoint
    :class: tip
 
@@ -140,22 +187,25 @@ The gateway exposes all endpoints under ``/api/v1``. Let's explore!
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/health
 
 **Get gateway capabilities:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/
 
 Response shows available endpoints and version info.
 
 .. admonition:: ✅ Checkpoint
    :class: tip
 
-   Health check should return: ``{"status": "healthy", "timestamp": ...}``
+   The health check should return ``"status": "healthy"`` with a
+   ``timestamp``, and - because the request carried a token - the discovery and
+   entity-cache sections alongside them.
 
-   If you see connection refused, verify gateway is running.
+   ``401`` means the token is missing or expired: re-run the ``TOKEN=`` command
+   above. Connection refused means the gateway is not running.
 
 Step 3: Discover Areas and Components
 -------------------------------------
@@ -197,7 +247,7 @@ ros2_medkit organizes ROS 2 nodes into a SOVD-aligned entity hierarchy:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/functions
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/functions
 
 With ``demo_nodes.launch.py``, you'll see Functions like ``powertrain``, ``chassis``, and ``body``
 (created from the first namespace segment).
@@ -206,7 +256,7 @@ With ``demo_nodes.launch.py``, you'll see Functions like ``powertrain``, ``chass
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/components
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components
 
 In runtime mode, you'll see a single host-level Component.
 
@@ -214,7 +264,7 @@ In runtime mode, you'll see a single host-level Component.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/areas
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas
 
 In runtime mode, this returns an empty list. Areas require a manifest definition
 (see :doc:`tutorials/manifest-discovery`).
@@ -228,7 +278,7 @@ The data endpoints let you read topic data from apps.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/temp_sensor/data
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/data
 
 Response structure (showing one topic):
 
@@ -282,7 +332,7 @@ Each data item includes:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature
 
 Response with live data:
 
@@ -339,7 +389,7 @@ The operations endpoints let you call ROS 2 services and actions.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/calibration/operations
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/calibration/operations
 
 **Call a service (synchronous execution):**
 
@@ -347,7 +397,7 @@ Services return immediately with status ``200 OK``:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/calibration/operations/calibrate/executions \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/calibration/operations/calibrate/executions \
      -H "Content-Type: application/json" \
      -d '{}'
 
@@ -370,7 +420,7 @@ Actions return ``202 Accepted`` immediately with an execution ID for polling:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions \
      -H "Content-Type: application/json" \
      -d '{"parameters": {"order": 5}}'
 
@@ -387,13 +437,13 @@ Response (202 Accepted):
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
 **Cancel a running action:**
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/long_calibration/operations/long_calibration/executions/a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
 Returns ``204 No Content`` on success.
 
@@ -406,19 +456,19 @@ The configurations endpoints expose ROS 2 parameters.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/temp_sensor/configurations
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/configurations
 
 **Get a specific parameter:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
 
 **Set a parameter value:**
 
 .. code-block:: bash
 
-   curl -X PUT http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate \
      -H "Content-Type: application/json" \
      -d '{"value": 5.0}'
 
@@ -426,7 +476,7 @@ The configurations endpoints expose ROS 2 parameters.
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/configurations/publish_rate
 
 Step 7: Monitor Faults
 ----------------------
@@ -439,19 +489,19 @@ Step 7: Monitor Faults
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults
 
 **List faults for a specific component:**
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/lidar_sensor/faults
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar_sensor/faults
 
 **Clear a fault:**
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/apps/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar_sensor/faults/LIDAR_CALIBRATION_REQUIRED
 
 .. admonition:: ✅ Checkpoint
    :class: tip

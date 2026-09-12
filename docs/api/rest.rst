@@ -944,7 +944,7 @@ Read and publish data from ROS 2 topics. Item ids follow
 
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
+      curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data/powertrain%2Fengine%2Ftemperature
 
 ``PUT /api/v1/components/{id}/data/{topic_path}``
    Publish to a topic.
@@ -958,7 +958,7 @@ Read and publish data from ROS 2 topics. Item ids follow
 
    .. code-block:: bash
 
-      curl -X PUT http://localhost:8080/api/v1/components/brake_actuator/data/chassis%2Fbrakes%2Fcommand \
+      curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/brake_actuator/data/chassis%2Fbrakes%2Fcommand \
         -H "Content-Type: application/json" \
         -d '{"data": 50.0}'
 
@@ -1030,7 +1030,7 @@ Execute Operations
 
    .. code-block:: bash
 
-      curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
+      curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
         -H "Content-Type: application/json" \
         -d '{}'
 
@@ -1038,7 +1038,7 @@ Execute Operations
 
    .. code-block:: bash
 
-      curl -X POST http://localhost:8080/api/v1/components/calibration/operations/long_calibration/executions \
+      curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/calibration/operations/long_calibration/executions \
         -H "Content-Type: application/json" \
         -d '{"order": 10}'
 
@@ -1244,7 +1244,7 @@ Request Transition
 
    .. code-block:: bash
 
-      curl -X PUT http://localhost:8080/api/v1/apps/temp_sensor/status/restart
+      curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/status/restart
 
 .. _configuration-endpoints:
 
@@ -1313,7 +1313,7 @@ Manage ROS 2 node parameters.
 
    .. code-block:: bash
 
-      curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
+      curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
         -H "Content-Type: application/json" \
         -d '{"data": 20.0}'
 
@@ -1735,7 +1735,7 @@ List available bulk-data categories for an entity. Returns the union of rosbag c
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/bulk-data
 
 **Response (200 OK):**
 
@@ -1756,7 +1756,7 @@ List all bulk-data items in a category for the entity.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
 
 **Response (200 OK):**
 
@@ -1832,10 +1832,10 @@ declared on the 206 only - the 200 can never carry it.
 
 .. code-block:: bash
 
-   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
+   curl -H "Authorization: Bearer $TOKEN" -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
 
    # One byte range
-   curl -H 'Range: bytes=0-1023' \
+   curl -H "Authorization: Bearer $TOKEN" -H 'Range: bytes=0-1023' \
      http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/550e8400-e29b-41d4-a716-446655440000
 
 **Response Codes:**
@@ -1880,7 +1880,7 @@ used for uploads.
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration \
      -F "file=@calibration_data.bin;type=application/octet-stream" \
      -F "description=Motor calibration parameters v2.1" \
      -F 'metadata={"version": "2.1", "author": "engineer_01"}'
@@ -1926,7 +1926,7 @@ fault manager and cannot be deleted via this endpoint.
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration/calibration_1739612345000000000_ab12cd34
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/bulk-data/calibration/calibration_1739612345000000000_ab12cd34
 
 **Response Codes:**
 
@@ -2682,7 +2682,7 @@ Trigger Events (SSE Stream)
 
    .. code-block:: bash
 
-      curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_001/events
+      curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_001/events
 
    - **404** ``resource-not-found`` - Trigger not found or expired
    - **503** ``service-unavailable`` - Maximum SSE client limit reached
@@ -3203,7 +3203,7 @@ topic (push-based).
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-topic-beacon
 
 **Response (200 OK):**
 
@@ -3258,7 +3258,7 @@ polling ROS 2 node parameters matching a configured prefix (pull-based).
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-param-beacon
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine_temp_sensor/x-medkit-param-beacon
 
 **Response (200 OK):**
 
@@ -3582,7 +3582,7 @@ runs - on any path, including paths that do not exist:
 
 .. code-block:: bash
 
-   $ curl -i -H 'Range: furlongs=1-2' http://localhost:8080/api/v1/health
+   $ curl -H "Authorization: Bearer $TOKEN" -i -H 'Range: furlongs=1-2' http://localhost:8080/api/v1/health
    HTTP/1.1 416 Range Not Satisfiable
 
 The body is the usual ``GenericError`` shape, which is why the document

@@ -57,8 +57,8 @@ Verify both gateways are healthy:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/health
-   curl http://localhost:8081/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/health
 
 Each gateway should report ``{"status": "healthy"}``.
 
@@ -96,7 +96,7 @@ Step 3: Explore the Merged API
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/components | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/components | jq
 
 The response includes components from both gateways. Remote-only Components
 have ``"source": "peer:subsystem_b"`` in their metadata.
@@ -118,7 +118,7 @@ are combined). Remote-only Components appear as separate entries:
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/areas | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/areas | jq
 
 Areas are merged by ID - if both gateways discover a ``root`` area, only one
 ``root`` appears in the response.
@@ -128,7 +128,7 @@ Areas are merged by ID - if both gateways discover a ``root`` area, only one
 .. code-block:: bash
 
    # If subsystem_b has a component "arm_controller"
-   curl -s http://localhost:8080/api/v1/components/arm_controller/data | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/components/arm_controller/data | jq
 
 The request is transparently forwarded to Gateway B. The client does not need
 to know which gateway owns the entity.
@@ -137,7 +137,7 @@ to know which gateway owns the entity.
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/functions | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/functions | jq
 
 Functions are merged by ID with combined ``hosts`` lists. A ``navigation``
 function that exists on both gateways appears once, listing hosts from both.
@@ -202,7 +202,7 @@ health endpoint to see discovered peers:
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/health | jq '.peers'
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/health | jq '.peers'
 
 .. note::
 
@@ -240,15 +240,15 @@ Test this by stopping Gateway B and querying Gateway A:
    # Stop Gateway B (Ctrl+C in Terminal 2)
 
    # Wait for cache refresh interval, then:
-   curl -s http://localhost:8080/api/v1/components | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/components | jq
    # Returns only local components (remote entities dropped from cache)
 
    # Faults show partial results:
-   curl -s http://localhost:8080/api/v1/faults | jq '.["x-medkit"].partial'
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/faults | jq '.["x-medkit"].partial'
    # Returns true
 
    # Try accessing a remote entity:
-   curl -s http://localhost:8080/api/v1/apps/subsystem_b__some_node/data
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/apps/subsystem_b__some_node/data
    # Returns 502 Bad Gateway
 
 When Gateway B comes back online, it is automatically re-included after the
@@ -298,7 +298,7 @@ Start all three gateways, then query the top-level:
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/components | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/components | jq
 
 Gateway A returns components from all three levels. Requests for entities on
 Gateway C are forwarded through B to C.

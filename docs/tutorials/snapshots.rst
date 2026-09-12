@@ -77,9 +77,15 @@ Quick Start
 
 3. **When a fault is confirmed, query its snapshots:**
 
+   .. note::
+
+      The gateway ships closed, so every request below needs a
+      credential. Exchange a client id and secret for ``$TOKEN`` at
+      ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+      curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
 
 Configuration Options
 ---------------------
@@ -264,7 +270,7 @@ Snapshots are included inline in the fault response as ``environment_data``:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
 
 **Response:**
 
@@ -330,7 +336,7 @@ Snapshots are included inline in the fault response as ``environment_data``:
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT | \
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT | \
      jq '.environment_data.snapshots'
 
 Example Workflow
@@ -365,7 +371,7 @@ This example demonstrates the complete snapshot capture workflow.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/nav_node/faults/NAV_ERROR | \
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/nav_node/faults/NAV_ERROR | \
      jq '.environment_data.snapshots'
 
 The response will contain the odometry data that was captured at the
@@ -763,7 +769,7 @@ Rosbag files are downloaded via SOVD bulk-data endpoints.
 
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags
 
 One item per **recording**, not per fault. A burst of correlated faults shares a
 single recording and appears once, with every fault it covers listed in
@@ -803,7 +809,7 @@ recordings had their own identity keep working.
 .. code-block:: bash
 
    # Using bulk_data_uri from fault response
-   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
+   curl -H "Authorization: Bearer $TOKEN" -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
 
 The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
 
