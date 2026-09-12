@@ -85,8 +85,52 @@ filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
 SOVD entities. The filter applies to both locally discovered Apps and
 peer-discovered Apps (after stripping the peer prefix).
 
+The same switch also excludes the helper nodes the gateway runs inside its own
+process. Three of them exist in every deployment, named after the gateway node:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Node
+     - What it is
+   * - ``<gateway>_sub``
+     - The subscription executor that serves ``/data`` reads and cyclic
+       subscriptions.
+   * - ``<gateway>_fault_clients``
+     - The service clients that talk to the fault manager.
+   * - ``<gateway>_lifecycle_state_reader``
+     - The client that reads managed nodes' lifecycle state.
+
+None of these names begins with an underscore, so the convention above does not
+cover them, and without this rule the gateway would list its own plumbing as
+diagnosable Apps. They carry no parameters, services or actions of their own, so
+there is nothing on them to diagnose. They are also left out of the
+``unmanifested_nodes`` report on ``GET /health``: a node that can never be an
+App is not a node to declare in a manifest.
+
+**The gateway's own node stays an App.** Its ROS parameters are what the
+gateway serves as that App's configurations, so
+``/apps/<gateway>/configurations`` is where a client reads and writes them -
+there is no other entity carrying, for instance,
+``aggregation.peer_auth_header``. Two gateways watching one graph also have to
+agree about what is on it, which they cannot do if each hides a different node.
+
+Namespaces: the subscription node is created with the gateway's own namespace,
+while the other two are created from the gateway's node name alone and take the
+process default namespace. A process-wide remap (``-r __ns:=/line_a``) moves all
+four together; a remap naming the gateway alone
+(``-r ros2_medkit_gateway:__ns:=/line_a``) moves the gateway and the
+subscription node and leaves the other two in the default namespace. Both
+spellings are recognised, so the rule holds either way.
+
+A manifest- or plugin-declared App bound to one of these nodes is not served,
+and the gateway logs a warning naming it: bind the App to the node you meant,
+or drop the declaration.
+
 Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
-convention.
+convention. That re-exposes the three helper nodes as well as the underscore
+ones.
 
 Function Entities from Namespaces
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -35,6 +35,16 @@ and the container images start it. ``launch_ros``' ``name=`` applies
 ``-r __node:=<name>`` to the whole process, which renames all four nodes to the
 same string - so under the suite's usual launch the helper names do not exist
 and nothing here could be observed.
+
+An absence assertion is only worth reading if the thing could have been there.
+The gateway's helper nodes are created at three different points of start-up,
+two of them after the first ``refresh_cache()`` and after ``/health`` starts
+answering, so a naive "wait until /apps is non-empty" can read a list built
+from a graph that did not yet contain them - and then the absences below hold
+whatever the filter does. The settle sequence therefore proves the order it
+needs: all three helpers on the graph FIRST, then a witness node created after
+them, then an ``/apps`` snapshot that contains the witness. Such a snapshot was
+built from a graph that held the helpers too.
 """
 
 import time
@@ -66,6 +76,15 @@ HELPER_NODES = (
     f'{GATEWAY_NODE}_fault_clients',
     f'{GATEWAY_NODE}_lifecycle_state_reader',
 )
+WITNESS_NODE = 'own_node_apps_refresh_witness'
+
+# The three stages of the settle sequence. They run one after another, so their
+# sum plus launch and teardown has to stay inside this file's ctest TIMEOUT
+# (the feature default, 120 s): a run killed by ctest reports a timeout and no
+# test name, which hides whichever assertion actually failed.
+HEALTH_BUDGET = 30.0
+HELPERS_ON_GRAPH_BUDGET = 20.0
+REFRESH_WITNESS_BUDGET = 25.0
 
 
 @pytest.mark.launch_test
@@ -83,67 +102,91 @@ def generate_test_description():
     ]), {'gateway_node': gateway_node}
 
 
-def _graph_node_fqns(awaited, timeout=30.0):
-    """Fully qualified node names on the graph, waiting for *awaited*.
-
-    Runs on its own rclpy context so it cannot disturb anything else in the
-    process, and polls: a graph query reads the discovery database directly and
-    needs no executor.
-    """
-    context = Context()
-    rclpy.init(context=context)
-    probe = Node('own_node_apps_graph_probe', context=context)
-    try:
-        deadline = time.monotonic() + timeout * get_time_scale()
-        while True:
-            fqns = {
-                (namespace.rstrip('/') + '/' + name)
-                for name, namespace in probe.get_node_names_and_namespaces()
-            }
-            if awaited <= fqns or time.monotonic() >= deadline:
-                return fqns
-            time.sleep(0.2)
-    finally:
-        probe.destroy_node()
-        rclpy.shutdown(context=context)
-
-
 class TestOwnNodeApps(unittest.TestCase):
     """The gateway is a diagnosable App; its in-process helpers are not."""
 
     @classmethod
     def setUpClass(cls):
-        """Wait for the gateway to answer, then read its app list once."""
+        """Wait for the gateway, then settle /apps against the helper nodes."""
         cls.session = requests.Session()
-        deadline = time.monotonic() + 60.0 * get_time_scale()
+        cls.context = Context()
+        rclpy.init(context=cls.context)
+        cls.probe = Node('own_node_apps_graph_probe', context=cls.context)
+        cls.witness = None
+        cls.apps = set()
+        cls.graph_fqns = set()
+        cls.witness_seen = False
+
+        cls._wait_for_health()
+        # Stage 1: every helper the absences below are about must be on the
+        # graph before anything reads /apps.
+        cls.graph_fqns = cls._graph_fqns_until(
+            {f'/{helper}' for helper in HELPER_NODES}, HELPERS_ON_GRAPH_BUDGET)
+        if not {f'/{helper}' for helper in HELPER_NODES} <= cls.graph_fqns:
+            return
+
+        # Stage 2: a node created strictly after the helpers appeared. Its own
+        # arrival in /apps dates the snapshot: the gateway cannot have seen the
+        # witness without having seen the helpers.
+        cls.witness = Node(WITNESS_NODE, context=cls.context)
+        cls.witness_seen, cls.apps = cls._apps_until_contains(
+            WITNESS_NODE, REFRESH_WITNESS_BUDGET)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.witness is not None:
+            cls.witness.destroy_node()
+        cls.probe.destroy_node()
+        rclpy.shutdown(context=cls.context)
+        cls.session.close()
+
+    @classmethod
+    def _wait_for_health(cls):
+        deadline = time.monotonic() + HEALTH_BUDGET * get_time_scale()
         last = None
         while time.monotonic() < deadline:
             try:
                 response = cls.session.get(f'{BASE_URL}/health', timeout=5)
                 if response.status_code == 200:
-                    break
+                    return
                 last = response.status_code
             except requests.RequestException as exc:
                 last = str(exc)
             time.sleep(0.5)
-        else:
-            raise AssertionError(f'gateway not ready within 60s (last: {last})')
-
-        # The app list is served from the discovery cache, which the first
-        # refresh fills; poll until the gateway's own node is in it or the
-        # budget is out, so the absence assertions below read a settled list.
-        cls.apps = set()
-        app_deadline = time.monotonic() + 30.0 * get_time_scale()
-        while time.monotonic() < app_deadline:
-            body = cls.session.get(f'{BASE_URL}/apps', timeout=10).json()
-            cls.apps = {item['id'] for item in body.get('items', [])}
-            if GATEWAY_NODE in cls.apps:
-                break
-            time.sleep(0.5)
+        raise AssertionError(
+            f'gateway not ready within {HEALTH_BUDGET}s (last: {last})')
 
     @classmethod
-    def tearDownClass(cls):
-        cls.session.close()
+    def _graph_fqns_until(cls, awaited, budget):
+        """Node FQNs on the graph, polled until *awaited* is a subset.
+
+        The graph query reads the discovery database directly, so this polls
+        rather than spinning an executor. Returns the last set seen even on
+        timeout - the caller asserts on it, so a timeout cannot pass silently.
+        """
+        deadline = time.monotonic() + budget * get_time_scale()
+        while True:
+            fqns = {
+                (namespace.rstrip('/') + '/' + name)
+                for name, namespace in cls.probe.get_node_names_and_namespaces()
+            }
+            if awaited <= fqns or time.monotonic() >= deadline:
+                return fqns
+            time.sleep(0.2)
+
+    @classmethod
+    def _apps_until_contains(cls, app_id, budget):
+        """Poll /apps until *app_id* is listed. Returns (seen, last snapshot)."""
+        deadline = time.monotonic() + budget * get_time_scale()
+        apps = set()
+        while True:
+            body = cls.session.get(f'{BASE_URL}/apps', timeout=10).json()
+            apps = {item['id'] for item in body.get('items', [])}
+            if app_id in apps:
+                return True, apps
+            if time.monotonic() >= deadline:
+                return False, apps
+            time.sleep(0.5)
 
     def test_the_gateways_own_node_is_an_app(self):
         """The gateway's own ROS node is listed, addressable and configurable.
@@ -172,22 +215,29 @@ class TestOwnNodeApps(unittest.TestCase):
 
         @verifies REQ_INTEROP_003
         """
+        # Anti-vacuity, first half: each helper really is a node on this graph,
+        # so the absences below are about the filter and not about names that
+        # were never there.
+        awaited = {f'/{helper}' for helper in HELPER_NODES}
+        self.assertTrue(
+            awaited <= self.graph_fqns,
+            f'helper nodes missing from the graph: {sorted(awaited - self.graph_fqns)}. '
+            f'Nodes seen: {sorted(self.graph_fqns)}')
+
+        # Anti-vacuity, second half: the snapshot was rebuilt after they
+        # appeared. Without this the assertions below can be read from a list
+        # the gateway built before it could have listed a helper at all.
+        self.assertTrue(
+            self.witness_seen,
+            f'/apps never listed "{WITNESS_NODE}", so no snapshot is known to '
+            f'post-date the helper nodes and these absences prove nothing. '
+            f'Listed: {sorted(self.apps)}')
+
         for helper in HELPER_NODES:
             self.assertNotIn(
                 helper, self.apps,
                 f'in-process helper "{helper}" must not be a diagnosable App. '
                 f'Listed: {sorted(self.apps)}')
-
-        # Anti-vacuity: each helper really is a node on this graph, so the
-        # assertions above are about the filter and not about names that were
-        # never there. Without this the test passes on a gateway that creates
-        # no helpers at all.
-        awaited = {f'/{helper}' for helper in HELPER_NODES}
-        graph_fqns = _graph_node_fqns(awaited)
-        self.assertTrue(
-            awaited <= graph_fqns,
-            f'helper nodes missing from the graph: {sorted(awaited - graph_fqns)}. '
-            f'Nodes seen: {sorted(graph_fqns)}')
 
 
 @launch_testing.post_shutdown_test()
