@@ -59,7 +59,6 @@ from ros2_medkit_test_utils.constants import (
     DISCOVERY_TIMEOUT,
     get_test_domain_id,
     get_test_port,
-    get_time_scale,
 )
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
@@ -81,7 +80,10 @@ PEER_PARAM_TIMEOUT_SEC = 6.0
 TIGHT_METADATA_MS = 800
 PATIENT_METADATA_MS = 20000
 
-TIMEOUT = DISCOVERY_TIMEOUT * get_time_scale()
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale. Applying the scale
+# again squares it, and setUpClass runs three of these waits back to back, so the
+# class would ask for more wall clock than this test's ctest budget grants.
+TIMEOUT = DISCOVERY_TIMEOUT
 
 PEER_COMPONENT = 'remote-ecu'
 UNRESPONSIVE_APP = 'remote_unresponsive_param'
