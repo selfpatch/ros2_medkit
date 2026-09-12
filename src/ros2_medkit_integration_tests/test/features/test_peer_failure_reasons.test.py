@@ -55,10 +55,10 @@ import requests
 from ros2_medkit_test_utils.constants import (
     ALLOWED_EXIT_CODES,
     API_BASE_PATH,
+    DISCOVERY_INTERVAL,
     DISCOVERY_TIMEOUT,
     get_test_domain_id,
     get_test_port,
-    get_time_scale,
 )
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
@@ -80,7 +80,10 @@ PEER_PARAM_TIMEOUT_SEC = 6.0
 TIGHT_METADATA_MS = 800
 PATIENT_METADATA_MS = 20000
 
-TIMEOUT = DISCOVERY_TIMEOUT * get_time_scale()
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale. Applying the scale
+# again squares it, and setUpClass runs three of these waits back to back, so the
+# class would ask for more wall clock than this test's ctest budget grants.
+TIMEOUT = DISCOVERY_TIMEOUT
 
 PEER_COMPONENT = 'remote-ecu'
 UNRESPONSIVE_APP = 'remote_unresponsive_param'
@@ -240,13 +243,29 @@ class PeerFailureReasonsTest(unittest.TestCase):
         raise AssertionError(f'{label} gateway never saw a healthy peer; last saw {last}')
 
     def _fan_out_failure(self, base_url, timeout):
-        response = requests.get(_config_url(base_url), timeout=timeout)
-        self.assertEqual(
-            response.status_code, 200,
-            f'a fanned-out listing whose peer failed must still answer 200: '
-            f'{response.status_code} {response.text[:400]}')
-        ext = response.json().get('x-medkit', {})
-        self.assertTrue(ext.get('partial'), f'the answer does not admit it is partial: {ext}')
+        # Until a discovery pass has both marked the peer healthy and published
+        # it as a contributor to this entity, the aggregator answers 200 with no
+        # `partial` - a correct answer about a peer it does not yet know
+        # contributes here. Health alone does not imply it: the two are set at
+        # opposite ends of the same background pass, and the fetch between them
+        # spends the aggregator's whole metadata budget. So a reason is readable
+        # only once the fan-out is in the answer, and this waits for that on the
+        # discovery budget, which is what it is waiting for.
+        deadline = time.time() + DISCOVERY_TIMEOUT
+        ext = {}
+        while True:
+            response = requests.get(_config_url(base_url), timeout=timeout)
+            self.assertEqual(
+                response.status_code, 200,
+                f'a fanned-out listing whose peer failed must still answer 200: '
+                f'{response.status_code} {response.text[:400]}')
+            ext = response.json().get('x-medkit', {})
+            if ext.get('partial') or time.time() >= deadline:
+                break
+            time.sleep(DISCOVERY_INTERVAL)
+        self.assertTrue(
+            ext.get('partial'),
+            f'no answer admitted it was partial within {DISCOVERY_TIMEOUT:.0f}s: {ext}')
         # R4: the existing key keeps its existing shape.
         self.assertEqual(
             ext.get('failed_peers'), ['remote_gateway'],

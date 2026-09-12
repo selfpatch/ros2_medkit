@@ -79,6 +79,18 @@ deadlock:rclcpp::Context*
 race:std::__future_base::_State_baseV2*
 race:std::__uniq_ptr_impl*_Result_base*
 race:std::unique_ptr*_Result_base*
+# Same shared state, its _Result object rather than the state itself. The last
+# reference to the state is dropped by whichever thread finishes with the
+# promise; when that is the rclcpp executor thread, ~_State_base and the
+# _Result::_M_destroy() it runs live inside librclcpp, which is not
+# instrumented. TSan sees the operator delete, because that is intercepted in
+# the allocator, but not the acquire on the shared_ptr refcount that orders it
+# after the caller's future::get(), so it pairs the free with the caller's read
+# of _Result::_M_error. Anchored on the libstdc++ frame that performs that read:
+# it is the only frame of the pair that is reliably symbolized, since librclcpp
+# is stripped and the freeing frame prints as <null> at librclcpp.so+0x...,
+# which no race: pattern can match.
+race:std::__basic_future*_M_get_result*
 
 # rclcpp GenericClient response staging: the executor thread fills the
 # generic response via rclcpp::GenericClient::create_response() before
