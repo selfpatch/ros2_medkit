@@ -573,6 +573,11 @@ bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string 
  *        manifest without saying so, and this function has no logger
  * @return Number of apps removed
  */
+size_t filter_internal_node_apps(std::vector<App> & apps,
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table,
+                                 const std::string & self_fqn,
+                                 std::vector<std::string> * dropped_declared_apps = nullptr);
+
 /**
  * @brief Remember which declared apps were dropped, and say whether that changed
  *
@@ -587,10 +592,5 @@ bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string 
  * @return true when the caller should warn
  */
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
-
-size_t filter_internal_node_apps(std::vector<App> & apps,
-                                 const std::unordered_map<std::string, std::string> & peer_routing_table,
-                                 const std::string & self_fqn,
-                                 std::vector<std::string> * dropped_declared_apps = nullptr);
 
 }  // namespace ros2_medkit_gateway
