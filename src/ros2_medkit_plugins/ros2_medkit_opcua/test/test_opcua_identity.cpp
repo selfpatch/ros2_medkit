@@ -44,7 +44,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -696,20 +698,33 @@ class ScopedExecutorSpin {
   }
 
   ~ScopedExecutorSpin() {
-    stop();
+    // A destructor is implicitly noexcept, and both cancel() and join() can
+    // throw, so an escape here would be the std::terminate this class exists
+    // to prevent. Swallowing is right in a destructor: by this point the test
+    // has either passed or recorded its failure, and that verdict is what the
+    // run has to report.
+    try {
+      stop();
+    } catch (const std::exception & e) {
+      std::cerr << "ScopedExecutorSpin teardown failed: " << e.what() << "\n";
+    } catch (...) {
+      std::cerr << "ScopedExecutorSpin teardown failed\n";
+    }
   }
 
   // Idempotent, so a test can end the spin at the point it wants the executor
-  // quiet and still be covered on the paths that never get there.
+  // quiet and still be covered on the paths that never get there. The thread is
+  // joined before the flag is set: a cancel() that throws must leave the object
+  // willing to try again rather than holding a thread nobody will join.
   void stop() {
     if (stopped_) {
       return;
     }
-    stopped_ = true;
     executor_.cancel();
     if (thread_.joinable()) {
       thread_.join();
     }
+    stopped_ = true;
   }
 
   ScopedExecutorSpin(const ScopedExecutorSpin &) = delete;
