@@ -148,6 +148,17 @@ class TestOpenApiContract(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'calibration', 'temp_sensor'}
+    # The app entities appearing is not enough for this file. A node is listed
+    # in the ROS graph before its service endpoints have propagated, so a
+    # discovery sweep can build the App with an empty service list, and the
+    # cache-derived operation items in `/docs` are built from exactly that
+    # list. Until one service is in the cache every operations sub-document
+    # publishes only projections, and the comparison over `operations` in
+    # `test_a_scoped_item_says_what_its_templated_sibling_says` has nothing to
+    # compare. Waiting for the capability the assertion reads, rather than for
+    # the entity that carries it, is what makes the file independent of how
+    # fast the runner propagates a service.
+    REQUIRED_OPERATIONS = {'/apps/calibration': 'calibrate'}
 
     _spec = None
 
