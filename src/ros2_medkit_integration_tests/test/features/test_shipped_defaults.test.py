@@ -53,6 +53,7 @@ from ros2_medkit_test_utils.constants import (
     get_test_port,
 )
 from ros2_medkit_test_utils.coverage import get_coverage_env
+import yaml
 
 PORT = get_test_port()
 BASE_URL = f'http://127.0.0.1:{PORT}{API_BASE_PATH}'
@@ -187,21 +188,39 @@ class TestShippedDefaults(unittest.TestCase):
 
         If the installed config stops declaring the values this file exists to
         check, the assertions above would still pass for the wrong reason.
+
+        Read through a YAML parse and addressed by key path. A substring search
+        cannot do this job: ``enabled: true`` occurs under eight different
+        parents in the shipped file, so a text guard for it stays green with
+        ``auth.enabled: false`` - the one drift this test exists to catch. The
+        parse also settles ``public_routes`` for free, because a commented
+        example is not a key and a key written in flow style still is one.
         """
         with open(SHIPPED_PARAMS, encoding='utf-8') as handle:
-            text = handle.read()
-        self.assertIn('require_auth_for: "all"', text)
-        self.assertIn('enabled: true', text)
-        # And no route is opened by the file itself. An uncommented entry here
-        # would be a public route shipped to every deployment, which is exactly
-        # what this branch exists to stop. The commented example does not count.
-        live_public_routes = [
-            line for line in text.splitlines()
-            if line.strip().startswith('public_routes:')
-        ]
+            document = yaml.safe_load(handle)
+        params = document['ros2_medkit_gateway']['ros__parameters']
+        auth = params['auth']
+        self.assertIs(
+            auth['enabled'], True,
+            f"the shipped config sets auth.enabled to {auth['enabled']!r}"
+        )
         self.assertEqual(
-            live_public_routes, [],
-            f'the shipped config declares public routes: {live_public_routes}'
+            auth['require_auth_for'], 'all',
+            'the shipped config sets auth.require_auth_for to '
+            f'{auth["require_auth_for"]!r}'
+        )
+        self.assertIs(
+            params['server']['tls']['enabled'], True,
+            'the shipped config sets server.tls.enabled to '
+            f"{params['server']['tls']['enabled']!r}"
+        )
+        # No route is opened by the file itself. An entry here would be a
+        # public route shipped to every deployment, which is exactly what this
+        # file exists to stop.
+        self.assertNotIn(
+            'public_routes', auth,
+            'the shipped config declares public routes: '
+            f'{auth.get("public_routes")!r}'
         )
 
 

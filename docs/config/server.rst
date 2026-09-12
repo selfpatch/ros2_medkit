@@ -844,8 +844,9 @@ See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 Authentication
 --------------
 
-JWT-based authentication with Role-Based Access Control (RBAC). Disabled by
-default for local development.
+JWT-based authentication with Role-Based Access Control (RBAC). Enabled by
+default, with ``require_auth_for`` set to ``all``, so a gateway started from the
+shipped config refuses every request until a signing secret is configured.
 
 .. list-table::
    :header-rows: 1
