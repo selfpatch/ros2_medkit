@@ -102,19 +102,23 @@ jobs:
             # :latest moves on every merge, which leaves a user who pulls it no
             # way back to the behaviour they had yesterday - and the defaults
             # this image ships are exactly the kind of thing that changes under
-            # them. sha-<short> is the immutable reference to pin. The
+            # them. main-<sha7> is the immutable reference to pin. The
             # multi-arch workflow publishes the semver tags and fires only on a
             # release tag; this one runs on every push to main, where there is
-            # no version number to use. The seven-character form is the
-            # spelling that workflow already publishes (metadata-action's
-            # type=sha,prefix=sha-,format=short), because two spellings of the
-            # same idea in one registry is how a user ends up unable to find
-            # the image they pinned.
+            # no version number to use.
+            #
+            # The `main-` prefix is what keeps the two workflows apart. This
+            # image is linux/amd64 only, while the multi-arch workflow pushes a
+            # two-architecture manifest list under sha-<sha7>. A release tag is
+            # normally cut on a commit that is also on main, so a shared tag
+            # name would be written by both and resolve to whichever job
+            # finished last. The prefix names the branch this image came from,
+            # which is also what a reader of the tag wants to know.
             - name: Tag the inspected digest
               run: |
                   set -euo pipefail
                   image=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}
                   docker buildx imagetools create \
                     -t "$image:latest" \
-                    -t "$image:sha-${GITHUB_SHA::7}" \
+                    -t "$image:main-${GITHUB_SHA::7}" \
                     "$image@${{ steps.build.outputs.digest }}"
