@@ -125,7 +125,7 @@ After installation, verify that everything works:
    ros2 launch ros2_medkit_gateway gateway.launch.py &
 
    # Test the API
-   curl http://localhost:8080/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/health
 
    # Stop the gateway
    pkill -f gateway_node

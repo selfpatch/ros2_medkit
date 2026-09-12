@@ -134,9 +134,15 @@ TLS/HTTPS Issues
 
 For development with self-signed certificates:
 
+.. note::
+
+   The gateway ships closed, so every request below needs a
+   credential. Exchange a client id and secret for ``$TOKEN`` at
+   ``POST /api/v1/auth/authorize`` - see :doc:`tutorials/authentication`.
+
 .. code-block:: bash
 
-   curl -k https://localhost:8443/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" -k https://localhost:8443/api/v1/health
 
 For production, use certificates from a trusted CA.
 

@@ -134,7 +134,7 @@ View and modify sensor parameters:
    curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev | jq
 
    # Change scan rate
-   curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/scan_rate \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/scan_rate \
      -H "Content-Type: application/json" \
      -d '{"data": 20.0}'
 
@@ -188,15 +188,15 @@ You can also inject faults by setting parameters directly:
 .. code-block:: bash
 
    # Increase noise level
-   curl -X PUT http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/lidar-sim/configurations/noise_stddev \
      -H "Content-Type: application/json" -d '{"data": 0.5}'
 
    # Enable NaN injection
-   curl -X PUT http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/imu-sim/configurations/inject_nan \
      -H "Content-Type: application/json" -d '{"data": true}'
 
    # Increase failure probability
-   curl -X PUT http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/gps-sim/configurations/failure_probability \
      -H "Content-Type: application/json" -d '{"data": 0.3}'
 
 Stopping the Demo

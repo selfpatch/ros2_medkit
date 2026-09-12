@@ -60,9 +60,9 @@ the SOVD tree from whatever is on the graph:
 
    ros2 run ros2_medkit_gateway gateway_node
    # nodes -> SOVD Apps
-   curl -s http://localhost:8080/api/v1/apps | jq '.items | length'
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/apps | jq '.items | length'
    # whole-system faults (from /diagnostics, /rosout, aborted actions via the bridges)
-   curl -s http://localhost:8080/api/v1/faults | jq
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/faults | jq
 
 .. _attach-containers:
 
@@ -112,9 +112,9 @@ Verify
 
 .. code-block:: bash
 
-   curl -s http://localhost:8080/api/v1/health           # -> healthy
-   curl -s http://localhost:8080/api/v1/apps  | jq '.items | length'   # your nodes
-   curl -s http://localhost:8080/api/v1/faults | jq '.items | length'   # active faults
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/health           # -> healthy
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/apps  | jq '.items | length'   # your nodes
+   curl -H "Authorization: Bearer $TOKEN" -s http://localhost:8080/api/v1/faults | jq '.items | length'   # active faults
 
 Troubleshooting
 ---------------

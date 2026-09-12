@@ -23,9 +23,15 @@ Start the gateway with demo nodes and a fault manager:
 
 Verify the gateway is running:
 
+.. note::
+
+   The gateway ships closed, so every request below needs a
+   credential. Exchange a client id and secret for ``$TOKEN`` at
+   ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
 .. code-block:: bash
 
-   curl http://localhost:8080/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/health
 
 Scenario 1: OTA Update Monitoring
 ----------------------------------
@@ -45,7 +51,7 @@ Step 1: Create the update status trigger
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/temp_sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/temp_sensor/updates",
@@ -82,7 +88,7 @@ fires, useful for recording context around a failure event.
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/temp_sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/temp_sensor/updates",
@@ -103,7 +109,7 @@ Step 3: Create the fault monitor trigger
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/temp_sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/temp_sensor/faults",
@@ -171,13 +177,13 @@ Open a separate terminal for each trigger's event stream:
 .. code-block:: bash
 
    # Terminal 2: Update status events
-   curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1/events
 
    # Terminal 3: Failure alert events
-   curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2/events
 
    # Terminal 4: Fault events
-   curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_3/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_3/events
 
 Events arrive as SSE frames:
 
@@ -190,9 +196,9 @@ Step 6: Clean up
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_3
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_3
 
 Scenario 2: Thermal Protection
 -------------------------------
@@ -212,7 +218,7 @@ Step 1: Create the range warning trigger
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/temp_sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature",
@@ -250,7 +256,7 @@ Step 2: Create the critical temperature alert
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/temp_sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/temp_sensor/data/powertrain%2Fengine%2Ftemperature",
@@ -289,7 +295,7 @@ component.
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/components/engine/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/engine/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/components/engine/faults",
@@ -317,13 +323,13 @@ Step 5: Connect SSE streams and observe cascade
 .. code-block:: bash
 
    # Range warning stream
-   curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1/events
 
    # Critical alert stream
-   curl -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2/events
 
    # Component fault stream
-   curl -N http://localhost:8080/api/v1/components/engine/triggers/trig_3/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/components/engine/triggers/trig_3/events
 
 When temperature exceeds 80.0, the range warning trigger fires first. If
 temperature reaches exactly 95.0, the critical alert fires as well. Any faults
@@ -335,9 +341,9 @@ Step 6: Clean up
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1
-   curl -X DELETE http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2
-   curl -X DELETE http://localhost:8080/api/v1/components/engine/triggers/trig_3
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_1
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/triggers/trig_2
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/engine/triggers/trig_3
 
 Scenario 3: Fleet Diagnostics
 ------------------------------
@@ -371,7 +377,7 @@ powertrain area, including all components and apps within it.
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/areas/powertrain/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas/powertrain/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/areas/powertrain/faults",
@@ -405,7 +411,7 @@ Step 3: Create the app-level data trigger
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/apps/engine-temp-sensor/data/powertrain%2Fengine%2Ftemperature",
@@ -435,10 +441,10 @@ Step 5: Connect SSE streams
 .. code-block:: bash
 
    # Area fault stream - catches faults from any entity in powertrain
-   curl -N http://localhost:8080/api/v1/areas/powertrain/triggers/trig_1/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/areas/powertrain/triggers/trig_1/events
 
    # App data stream - fires when temperature leaves [15, 90]
-   curl -N http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers/trig_2/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers/trig_2/events
 
 When a fault is reported by any node in the ``powertrain`` area, the
 area-level trigger fires. Meanwhile, the app-level trigger independently
@@ -449,8 +455,8 @@ Step 6: Clean up
 
 .. code-block:: bash
 
-   curl -X DELETE http://localhost:8080/api/v1/areas/powertrain/triggers/trig_1
-   curl -X DELETE http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers/trig_2
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas/powertrain/triggers/trig_1
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/engine-temp-sensor/triggers/trig_2
 
 Key Concepts
 ------------

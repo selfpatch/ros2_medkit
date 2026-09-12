@@ -88,6 +88,12 @@ The demo uses a **manifest-based configuration** to organize entities into logic
 
 Querying via API:
 
+.. note::
+
+   The gateway ships closed, so every request below needs a
+   credential. Exchange a client id and secret for ``$TOKEN`` at
+   ``POST /api/v1/auth/authorize`` - see :doc:`../authentication`.
+
 .. code-block:: bash
 
    curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas | jq
@@ -169,7 +175,7 @@ View and modify parameters:
    curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time | jq
 
    # Change parameter value
-   curl -X PUT http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time \
+   curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/amcl/configurations/use_sim_time \
      -H "Content-Type: application/json" \
      -d '{"value": false}'
 

@@ -57,6 +57,11 @@ jobs:
       - name: Generate verification report
         run: python3 scripts/generate_verification.py
 
+      # Before Sphinx, because Sphinx does not read the contents of a shell
+      # code block: it would build a page full of examples that answer 401.
+      - name: Check documented curl examples carry a credential
+        run: python3 scripts/check_docs_curl_auth.py
+
       - name: Check links
         working-directory: docs
         run: sphinx-build -b linkcheck . _build/linkcheck

@@ -77,6 +77,12 @@ Quick Start
 
 3. **When a fault is confirmed, query its snapshots:**
 
+   .. note::
+
+      The gateway ships closed, so every request below needs a
+      credential. Exchange a client id and secret for ``$TOKEN`` at
+      ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
    .. code-block:: bash
 
       curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
@@ -803,7 +809,7 @@ recordings had their own identity keep working.
 .. code-block:: bash
 
    # Using bulk_data_uri from fault response
-   curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
+   curl -H "Authorization: Bearer $TOKEN" -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
 
 The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
 

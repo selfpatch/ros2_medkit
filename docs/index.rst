@@ -49,14 +49,15 @@ Common commands for quick access.
 
 .. note::
 
-   The gateway ships closed: every command below needs a credential, and
-   ``GET /api/v1/health`` is the only one that does not. See
-   :doc:`getting_started` for how to obtain ``$TOKEN``.
+   The gateway ships closed: every command below needs a credential, health
+   included. Only ``/api/v1/auth/*`` is exempt, because that is where the
+   credential comes from. See :doc:`getting_started` for how to obtain
+   ``$TOKEN``.
 
 .. code-block:: bash
 
    # Check gateway health
-   curl http://localhost:8080/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/health
 
    # List all areas
    curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas

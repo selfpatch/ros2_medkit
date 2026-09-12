@@ -58,6 +58,7 @@ Test the gateway:
 
 .. code-block:: bash
 
+   # docs-curl-auth: public - the refusal is the point of this example
    curl -i http://localhost:8080/api/v1/health
    # HTTP/1.1 401 Unauthorized
    # The image ships closed: every route needs a credential, health included.

@@ -169,7 +169,7 @@ Lists all discovered areas in the system.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/areas
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas
 ```
 
 **Response:**
@@ -196,7 +196,7 @@ Lists all discovered components across all areas.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components
 ```
 
 **Response:**
@@ -223,7 +223,7 @@ Lists all components within a specific area.
 
 **Example (Success):**
 ```bash
-curl http://localhost:8080/api/v1/areas/powertrain/components
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas/powertrain/components
 ```
 
 **Response (200 OK):**
@@ -246,7 +246,7 @@ curl http://localhost:8080/api/v1/areas/powertrain/components
 
 **Example (Error - Area Not Found):**
 ```bash
-curl http://localhost:8080/api/v1/areas/nonexistent/components
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas/nonexistent/components
 ```
 
 **Response (404 Not Found):**
@@ -487,7 +487,7 @@ Read all topic data from a specific component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/data
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data
 ```
 
 **Response (200 OK):**
@@ -508,7 +508,7 @@ curl http://localhost:8080/api/v1/components/temp_sensor/data
 
 **Example (Error - Component Not Found):**
 ```bash
-curl http://localhost:8080/api/v1/components/nonexistent/data
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/nonexistent/data
 ```
 
 **Response (404 Not Found):**
@@ -550,7 +550,7 @@ Read data from a specific topic within a component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/data/temperature
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data/temperature
 ```
 
 **Response (200 OK):**
@@ -567,7 +567,7 @@ curl http://localhost:8080/api/v1/components/temp_sensor/data/temperature
 
 **Example (Error - Topic Not Found):**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/data/nonexistent
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data/nonexistent
 ```
 
 **Response (404 Not Found):**
@@ -581,7 +581,7 @@ curl http://localhost:8080/api/v1/components/temp_sensor/data/nonexistent
 
 **Example (Error - Component Not Found):**
 ```bash
-curl http://localhost:8080/api/v1/components/nonexistent/data/temperature
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/nonexistent/data/temperature
 ```
 
 **Response (404 Not Found):**
@@ -594,7 +594,7 @@ curl http://localhost:8080/api/v1/components/nonexistent/data/temperature
 
 **Example (Error - Invalid Topic Name):**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/data/invalid-name
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/data/invalid-name
 ```
 
 **Response (400 Bad Request):**
@@ -633,7 +633,7 @@ List all operations (services and actions) available for a component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/calibration/operations
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/calibration/operations
 ```
 
 **Response (200 OK):**
@@ -660,7 +660,7 @@ Execute an operation (call a service or send an action goal).
 
 **Example (Service Call):**
 ```bash
-curl -X POST http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/calibration/operations/calibrate/executions \
   -H "Content-Type: application/json" \
   -d '{"parameters": {}}'
 ```
@@ -677,7 +677,7 @@ curl -X POST http://localhost:8080/api/v1/components/calibration/operations/cali
 
 **Example (Action Goal):**
 ```bash
-curl -X POST http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions \
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions \
   -H "Content-Type: application/json" \
   -d '{"parameters": {"order": 10}}'
 ```
@@ -698,7 +698,7 @@ Get the status of an action execution.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
 ```
 
 **Response (200 OK):**
@@ -728,7 +728,7 @@ Cancel a running action execution.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
 ```
 
 **Response:** `204 No Content` (empty body) - the cancellation is underway. Also
@@ -759,7 +759,7 @@ above (with `202 Accepted` in place of `204`, plus `409` when `execute` is
 requested on an execution that is still running).
 
 ```bash
-curl -X PUT -H 'Content-Type: application/json' -d '{"capability": "stop"}' \
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"capability": "stop"}' \
   http://localhost:8080/api/v1/components/long_calibration/operations/long_calibration/executions/abc123def456
 ```
 
@@ -859,7 +859,7 @@ List all parameters for a component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/configurations
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations
 ```
 
 **Response (200 OK):**
@@ -888,7 +888,7 @@ Get a specific parameter value.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate
 ```
 
 **Response (200 OK):**
@@ -909,7 +909,7 @@ Set a parameter value.
 
 **Example:**
 ```bash
-curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
+curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations/publish_rate \
   -H "Content-Type: application/json" \
   -d '{"value": 5.0}'
 ```
@@ -933,7 +933,7 @@ Reset a parameter to its default (initial) value.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations/min_temp
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations/min_temp
 ```
 
 **Response (200 OK):**
@@ -952,7 +952,7 @@ Reset all parameters to their default (initial) values.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configurations
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/configurations
 ```
 
 **Response (200 OK):**
@@ -996,8 +996,8 @@ List all faults across the system. This is a convenience API for dashboards and 
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/faults
-curl http://localhost:8080/api/v1/faults?status=all
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults?status=all
 ```
 
 **Response (200 OK):**
@@ -1049,7 +1049,7 @@ Real-time fault event stream using Server-Sent Events (SSE). Clients receive ins
 
 **Example:**
 ```bash
-curl -N http://localhost:8080/api/v1/faults/stream
+curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/faults/stream
 ```
 
 **Response (SSE Stream):**
@@ -1076,7 +1076,7 @@ data: {"event_type":"fault_cleared","fault":{"fault_code":"MOTOR_OVERHEAT",...},
 
 **Reconnection with Last-Event-ID:**
 ```bash
-curl -N -H "Last-Event-ID: 5" http://localhost:8080/api/v1/faults/stream
+curl -H "Authorization: Bearer $TOKEN" -N -H "Last-Event-ID: 5" http://localhost:8080/api/v1/faults/stream
 ```
 
 This replays any buffered events with ID > 5, then continues streaming new events. Replayed `id` sequences may contain holes (e.g. 41, 43, 44) where buffer eviction removed superseded events; ids are monotonically increasing but never guaranteed contiguous. A `Last-Event-ID` beyond the newest issued id is treated as "caught up": the client receives only events published after it connected.
@@ -1090,7 +1090,7 @@ List all faults for a specific component.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/nav2_controller/faults
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/nav2_controller/faults
 ```
 
 **Response (200 OK):**
@@ -1112,8 +1112,8 @@ Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snap
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
 ```
 
 **Response (200 OK):**
@@ -1159,7 +1159,7 @@ Get topic snapshots for a specific component's fault. Same as the system-wide en
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
 ```
 
 **Response (200 OK):**
@@ -1223,10 +1223,10 @@ Rosbag capture provides "black box" style recording - a ring buffer continuously
 **Example:**
 ```bash
 # Download rosbag archive
-curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
+curl -H "Authorization: Bearer $TOKEN" -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
 
 # Or save with custom filename
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
 ```
 
 **Response (200 OK):**
@@ -1318,8 +1318,8 @@ The gateway collects `/rosout` messages and exposes them via REST. Each node's l
 Returns recent log entries for all nodes under the component's namespace (prefix match). Results are capped at `max_entries` (default: 100, configurable per entity via `PUT /logs/configuration`).
 
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/logs
-curl "http://localhost:8080/api/v1/components/temp_sensor/logs?severity=warning"
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/logs
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/v1/components/temp_sensor/logs?severity=warning"
 ```
 
 **Response:**
@@ -1348,8 +1348,8 @@ curl "http://localhost:8080/api/v1/components/temp_sensor/logs?severity=warning"
 Same as above but for a single app node (exact logger name match).
 
 ```bash
-curl http://localhost:8080/api/v1/apps/temp_sensor/logs
-curl "http://localhost:8080/api/v1/apps/temp_sensor/logs?severity=error&context=engine"
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps/temp_sensor/logs
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/v1/apps/temp_sensor/logs?severity=error&context=engine"
 ```
 
 #### GET /api/v1/{entity}/{id}/logs/configuration
@@ -1357,7 +1357,7 @@ curl "http://localhost:8080/api/v1/apps/temp_sensor/logs?severity=error&context=
 Returns the current log configuration for the entity.
 
 ```bash
-curl http://localhost:8080/api/v1/components/temp_sensor/logs/configuration
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/logs/configuration
 ```
 
 **Response:**
@@ -1374,7 +1374,7 @@ curl http://localhost:8080/api/v1/components/temp_sensor/logs/configuration
 Updates the log configuration. Both fields are optional; omitted fields are unchanged.
 
 ```bash
-curl -X PUT http://localhost:8080/api/v1/components/temp_sensor/logs/configuration \
+curl -X PUT -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components/temp_sensor/logs/configuration \
   -H "Content-Type: application/json" \
   -d '{"severity_filter": "warning", "max_entries": 50}'
 ```
@@ -1425,10 +1425,10 @@ ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 **Test the API:**
 ```bash
 # HTTP
-curl http://localhost:8080/api/v1/areas
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/areas
 
 # HTTPS (skip certificate verification for self-signed)
-curl -k https://localhost:8443/api/v1/areas
+curl -H "Authorization: Bearer $TOKEN" -k https://localhost:8443/api/v1/areas
 ```
 
 ## Configuration
@@ -1723,13 +1723,13 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py \
 **Usage with curl (self-signed certs):**
 ```bash
 # Basic HTTPS (skip verification for self-signed)
-curl -k https://localhost:8443/api/v1
+curl -H "Authorization: Bearer $TOKEN" -k https://localhost:8443/api/v1
 
 # HTTPS with CA verification
-curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
+curl -H "Authorization: Bearer $TOKEN" --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
 # TODO: Mutual TLS example - coming in future release
-# curl --cacert ./certs/ca.crt \
+# curl -H "Authorization: Bearer $TOKEN" --cacert ./certs/ca.crt \
 #      --cert ./certs/client.crt \
 #      --key ./certs/client.key \
 #      https://localhost:8443/api/v1/areas
@@ -1930,7 +1930,7 @@ ros2 run ros2_medkit_gateway gateway_node --ros-args \
     --params-file gateway_params.yaml
 
 # Query merged entity tree
-curl http://localhost:8080/api/v1/components | jq
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/components | jq
 ```
 
 **Key features:**

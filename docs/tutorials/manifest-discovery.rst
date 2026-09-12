@@ -508,7 +508,7 @@ Reload the manifest without restarting the gateway:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/manifest/reload
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/manifest/reload
 
 This re-parses the manifest file and re-links apps to nodes.
 

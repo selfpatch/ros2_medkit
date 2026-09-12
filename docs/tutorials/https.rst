@@ -34,7 +34,7 @@ Test with curl (skip certificate verification for self-signed):
 
 .. code-block:: bash
 
-   curl -k https://localhost:8443/api/v1/health
+   curl -H "Authorization: Bearer $TOKEN" -k https://localhost:8443/api/v1/health
 
 Generating Development Certificates
 -----------------------------------
@@ -154,10 +154,10 @@ any other CA is rejected the same way.
 .. code-block:: bash
 
    # without a client certificate: no response, the handshake never completes
-   curl --cacert ca.pem https://localhost:8443/api/v1/areas
+   curl -H "Authorization: Bearer $TOKEN" --cacert ca.pem https://localhost:8443/api/v1/areas
 
    # with one signed by ca_file
-   curl --cacert ca.pem --cert client.pem --key client-key.pem \
+   curl -H "Authorization: Bearer $TOKEN" --cacert ca.pem --cert client.pem --key client-key.pem \
      https://localhost:8443/api/v1/areas
 
 Mutual TLS is transport-level and sits alongside token authentication rather
@@ -171,13 +171,13 @@ Using with curl
 
 .. code-block:: bash
 
-   curl --cacert ./certs/ca.crt https://localhost:8443/api/v1/areas
+   curl -H "Authorization: Bearer $TOKEN" --cacert ./certs/ca.crt https://localhost:8443/api/v1/areas
 
 **Skip verification (development only):**
 
 .. code-block:: bash
 
-   curl -k https://localhost:8443/api/v1/areas
+   curl -H "Authorization: Bearer $TOKEN" -k https://localhost:8443/api/v1/areas
 
 Using with Postman
 ------------------

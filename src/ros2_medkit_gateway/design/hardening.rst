@@ -14,11 +14,20 @@ Two consequences worth stating plainly:
   characters). This is intended. A gateway that will not boot is a deployment
   problem someone fixes in a minute; a gateway that booted open is one nobody
   notices.
-* **``GET /api/v1/health`` and ``/api/v1/auth/*`` stay public.** Health so a
-  container supervisor or load balancer with no credential can tell the
-  process is alive - it carries a fixed status document and no topology. Auth
+* **Only ``/api/v1/auth/*`` is exempt, and health is not.** Auth is exempt
   because authentication cannot bootstrap through a door that already demands
-  the credential it exists to hand out. Nothing else is exempt.
+  the credential it exists to hand out. Everything else, ``GET /api/v1/health``
+  included, needs a credential. A container supervisor, load balancer or
+  browser UI that probes health without one gets 401, so a deployment that
+  wants an unauthenticated probe has to ask for it by name::
+
+      auth:
+        public_routes: ["GET /api/v1/health"]
+
+  ``auth.public_routes`` ships absent, which is what makes the exemption a
+  deployment decision rather than a property of the artefact. The match is on
+  method and path exactly, so the entry above opens ``GET /api/v1/health`` and
+  neither ``HEAD`` nor ``/api/v1/health/detail``.
 
 For a deployment reachable from an untrusted network, the remaining controls -
 restricted CORS, rate limiting, locking, a reduced surface - are collected in

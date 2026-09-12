@@ -209,6 +209,12 @@ The Discovery Path
 
 1. **List functions** to find the one you care about:
 
+   .. note::
+
+      The gateway ships closed, so every request below needs a
+      credential. Exchange a client id and secret for ``$TOKEN`` at
+      ``POST /api/v1/auth/authorize`` - see :doc:`authentication`.
+
    .. code-block:: bash
 
       curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/functions | jq
@@ -327,7 +333,7 @@ Create the subscription:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8080/api/v1/functions/engine-monitoring/cyclic-subscriptions \
+   curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/functions/engine-monitoring/cyclic-subscriptions \
      -H "Content-Type: application/json" \
      -d '{
        "resource": "/api/v1/functions/engine-monitoring/x-medkit-graph",
@@ -350,7 +356,7 @@ Then stream events from ``event_source``. Each frame's payload is the same
 
 .. code-block:: bash
 
-   curl -N http://localhost:8080/api/v1/functions/engine-monitoring/cyclic-subscriptions/sub_001/events
+   curl -H "Authorization: Bearer $TOKEN" -N http://localhost:8080/api/v1/functions/engine-monitoring/cyclic-subscriptions/sub_001/events
 
 .. code-block:: text
 
