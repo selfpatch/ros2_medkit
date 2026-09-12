@@ -1093,6 +1093,79 @@ TEST(IsOwnGatewayHelperNodeTest, MatchesTheThreeHelperSuffixesExactlyAndNothingE
   EXPECT_FALSE(is_own_gateway_helper_node("", self_fqn));
 }
 
+TEST(IsOwnGatewayHelperNodeTest, RecognizesHelpersOfANamespacedGateway) {
+  // A gateway moved on its own - `-r <gateway>:__ns:=/subsystem_b` - keeps the
+  // subscription node with it, because the executor passes the gateway's
+  // namespace, while the fault-client and lifecycle-reader nodes are built from
+  // the node name alone and stay in the process default namespace. All three
+  // are still this gateway's plumbing.
+  const std::string self_fqn = "/subsystem_b/ros2_medkit_gateway";
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_sub", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+
+  // A process-wide namespace remap moves all four together, so the in-namespace
+  // spelling has to keep working for the same two.
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+
+  // The subscription node always shares the gateway's namespace, so a
+  // root-namespace one belongs to a different gateway process and is that
+  // gateway's own filter's business.
+  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_sub", self_fqn));
+
+  // Still nothing else: a peer in either namespace, and the gateway itself.
+  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/fault_manager", self_fqn));
+}
+
+TEST(FilterInternalNodeAppsTest, ReportsOnlyDeclaredAppsItDropsAsHelpers) {
+  // A runtime-discovered helper app is what this filter exists to remove, and
+  // saying so on every refresh would be noise. A DECLARED one is a manifest or
+  // plugin entity being overridden, which the caller has to be able to log.
+  const std::string self_fqn = "/ros2_medkit_gateway";
+  App runtime_helper = bound_app("ros2_medkit_gateway_sub", self_fqn + "_sub");
+  runtime_helper.source = "heuristic";
+  App declared_helper = bound_app("plc_bridge", self_fqn + "_fault_clients");
+  declared_helper.source = "manifest";
+  std::vector<App> apps{runtime_helper, declared_helper};
+
+  std::unordered_map<std::string, std::string> routing;
+  std::vector<std::string> dropped_declared;
+  auto removed = filter_internal_node_apps(apps, routing, self_fqn, &dropped_declared);
+
+  EXPECT_EQ(removed, 2u);
+  EXPECT_TRUE(apps.empty());
+  ASSERT_EQ(dropped_declared.size(), 1u);
+  EXPECT_EQ(dropped_declared[0], "plc_bridge -> /ros2_medkit_gateway_fault_clients");
+}
+
+TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
+  // The same split at the level callers see: two of the three helpers of a
+  // namespaced gateway live in the root namespace, and without them being
+  // recognised the gateway lists its own plumbing.
+  const std::string self_fqn = "/subsystem_b/ros2_medkit_gateway";
+  std::vector<App> apps{
+      bound_app("ros2_medkit_gateway", self_fqn),
+      bound_app("ros2_medkit_gateway_sub", "/subsystem_b/ros2_medkit_gateway_sub"),
+      bound_app("ros2_medkit_gateway_fault_clients", "/ros2_medkit_gateway_fault_clients"),
+      bound_app("ros2_medkit_gateway_lifecycle_state_reader", "/ros2_medkit_gateway_lifecycle_state_reader"),
+      bound_app("other_gateway", "/subsystem_c/other_gateway"),
+  };
+
+  std::unordered_map<std::string, std::string> routing;
+  auto removed = filter_internal_node_apps(apps, routing, self_fqn);
+
+  EXPECT_EQ(removed, 3u);
+  std::set<std::string> remaining;
+  for (const auto & app : apps) {
+    remaining.insert(app.id);
+  }
+  EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway"}));
+}
+
 // =============================================================================
 // Area fault/log aggregation handler tests (via REST API)
 // =============================================================================
