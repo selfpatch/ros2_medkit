@@ -43,6 +43,192 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `~/list_faults` | `ros2_medkit_msgs/srv/ListFaults` | Query faults with filtering |
 | `~/clear_fault` | `ros2_medkit_msgs/srv/ClearFault` | Clear/acknowledge a fault |
 | `~/get_snapshots` | `ros2_medkit_msgs/srv/GetSnapshots` | Get topic snapshots for a fault |
+| `~/set_planned_stop` | `ros2_medkit_msgs/srv/SetPlannedStop` | Declare or withdraw a planned stop |
+| `~/get_planned_stop` | `ros2_medkit_msgs/srv/GetPlannedStop` | Read the planned-stop declaration |
+
+## Planned Stop
+
+Maintenance produces faults that nobody wants paged: a robot on a bench raises
+`NODE_UNREACHABLE` for every peer it can no longer see, and the alarm reaches
+whoever is on call. The planned stop is the operator saying "this is us, not the
+plant".
+
+```bash
+ros2 service call /fault_manager/set_planned_stop ros2_medkit_msgs/srv/SetPlannedStop \
+  "{active: true, reason: 'line 3 quarterly maintenance', declared_by: 'shift_lead'}"
+
+ros2 service call /fault_manager/get_planned_stop ros2_medkit_msgs/srv/GetPlannedStop "{}"
+```
+
+**Marked, never dropped.** While the stop stands, it *owns* every fault cycle that
+starts. An owned fault goes through report, debounce, confirmation, snapshot and
+rosbag capture and the audit log exactly as it would otherwise. What changes is
+only how it is *shown*: it is registered as muted with `rule_id: planned_stop` and
+the pseudo root cause `PLANNED_STOP`, so it is absent from the default
+`~/list_faults` response, counted in `muted_count`, and listed under
+`muted_faults` when `include_muted` is set.
+
+**Ownership is the truth, and it is persisted.** A flag on the fault row records it,
+so a restart reads back exactly which cycles the stop owns - no timestamp
+comparison, which a clock step would break and which cannot tell a rule's mute from
+the stop's. It is written by the report that starts the cycle, in the same store
+call and the same transaction, so there is no moment at which a cycle that STARTED
+inside a stop exists unowned - a moment a crash would turn into a confirmed fault
+that no switch-off releases and no restart recognises. (The cycle a fault was
+already in when the stop was declared is never owned; the fault itself becomes owned
+if it heals and fails again inside the stop. See below.) The mute is derived from
+ownership: an owned fault is muted unless a rule's mute overlays it, and when that
+overlay ends the fault is muted by the stop again.
+
+While the process runs, the engine keeps the same set in memory and the switch-off
+works from it. The stored flags are the durable copy: they are what a startup reads
+back, and they are dropped once the switch-off has announced what it released.
+
+**Only a cycle that starts inside the stop.** A fault that was already up when the
+stop was declared keeps its place in the fault list. Reporters are level-triggered
+- `FaultReporter::report()` is called for as long as the condition holds, not once
+per transition - so marking on any report would take a standing alarm off the list
+and then announce it a second time at the switch-off. A cycle starts on a new
+fault, on one raised again after being cleared, and on one that fails again after
+healing (the heal published the fault's end, so the next confirmation is fresh
+news). `occurrence_count` keeps its own, narrower definition and counts the first
+two only.
+
+**Published exactly like a rule-muted symptom.** `EVENT_CONFIRMED` and
+`EVENT_UPDATED` are withheld while the fault is muted, whichever kind of report
+produced them - a PASSED that leaves the fault CONFIRMED announces nothing either.
+`EVENT_CLEARED` is not withheld: a fault that heals past the healing threshold, or
+that is acknowledged, publishes it as any muted fault does. Consumers therefore see
+the end of a fault whose start they never heard - that is the existing muting
+contract, not something the switch changes.
+
+**Withdrawing unmutes, and separately announces.** Two different things happen, and
+they do not cover the same faults.
+
+*Unmuted* is every fault the stop owns whose entry in the muted list is the stop's
+own. A fault a hierarchical rule has since claimed keeps that rule's entry and stays
+muted; everything else the stop owned leaves the muted list, `muted_count` included.
+
+*Announced* is the subset of those that is CONFIRMED and that no live cluster is
+hiding: each publishes a single `EVENT_CONFIRMED`, because that confirmation
+happened behind the mute and was never heard, while the condition it reports still
+stands on the machine. A fault still short of confirmation announces nothing (there
+is nothing yet to announce), and one acknowledged during the stop announces nothing
+either. A cluster-hidden member is therefore unmuted and NOT announced - it leaves
+the muted list and goes on being folded into its cluster's line.
+
+**Correlation rules and the stop compose, and the rule outranks it.** A hierarchical
+rule's mute is an *overlay* on an owned fault, not a transfer: while the rule holds
+it, the withdrawal leaves it alone, and when the rule lets go - which means its root
+cause being acknowledged, the one path that drops a symptom's entry - the fault goes
+back to being muted by the stop. A rule whose window has closed keeps its entry
+until then. A fault whose cycle started before the stop is not owned at all, so the
+stop neither hides it nor releases it.
+
+Cluster rules take the same precedence, and they take it without an entry of their
+own: a cluster hides a member by suppressing that member's events on every report,
+not by writing it into the muted list. So at the switch-off a member an active
+`show_as_single` cluster still hides is simply not announced - the stop's entry
+goes and nothing is written in its place. Releasing them all would fire, in one
+wave, the storm the rule exists to show as a single line.
+
+Afterwards the burst is indistinguishable from one that never met a planned stop in
+the muted list, in `muted_count`, in the cluster listing and in the audit log. It is
+NOT indistinguishable in the event stream, and that is the point of the switch: a
+confirmation that happened inside the stop and behind a cluster is never announced,
+where the same fault outside a stop would have been announced if it confirmed before
+its cluster reached `min_count`. What the stop withheld, it withholds for good.
+
+Which member is announced at the switch-off: the representative, if the stop owned
+its cycle. A representative whose cycle predates the stop was announced when it
+confirmed and is not announced again. A member the cluster is still hiding stays
+hidden, and the one promoted when the representative is acknowledged is heard from
+again from that point on.
+
+*Still hiding* is bounded by the rule's `window_ms`. A cluster hides the reports that
+fall inside its window; a report after it is a new burst - the lapsed cluster is
+dropped and the reporting fault becomes the representative of a fresh one - so that
+fault is no longer folded into the old line, and the switch-off announces it like any
+owned fault. Nothing about the stop causes this: with no stop in force the same late
+report publishes an update.
+
+`min_count` gates whether a cluster FORMS, not how long it hides. Once formed, a
+cluster folds into the representative the members it formed with, for as long as its
+window holds them, until the last of them is acknowledged and it dissolves - a burst
+that shrinks back below the threshold does not start announcing its members again,
+and a fault that JOINS below the threshold was never one of them and is announced and
+updated like any fault of its own. A cluster that never reached `min_count`, or one
+configured without `show_as_single`, hides nobody, so every member of it is released
+as usual.
+
+**The cluster hold does not survive a restart.** Ownership is persisted; cluster
+membership is not. A cluster only holds faults it formed from reports this process
+saw, so if the stop spanned a reboot the switch-off releases every fault the store
+says the stop owns and announces the CONFIRMED ones among them, cluster or no
+cluster. Persisting cluster state is not part of this.
+
+**Both transitions are audited** - when the audit log is on. `audit_log.enabled`
+is `false` by default, and with it off the switch writes no audit row at all. With
+it on, each transition appends `planned_stop_started` / `planned_stop_ended`
+carrying that transition's own reason in `description` and its declarer in
+`source_id`, under the `__audit__` fault code the log's own lifecycle markers use,
+because the transition is about the installation rather than one fault. They are
+recorded whatever `audit_log.transitions` says. A request asking for the state the
+switch is already in succeeds, changes nothing and records nothing, so a retried
+call cannot manufacture evidence of a stop that never started. A request the store
+cannot record answers `success: false` with the reason, and changes nothing.
+
+**The declaration outlives the stop.** `~/get_planned_stop` keeps serving the
+reason, the declarer and the start time after the withdrawal, with `ended_at`
+stamped, so "why was line 3 quiet on Friday?" is answerable once the plant is back
+up without reading the audit database.
+
+**The declaration survives a restart** when the SQLite backend is in use: it is a
+row in the fault store, so a stop declared on Friday still mutes on Monday. On
+startup the manager reads the ownership flags back, so the switch-off after a
+reboot releases exactly the cycles the stop owned and announces their
+confirmations. A *rule's* mute is not persisted anywhere, so a fault a correlation
+rule was muting before a restart comes back unmuted unless the stop owns it - a
+pre-existing property of correlation, not of the switch. The in-memory backend has
+no file behind it and starts every process with no declaration and no ownership.
+
+**A switch-off interrupted by a crash is finished at startup.** The withdrawal
+writes the declaration first, announces the confirmations it was holding back, and
+drops the ownership flags last. A process that dies in between leaves faults owned
+by a declaration that is already over; the next startup recognises exactly that,
+announces them, and clears the flags.
+
+The announcement waits for somebody to hear it. A publisher created during startup
+has matched no subscriber yet, so the confirmations would go into an empty topic and
+the flags behind them would come down all the same - the fault would be released and
+never heard from. The manager therefore captures the release at startup and delivers
+it from a timer, as soon as the events topic has a subscriber. The wait is bounded by
+`planned_stop.interrupted_release_wait_sec` (default 5 s): at the bound it publishes
+anyway, because a release that never completes is worse than one nobody hears - the
+flags stay set, every later startup inherits the same release, and the faults behind
+them stay marked. Ownership is re-read from the store at delivery, so a fault
+acknowledged while the wait ran is not announced; and because a flag belongs to a
+cycle, a fault that heals and fails again with no stop in force has the flag taken
+down by the report that starts that cycle, so it is announced once by the report path
+and not again by the release.
+
+A stop declared while the release is still waiting takes it over rather than forcing
+it out: the pending faults stay flagged and become that stop's to hold, and its own
+switch-off announces them with everything else it owns.
+
+**Over SOVD.** The gateway maps a node's services to operations on its App entity,
+so an operator reaches the switch without any new route:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/apps/fault_manager/operations/set_planned_stop/executions \
+  -H 'Content-Type: application/json' \
+  -d '{"parameters": {"active": true, "reason": "line 3 maintenance", "declared_by": "shift_lead"}}'
+```
+
+That works out of the box in `runtime_only` discovery, where every node is an
+App. In `hybrid` or `manifest_only` discovery the fault manager has to be
+declared in the manifest like any other entity, or there is no `fault_manager`
+entity to address.
 
 ## Features
 
@@ -55,7 +241,8 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (snapshots are deleted when fault is cleared)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
 - **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
-- **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
+- **Planned stop**: An operator declares the plant deliberately down, and faults raised while it stands are marked rather than announced (see below)
+- **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear. The correlation *engine* is always constructed, because the planned stop needs no configuration; without a `correlation.config_file` it carries no rules, correlates nothing, and its cleanup timer (`correlation.cleanup_interval_sec`, default 5 s) walks two empty containers
 - **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
 ## Parameters

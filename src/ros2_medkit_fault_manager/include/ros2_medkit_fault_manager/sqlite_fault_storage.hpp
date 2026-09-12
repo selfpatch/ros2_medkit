@@ -48,7 +48,8 @@ class SqliteFaultStorage : public FaultStorage {
 
   bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                           const std::string & description, const std::string & source_id,
-                          const rclcpp::Time & timestamp, const DebounceConfig & config) override;
+                          const rclcpp::Time & timestamp, const DebounceConfig & config,
+                          bool planned_stop_active = false) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
                                                         const std::vector<std::string> & statuses) const override;
@@ -95,6 +96,12 @@ class SqliteFaultStorage : public FaultStorage {
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
   std::vector<std::string> reclassify_healed_as_cleared() override;
 
+  void set_planned_stop(const PlannedStopState & state) override;
+  PlannedStopState get_planned_stop() const override;
+  std::vector<std::string> get_planned_stop_owned() const override;
+  size_t clear_planned_stop_owned() override;
+  size_t clear_planned_stop_owned(const std::vector<std::string> & fault_codes) override;
+
   /// Get the database path
   const std::string & db_path() const {
     return db_path_;
@@ -134,11 +141,18 @@ class SqliteFaultStorage : public FaultStorage {
   /// still says nobody holds it.
   std::vector<std::string> store_rosbag_file_locked(const RosbagFileInfo & info);
 
-  /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
-  /// and wraps the call, so the fault row and any near-miss row commit together.
+  /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_.
+  /// A FAILED report is the one the caller wraps in a transaction, so the fault row, any near-miss
+  /// row and the planned stop's ownership of the cycle commit together; a PASSED report writes at
+  /// most one row, starts no cycle, and runs in autocommit.
   bool report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                  const std::string & description, const std::string & source_id,
-                                 const rclcpp::Time & timestamp, const DebounceConfig & config);
+                                 const rclcpp::Time & timestamp, const DebounceConfig & config,
+                                 bool planned_stop_active);
+
+  /// Record whether the fault's current cycle is the planned stop's. Caller holds mutex_ and has
+  /// already written the fault row inside the same transaction.
+  void set_planned_stop_owned_locked(const std::string & fault_code, bool owned);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.
