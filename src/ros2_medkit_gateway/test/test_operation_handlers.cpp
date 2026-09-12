@@ -1007,8 +1007,26 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocati
     EXPECT_TRUE(has_location);
     ASSERT_TRUE(exec.id.has_value());
     EXPECT_EQ(*exec.id, execution_id);
-    EXPECT_EQ(exec.status, "running");
-    EXPECT_EQ(goal_info.status, ActionGoalStatus::CANCELING);
+
+    // An accepted stop promises the goal is on its way out: CANCELING while
+    // the server winds down, CANCELED once it has. It never promises which of
+    // the two the caller observes, and a server that cancels within the
+    // round trip lands on CANCELED directly. What it does rule out is a goal
+    // that is still running (ACCEPTED, EXECUTING) or one that completed
+    // anyway (SUCCEEDED): those mean the stop did not take.
+    EXPECT_TRUE(goal_info.status == ActionGoalStatus::CANCELING || goal_info.status == ActionGoalStatus::CANCELED)
+        << "tracked status after an accepted stop: " << ros2_medkit_gateway::action_status_to_string(goal_info.status);
+
+    // The body renders the status the handler read, which is at or before the
+    // one read above - a goal only moves CANCELING -> CANCELED, never back. So
+    // a goal still CANCELING here cannot have been CANCELED when the handler
+    // looked, which pins the body exactly; a goal already CANCELED admits
+    // either rendering.
+    if (goal_info.status == ActionGoalStatus::CANCELING) {
+      EXPECT_EQ(exec.status, "running");
+    } else {
+      EXPECT_TRUE(exec.status == "running" || exec.status == "failed") << "execution status in body: " << exec.status;
+    }
   } else {
     // The fixture's action server always ACCEPTS cancels, so the only
     // realistic failure here is a lost/late CancelGoal response whose
