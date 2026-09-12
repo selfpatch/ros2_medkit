@@ -1485,7 +1485,7 @@ Cross-Origin Resource Sharing (CORS) settings for browser-based clients. CORS is
 
 #### Authentication Configuration
 
-JWT-based authentication with Role-Based Access Control (RBAC). Authentication is **enabled by default** for backward compatibility.
+JWT-based authentication with Role-Based Access Control (RBAC). Authentication is **enabled by default**, and `require_auth_for` ships as `all`, so the gateway does not start until a signing secret is configured.
 
 | Parameter                           | Type     | Default               | Description                                                                 |
 | ----------------------------------- | -------- | --------------------- | --------------------------------------------------------------------------- |
