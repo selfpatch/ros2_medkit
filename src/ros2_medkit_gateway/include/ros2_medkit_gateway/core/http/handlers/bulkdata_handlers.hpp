@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -102,6 +104,36 @@ class BulkDataHandlers {
    */
   static std::vector<std::string> download_media_types();
 
+  /**
+   * @brief Resolve rosbag file path from storage path.
+   *
+   * Rosbag2 creates a directory containing the actual db3/mcap file.
+   * This function resolves the directory to the actual file path. A path that is
+   * already a regular file is returned unchanged.
+   *
+   * The single place that decides which bytes a recording IS, which is why it is
+   * reachable from outside the class rather than being a private helper of the
+   * download path. `download()` streams the file this returns and reports its
+   * length, and `detail::rosbag_served_bytes` sizes the listing through it, so a
+   * change to which file a recording resolves to moves both at once.
+   *
+   * That does not make the two numbers equal in every case, and since the split
+   * fix it deliberately does not. For a recording held in one storage file the
+   * listing resolves through here and reports exactly what the download sends.
+   * For a recording split across several files the listing does not come through
+   * here at all: it carries the recording's total from the fault manager while
+   * this route still hands over one file, and the gap is what tells a client the
+   * transfer is partial. See the size rule in ``docs/api/rest.rst``.
+   *
+   * When the bag's own ``metadata.yaml`` names exactly one storage file and that
+   * file exists, that is the file. Otherwise the directory is scanned for the
+   * first ``.db3`` or ``.mcap`` in whatever order it yields.
+   *
+   * @param path Path to rosbag (can be file or directory)
+   * @return Resolved file path, or empty string if not found
+   */
+  static std::string resolve_rosbag_file_path(const std::string & path);
+
  private:
   HandlerContext & ctx_;
 
@@ -114,17 +146,6 @@ class BulkDataHandlers {
    * to keep the handler's public surface unchanged.
    */
   std::vector<std::string> get_source_filters(const EntityInfo & entity) const;
-
-  /**
-   * @brief Resolve rosbag file path from storage path.
-   *
-   * Rosbag2 creates a directory containing the actual db3/mcap file.
-   * This function resolves the directory to the actual file path.
-   *
-   * @param path Path to rosbag (can be file or directory)
-   * @return Resolved file path, or empty string if not found
-   */
-  static std::string resolve_rosbag_file_path(const std::string & path);
 };
 
 namespace detail {
@@ -206,6 +227,41 @@ std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosb
 bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std::string & requested_id);
 
 /**
+ * @brief Bytes a rosbag download puts on the wire for one recording.
+ *
+ * Answers only for a recording held in a single storage file, which is the only
+ * shape where one number describes the transfer. That is a bag directory whose
+ * ``metadata.yaml`` names one file, or a @p bag_path that is itself a storage
+ * file, which is one by definition and carries no metadata to consult.
+ * ``BulkDataHandlers::resolve_rosbag_file_path`` picks that file and the
+ * download streams it alone, so the length a client is told to expect is that
+ * file's length and nothing else. Reporting the bag directory's total instead
+ * overstated every download by ``metadata.yaml`` - on a short recording, by
+ * around a tenth of the transfer - and a client sizing a buffer or a progress
+ * bar from the listing never reached the end.
+ *
+ * Returns nullopt for anything else, and the caller then keeps the row's own
+ * figure. That covers a bag this process cannot see or read at all, and it
+ * covers a recording split across several storage files past the configured
+ * maximum bag size: the download hands over one segment, so no single file is
+ * the transfer, and answering with whichever segment the resolver reached first
+ * advertised a split recording at the size of one part of it. The row's figure
+ * is the fault manager's answer to the same question, decided from the same
+ * ``metadata.yaml``, so deferring to it keeps the two API surfaces agreeing on
+ * one recording.
+ *
+ * Never throws and never reports a filesystem error upwards. It runs once per
+ * row of a listing, and an error here is one unreadable recording, not a failed
+ * request for the entity's other recordings.
+ *
+ * @param bag_path Bag path as stored by the fault manager. A bag directory, or
+ *                 a bare storage file, which both answer
+ * @return The single storage file's size, or nullopt when there is not exactly
+ *         one, or when this process cannot see it
+ */
+std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
+
+/**
  * @brief Fold rosbag link rows into one descriptor per recording.
  *
  * The fault manager returns one row per ``(fault, recording)`` link, so a burst
@@ -219,6 +275,11 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  *
  * Order follows first appearance, which is the order the fault manager listed
  * the rows in.
+ *
+ * The descriptor size is measured on the file the download resolves (see
+ * ``rosbag_served_bytes``), not taken from the row. A row whose bag this
+ * process cannot see keeps the row's own figure: it is the only number left,
+ * and a recording listed with a zero size reads as an empty one.
  *
  * @param rows Rosbag rows as returned by the fault manager
  * @param faults_by_code Faults keyed by code, for timestamp enrichment

@@ -55,7 +55,9 @@ inline constexpr std::string_view dto_name<BulkDataCategoryList> = "BulkDataCate
 //   id              - unique file identifier (required)
 //   name            - human-readable filename / label (required)
 //   mimetype        - MIME type of the file (required)
-//   size            - byte count (required)
+//   size            - byte count the download route serves for this item
+//                     (required). For a rosbag that is the bag's single
+//                     storage file, not the bag directory's total
 //   creation_date   - ISO 8601 timestamp string (required)
 //   description     - optional human-readable description
 //   x-medkit        - optional open vendor extension object; for rosbags:

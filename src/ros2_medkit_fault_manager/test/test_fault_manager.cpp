@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
@@ -26,20 +27,25 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <std_msgs/msg/float64.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_manager_node.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/msg/snapshot.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
+#include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 using ros2_medkit_fault_manager::clamp_debounce_counter;
@@ -52,7 +58,10 @@ using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::GetFault;
+using ros2_medkit_msgs::srv::GetRosbag;
+using ros2_medkit_msgs::srv::GetSnapshots;
 using ros2_medkit_msgs::srv::ListFaultsForEntity;
+using ros2_medkit_msgs::srv::ListRosbags;
 using ros2_medkit_msgs::srv::ReportFault;
 
 /// Default debounce config for tests (matches DebounceConfig defaults: threshold=-1, no healing)
@@ -1549,6 +1558,199 @@ TEST_F(FreezeFrameRetentionTest, GetFaultServesRetainedFreezeFrameAfterClear) {
   auto parsed = nlohmann::json::parse(snapshot.data);
   ASSERT_TRUE(parsed.contains("/ff_pressure"));
   EXPECT_DOUBLE_EQ(parsed["/ff_pressure"]["data"].get<double>(), 91.25);
+}
+
+// === Rosbag reporting through the services ===
+
+namespace {
+
+/// A bag directory on disk plus the two sizes a recording has: the storage file the
+/// download hands over, and the directory total the storage quota is charged.
+struct ReportedBag {
+  explicit ReportedBag(const std::string & label) {
+    dir = std::filesystem::temp_directory_path() /
+          ("fm_reported_bag_" + std::to_string(::getpid()) + "_" + label + "_" + std::to_string(counter++));
+    std::filesystem::create_directories(dir);
+
+    {
+      std::ofstream out(dir / storage_file, std::ios::binary);
+      out << std::string(8192, 'x');
+    }
+    rosbag2_storage::BagMetadata metadata;
+    metadata.storage_identifier = "sqlite3";
+    metadata.relative_file_paths = {storage_file};
+    metadata.duration = std::chrono::nanoseconds(0);
+    metadata.starting_time = std::chrono::time_point<std::chrono::high_resolution_clock>(std::chrono::nanoseconds(0));
+    metadata.message_count = 0;
+    rosbag2_storage::MetadataIo().write_metadata(dir.string(), metadata);
+
+    for (const auto & entry : std::filesystem::recursive_directory_iterator(dir)) {
+      if (entry.is_regular_file()) {
+        footprint += entry.file_size();
+      }
+    }
+    served = std::filesystem::file_size(dir / storage_file);
+  }
+
+  ~ReportedBag() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+  }
+
+  ReportedBag(const ReportedBag &) = delete;
+  ReportedBag & operator=(const ReportedBag &) = delete;
+
+  /// The row the capture would have stored for @p fault_code: footprint, not served.
+  ros2_medkit_fault_manager::RosbagFileInfo row_for(const std::string & fault_code) const {
+    ros2_medkit_fault_manager::RosbagFileInfo info;
+    info.fault_code = fault_code;
+    info.file_path = dir.string();
+    info.recording_id = ros2_medkit_fault_manager::rosbag_recording_id(info.file_path);
+    info.format = "sqlite3";
+    info.duration_sec = 5.0;
+    info.size_bytes = footprint;
+    info.created_at_ns = 1738664999000000000;
+    return info;
+  }
+
+  static constexpr const char * storage_file = "recording_0.db3";
+  std::filesystem::path dir;
+  size_t footprint{0};
+  size_t served{0};
+  static int counter;
+};
+
+int ReportedBag::counter = 0;
+
+}  // namespace
+
+// A rosbag snapshot advertises a download, so the size beside it has to be the size
+// of that download. The row keeps the recording's directory total for the storage
+// quota. This checks the service reports the served file instead, which is the
+// wiring the helper's own unit tests in test_rosbag_capture cannot see.
+TEST_F(FaultEventPublishingTest, GetFaultReportsARecordingsServedBytesNotItsFootprint) {
+  ReportedBag bag("get_fault");
+  ASSERT_GT(bag.footprint, bag.served) << "metadata.yaml did not land, so there is nothing to tell apart";
+
+  ASSERT_TRUE(call_report_fault("SERVED_BYTES_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
+  fault_manager_->get_storage_for_test().store_rosbag_file(bag.row_for("SERVED_BYTES_FAULT"));
+
+  auto response = call_get_fault("SERVED_BYTES_FAULT");
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->success);
+
+  const ros2_medkit_msgs::msg::Snapshot * rosbag_snapshot = nullptr;
+  for (const auto & snapshot : response->environment_data.snapshots) {
+    if (snapshot.type == ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG) {
+      rosbag_snapshot = &snapshot;
+      break;
+    }
+  }
+  ASSERT_NE(rosbag_snapshot, nullptr) << "the stored recording was not reported at all";
+  EXPECT_EQ(rosbag_snapshot->size_bytes, bag.served) << "the snapshot must state the bytes a download transfers";
+  EXPECT_NE(rosbag_snapshot->size_bytes, bag.footprint) << "the directory total is the quota's figure, not the API's";
+
+  // The row itself is untouched: the quota still sees the whole recording.
+  auto row = fault_manager_->get_storage().get_rosbag_file("SERVED_BYTES_FAULT");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_EQ(row->size_bytes, bag.footprint) << "reporting must not have rewritten what the quota counts";
+}
+
+// The other three services that quote a recording's size. GetFault above covers the
+// snapshot entry. These are the remaining answers, each reached through its own
+// service call rather than through the helper.
+TEST_F(FaultEventPublishingTest, EveryRosbagServiceReportsTheServedBytes) {
+  ReportedBag bag("all_services");
+  ASSERT_GT(bag.footprint, bag.served) << "metadata.yaml did not land, so there is nothing to tell apart";
+
+  ASSERT_TRUE(call_report_fault("ALL_SERVICES_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
+  const auto row = bag.row_for("ALL_SERVICES_FAULT");
+  fault_manager_->get_storage_for_test().store_rosbag_file(row);
+
+  const std::string ns = test_node_->get_namespace();
+
+  // GetSnapshots: the rosbag block of the JSON payload.
+  {
+    auto client = test_node_->create_client<GetSnapshots>(ns + "/fault_manager/get_snapshots");
+    ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+    auto request = std::make_shared<GetSnapshots::Request>();
+    request->fault_code = "ALL_SERVICES_FAULT";
+    auto future = client->async_send_request(request);
+    ASSERT_TRUE(spin_until_future_ready(future));
+    auto response = future.get();
+    ASSERT_TRUE(response->success) << response->error_message;
+
+    auto payload = nlohmann::json::parse(response->data);
+    ASSERT_TRUE(payload.contains("rosbag"));
+    ASSERT_TRUE(payload["rosbag"].value("available", false));
+    EXPECT_EQ(payload["rosbag"]["size_bytes"].get<size_t>(), bag.served);
+    EXPECT_NE(payload["rosbag"]["size_bytes"].get<size_t>(), bag.footprint);
+  }
+
+  // GetRosbag: the single-recording lookup.
+  {
+    auto client = test_node_->create_client<GetRosbag>(ns + "/fault_manager/get_rosbag");
+    ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+    auto request = std::make_shared<GetRosbag::Request>();
+    request->recording_id = row.recording_id;
+    request->fault_code = "ALL_SERVICES_FAULT";
+    auto future = client->async_send_request(request);
+    ASSERT_TRUE(spin_until_future_ready(future));
+    auto response = future.get();
+    ASSERT_TRUE(response->success) << response->error_message;
+    EXPECT_EQ(response->size_bytes, bag.served);
+    EXPECT_NE(response->size_bytes, bag.footprint);
+  }
+
+  // ListRosbags: the per-entity listing, keyed by the fault's reporting source.
+  {
+    auto client = test_node_->create_client<ListRosbags>(ns + "/fault_manager/list_rosbags");
+    ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+    auto request = std::make_shared<ListRosbags::Request>();
+    request->entity_fqn = "/test_node";
+    auto future = client->async_send_request(request);
+    ASSERT_TRUE(spin_until_future_ready(future));
+    auto response = future.get();
+    ASSERT_TRUE(response->success) << response->error_message;
+    ASSERT_EQ(response->sizes_bytes.size(), 1u) << "the stored recording was not listed";
+    EXPECT_EQ(response->sizes_bytes[0], bag.served);
+    EXPECT_NE(response->sizes_bytes[0], bag.footprint);
+  }
+}
+
+// The legacy /faults/{code}/snapshots/bag route was removed, so a payload naming it
+// hands the caller a 404. Nothing in this repo reads the field, and a recording is
+// addressed under its entity, which the fault manager cannot resolve, so the field
+// is gone rather than repointed.
+TEST_F(FaultEventPublishingTest, GetSnapshotsDoesNotAdvertiseARouteThatWasRemoved) {
+  ReportedBag bag("no_download_url");
+
+  ASSERT_TRUE(call_report_fault("NO_URL_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
+  fault_manager_->get_storage_for_test().store_rosbag_file(bag.row_for("NO_URL_FAULT"));
+
+  auto client = test_node_->create_client<GetSnapshots>(std::string(test_node_->get_namespace()) +
+                                                        "/fault_manager/get_snapshots");
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  auto request = std::make_shared<GetSnapshots::Request>();
+  request->fault_code = "NO_URL_FAULT";
+  auto future = client->async_send_request(request);
+  ASSERT_TRUE(spin_until_future_ready(future));
+  auto response = future.get();
+  ASSERT_TRUE(response->success) << response->error_message;
+
+  auto payload = nlohmann::json::parse(response->data);
+
+  // Positive control for the absence below: the rosbag block IS present and populated,
+  // so a missing key is a dropped field and not an empty or absent payload.
+  ASSERT_TRUE(payload.contains("rosbag")) << "control: the payload carries a rosbag block";
+  ASSERT_TRUE(payload["rosbag"].value("available", false)) << "control: the recording was found";
+  ASSERT_TRUE(payload["rosbag"].contains("format")) << "control: the block still carries its other fields";
+
+  EXPECT_FALSE(payload["rosbag"].contains("download_url"))
+      << "the payload advertises a route that answers 404: " << payload["rosbag"].dump();
+  // Nowhere else in the payload either.
+  EXPECT_EQ(payload.dump().find("snapshots/bag"), std::string::npos)
+      << "a removed route is named somewhere in the payload: " << payload.dump();
 }
 
 // snapshots.max_per_fault and snapshots.retain_on_clear are independent settings.
