@@ -47,6 +47,7 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -693,8 +694,19 @@ struct ScopedRclcpp {
 // what actually failed never reaches the report.
 class ScopedExecutorSpin {
  public:
-  explicit ScopedExecutorSpin(rclcpp::executors::MultiThreadedExecutor & executor)
-    : executor_(executor), thread_([this]() {
+  using CancelFn = std::function<void()>;
+
+  // The cancel is injectable so a test can make it fail. A callable rather than
+  // a virtual override on a derived executor because rclcpp::Executor::cancel()
+  // is virtual on jazzy and later but NOT on humble, where a subclass's
+  // cancel() would neither compile with `override` nor be the one called
+  // through a base reference.
+  explicit ScopedExecutorSpin(rclcpp::executors::MultiThreadedExecutor & executor, CancelFn cancel = nullptr)
+    : executor_(executor)
+    , cancel_(cancel ? std::move(cancel) : CancelFn([this]() {
+      executor_.cancel();
+    }))
+    , thread_([this]() {
       executor_.spin();
       spin_returned_.store(true);
     }) {
@@ -736,7 +748,7 @@ class ScopedExecutorSpin {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!spin_returned_.load()) {
       try {
-        executor_.cancel();
+        cancel_();
       } catch (const std::exception &) {
         // Not spinning yet, or the guard condition could not be triggered. The
         // next attempt is what resolves either case.
@@ -764,6 +776,7 @@ class ScopedExecutorSpin {
 
  private:
   rclcpp::executors::MultiThreadedExecutor & executor_;
+  CancelFn cancel_;
   std::atomic<bool> spin_returned_{false};
   std::thread thread_;
   bool stopped_{false};
@@ -785,21 +798,6 @@ class RealNodePluginContext : public FakePluginContext {
 
 }  // namespace
 
-namespace {
-
-// Fails cancel() the way rclcpp documents it can - the guard condition cannot
-// be triggered - after actually stopping the spin, so the join below is the only
-// thing under test rather than a hang.
-class ThrowingCancelExecutor : public rclcpp::executors::MultiThreadedExecutor {
- public:
-  void cancel() override {
-    rclcpp::executors::MultiThreadedExecutor::cancel();
-    throw std::runtime_error("cancel failed");
-  }
-};
-
-}  // namespace
-
 // A cancel() that throws must not cost the join. If it does, the guard's thread
 // member is destroyed while joinable and ~std::thread calls std::terminate, so
 // this test does not fail - it takes the whole binary down with SIGABRT, which
@@ -807,11 +805,18 @@ class ThrowingCancelExecutor : public rclcpp::executors::MultiThreadedExecutor {
 TEST(ScopedExecutorSpinTest, AThrowingCancelStillJoinsTheThread) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("scoped_spin_throwing_cancel");
-  ThrowingCancelExecutor executor;
+  rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
 
   {
-    ScopedExecutorSpin spin(executor);
+    // Fails the way rclcpp documents cancel() can - the guard condition cannot
+    // be triggered - after actually stopping the spin, so what is under test is
+    // the join and not a hang. Injected rather than overridden: cancel() is not
+    // virtual on every distro this builds on.
+    ScopedExecutorSpin spin(executor, [&executor]() {
+      executor.cancel();
+      throw std::runtime_error("cancel failed");
+    });
     // stop() contains the throw itself, so the explicit teardown a test does at
     // the point it wants the executor quiet stays usable.
     EXPECT_NO_THROW(spin.stop());
