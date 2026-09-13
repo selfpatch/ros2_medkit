@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <thread>
@@ -50,6 +51,7 @@
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
@@ -195,6 +197,18 @@ class GatewayNode : public rclcpp::Node {
    * @return Raw pointer, or nullptr when disabled / no plugins loaded
    */
   EntityFreezeFrameCapture * get_entity_freeze_frame_capture() const;
+
+  /**
+   * @brief The gateway's lifecycle-state reader, created on first use.
+   *
+   * One instance per gateway. The reader owns a private ROS node named after
+   * this one, so a second instance would put a second node of that exact name
+   * on the graph: DDS warns about the collision, and every graph query that
+   * lists nodes then returns the name twice.
+   *
+   * @return Shared pointer; never null.
+   */
+  std::shared_ptr<LifecycleStateReader> get_lifecycle_state_reader();
 
   /**
    * @brief Route the trigger topic subscriber through the shared subscription
@@ -418,6 +432,11 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
   std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
+  // Shared by the /status handler and by any plugin that reads lifecycle state,
+  // guarded because the REST server and the plugin manager reach it from
+  // different threads during start-up.
+  std::shared_ptr<LifecycleStateReader> lifecycle_state_reader_;
+  std::mutex lifecycle_state_reader_mutex_;
   // Config-less threshold-rule engine + its dedicated evaluation loop (issue
   // #235). The thread is joined in ~GatewayNode BEFORE plugin/fault shutdown.
   std::unique_ptr<FaultTriggerEngine> fault_trigger_engine_;

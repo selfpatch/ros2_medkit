@@ -1790,7 +1790,9 @@ In addition to standard ROS 2 node discovery, the gateway supports **topic-based
 In runtime discovery mode, the gateway maps the ROS 2 graph to the SOVD entity model:
 
 - **Component**: A single host-derived Component is created from `HostInfoProvider` (hostname, OS, architecture). All Apps belong to this Component.
-- **App**: Each discovered ROS 2 node becomes an App entity.
+- **App**: Each discovered ROS 2 node becomes an App entity, as long as the graph
+  still attributes at least one service, publisher or subscription to it - a name
+  with no endpoints left is a node that has gone, not an App.
 - **Function**: The first namespace segment creates a Function entity that groups all Apps under that namespace (e.g., `/powertrain/engine/temp_sensor` and `/powertrain/engine/rpm_sensor` both belong to Function `powertrain`).
 - **Area**: Areas are only created from manifest definitions. They are never auto-generated in runtime mode. Use hybrid or manifest-only mode to organize entities into Areas.
 

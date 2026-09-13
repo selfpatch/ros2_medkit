@@ -113,7 +113,8 @@ Entity Model
 
 In runtime mode, the gateway maps the ROS 2 graph as follows:
 
-- **Apps** - each ROS 2 node becomes an App (``source: "heuristic"``)
+- **Apps** - each ROS 2 node the graph still attributes an endpoint to becomes
+  an App (``source: "heuristic"``); see :doc:`/config/discovery-options`
 - **Functions** - namespace grouping creates Function entities
 - **Components** - a single host-level Component from ``HostInfoProvider``
 - **Areas** - not created (Areas come from manifest only)

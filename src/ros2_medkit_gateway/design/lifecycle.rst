@@ -94,10 +94,22 @@ plain node with no lifecycle services, the status falls back to ``App::is_online
 the ROS 2 graph), which is the best signal available for an unmanaged node. A node that is not
 online short-circuits to ``"notReady"`` without a GetState read (an offline node cannot be
 ``active``), which also avoids a blocking read against a crashed managed node whose services still
-linger in the cache. The GetState read runs on a private node and executor (spun inline), so it
-never blocks or races the gateway executor; it is, however, serialized by an internal mutex, so a
-reachable-but-slow managed node holds that mutex across its spin and delays other concurrent
-``/status`` reads for up to the (short) read timeout.
+linger in the cache. The GetState read runs on a private node, and on an executor created for that one call and spun
+inline, so it never blocks or races the gateway executor. That private node is named after the
+gateway, so there is exactly one reader per gateway:
+``GatewayNode::get_lifecycle_state_reader()`` creates it on first use and both the ``/status``
+handler and any plugin that reads lifecycle state (through
+``RosPluginContext::lifecycle_state_reader()``) share it.
+
+Sharing one object between an HTTP handler and a plugin tick is only safe because the reader's
+mutex covers just the two things rclcpp does not make thread-safe - creating and destroying the
+call's callback group and client on the shared node. The service wait, the request and the spin
+run outside it, so a read of one node never waits for a read of another. That matters because the
+graph watchdog's lifecycle watcher seeds nodes that may never answer: with the mutex spanning the
+spin, a ``/status`` read of a healthy node was measured queueing behind one such seed for the full
+read timeout, against single-digit milliseconds once the mutex was narrowed
+(``test_lifecycle_reader_contention_e2e``). Destruction is not ordered by that mutex either - a
+call spends most of its life outside it - but by an in-flight count the destructor waits on.
 
 **Component status:** the synthetic host component (the one carrying ``host_metadata``,
 populated by ``HostInfoProvider``) is ``"ready"`` while the gateway is serving the request -

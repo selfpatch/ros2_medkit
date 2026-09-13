@@ -51,7 +51,8 @@ In runtime mode, the gateway maps the ROS 2 graph to SOVD entities as follows:
 - **Components** - a single host-level Component is created from
   ``HostInfoProvider`` (see Default Component below). No synthetic/heuristic
   Components are created from namespaces.
-- **Apps** - each ROS 2 node becomes an App with ``source: "heuristic"``.
+- **Apps** - each ROS 2 node the graph still attributes an endpoint to becomes
+  an App with ``source: "heuristic"`` (see `What Makes a Node an App`_).
 - **Functions** - namespace grouping creates Function entities (see below).
 
 Default Component
@@ -672,6 +673,73 @@ staleness behavior:
        plugins.parameter_beacon.poll_interval_sec: 5.0
        plugins.parameter_beacon.beacon_ttl_sec: 15.0
        plugins.parameter_beacon.beacon_expiry_sec: 300.0
+
+What Makes a Node an App
+------------------------
+
+Runtime discovery lists the node names on the graph and then asks the graph
+about each name in turn. A name becomes an App only when that second question
+comes back with at least one endpoint: a service, a publisher or a
+subscription. A name the graph attributes nothing to is not turned into an App,
+and where the same App is also declared in a manifest it is linked as
+``x-medkit.is_online: false`` instead.
+
+The rule exists because a name on the graph is not by itself evidence that the
+node is there. Node names and endpoints live in different maps inside the RMW
+graph cache, filled and emptied by different code paths, and the two can
+disagree: a cache can go on naming a node whose endpoints it has already
+removed, and it does not correct itself on a timer, because the removal event
+for a participant is generated once. A gateway that trusted the name alone
+would keep serving that App for as long as the process runs. Asking about the
+endpoints costs nothing extra in the normal case - discovery already reads each
+node's services to build its operations - and it answers the question the name
+cannot.
+
+The same answer covers the ordinary race. Anything may happen between listing
+the names and asking about one of them, including the node exiting; rcl then
+reports the name as non-existent and raises. That is read the same way: the
+node is not part of this pass, the pass finishes normally, and the next pass
+decides again from a fresh read.
+
+The boundary, stated as a limit rather than as a promise: a node that
+advertises no service, no publisher and no subscription at all is not visible as
+an App.
+
+What an rclcpp node puts on the graph, and what a ``NodeOptions`` flag can take
+away:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 25 35
+
+   * - Entity
+     - Distro
+     - Switched off by
+   * - the six parameter services
+     - all
+     - ``start_parameter_services(false)``
+   * - ``/parameter_events`` publisher
+     - all
+     - ``start_parameter_event_publisher(false)``
+   * - ``/rosout`` publisher
+     - all
+     - ``enable_rosout(false)``
+   * - ``/parameter_events`` subscription (the node's time source watches
+       ``use_sim_time``)
+     - all
+     - nothing - no ``NodeOptions`` flag reaches it
+   * - ``~/get_type_description`` service
+     - Jazzy and newer
+     - the read-only ``start_type_description_service`` parameter
+
+So a node that switches off everything ``NodeOptions`` offers is still visible:
+its time-source subscription alone keeps it an App on every supported distro.
+Reaching the boundary takes a node built below rclcpp - an rcl-level node with
+no endpoints of any kind - or an rclcpp node whose time source has been taken
+away. The fixture ``demo_silent_node`` in ``ros2_medkit_integration_tests``
+carries exactly one endpoint of its own, the ``/rosout`` publisher, and its test
+asserts that the graph still attributes it to the node and that the gateway
+still lists it.
 
 See Also
 --------

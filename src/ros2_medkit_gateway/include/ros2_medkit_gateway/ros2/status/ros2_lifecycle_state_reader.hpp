@@ -15,6 +15,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -27,17 +28,24 @@
 namespace ros2_medkit_gateway {
 
 /// LifecycleStateReader backed by lifecycle_msgs/srv/GetState. The GetState client
-/// runs on a private node driven by a private SingleThreadedExecutor that is spun
-/// inline on the calling thread (no background spin), so it never races the host
-/// gateway node's MultiThreadedExecutor (the private-node/private-executor idea is
-/// borrowed from ros2_fault_service_transport.cpp; unlike that transport, the target
-/// service path varies per app, so the client is created per call rather than once
-/// in the constructor). create_client, async_send_request, the inline spin, and the
-/// client teardown are serialized by an internal mutex; wait_for_service runs outside
-/// it (backed by an independent graph listener) so an unreachable node does not hold
-/// the mutex. A reachable-but-slow node still holds the mutex across its spin for up to
-/// the timeout and serializes other concurrent /status reads, so the default timeout is
-/// kept short.
+/// runs on a private node, never on the host gateway node, so it cannot race that
+/// node's MultiThreadedExecutor (the private-node idea is borrowed from
+/// ros2_fault_service_transport.cpp; unlike that transport, the target service path
+/// varies per app, so the client is created per call rather than once in the
+/// constructor).
+///
+/// One instance serves every caller in the process - the /status handler and any
+/// plugin that reads lifecycle state - so a slow or unanswering target must not be
+/// able to delay a caller asking about a different node. Each call therefore gets its
+/// own callback group and its own executor, spun inline on the calling thread, and the
+/// internal mutex covers only what rclcpp does not make thread-safe: creating and
+/// destroying that group and client on the shared node. The service wait, the request
+/// and the spin all run outside it, so concurrent reads overlap.
+///
+/// The mutex is not what makes destruction safe, since a call spends most of its life
+/// outside it. `in_flight_` is: the destructor refuses new calls and waits for the
+/// ones already running, so the private node outlives every executor that references
+/// it.
 class Ros2LifecycleStateReader : public LifecycleStateReader {
  public:
   explicit Ros2LifecycleStateReader(rclcpp::Node * host,
@@ -52,9 +60,15 @@ class Ros2LifecycleStateReader : public LifecycleStateReader {
 
  private:
   std::shared_ptr<rclcpp::Node> client_node_;
-  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::chrono::duration<double> timeout_;
+  /// Guards client_node_'s callback-group and client registries, which rclcpp
+  /// does not serialize, plus the two fields below.
   std::mutex mutex_;
+  std::condition_variable idle_cv_;
+  /// Calls that have created their client and not yet destroyed it.
+  int in_flight_{0};
+  /// Set by the destructor; a call that sees it returns without touching the node.
+  bool stopping_{false};
 };
 
 }  // namespace ros2_medkit_gateway

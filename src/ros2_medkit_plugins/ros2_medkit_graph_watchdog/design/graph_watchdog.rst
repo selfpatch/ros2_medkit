@@ -146,6 +146,13 @@ Reliability core
   ``ros2_lifecycle_state_reader.cpp``) compiled in via ``GATEWAY_SRC_DIR`` -
   the same non-header-only reuse pattern other gateway plugins use - rather than reimplementing lifecycle-state
   parsing.
+- **One reader per gateway.** The reader instance itself comes from the plugin
+  context (``RosPluginContext::lifecycle_state_reader()``), not from a
+  constructor call here. It owns a private ROS node named after the gateway, so
+  a second instance would claim a fully qualified name that is already taken -
+  DDS warns about it and every graph query that lists nodes returns the name
+  twice. ``LifecycleWatcher`` still builds its own when the context hands it
+  nullptr, which is what a fixture running without a gateway gets.
 
 Detectors
 ---------

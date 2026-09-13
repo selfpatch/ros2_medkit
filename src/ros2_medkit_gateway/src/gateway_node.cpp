@@ -38,6 +38,7 @@
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
+#include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
@@ -1913,6 +1914,14 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
 
 EntityFreezeFrameCapture * GatewayNode::get_entity_freeze_frame_capture() const {
   return entity_freeze_frame_capture_.get();
+}
+
+std::shared_ptr<LifecycleStateReader> GatewayNode::get_lifecycle_state_reader() {
+  std::lock_guard<std::mutex> lock(lifecycle_state_reader_mutex_);
+  if (!lifecycle_state_reader_) {
+    lifecycle_state_reader_ = std::make_shared<Ros2LifecycleStateReader>(this);
+  }
+  return lifecycle_state_reader_;
 }
 
 void GatewayNode::set_trigger_subscription_executor(ros2_common::Ros2SubscriptionExecutor & exec) {

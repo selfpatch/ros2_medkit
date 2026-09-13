@@ -266,7 +266,8 @@ void GraphWatchdogPlugin::set_context(ros2_medkit_gateway::PluginContext & conte
   // Computed BEFORE gate_ is constructed: node_death's own configure() (which normally
   // owns its miss_grace default) has not run yet at this point.
   const int departed_retention_ticks = compute_departed_retention_ticks(config_snapshot);
-  gate_ = std::make_unique<ReliabilityGate>(warmup_cycles_, node, &node_mutex_, departed_retention_ticks);
+  gate_ = std::make_unique<ReliabilityGate>(warmup_cycles_, node, &node_mutex_, departed_retention_ticks,
+                                            ctx_->lifecycle_state_reader());
 
   // The fault client gets the same treatment as the lifecycle subscriptions: its own
   // callback group, automatic executor registration disabled, added only to a private

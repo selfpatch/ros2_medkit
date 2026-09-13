@@ -23,4 +23,9 @@ GatewayCallbackGroups create_gateway_callback_groups(rclcpp::Node & node) {
   return groups;
 }
 
+rclcpp::CallbackGroup::SharedPtr create_isolated_callback_group(rclcpp::Node & node) {
+  return node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
+                                    /*automatically_add_to_executor_with_node=*/false);
+}
+
 }  // namespace ros2_medkit_gateway::ros2_common

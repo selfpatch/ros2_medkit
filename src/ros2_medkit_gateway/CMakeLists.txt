@@ -882,6 +882,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_ros2_lifecycle_state_reader gateway_ros2)
   medkit_target_dependencies(test_ros2_lifecycle_state_reader rclcpp lifecycle_msgs)
 
+  # Helper nodes that outlive rclcpp::shutdown() (each test cycles the context)
+  medkit_add_gtest(test_graph_listener_shutdown_safety test/test_graph_listener_shutdown_safety.cpp)
+  target_link_libraries(test_graph_listener_shutdown_safety gateway_ros2)
+  medkit_target_dependencies(test_graph_listener_shutdown_safety rclcpp lifecycle_msgs)
+
   # Add operation handler tests
   medkit_add_gtest(test_operation_handlers test/test_operation_handlers.cpp)
   target_link_libraries(test_operation_handlers gateway_ros2)

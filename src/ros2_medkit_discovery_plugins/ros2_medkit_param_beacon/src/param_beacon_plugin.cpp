@@ -121,6 +121,16 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
   param_node_ = std::make_shared<rclcpp::Node>("_param_beacon_node", options);
+  // Registered with the context's GraphListener here, while the context is
+  // known valid. The beacon's parameter sweeps wait for services, and a
+  // shutdown landing on this node's first such wait would leave it marked as
+  // registered while absent from the listener's list:
+  // NodeGraph::get_graph_event() spends should_add_to_graph_listener_ before
+  // add_node() throws GraphListenerShutdownError, and ~NodeGraph then throws
+  // NodeNotFoundError out of a noexcept destructor. The window is narrowed, not
+  // closed: a shutdown between the make_shared above and this line spends the
+  // flag the same way, and rclcpp offers no way to un-spend it.
+  (void)param_node_->get_graph_event();
 
   // Set default client factory if not injected (tests inject mock factory)
   if (!client_factory_) {

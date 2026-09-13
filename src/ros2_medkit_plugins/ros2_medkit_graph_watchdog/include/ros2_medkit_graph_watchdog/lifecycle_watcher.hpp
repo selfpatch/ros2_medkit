@@ -106,8 +106,14 @@ class LifecycleWatcher {
   /// number of attempts covers five times the wall clock at a fifth of the per-tick cost.
   static constexpr std::uint64_t kUnmeasuredSeedInterval = 5;
 
+  /// `reader` is the gateway's own lifecycle-state reader. It is shared rather
+  /// than built here because the reader owns a private ROS node named after the
+  /// gateway; a second one would put a second node of that name on the graph.
+  /// A null `reader` makes this watcher build its own, which is what a fixture
+  /// running without a gateway needs.
   LifecycleWatcher(rclcpp::Node * gateway_node, std::mutex * node_mutex,
-                   int departed_retention_ticks = kDefaultDepartedRetentionTicks);
+                   int departed_retention_ticks = kDefaultDepartedRetentionTicks,
+                   std::shared_ptr<ros2_medkit_gateway::LifecycleStateReader> reader = nullptr);
   ~LifecycleWatcher();
   LifecycleWatcher(const LifecycleWatcher &) = delete;
   LifecycleWatcher & operator=(const LifecycleWatcher &) = delete;
@@ -226,7 +232,7 @@ class LifecycleWatcher {
   };
   rclcpp::Node * node_;
   std::mutex * node_mutex_;
-  std::shared_ptr<ros2_medkit_gateway::Ros2LifecycleStateReader> reader_;
+  std::shared_ptr<ros2_medkit_gateway::LifecycleStateReader> reader_;
   std::shared_ptr<SharedState> state_;
   int retention_ticks_;
   /// The lifecycle subscriptions' own callback group, created with automatic executor

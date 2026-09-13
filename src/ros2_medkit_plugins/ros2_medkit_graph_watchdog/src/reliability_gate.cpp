@@ -16,9 +16,10 @@
 namespace ros2_medkit_graph_watchdog {
 
 ReliabilityGate::ReliabilityGate(int warmup_cycles, rclcpp::Node * gateway_node, std::mutex * node_mutex,
-                                 int departed_retention_ticks)
+                                 int departed_retention_ticks,
+                                 std::shared_ptr<ros2_medkit_gateway::LifecycleStateReader> reader)
   : warmup_(warmup_cycles)
-  , lifecycle_(gateway_node, node_mutex, departed_retention_ticks)
+  , lifecycle_(gateway_node, node_mutex, departed_retention_ticks, std::move(reader))
   , warmup_cycles_(warmup_cycles < 0 ? 0 : warmup_cycles) {
 }
 

@@ -102,6 +102,22 @@ Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node
   // race against the calling thread destroying the response shared_ptr - both
   // happen inline on the caller's thread inside spin_until_future_complete().
   client_node_ = std::make_shared<rclcpp::Node>(std::string(node_->get_name()) + "_fault_clients");
+  // Register client_node_ with the context's GraphListener here, where the
+  // context is known valid, rather than leaving it to the first
+  // wait_for_service. NodeGraph::get_graph_event() spends
+  // should_add_to_graph_listener_ BEFORE calling add_node(), and add_node()
+  // throws GraphListenerShutdownError once rclcpp::shutdown() has stopped the
+  // listener. The flag is then spent on a node that was never listed, so
+  // ~NodeGraph takes its remove_node() branch, the node is absent from
+  // node_graph_interfaces_, and NodeNotFoundError escapes a noexcept destructor
+  // -> std::terminate, exit -6. This narrows the window rather than closing it:
+  // a shutdown landing between the make_shared above and this line still spends
+  // the flag inside a throwing constructor, and rclcpp offers no way to un-spend
+  // it. What it removes is the part that is ordinary - a shutdown arriving
+  // during a fault service wait, which lasts as long as the wait does. The
+  // returned event is not needed: nothing here waits on graph changes, and
+  // NodeGraph holds it weakly.
+  (void)client_node_->get_graph_event();
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(client_node_);
 

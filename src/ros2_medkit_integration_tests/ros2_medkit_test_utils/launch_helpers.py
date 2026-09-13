@@ -76,6 +76,11 @@ DEMO_NODE_REGISTRY = {
     # Regression fixture (#531): parameter services are discoverable
     # (wait_for_service succeeds) but list_parameters never replies.
     'unresponsive_param': ('demo_unresponsive_param_node', 'unresponsive_param', ''),
+    # As little graph surface as a node can be configured to have: parameter
+    # services, the parameter-event publisher and /rosout are all off. The
+    # control on discovery's "a name the graph attributes no endpoint to is
+    # not an App" rule.
+    'silent': ('demo_silent_node', 'silent_node', ''),
 }
 
 # Convenience groupings for callers that want subsets of demo nodes.
@@ -109,9 +114,16 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
     ----------
     port : int
         HTTP server port (default: 8080).
-    name : str
+    name : str or None
         ROS node name. Override when a test launches more than one gateway
         so their names do not collide (e.g. ``gateway_with_scripts``).
+        ``None`` omits the name, and with it the ``-r __node:=`` ros-arg
+        launch_ros would otherwise emit. That remap is a GLOBAL argument, so
+        rclcpp applies it to every node the gateway process creates, not just
+        the gateway's own: the private client nodes (``_fault_clients``,
+        ``_sub``, ``_lifecycle_state_reader``) then all answer to the one name.
+        Pass ``None`` when a test needs to see those nodes under their own
+        names; the gateway falls back to its compiled default.
     extra_params : dict or None
         Additional ROS parameters merged into the node config.
     coverage : bool

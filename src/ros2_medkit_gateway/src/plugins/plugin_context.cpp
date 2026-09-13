@@ -69,6 +69,10 @@ class GatewayPluginContext : public RosPluginContext {
     return node_;
   }
 
+  std::shared_ptr<LifecycleStateReader> lifecycle_state_reader() const override {
+    return node_->get_lifecycle_state_reader();
+  }
+
   std::optional<PluginEntityInfo> get_entity(const std::string & id) const override {
     const auto & cache = node_->get_thread_safe_cache();
 

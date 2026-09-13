@@ -220,3 +220,29 @@ TEST_F(RuntimeDiscoveryMultiNsTest, Introspect_AreasAndComponentsEmpty) {
   EXPECT_TRUE(result.new_entities.components.empty())
       << "Components should always be empty - Components come from HostInfoProvider or manifest";
 }
+
+// -----------------------------------------------------------------------------
+// services_of_present_node() - an App is a node the graph still attributes at
+// least one endpoint to.
+// -----------------------------------------------------------------------------
+
+TEST_F(RuntimeDiscoveryTest, PresentNodeIsReportedWithItsServices) {
+  auto services = strategy_->services_of_present_node(node_->get_name(), node_->get_namespace());
+  ASSERT_TRUE(services.has_value()) << "A live node with default parameter services must read as present";
+  EXPECT_FALSE(services->empty());
+}
+
+TEST_F(RuntimeDiscoveryTest, NodeNameThatIsNotOnTheGraphIsReportedAbsent) {
+  // rcl answers a per-node query for an unknown node with
+  // RCL_RET_NODE_NAME_NON_EXISTENT, which rclcpp raises. That is what a node
+  // leaving the graph between the name listing and the query looks like.
+  EXPECT_FALSE(strategy_->services_of_present_node("node_that_left_the_graph", "/test_ns").has_value());
+}
+
+TEST_F(RuntimeDiscoveryTest, DiscoverAppsListsTheLiveNode) {
+  auto apps = strategy_->discover_apps();
+  const bool found = std::any_of(apps.begin(), apps.end(), [](const auto & app) {
+    return app.bound_fqn.has_value() && *app.bound_fqn == "/test_ns/test_node";
+  });
+  EXPECT_TRUE(found) << "A node the graph attributes endpoints to stays an App";
+}

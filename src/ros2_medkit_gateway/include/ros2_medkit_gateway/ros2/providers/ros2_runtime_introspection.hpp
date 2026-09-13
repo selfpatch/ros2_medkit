@@ -96,6 +96,24 @@ class Ros2RuntimeIntrospection : public IntrospectionProvider {
   /// call from hot paths.
   std::vector<App> discover_apps();
 
+  /// Services the graph attributes to the node `name` in namespace `ns`,
+  /// including the internal parameter services, or nullopt when the graph
+  /// attributes no service, publisher or subscription to it at all.
+  ///
+  /// Nullopt is the "this name is not a node any more" answer, and it covers
+  /// both shapes a departure takes. rcl answers the per-node query for a name
+  /// it no longer knows with RCL_RET_NODE_NAME_NON_EXISTENT, which rclcpp
+  /// raises; and an rmw graph cache can keep a node name after the node's
+  /// endpoints have already been removed from the same cache, in which case
+  /// every per-node query comes back empty instead. Both mean the node is not
+  /// there, so both read the same way here.
+  ///
+  /// The publisher and subscription queries only run when the node reports no
+  /// services, so a node with the default parameter services costs exactly one
+  /// query, as before.
+  std::optional<std::map<std::string, std::vector<std::string>>> services_of_present_node(const std::string & name,
+                                                                                          const std::string & ns) const;
+
   /// Group nodes by namespace into Function entities (no graph query).
   std::vector<Function> discover_functions(const std::vector<App> & apps);
 

@@ -72,4 +72,22 @@ struct GatewayCallbackGroups {
  */
 GatewayCallbackGroups create_gateway_callback_groups(rclcpp::Node & node);
 
+/**
+ * @brief A MutuallyExclusive group on @p node that no executor collects along
+ * with the node.
+ *
+ * For an entity created, used and destroyed inside a single call on a single
+ * thread. `automatically_add_to_executor_with_node = false` means the group is
+ * reachable only from the executor that call builds for it, so no other thread
+ * ever holds a reference to the entity and the entity can be destroyed on the
+ * calling thread rather than on an executor thread - the ordering rule the
+ * gateway relies on everywhere it creates ROS entities while running.
+ *
+ * Unlike `create_gateway_callback_groups`, this is called while the node is
+ * live, so the caller owns the serialisation: every call must be made under the
+ * same lock as every other node-mutating call on @p node. Group creation is one
+ * of the rcl hash-map mutations the issue-#375 gate exists for.
+ */
+rclcpp::CallbackGroup::SharedPtr create_isolated_callback_group(rclcpp::Node & node);
+
 }  // namespace ros2_medkit_gateway::ros2_common

@@ -40,7 +40,8 @@ namespace ros2_medkit_graph_watchdog {
 class ReliabilityGate {
  public:
   ReliabilityGate(int warmup_cycles, rclcpp::Node * gateway_node, std::mutex * node_mutex,
-                  int departed_retention_ticks = kDefaultDepartedRetentionTicks);
+                  int departed_retention_ticks = kDefaultDepartedRetentionTicks,
+                  std::shared_ptr<ros2_medkit_gateway::LifecycleStateReader> reader = nullptr);
 
   /// Feed a fresh introspection snapshot at `tick`: updates per-entity warmup,
   /// lifecycle tracking, and the global bringup marker.

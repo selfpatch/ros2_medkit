@@ -49,6 +49,9 @@ set(GATEWAY_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../ros2_medkit_gateway"
 set(GATEWAY_SRC_INCLUDE_DIR "${GATEWAY_SRC_DIR}/include")
 set(LIFECYCLE_STATE_READER_SOURCES
   ${GATEWAY_SRC_DIR}/src/core/status/lifecycle_status_helpers.cpp
+  # The reader builds each call's callback group through ros2_common, which is
+  # where the gateway keeps node-entity creation.
+  ${GATEWAY_SRC_DIR}/src/ros2_common/callback_groups.cpp
   ${GATEWAY_SRC_DIR}/src/ros2/status/ros2_lifecycle_state_reader.cpp)
 # Fail early with a clear message if the reused gateway sources are missing
 # (e.g. building the package outside the workspace),
@@ -644,6 +647,26 @@ if(BUILD_TESTING)
     test/e2e/test_lifecycle_expectation_e2e.test.py TIMEOUT 600
     LABELS "integration;e2e"
     ENV "GATEWAY_TEST_PORT=19300" "WATCHDOG_E2E_SCENARIO=restart_departed" "${_WATCHDOG_E2E_ENV}")
+
+  # === lifecycle reader contention e2e (launch_testing) ===
+  #
+  # 60 (arming gate) + 15 (sampling window) plus the launch's own settle time.
+  # 240 to also cover teardown for TWO processes (sigterm 30 + sigkill 15 each,
+  # not fully serial).
+  medkit_add_launch_test(test_e2e_test_lifecycle_reader_contention_e2e.test.py
+    test/e2e/test_lifecycle_reader_contention_e2e.test.py TIMEOUT 240
+    LABELS "integration;e2e"
+    ENV "GATEWAY_TEST_PORT=19630" "${_WATCHDOG_E2E_ENV}")
+
+  # === lifecycle reader identity e2e (launch_testing) ===
+  #
+  # 60 (arming gate) + 60 (reader visible) + 10 (settle window while both creators have
+  # had their chance) = 130 internal. Rounded to 240 to also cover the launch's own
+  # teardown for TWO processes (sigterm 30 + sigkill 15 each, not fully serial).
+  medkit_add_launch_test(test_e2e_test_lifecycle_reader_identity_e2e.test.py
+    test/e2e/test_lifecycle_reader_identity_e2e.test.py TIMEOUT 240
+    LABELS "integration;e2e"
+    ENV "GATEWAY_TEST_PORT=19620" "${_WATCHDOG_E2E_ENV}")
 
   # === node_death e2e (launch_testing) ===
   #

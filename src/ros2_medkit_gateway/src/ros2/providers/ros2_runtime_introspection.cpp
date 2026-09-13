@@ -124,6 +124,13 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
     }
     seen_fqns.insert(fqn);
 
+    auto node_services_opt = services_of_present_node(name, ns);
+    if (!node_services_opt) {
+      RCLCPP_DEBUG(node_->get_logger(), "Node '%s' advertises no endpoint; not an app in this pass", fqn.c_str());
+      continue;
+    }
+    const auto & node_services = *node_services_opt;
+
     App app;
     if (name_namespaces[name].size() > 1 && ns != "/") {
       std::string ns_prefix = ns.substr(1);  // Remove leading '/'
@@ -141,45 +148,39 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
     app.is_online = true;
     app.bound_fqn = fqn;
 
-    try {
-      auto node_services = node_->get_service_names_and_types_by_node(name, ns);
-      for (const auto & [service_path, types] : node_services) {
-        if (is_internal_service(service_path)) {
-          continue;
-        }
-        auto it = service_info_map.find(service_path);
-        if (it != service_info_map.end()) {
-          app.services.push_back(it->second);
-        } else {
-          ServiceInfo info;
-          info.full_path = service_path;
-          info.name = extract_name_from_path(service_path);
-          info.type = types.empty() ? "" : types[0];
-          app.services.push_back(info);
-        }
+    for (const auto & [service_path, types] : node_services) {
+      if (is_internal_service(service_path)) {
+        continue;
       }
+      auto it = service_info_map.find(service_path);
+      if (it != service_info_map.end()) {
+        app.services.push_back(it->second);
+      } else {
+        ServiceInfo info;
+        info.full_path = service_path;
+        info.name = extract_name_from_path(service_path);
+        info.type = types.empty() ? "" : types[0];
+        app.services.push_back(info);
+      }
+    }
 
-      // Detect actions by checking for /_action/send_goal services
-      for (const auto & [service_path, types] : node_services) {
-        const std::string action_suffix = "/_action/send_goal";
-        if (service_path.length() > action_suffix.length() &&
-            service_path.compare(service_path.length() - action_suffix.length(), action_suffix.length(),
-                                 action_suffix) == 0) {
-          std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
-          auto it = action_info_map.find(action_path);
-          if (it != action_info_map.end()) {
-            app.actions.push_back(it->second);
-          } else {
-            ActionInfo info;
-            info.full_path = action_path;
-            info.name = extract_name_from_path(action_path);
-            app.actions.push_back(info);
-          }
+    // Detect actions by checking for /_action/send_goal services
+    for (const auto & [service_path, types] : node_services) {
+      const std::string action_suffix = "/_action/send_goal";
+      if (service_path.length() > action_suffix.length() &&
+          service_path.compare(service_path.length() - action_suffix.length(), action_suffix.length(), action_suffix) ==
+              0) {
+        std::string action_path = service_path.substr(0, service_path.length() - action_suffix.length());
+        auto it = action_info_map.find(action_path);
+        if (it != action_info_map.end()) {
+          app.actions.push_back(it->second);
+        } else {
+          ActionInfo info;
+          info.full_path = action_path;
+          info.name = extract_name_from_path(action_path);
+          app.actions.push_back(info);
         }
       }
-    } catch (const std::exception & e) {
-      RCLCPP_DEBUG(node_->get_logger(), "Could not get services for node '%s' in namespace '%s': %s", name.c_str(),
-                   ns.c_str(), e.what());
     }
 
     if (topic_data_provider_) {
@@ -194,6 +195,33 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
 
   RCLCPP_DEBUG(node_->get_logger(), "Discovered %zu apps from runtime nodes", apps.size());
   return apps;
+}
+
+std::optional<std::map<std::string, std::vector<std::string>>>
+Ros2RuntimeIntrospection::services_of_present_node(const std::string & name, const std::string & ns) const {
+  std::map<std::string, std::vector<std::string>> services;
+  try {
+    services = node_->get_service_names_and_types_by_node(name, ns);
+    if (!services.empty()) {
+      return services;
+    }
+    // Every rclcpp and rclpy node carries the six parameter services unless
+    // they were turned off explicitly, so an empty service map is already the
+    // unusual case. Confirm it against the node's other endpoints before
+    // treating the name as gone.
+    auto node_graph = node_->get_node_graph_interface();
+    if (!node_graph->get_publisher_names_and_types_by_node(name, ns).empty()) {
+      return services;
+    }
+    if (!node_graph->get_subscriber_names_and_types_by_node(name, ns).empty()) {
+      return services;
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_DEBUG(node_->get_logger(), "Per-node graph query for '%s' in namespace '%s' failed: %s", name.c_str(),
+                 ns.c_str(), e.what());
+    return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 std::vector<Function> Ros2RuntimeIntrospection::discover_functions() {

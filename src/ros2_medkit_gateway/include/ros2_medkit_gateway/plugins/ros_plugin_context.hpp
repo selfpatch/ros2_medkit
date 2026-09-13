@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
+#include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"
 
 namespace rclcpp {
 class Node;
@@ -43,6 +44,17 @@ class RosPluginContext : public PluginContext {
  public:
   /// Get the ROS 2 node pointer for subscriptions, service clients, etc.
   virtual rclcpp::Node * node() const = 0;
+
+  /// The gateway's own lifecycle-state reader, for plugins that read managed
+  /// nodes' states. Shared on purpose: the reader owns a private ROS node named
+  /// after the gateway, so a plugin that built its own would put a second node
+  /// of that exact name on the graph.
+  ///
+  /// Returns nullptr for contexts that are not backed by a gateway (test
+  /// doubles); a plugin that gets nullptr owns the fallback.
+  virtual std::shared_ptr<LifecycleStateReader> lifecycle_state_reader() const {
+    return nullptr;
+  }
 };
 
 /**

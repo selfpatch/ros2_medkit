@@ -173,6 +173,7 @@ def create_watchdog_test_launch(
     healing_enabled=True,
     healing_threshold=3,
     gateway_respawn=False,
+    gateway_name='ros2_medkit_gateway',
 ):
     """Build a ``LaunchDescription`` that loads graph_watchdog into a real gateway.
 
@@ -209,6 +210,13 @@ def create_watchdog_test_launch(
         whose subject IS the debounce counter (a low threshold makes it
         sensitive to even a single spurious PASSED) overrides this directly
         rather than adding a second mechanism.
+    gateway_name : str or None
+        Name to launch the gateway under. ``None`` omits the ``__node:=``
+        remap, which is the only way to see the gateway's helper nodes under
+        their own names: the remap is a global argument and rclcpp applies it
+        to every node the process creates, so under a name the gateway's
+        private client nodes all answer to that one name instead of their
+        suffixed ones.
     gateway_respawn : bool
         If True, ``launch`` restarts the gateway when it exits. For the one
         scenario whose subject is a gateway restart: the fault_manager and the
@@ -237,7 +245,8 @@ def create_watchdog_test_launch(
     if extra_gateway_params:
         params.update(extra_gateway_params)
 
-    gateway_node = create_gateway_node(port=port, extra_params=params, respawn=gateway_respawn)
+    gateway_node = create_gateway_node(port=port, extra_params=params, respawn=gateway_respawn,
+                                       name=gateway_name)
 
     delayed_actions = create_demo_nodes(demo_nodes if demo_nodes is not None else [])
     delayed_actions.append(create_fault_manager_node(

@@ -66,10 +66,11 @@ std::string derive_transition_event_topic(const std::string & get_state_path) {
 
 }  // namespace
 
-LifecycleWatcher::LifecycleWatcher(rclcpp::Node * gateway_node, std::mutex * node_mutex, int departed_retention_ticks)
+LifecycleWatcher::LifecycleWatcher(rclcpp::Node * gateway_node, std::mutex * node_mutex, int departed_retention_ticks,
+                                   std::shared_ptr<ros2_medkit_gateway::LifecycleStateReader> reader)
   : node_(gateway_node)
   , node_mutex_(node_mutex)
-  , reader_(std::make_shared<ros2_medkit_gateway::Ros2LifecycleStateReader>(gateway_node))
+  , reader_(reader ? std::move(reader) : std::make_shared<ros2_medkit_gateway::Ros2LifecycleStateReader>(gateway_node))
   , state_(std::make_shared<SharedState>())
   , retention_ticks_(departed_retention_ticks) {
   // One group for every lifecycle subscription, created once here rather than per node:
