@@ -186,6 +186,18 @@ Clears (acknowledges) a fault by setting its status to CLEARED.
 - **Idempotent**: Clearing an already-cleared fault succeeds
 - **Returns**: ``success=true`` if fault existed, ``success=false`` if not found
 
+~/set_planned_stop and ~/get_planned_stop
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Declares, withdraws and reads the planned stop.
+
+- **One declaration per manager**: the stop is a fact about the installation, not about a fault
+- **Idempotent**: a request for the state the switch is already in succeeds, changes nothing and writes no audit record; ``was_active`` tells the caller which of the two happened
+- **Store first**: the declaration is written before anything is muted, unmuted, announced or audited, and a store that refuses the write ends the request with ``success=false`` - a stop the manager could not record must not be one a restart comes back believing in
+- **Audited**: when ``audit_log.enabled`` is set (off by default), each real transition appends ``planned_stop_started`` / ``planned_stop_ended`` under the ``__audit__`` fault code, with that transition's own reason and declarer
+- **Persisted**: stored in the fault store, so the declaration outlives the process (SQLite backend), and ``~/get_planned_stop`` keeps serving it after the withdrawal with ``ended_at`` stamped
+- **Returns**: ``success``, a message, and the state the switch was in before the call
+
 Design Decisions
 ----------------
 
@@ -245,6 +257,195 @@ means heal on a single PASSED event); the node validates the
 merged per-entity config at startup, logs a warning, and falls back to safe defaults if not. When
 healing is disabled, any HEALED row left by a previous (healing-enabled) run is reclassified to
 CLEARED once at startup so it does not behave inconsistently under the latch.
+
+Planned Stop as a Second Mute Source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Maintenance produces faults that are real, correctly detected, and not news. The
+planned stop marks them instead of dropping them: while it stands, a fault whose
+cycle *starts* is registered in the correlation engine as muted with
+``rule_id = "planned_stop"`` and the pseudo root cause ``PLANNED_STOP``, and
+everything else about it - debounce, confirmation, snapshot and rosbag capture,
+the audit records - happens exactly as it would otherwise. Dropping the report
+instead was rejected because a fault that outlived the stop would then never be
+raised again: reporters are level-triggered, so nothing re-announces a condition
+whose report was thrown away.
+
+**Only a cycle that starts inside the stop.** That same level-triggered shape is
+why the mark is gated on the cycle boundary rather than on the report.
+``ros2_medkit_diagnostic_bridge`` sends one FAILED per incoming
+``DiagnosticArray`` - typically 1 Hz for as long as the condition holds - and
+``FaultReporter::report()`` is documented to be called the same way. Marking on any
+report would take a fault that was confirmed and announced *before* the stop off
+the fault list within a second of the declaration, and announce it a second time at
+the switch-off. The boundary is ``report_fault_event``'s own ``is_new`` - a new fault, or one
+raised again after being cleared - plus a re-fail out of HEALED, because the manager
+publishes ``EVENT_CLEARED`` at the heal and the confirmation that follows is
+therefore fresh news. ``occurrence_count`` keeps its own, narrower definition.
+
+**Ownership is the fact; the mute is derived from it.** The stop owns a fault
+CYCLE, and the durable record of that is a flag on the fault row in the store -
+not a timestamp comparison. The report that starts the cycle carries it: the store
+is told whether a stop is in force, decides inside the same transaction whether
+this report started a cycle, and writes the flag with the row. Recorded by a call
+that follows the report instead, there is a window in which a fault has confirmed
+inside a stop and is not owned, and a process that dies there comes back to a
+confirmed fault that no switch-off releases, that no startup recognises as
+interrupted, and whose next report announces an update mid-stop.
+
+The engine keeps the same set in the process (``planned_stop_owned_``) and that is
+what a running switch-off works from; the stored flags are what a STARTUP reads
+back, and ``clear_planned_stop_owned`` drops them once the switch-off has announced
+what it released. Several paths move each of them - the report takes a cycle, the
+constructor restores from the store, an acknowledgement and the switch-off give it
+up - and they stay in step because every one of THOSE runs on the node's single
+thread: the constructor before anything is spinning, and the rest as service
+callbacks under the ``rclcpp::spin()`` in ``main.cpp``, none of them on a callback
+group of its own, so no two are ever in flight at once. (The node does create a
+callback group elsewhere - ``SnapshotCapture`` drains one on a thread of its own -
+but nothing on it reads or writes either set.)
+
+Everything else follows: an owned fault is
+muted unless a rule's mute overlays it, and the moment the overlay ends the engine
+re-asserts the stop's mute (``reassert_planned_stop_mutes``). An overlay ends when a
+cycle ends, which is ``process_clear`` in all three of its forms: on the root cause,
+which erases its symptoms' entries; on the symptom itself; and on a symptom the
+auto-clear loop takes with its root cause. A window closing is not one of them:
+``cleanup_expired`` drops pending root causes and pending clusters and never touches
+``muted_faults_``, so it calls the re-assert to cover the ownership set rather than
+to hand anything back. A rule therefore borrows a fault
+rather than taking it, which is what makes the two features compose in both
+directions: the withdrawal leaves a rule-held fault muted, and a rule that lets go
+mid-stop hands the fault back instead of dropping it out of the stop for good.
+
+Deriving the mute also fixes what ``should_mute`` means. A repeat report of a fault
+whose rule has stopped matching produces no correlation result at all, so the report
+path used to treat it as unmuted and announce an update for a fault the list was
+hiding. ``process_fault`` now answers with the state of the mute map, not with what
+this particular report matched, and the PASSED path asks the same question rather
+than defaulting to "not muted".
+
+Ownership ends in exactly three places: the fault is acknowledged (both
+acknowledgement paths - the correlation clear and the scoped per-entity clear that
+skips it - and the store clears the flag with the CLEARED status), the fault is
+auto-cleared with its root cause, or the stop is withdrawn.
+
+**The mark survives a restart** because the flags do. Startup reads them back and
+re-registers the mute. Without that, a reboot inside a weekend stop would make the
+survivors silently visible and the switch-off would announce none of them: their
+confirmations, suppressed before the reboot, would be lost for good. A correlation
+rule's mute is not persisted anywhere, so a rule-muted fault comes back unmuted
+after a restart unless the stop owns its cycle - a pre-existing property of
+correlation rather than something the switch introduces.
+
+**A withdrawal is ordered so a crash cannot swallow an announcement.** The
+declaration is written first (so a store that refuses the write changes nothing, and
+a restart never re-arms a stop the operator withdrew), the confirmations are
+announced next, and the ownership flags are cleared last. A process that dies in
+between leaves faults owned by a declaration that is already over, which is a state
+the next startup recognises: it announces them and clears the flags of exactly
+those faults. Clearing first would have turned a crash into permanent silence.
+
+The recovery is CAPTURED in the constructor and DELIVERED from a timer. Publishing
+in the constructor publishes into nothing: the events topic is volatile, the
+publisher is milliseconds old, and no subscriber has matched it - so the
+confirmations are dropped while the flags behind them come down, which is the one
+outcome the ordering above exists to prevent. ``finish_interrupted_release`` records
+the owned codes and arms a wall timer; the timer polls
+``event_publisher_->get_subscription_count()`` every 100 ms and calls
+``deliver_interrupted_release`` at the first subscriber, or when
+``planned_stop.interrupted_release_wait_sec`` has elapsed with none. At the bound it
+publishes anyway: a flag that never clears makes every later startup inherit the same
+release and leaves the faults behind it marked, which is worse than an event nobody
+heard.
+
+Delivery re-reads ownership from the store and keeps only the captured codes the
+store still owns, so a fault acknowledged during the wait is neither announced nor
+touched. Ownership is a fact about a CYCLE, so the store takes the flag down itself
+when a report starts a new cycle for that code with no stop in force - the same write
+that sets it when one is. Without that, a fault that healed and failed again would be
+announced twice: once by the report path, which sees no mute, and once more by the
+delivery, which still saw the flag on a cycle the dead declaration never owned.
+
+A stop declared while the release is still pending does not force it out. The release
+FOLDS into the new declaration: ``handle_set_planned_stop`` cancels the timer and
+hands the captured codes to the engine the way a startup under a standing declaration
+does (``restore_planned_stop_ownership``), leaving their flags where they are. The new
+stop then owns those cycles and its own switch-off releases and announces them with
+everything else it owns. Delivering instead would publish into whatever was listening
+at that instant, which is exactly the empty topic the deferral exists to avoid.
+
+The timer holds ``this`` by raw pointer rather than a shared handle, so the node does
+not own itself, and the destructor cancels it before the store and the publisher it
+reads are taken apart. That cancel is sufficient because ``main.cpp`` spins the node on
+one thread and destroys it after ``spin()`` returns: no tick can be in flight. Under a
+multi-threaded executor or a component container it would not be, and the capture would
+have to become a weak handle.
+
+Withdrawing releases the rest and publishes ``EVENT_CONFIRMED`` once for each
+released fault that is CONFIRMED. That republication is the point of marking
+rather than dropping: the confirmation happened behind the mute, no consumer of
+the event stream ever heard it, and the condition still stands on the machine.
+What is withheld is exactly what a rule-muted symptom withholds - ``EVENT_CONFIRMED``
+and ``EVENT_UPDATED`` - while ``EVENT_CLEARED`` is published as usual, so a fault
+that heals or is acknowledged inside the stop still reports its end.
+
+**A rule outranks the stop at the switch-off, clusters included.** A hierarchical
+rule holds its symptom through the withdrawal because its mute entry is there to
+see. A cluster's ``show_as_single`` is different: it sets ``should_mute`` on the
+report and writes no entry, so an owned member carries the stop's entry and would be
+released with everything else - announcing, in one wave, exactly the storm the rule
+exists to fold into a single alarm. The release therefore asks the cluster the same
+question the report path asks (``cluster_hides``: an ACTIVE cluster, a
+``show_as_single`` rule, and not the representative) and, when the answer is yes,
+erases the stop's entry without announcing the fault and without writing anything in
+its place.
+
+A cluster-attributed entry there would be wrong in two ways. It is a remembered
+answer to a question whose inputs keep moving -
+membership and the representative both change - so acknowledging the representative
+afterwards leaves the promoted member hidden behind an entry naming a fault that is
+gone, with nothing but clearing it to remove the entry. And it makes ``muted_count``
+and the default fault list depend on whether a stop happened to be in force earlier,
+for a cluster that is otherwise identical, because a cluster writes no entry at any
+other time. ``cluster_hides`` is a verdict, asked fresh on every report and once
+more at the release; it is never stored.
+
+Ownership ends either way. What is announced is the representative, if the stop
+owned its cycle. ``min_count`` gates whether a cluster FORMS, not how long it hides:
+a formed cluster holds its members until the last one is acknowledged and it
+dissolves, so a burst that shrinks below the threshold keeps hiding. A cluster that
+never reached ``min_count``, or one whose rule groups without hiding, has no verdict
+to outrank the stop with, and every member of it is released.
+
+Promotion has to read the ACTIVE cluster, not the pending twin. ``cleanup_expired``
+drops the pending cluster when its window closes and keeps the active one, so once
+the window is behind the burst the active cluster is the only record of who is left.
+Promoting from a twin that is no longer there leaves ``representative_code`` naming
+the acknowledged fault, and every remaining member is then hidden by a cluster whose
+representative can never be reported again - at the switch-off nobody is released.
+The member severities therefore live on ``ClusterData`` rather than beside the
+pending cluster, so a highest-severity rule can still name a replacement.
+
+**The cluster hold does not survive a restart.** Ownership is persisted; cluster
+membership is not, and persisting it is a separate feature this does not build. A
+cluster only holds faults it formed from reports the running process saw, so a stop
+that spanned a reboot releases and announces every fault the store says it owns.
+
+The switch is a service rather than a parameter because it carries a reason and a
+declarer and produces an audit record, none of which a parameter can do; and it is
+not a new HTTP route because the gateway already exposes a node's services as SOVD
+operations on its App entity.
+
+One cost falls on every deployment, correlation or not: the engine is now always
+constructed, so the ``correlation.cleanup_interval_sec`` timer (5 s by default)
+runs on every fault manager. With no rules loaded a tick takes the engine's mutex,
+walks two empty containers - ``pending_root_causes_`` and ``pending_clusters_`` -
+and re-asserts an empty ownership set. Measured at ~190 ns per call (1e6 calls on a
+rules-free engine, three runs: 191.2, 194.7, 190.3 ns), which at the default
+interval is ~2.3 us of CPU per minute. Building the engine lazily when a stop is
+first declared would put a second construction path under the service handler to
+save that.
 
 Rosbag Black-Box Recording
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

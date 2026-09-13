@@ -15,9 +15,11 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -38,9 +40,11 @@
 #include "ros2_medkit_msgs/msg/snapshot.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_planned_stop.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "ros2_medkit_msgs/srv/set_planned_stop.hpp"
 
 using ros2_medkit_fault_manager::clamp_debounce_counter;
 using ros2_medkit_fault_manager::compute_debounce_status;
@@ -1060,7 +1064,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     std::string events_topic = ns + "/fault_manager/events";
     auto qos = rclcpp::QoS(100).reliable().durability_volatile();
     event_subscription_ =
-        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::SharedPtr msg) {
+        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::ConstSharedPtr & msg) {
           received_events_.push_back(*msg);
         });
 
@@ -1206,7 +1210,7 @@ TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
 
   // Wait for event to arrive (polling, robust under CPU contention)
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CONFIRMED was published
@@ -1221,7 +1225,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report a new fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_WARN, "/test_node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1230,7 +1234,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report same fault again - should trigger EVENT_UPDATED
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_ERROR, "/test_node2"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_UPDATED was published (severity/sources changed; still one occurrence)
@@ -1244,7 +1248,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_3", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1253,7 +1257,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Clear the fault
   ASSERT_TRUE(call_clear_fault("TEST_FAULT_3"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CLEARED was published
@@ -1280,7 +1284,7 @@ class HealingFaultEventPublishingTest : public FaultEventPublishingTest {
 TEST_F(HealingFaultEventPublishingTest, HealPublishesClearedEventSoStreamConsumersSeeTheEnd) {
   ASSERT_TRUE(call_report_fault("HEAL_ME", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   received_events_.clear();
 
@@ -1323,7 +1327,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 
   ASSERT_TRUE(call_report_fault("TEST_FAULT_4", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto after = fault_manager_->now();
@@ -1339,7 +1343,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
   ASSERT_TRUE(call_report_fault("FULL_DATA_TEST", Fault::SEVERITY_CRITICAL, "/sensor/temperature"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   ASSERT_EQ(received_events_.size(), 1u);
@@ -1362,7 +1366,7 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
 
   ASSERT_TRUE(call_report_fault("WALL_CLOCK_TEST", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto wall_after = std::chrono::system_clock::now();
@@ -1390,7 +1394,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExpectedFault) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("GET_FAULT_TEST", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Get fault via service
@@ -1414,7 +1418,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
   // Report a fault
   ASSERT_TRUE(call_report_fault("ENV_DATA_TEST", Fault::SEVERITY_WARN, "/sensor/temp"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto response = call_get_fault("ENV_DATA_TEST");
@@ -1434,7 +1438,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   // Report fault twice to have first and last occurrence timestamps differ
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node2"));
   ASSERT_TRUE(spin_until([this]() {
@@ -1482,7 +1486,7 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   // Report faults from a different entity
   ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Query faults for non-existent entity
@@ -2989,6 +2993,553 @@ TEST_F(SnapshotReadPathTest, FreezeFrameStaysVisibleBehindRetainedSnapshots) {
   EXPECT_TRUE(frame_served) << "retained snapshots must not hide the most recent freeze-frame";
 }
 
+namespace {
+
+/// A store whose planned-stop write always fails, standing in for a disk that has
+/// gone read-only under a running manager. Everything else behaves normally.
+class PlannedStopFailingStorage : public ros2_medkit_fault_manager::InMemoryFaultStorage {
+ public:
+  void set_planned_stop(const ros2_medkit_fault_manager::PlannedStopState & /*state*/) override {
+    throw std::runtime_error("planned_stop table is read-only");
+  }
+};
+
+/// Records the order of the calls a switch-off makes, so the ordering that decides
+/// what a crash mid-release costs is testable without killing a process inside a
+/// sub-millisecond window.
+class ReleaseOrderRecordingStorage : public ros2_medkit_fault_manager::InMemoryFaultStorage {
+ public:
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override {
+    calls.push_back("get_fault:" + fault_code);
+    return InMemoryFaultStorage::get_fault(fault_code);
+  }
+
+  // The scoped overload is the one the release actually uses; both are recorded so
+  // neither can be hidden by overriding only one.
+  using InMemoryFaultStorage::clear_planned_stop_owned;
+
+  size_t clear_planned_stop_owned() override {
+    calls.push_back("clear_owned");
+    return InMemoryFaultStorage::clear_planned_stop_owned();
+  }
+
+  size_t clear_planned_stop_owned(const std::vector<std::string> & fault_codes) override {
+    calls.push_back("clear_owned_scoped");
+    return InMemoryFaultStorage::clear_planned_stop_owned(fault_codes);
+  }
+
+  mutable std::vector<std::string> calls;
+};
+
+/// Reaches the node's protected storage-injecting constructor. The backend is in
+/// place before anything borrows it, so nothing is left dangling.
+class NodeWithInjectedStorage : public FaultManagerNode {
+ public:
+  NodeWithInjectedStorage(const rclcpp::NodeOptions & options,
+                          std::unique_ptr<ros2_medkit_fault_manager::FaultStorage> storage)
+    : FaultManagerNode(options, std::move(storage)) {
+  }
+};
+
+}  // namespace
+
+/// The switch driven over its real services, against a node in this process.
+class PlannedStopServiceTest : public ::testing::Test {
+ protected:
+  static inline std::atomic<int> test_counter_{0};
+
+  /// Overridden by the failure-path fixture to hand the node a store that refuses
+  /// to record the declaration.
+  virtual std::unique_ptr<ros2_medkit_fault_manager::FaultStorage> make_storage() {
+    return nullptr;
+  }
+
+  /// Parameter overrides a derived fixture adds to the common ones.
+  virtual std::vector<rclcpp::Parameter> extra_parameters() {
+    return {};
+  }
+
+  void SetUp() override {
+    const std::string ns = "/test_planned_stop_" + std::to_string(test_counter_.fetch_add(1));
+    ns_ = ns;
+
+    std::vector<rclcpp::Parameter> overrides{
+        rclcpp::Parameter("storage_type", "memory"),
+        rclcpp::Parameter("confirmation_threshold", -1),
+        // One PASSED heals, so a test can end a fault cycle and start the next one.
+        rclcpp::Parameter("healing_enabled", true),
+        rclcpp::Parameter("healing_threshold", 0),
+    };
+    for (const auto & extra : extra_parameters()) {
+      overrides.push_back(extra);
+    }
+    rclcpp::NodeOptions fm_options;
+    fm_options.parameter_overrides(overrides);
+    fm_options.arguments({"--ros-args", "-r", "__ns:=" + ns});
+    auto storage = make_storage();
+    fault_manager_ = storage ? std::make_shared<NodeWithInjectedStorage>(fm_options, std::move(storage))
+                             : std::make_shared<FaultManagerNode>(fm_options);
+
+    rclcpp::NodeOptions test_options;
+    test_options.arguments({"--ros-args", "-r", "__ns:=" + ns});
+    test_node_ = std::make_shared<rclcpp::Node>("planned_stop_test_client", test_options);
+
+    set_client_ =
+        test_node_->create_client<ros2_medkit_msgs::srv::SetPlannedStop>(ns + "/fault_manager/set_planned_stop");
+    get_client_ =
+        test_node_->create_client<ros2_medkit_msgs::srv::GetPlannedStop>(ns + "/fault_manager/get_planned_stop");
+    report_client_ = test_node_->create_client<ros2_medkit_msgs::srv::ReportFault>(ns + "/fault_manager/report_fault");
+    ASSERT_TRUE(set_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(get_client_->wait_for_service(std::chrono::seconds(5)));
+    ASSERT_TRUE(report_client_->wait_for_service(std::chrono::seconds(5)));
+  }
+
+  void TearDown() override {
+    set_client_.reset();
+    get_client_.reset();
+    report_client_.reset();
+    test_node_.reset();
+    fault_manager_.reset();
+  }
+
+  template <typename FutureT>
+  bool spin_until_future_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      rclcpp::spin_some(fault_manager_);
+      rclcpp::spin_some(test_node_);
+      if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  }
+
+  ros2_medkit_msgs::srv::SetPlannedStop::Response set_stop(bool active, const std::string & reason,
+                                                           const std::string & declared_by) {
+    auto request = std::make_shared<ros2_medkit_msgs::srv::SetPlannedStop::Request>();
+    request->active = active;
+    request->reason = reason;
+    request->declared_by = declared_by;
+    auto future = set_client_->async_send_request(request);
+    EXPECT_TRUE(spin_until_future_ready(future));
+    return *future.get();
+  }
+
+  ros2_medkit_msgs::srv::GetPlannedStop::Response get_stop() {
+    auto request = std::make_shared<ros2_medkit_msgs::srv::GetPlannedStop::Request>();
+    auto future = get_client_->async_send_request(request);
+    EXPECT_TRUE(spin_until_future_ready(future));
+    return *future.get();
+  }
+
+  /// One FAILED report over the real service. The fixture's confirmation
+  /// threshold is -1, so a single call confirms the fault.
+  ros2_medkit_msgs::srv::ReportFault::Response
+  report(const std::string & fault_code,
+         uint8_t event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
+    auto request = std::make_shared<ros2_medkit_msgs::srv::ReportFault::Request>();
+    request->fault_code = fault_code;
+    request->event_type = event_type;
+    request->severity = Fault::SEVERITY_ERROR;
+    request->description = "planned stop ownership test";
+    request->source_id = "/test_source";
+    auto future = report_client_->async_send_request(request);
+    EXPECT_TRUE(spin_until_future_ready(future));
+    return *future.get();
+  }
+
+  std::string ns_;
+  std::shared_ptr<FaultManagerNode> fault_manager_;
+  std::shared_ptr<rclcpp::Node> test_node_;
+  rclcpp::Client<ros2_medkit_msgs::srv::SetPlannedStop>::SharedPtr set_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::GetPlannedStop>::SharedPtr get_client_;
+  rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_client_;
+};
+
+/// The same fixture, with a store that records the order of the release.
+class PlannedStopReleaseOrderTest : public PlannedStopServiceTest {
+ protected:
+  std::unique_ptr<ros2_medkit_fault_manager::FaultStorage> make_storage() override {
+    auto storage = std::make_unique<ReleaseOrderRecordingStorage>();
+    recorder_ = storage.get();
+    return storage;
+  }
+
+  ReleaseOrderRecordingStorage * recorder_{nullptr};
+};
+
+// The ownership flags are what a startup uses to finish a release its predecessor
+// did not. They must therefore outlive the announcement: cleared first, a crash
+// mid-loop would leave nothing for the next process to find, and the confirmations
+// suppressed during the stop would be lost for good.
+TEST_F(PlannedStopReleaseOrderTest, TheOwnershipFlagsAreClearedAfterTheAnnouncement) {
+  ASSERT_NE(recorder_, nullptr);
+  ASSERT_TRUE(set_stop(true, "line 3 maintenance", "shift_lead").success);
+
+  // A confirmed fault the stop owns, put in place through the store directly: this test
+  // is about the order of the switch-off's own calls, not about the report path.
+  auto & storage = fault_manager_->get_storage_for_test();
+  storage.report_fault_event("ORDER_OWNED", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "order test",
+                             "/src", fault_manager_->now(), storage.get_debounce_config(),
+                             /*planned_stop_active=*/true);
+  fault_manager_->restore_planned_stop_ownership_for_test("ORDER_OWNED");
+
+  recorder_->calls.clear();
+  ASSERT_TRUE(set_stop(false, "plant back up", "shift_lead").success);
+
+  const auto & calls = recorder_->calls;
+  const auto read = std::find(calls.begin(), calls.end(), "get_fault:ORDER_OWNED");
+  const auto cleared = std::find(calls.begin(), calls.end(), "clear_owned");
+  ASSERT_NE(read, calls.end()) << "the switch-off never looked the released fault up";
+  ASSERT_NE(cleared, calls.end()) << "the switch-off never released the ownership flags";
+  EXPECT_LT(read - calls.begin(), cleared - calls.begin())
+      << "the flags were cleared before the announcement, so a crash in between would lose it";
+}
+
+// The handler has to hand the store the switch, or a cycle that starts inside the stop
+// is confirmed and unowned: no switch-off releases it, no startup recognises it as
+// interrupted, and its later reports announce updates mid-stop. The store is the only
+// writer of the flag, so the report returning with it set is the whole path.
+TEST_F(PlannedStopServiceTest, TheReportItselfRecordsTheStopsOwnership) {
+  ASSERT_TRUE(set_stop(true, "line 3 maintenance", "shift_lead").success);
+
+  ASSERT_TRUE(report("PS_OWNED_BY_REPORT").accepted);
+
+  const auto owned = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_NE(std::find(owned.begin(), owned.end(), "PS_OWNED_BY_REPORT"), owned.end())
+      << "the report returned with the fault unowned, so the handler withheld the switch";
+
+  // A fault raised after the withdrawal belongs to nobody.
+  ASSERT_TRUE(set_stop(false, "plant back up", "shift_lead").success);
+  ASSERT_TRUE(report("PS_AFTER_THE_STOP").accepted);
+  const auto after = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_EQ(std::find(after.begin(), after.end(), "PS_AFTER_THE_STOP"), after.end());
+}
+
+/// The same fixture, with a store that refuses to record the declaration.
+class PlannedStopFailingStoreTest : public PlannedStopServiceTest {
+ protected:
+  std::unique_ptr<ros2_medkit_fault_manager::FaultStorage> make_storage() override {
+    return std::make_unique<PlannedStopFailingStorage>();
+  }
+};
+
+// A store that cannot record the declaration must not leave the caller believing
+// a stop is in force, and must not take the process down with it.
+TEST_F(PlannedStopFailingStoreTest, AStoreThatRejectsTheWriteIsReportedNotThrown) {
+  const auto response = set_stop(true, "line 3 maintenance", "shift_lead");
+  EXPECT_FALSE(response.success);
+  EXPECT_FALSE(response.message.empty());
+  EXPECT_FALSE(response.was_active);
+
+  // The switch is where it was, and the node is still answering.
+  const auto state = get_stop();
+  EXPECT_FALSE(state.active);
+  EXPECT_TRUE(state.reason.empty());
+}
+
+// "Why was line 3 quiet on Friday?" has to be answerable after the plant is back
+// up, without reading a raw audit database.
+TEST_F(PlannedStopServiceTest, TheLastDeclarationIsReadableAfterTheWithdrawal) {
+  const auto before_any = get_stop();
+  EXPECT_FALSE(before_any.active);
+  EXPECT_EQ(0, before_any.since.sec);
+  EXPECT_EQ(0, before_any.ended_at.sec);
+
+  ASSERT_TRUE(set_stop(true, "line 3 quarterly maintenance", "shift_lead").success);
+  const auto during = get_stop();
+  ASSERT_TRUE(during.active);
+  EXPECT_EQ("line 3 quarterly maintenance", during.reason);
+  EXPECT_GT(during.since.sec, 0);
+  EXPECT_EQ(0, during.ended_at.sec) << "a stop that is still in force has not ended";
+
+  ASSERT_TRUE(set_stop(false, "plant back up", "shift_lead").success);
+
+  const auto after = get_stop();
+  EXPECT_FALSE(after.active);
+  EXPECT_EQ("line 3 quarterly maintenance", after.reason) << "the declaration that started the stop";
+  EXPECT_EQ("shift_lead", after.declared_by);
+  EXPECT_EQ(during.since.sec, after.since.sec);
+  EXPECT_GT(after.ended_at.sec, 0) << "the withdrawal has to be readable too";
+}
+
+// The audit rows for the switch describe the installation, so they carry the same
+// sentinel fault code the log's own lifecycle markers use.
+TEST(PlannedStopAuditTest, TransitionsUseTheInstallationSentinelFaultCode) {
+  const std::string audit_path = make_temp_audit_path("test_audit_planned_stop_");
+  {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        {"storage_type", "memory"},
+        {"audit_log.enabled", true},
+        {"audit_log.database_path", audit_path},
+    });
+    options.arguments({"--ros-args", "-r", "__ns:=/test_planned_stop_audit"});
+    auto node = std::make_shared<FaultManagerNode>(options);
+
+    auto client_node = std::make_shared<rclcpp::Node>(
+        "planned_stop_audit_client",
+        rclcpp::NodeOptions().arguments({"--ros-args", "-r", "__ns:=/test_planned_stop_audit"}));
+    auto client = client_node->create_client<ros2_medkit_msgs::srv::SetPlannedStop>(
+        "/test_planned_stop_audit/fault_manager/set_planned_stop");
+    ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+
+    auto call = [&](bool active, const std::string & reason) {
+      auto request = std::make_shared<ros2_medkit_msgs::srv::SetPlannedStop::Request>();
+      request->active = active;
+      request->reason = reason;
+      request->declared_by = "shift_lead";
+      auto future = client->async_send_request(request);
+      auto start = std::chrono::steady_clock::now();
+      while (std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
+        rclcpp::spin_some(node);
+        rclcpp::spin_some(client_node);
+        if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      ASSERT_EQ(future.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+      ASSERT_TRUE(future.get()->success);
+    };
+    call(true, "maintenance");
+    call(false, "back up");
+
+    const auto * log = node->get_audit_log_for_test();
+    ASSERT_NE(log, nullptr);
+    bool saw_started = false;
+    bool saw_ended = false;
+    for (const auto & record : log->read()) {
+      if (record.event.transition == ros2_medkit_fault_manager::kTransitionPlannedStopStarted) {
+        saw_started = true;
+        EXPECT_EQ("__audit__", record.event.fault_code);
+        EXPECT_EQ("maintenance", record.event.description);
+        EXPECT_EQ("shift_lead", record.event.source_id);
+      } else if (record.event.transition == ros2_medkit_fault_manager::kTransitionPlannedStopEnded) {
+        saw_ended = true;
+        EXPECT_EQ("__audit__", record.event.fault_code);
+        EXPECT_EQ("back up", record.event.description);
+      }
+    }
+    EXPECT_TRUE(saw_started);
+    EXPECT_TRUE(saw_ended);
+    EXPECT_TRUE(log->verify().ok);
+  }
+  remove_audit_files(audit_path);
+}
+
+namespace {
+
+constexpr const char * kInheritedCode = "PS_INHERITED_RELEASE";
+
+/// A store already holding what a crash mid-release leaves behind: a confirmed fault
+/// the planned stop owns, under a declaration that is already withdrawn. Seeded
+/// through a report, which is the only thing that makes a fault the stop's.
+class InterruptedReleaseStorage : public ros2_medkit_fault_manager::InMemoryFaultStorage {
+ public:
+  InterruptedReleaseStorage() {
+    rclcpp::Clock clock;
+    report_fault_event(kInheritedCode, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inherited", "/src",
+                       clock.now(), get_debounce_config(), /*planned_stop_active=*/true);
+  }
+};
+
+}  // namespace
+
+/// The same fixture, with a store that comes up mid-release.
+class PlannedStopInheritedReleaseTest : public PlannedStopServiceTest {
+ protected:
+  std::unique_ptr<ros2_medkit_fault_manager::FaultStorage> make_storage() override {
+    return std::make_unique<InterruptedReleaseStorage>();
+  }
+};
+
+// A release inherited from a dead process is armed, not published. The publisher is
+// milliseconds old at that point and no subscriber has matched it, so publishing
+// there drops the confirmation and the flag together and nothing is left to try
+// again.
+TEST_F(PlannedStopInheritedReleaseTest, AnInheritedReleaseWaitsInsteadOfPublishingIntoAnEmptyTopic) {
+  EXPECT_TRUE(fault_manager_->interrupted_release_pending_for_test())
+      << "the release was not taken on, so nothing will ever announce it";
+
+  const auto owned = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_NE(std::find(owned.begin(), owned.end(), kInheritedCode), owned.end())
+      << "the flag was dropped before anyone could hear the confirmation";
+}
+
+// A store with nothing half-released arms nothing: the timer exists only when there
+// is something for it to deliver.
+TEST_F(PlannedStopServiceTest, AStoreWithNothingHalfReleasedArmsNoTimer) {
+  EXPECT_FALSE(fault_manager_->interrupted_release_pending_for_test());
+}
+
+// And when a subscriber does appear, the confirmation the dead process suppressed
+// reaches it, once, and the flag comes down behind it.
+TEST_F(PlannedStopInheritedReleaseTest, ASubscriberAppearingGetsWhatTheDeadProcessSuppressed) {
+  std::vector<std::string> confirmed;
+  auto subscription = test_node_->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
+      ns_ + "/fault_manager/events", rclcpp::QoS(10).reliable(),
+      [&confirmed](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+        if (msg->event_type == ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED) {
+          confirmed.push_back(msg->fault.fault_code);
+        }
+      });
+
+  const auto start = std::chrono::steady_clock::now();
+  while (confirmed.empty() && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    rclcpp::spin_some(fault_manager_);
+    rclcpp::spin_some(test_node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  ASSERT_EQ(1u, confirmed.size()) << "the inherited confirmation never reached a subscriber that was listening";
+  EXPECT_EQ(kInheritedCode, confirmed[0]);
+  EXPECT_FALSE(fault_manager_->interrupted_release_pending_for_test());
+  EXPECT_TRUE(fault_manager_->get_storage_for_test().get_planned_stop_owned().empty())
+      << "the ownership flag outlived the announcement, so a later startup would announce it again";
+}
+
+namespace {
+
+/// Build a node with one wait override and read back the bound it settled on, which
+/// is the only way to see what a value outside the documented range turns into.
+double effective_interrupted_wait(double requested) {
+  static std::atomic<int> counter{0};
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("storage_type", "memory"),
+      rclcpp::Parameter("planned_stop.interrupted_release_wait_sec", requested),
+  });
+  options.arguments({"--ros-args", "-r", "__ns:=/test_wait_bound_" + std::to_string(counter.fetch_add(1))});
+  auto node = std::make_shared<FaultManagerNode>(options);
+  return node->interrupted_release_wait_sec_for_test();
+}
+
+}  // namespace
+
+// A flag belongs to the cycle the stop owned. Heal that fault and raise it again with
+// no stop in force and the cycle is a new one, which no stop owns: the report path
+// announces it, and a delivery that still saw the flag would announce it a second
+// time.
+TEST_F(PlannedStopInheritedReleaseTest, ANewCycleWithNoStopInForceIsAnnouncedOnlyOnce) {
+  std::vector<std::string> confirmed;
+  auto subscription = test_node_->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
+      ns_ + "/fault_manager/events", rclcpp::QoS(10).reliable(),
+      [&confirmed](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+        if (msg->event_type == ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED) {
+          confirmed.push_back(msg->fault.fault_code);
+        }
+      });
+  ASSERT_TRUE(fault_manager_->interrupted_release_pending_for_test());
+
+  // A PASSED heals the fault, and the FAILED after it starts a cycle nobody declared
+  // a stop for.
+  ASSERT_TRUE(report(kInheritedCode, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED).accepted);
+  ASSERT_TRUE(report(kInheritedCode).accepted);
+
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
+    rclcpp::spin_some(fault_manager_);
+    rclcpp::spin_some(test_node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  EXPECT_EQ(1u, confirmed.size()) << "the new cycle was announced by the report path and again by the release";
+  EXPECT_TRUE(fault_manager_->get_storage_for_test().get_planned_stop_owned().empty())
+      << "a cycle no stop owns kept the dead stop's flag";
+}
+
+// A stop declared while a release is still waiting does not force the release out to
+// an empty topic. The pending codes become the new stop's to hold, and its own
+// switch-off announces them with everything else it owns.
+TEST_F(PlannedStopInheritedReleaseTest, AStopDeclaredDuringTheWaitTakesOverThePendingRelease) {
+  ASSERT_TRUE(fault_manager_->interrupted_release_pending_for_test());
+
+  // No subscriber yet, so nothing could have heard a delivery.
+  ASSERT_TRUE(set_stop(true, "cell 4 rebuild", "shift_lead").success);
+  EXPECT_FALSE(fault_manager_->interrupted_release_pending_for_test())
+      << "the release is still armed under a stop that has taken its faults on";
+
+  const auto owned = fault_manager_->get_storage_for_test().get_planned_stop_owned();
+  EXPECT_NE(std::find(owned.begin(), owned.end(), kInheritedCode), owned.end())
+      << "the fault was released into an empty topic instead of being taken over";
+
+  std::vector<std::string> confirmed;
+  auto subscription = test_node_->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
+      ns_ + "/fault_manager/events", rclcpp::QoS(10).reliable(),
+      [&confirmed](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+        if (msg->event_type == ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED) {
+          confirmed.push_back(msg->fault.fault_code);
+        }
+      });
+  // Let the subscription match before the switch-off publishes.
+  const auto matched_by = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < matched_by) {
+    rclcpp::spin_some(fault_manager_);
+    rclcpp::spin_some(test_node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  ASSERT_TRUE(set_stop(false, "plant back up", "shift_lead").success);
+  const auto start = std::chrono::steady_clock::now();
+  while (confirmed.empty() && std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+    rclcpp::spin_some(fault_manager_);
+    rclcpp::spin_some(test_node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  ASSERT_EQ(1u, confirmed.size()) << "the taken-over fault was not announced by the new stop's switch-off";
+  EXPECT_EQ(kInheritedCode, confirmed[0]);
+  EXPECT_TRUE(fault_manager_->get_storage_for_test().get_planned_stop_owned().empty());
+}
+
+/// The same seeded store, with the wait set to nothing.
+class PlannedStopZeroWaitTest : public PlannedStopInheritedReleaseTest {
+ protected:
+  std::vector<rclcpp::Parameter> extra_parameters() override {
+    return {rclcpp::Parameter("planned_stop.interrupted_release_wait_sec", 0.0)};
+  }
+};
+
+// Zero means the first tick, whether or not anyone is listening.
+TEST_F(PlannedStopZeroWaitTest, AZeroWaitDeliversOnTheFirstTickWithNobodyListening) {
+  ASSERT_TRUE(fault_manager_->interrupted_release_pending_for_test());
+
+  const auto start = std::chrono::steady_clock::now();
+  while (fault_manager_->interrupted_release_pending_for_test() &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
+    rclcpp::spin_some(fault_manager_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  EXPECT_FALSE(fault_manager_->interrupted_release_pending_for_test()) << "a zero wait still waited for a subscriber";
+  EXPECT_TRUE(fault_manager_->get_storage_for_test().get_planned_stop_owned().empty());
+}
+
+// The ends of the documented range and the values outside it. The rejected ones fall
+// back to the default, which is what keeps a fat-fingered override from turning the
+// wait into something unbounded or instant. Read from a node that declared no
+// interrupted release, because the parameter exists on every boot.
+TEST(PlannedStopWaitBound, TheWaitIsReadBackFromTheRangeItDocuments) {
+  EXPECT_DOUBLE_EQ(0.0, effective_interrupted_wait(0.0));
+  EXPECT_DOUBLE_EQ(0.5, effective_interrupted_wait(0.5));
+  EXPECT_DOUBLE_EQ(300.0, effective_interrupted_wait(300.0));
+
+  EXPECT_DOUBLE_EQ(5.0, effective_interrupted_wait(300.1)) << "a value past the bound was taken";
+  EXPECT_DOUBLE_EQ(5.0, effective_interrupted_wait(-1.0)) << "a negative wait was taken";
+  EXPECT_DOUBLE_EQ(5.0, effective_interrupted_wait(std::numeric_limits<double>::quiet_NaN()))
+      << "NaN passed the range check";
+}
+
+TEST(PlannedStopWaitBound, TheDefaultIsFiveSeconds) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("storage_type", "memory")});
+  options.arguments({"--ros-args", "-r", "__ns:=/test_wait_default"});
+  auto node = std::make_shared<FaultManagerNode>(options);
+  EXPECT_DOUBLE_EQ(5.0, node->interrupted_release_wait_sec_for_test());
+}
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
