@@ -18,8 +18,9 @@ Storage
 
    fault_manager:
      ros__parameters:
-       storage_type: "sqlite"              # Storage backend: "sqlite" or "memory"
+       storage_type: "sqlite"              # Storage backend: "sqlite" or "memory" or "postgres" 
        database_path: "/var/lib/ros2_medkit/faults.db"  # Path for sqlite storage
+       database_url: "postgresql://user:password@localhost:5432/ros2_medkit_faults_database"  # URL for postgres storage (alternatively:  "host=localhost port=5432 dbname=ros2_medkit_faults_database user=user password=password")
 
 .. list-table::
    :header-rows: 1
@@ -34,6 +35,9 @@ Storage
    * - ``database_path``
      - ``/var/lib/ros2_medkit/faults.db``
      - File path for SQLite database. Directory must exist and be writable.
+   * - ``database_url``
+     - ``postgresql://user:password@localhost:5432/ros2_medkit_faults_database``
+     - Connection URL for PostgreSQL database. The PostgreSQL server must be running with the appropriate user and password.
 
 Debounce Settings
 ~~~~~~~~~~~~~~~~~
@@ -581,7 +585,7 @@ by default: with it off there is no table, no file and no write cost.
    * - ``audit_log.database_path``
      - ``""``
      - Where the audit database lives. Empty puts it beside the fault database,
-       or in memory when the fault store is itself in memory or not SQLite.
+       or in memory when the fault store is itself in memory or unknown storage type.
 
 Correlation Configuration
 -------------------------
