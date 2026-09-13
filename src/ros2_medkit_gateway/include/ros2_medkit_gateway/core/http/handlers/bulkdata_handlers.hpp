@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -123,11 +124,32 @@ class BulkDataHandlers {
    * For a recording split across several files the listing does not come through
    * here at all: it carries the recording's total from the fault manager while
    * this route still hands over one file, and the gap is what tells a client the
-   * transfer is partial. See the size rule in ``docs/api/rest.rst``.
+   * transfer is partial, alongside ``x-medkit.storage_files`` in the descriptor.
+   * See the size rule in ``docs/api/rest.rst``.
    *
-   * When the bag's own ``metadata.yaml`` names exactly one storage file and that
-   * file exists, that is the file. Otherwise the directory is scanned for the
-   * first ``.db3`` or ``.mcap`` in whatever order it yields.
+   * The bag's own ``metadata.yaml`` decides, and when it has decided nothing
+   * else gets a vote. The answer is the first file named in
+   * ``relative_file_paths`` that is on disk. That order is the capture order, so
+   * for a split recording the first name is where the recording begins and a
+   * client that fetches one gets its start rather than an arbitrary slice. A
+   * name that is not on disk is skipped, because a half-copied bag leaves
+   * metadata naming a file that is gone and failing the request there would cost
+   * a recording whose other segments are readable. A name that is absolute or
+   * climbs through ``..`` is skipped as well: it would resolve outside the bag
+   * directory and put a file that is not part of the recording on the wire.
+   *
+   * When the bag named files and none of them is on disk the answer is the empty
+   * string. Falling through to the directory there served whatever ``.db3`` or
+   * ``.mcap`` sat beside the recording, under this recording's id and against a
+   * ``storage_files`` count the served file is not a member of.
+   *
+   * Only when the bag will not say what it holds - no ``metadata.yaml``, one
+   * this process cannot read or parse, or a ``relative_file_paths`` naming
+   * nothing - is the directory scanned for the first ``.db3`` or ``.mcap`` in
+   * whatever order it yields. That is the same set of shapes
+   * ``detail::rosbag_storage_file_count`` declines, which is the invariant: the
+   * count and the served file are both read from the metadata, or both from the
+   * directory, never one from each.
    *
    * @param path Path to rosbag (can be file or directory)
    * @return Resolved file path, or empty string if not found
@@ -227,6 +249,47 @@ std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosb
 bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std::string & requested_id);
 
 /**
+ * @brief How many storage files one recording is held in.
+ *
+ * Read from the bag's own ``metadata.yaml``, the same field
+ * ``BulkDataHandlers::resolve_rosbag_file_path`` picks the served file out of,
+ * so the count and the choice of segment cannot describe different recordings.
+ * A @p bag_path that is itself a storage file is one by definition and carries
+ * no metadata beside it under that name to consult.
+ *
+ * It reaches the client as ``x-medkit.storage_files`` on the rosbag descriptor,
+ * and what it is for is the split case. There the descriptor ``size`` is the
+ * whole recording while the download hands over one segment, so ``size`` and
+ * ``Content-Length`` differ. Without this field that difference has no stated
+ * reason, and a client holding one segment has no way to learn that the rest of
+ * the recording exists. A ``1`` says the transfer was the whole recording.
+ *
+ * nullopt when the bag will not say - no metadata, unreadable metadata, not the
+ * shape rosbag2 writes, or a ``relative_file_paths`` naming nothing - and the
+ * field is then omitted from the descriptor rather than defaulted. Counting the
+ * directory's ``.db3`` / ``.mcap`` files instead would count a stray beside the
+ * recording, and defaulting to one would claim a recording is whole on the
+ * evidence of nothing. A list naming nothing is declined rather than reported as
+ * zero for the same reason: the recording is not empty, the bag did not answer.
+ *
+ * The set of shapes declined here is exactly the set on which
+ * ``BulkDataHandlers::resolve_rosbag_file_path`` falls back to the directory, so
+ * the count and the served file are read from the metadata together or from the
+ * directory together. A count taken from one source describing a file chosen by
+ * the other is the state this pairing exists to make unreachable.
+ *
+ * Never throws, for the same reason as the two helpers around it: it runs once
+ * per row of a listing, and one unreadable recording must not cost the entity's
+ * other recordings.
+ *
+ * @param bag_path Bag path as stored by the fault manager. A bag directory, or
+ *                 a bare storage file, which both answer
+ * @return The number of storage files the recording names, or nullopt when the
+ *         bag's metadata cannot be read
+ */
+std::optional<std::size_t> rosbag_storage_file_count(const std::string & bag_path);
+
+/**
  * @brief Bytes a rosbag download puts on the wire for one recording.
  *
  * Answers only for a recording held in a single storage file, which is the only
@@ -244,8 +307,8 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * figure. That covers a bag this process cannot see or read at all, and it
  * covers a recording split across several storage files past the configured
  * maximum bag size: the download hands over one segment, so no single file is
- * the transfer, and answering with whichever segment the resolver reached first
- * advertised a split recording at the size of one part of it. The row's figure
+ * the transfer, and answering with the segment it hands over advertised a split
+ * recording at the size of one part of it. The row's figure
  * is the fault manager's answer to the same question, decided from the same
  * ``metadata.yaml``, so deferring to it keeps the two API surfaces agreeing on
  * one recording.
@@ -280,6 +343,10 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
  * ``rosbag_served_bytes``), not taken from the row. A row whose bag this
  * process cannot see keeps the row's own figure: it is the only number left,
  * and a recording listed with a zero size reads as an empty one.
+ *
+ * ``x-medkit.storage_files`` carries how many files the recording is held in
+ * (see ``rosbag_storage_file_count``), and is omitted for a bag whose metadata
+ * this process cannot read.
  *
  * @param rows Rosbag rows as returned by the fault manager
  * @param faults_by_code Faults keyed by code, for timestamp enrichment

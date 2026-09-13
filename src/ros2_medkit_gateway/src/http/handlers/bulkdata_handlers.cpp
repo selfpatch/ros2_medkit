@@ -112,6 +112,30 @@ std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::st
   }
 }
 
+/// Does @p name, joined onto the bag directory, stay inside it?
+///
+/// The names come out of a ``metadata.yaml`` on disk and are joined onto the bag
+/// path, so they are input rather than a constant. An absolute name replaces the
+/// bag path outright, because that is what ``operator/`` does with an absolute
+/// right-hand side, and a name climbing through ``..`` walks out of the
+/// directory. Either way the resolver would return a path outside the recording
+/// and the download would stream that file under the recording's id.
+///
+/// rosbag2 writes plain basenames here, so nothing legitimate is refused. This
+/// is about what a bag directory that is not what it claims can name.
+bool rosbag_name_stays_in_bag(const std::string & name) {
+  const std::filesystem::path candidate(name);
+  if (candidate.is_absolute() || candidate.has_root_name()) {
+    return false;
+  }
+  for (const auto & part : candidate) {
+    if (part == "..") {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
@@ -156,24 +180,56 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
     return "";
   }
 
-  // Ask the bag first. When its metadata names exactly one storage file and that
-  // file is there, that is the file, and directory order does not get a vote.
-  // Iterating instead returned whichever .db3 or .mcap the directory happened to
-  // yield first, so a stray file beside the recording - a leftover segment, a
-  // copy - could be served and sized in place of the real one, while the fault
-  // manager, which sizes relative_file_paths.front(), reported the other. Same
-  // question, same evidence, on both sides now.
+  // Ask the bag first. Its metadata names the storage files it holds, in the
+  // order they were recorded, and the first of those that is on disk is the file
+  // to hand over. Directory order does not get a vote.
   //
-  // Several names is a split recording and is deliberately left to the loop
-  // below: the download's choice of segment there is a separate question from
-  // this one. No metadata, unreadable metadata, or a named file that is not on
-  // disk all fall through as well, because then the bag has not answered.
-  if (const auto names = rosbag_relative_file_paths(path); names && names->size() == 1) {
-    const std::filesystem::path named = std::filesystem::path(path) / names->front();
-    std::error_code named_ec;
-    if (std::filesystem::is_regular_file(named, named_ec) && !named_ec) {
-      return named.string();
+  // For a recording held in one file that removes a stray .db3 beside it - a
+  // leftover segment, a copy - from being served and sized in place of the real
+  // one, which is what the directory walk below could pick while the fault
+  // manager, which sizes relative_file_paths.front(), reported the other. Same
+  // question, same evidence, on both sides.
+  //
+  // For a recording split across several files it decides which segment the
+  // download is. The walk below answered with whichever .db3 or .mcap the
+  // directory happened to yield first, which is a segment from the middle of the
+  // recording as readily as its start, and which file that was could change
+  // between two requests for the same bag. The metadata's order is the capture
+  // order, so its first name is where the recording begins, and a client that
+  // fetches a split recording gets its start rather than an arbitrary slice.
+  // ``x-medkit.storage_files`` in the descriptor is what tells that client the
+  // rest of the recording exists (see rosbag_storage_file_count).
+  //
+  // A name that is not on disk is skipped rather than returned: a half-copied
+  // bag leaves metadata naming a file that is gone, and resolving to it would
+  // fail the request for a recording whose other segments are readable.
+  //
+  // When the bag HAS named files and none of them is on disk, the answer is
+  // nothing. The directory is deliberately not consulted then: it is the same
+  // question the bag already answered, and reaching past that answer served
+  // whatever .db3 or .mcap happened to sit beside the recording - a stray, a
+  // copy, a segment of a different bag - under this recording's id, and counted
+  // in ``x-medkit.storage_files`` a list the served file is not a member of. A
+  // client received neither the recording nor an error, and nothing in the
+  // response said which. Empty is honest: the listing keeps the row's own figure
+  // and the download answers its own error.
+  //
+  // The walk below is for a bag that will not say what it holds at all: no
+  // metadata, metadata this process cannot read or parse, or a list naming
+  // nothing (see rosbag_storage_file_count, which declines the same shapes).
+  // Metadata decides both the count and the served file, or neither does.
+  if (const auto names = rosbag_relative_file_paths(path); names && !names->empty()) {
+    for (const auto & name : *names) {
+      if (!rosbag_name_stays_in_bag(name)) {
+        continue;
+      }
+      const std::filesystem::path named = std::filesystem::path(path) / name;
+      std::error_code named_ec;
+      if (std::filesystem::is_regular_file(named, named_ec) && !named_ec) {
+        return named.string();
+      }
     }
+    return "";
   }
 
   std::filesystem::directory_iterator it(path, ec);
@@ -210,6 +266,36 @@ std::string rosbag_recording_id(const std::string & file_path) {
     p = p.parent_path();  // tolerate a trailing slash
   }
   return p.filename().string();
+}
+
+std::optional<std::size_t> rosbag_storage_file_count(const std::string & bag_path) {
+  if (bag_path.empty()) {
+    return std::nullopt;
+  }
+
+  // A path that is already a storage file is one storage file, and has no
+  // metadata.yaml beside it under that name to ask. The resolver accepts such a
+  // path and the download serves it, so it is a shape the descriptor describes.
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(bag_path, ec) && !ec) {
+    return std::size_t{1};
+  }
+
+  // Anything else is answered by the bag's own record or not at all. A directory
+  // walk would count strays beside the recording, and a bag this process cannot
+  // read would count zero, which reads as an empty recording rather than as an
+  // unread one.
+  //
+  // A list naming nothing is that same zero by another route, so it is declined
+  // here rather than reported: the recording is not empty, the bag simply did
+  // not say what it holds. The resolver treats that shape identically and falls
+  // back to the directory, which keeps the invariant that the count and the
+  // served file come from the metadata together or from the directory together.
+  const auto names = rosbag_relative_file_paths(bag_path);
+  if (!names || names->empty()) {
+    return std::nullopt;
+  }
+  return names->size();
 }
 
 std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
@@ -295,6 +381,7 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     std::string recording_id;
     std::string format;
     uint64_t size_bytes{0};
+    std::optional<std::size_t> storage_files;
     double duration_sec{0.0};
     int64_t created_at_ns{0};
     std::vector<std::string> fault_codes;
@@ -355,6 +442,11 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // a zero instead would describe the recording as empty rather than as
     // unmeasured here.
     entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
+    // How many storage files the recording holds, so a client can tell a whole
+    // recording from one segment of a split. Without it the descriptor size and
+    // the download's Content-Length differ with no stated reason, and a client
+    // that fetched a split has no way to learn that more of it exists.
+    entry.storage_files = rosbag_storage_file_count(row.value("file_path", ""));
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
     entry.fault_codes.push_back(fault_code);
@@ -380,6 +472,12 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
                                          // Redundant with the descriptor id, kept because
                                          // clients already group on it.
                                          {"recording_id", entry.recording_id}};
+    // Omitted rather than defaulted when the bag would not say: a one there
+    // would claim the recording is whole, which is the one thing this field
+    // exists to establish.
+    if (entry.storage_files) {
+      (*descriptor.x_medkit)["storage_files"] = *entry.storage_files;
+    }
     descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
