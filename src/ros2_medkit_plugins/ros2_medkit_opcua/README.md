@@ -871,9 +871,27 @@ curl -s http://localhost:8080/api/v1/apps/tank_process/x-plc-data | jq .
 # Automated tests (16 assertions)
 bash scripts/run_integration_tests.sh
 
-# Stop
+# Stop (keeps the gateway's state)
 bash scripts/stop.sh
 ```
+
+`start.sh` mounts the named volume `ros2-medkit-opcua-state` at
+`/var/lib/ros2_medkit`, so the gateway's state survives `stop.sh` and the next
+`start.sh`: the entity freeze frames, `faults.db` and the rosbags. That is what
+lets a fault raised before the stop still serve the values frozen when it
+confirmed, with its original `captured_at` and no `x-medkit.capture_origin`,
+rather than a fresh read of the PLC as it is after the restart. `stop.sh`
+removes the container, so state left in the container's writable layer would
+not survive it.
+
+To start from a clean slate, purge the volume:
+
+```bash
+bash scripts/stop.sh
+docker volume rm ros2-medkit-opcua-state
+```
+
+Set `OPCUA_DEMO_STATE_VOLUME` to use a different volume name.
 
 A separate scenario covers the config-less discovery start-up race, which the
 suite above cannot see because it pins `OPCUA_ENDPOINT_URL` and so

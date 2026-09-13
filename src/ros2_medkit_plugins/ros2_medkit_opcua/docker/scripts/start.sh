@@ -2,7 +2,13 @@
 # Start OpenPLC + medkit gateway for manual testing.
 # Usage: from the ros2_medkit repo root, run
 #     bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/start.sh
+#
+# The gateway's state (entity freeze frames, faults.db, rosbags) is kept on the
+# named volume below, so it survives stop.sh and a later start.sh. Purge it with
+#     docker volume rm ros2-medkit-opcua-state
 set -eo pipefail
+
+STATE_VOLUME="${OPCUA_DEMO_STATE_VOLUME:-ros2-medkit-opcua-state}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$(dirname "$SCRIPT_DIR")"
@@ -23,6 +29,12 @@ echo ""
 echo "=== Starting containers ==="
 docker rm -f openplc gateway 2>/dev/null || true
 docker network create plc-demo 2>/dev/null || true
+# The gateway's state goes on a named volume rather than the container's
+# writable layer, because stop.sh removes the container. Without this a
+# freeze-frame captured when the alarm confirmed would be destroyed by the only
+# stop procedure the demo ships, and the next start would re-read the PLC as it
+# is then instead of serving the values frozen at fault time.
+docker volume create "$STATE_VOLUME" >/dev/null
 
 docker run -d --name openplc --network plc-demo -p 4840:4840 openplc-tank
 echo "OpenPLC starting..."
@@ -35,6 +47,7 @@ for _ in $(seq 1 45); do
 done
 
 docker run -d --name gateway --network plc-demo -p 8080:8080 \
+    -v "$STATE_VOLUME":/var/lib/ros2_medkit \
     -e ROS_DOMAIN_ID=60 \
     -e OPCUA_ENDPOINT_URL="opc.tcp://openplc:4840/openplc/opcua" \
     -e OPCUA_NODE_MAP_PATH="/config/tank_nodes.yaml" \
@@ -62,6 +75,7 @@ for _ in $(seq 1 30); do
         echo ""
         echo "Stop:  bash scripts/stop.sh"
         echo "Tests: bash scripts/run_integration_tests.sh"
+        echo "State: volume '$STATE_VOLUME' (kept across stop/start)"
         exit 0
     fi
     sleep 2

@@ -840,6 +840,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_entity_freeze_frame_capture gateway_ros2)
   medkit_target_dependencies(test_entity_freeze_frame_capture rclcpp ros2_medkit_msgs)
 
+  # Entity freeze-frame persistence (both store backends). Links gateway_core
+  # only (ROS-neutral).
+  medkit_add_gtest(test_entity_freeze_frame_store test/test_entity_freeze_frame_store.cpp)
+  target_link_libraries(test_entity_freeze_frame_store gateway_core)
+
   # Add update manager tests
   medkit_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_ros2)

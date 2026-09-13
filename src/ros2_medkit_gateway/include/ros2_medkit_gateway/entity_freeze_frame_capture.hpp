@@ -31,6 +31,7 @@
 #include <nlohmann/json.hpp>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_gateway/core/entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_slot.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
@@ -57,6 +58,13 @@ namespace ros2_medkit_gateway {
  * kept across EVENT_CLEARED (the confirmed-state record stays attached to
  * the cleared fault's detail) and overwritten on every EVENT_CONFIRMED, so
  * a re-occurrence re-samples the plugin at its own confirm time.
+ *
+ * With an EntityFreezeFrameStore the frames also survive the process. Without
+ * one a restart loses them, and the startup catch-up then re-reads the plant
+ * as it is *now* and stamps that re-read with the restart - the values at
+ * fault time are gone. With one, the stored frame is reloaded before the
+ * catch-up and served exactly as it was captured, and the catch-up re-reads
+ * only the faults that have no frame.
  */
 class EntityFreezeFrameCapture {
  public:
@@ -66,6 +74,13 @@ class EntityFreezeFrameCapture {
   /// DataProvider.
   static constexpr const char * kSourceDataProvider = "plugin_data_provider";
   static constexpr const char * kSourceXPlcDataRoute = "plugin_x_plc_data_route";
+
+  /// Persisted marker for a startup catch-up frame, served as
+  /// ``x-medkit.capture_origin``. Stored so a reloaded frame keeps saying
+  /// which clock its captured_at came from: the property is intrinsic to the
+  /// frame, so a restart must not launder a catch-up frame into a confirm-edge
+  /// one. A confirm-edge frame stores the empty string and stays unmarked.
+  static constexpr const char * kCaptureOriginStartup = "startup";
 
   /// One captured frame: the entity's data values at fault-confirm time.
   /// captured_at_ns dates the capture, not the values - a disconnected entity
@@ -104,6 +119,15 @@ class EntityFreezeFrameCapture {
   struct StandingFault {
     std::string fault_code;
     std::vector<std::string> reporting_sources;
+    /// When THIS occurrence of the fault started, from the list reply's
+    /// `first_occurred` (seconds on the wire, nanoseconds here). The
+    /// fault_manager resets it only when a CLEARED fault reactivates, so it is
+    /// what tells a stored frame from a previous occurrence apart from one
+    /// belonging to the occurrence being served now. `last_occurred` cannot do
+    /// this: it moves on every report, so a fault that keeps failing would look
+    /// re-occurred at every restart. 0 when the reply did not report it, which
+    /// reads as "cannot tell" and keeps the stored frame.
+    int64_t first_occurred_ns{0};
   };
 
   /// Lists the faults that are already confirmed when this object starts, so
@@ -114,6 +138,15 @@ class EntityFreezeFrameCapture {
   /// that is what lets the destructor's join interrupt the wait.
   using StandingFaultLister = std::function<std::vector<StandingFault>(const std::function<bool()> & should_abort)>;
 
+  /// Reports every fault code the fault_manager still holds, whatever its
+  /// status, so a reloaded frame for a fault that is gone can be dropped.
+  /// Returns nullopt when the fault_manager could not be asked - the caller
+  /// then drops nothing, because "could not tell" must never read as "gone".
+  /// Called once, on the capture thread, right after the standing-fault
+  /// lister has already waited for the services.
+  using KnownFaultCodeLister =
+      std::function<std::optional<std::unordered_set<std::string>>(const std::function<bool()> & should_abort)>;
+
   /**
    * @param node ROS 2 node used to resolve the fault-events topic name and logger
    * @param exec shared subscription executor; the fault-events subscription is
@@ -123,11 +156,19 @@ class EntityFreezeFrameCapture {
    * @param resolver entity-to-DataProvider resolver (typically wraps PluginManager)
    * @param route_fetcher x-plc-data route fallback for entities whose plugin
    *        has no DataProvider (the commercial PLC bridges); may be null
-   * @param max_faults retained-frame bound; oldest fault's frames evicted past it
+   * @param max_faults retained-frame bound; oldest fault's frames evicted past it.
+   *        Counts reloaded and freshly captured frames together.
+   * @param standing_lister lists the faults already confirmed at startup
+   * @param store frame persistence; null keeps the frames in process memory only
+   * @param known_code_lister reports the fault codes the fault_manager still
+   *        holds, so reloaded frames for faults that are gone can be dropped;
+   *        null keeps every reloaded frame
    */
   EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                            DataProviderResolver resolver, RouteDataFetcher route_fetcher = nullptr,
-                           size_t max_faults = 256, StandingFaultLister standing_lister = nullptr);
+                           size_t max_faults = 256, StandingFaultLister standing_lister = nullptr,
+                           std::shared_ptr<EntityFreezeFrameStore> store = nullptr,
+                           KnownFaultCodeLister known_code_lister = nullptr);
 
   ~EntityFreezeFrameCapture();
 
@@ -214,6 +255,56 @@ class EntityFreezeFrameCapture {
   /// clear/re-report cycle; one line per code is enough for an operator).
   void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
 
+  /// Fill frames_ from the store. Runs in the constructor, so a frame captured
+  /// before the last shutdown is already being served when the first request
+  /// arrives, and the catch-up (which starts later, on capture_thread_)
+  /// already sees it. Honours max_faults_ by keeping the newest codes: a store
+  /// larger than the bound must not evict what it just loaded.
+  void load_persisted_frames();
+
+  /// Serialize a frame for the store. The columns carry entity, timestamp,
+  /// source and origin; the blob carries the values and the payload
+  /// provenance, so a reload reproduces the frame exactly.
+  static StoredEntityFreezeFrame to_stored(const std::string & fault_code, const Frame & frame);
+
+  /// Inverse of to_stored. Returns nullopt for a row whose blob is not shaped
+  /// like a frame (a hand-edited or half-written file).
+  static std::optional<Frame> from_stored(const StoredEntityFreezeFrame & row);
+
+  /// Write the code's frames through to the store, replacing what was there.
+  /// Caller holds mutex_, so the file and the map cannot disagree.
+  void persist_frames_locked(const std::string & fault_code, const std::vector<Frame> & frames);
+
+  /// Drop the code's rows from the store. Caller holds mutex_.
+  void erase_persisted_locked(const std::string & fault_code);
+
+  /// Drop reloaded frames whose fault the fault_manager no longer holds (its
+  /// store was replaced or wiped under ours). Codes reported in any status,
+  /// cleared included, are kept: a cleared fault keeps its frame. Does nothing
+  /// without a known-code lister, or when the lister cannot answer.
+  void prune_frames_for_unknown_faults(const std::function<bool()> & should_abort);
+
+  /// Reloaded codes whose stored frame belongs to an EARLIER occurrence of
+  /// their fault: it cleared and confirmed again while the gateway was down, so
+  /// the frame holds the previous incident's values and serving it unmarked
+  /// would present them as this occurrence's.
+  ///
+  /// Read-only on purpose. The row stays until a re-read has actually been
+  /// tried, so a fault whose entity answers gets its frame replaced rather than
+  /// deleted and then not re-taken. It is dropped only by drop_stale_frame(),
+  /// after the attempt failed. Only reloaded codes are eligible: a frame this
+  /// process captured is by definition this occurrence's.
+  std::unordered_set<std::string> stale_reloaded_codes(const std::vector<StandingFault> & standing) const;
+
+  /// Last resort for a stale-occurrence code the catch-up could not re-read:
+  /// erase it from memory and from the store, and say so. Keeping it would
+  /// serve the previous incident's values unmarked, which is the defect this
+  /// path exists to fix, so the frame goes. Never silently, though: the
+  /// operator is losing evidence and only the log can tell them.
+  /// @p entities names the reporting sources that were tried (empty when the
+  /// fault named none), @p reason why no frame could be taken.
+  void drop_stale_frame(const std::string & fault_code, const std::string & entities, const char * reason);
+
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> subscription_slot_;
   DataProviderResolver resolver_;
   RouteDataFetcher route_fetcher_;
@@ -230,6 +321,14 @@ class EntityFreezeFrameCapture {
   std::unordered_map<std::string, std::vector<Frame>> frames_;
   std::deque<std::string> insertion_order_;          ///< eviction order (FIFO)
   std::unordered_set<std::string> fallback_logged_;  ///< fault codes already warned about (bounded)
+  /// Codes whose frames came from the store and have not been re-captured
+  /// since. Only these are eligible for the unknown-fault prune: a frame this
+  /// process captured is by definition for a fault the fault_manager just
+  /// confirmed, whatever a stale list reply says.
+  std::unordered_set<std::string> reloaded_codes_;
+  /// Store-write failures already warned about, so a read-only or full volume
+  /// costs one line, not one per capture.
+  bool store_write_warned_{false};
 
   /// Confirm events pending capture: fed by the subscription worker, drained
   /// by capture_thread_. Bounded - oldest event dropped when full.
@@ -241,6 +340,12 @@ class EntityFreezeFrameCapture {
 
   /// Lists faults already confirmed at construction; run once on that thread.
   StandingFaultLister standing_lister_;
+
+  /// Frame persistence; null keeps the frames in process memory only.
+  std::shared_ptr<EntityFreezeFrameStore> store_;
+  /// Reports the codes the fault_manager still holds; run once, on the
+  /// capture thread, after the standing-fault lister.
+  KnownFaultCodeLister known_code_lister_;
 };
 
 }  // namespace ros2_medkit_gateway
