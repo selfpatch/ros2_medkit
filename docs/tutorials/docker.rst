@@ -36,6 +36,12 @@ Images are available for all supported ROS 2 distributions:
    * - Lyrical
      - ``ghcr.io/selfpatch/ros2_medkit-lyrical:latest``
 
+Every push to ``main`` moves ``:latest`` and also publishes
+``:main-<sha7>`` - the same image under the short commit hash it was built
+from, which is what to pin when ``:latest`` moving underneath a deployment is
+not acceptable. Release tags carry the semver tags and ``:sha-<sha7>``, which
+name a multi-architecture manifest list rather than this amd64-only image.
+
 Each image includes the gateway and all open-core packages:
 
 - ``ros2_medkit_gateway`` - HTTP REST server
@@ -64,13 +70,38 @@ Test the gateway:
    curl http://localhost:8080/api/v1/version-info
    # {"items":[{"version":"<gateway-version>","vendor_info":{"name":"ros2_medkit",...}}]}
 
+The image carries ``config/gateway_params.yaml``, the same file a source
+install gets, so it answers without a credential like a source install does.
+Publish the port only where that is acceptable.
+
+Running the container closed
+----------------------------
+
+Set ``MEDKIT_JWT_SECRET`` and the container runs with authentication on,
+``require_auth_for`` ``all``, and the secret you gave it. ``MEDKIT_CLIENTS``
+carries the credentials a client exchanges for a token:
+
+.. code-block:: bash
+
+   docker run -p 8080:8080 \
+     -e MEDKIT_JWT_SECRET="$(head -c 32 /dev/urandom | base64)" \
+     -e MEDKIT_CLIENTS="medkit:$(head -c 24 /dev/urandom | base64):admin" \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+The precedence is one rule: ``MEDKIT_AUTH_DISABLED=1`` wins over everything and
+forces authentication off; otherwise a set ``MEDKIT_JWT_SECRET`` closes the
+container whatever any params file says, because those parameters are passed
+after the file; otherwise the file decides. The image also carries
+``config/gateway_params.secure.yaml`` - TLS, rate limiting and the rest - which
+you can point ``--params-file`` at once the container has a certificate.
+
 Custom Configuration
 --------------------
 
-The default configuration listens on ``0.0.0.0:8080``. CORS is enabled for the
-default web UI origins (``http://localhost:3000`` and ``http://localhost:5173``)
-so the web UI works out of the box; add your own UI origin(s) as needed (see
-`CORS for Web UI`_ below). To use a custom configuration, mount a params file:
+The container listens on ``0.0.0.0:8080`` and refreshes discovery every 2 s -
+the two values the image passes on top of the packaged config. CORS is off, so
+a browser UI on another origin needs its origin named (see `CORS for Web UI`_
+below). To use a custom configuration, mount a params file:
 
 .. code-block:: bash
 
@@ -156,7 +187,15 @@ Example ``docker-compose.yml`` with the gateway and web UI:
        environment:
          - ROS_DOMAIN_ID=42
        healthcheck:
-         test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+         # Any HTTP answer proves the process is up, 401 included. `curl -f`
+         # exits non-zero on the refusal a closed container gives an
+         # uncredentialed probe, and reports a healthy container as sick.
+         test:
+           - CMD-SHELL
+           - >-
+             code=$$(curl -s -o /dev/null -w '%{http_code}'
+             http://localhost:8080/api/v1/health) && case "$$code" in
+             200|401|403) exit 0 ;; *) exit 1 ;; esac
          interval: 10s
          timeout: 5s
          retries: 3
@@ -213,10 +252,12 @@ For containers to discover each other's ROS 2 nodes, use the same ``ROS_DOMAIN_I
 CORS for Web UI
 ---------------
 
-The image enables CORS for the default web UI origins (``http://localhost:3000``
-and ``http://localhost:5173``). A wildcard is deliberately not used: with auth
-disabled and write methods enabled it would let any site drive cross-origin
-writes. Add your own UI origin(s):
+The image names no CORS origin. A published image that allowed
+``http://localhost:3000`` would be making a development machine's choice for
+every deployment, so the origin a browser UI is served from is named by the
+deployment that runs it. A wildcard is the wrong answer here: with auth off and
+write methods enabled it would let any site drive cross-origin writes. Add your
+own UI origin(s):
 
 .. code-block:: yaml
 
@@ -230,16 +271,37 @@ writes. Add your own UI origin(s):
 Health Checks
 -------------
 
-The gateway exposes a health endpoint at ``/api/v1/health``:
+The gateway exposes a health endpoint at ``/api/v1/health``. A container left
+at the image default answers it without a credential; one running closed
+refuses it, so a probe that has to work in both cases reads the status code
+rather than insisting on success:
 
 .. code-block:: yaml
 
    healthcheck:
-     test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+     # 401 means the gateway is up and refused an uncredentialed probe, which
+     # is exactly what a liveness check wants to know.
+     test:
+       - CMD-SHELL
+       - >-
+         code=$$(curl -s -o /dev/null -w '%{http_code}'
+         http://localhost:8080/api/v1/health) && case "$$code" in
+         200|401|403) exit 0 ;; *) exit 1 ;; esac
      interval: 10s
      timeout: 5s
      retries: 3
      start_period: 15s
+
+If a closed container has to answer a probe that cannot be changed - a load
+balancer that only accepts 200, say - open the route explicitly instead:
+
+.. code-block:: yaml
+
+   auth:
+     public_routes: ["GET /api/v1/health"]
+
+An anonymous caller then gets liveness only, marked ``x-medkit-reduced``. See
+:doc:`/config/server` for what that setting does and does not open.
 
 Production Considerations
 -------------------------

@@ -102,7 +102,7 @@ LIDAR_FAULTY_PARAMS = {
 
 def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
                         extra_params=None, coverage=True, extra_env=None,
-                        respawn=False, respawn_delay=1.0):
+                        respawn=False, respawn_delay=1.0, params_file=None):
     """Create a ``gateway_node`` launch action with standard config.
 
     Parameters
@@ -132,6 +132,11 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         and the DDS participant are released before the replacement binds
         them, which also gives a test a window in which the port is provably
         down - the only way to tell "restarted" from "never died".
+    params_file : str or None
+        Path to a YAML params file loaded BEFORE the inline parameters, so a
+        test can launch a shipped profile - ``config/gateway_params.yaml`` or
+        ``config/gateway_params.secure.yaml`` - and still override the port and
+        the credentials a committed file cannot carry.
 
     Returns
     -------
@@ -142,6 +147,7 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
     params = {'refresh_interval_ms': 1000, 'server.port': port}
     if extra_params:
         params.update(extra_params)
+    file_then_inline = ([params_file] if params_file else []) + [params]
 
     env = dict(get_coverage_env() if coverage else {})
     if extra_env:
@@ -152,7 +158,7 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         executable='gateway_node',
         name=name,
         output='screen',
-        parameters=[params],
+        parameters=file_then_inline,
         additional_env=env,
         respawn=respawn,
         respawn_delay=respawn_delay,

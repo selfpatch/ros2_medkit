@@ -35,6 +35,35 @@ Control                          Default        Secure profile
 ``locking`` on operations        none           lock required before mutation
 ================================ ============== ===========================================
 
+Two things the secure profile brings with it are worth stating plainly.
+
+**The gateway refuses to start without a signing secret.** With
+``auth.enabled`` true and ``auth.jwt_secret`` empty it exits with "JWT secret is
+required when authentication is enabled" (and HS256 additionally requires at
+least 32 characters). That is the intended failure. A gateway that will not boot
+is a deployment problem someone fixes in a minute; a gateway that booted
+half-protected is one nobody notices.
+
+**Under ``require_auth_for: "all"`` only ``/api/v1/auth/*`` is exempt, and
+health is not.** Auth is exempt because authentication cannot bootstrap through
+a door that already demands the credential it exists to hand out. Everything
+else, ``GET /api/v1/health`` included, needs a credential, so a container
+supervisor, load balancer or browser UI that probes health without one gets
+401. A probe that accepts 200, 401 and 403 works against either profile and
+leaves nothing open; a probe that cannot be changed gets the route named for
+it::
+
+    auth:
+      public_routes: ["GET /api/v1/health"]
+
+``auth.public_routes`` is empty in both profiles, which is what makes the
+exemption a deployment decision rather than a property of the artefact. The
+match is on method and path exactly, so the entry above opens
+``GET /api/v1/health`` and neither ``HEAD`` nor ``/api/v1/health/detail``. An
+anonymous caller on a route opened that way gets liveness only - ``status``,
+``timestamp`` and ``x-medkit-reduced: true`` - because the full body names
+entities and ROS nodes.
+
 Credential and certificate provisioning
 ----------------------------------------
 

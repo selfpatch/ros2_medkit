@@ -129,7 +129,7 @@ TLS/HTTPS Configuration
    * - ``server.tls.ca_file``
      - string
      - ``""``
-     - Path to CA certificate file (reserved for mutual TLS).
+     - CA that signs CLIENT certificates. Setting it turns on mutual TLS and makes a client certificate **required**: a caller that presents none is rejected during the handshake, before any request is read, so every bearer-token client without a certificate goes off the air. Leave empty for ordinary server-only TLS.
    * - ``server.tls.min_version``
      - string
      - ``"1.2"``
@@ -844,8 +844,10 @@ See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 Authentication
 --------------
 
-JWT-based authentication with Role-Based Access Control (RBAC). Disabled by
-default for local development.
+JWT-based authentication with Role-Based Access Control (RBAC). Off in
+``config/gateway_params.yaml`` and on in ``config/gateway_params.secure.yaml``,
+which also sets ``require_auth_for`` to ``all``. With authentication on and no
+``jwt_secret`` the gateway refuses to start rather than serve half-protected.
 
 .. list-table::
    :header-rows: 1
@@ -891,6 +893,10 @@ default for local development.
      - string[]
      - ``[]``
      - Pre-configured clients as ``"client_id:client_secret:role"`` strings.
+   * - ``auth.public_routes``
+     - string[]
+     - ``[]``
+     - Routes answered with no credential, each written ``"METHOD /path"``. Layers over ``require_auth_for`` and only ever removes a requirement. Matched exactly, no wildcards. Every entry is logged at ``WARN`` on startup, and a malformed entry stops the gateway.
 
 .. note::
 
@@ -921,6 +927,35 @@ Example:
          require_auth_for: "write"
          token_expiry_seconds: 3600
          clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin", "viewer:REPLACE_WITH_STRONG_SECRET:viewer"]
+
+Opening a route to uncredentialed callers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Under ``require_auth_for: "all"`` - the secure profile's setting - the only
+routes answered without a credential are ``/api/v1/auth/*``, because
+authentication cannot bootstrap through a door that demands the credential it
+hands out. Health is not special and is refused like everything else.
+
+When something that cannot hold a credential has to reach a route, name it:
+
+.. code-block:: yaml
+
+   auth:
+     public_routes: ["GET /api/v1/health"]
+
+Matching is exact. ``GET /api/v1/health`` opens that method on that path and
+nothing else - not ``HEAD``, not ``/api/v1/healthz``, not the subtree. Wildcards
+are rejected rather than accepted and matched literally, and a malformed entry
+stops the gateway rather than being dropped silently.
+
+An anonymous caller on such a route gets a reduced body: ``GET /health`` answers
+with ``status`` and ``timestamp`` only, plus ``x-medkit-reduced: true`` so a
+monitor can tell a withheld answer from a clean one. A credential still returns
+the whole document.
+
+Most liveness probes need no entry at all. A ``401`` already proves the process
+is up and answering HTTP, so a probe that accepts ``200``, ``401`` and ``403``
+works against any auth configuration and leaves nothing open. Prefer that.
 
 See :doc:`/tutorials/authentication` for a complete setup tutorial.
 

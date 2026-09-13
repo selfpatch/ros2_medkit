@@ -317,8 +317,25 @@ void RESTServer::setup_pre_routing_handler() {
         }
       }
 
-      // 2. Handle preflight OPTIONS requests
-      if (req.method == "OPTIONS") {
+      // 2. Handle preflight OPTIONS requests.
+      //
+      // This is answered WITHOUT a credential, and it has to be. A browser
+      // never puts Authorization on a preflight - asking permission before
+      // sending the real request, headers included, is the entire purpose of
+      // the mechanism - so requiring one here does not harden the gateway, it
+      // makes every browser client impossible.
+      //
+      // It is safe because a preflight discloses nothing about the system: the
+      // response is the CORS policy for an origin the operator configured, with
+      // no body, and the real request that follows is authenticated normally.
+      // Treat this as a named exemption alongside /auth/, not as an oversight.
+      // A real preflight carries Access-Control-Request-Method; the browser
+      // sends it to ask whether the method it is about to use is allowed.
+      // Requiring it is what keeps the exemption to the case that genuinely
+      // cannot authenticate: matching on the method and the origin alone would
+      // let a plain anonymous OPTIONS take this early return, which is
+      // "OPTIONS is public" rather than "a preflight is public".
+      if (req.method == "OPTIONS" && req.has_header("Access-Control-Request-Method")) {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
           res.status = 204;
@@ -329,21 +346,46 @@ void RESTServer::setup_pre_routing_handler() {
       }
     }
 
-    // 3. Rate limiting check. If rejected, return Handled (CORS headers already set)
+    // 3. Rate limiting is METERED here and ANSWERED after authentication.
+    //
+    // Both halves matter and they pull in opposite directions. Metering after
+    // authentication means a request refused for a bad credential never spends
+    // any allowance, so an anonymous caller can hammer a protected route for
+    // free and pay only for the signature verification each attempt costs the
+    // gateway - which under RS256 is not cheap. Answering before
+    // authentication means an anonymous caller who exhausted the allowance
+    // gets 429 from a protected route instead of 401: an answer, and a small
+    // disclosure of limiter state, without any credential.
+    //
+    // So: consume the allowance for every request, and decide what to say
+    // about it once we know whether the caller had a credential.
+    //
+    // The X-RateLimit-* headers are NOT written here. They report how much
+    // allowance is left and when it resets, and writing them at metering time
+    // put them on the anonymous 401 below - limiter state disclosed to a caller
+    // holding no credential, which is the thing answering before authentication
+    // would have done. They go on after the auth decision, at the point the
+    // limiter is allowed to speak.
+    bool rate_limited = false;
+    RateLimitResult rl_result;
+    bool rate_metered = false;
     if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
-      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
-      RateLimiter::apply_headers(rl_result, res);
-      if (!rl_result.allowed) {
-        RateLimiter::apply_rejection(rl_result, res);
-        return handled(req, res);
-      }
+      rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      rate_limited = !rl_result.allowed;
+      rate_metered = true;
     }
 
-    // 1. Handle CORS (existing logic)
-
-    // Handle Authentication if enabled
+    // 4. Authentication.
     if (auth_middleware_ && auth_middleware_->is_enabled()) {
-      // Use AuthMiddleware to process the request
+      // No special case for an exhausted anonymous caller. `process` returns
+      // on a missing Authorization header before it extracts or verifies
+      // anything, so a request with no credential already costs nothing beyond
+      // the route lookup - which is the whole of what an anonymous flood would
+      // buy by being refused earlier. A second refusal path here produced a
+      // 401 of a different shape from every other one: no WWW-Authenticate and
+      // no error document, so a client could not tell a missing credential
+      // from an expired one, and the difference was itself a signal that the
+      // limiter rather than the credential had decided.
       auto auth_request = AuthMiddleware::from_httplib_request(req);
       auto result = auth_middleware_->process(auth_request);
 
@@ -351,6 +393,18 @@ void RESTServer::setup_pre_routing_handler() {
         AuthMiddleware::apply_to_response(result, res);
         return handled(req, res);
       }
+    }
+
+    // 5. Now the limiter may speak, headers included. The caller reached this
+    // line with a credential this gateway accepts, or on a route that needs
+    // none, so the allowance and the reset time tell them something they are
+    // entitled to know.
+    if (rate_metered) {
+      RateLimiter::apply_headers(rl_result, res);
+    }
+    if (rate_limited) {
+      RateLimiter::apply_rejection(rl_result, res);
+      return handled(req, res);
     }
 
     return httplib::Server::HandlerResponse::Unhandled;

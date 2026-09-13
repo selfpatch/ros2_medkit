@@ -11,8 +11,22 @@ Role-Based Access Control (RBAC) in ros2_medkit_gateway.
 Overview
 --------
 
-By default, the gateway runs without authentication for easy development.
-For production deployments, you should enable authentication to:
+By default, the gateway runs without authentication for easy development:
+``config/gateway_params.yaml`` leaves ``auth.enabled`` false and
+``require_auth_for`` at ``"write"``. ``config/gateway_params.secure.yaml`` is
+the profile that turns it on, together with TLS and ``require_auth_for``
+``"all"``:
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway gateway.launch.py \
+     config_file:=$(ros2 pkg prefix --share ros2_medkit_gateway)/config/gateway_params.secure.yaml \
+     jwt_secret:=<at least 32 characters> \
+     auth_clients:=<id>:<secret>:admin \
+     cert_file:=<cert.pem> key_file:=<key.pem>
+
+Turn authentication on for any deployment reachable beyond the machine it runs
+on, to:
 
 - Control who can access the API
 - Limit write operations to authorized users
@@ -204,6 +218,22 @@ Response:
    curl -X POST http://localhost:8080/api/v1/auth/revoke \
      -H "Content-Type: application/json" \
      -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}'
+
+A Gateway Restart Invalidates Every Token
+-----------------------------------------
+
+Refresh records live in memory. An access token names the refresh record it was
+issued alongside, and a token whose record the gateway no longer knows is
+refused - so after a restart every access token and every refresh token issued
+before it stops verifying, and clients re-authenticate with their client id and
+secret.
+
+This is deliberate. The alternative - treating an unknown record as "nothing to
+check" - would make a token somebody explicitly revoked work again across a
+restart, for as long as ``token_expiry_seconds`` allows. A client that holds a
+long-lived credential and exchanges it for tokens handles the restart by
+re-authenticating on a 401; one that caches an access token across a gateway
+restart does not.
 
 Production Recommendations
 --------------------------

@@ -1,10 +1,22 @@
 # ROS 2 Medkit Gateway - secure field profile
 #
 # Hardened parameter preset for on-prem / plant-network (appliance)
-# deployments. It turns ON every control that the default development config
-# leaves OFF: JWT auth, TLS, restricted CORS, and rate limiting. Use this file
-# instead of gateway_params.yaml for any deployment reachable from an
-# untrusted network.
+# deployments. This is the closed profile: it turns ON every control that
+# gateway_params.yaml leaves OFF - JWT auth with require_auth_for "all", TLS,
+# rate limiting - and replaces the default's empty CORS origin list with an
+# explicit one. Use this file instead of gateway_params.yaml for any
+# deployment reachable from an untrusted network.
+#
+# gateway_params.yaml stays open so that an existing launch, an existing
+# config and the web UI keep working unchanged. Closing a gateway is a
+# deployment decision, and this file is how it is made:
+#
+#   ros2 launch ros2_medkit_gateway gateway.launch.py \
+#     config_file:=$(ros2 pkg prefix --share ros2_medkit_gateway)/config/gateway_params.secure.yaml \
+#     jwt_secret:="$MEDKIT_JWT_SECRET" \
+#     auth_clients:="operator:$OP_SECRET:operator" \
+#     cert_file:=/etc/ros2_medkit/certs/server.pem \
+#     key_file:=/etc/ros2_medkit/certs/server-key.pem
 #
 #   ros2 run ros2_medkit_gateway gateway_node \
 #     --ros-args --params-file gateway_params.secure.yaml

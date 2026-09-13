@@ -164,8 +164,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy built workspace from builder (builder uses /root/ws, runtime uses /home/medkit/ws)
 COPY --from=builder /root/ws/install/ ${COLCON_WS}/install/
 
-# Default config - can be overridden via volume mount
-COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
+# Default config - the same file the package ships, so the image and a source
+# install have one posture rather than two that drift. Override via volume
+# mount, or point the container at config/gateway_params.secure.yaml inside the
+# image for the closed profile.
+COPY src/ros2_medkit_gateway/config/gateway_params.yaml /etc/ros2_medkit/params.yaml
 
 # When running via ros2 run (as this container does), plugin .so paths must be
 # configured explicitly via plugins.<name>.path parameters in the params file.
@@ -188,4 +191,14 @@ USER medkit
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "--params-file", "/etc/ros2_medkit/params.yaml"]
+# The two values a container needs that a host install does not: bind every
+# interface, because the port is published rather than reached over loopback,
+# and refresh faster, because a container's graph turns over as sibling
+# containers come and go. Passed after the params file so they win over it.
+#
+# CORS names no origin here. A published image allowing development origins is
+# a setting nobody chose; a deployment that runs the web UI next to the gateway
+# sets cors.allowed_origins to its own origin.
+CMD ["--ros-args", "--params-file", "/etc/ros2_medkit/params.yaml", \
+     "-p", "server.host:=0.0.0.0", \
+     "-p", "refresh_interval_ms:=2000"]
