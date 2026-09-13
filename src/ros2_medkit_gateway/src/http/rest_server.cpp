@@ -317,8 +317,25 @@ void RESTServer::setup_pre_routing_handler() {
         }
       }
 
-      // 2. Handle preflight OPTIONS requests
-      if (req.method == "OPTIONS") {
+      // 2. Handle preflight OPTIONS requests.
+      //
+      // This is answered WITHOUT a credential, and it has to be. A browser
+      // never puts Authorization on a preflight - asking permission before
+      // sending the real request, headers included, is the entire purpose of
+      // the mechanism - so requiring one here does not harden the gateway, it
+      // makes every browser client impossible.
+      //
+      // It is safe because a preflight discloses nothing about the system: the
+      // response is the CORS policy for an origin the operator configured, with
+      // no body, and the real request that follows is authenticated normally.
+      // Treat this as a named exemption alongside /auth/, not as an oversight.
+      // A real preflight carries Access-Control-Request-Method; the browser
+      // sends it to ask whether the method it is about to use is allowed.
+      // Requiring it is what keeps the exemption to the case that genuinely
+      // cannot authenticate: matching on the method and the origin alone would
+      // let a plain anonymous OPTIONS take this early return, which is
+      // "OPTIONS is public", which is wider than "a preflight is public".
+      if (req.method == "OPTIONS" && req.has_header("Access-Control-Request-Method")) {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
           res.status = 204;
@@ -329,28 +346,84 @@ void RESTServer::setup_pre_routing_handler() {
       }
     }
 
-    // 3. Rate limiting check. If rejected, return Handled (CORS headers already set)
-    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
-      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
-      RateLimiter::apply_headers(rl_result, res);
-      if (!rl_result.allowed) {
-        RateLimiter::apply_rejection(rl_result, res);
-        return handled(req, res);
-      }
+    // 3. Rate limiting is METERED here, and ANSWERED at one of two later
+    // points depending on what the caller presented.
+    //
+    // Metering before authentication makes every request spend its allowance,
+    // a refused one included, so a flood of bad credentials cannot run free.
+    // The cost of the refusal is the other half: an over-limit caller sending
+    // any Authorization header at all pays for a signature verification per
+    // request under the old order, which under RS256 is the expensive path.
+    //
+    // The X-RateLimit-* headers are NOT written here. They report how much
+    // allowance is left and when it resets, which is limiter state, and at
+    // metering time nothing is known about the caller yet. They go on at step
+    // 5, where the caller has been accepted or the route needs nobody.
+    bool rate_limited = false;
+    RateLimitResult rl_result;
+    bool rate_metered = false;
+    // Every method reaching this line is metered, OPTIONS included. With CORS
+    // on, a preflight - an OPTIONS carrying Access-Control-Request-Method -
+    // has already been answered at step 2; with CORS off there is no preflight
+    // to exempt. Any other OPTIONS is an ordinary request to a route: where the
+    // route needs a credential it runs the token verifier like any other
+    // request, so it spends allowance like any other. The exemption belongs
+    // to the preflight; one for the method would let a flood of plain OPTIONS
+    // cost a signature check each for free.
+    if (rate_limiter_ && rate_limiter_->is_enabled()) {
+      rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      rate_limited = !rl_result.allowed;
+      rate_metered = true;
     }
 
-    // 1. Handle CORS (existing logic)
-
-    // Handle Authentication if enabled
+    // 4. Authentication, with the limiter given the first word where it has
+    // one to say.
     if (auth_middleware_ && auth_middleware_->is_enabled()) {
-      // Use AuthMiddleware to process the request
       auto auth_request = AuthMiddleware::from_httplib_request(req);
+
+      // An exhausted caller who presented an Authorization header is already
+      // being refused, so the signature never needs checking - see
+      // rate_limit_precedes_validation for the three conditions and why the
+      // header is one of them. The `&&` order matters: the route question is a
+      // policy lookup, and it is asked only on the path that can use the
+      // answer.
+      if (rate_limited && auth_request.authorization_header.has_value() &&
+          AuthMiddleware::rate_limit_precedes_validation(rate_limited, true,
+                                                         auth_middleware_->requires_authentication(auth_request))) {
+        // Bare: the refusal and nothing about the limiter. Whoever holds this
+        // header has not been verified, so the allowance, the reset time and
+        // the retry delay stay behind the credential check they would
+        // otherwise sit in front of.
+        RateLimiter::apply_bare_rejection(res);
+        return handled(req, res);
+      }
+
+      // A caller with no credential keeps the anonymous 401. `process` returns
+      // on the missing Authorization header before it extracts or verifies
+      // anything, so that refusal already costs nothing beyond the route
+      // lookup - which is the whole of what refusing it earlier would buy. A
+      // second refusal path here would produce a 401 of a different shape from
+      // every other one: no WWW-Authenticate and no error document, so a
+      // client could not tell a missing credential from an expired one, and
+      // the difference is itself a signal about which of the two decided.
       auto result = auth_middleware_->process(auth_request);
 
       if (!result.allowed) {
         AuthMiddleware::apply_to_response(result, res);
         return handled(req, res);
       }
+    }
+
+    // 5. Now the limiter may speak on every remaining request, headers
+    // included. The caller reached this line with a credential this gateway
+    // accepts, or on a route that needs none, so the allowance and the reset
+    // time tell them something they are entitled to know.
+    if (rate_metered) {
+      RateLimiter::apply_headers(rl_result, res);
+    }
+    if (rate_limited) {
+      RateLimiter::apply_rejection(rl_result, res);
+      return handled(req, res);
     }
 
     return httplib::Server::HandlerResponse::Unhandled;

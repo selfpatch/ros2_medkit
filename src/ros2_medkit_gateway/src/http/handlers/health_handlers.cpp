@@ -17,6 +17,7 @@
 #include <chrono>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
@@ -50,12 +51,68 @@ ErrorInfo make_internal_error(const char * where, const std::exception & e) {
 
 }  // namespace
 
+namespace {
+
+/// True when this answer must be cut down to liveness only.
+///
+/// Two conditions, and both are needed. The route has to be one an operator
+/// named in `auth.public_routes` - the documented case, where something that
+/// cannot hold a credential was given a door of its own - and the caller has to
+/// have presented no token this gateway accepts. On such a route the full body
+/// is more than the probe asked for: the linking warnings name entities and ROS
+/// node FQNs, and the entity cache reports how many apps, areas and components
+/// this gateway sees.
+///
+/// The operator's list is the test, and `auth.enabled` on its own is not:
+/// under `require_auth_for: "write"` every GET is open by the requirement
+/// level, with nobody deciding anything route by route, and the full body
+/// belongs to an anonymous caller there. docs/config/server.rst promises the
+/// cut on a named route and nowhere else.
+///
+/// One case is wider than the list: with authentication on and no manager to
+/// ask, this cuts the body. That path means the gateway cannot answer the
+/// question at all, and liveness is the safe thing to say when the check
+/// itself is unavailable.
+bool serves_reduced_body(const HandlerContext & ctx, const http::TypedRequest & req) {
+  if (!ctx.auth_config().enabled) {
+    return false;  // Nothing is anonymous when nothing is authenticated.
+  }
+  auto * manager = ctx.auth_manager();
+  if (manager == nullptr) {
+    return true;  // Fail closed: cannot verify, so do not disclose.
+  }
+  if (!manager->is_public_route(req.method(), req.path())) {
+    return false;
+  }
+  auto header = req.header("Authorization");
+  if (!header) {
+    return true;
+  }
+  auto token = AuthMiddleware::extract_bearer_token(*header);
+  if (!token) {
+    return true;
+  }
+  return !manager->validate_token(*token).valid;
+}
+
+}  // namespace
+
 http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & req) {
-  (void)req;  // Unused parameter
   try {
     dto::Health response;
     response.status = "healthy";
     response.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+
+    // Liveness and nothing else for an anonymous caller on a route somebody
+    // opened by name. Returned before any of the sections below are built, so
+    // a section added later is private by default, and stays private until
+    // someone decides otherwise. The flag is what keeps the empty
+    // `warnings` below from reading as "nothing is wrong here" to a monitor
+    // that never presented a credential.
+    if (serves_reduced_body(ctx_, req)) {
+      response.x_medkit_reduced = true;
+      return response;
+    }
 
     // Operator-actionable warnings the gateway flags without taking itself
     // offline. Collected across every subsystem that can produce one, so the
