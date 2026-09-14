@@ -1775,7 +1775,7 @@ is the time that recording was made.
 ``size`` is the number of bytes the download route below puts on the wire for
 that descriptor, so a client can size a buffer or a progress bar from the
 listing. For a rosbag held in a single storage file, which is the normal case,
-that is the file (``.mcap`` or ``.sqlite3``) and it is the only file the
+that is the file (``.mcap`` or ``.db3``) and it is the only file the
 download serves. The bag directory also holds ``metadata.yaml``, and those bytes
 are not part of the transfer.
 
@@ -1783,21 +1783,33 @@ are not part of the transfer.
 
 **One recording, one size.** The descriptor ``size`` here, the
 ``environment_data.snapshots[].size_bytes`` a fault reports for the same
-recording, and the ``Content-Length`` of its download are the same number, and
-that number is the storage file. A recording also has a footprint on the
-gateway host, which is larger because the directory holds ``metadata.yaml`` as
-well. That figure is what the recording spends against its storage quota and is
-not reported by the API. The one case where the two coincide is a recording
-split across several storage files, past the configured maximum bag size: the
-download can hand over only one of them, no single file describes the transfer,
-and the API reports the recording's total instead.
+recording, and the ``Content-Length`` of its download are the same number when
+the bag's ``metadata.yaml`` names exactly one storage file, that name is a direct
+child of the bag directory ending in ``.db3`` or ``.mcap``, and the file is
+present - the normal case - and that number is the storage file. A recording also
+has a footprint on the gateway host, which is larger because the directory holds
+``metadata.yaml`` as well. That figure is what the recording spends against its
+storage quota and is not reported by the API.
 
-For that split case the three numbers stop agreeing, and deliberately so. The
-descriptor ``size`` and the nested ``size_bytes`` report the recording's total
-while the download's ``Content-Length`` is the one storage file it hands over,
-so ``size`` exceeds ``Content-Length``. That gap is the signal: a client that
-compares the two can tell the transfer it just made is a part of the recording
-rather than the whole of it, which no single reported number could express.
+Four shapes fall outside that condition, and there the three numbers part
+deliberately:
+
+- a recording split across several storage files, past the configured maximum
+  bag size;
+- a bag with no ``metadata.yaml``, or one that cannot be parsed;
+- a bag whose named storage file is absent from the directory;
+- a name that points outside the bag directory, or at a file that is neither
+  ``.db3`` nor ``.mcap``. The gateway and the fault manager both decline such a
+  name, because a name decides which file on the host is served and measured.
+
+In each of them the descriptor ``size`` and the nested ``size_bytes`` carry the
+recording's stored total, while the download hands over whichever single storage
+file the bag directory holds. ``size`` can therefore exceed ``Content-Length``,
+and that gap is the signal in each of these cases: a client comparing the two can
+tell the transfer it just made is a part of the recording and not the whole of
+it, which no single reported number could express. When the directory holds no
+storage file at all, the download has nothing to send and answers ``500``, so
+there is no ``Content-Length`` to compare.
 
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
