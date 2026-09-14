@@ -499,7 +499,7 @@ class RosbagCapture {
 ///
 /// The file is the one ``metadata.yaml`` names in ``relative_file_paths``, read through
 /// the same library that wrote it, so this answers with the bag's own record of its
-/// contents rather than by guessing from a file extension.
+/// contents.
 ///
 /// Falls back to @p stored_total_bytes, never to zero, when no single served file can
 /// be named:
@@ -507,12 +507,16 @@ class RosbagCapture {
 /// - ``relative_file_paths`` naming other than exactly one file. Past
 ///   ``max_bag_size_mb`` rosbag2 splits a recording across several storage files, and
 ///   then no single number describes the download at all.
+/// - a name that points outside the bag directory, or at something other than a
+///   ``.db3`` or ``.mcap`` file. A name decides which file on the host is measured,
+///   so only a storage file that is a direct child of the bag is followed. The
+///   gateway applies the same rule to the same field.
 /// - a named file that cannot be stat'd.
 ///
 /// None of those is an error worth logging. A pre-metadata bag and a split bag are
 /// both normal, this runs once per reported row on every request, and the fallback is
-/// a real measurement of the recording rather than a failure sentinel. A zero would
-/// not be: it would describe the recording as empty.
+/// a real measurement of the recording. A zero would describe the recording as
+/// empty.
 ///
 /// @param bag_path Bag directory as stored in ``RosbagFileInfo::file_path``
 /// @param stored_total_bytes The stored directory total, used as the fallback

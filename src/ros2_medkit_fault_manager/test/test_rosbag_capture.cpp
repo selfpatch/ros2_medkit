@@ -578,7 +578,7 @@ namespace {
 
 /// A bag directory carrying a real ``metadata.yaml``, written by the same library
 /// rosbag2 writes it with, so the parse under test is the parse that runs in
-/// production rather than a hand-copied literal that can drift from it.
+/// production.
 class ServedBytesBag {
  public:
   explicit ServedBytesBag(const std::string & label) {
@@ -700,15 +700,98 @@ TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) 
   EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
 }
 
+namespace {
+
+/// A name the size helper follows only when it lands on a storage file inside the
+/// bag directory. Every case below is checked twice on one bag: first with an
+/// in-bag name, which must answer with that file, and then with @p
+/// unfollowable_name, which must answer with the stored total. The control is what
+/// separates the rule from a metadata document rosbag2 wrote but cannot read back -
+/// both would fall back, for entirely different reasons.
+void expect_unfollowable_name_falls_back(ServedBytesBag & bag, const std::string & unfollowable_name,
+                                         const std::string & in_bag_name) {
+  bag.write_metadata({in_bag_name});
+  ASSERT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), bag.directory_total()),
+            bag.file_size_of(in_bag_name))
+      << "the in-bag control name was not followed, so this bag says nothing about " << unfollowable_name;
+
+  bag.write_metadata({unfollowable_name});
+  const size_t stored_total = bag.directory_total();
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+      << "a name pointing outside the bag was measured as the recording: " << unfollowable_name;
+}
+
+}  // namespace
+
+// A name in metadata.yaml decides which file on the host this helper measures and
+// reports as the recording's size, so it is followed only when it lands on a
+// storage file that is a direct child of the bag directory. Path concatenation
+// enforces none of that: an absolute name replaces the bag directory and a `..`
+// name climbs out of it.
+TEST(RosbagServedBytesTest, ANameThatClimbsOutOfTheBagFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("escape");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  const std::string outside_name = "served_bytes_outside_" + std::to_string(::getpid()) + ".db3";
+  const auto outside = bag.dir().parent_path() / outside_name;
+  {
+    std::ofstream out(outside, std::ios::binary);
+    out << std::string(8192, 'o');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(outside)) << "the file the name points at was not created";
+
+  expect_unfollowable_name_falls_back(bag, "../" + outside_name, in_bag);
+
+  std::error_code ec;
+  std::filesystem::remove(outside, ec);
+}
+
+TEST(RosbagServedBytesTest, AnAbsoluteNameFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("absolute");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  ServedBytesBag elsewhere("absolute_target");
+  elsewhere.add_storage_file("recording_0.db3", 8192);
+  const std::string absolute_name = (elsewhere.dir() / "recording_0.db3").string();
+  ASSERT_TRUE(std::filesystem::is_regular_file(absolute_name));
+  expect_unfollowable_name_falls_back(bag, absolute_name, in_bag);
+
+  // A host file that is not a recording at all, which is what an absolute name
+  // reaches for when this is an attack and not a stale bag.
+  expect_unfollowable_name_falls_back(bag, "/etc/hostname", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameInASubdirectoryFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("nested");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  std::filesystem::create_directories(bag.dir() / "sub");
+  {
+    std::ofstream out(bag.dir() / "sub" / "segment.db3", std::ios::binary);
+    out << std::string(8192, 's');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "sub" / "segment.db3"));
+  expect_unfollowable_name_falls_back(bag, "sub/segment.db3", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameWithoutAStorageExtensionFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("text");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_0.txt", 8192);
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "recording_0.txt"));
+  expect_unfollowable_name_falls_back(bag, "recording_0.txt", in_bag);
+}
+
 TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
   // A leftover segment or a copy sitting beside the recording must not change
   // which file is measured. The metadata names one file and that is the file.
   //
   // This is also the fault manager's half of a cross-package agreement: the
   // gateway sizes the same directory shape through its own resolver, and its
-  // TheMetadataNamesTheStorageFileRatherThanDirectoryOrder asserts the same
-  // 4096. Directory order decided the gateway's answer until it read this field
-  // too, and the two sides reported different sizes for one recording.
+  // TheMetadataNamesTheStorageFileRatherThanDirectoryOrder pins the same rule:
+  // the size follows the file the metadata names, whichever file the directory
+  // yields first. Directory order decided the gateway's answer until it read
+  // this field too, and the two sides reported different sizes for one recording.
   ServedBytesBag bag("stray");
   const std::string named = bag.add_storage_file("recording_0.db3", 4096);
   bag.add_storage_file("recording_1.db3", 65536);
@@ -717,7 +800,7 @@ TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
 
   const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
   EXPECT_EQ(reported, bag.file_size_of(named));
-  EXPECT_EQ(reported, 4096u) << "the same number the gateway's listing reports for this shape";
+  EXPECT_EQ(reported, 4096u) << "the rule the gateway's listing follows for this shape: the file the bag names";
   EXPECT_NE(reported, bag.file_size_of("recording_1.db3")) << "the stray file is not the recording";
   EXPECT_NE(reported, stored_total);
 }

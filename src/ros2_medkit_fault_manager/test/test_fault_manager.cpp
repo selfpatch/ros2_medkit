@@ -1657,8 +1657,8 @@ TEST_F(FaultEventPublishingTest, GetFaultReportsARecordingsServedBytesNotItsFoot
 }
 
 // The other three services that quote a recording's size. GetFault above covers the
-// snapshot entry. These are the remaining answers, each reached through its own
-// service call rather than through the helper.
+// snapshot entry. These are the remaining answers, each driven through its own
+// service call, so what every assertion here reads is the service's own reply.
 TEST_F(FaultEventPublishingTest, EveryRosbagServiceReportsTheServedBytes) {
   ReportedBag bag("all_services");
   ASSERT_GT(bag.footprint, bag.served) << "metadata.yaml did not land, so there is nothing to tell apart";
@@ -1721,7 +1721,7 @@ TEST_F(FaultEventPublishingTest, EveryRosbagServiceReportsTheServedBytes) {
 // The legacy /faults/{code}/snapshots/bag route was removed, so a payload naming it
 // hands the caller a 404. Nothing in this repo reads the field, and a recording is
 // addressed under its entity, which the fault manager cannot resolve, so the field
-// is gone rather than repointed.
+// is gone.
 TEST_F(FaultEventPublishingTest, GetSnapshotsDoesNotAdvertiseARouteThatWasRemoved) {
   ReportedBag bag("no_download_url");
 
