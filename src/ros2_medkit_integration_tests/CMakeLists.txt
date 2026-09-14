@@ -321,6 +321,13 @@ if(BUILD_TESTING)
   # round trip on the patient aggregator, twice, and then polls after killing
   # the peer. Two of those plus three gateway startups exceed the default.
   #
+  # test_relay_peer_credential launches three gateways plus a fault_manager,
+  # holding three extra domains for its two aggregators and the peer beside
+  # the launcher's own, and setUpClass waits for both aggregators to answer
+  # before separately holding a 60s wait, scaled, for the fault_manager node
+  # to appear on the peer's domain - before a single test case runs. Three
+  # startups plus those two sequential waits exceed the default.
+  #
   # test_aggregator_fault_stream spends most of its budget waiting rather than
   # working: a closed SSE connection is noticed at the peer's next keepalive,
   # 30s away, and the test settles the peer's occupancy before each measurement
@@ -338,6 +345,7 @@ if(BUILD_TESTING)
   set(_MEDKIT_TEST_TIMEOUT_OVERRIDES
     test_aggregation_time_budgets 300
     test_peer_failure_reasons 300
+    test_relay_peer_credential 300
     test_aggregator_fault_stream 420
     test_auth_policy_contract 300
     test_rosbag_boundary_download 180
