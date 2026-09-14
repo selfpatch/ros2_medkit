@@ -232,8 +232,11 @@ The One Exception: Global Fault Clear
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``DELETE /api/v1/faults`` reads ``X-Client-Id`` like the writes above but never
-answers ``409``. It walks every fault, **skips** the ones whose reporting
-entity is locked by another client, clears the rest, and answers ``204``.
+answers ``409``. It walks every fault RECORD, **skips** the ones whose owning
+entity is locked by another client, clears the rest one record at a time with
+its owner, and answers ``204``. The owner is resolved the same way the
+per-entity fault scope resolves it, so an external app or an external component
+is found by its bare SOVD id and its lock is honoured here too.
 Nothing on the response says which faults were skipped - the
 ``X-Medkit-Local-Only: true`` header that 204 also carries is set
 unconditionally and reports that aggregated *peers* were not cleared, not that

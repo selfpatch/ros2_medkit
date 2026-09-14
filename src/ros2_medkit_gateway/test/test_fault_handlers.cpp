@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
@@ -598,6 +599,103 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {
 // This pins the shape build_sovd_fault_response produces for the PLC case:
 // reporting_sources=[bare id] + a freeze-frame snapshot under a plugin entity
 // path.
+// =============================================================================
+// select_scoped_fault - which record a per-record route acts on
+//
+// A fault code is half of a record's identity. These pin what the per-entity
+// GET and DELETE do when the entity's own scope holds none, one, or several
+// records of the code the URL named.
+// =============================================================================
+namespace {
+
+json record(const std::string & code, const std::string & owner) {
+  return json{{"fault_code", code}, {"status", "CONFIRMED"}, {"reporting_sources", json::array({owner})}};
+}
+
+std::vector<ros2_medkit_gateway::faults::ScopedFault> in_scope(const json & faults, const std::string & code,
+                                                               const std::set<std::string> & scope) {
+  return ros2_medkit_gateway::faults::records_of_code_in_scope(faults, code, scope);
+}
+
+}  // namespace
+
+// @verifies REQ_INTEROP_013
+TEST(SelectScopedFaultTest, OneRecordInScopeIsTheRecordAndNamesItsOwner) {
+  const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b"),
+                                   record("OTHER_CODE", "app_a")});
+
+  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id",
+                                                   "app_a");
+
+  ASSERT_TRUE(picked.has_value()) << picked.error().message;
+  EXPECT_EQ(picked->owner, "app_a");
+  EXPECT_EQ(picked->fault["fault_code"], "SHARED_CODE");
+}
+
+// @verifies REQ_INTEROP_013
+TEST(SelectScopedFaultTest, NoRecordInScopeIs404) {
+  const json faults = json::array({record("SHARED_CODE", "app_b")});
+
+  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id",
+                                                   "app_a");
+
+  ASSERT_FALSE(picked.has_value());
+  EXPECT_EQ(picked.error().http_status, 404);
+  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
+}
+
+// Two of this component's own apps report the code, so the URL names two
+// records. Acting on either would clear or disclose a record the caller did
+// not ask for and could not tell apart in the response.
+// @verifies REQ_INTEROP_015
+TEST(SelectScopedFaultTest, SeveralRecordsInScopeIs409NamingEveryOwner) {
+  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
+
+  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}), "SHARED_CODE",
+                                                   "component_id", "host");
+
+  ASSERT_FALSE(picked.has_value());
+  EXPECT_EQ(picked.error().http_status, 409);
+  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_AMBIGUOUS_FAULT);
+  ASSERT_TRUE(picked.error().params.contains("owners"));
+  // Ordered by owner, so the answer does not depend on the store's listing order.
+  EXPECT_EQ(picked.error().params["owners"], json::array({"app_a", "app_b"}));
+  EXPECT_EQ(picked.error().params["fault_code"], "SHARED_CODE");
+  EXPECT_EQ(picked.error().params["component_id"], "host");
+}
+
+// The records of ONE code only: a second code the entity also owns is a
+// different resource and must not make its sibling ambiguous.
+TEST(RecordsOfCodeInScopeTest, OtherCodesAreNotCollected) {
+  const json faults = json::array({record("SHARED_CODE", "app_a"), record("OTHER_CODE", "app_b")});
+
+  const auto records = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
+
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].owner, "app_a");
+}
+
+// The rosbag download authorizes on the same records, but a code addressing
+// several of them is not an ambiguity there: the question is only whether any
+// record attached to the recording is this entity's, and one that is settles
+// it. Reading the code unscoped instead answered "ambiguous" and the entity was
+// refused a recording it owns.
+TEST(RecordsOfCodeInScopeTest, OneOwnerInScopeIsEnoughToAuthorizeARecording) {
+  const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b")});
+
+  EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a"}).empty()) << "app_a owns a record of this code";
+  EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}).empty())
+      << "a component hosting both owners still owns the recording";
+  EXPECT_TRUE(in_scope(faults, "SHARED_CODE", {"unrelated_app"}).empty())
+      << "an entity owning no record of this code must not be authorized";
+}
+
+TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(record("C", "app_a")), "app_a");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"reporting_sources", json::array()}}), "");
+}
+
 TEST_F(FaultHandlersTest, BuildSovdFaultResponseExternalEntityFreezeFrame) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "PLC_LEVEL_HIGH";

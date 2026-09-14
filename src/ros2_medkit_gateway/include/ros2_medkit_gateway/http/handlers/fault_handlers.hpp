@@ -17,10 +17,12 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_types.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
@@ -159,22 +161,18 @@ class FaultHandlers {
    * or is a strict path-child (i.e. `<fqn>/<...>`), so similarly named nodes
    * like `/ns/node` and `/ns/node_extra` are not conflated.
    *
-   * The "all sources must match" semantic (rather than "any source") is
-   * deliberate: it blocks two cross-entity escalation paths.
-   *
-   * 1. GET would otherwise return a response whose `reporting_sources` and
-   *    environment data carry identities of nodes the caller has no
-   *    business reading.
-   * 2. DELETE would otherwise let a viewer of entity A clear the aggregated
-   *    fault record for a fault that entity B also reports, because the
-   *    underlying `ClearFault.srv` has no scope argument.
+   * A record names one reporting source, its owner, so in practice this asks
+   * whether that owner is in scope. The "all sources must match" form is kept
+   * because the gateway also serves records relayed from peers and read back
+   * from older stores, and a record that somehow carries a source outside the
+   * entity must stay invisible to it rather than half-visible.
    *
    * An empty scope set, an empty `reporting_sources` array, a missing
    * `reporting_sources` field, or any non-string source entry all return
    * false - there is no vacuous "all match" case.
    *
-   * Public for direct unit testing; called by `get_fault`, `clear_fault`,
-   * and indirectly via the per-entity collection routes.
+   * Public for direct unit testing; called by `resolve_scoped_fault` and
+   * indirectly via the per-entity collection routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 
@@ -219,7 +217,51 @@ class FaultHandlers {
   static nlohmann::json merge_entity_freeze_frames(nlohmann::json env_data,
                                                    const std::vector<EntityFreezeFrameCapture::Frame> & frames);
 
+  /**
+   * @brief Turn the records of one code in an entity's scope into the single
+   * record a per-record route may act on, or the error it answers instead.
+   *
+   * A fault code addresses as many records as there are sources reporting it,
+   * so an entity hosting two of them has not named one. The route answers 409
+   * `x-medkit-ambiguous-fault` with both owners in `params` rather than acting
+   * on whichever record the store happened to list first: picking one is the
+   * failure the per-record identity exists to remove, and the caller cannot
+   * tell from the response which one it got. None in scope is the 404 the
+   * routes have always answered.
+   *
+   * Public static for direct unit testing; called by `resolve_scoped_fault`.
+   */
+  /**
+   * @brief Map every reporting source the cache can attribute to the entity
+   * that owns it, for the global clear's lock check.
+   *
+   * A source is whatever a reporter put in `source_id`, which for an external
+   * app or an external component is its bare SOVD id and not a ROS FQN. The map
+   * was built from `App::effective_fqn()` alone, which is empty for exactly
+   * those entities, so `DELETE /faults` found none of them and cleared their
+   * records straight through another client's lock - while the locking document
+   * said the route skips a locked entity's faults.
+   *
+   * Public static for direct unit testing; called by `clear_all_faults_global`.
+   */
+  static std::unordered_map<std::string, std::string> build_source_entity_map(const ThreadSafeEntityCache & cache);
+
+  static tl::expected<faults::ScopedFault, ErrorInfo> select_scoped_fault(std::vector<faults::ScopedFault> records,
+                                                                          const std::string & fault_code,
+                                                                          const std::string & id_field,
+                                                                          const std::string & entity_id);
+
  private:
+  /**
+   * @brief Resolve the one record of `fault_code` that `entity` owns.
+   *
+   * Lists every status, keeps the records of this code whose owner is inside
+   * the entity's fault scope, and hands the result to `select_scoped_fault`.
+   * The owner it returns is what the per-record services are then called with.
+   */
+  tl::expected<faults::ScopedFault, ErrorInfo> resolve_scoped_fault(const EntityInfo & entity_info,
+                                                                    const std::string & fault_code);
+
   HandlerContext & ctx_;
 };
 

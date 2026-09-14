@@ -385,17 +385,21 @@ Response always includes:
 
 .. note::
 
-   **Per-entity DELETE opts out of the cascade.** The same fault cleared
-   via ``DELETE /api/v1/{entity-path}/faults/ESTOP_001`` clears only
-   ``ESTOP_001`` itself - ``auto_cleared_codes`` will be empty in the
-   response. The gateway sets ``ClearFault.srv``'s
-   ``skip_correlation_auto_clear`` to ``true`` on per-entity routes so
-   that an operator with access to one entity cannot cascade-clear
-   correlated symptom faults reported by apps in other entities. Use
-   the global ``DELETE /api/v1/faults/{fault_code}`` route when you do
-   want the correlation cascade. Direct ``ros2 service call`` clients
-   can choose explicitly by setting ``skip_correlation_auto_clear`` in
-   the request body (see ``ros2_medkit_msgs`` ``ClearFault.srv``).
+   **Per-entity DELETE opts out of the cascade.** The same record cleared
+   via ``DELETE /api/v1/{entity-path}/faults/ESTOP_001`` clears only that
+   record - ``auto_cleared_codes`` will be empty in the response. The
+   gateway sets ``ClearFault.srv``'s ``skip_correlation_auto_clear`` to
+   ``true`` on per-entity routes so that an operator with access to one
+   entity cannot cascade-clear correlated symptom faults reported by apps
+   in other entities.
+
+   There is no global ``DELETE /api/v1/faults/{fault_code}`` route over
+   HTTP: a bare fault code names as many records as there are sources
+   reporting it, so it is not an address. ``DELETE /api/v1/faults``
+   clears every record and takes no code. To get the cascade for one
+   record, call the service directly and set ``skip_correlation_auto_clear``
+   to ``false`` alongside that record's ``fault_code`` and ``source_id``
+   (see ``ros2_medkit_msgs`` ``ClearFault.srv``).
 
 Example: Complete Configuration
 -------------------------------

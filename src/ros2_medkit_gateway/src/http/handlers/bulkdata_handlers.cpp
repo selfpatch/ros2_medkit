@@ -150,9 +150,14 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
   return !resolved.empty() && resolved != requested_id;
 }
 
+std::string record_map_key(const std::string & owner, const std::string & fault_code) {
+  // '\0' cannot appear in either id, so the two halves cannot run together.
+  return owner + '\0' + fault_code;
+}
+
 std::vector<dto::BulkDataDescriptor>
 fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
-                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_code) {
+                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_record) {
   struct RecordingEntry {
     std::string recording_id;
     std::string format;
@@ -184,7 +189,8 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // fault only for a row that predates the field.
     int64_t created_at_ns = row.value("created_at_ns", int64_t{0});
     if (created_at_ns == 0) {
-      if (auto it = faults_by_code.find(fault_code); it != faults_by_code.end()) {
+      const auto key = record_map_key(row.value("owner", std::string{}), fault_code);
+      if (auto it = faults_by_record.find(key); it != faults_by_record.end()) {
         const double first_occurred = it->second.value("first_occurred", 0.0);
         created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
       }
@@ -335,27 +341,37 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
     // Functions aggregate rosbags from all hosting apps.
     auto source_filters = get_source_filters(entity);
 
-    // Collect faults across all source filters for timestamp enrichment
+    // Records for the date fallback, keyed by the record they belong to rather
+    // than by code alone: two owners of one code are two records with their own
+    // first_occurred, and keying on the code let whichever was listed last date
+    // the other's recordings. Every status, because an acknowledged record still
+    // has its recordings served.
     std::unordered_map<std::string, json> fault_map;
-    for (const auto & source_filter : source_filters) {
-      auto faults_result = fault_mgr->list_faults(source_filter);
+    {
+      auto faults_result = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                                  /*include_cleared=*/true, /*include_healed=*/true,
+                                                  /*include_muted=*/false, /*include_clusters=*/false);
       if (faults_result.success && faults_result.data.contains("faults")) {
         for (const auto & fault_json : faults_result.data["faults"]) {
           if (fault_json.contains("fault_code")) {
-            std::string fc = fault_json["fault_code"].get<std::string>();
-            fault_map[fc] = fault_json;
+            fault_map[detail::record_map_key(faults::record_owner(fault_json),
+                                             fault_json["fault_code"].get<std::string>())] = fault_json;
           }
         }
       }
     }
 
-    // Collect rosbags across all source filters
+    // Collect rosbags across all source filters. ListRosbags matches the record
+    // owner exactly, so every row it answers with is owned by the filter it was
+    // asked under; the row itself does not carry the owner, so stamp it here
+    // while that is still known.
     std::vector<json> all_rosbags;
     for (const auto & source_filter : source_filters) {
       auto rosbags_result = fault_mgr->list_rosbags(source_filter);
       if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
-        for (const auto & rosbag : rosbags_result.data["rosbags"]) {
-          all_rosbags.push_back(rosbag);
+        for (auto rosbag : rosbags_result.data["rosbags"]) {
+          rosbag["owner"] = source_filter;
+          all_rosbags.push_back(std::move(rosbag));
         }
       }
     }
@@ -440,42 +456,50 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // is exactly one authorization semantic, not two.
     auto fault_mgr = ctx_.node()->get_fault_manager();
 
-    auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id);
+    auto source_filters = get_source_filters(entity);
+    std::set<std::string> scope(source_filters.begin(), source_filters.end());
+
+    // Every record this entity owns, in one read, every status. Authorization
+    // asks which RECORDS a code addresses, not whether a code exists: two
+    // sources reporting one code are two records, and an unscoped read of that
+    // code is ambiguous and answers nothing at all. Reading the list once also
+    // replaces one GetFault round trip per attached code.
+    auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/false,
+                                       /*include_clusters=*/false);
+    const json all_faults = held.success ? held.data.value("faults", json::array()) : json::array();
+
+    // A compatibility URL carries a fault code, so the entity's own records of
+    // that code say which owner to ask the recording for. An id that is really
+    // a recording id matches none and the owner stays empty, which is what the
+    // recording path ignores anyway.
+    auto requested_records = faults::records_of_code_in_scope(all_faults, bulk_data_id, scope);
+    const std::string requested_owner = requested_records.empty() ? std::string{} : requested_records.front().owner;
+
+    auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id, requested_owner);
     if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
       return tl::unexpected(
           make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found", json{{"bulk_data_id", bulk_data_id}}));
     }
 
-    // Security check: the bag belongs to this entity when ANY fault it was captured
-    // for is within the entity's source scope. Union rather than a single code
-    // because a burst shares one recording, and each of those faults already had its
-    // own downloadable copy of it before - so this grants nothing new, it only
-    // renames the door. Tested with the shared boundary-aware matcher: the
-    // transport's get_fault(code, source) check is a raw prefix match, so app id
-    // "plc" would otherwise claim the assets of "plc_line1".
-    auto source_filters = get_source_filters(entity);
-    std::set<std::string> scope(source_filters.begin(), source_filters.end());
-
     // The compatibility path needs the REQUESTED code in scope, not just some code
     // the recording is attached to. A burst shares one bag, so authorizing on the
     // union alone answers 200 for a fault code this entity does not own - the bytes
     // are ones it could already fetch under its own code, but the 200 itself tells
-    // the caller that another fault shares its recording. build_sovd_fault_response
-    // refuses to mix sources for the same reason. When the id really was a recording
-    // id there is no requested code and the union is the whole answer.
-    if (detail::rosbag_resolved_by_fault_code(rosbag_result.data, bulk_data_id)) {
-      auto requested = fault_mgr->get_fault(bulk_data_id, "");
-      if (!requested.success || !faults::fault_in_source_scope(requested.data, scope)) {
-        return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
-                                         json{{"entity_id", path_info->entity_id}}));
-      }
+    // the caller that another fault shares its recording.
+    if (detail::rosbag_resolved_by_fault_code(rosbag_result.data, bulk_data_id) && requested_records.empty()) {
+      return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
+                                       json{{"entity_id", path_info->entity_id}}));
     }
 
     const auto attached_codes = detail::rosbag_attached_fault_codes(rosbag_result.data, bulk_data_id);
 
+    // The bag belongs to this entity when at least one record attached to it is
+    // owned by a source in scope. Several owners of one attached code is not an
+    // ambiguity here: the question is whether any of them is this entity's, and
+    // one that is settles it.
     const bool authorized = std::any_of(attached_codes.begin(), attached_codes.end(), [&](const std::string & code) {
-      auto fault_result = fault_mgr->get_fault(code, "");
-      return fault_result.success && faults::fault_in_source_scope(fault_result.data, scope);
+      return !faults::records_of_code_in_scope(all_faults, code, scope).empty();
     });
     if (!authorized) {
       return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",

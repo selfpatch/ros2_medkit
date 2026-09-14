@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
@@ -812,6 +813,91 @@ TEST_F(SSEFaultHandlerTest, StreamResolvesRuntimeCollisionRenamedApp) {
 
   ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
   EXPECT_EQ(payload["x-medkit"]["entity_id"], "bridge_diagnostic_bridge");
+
+  release_stream(res);
+}
+
+// An external app owns its record under its bare SOVD id, which is not a ROS
+// node FQN. An entity id carries no slash, so the last-segment fallback looks
+// it up as an app id unchanged - this pins that, since the bare-id case is
+// what the record model puts on the stream and nothing else covers it.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalAppId) {
+  App app;
+  app.id = "plc_process";
+  app.name = "process";
+  app.source = "plugin";
+  app.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "PROCESS_LEVEL_HIGH", 72);
+  event.fault.reporting_sources = {"plc_process"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "plc_process");
+
+  release_stream(res);
+}
+
+// A protocol bridge raises its link faults under the component's own id. The
+// hint must name the component, because that is the entity whose fault routes
+// serve the record.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalComponentId) {
+  ros2_medkit_gateway::Component component;
+  component.id = "line_controller";
+  component.name = "Line Controller";
+  component.source = "plugin";
+  component.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "DEVICE_COMMS_LOST", 73);
+  event.fault.reporting_sources = {"line_controller"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "components");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "line_controller");
+
+  release_stream(res);
+}
+
+// Only an external component claims its bare id as a reporting source. A
+// runtime host component never does, and naming it would point the consumer at
+// an entity whose own fault routes drop the record.
+TEST_F(SSEFaultHandlerTest, StreamDoesNotNameANonExternalComponent) {
+  ros2_medkit_gateway::Component component;
+  component.id = "runtime_host";
+  component.name = "runtime host";
+  component.source = "heuristic";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "HOST_FAULT", 74);
+  event.fault.reporting_sources = {"runtime_host"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  EXPECT_FALSE(payload.contains("x-medkit")) << payload.dump();
 
   release_stream(res);
 }

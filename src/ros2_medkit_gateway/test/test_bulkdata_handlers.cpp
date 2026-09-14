@@ -111,13 +111,22 @@ TEST_F(BulkDataHandlersTest, RecordingIdToleratesTrailingSlashAndEmptyPath) {
 
 namespace {
 
-json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024) {
+/// The listing stamps each row with the reporting source it was listed under,
+/// which is the owner of the record the recording belongs to.
+json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024,
+                const std::string & owner = "app_a") {
   return json{{"fault_code", fault_code}, {"recording_id", recording_id}, {"file_path", "/var/bags/" + recording_id},
-              {"format", "mcap"},         {"duration_sec", 5.0},          {"size_bytes", size_bytes}};
+              {"format", "mcap"},         {"duration_sec", 5.0},          {"size_bytes", size_bytes},
+              {"owner", owner}};
 }
 
 json fault_at(double first_occurred) {
   return json{{"first_occurred", first_occurred}};
+}
+
+/// Key one record for the date lookup the same way the handler does.
+std::string record_key(const std::string & owner, const std::string & fault_code) {
+  return handlers::detail::record_map_key(owner, fault_code);
 }
 
 /// A row carrying the recording's own timestamp, which is what the fault manager
@@ -179,8 +188,8 @@ TEST_F(BulkDataHandlersTest, ARecordingIsDatedByTheEarliestFaultOfItsBurst) {
   // Downstream faults confirm after the root cause, and the recording covers
   // the whole burst, so the earliest is the honest creation date.
   const std::vector<json> rows{rosbag_row("DOWNSTREAM", "fault_ROOT_9"), rosbag_row("ROOT", "fault_ROOT_9")};
-  const std::unordered_map<std::string, json> faults{{"DOWNSTREAM", fault_at(1700000900.0)},
-                                                     {"ROOT", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "DOWNSTREAM"), fault_at(1700000900.0)},
+                                                     {record_key("app_a", "ROOT"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 1u);
@@ -193,13 +202,30 @@ TEST_F(BulkDataHandlersTest, EachRecordingOfOneFaultIsDatedByItsOwnCapture) {
   // is exactly what tells the occurrences apart.
   const std::vector<json> rows{rosbag_row_made_at("FLAP", "fault_FLAP_2", int64_t{1700000900} * 1'000'000'000),
                                rosbag_row_made_at("FLAP", "fault_FLAP_1", int64_t{1700000000} * 1'000'000'000)};
-  const std::unordered_map<std::string, json> faults{{"FLAP", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "FLAP"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 2u);
   EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000900} * 1'000'000'000));
   EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
   EXPECT_NE(descriptors[0].creation_date, descriptors[1].creation_date);
+}
+
+// Two sources reporting one code are two records with their own first_occurred.
+// Keying the date lookup on the code alone let whichever record was listed last
+// date the other owner's recordings.
+TEST_F(BulkDataHandlersTest, ARecordingIsDatedByItsOwnOwnersRecord) {
+  const std::vector<json> rows{rosbag_row("SHARED_CODE", "rec_a", 1024, "app_a"),
+                               rosbag_row("SHARED_CODE", "rec_b", 1024, "app_b")};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "SHARED_CODE"), fault_at(1700000000.0)},
+                                                     {record_key("app_b", "SHARED_CODE"), fault_at(1700009999.0)}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
+
+  ASSERT_EQ(descriptors.size(), 2u);
+  EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
+  EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700009999} * 1'000'000'000))
+      << "app_b's recording was dated from app_a's record of the same code";
 }
 
 TEST_F(BulkDataHandlersTest, AnAcknowledgedFaultsRecordingsKeepTheirRealDate) {

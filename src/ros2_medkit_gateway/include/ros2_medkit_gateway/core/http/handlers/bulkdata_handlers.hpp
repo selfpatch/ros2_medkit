@@ -220,13 +220,24 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * Order follows first appearance, which is the order the fault manager listed
  * the rows in.
  *
- * @param rows Rosbag rows as returned by the fault manager
- * @param faults_by_code Faults keyed by code, for timestamp enrichment
+ * @param rows Rosbag rows as returned by the fault manager, each stamped with
+ *        the ``owner`` it was listed under
+ * @param faults_by_record Fault records keyed by ``record_map_key``, for
+ *        timestamp enrichment
  * @return One descriptor per distinct recording
  */
 std::vector<dto::BulkDataDescriptor>
 fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
-                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_code);
+                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_record);
+
+/**
+ * @brief Key one fault record for the descriptor date lookup.
+ *
+ * A record is the pair (reporting source, fault code), and the two owners of
+ * one code have their own ``first_occurred``. Keying the lookup on the code
+ * alone let whichever record was listed last date the other's recordings.
+ */
+std::string record_map_key(const std::string & owner, const std::string & fault_code);
 
 }  // namespace detail
 

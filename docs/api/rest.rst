@@ -1374,20 +1374,27 @@ Query and manage faults.
 
 .. note::
 
-   **Per-entity fault scope (``/{entity-path}/faults`` routes).** The gateway keys
-   faults by ``fault_code`` only, and a fault's ``reporting_sources`` set is the
-   union of every app that has reported that code. Per-entity routes apply a
-   strict all-sources scope check: a fault is in scope for an entity iff **every**
-   entry in ``reporting_sources`` is an app owned by that entity (exact FQN
-   match, or strict path-child).
+   **Per-entity fault scope (``/{entity-path}/faults`` routes).** A fault record
+   is the pair (``fault_code``, reporting source). The source is the ``source_id``
+   the reporter used, it owns the record, and it is the single entry of the
+   record's ``reporting_sources``. Two apps reporting one ``fault_code`` are two
+   records, each with its own status, occurrence count and timestamps, and each
+   cleared on its own. A record is in scope for an entity when its owner is one
+   of the entity's own reporting sources (exact FQN match, or strict path-child;
+   for an external app or an external component, its bare SOVD id).
 
-   This means a ``fault_code`` reported by apps in two different entities
-   (for example ``SENSOR_TIMEOUT`` reported by both the lidar and the
-   temperature sensor app) is **not** visible or clearable through either
-   entity's per-entity routes - per-fault routes return ``404``, collection
-   responses omit it, and per-entity ``DELETE`` skips it. To see, list, or
-   clear such shared faults use the global ``GET /api/v1/faults`` /
-   ``DELETE /api/v1/faults`` routes.
+   ``SENSOR_TIMEOUT`` reported by both the lidar app and the temperature sensor
+   app therefore appears on each app's own ``/faults`` page as that app's record,
+   and on the component hosting both as two items with distinct ``source_id``.
+
+   A ``fault_code`` in a URL names a record only when the entity owns exactly one
+   record carrying it. When the entity owns several, ``GET`` and ``DELETE`` on
+   ``/{entity-path}/faults/{fault_code}`` answer ``409`` with vendor error code
+   ``x-medkit-ambiguous-fault`` and ``params.owners`` listing the owners, rather
+   than acting on whichever record the store listed first. Address one of them
+   through the app that owns it, or read them from the entity's fault list.
+   Per-entity ``DELETE /{entity-path}/faults`` clears every in-scope record
+   individually, each with its own owner.
 
 ``GET /api/v1/faults``
    List all faults across the system.
@@ -2839,8 +2846,8 @@ such app or rule".
    ``data_name`` the app does not expose (when enumerable); ``404``
    (``entity-not-found``) when the app itself was never discovered; ``409``
    (``precondition-not-fulfilled``) when the ``fault_code`` is already used by
-   another rule - fault codes are global to the fault store, so two rules
-   sharing one would fight over the same fault.
+   another rule - a rule reports under its own app id, so two rules on one app
+   sharing a code would raise and clear the same record.
 
 ``DELETE /api/v1/apps/{app_id}/fault-triggers/{trigger_id}``
    Remove a rule (``204``). A fault currently asserted by the rule is cleared;
@@ -3395,6 +3402,13 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - ``vendor-error``
      - varies
      - A vendor-specific failure; read ``vendor_code`` for the real code
+   * - ``x-medkit-ambiguous-fault``
+     - 409
+     - The ``fault_code`` in the URL addresses several fault records inside the
+       addressed entity, because several of its reporting sources report that
+       code and each is its own record. ``parameters.owners`` lists them.
+       Address one of them through the app that owns it, or read them from the
+       entity's fault list.
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.

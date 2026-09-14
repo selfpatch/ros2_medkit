@@ -521,11 +521,10 @@ struct SchemaWriter<FaultClearResult> {
         {"additionalProperties", true},
         {"x-medkit-opaque", true},
         {"description",
-         "Acknowledgement of a clear, shaped by whoever owns the entity. The ROS 2 path answers "
-         "`{\"code\": <fault_code>, \"cleared\": true}`; a plugin answers with its backend's own "
-         "acknowledgement - UDS clear response codes, vendor warnings, residual fault state - and the "
-         "gateway emits it verbatim. Treat the 2xx status, not a body field, as the signal that the clear "
-         "succeeded."}};
+         "Acknowledgement of a clear, shaped by whoever owns the entity. The ROS 2 path answers 204 with "
+         "no body at all; a plugin answers with its backend's own acknowledgement - UDS clear response "
+         "codes, vendor warnings, residual fault state - and the gateway emits it verbatim. Treat the 2xx "
+         "status, not a body field, as the signal that the clear succeeded."}};
   }
 };
 

@@ -40,6 +40,7 @@
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
 
@@ -1795,6 +1796,76 @@ TEST(ResolveEntitySourceFqnsTest, ExternalAppWithStrayRosBindingOwnsFaultsByBare
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::APP, "process"));
   // Bare id owns the faults; the derived FQN "/plc/process" must NOT appear.
   EXPECT_EQ(fqns, std::set<std::string>{"process"});
+}
+
+// =============================================================================
+// build_source_entity_map - whose lock the global fault clear consults
+//
+// `DELETE /api/v1/faults` skips a record whose owning entity is locked by
+// another client. It finds that entity by looking the record's reporting source
+// up in this map, so a source the map cannot attribute is a lock the route
+// silently walks through.
+// =============================================================================
+TEST(BuildSourceEntityMapTest, BoundAppIsFoundByItsFqn) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("/powertrain/engine/temp_sensor"), 1u);
+  EXPECT_EQ(map.at("/powertrain/engine/temp_sensor"), "temp_sensor");
+}
+
+// An external app has no ROS binding, so its effective_fqn() is empty and the
+// old map held nothing for it. It reports under its bare id, which is the value
+// that arrives on the wire, so the lock of every plugin-owned app went
+// unhonoured on this route.
+TEST(BuildSourceEntityMapTest, ExternalAppIsFoundByItsBareId) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_external_app("plc_line1", "plc_hw")});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("plc_line1"), 1u) << "an external app's bare id must resolve to its entity";
+  EXPECT_EQ(map.at("plc_line1"), "plc_line1");
+}
+
+// A protocol bridge raises its link faults under the component's own id, and
+// the map was built from apps only, so it never held a component at all.
+TEST(BuildSourceEntityMapTest, ExternalComponentIsFoundByItsBareId) {
+  ThreadSafeEntityCache cache;
+  Component device;
+  device.id = "line_controller";
+  device.external = true;
+  cache.update_components({device});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("line_controller"), 1u) << "an external component's bare id must resolve to its entity";
+  EXPECT_EQ(map.at("line_controller"), "line_controller");
+}
+
+// The #516 guardrail, restated for the lock map: a runtime host component never
+// claims its bare id, so attributing a record to it would let an unrelated
+// lock block a clear.
+TEST(BuildSourceEntityMapTest, InternalComponentClaimsNoBareId) {
+  ThreadSafeEntityCache cache;
+  Component host;
+  host.id = "runtime_host";
+  cache.update_components({host});
+
+  EXPECT_EQ(handlers::FaultHandlers::build_source_entity_map(cache).count("runtime_host"), 0u);
+}
+
+// An unbound non-external app owns no reporting source at all: granting it its
+// bare id would let it claim records it never reported.
+TEST(BuildSourceEntityMapTest, UnboundInternalAppContributesNothing) {
+  ThreadSafeEntityCache cache;
+  App unbound;
+  unbound.id = "manifest_only";
+  cache.update_apps({unbound});
+
+  EXPECT_TRUE(handlers::FaultHandlers::build_source_entity_map(cache).empty());
 }
 
 TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithNoAppsOwnsFaultsUnderItsOwnId) {

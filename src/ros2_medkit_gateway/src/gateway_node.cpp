@@ -2014,14 +2014,18 @@ void GatewayNode::init_fault_trigger_engine() {
     fault_mgr_->report_fault(fault_code, sev, description, app_id);
   };
 
-  auto clear = [this](const std::string & /*app_id*/, const std::string & fault_code) {
+  auto clear = [this](const std::string & app_id, const std::string & fault_code) {
     if (fault_mgr_) {
-      // A trigger-rule auto-clear (falling edge / rule deletion) is a local,
-      // rule-scoped event: skip the correlation engine's cascade so clearing
-      // one rule's fault can never wipe correlated faults owned by anything
-      // else. fault_code is globally unique (create() rejects duplicates), so
-      // the app scope is already encoded in the code itself.
-      fault_mgr_->clear_fault(fault_code, /*source_id=*/"", /*skip_correlation_auto_clear=*/true);
+      // The record this rule raised is the one it reported under: the report
+      // lambda above passes app_id as source_id, so the clear names the same
+      // owner. Clearing by code alone would reach another source's record of
+      // the same code, which a rule on this app has no business touching.
+      //
+      // A trigger-rule auto-clear (falling edge / rule deletion) is also a
+      // local, rule-scoped event: skip the correlation engine's cascade so
+      // clearing one rule's fault can never wipe correlated faults owned by
+      // anything else.
+      fault_mgr_->clear_fault(fault_code, app_id, /*skip_correlation_auto_clear=*/true);
     }
   };
 

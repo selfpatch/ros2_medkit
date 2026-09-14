@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 
@@ -56,6 +57,27 @@ bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::str
 
 /// Subset of `faults_array` whose faults satisfy `fault_in_source_scope`.
 nlohmann::json filter_faults_by_sources(const nlohmann::json & faults_array, const std::set<std::string> & source_fqns);
+
+/// One fault record paired with the reporting source that owns it.
+struct ScopedFault {
+  nlohmann::json fault;
+  std::string owner;
+};
+
+/// The reporting source that owns `fault`, or "" when the record names none.
+/// A record carries exactly one, so this is its first (and only) entry.
+std::string record_owner(const nlohmann::json & fault);
+
+/// Every record of `fault_code` in `faults_array` whose owner lies inside
+/// `source_fqns`, ordered by owner so the answer does not depend on the order
+/// the store listed them in.
+///
+/// Returns the records rather than a count or a single pick, because the
+/// consumers disagree about what several of them mean: a per-entity fault route
+/// refuses to act on an ambiguous address, while a rosbag download is
+/// authorized as soon as one attached record is in scope.
+std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
+                                                  const std::set<std::string> & source_fqns);
 
 }  // namespace faults
 }  // namespace ros2_medkit_gateway

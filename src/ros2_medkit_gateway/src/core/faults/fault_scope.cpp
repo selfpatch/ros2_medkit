@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -178,6 +179,40 @@ nlohmann::json filter_faults_by_sources(const nlohmann::json & faults_array,
     }
   }
   return filtered;
+}
+
+std::string record_owner(const nlohmann::json & fault) {
+  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
+    return {};
+  }
+  const auto & sources = fault["reporting_sources"];
+  if (sources.empty() || !sources.front().is_string()) {
+    return {};
+  }
+  return sources.front().get<std::string>();
+}
+
+std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
+                                                  const std::set<std::string> & source_fqns) {
+  std::vector<ScopedFault> records;
+  if (!faults_array.is_array()) {
+    return records;
+  }
+  for (const auto & fault : faults_array) {
+    if (!fault.is_object() || fault.value("fault_code", std::string{}) != fault_code) {
+      continue;
+    }
+    // The same predicate the list routes filter with, so a record is visible on
+    // the detail route exactly when it is visible on the collection route.
+    if (!fault_in_source_scope(fault, source_fqns)) {
+      continue;
+    }
+    records.push_back(ScopedFault{fault, record_owner(fault)});
+  }
+  std::sort(records.begin(), records.end(), [](const ScopedFault & a, const ScopedFault & b) {
+    return a.owner < b.owner;
+  });
+  return records;
 }
 
 }  // namespace faults

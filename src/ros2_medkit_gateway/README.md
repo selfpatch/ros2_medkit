@@ -976,7 +976,11 @@ curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configuration
 
 ### Faults Endpoints
 
-Faults represent errors or warnings reported by system components. The gateway provides access to faults stored in `ros2_medkit_fault_manager`.
+Faults represent errors or warnings reported by system components. The gateway provides access to fault records stored in `ros2_medkit_fault_manager`.
+
+One record is the pair (`fault_code`, reporting source). The source is the `source_id` the reporter used, it owns the record, and every fault item carries it as a top-level `source_id` beside the one-element `reporting_sources`. Two sources reporting one `fault_code` are two records, each with its own status, occurrence count and timestamps, and each cleared on its own.
+
+A per-entity route resolves a `fault_code` in the addressed entity's scope. Exactly one record there, and the route acts on it with its owner. Several, and it answers `409` with vendor error code `x-medkit-ambiguous-fault` and `params.owners` naming them, rather than acting on an arbitrary one. None, and it answers `404`. `DELETE /api/v1/{entity-path}/faults` clears every in-scope record individually, each with its own owner.
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
@@ -1083,7 +1087,7 @@ This replays any buffered events with ID > 5, then continues streaming new event
 
 #### GET /api/v1/components/{component_id}/faults
 
-List all faults for a specific component.
+List every fault record the component owns, through the apps it hosts plus, for an external component, its own id.
 
 **Query Parameters:**
 - `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
