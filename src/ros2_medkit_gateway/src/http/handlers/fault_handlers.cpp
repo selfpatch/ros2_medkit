@@ -420,6 +420,10 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
   dto::FaultXMedkit xm;
   xm.occurrence_count = static_cast<int64_t>(fault_json.value("occurrence_count", static_cast<uint64_t>(0)));
   if (!reporting_sources.empty()) {
+    // The owner, beside the list it is the single entry of: a client reading
+    // the detail can address the record it is looking at without unpacking an
+    // array.
+    xm.source_id = reporting_sources.front();
     xm.reporting_sources = std::move(reporting_sources);
   }
   xm.severity_label = severity_to_label(severity);
@@ -959,7 +963,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
                           {"fault_code", fault_code}}));
     }
 
-    auto result = fault_mgr->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
+    auto result = fault_mgr->clear_fault(fault_code, /*source_id=*/"", /*skip_correlation_auto_clear=*/true);
     if (!result.success) {
       return tl::make_unexpected(classify_fault_failure(result.failure, result.error_message, "Failed to clear fault",
                                                         entity_info.id_field, entity_id, fault_code));
@@ -1067,7 +1071,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
           continue;
         }
         std::string code = fault["fault_code"].get<std::string>();
-        auto clear_result = fault_mgr->clear_fault(code, /*skip_correlation_auto_clear=*/true);
+        auto clear_result = fault_mgr->clear_fault(code, /*source_id=*/"", /*skip_correlation_auto_clear=*/true);
         if (!clear_result.success) {
           RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", code.c_str(),
                       entity_id.c_str(), clear_result.error_message.c_str());
@@ -1151,7 +1155,7 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
         }
 
         std::string code = fault["fault_code"].get<std::string>();
-        auto clear_result = fault_mgr->clear_fault(code);
+        auto clear_result = fault_mgr->clear_fault(code, /*source_id=*/"");
         if (!clear_result.success) {
           RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", code.c_str(),
                       clear_result.error_message.c_str());

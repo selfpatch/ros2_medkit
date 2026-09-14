@@ -381,11 +381,16 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction) {
   }
 }
 
+// A record is (fault_code, owner), so the detail names exactly one reporting
+// source and repeats it as x-medkit.source_id, which is the value the
+// per-record routes address the record by. This test used to pin one record
+// carrying three sources; three sources reporting one code are three records
+// now, and each detail response describes one of them.
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources) {
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
   ros2_medkit_msgs::msg::Fault fault;
-  fault.fault_code = "MULTI_SOURCE_FAULT";
-  fault.reporting_sources = {"/perception/lidar", "/perception/camera", "/control/motor"};
+  fault.fault_code = "SHARED_CODE";
+  fault.reporting_sources = {"/perception/lidar"};
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
@@ -393,10 +398,31 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources) {
       to_json(FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test"));
 
   auto sources = response["x-medkit"]["reporting_sources"];
-  ASSERT_EQ(sources.size(), 3);
+  ASSERT_EQ(sources.size(), 1);
   EXPECT_EQ(sources[0], "/perception/lidar");
-  EXPECT_EQ(sources[1], "/perception/camera");
-  EXPECT_EQ(sources[2], "/control/motor");
+  ASSERT_TRUE(response["x-medkit"].contains("source_id"));
+  EXPECT_EQ(response["x-medkit"]["source_id"], "/perception/lidar");
+}
+
+// The other owner of the same code is a different record, and its detail says
+// so: same code, different source_id.
+// @verifies REQ_INTEROP_013
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeparatesOwnersOfOneCode) {
+  ros2_medkit_msgs::msg::Fault first;
+  first.fault_code = "SHARED_CODE";
+  first.reporting_sources = {"/perception/lidar"};
+  ros2_medkit_msgs::msg::Fault second;
+  second.fault_code = "SHARED_CODE";
+  second.reporting_sources = {"/control/motor"};
+
+  ros2_medkit_msgs::msg::EnvironmentData env_data;
+
+  auto a = to_json(FaultHandlers::build_sovd_fault_response(fault_json(first), env_json(env_data), "/apps/lidar"));
+  auto b = to_json(FaultHandlers::build_sovd_fault_response(fault_json(second), env_json(env_data), "/apps/motor"));
+
+  EXPECT_EQ(a["item"]["code"], b["item"]["code"]);
+  EXPECT_EQ(a["x-medkit"]["source_id"], "/perception/lidar");
+  EXPECT_EQ(b["x-medkit"]["source_id"], "/control/motor");
 }
 
 // @verifies REQ_INTEROP_013
@@ -616,7 +642,7 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   fault.description = "Brake pressure below threshold";
   fault.occurrence_count = 3;
   fault.status = "active";
-  fault.reporting_sources = {"brake_ecu", "abs_node"};
+  fault.reporting_sources = {"brake_ecu"};  // a record carries its one owner
   fault.last_passed.sec = 1200;  // absent-when-zero covered separately below
 
   const json wire = conversions::fault_to_json(fault);
@@ -626,6 +652,34 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   ASSERT_TRUE(parsed.has_value()) << "fault_to_json output does not conform to FaultListItem";
   // ... and round-trip back to identical wire (no field added or dropped).
   EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire);
+}
+
+TEST(FaultListItemSchema, FlatItemNamesTheOwningSource) {
+  // The flat list item addresses its own record: source_id is the owner, and it
+  // is the single entry of reporting_sources. A client filtering or clearing
+  // from a list never has to reach into the array to find out whose record it
+  // is holding.
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "SHARED_CODE";
+  fault.status = "CONFIRMED";
+  fault.reporting_sources = {"app_a"};
+
+  const json wire = conversions::fault_to_json(fault);
+
+  ASSERT_TRUE(wire.contains("source_id")) << "flat fault item must name the record owner";
+  EXPECT_EQ(wire["source_id"], "app_a");
+  ASSERT_EQ(wire["reporting_sources"].size(), 1u);
+  EXPECT_EQ(wire["reporting_sources"][0], "app_a");
+}
+
+TEST(FaultListItemSchema, FlatItemOmitsSourceIdWithoutAnOwner) {
+  // A record always has an owner, but the conversion is fed straight from the
+  // wire and must not invent one: no reporting source, no source_id key.
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "ORPHANED";
+  fault.status = "CONFIRMED";
+
+  EXPECT_FALSE(conversions::fault_to_json(fault).contains("source_id"));
 }
 
 TEST(FaultListItemSchema, LastPassedOmittedWhenNeverPassed) {

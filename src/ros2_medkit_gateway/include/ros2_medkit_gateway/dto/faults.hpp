@@ -43,7 +43,7 @@ namespace dto {
 // Wire keys (exact, from fault_msg_conversions.cpp):
 //   fault_code, severity, description, first_occurred, last_occurred,
 //   last_passed (absent = never passed), occurrence_count, status,
-//   reporting_sources, severity_label
+//   reporting_sources, source_id, severity_label
 // =============================================================================
 struct FaultListItem {
   std::string fault_code;
@@ -55,6 +55,10 @@ struct FaultListItem {
   std::optional<int64_t> occurrence_count;
   std::string status;
   std::optional<std::vector<std::string>> reporting_sources;
+  /// The reporting source that owns this record. Together with `fault_code` it
+  /// addresses the record on the per-record routes, and it is the single entry
+  /// of `reporting_sources`.
+  std::optional<std::string> source_id;
   std::optional<std::string> severity_label;  // enum: INFO|WARN|ERROR|CRITICAL|UNKNOWN
 };
 
@@ -64,7 +68,7 @@ inline constexpr auto dto_fields<FaultListItem> = std::make_tuple(
     field("description", &FaultListItem::description), field("first_occurred", &FaultListItem::first_occurred),
     field("last_occurred", &FaultListItem::last_occurred), field("last_passed", &FaultListItem::last_passed),
     field("occurrence_count", &FaultListItem::occurrence_count), field("status", &FaultListItem::status),
-    field("reporting_sources", &FaultListItem::reporting_sources),
+    field("reporting_sources", &FaultListItem::reporting_sources), field("source_id", &FaultListItem::source_id),
     field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues));
 
 template <>
@@ -242,11 +246,14 @@ inline constexpr std::string_view dto_name<FaultListAggXMedkit> = "FaultListAggX
 // FaultXMedkit - x-medkit vendor extension inside FaultDetail
 //
 // Wire keys (from build_sovd_fault_response):
-//   occurrence_count, reporting_sources, severity_label, status_raw
+//   occurrence_count, reporting_sources, source_id, severity_label, status_raw
 // =============================================================================
 struct FaultXMedkit {
   std::optional<int64_t> occurrence_count;
   std::optional<std::vector<std::string>> reporting_sources;
+  /// The reporting source that owns this record, and the `source_id` the
+  /// per-record routes address it by.
+  std::optional<std::string> source_id;
   std::optional<std::string> severity_label;
   std::optional<std::string> status_raw;
 };
@@ -255,6 +262,7 @@ template <>
 inline constexpr auto dto_fields<FaultXMedkit> =
     std::make_tuple(field("occurrence_count", &FaultXMedkit::occurrence_count),
                     field("reporting_sources", &FaultXMedkit::reporting_sources),
+                    field("source_id", &FaultXMedkit::source_id),
                     field("severity_label", &FaultXMedkit::severity_label),
                     field("status_raw", &FaultXMedkit::status_raw));
 

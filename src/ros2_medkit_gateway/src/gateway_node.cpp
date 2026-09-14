@@ -2021,7 +2021,7 @@ void GatewayNode::init_fault_trigger_engine() {
       // one rule's fault can never wipe correlated faults owned by anything
       // else. fault_code is globally unique (create() rejects duplicates), so
       // the app scope is already encoded in the code itself.
-      fault_mgr_->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
+      fault_mgr_->clear_fault(fault_code, /*source_id=*/"", /*skip_correlation_auto_clear=*/true);
     }
   };
 

@@ -1483,6 +1483,7 @@ Query and manage faults.
         "x-medkit": {
           "occurrence_count": 3,
           "reporting_sources": ["/powertrain/motor_controller"],
+          "source_id": "/powertrain/motor_controller",
           "severity_label": "ERROR"
         }
       }

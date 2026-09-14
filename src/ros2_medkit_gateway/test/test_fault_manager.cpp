@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
+#include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
@@ -40,6 +41,7 @@ using ros2_medkit_gateway::FaultManager;
 using ros2_medkit_gateway::ResourceChange;
 using ros2_medkit_gateway::ResourceChangeNotifier;
 using ros2_medkit_gateway::TriggerFaultSubscriber;
+using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::GetFault;
 using ros2_medkit_msgs::srv::GetRosbag;
 using ros2_medkit_msgs::srv::GetSnapshots;
@@ -132,7 +134,7 @@ TEST_F(FaultManagerTest, GetSnapshotsServiceNotAvailable) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   // Don't create a service, so it will timeout
-  auto result = fault_manager.get_snapshots("TEST_FAULT");
+  auto result = fault_manager.get_snapshots("TEST_FAULT", "/cell_a/sensor");
 
   EXPECT_FALSE(result.success);
   // On Humble, wait_for_service may report ready before DDS confirms absence,
@@ -160,7 +162,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithValidJson) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("MOTOR_OVERHEAT");
+  auto result = fault_manager.get_snapshots("MOTOR_OVERHEAT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -195,7 +197,7 @@ TEST_F(FaultManagerTest, GetSnapshotsDrivesPrivateClientWithoutSpinningHostNode)
 
   // node_ is deliberately never spun by this test.
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
-  auto result = fault_manager.get_snapshots("SELF_DRIVEN_FAULT");
+  auto result = fault_manager.get_snapshots("SELF_DRIVEN_FAULT", "/cell_a/sensor");
 
   service_executor.cancel();
   service_thread.join();
@@ -228,7 +230,7 @@ TEST_F(FaultManagerTest, GetSnapshotsUsesConfiguredFaultManagerNamespace) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("NAMESPACED_FAULT");
+  auto result = fault_manager.get_snapshots("NAMESPACED_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -258,7 +260,7 @@ TEST_F(FaultManagerTest, InvalidFaultManagerNamespaceFallsBackToRootServicePath)
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("INVALID_NAMESPACE_FAULT");
+  auto result = fault_manager.get_snapshots("INVALID_NAMESPACE_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -280,7 +282,7 @@ TEST_F(FaultManagerTest, GetSnapshotsSuccessWithTopicFilter) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  fault_manager.get_snapshots("TEST_FAULT", "/specific_topic");
+  fault_manager.get_snapshots("TEST_FAULT", "/cell_a/sensor", "/specific_topic");
   stop_spinning();
 
   EXPECT_EQ(received_topic, "/specific_topic");
@@ -298,7 +300,7 @@ TEST_F(FaultManagerTest, GetSnapshotsErrorResponse) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("NONEXISTENT_FAULT");
+  auto result = fault_manager.get_snapshots("NONEXISTENT_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_FALSE(result.success);
@@ -317,7 +319,7 @@ TEST_F(FaultManagerTest, GetSnapshotsInvalidJsonFallback) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("TEST_FAULT");
+  auto result = fault_manager.get_snapshots("TEST_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -338,7 +340,7 @@ TEST_F(FaultManagerTest, GetSnapshotsEmptyResponse) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_snapshots("TEST_FAULT");
+  auto result = fault_manager.get_snapshots("TEST_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -353,7 +355,7 @@ TEST_F(FaultManagerTest, GetRosbagServiceNotAvailable) {
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
   // Don't create a service, so it will timeout
-  auto result = fault_manager.get_rosbag("TEST_FAULT");
+  auto result = fault_manager.get_rosbag("TEST_FAULT", "/cell_a/sensor");
 
   EXPECT_FALSE(result.success);
   // On Humble, wait_for_service may report ready before DDS confirms absence,
@@ -377,7 +379,7 @@ TEST_F(FaultManagerTest, GetRosbagSuccess) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_rosbag("TEST_ROSBAG_FAULT");
+  auto result = fault_manager.get_rosbag("TEST_ROSBAG_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -411,7 +413,7 @@ TEST_F(FaultManagerTest, GetRosbagUsesConfiguredFaultManagerNamespace) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_rosbag("NAMESPACED_ROSBAG");
+  auto result = fault_manager.get_rosbag("NAMESPACED_ROSBAG", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_TRUE(result.success);
@@ -625,7 +627,7 @@ TEST_F(FaultManagerTest, GetRosbagNotFound) {
   start_spinning();
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
 
-  auto result = fault_manager.get_rosbag("NONEXISTENT_FAULT");
+  auto result = fault_manager.get_rosbag("NONEXISTENT_FAULT", "/cell_a/sensor");
   stop_spinning();
 
   EXPECT_FALSE(result.success);
@@ -678,6 +680,105 @@ TEST_F(FaultManagerTest, GetFaultRefusedByTheStoreReportsDeclined) {
   EXPECT_EQ(result.failure, FaultFailure::Declined)
       << "a refusal from a reachable fault manager must not be reported as a server failure";
   EXPECT_EQ(result.error_message, "fault_code contains invalid character '~'");
+}
+
+// ============================================================================
+// The owning source reaches the wire
+//
+// A fault record is the pair (fault_code, owning reporting source), so every
+// service that acts on one record carries the owner in its request. The
+// gateway used to filter the answer instead, which meant asking the fault
+// manager for an arbitrary record of that code and hoping it was the right
+// one. These tests read the field off the request the service actually
+// received, which is the only place that claim can be checked.
+// ============================================================================
+
+// @verifies REQ_INTEROP_013
+TEST_F(FaultManagerTest, GetFaultSendsTheOwningSourceInTheRequest) {
+  std::string received_source;
+  auto service = node_->create_service<GetFault>(
+      "/fault_manager/get_fault", [&received_source](const std::shared_ptr<GetFault::Request> & request,
+                                                     const std::shared_ptr<GetFault::Response> & response) {
+        received_source = request->source_id;
+        response->success = true;
+        response->fault.fault_code = request->fault_code;
+        response->fault.reporting_sources = {request->source_id};
+      });
+
+  start_spinning();
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+
+  auto result = fault_manager.get_fault_with_env("SHARED_CODE", "app_b");
+  stop_spinning();
+
+  EXPECT_EQ(received_source, "app_b");
+  ASSERT_TRUE(result.success) << result.error_message;
+  EXPECT_EQ(result.data["fault"]["source_id"], "app_b");
+}
+
+// @verifies REQ_INTEROP_015
+TEST_F(FaultManagerTest, ClearFaultSendsTheOwningSourceInTheRequest) {
+  std::string received_source;
+  std::string received_code;
+  auto service = node_->create_service<ClearFault>(
+      "/fault_manager/clear_fault",
+      [&received_source, &received_code](const std::shared_ptr<ClearFault::Request> & request,
+                                         const std::shared_ptr<ClearFault::Response> & response) {
+        received_code = request->fault_code;
+        received_source = request->source_id;
+        response->success = true;
+        response->message = "cleared";
+      });
+
+  start_spinning();
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+
+  auto result = fault_manager.clear_fault("SHARED_CODE", "app_a", /*skip_correlation_auto_clear=*/true);
+  stop_spinning();
+
+  EXPECT_TRUE(result.success) << result.error_message;
+  EXPECT_EQ(received_code, "SHARED_CODE");
+  EXPECT_EQ(received_source, "app_a");
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetSnapshotsSendsTheOwningSourceInTheRequest) {
+  std::string received_source;
+  auto service = node_->create_service<GetSnapshots>(
+      "/fault_manager/get_snapshots", [&received_source](const std::shared_ptr<GetSnapshots::Request> & request,
+                                                         const std::shared_ptr<GetSnapshots::Response> & response) {
+        received_source = request->source_id;
+        response->success = true;
+        response->data = "{}";
+      });
+
+  start_spinning();
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+
+  fault_manager.get_snapshots("SHARED_CODE", "app_b", "/joint_states");
+  stop_spinning();
+
+  EXPECT_EQ(received_source, "app_b");
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(FaultManagerTest, GetRosbagSendsTheOwningSourceInTheRequest) {
+  std::string received_source;
+  auto service = node_->create_service<GetRosbag>(
+      "/fault_manager/get_rosbag", [&received_source](const std::shared_ptr<GetRosbag::Request> & request,
+                                                      const std::shared_ptr<GetRosbag::Response> & response) {
+        received_source = request->source_id;
+        response->success = true;
+        response->file_path = "/tmp/bag";
+      });
+
+  start_spinning();
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+
+  fault_manager.get_rosbag("SHARED_CODE", "app_b");
+  stop_spinning();
+
+  EXPECT_EQ(received_source, "app_b");
 }
 
 int main(int argc, char ** argv) {

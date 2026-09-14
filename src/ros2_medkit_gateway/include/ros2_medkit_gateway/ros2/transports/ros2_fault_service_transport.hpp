@@ -74,11 +74,13 @@ class Ros2FaultServiceTransport : public FaultServiceTransport {
 
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id) override;
 
-  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) override;
+  FaultResult clear_fault(const std::string & fault_code, const std::string & source_id,
+                          bool skip_correlation_auto_clear) override;
 
-  FaultResult get_snapshots(const std::string & fault_code, const std::string & topic) override;
+  FaultResult get_snapshots(const std::string & fault_code, const std::string & source_id,
+                            const std::string & topic) override;
 
-  FaultResult get_rosbag(const std::string & fault_code) override;
+  FaultResult get_rosbag(const std::string & id, const std::string & source_id) override;
 
   FaultResult list_rosbags(const std::string & entity_fqn) override;
 

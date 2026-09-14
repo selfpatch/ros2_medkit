@@ -66,29 +66,37 @@ class FaultManager {
                            const std::string & source_id);
 
   /// Get all faults, optionally filtered by component (prefix match on source_id).
+  /// The filter is applied gateway-side: ListFaults carries no source field.
   FaultResult list_faults(const std::string & source_id = "", bool include_prefailed = true,
                           bool include_confirmed = true, bool include_cleared = false, bool include_healed = false,
                           bool include_muted = false, bool include_clusters = false);
 
-  /// Get a specific fault by code with environment data, returned as JSON.
+  /// Get one fault record with environment data, returned as JSON.
+  /// A record is the pair (fault_code, owner); `source_id` names the owner and
+  /// is sent in the request. Empty is unscoped and the fault manager refuses it
+  /// when several records carry the code.
   /// `data` carries `{ "fault": {...}, "environment_data": {...} }`. The
   /// rosbag-snapshot bulk_data_uri is intentionally NOT included; per-request
   /// URL building belongs to the handler that knows the entity path.
   FaultWithEnvJsonResult get_fault_with_env(const std::string & fault_code, const std::string & source_id = "");
 
-  /// Get a specific fault by code (JSON result - "fault" body only).
+  /// Get one fault record (JSON result - "fault" body only).
   FaultResult get_fault(const std::string & fault_code, const std::string & source_id = "");
 
-  /// Clear a fault. When `skip_correlation_auto_clear` is true the fault
-  /// manager will not cascade-clear correlated symptom fault codes - per-entity
-  /// DELETE routes set this to keep their clear inside the entity boundary.
-  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear = false);
+  /// Clear one fault record, addressed by code and owning source. When
+  /// `skip_correlation_auto_clear` is true the fault manager will not
+  /// cascade-clear correlated symptom fault codes - per-entity DELETE routes
+  /// set this to keep their clear inside the entity boundary.
+  FaultResult clear_fault(const std::string & fault_code, const std::string & source_id,
+                          bool skip_correlation_auto_clear = false);
 
-  /// Get snapshots for a fault (optional topic filter).
-  FaultResult get_snapshots(const std::string & fault_code, const std::string & topic = "");
+  /// Get snapshots of one fault record (optional topic filter).
+  FaultResult get_snapshots(const std::string & fault_code, const std::string & source_id,
+                            const std::string & topic = "");
 
-  /// Get rosbag file info for a fault.
-  FaultResult get_rosbag(const std::string & fault_code);
+  /// Get rosbag file info for a recording id, or for one fault record when the
+  /// id is a fault code. `source_id` scopes the fault-code lookup only.
+  FaultResult get_rosbag(const std::string & id, const std::string & source_id = "");
 
   /// Get all rosbag files for an entity (batch operation).
   FaultResult list_rosbags(const std::string & entity_fqn);

@@ -41,16 +41,18 @@ FaultResult FaultManager::get_fault(const std::string & fault_code, const std::s
   return transport_->get_fault(fault_code, source_id);
 }
 
-FaultResult FaultManager::clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) {
-  return transport_->clear_fault(fault_code, skip_correlation_auto_clear);
+FaultResult FaultManager::clear_fault(const std::string & fault_code, const std::string & source_id,
+                                      bool skip_correlation_auto_clear) {
+  return transport_->clear_fault(fault_code, source_id, skip_correlation_auto_clear);
 }
 
-FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & topic) {
-  return transport_->get_snapshots(fault_code, topic);
+FaultResult FaultManager::get_snapshots(const std::string & fault_code, const std::string & source_id,
+                                        const std::string & topic) {
+  return transport_->get_snapshots(fault_code, source_id, topic);
 }
 
-FaultResult FaultManager::get_rosbag(const std::string & fault_code) {
-  return transport_->get_rosbag(fault_code);
+FaultResult FaultManager::get_rosbag(const std::string & id, const std::string & source_id) {
+  return transport_->get_rosbag(id, source_id);
 }
 
 FaultResult FaultManager::list_rosbags(const std::string & entity_fqn) {

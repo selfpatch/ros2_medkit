@@ -42,6 +42,12 @@ nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
   j["occurrence_count"] = fault.occurrence_count;
   j["status"] = fault.status;
   j["reporting_sources"] = fault.reporting_sources;
+  // The owner of the record, next to the list it is the single entry of. It is
+  // what the per-record routes send back as source_id, so a client never has to
+  // reach into an array to address the record it is looking at.
+  if (!fault.reporting_sources.empty()) {
+    j["source_id"] = fault.reporting_sources.front();
+  }
 
   switch (fault.severity) {
     case ros2_medkit_msgs::msg::Fault::SEVERITY_INFO:

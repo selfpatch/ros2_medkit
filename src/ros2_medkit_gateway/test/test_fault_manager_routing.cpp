@@ -88,8 +88,10 @@ class MockFaultServiceTransport : public FaultServiceTransport {
     return r;
   }
 
-  FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) override {
+  FaultResult clear_fault(const std::string & fault_code, const std::string & source_id,
+                          bool skip_correlation_auto_clear) override {
     last_clear_code_ = fault_code;
+    last_clear_source_ = source_id;
     last_clear_skip_correlation_ = skip_correlation_auto_clear;
     ++clear_calls_;
     FaultResult r;
@@ -99,8 +101,10 @@ class MockFaultServiceTransport : public FaultServiceTransport {
     return r;
   }
 
-  FaultResult get_snapshots(const std::string & fault_code, const std::string & topic) override {
+  FaultResult get_snapshots(const std::string & fault_code, const std::string & source_id,
+                            const std::string & topic) override {
     last_snapshots_code_ = fault_code;
+    last_snapshots_source_ = source_id;
     last_snapshots_topic_ = topic;
     ++snapshots_calls_;
     FaultResult r;
@@ -110,8 +114,9 @@ class MockFaultServiceTransport : public FaultServiceTransport {
     return r;
   }
 
-  FaultResult get_rosbag(const std::string & fault_code) override {
-    last_rosbag_code_ = fault_code;
+  FaultResult get_rosbag(const std::string & id, const std::string & source_id) override {
+    last_rosbag_code_ = id;
+    last_rosbag_source_ = source_id;
     ++rosbag_calls_;
     FaultResult r;
     r.success = rosbag_success_;
@@ -181,6 +186,7 @@ class MockFaultServiceTransport : public FaultServiceTransport {
   json clear_data_ = json{{"success", true}, {"message", "ok"}};
   std::string clear_error_;
   std::string last_clear_code_;
+  std::string last_clear_source_;
   bool last_clear_skip_correlation_ = false;
   int clear_calls_ = 0;
 
@@ -188,6 +194,7 @@ class MockFaultServiceTransport : public FaultServiceTransport {
   json snapshots_data_ = json::object();
   std::string snapshots_error_;
   std::string last_snapshots_code_;
+  std::string last_snapshots_source_;
   std::string last_snapshots_topic_;
   int snapshots_calls_ = 0;
 
@@ -195,6 +202,7 @@ class MockFaultServiceTransport : public FaultServiceTransport {
   json rosbag_data_ = json::object();
   std::string rosbag_error_;
   std::string last_rosbag_code_;
+  std::string last_rosbag_source_;
   int rosbag_calls_ = 0;
 
   bool list_rosbags_success_ = true;
@@ -343,12 +351,25 @@ TEST(FaultManagerRoutingTest, ClearFaultDelegatesAndReturnsAutoClearedCodes) {
   mock->clear_data_ = {{"success", true}, {"message", "ok"}, {"auto_cleared_codes", json::array({"S1", "S2"})}};
   FaultManager mgr(mock);
 
-  auto r = mgr.clear_fault("ROOT");
+  auto r = mgr.clear_fault("ROOT", "/cell_a/root_node");
 
   EXPECT_TRUE(r.success);
   EXPECT_EQ(mock->last_clear_code_, "ROOT");
   ASSERT_TRUE(r.data.contains("auto_cleared_codes"));
   EXPECT_EQ(r.data["auto_cleared_codes"].size(), 2u);
+}
+
+TEST(FaultManagerRoutingTest, ClearFaultCarriesTheOwningSourceToTheTransport) {
+  // A clear addresses one record, so the owner travels with the code. Without
+  // it the fault manager would have to guess which owner's record to clear
+  // whenever two sources report the same code.
+  auto mock = std::make_shared<MockFaultServiceTransport>();
+  FaultManager mgr(mock);
+
+  mgr.clear_fault("SHARED_CODE", "app_b", /*skip_correlation_auto_clear=*/true);
+
+  EXPECT_EQ(mock->last_clear_code_, "SHARED_CODE");
+  EXPECT_EQ(mock->last_clear_source_, "app_b");
 }
 
 TEST(FaultManagerRoutingTest, ClearFaultDefaultsToCorrelationAutoClear) {
@@ -358,21 +379,21 @@ TEST(FaultManagerRoutingTest, ClearFaultDefaultsToCorrelationAutoClear) {
   mock->clear_success_ = true;
   FaultManager mgr(mock);
 
-  mgr.clear_fault("ROOT");
+  mgr.clear_fault("ROOT", "/cell_a/root_node");
 
   EXPECT_EQ(mock->last_clear_code_, "ROOT");
   EXPECT_FALSE(mock->last_clear_skip_correlation_);
 }
 
 TEST(FaultManagerRoutingTest, ClearFaultForwardsSkipCorrelationFlag) {
-  // Per-entity DELETE routes call `clear_fault(code, /*skip=*/true)` so the
-  // fault manager does NOT cascade-clear correlated symptoms reported by
+  // Per-entity DELETE routes call `clear_fault(code, owner, /*skip=*/true)` so
+  // the fault manager does NOT cascade-clear correlated symptoms reported by
   // apps outside the addressed entity. Pin the routing here.
   auto mock = std::make_shared<MockFaultServiceTransport>();
   mock->clear_success_ = true;
   FaultManager mgr(mock);
 
-  mgr.clear_fault("ROOT", /*skip_correlation_auto_clear=*/true);
+  mgr.clear_fault("ROOT", "/cell_a/root_node", /*skip_correlation_auto_clear=*/true);
 
   EXPECT_EQ(mock->last_clear_code_, "ROOT");
   EXPECT_TRUE(mock->last_clear_skip_correlation_);
@@ -383,11 +404,24 @@ TEST(FaultManagerRoutingTest, GetSnapshotsRoutesTopicFilter) {
   mock->snapshots_data_ = {{"topics", json::object()}};
   FaultManager mgr(mock);
 
-  auto r = mgr.get_snapshots("F1", "/joint_states");
+  auto r = mgr.get_snapshots("F1", "/cell_a/sensor", "/joint_states");
 
   EXPECT_TRUE(r.success);
   EXPECT_EQ(mock->last_snapshots_code_, "F1");
+  EXPECT_EQ(mock->last_snapshots_source_, "/cell_a/sensor");
   EXPECT_EQ(mock->last_snapshots_topic_, "/joint_states");
+}
+
+TEST(FaultManagerRoutingTest, GetRosbagCarriesTheOwningSourceToTheTransport) {
+  // Snapshots and recordings belong to one record. The owner scopes the
+  // fault-code lookup so a shared code does not serve another owner's bytes.
+  auto mock = std::make_shared<MockFaultServiceTransport>();
+  FaultManager mgr(mock);
+
+  mgr.get_rosbag("SHARED_CODE", "app_b");
+
+  EXPECT_EQ(mock->last_rosbag_code_, "SHARED_CODE");
+  EXPECT_EQ(mock->last_rosbag_source_, "app_b");
 }
 
 TEST(FaultManagerRoutingTest, GetRosbagPropagatesErrorMessage) {
