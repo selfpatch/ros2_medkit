@@ -1265,6 +1265,37 @@ std::string fnv1a_hex(const std::string & text) {
   return oss.str();
 }
 
+/// The file @p relative_name names inside the bag at @p bag_path, when that is a
+/// name this side follows: a direct child of the bag directory carrying a storage
+/// extension, which is what rosbag2 writes.
+///
+/// Path concatenation carries no such guarantee. An absolute name replaces the bag
+/// directory outright and a `..` name climbs out of it, so without this test a
+/// metadata.yaml chooses which file on the host gets measured and reported as the
+/// recording's size. The gateway applies the same rule in its own
+/// rosbag_named_storage_file (bulkdata_handlers.cpp); the two packages share no
+/// code, so the rule is written out on both sides and a change to it belongs on
+/// both.
+///
+/// nullopt when the name is not one of those. The caller treats that as it treats
+/// a named file that is absent: the stored total.
+std::optional<std::filesystem::path> named_storage_file(const std::string & bag_path,
+                                                        const std::string & relative_name) {
+  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
+  if (!bag.has_filename()) {
+    bag = bag.parent_path();  // tolerate a trailing slash
+  }
+  const std::filesystem::path named = (bag / relative_name).lexically_normal();
+  if (named.parent_path() != bag) {
+    return std::nullopt;
+  }
+  const std::string extension = named.extension().string();
+  if (extension != ".db3" && extension != ".mcap") {
+    return std::nullopt;
+  }
+  return named;
+}
+
 }  // namespace
 
 std::string RosbagCapture::bag_directory_name(const std::string & fault_code, int64_t timestamp_ms) {
@@ -1356,14 +1387,13 @@ size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
 // The bytes a download of this recording actually transfers, which is the one
 // storage file the bulk-data route hands over. calculate_bag_size() above answers
 // the storage question (what the recording costs on disk) and this one answers the
-// client's question (what is about to arrive). Reporting the footprint in place of
-// the transfer is what made every listing overstate its own download by
-// metadata.yaml. Keeping them separate is what lets the quota stay honest while the
-// API does.
+// client's question (what is about to arrive). The two are separate figures, which
+// is what lets the quota and the API each stay honest: a footprint reported here
+// would overstate every download by metadata.yaml.
 //
-// The served file is read out of the bag's own metadata.yaml rather than guessed
-// from a file extension, so a bag that names something unexpected is still described
-// by its own record. See the header for every fallback and why none of them logs.
+// The served file is the one the bag's own metadata.yaml names, and only when that
+// name points at a storage file inside the bag directory. See the header for every
+// fallback and why none of them logs.
 size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_bytes) {
   try {
     rosbag2_storage::MetadataIo metadata_io;
@@ -1380,9 +1410,12 @@ size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_byt
       return stored_total_bytes;
     }
 
-    const std::filesystem::path storage_file = std::filesystem::path(bag_path) / metadata.relative_file_paths.front();
+    const auto storage_file = named_storage_file(bag_path, metadata.relative_file_paths.front());
+    if (!storage_file) {
+      return stored_total_bytes;
+    }
     std::error_code ec;
-    const auto served = std::filesystem::file_size(storage_file, ec);
+    const auto served = std::filesystem::file_size(*storage_file, ec);
     if (ec) {
       return stored_total_bytes;
     }
