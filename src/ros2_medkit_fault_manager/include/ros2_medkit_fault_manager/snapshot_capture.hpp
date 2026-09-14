@@ -164,17 +164,22 @@ class SnapshotCapture {
   SnapshotCapture(SnapshotCapture &&) = delete;
   SnapshotCapture & operator=(SnapshotCapture &&) = delete;
 
-  /// Capture snapshots for a fault that was just confirmed
+  /// Capture snapshots for a fault record that was just confirmed
+  ///
+  /// Topic resolution stays keyed by the fault CODE (fault_specific and patterns are
+  /// config about what a code means), while everything written is keyed by the RECORD:
+  /// the rows, the freeze frame and the mid-capture acknowledgement check. Two owners
+  /// confirming one code therefore capture the same topics into two separate frames.
   ///
   /// If the fault code resolves to no capture set (not in fault_specific, no pattern
   /// match, no default_topics), the entity-default fallback (when enabled) captures
-  /// the reporting source node's own published topics instead. A code explicitly
+  /// the owning source node's own published topics instead. A code explicitly
   /// listed in fault_specific or matched by a pattern never falls through - a
   /// present-but-empty topic list is a per-fault opt-out. Only when nothing
   /// resolves does capture return early: no freeze_frames row is written
   /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
-  /// @param fault_code The fault code that was confirmed
-  void capture(const std::string & fault_code);
+  /// @param id The fault record that was confirmed
+  void capture(const FaultId & id);
 
   /// Get current configuration
   const SnapshotConfig & config() const {
@@ -195,12 +200,12 @@ class SnapshotCapture {
   ///             entity-default capture.
   std::vector<std::string> resolve_topics(const std::string & fault_code, bool & explicit_match) const;
 
-  /// Entity-default fallback: topics published by the fault's reporting source
-  /// node(s), excluding per-node noise (/rosout, /parameter_events). Non-FQN
-  /// sources (bare plugin entity ids - the gateway covers those) are skipped,
-  /// and empty is returned when no source resolves to a live node. Never
+  /// Entity-default fallback: topics published by the record's owning source
+  /// node, excluding per-node noise (/rosout, /parameter_events). A non-FQN
+  /// owner (a bare plugin entity id - the gateway covers those) is skipped,
+  /// and empty is returned when the owner resolves to no live node. Never
   /// throws; any failure degrades to empty.
-  std::vector<std::string> resolve_entity_topics(const std::string & fault_code) const;
+  std::vector<std::string> resolve_entity_topics(const FaultId & id) const;
 
   /// Capture a single topic on-demand (creates temporary subscription)
   /// On success also records the captured value into @p freeze_frame under the topic key.
@@ -208,14 +213,14 @@ class SnapshotCapture {
   /// Appends to @p rows rather than storing: a capture is persisted as one set,
   /// so the per-fault cap can drop a whole old capture instead of truncating this
   /// one topic by topic.
-  bool capture_topic_on_demand(const std::string & fault_code, const std::string & topic, nlohmann::json & freeze_frame,
+  bool capture_topic_on_demand(const FaultId & id, const std::string & topic, nlohmann::json & freeze_frame,
                                std::vector<SnapshotData> & rows);
 
   /// Capture a topic from background cache
   /// On success also records the cached value into @p freeze_frame under the topic key.
   /// @return true if data was available in cache
-  bool capture_topic_from_cache(const std::string & fault_code, const std::string & topic,
-                                nlohmann::json & freeze_frame, std::vector<SnapshotData> & rows);
+  bool capture_topic_from_cache(const FaultId & id, const std::string & topic, nlohmann::json & freeze_frame,
+                                std::vector<SnapshotData> & rows);
 
   /// Initialize background subscriptions for all configured topics
   void init_background_subscriptions();

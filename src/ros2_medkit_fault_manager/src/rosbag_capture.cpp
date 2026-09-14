@@ -369,54 +369,54 @@ bool RosbagCapture::is_running() const {
   return running_.load();
 }
 
-void RosbagCapture::on_fault_prefailed(const std::string & fault_code) {
+void RosbagCapture::on_fault_prefailed(const FaultId & id) {
   if (!config_.enabled) {
     return;
   }
 
   // Start buffer if lazy_start and not already running
   if (config_.lazy_start && !running_.load()) {
-    RCLCPP_INFO(node_->get_logger(), "RosbagCapture starting on PREFAILED for fault '%s'", fault_code.c_str());
+    RCLCPP_INFO(node_->get_logger(), "RosbagCapture starting on PREFAILED for fault '%s'", id.fault_code.c_str());
     start();
   }
 }
 
-bool RosbagCapture::is_current_recording_primary(const std::string & fault_code) const {
+bool RosbagCapture::is_current_recording_primary(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
-  return recording_post_fault_.load() && fault_code == current_fault_code_;
+  return recording_post_fault_.load() && id == current_fault_id_;
 }
 
-bool RosbagCapture::attach_to_active_recording(const std::string & fault_code,
-                                               const std::set<std::string> & entity_topics) {
+bool RosbagCapture::attach_to_active_recording(const FaultId & id, const std::set<std::string> & entity_topics) {
   std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
   if (!recording_post_fault_.load()) {
     return false;
   }
-  if (fault_code == current_fault_code_) {
+  if (id == current_fault_id_) {
     return true;
   }
   // Cap the attachment set: a flapping detector must not grow it without bound
   // between two post-roll windows. Past the cap the burst is already recorded,
   // only the per-fault lookup key is missing.
-  if (attached_fault_codes_.size() >= kMaxAttachedFaults) {
+  if (attached_fault_ids_.size() >= kMaxAttachedFaults) {
     RCLCPP_WARN(node_->get_logger(), "Post-fault recording already covers %zu faults, not attaching '%s'",
-                attached_fault_codes_.size(), fault_code.c_str());
+                attached_fault_ids_.size(), id.fault_code.c_str());
     // Widened anyway. What the cap withholds is the lookup key, not the data - and in
     // entity mode returning here withheld the data too, because the recording never
     // learned this fault's topics and should_capture_topic() then dropped every one of
     // its messages. The bag is the burst's black box either way.
-    widen_capture_filter_for(fault_code, entity_topics);
+    widen_capture_filter_for(id, entity_topics);
     return true;
   }
-  if (attached_fault_codes_.insert(fault_code).second) {
+  if (attached_fault_ids_.insert(id).second) {
     RCLCPP_INFO(node_->get_logger(), "Fault '%s' confirmed during post-fault recording, attaching it to bag for '%s'",
-                fault_code.c_str(), current_fault_code_.empty() ? "<cleared primary>" : current_fault_code_.c_str());
-    widen_capture_filter_for(fault_code, entity_topics);
+                id.fault_code.c_str(),
+                current_fault_id_.fault_code.empty() ? "<cleared primary>" : current_fault_id_.fault_code.c_str());
+    widen_capture_filter_for(id, entity_topics);
   }
   return true;
 }
 
-void RosbagCapture::widen_capture_filter_for(const std::string & fault_code, const std::set<std::string> & topics) {
+void RosbagCapture::widen_capture_filter_for(const FaultId & id, const std::set<std::string> & topics) {
   // Entity mode scoped the in-flight writes to the first fault's topics; an
   // attached fault needs its own topics in the bag from the attach onwards, or
   // its row would serve a recording with none of its data. Union them in, and
@@ -437,14 +437,15 @@ void RosbagCapture::widen_capture_filter_for(const std::string & fault_code, con
   if (topics.empty()) {
     RCLCPP_WARN(node_->get_logger(),
                 "Entity scope unresolved for attached fault '%s'; widening the recording to all topics",
-                fault_code.c_str());
+                id.fault_code.c_str());
     active_capture_topics_.clear();
     return;
   }
   active_capture_topics_.insert(topics.begin(), topics.end());
 }
 
-void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
+void RosbagCapture::on_fault_confirmed(const FaultId & id) {
+  const std::string & fault_code = id.fault_code;
   if (!config_.enabled || !running_.load()) {
     return;
   }
@@ -456,15 +457,15 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
   // guard stays true, messages keep entering the bag, and the recording overruns
   // duration_after_sec by however long the store stalls.
   std::set<std::string> entity_topics;
-  if (config_.topics == "entity" && !is_current_recording_primary(fault_code)) {
-    entity_topics = compute_entity_topics(fault_code);
+  if (config_.topics == "entity" && !is_current_recording_primary(id)) {
+    entity_topics = compute_entity_topics(id);
   }
 
   // Faults arrive in bursts from one root cause, so a confirmation landing inside
   // an in-flight post-roll is exactly the correlated fault whose black box matters
   // most. It shares the recording window, so attach it to the running bag instead
   // of leaving it with no recording at all.
-  if (attach_to_active_recording(fault_code, entity_topics)) {
+  if (attach_to_active_recording(id, entity_topics)) {
     return;
   }
 
@@ -522,9 +523,9 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     // confirmation either attaches to this bag or starts its own - never both.
     {
       std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
-      current_fault_code_ = fault_code;
+      current_fault_id_ = id;
       current_bag_path_ = bag_path;
-      attached_fault_codes_.clear();
+      attached_fault_ids_.clear();
       recording_post_fault_.store(true);
       arm_post_fault_timer();
     }
@@ -564,6 +565,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
 
     RosbagFileInfo info;
     info.fault_code = fault_code;
+    info.owner = id.owner;
     info.recording_id = rosbag_recording_id(bag_path);
     info.file_path = bag_path;
     info.format = config_.format;
@@ -587,7 +589,8 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
   }
 }
 
-void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
+void RosbagCapture::on_fault_cleared(const FaultId & id) {
+  const std::string & fault_code = id.fault_code;
   if (!config_.enabled || !config_.auto_cleanup) {
     return;
   }
@@ -611,15 +614,15 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
   {
     std::lock_guard<std::mutex> lock(post_fault_timer_mutex_);
     if (recording_post_fault_.load()) {
-      attached_fault_codes_.erase(fault_code);
-      if (fault_code == current_fault_code_) {
-        current_fault_code_.clear();
+      attached_fault_ids_.erase(id);
+      if (id == current_fault_id_) {
+        current_fault_id_ = FaultId{};
       }
     }
   }
 
-  // Delete the bag file for this fault
-  if (storage_->delete_rosbag_file(fault_code)) {
+  // Delete the bag rows of this record
+  if (storage_->delete_rosbag_file(id)) {
     RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
   }
 }
@@ -961,20 +964,20 @@ rclcpp::QoS RosbagCapture::resolve_topic_qos(const std::string & topic) const {
   return qos;
 }
 
-std::set<std::string> RosbagCapture::compute_entity_topics(const std::string & fault_code) {
+std::set<std::string> RosbagCapture::compute_entity_topics(const FaultId & id) {
   std::set<std::string> topics;
 
   // The whole resolution is guarded: this runs on a detached capture thread with
-  // no outer catch, and storage_->get_fault() can throw on the sqlite backend
-  // (e.g. SQLITE_BUSY). A throw here would terminate the process - the exact crash
-  // the crash-safety work removed - so any failure degrades to "write everything".
+  // no outer catch, and the store can throw on the sqlite backend (e.g. SQLITE_BUSY).
+  // A throw here would terminate the process - the exact crash the crash-safety work
+  // removed - so any failure degrades to "write everything".
   try {
-    auto fault = storage_->get_fault(fault_code);
-    if (fault && !fault->reporting_sources.empty()) {
-      // reporting_sources hold the reporting node's FQN (e.g. "/planner_server").
-      // Split each into (name, namespace) to match against topic endpoints.
+    if (storage_->contains(id)) {
+      // The record's owner is the reporting node's FQN (e.g. "/planner_server").
+      // Split it into (name, namespace) to match against topic endpoints.
       std::set<std::pair<std::string, std::string>> wanted;
-      for (const auto & source : fault->reporting_sources) {
+      {
+        const std::string & source = id.owner;
         std::string ns = "/";
         std::string name = source;
         const auto slash = source.rfind('/');
@@ -1025,7 +1028,7 @@ std::set<std::string> RosbagCapture::compute_entity_topics(const std::string & f
     }
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Entity scope resolution failed for fault '%s' (%s); writing full buffer",
-                fault_code.c_str(), e.what());
+                id.fault_code.c_str(), e.what());
     topics.clear();
   }
 
@@ -1033,13 +1036,14 @@ std::set<std::string> RosbagCapture::compute_entity_topics(const std::string & f
 }
 
 void RosbagCapture::resolve_entity_topics(const std::string & fault_code, std::set<std::string> topics) {
+  // By code only for the log line; the caller already resolved the topics from the record.
   // The topics arrive resolved, for the same reason widen_capture_filter_for() takes
   // them resolved: computing them reads the fault store and walks the ROS graph, and
   // the caller does that once, before it touches any lock.
   if (config_.topics != "entity") {
     topics.clear();
   } else if (!topics.empty()) {
-    RCLCPP_INFO(node_->get_logger(), "Entity scope for fault '%s': %zu topic(s) from the faulting node(s) + /tf",
+    RCLCPP_INFO(node_->get_logger(), "Entity scope for fault '%s': %zu topic(s) from the owning node + /tf",
                 fault_code.c_str(), topics.size());
   } else {
     RCLCPP_WARN(node_->get_logger(),
@@ -1510,8 +1514,8 @@ void RosbagCapture::finalize_post_fault_recording() {
   // a recording that is already being finalised. Testing the guard under the same
   // lock also settles a timer firing concurrently with stop() - the loser sees the
   // recording already claimed and returns.
-  std::set<std::string> attached;
-  std::string fault_code;
+  std::set<FaultId> attached;
+  FaultId fault_id;
   std::string bag_path;
   int64_t started_at_ns = 0;
   double recording_span_sec = 0.0;
@@ -1527,8 +1531,8 @@ void RosbagCapture::finalize_post_fault_recording() {
       post_fault_timer_->cancel();
     }
     recording_post_fault_.store(false);
-    attached.swap(attached_fault_codes_);
-    fault_code.swap(current_fault_code_);
+    attached.swap(attached_fault_ids_);
+    std::swap(fault_id, current_fault_id_);
     bag_path.swap(current_bag_path_);
     // Taken here, under the lock that clears the guard: a confirmation racing this
     // finalise opens its own recording the moment the guard drops, and would
@@ -1614,7 +1618,7 @@ void RosbagCapture::finalize_post_fault_recording() {
   // keeping the bag referenced for good. The store knows the current answer, so ask
   // it rather than trust a flag captured earlier. Only under auto_cleanup: without
   // it, a cleared fault is meant to keep its black box.
-  const auto wants_a_row = [this](const std::string & code) {
+  const auto wants_a_row = [this](const FaultId & row_id) {
     // Same rule as on_fault_cleared: without auto_cleanup, or with a history
     // configured, a cleared fault keeps its black box. Checking only auto_cleanup
     // here let an acknowledgement arriving during the post-roll drop every row and
@@ -1622,23 +1626,27 @@ void RosbagCapture::finalize_post_fault_recording() {
     if (!config_.auto_cleanup || keeps_history()) {
       return true;
     }
-    const auto fault = storage_->get_fault(code);
-    // Absent is not cleared. A caller driving the capture directly, or a fault the
-    // store never saw, must keep its row - only a fault the store still holds AND
+    const auto fault = storage_->get_fault(row_id);
+    // Absent is not cleared. A caller driving the capture directly, or a record the
+    // store never saw, must keep its row - only a record the store still holds AND
     // reports as cleared loses one.
     return !fault.has_value() || fault->status != ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
   };
 
+  // One row per RECORD the recording covers, so two owners confirming one code in
+  // the same burst each get their own lookup key to serve the shared bag.
   std::vector<RosbagFileInfo> rows;
-  if (!fault_code.empty() && wants_a_row(fault_code)) {
-    info.fault_code = fault_code;
+  if (!fault_id.fault_code.empty() && wants_a_row(fault_id)) {
+    info.fault_code = fault_id.fault_code;
+    info.owner = fault_id.owner;
     rows.push_back(info);
   }
-  for (const auto & code : attached) {
-    if (!wants_a_row(code)) {
+  for (const auto & attached_id : attached) {
+    if (!wants_a_row(attached_id)) {
       continue;
     }
-    info.fault_code = code;
+    info.fault_code = attached_id.fault_code;
+    info.owner = attached_id.owner;
     rows.push_back(info);
   }
 

@@ -275,10 +275,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     if (!reclassified.empty()) {
       if (audit_log_) {
         const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
-        for (const auto & fault_code : reclassified) {
-          auto fault = storage_->get_fault(fault_code);
+        for (const auto & reclassified_id : reclassified) {
+          auto fault = storage_->get_fault(reclassified_id);
           if (fault) {
-            audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
+            audit_transition(kTransitionCleared, *fault, reclassified_id.owner, reclassified_at_ns);
           }
         }
       }
@@ -416,13 +416,13 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     auto rosbag_mutex = std::make_shared<std::mutex>();
     capture_pool_ = std::make_unique<CaptureThreadPool>(
         static_cast<std::size_t>(capture_pool_size_), static_cast<std::size_t>(capture_queue_depth_),
-        capture_queue_full_policy_, get_logger(), [snap, bag, rosbag_mutex](const std::string & fault_code) {
+        capture_queue_full_policy_, get_logger(), [snap, bag, rosbag_mutex](const FaultId & id) {
           if (snap) {
-            snap->capture(fault_code);
+            snap->capture(id);
           }
           if (bag) {
             std::lock_guard<std::mutex> bag_lock(*rosbag_mutex);
-            bag->on_fault_confirmed(fault_code);
+            bag->on_fault_confirmed(id);
           }
         });
   }
@@ -454,10 +454,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
       // Audit every timer-driven PREFAILED->CONFIRMED transition. Without this the
       // confirmations are invisible to the audit log's verify().
       const int64_t confirmed_at_ns = get_wall_clock_time().nanoseconds();
-      for (const auto & fault_code : confirmed) {
-        auto fault = storage_->get_fault(fault_code);
+      for (const auto & confirmed_id : confirmed) {
+        auto fault = storage_->get_fault(confirmed_id);
         if (fault) {
-          audit_transition(kTransitionConfirmed, *fault, "auto_confirm_timer", confirmed_at_ns);
+          audit_transition(kTransitionConfirmed, *fault, confirmed_id.owner, confirmed_at_ns);
           // A timer-driven confirmation is a confirmation: it has to reach the
           // event stream and the black box exactly like one raised by a report,
           // or subscribers see no alarm and no recording is ever made for it.
@@ -467,10 +467,10 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
           // the trigger subscribers see an alarm that the fault list hides.
           // Capture is deliberately not gated, matching the report path, where
           // just_confirmed is set regardless of muting.
-          if (!correlation_engine_ || !correlation_engine_->is_muted(fault_code)) {
+          if (!correlation_engine_ || !correlation_engine_->is_muted(confirmed_id)) {
             publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault);
           }
-          capture_on_confirm(fault_code);
+          capture_on_confirm(confirmed_id);
         }
       }
       RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed.size());
@@ -687,7 +687,7 @@ void FaultManagerNode::audit_transition(const char * transition, const ros2_medk
   }
 }
 
-void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
+void FaultManagerNode::capture_on_confirm(const FaultId & id) {
   // Capture snapshots/rosbag when a fault confirms, via the bounded pool.
   // Both callers - the report handler and the auto-confirm timer - run on the
   // node's single-threaded executor, so confirmations are already serialized;
@@ -707,8 +707,8 @@ void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
   if (cooldown_enabled) {
     const auto cooldown = std::chrono::duration<double>(snapshot_recapture_cooldown_sec_);
     const auto sweep_now = std::chrono::steady_clock::now();
-    // Bound the map (issue #441): a storm of distinct fault codes would otherwise
-    // leave one permanent entry per code. Entries older than the cooldown can never
+    // Bound the map (issue #441): a storm of distinct records would otherwise
+    // leave one permanent entry per record. Entries older than the cooldown can never
     // gate a capture again, so drop them while we hold the lock.
     for (auto it = last_capture_times_.begin(); it != last_capture_times_.end();) {
       if (sweep_now - it->second >= cooldown) {
@@ -717,16 +717,16 @@ void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
         ++it;
       }
     }
-    auto it = last_capture_times_.find(fault_code);
+    auto it = last_capture_times_.find(id);
     if (it != last_capture_times_.end()) {
       on_cooldown = (sweep_now - it->second) < cooldown;
     }
   }
 
   if (on_cooldown) {
-    RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", fault_code.c_str());
+    RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", id.fault_code.c_str());
   } else {
-    const EnqueueOutcome outcome = capture_pool_->enqueue(fault_code);
+    const EnqueueOutcome outcome = capture_pool_->enqueue(id);
     const auto now = std::chrono::steady_clock::now();
     // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical
     // compat); mirror rosbag_capture.cpp's local-copy pattern. Cast the
@@ -736,20 +736,20 @@ void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
     switch (outcome.result) {
       case EnqueueResult::kAccepted:
         if (cooldown_enabled) {
-          last_capture_times_[fault_code] = now;
+          last_capture_times_[id] = now;
         }
         break;
       case EnqueueResult::kEvictedOldest:
         if (cooldown_enabled) {
-          last_capture_times_[fault_code] = now;
-          if (outcome.evicted_code) {
-            last_capture_times_.erase(*outcome.evicted_code);  // keep evicted fault retriable
+          last_capture_times_[id] = now;
+          if (outcome.evicted_id) {
+            last_capture_times_.erase(*outcome.evicted_id);  // keep evicted record retriable
           }
         }
         RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                              "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
                              "(pool=%d, queue=%d, total_dropped=%llu)",
-                             outcome.evicted_code ? outcome.evicted_code->c_str() : "?", fault_code.c_str(),
+                             outcome.evicted_id ? outcome.evicted_id->fault_code.c_str() : "?", id.fault_code.c_str(),
                              capture_pool_size_, capture_queue_depth_,
                              static_cast<unsigned long long>(capture_pool_->dropped_captures()));
         break;
@@ -759,11 +759,11 @@ void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
         RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                              "Capture queue full (reject_newest): dropped capture for '%s' "
                              "(pool=%d, queue=%d, total_dropped=%llu)",
-                             fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
+                             id.fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
                              static_cast<unsigned long long>(capture_pool_->dropped_captures()));
         break;
       case EnqueueResult::kRejectedShuttingDown:
-        RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", fault_code.c_str());
+        RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", id.fault_code.c_str());
         break;
     }
   }
@@ -803,12 +803,17 @@ void FaultManagerNode::handle_report_fault(
     return;
   }
 
-  // Get status before update (if fault exists)
-  auto fault_before = storage_->get_fault(request->fault_code);
+  // The record this report addresses. The source_id owns it, so a report from a
+  // second source of the same code creates a second record instead of merging.
+  const FaultId id{request->fault_code, request->source_id};
+
+  // Get status before update (if the record exists)
+  auto fault_before = storage_->get_fault(id);
   std::string status_before = fault_before ? fault_before->status : "";
 
-  // Resolve per-entity debounce config (longest-prefix match on source_id)
-  // TODO(#276): warn when different entities resolve different configs for the same fault_code
+  // Resolve per-entity debounce config (longest-prefix match on source_id). The config
+  // and the record now share an owner, so the resolved band always governs the counter
+  // it is applied to.
   auto resolved_config = resolve_config(request->source_id);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
@@ -818,15 +823,15 @@ void FaultManagerNode::handle_report_fault(
 
   response->accepted = true;
 
-  // Get updated fault state to publish event
-  auto fault_after = storage_->get_fault(request->fault_code);
+  // Get updated record state to publish event
+  auto fault_after = storage_->get_fault(id);
   if (fault_after) {
     // Process through correlation engine (if enabled)
     // Only process FAILED events with correlation
     bool should_mute = false;
     if (correlation_engine_ && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
       auto correlation_result =
-          correlation_engine_->process_fault(request->fault_code, correlation::severity_to_string(request->severity));
+          correlation_engine_->process_fault(id, correlation::severity_to_string(request->severity));
 
       should_mute = correlation_result.should_mute;
 
@@ -896,11 +901,11 @@ void FaultManagerNode::handle_report_fault(
       audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time.nanoseconds());
     }
     if (just_healed) {
-      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time.nanoseconds());
+      audit_transition(kTransitionHealed, *fault_after, id.owner, event_time.nanoseconds());
     }
 
     if (just_confirmed) {
-      capture_on_confirm(request->fault_code);
+      capture_on_confirm(id);
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
@@ -908,7 +913,7 @@ void FaultManagerNode::handle_report_fault(
                           (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED &&
                            fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
     if (just_prefailed && rosbag_capture_) {
-      rosbag_capture_->on_fault_prefailed(request->fault_code);
+      rosbag_capture_->on_fault_prefailed(id);
     }
   }
 
@@ -1006,43 +1011,58 @@ void FaultManagerNode::handle_clear_fault(
     return;
   }
 
-  // Process through correlation engine first (to get auto-clear list).
-  // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
-  // correlated symptom fault codes. Per-entity DELETE routes set it to true
-  // so they cannot reach across entity boundaries via the correlation graph.
-  std::vector<std::string> auto_cleared_codes;
-  if (correlation_engine_ && !request->skip_correlation_auto_clear) {
-    auto clear_result = correlation_engine_->process_clear(request->fault_code);
-    auto_cleared_codes = clear_result.auto_cleared_codes;
+  // Which record. Resolved before anything is changed, so an ambiguous unscoped call
+  // clears nothing at all rather than one arbitrary owner's record.
+  std::string resolve_error;
+  const auto target = resolve_target(request->fault_code, request->source_id, resolve_error);
+  if (!target) {
+    response->success = false;
+    response->message = resolve_error;
+    RCLCPP_WARN(get_logger(), "ClearFault rejected: %s", resolve_error.c_str());
+    return;
   }
 
-  bool cleared = storage_->clear_fault(request->fault_code);
+  // Process through correlation engine first (to get auto-clear list). Symptoms come
+  // back as records of the same owner, so a cascade never crosses an owner boundary.
+  // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
+  // correlated symptom faults. Per-entity DELETE routes set it to true
+  // so they cannot reach across entity boundaries via the correlation graph.
+  std::vector<FaultId> auto_cleared;
+  if (correlation_engine_ && !request->skip_correlation_auto_clear) {
+    auto clear_result = correlation_engine_->process_clear(*target);
+    auto_cleared = clear_result.auto_cleared_symptoms;
+  }
+
+  bool cleared = storage_->clear_fault(*target);
 
   response->success = cleared;
   if (cleared) {
-    // Evict cooldown tracking for cleared fault and auto-cleared symptoms
+    // Evict cooldown tracking for the cleared record and the auto-cleared symptoms
     {
       std::lock_guard<std::mutex> lock(last_capture_mutex_);
-      last_capture_times_.erase(request->fault_code);
-      for (const auto & symptom_code : auto_cleared_codes) {
-        last_capture_times_.erase(symptom_code);
+      last_capture_times_.erase(*target);
+      for (const auto & symptom_id : auto_cleared) {
+        last_capture_times_.erase(symptom_id);
       }
     }
 
     // Auto-clear correlated symptoms
-    for (const auto & symptom_code : auto_cleared_codes) {
-      storage_->clear_fault(symptom_code);
+    std::vector<std::string> auto_cleared_codes;
+    auto_cleared_codes.reserve(auto_cleared.size());
+    for (const auto & symptom_id : auto_cleared) {
+      storage_->clear_fault(symptom_id);
+      auto_cleared_codes.push_back(symptom_id.fault_code);
       if (audit_log_) {
-        auto symptom = storage_->get_fault(symptom_code);
+        auto symptom = storage_->get_fault(symptom_id);
         if (symptom) {
-          audit_transition(kTransitionCleared, *symptom, "clear_service", get_wall_clock_time().nanoseconds());
+          audit_transition(kTransitionCleared, *symptom, symptom_id.owner, get_wall_clock_time().nanoseconds());
         }
       }
-      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
+      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_id.fault_code.c_str(),
                    request->fault_code.c_str());
-      // Also cleanup rosbag for auto-cleared faults
+      // Also cleanup rosbag for auto-cleared records
       if (rosbag_capture_) {
-        rosbag_capture_->on_fault_cleared(symptom_code);
+        rosbag_capture_->on_fault_cleared(symptom_id);
       }
     }
 
@@ -1053,19 +1073,19 @@ void FaultManagerNode::handle_clear_fault(
       response->message = "Fault cleared: " + request->fault_code + " (auto-cleared " +
                           std::to_string(auto_cleared_codes.size()) + " symptoms)";
     }
-    RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
-                auto_cleared_codes.size());
+    RCLCPP_INFO(get_logger(), "Fault cleared: %s (source=%s, auto-cleared %zu symptoms)", request->fault_code.c_str(),
+                target->owner.c_str(), auto_cleared_codes.size());
 
-    // Cleanup rosbag for the main fault (auto_cleanup handled inside RosbagCapture)
+    // Cleanup rosbag for the cleared record (auto_cleanup handled inside RosbagCapture)
     if (rosbag_capture_) {
-      rosbag_capture_->on_fault_cleared(request->fault_code);
+      rosbag_capture_->on_fault_cleared(*target);
     }
 
-    // Publish EVENT_CLEARED - get the cleared fault to include in event
-    auto fault = storage_->get_fault(request->fault_code);
+    // Publish EVENT_CLEARED - get the cleared record to include in event
+    auto fault = storage_->get_fault(*target);
     if (fault) {
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
-      audit_transition(kTransitionCleared, *fault, "clear_service", get_wall_clock_time().nanoseconds());
+      audit_transition(kTransitionCleared, *fault, target->owner, get_wall_clock_time().nanoseconds());
     }
   } else {
     response->message = "Fault not found: " + request->fault_code;
@@ -1097,8 +1117,16 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     return;
   }
 
-  // Get fault from storage
-  auto fault = storage_->get_fault(request->fault_code);
+  // Which record
+  std::string resolve_error;
+  const auto target = resolve_target(request->fault_code, request->source_id, resolve_error);
+  if (!target) {
+    response->success = false;
+    response->error_message = resolve_error;
+    return;
+  }
+
+  auto fault = storage_->get_fault(*target);
   if (!fault) {
     response->success = false;
     response->error_message = "Fault not found: " + request->fault_code;
@@ -1115,7 +1143,7 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   response->environment_data.extended_data_records = extended_records;
 
   // Get freeze frame snapshots from storage
-  auto stored_snapshots = storage_->get_snapshots(request->fault_code);
+  auto stored_snapshots = storage_->get_snapshots(*target);
   for (const auto & stored_snapshot : stored_snapshots) {
     ros2_medkit_msgs::msg::Snapshot snapshot;
     snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
@@ -1136,7 +1164,7 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   // which is the state at the MOST RECENT confirmation - would stay hidden behind snapshots of
   // earlier occurrences. Serve it in that case too.
   if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
-    auto frame = storage_->get_freeze_frame(request->fault_code);
+    auto frame = storage_->get_freeze_frame(*target);
     if (frame) {
       ros2_medkit_msgs::msg::Snapshot snapshot;
       snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
@@ -1151,7 +1179,7 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   // One entry per recording, newest first. A fault that keeps re-confirming leaves a
   // trail of black boxes, and every one of them needs its own addressable id here -
   // this list is the only place the fault itself advertises them.
-  for (const auto & rosbag_info : storage_->get_rosbag_files(request->fault_code)) {
+  for (const auto & rosbag_info : storage_->get_rosbag_files(*target)) {
     ros2_medkit_msgs::msg::Snapshot rosbag_snapshot;
     rosbag_snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG;
     rosbag_snapshot.name = "rosbag_" + rosbag_info.recording_id;
@@ -1421,16 +1449,17 @@ void FaultManagerNode::handle_get_snapshots(
     return;
   }
 
-  // Check if fault exists
-  auto fault = storage_->get_fault(request->fault_code);
-  if (!fault) {
+  // Which record
+  std::string resolve_error;
+  const auto target = resolve_target(request->fault_code, request->source_id, resolve_error);
+  if (!target) {
     response->success = false;
-    response->error_message = "Fault not found: " + request->fault_code;
+    response->error_message = resolve_error;
     return;
   }
 
   // Get snapshots from storage, newest capture set first.
-  auto snapshots = storage_->get_snapshots(request->fault_code, request->topic);
+  auto snapshots = storage_->get_snapshots(*target, request->topic);
 
   // One capture set, not a blend of several. The response is a topic -> value map,
   // so folding every retained set into it makes the last row per topic win: with
@@ -1492,7 +1521,7 @@ void FaultManagerNode::handle_get_snapshots(
   result["topics"] = topics_json;
 
   // Include rosbag info if available
-  auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
+  auto rosbag_info = storage_->get_rosbag_file(*target);
   if (rosbag_info) {
     nlohmann::json rosbag_json;
     rosbag_json["available"] = true;
@@ -1514,9 +1543,11 @@ void FaultManagerNode::handle_get_snapshots(
 
 void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
                                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
-  // Two ways in. recording_id addresses one specific bag and is tried first;
-  // fault_code keeps working and means "the newest recording of this fault", which
-  // is what it has always meant back when a fault could only have one.
+  // Two ways in. recording_id addresses one specific bag and is tried first, and
+  // source_id does not scope it: a recording is named directly and is shared by every
+  // record of its burst. fault_code (with source_id) keeps working and means "the
+  // newest recording of this record", which is what it has always meant back when a
+  // fault could only have one.
   //
   // A caller that cannot tell the two apart - the gateway, holding one URL segment
   // that may be either - sets both to the same string and relies on this fallthrough.
@@ -1558,15 +1589,16 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     }
     subject = "fault " + request->fault_code;
 
-    // Check if fault exists
-    auto fault = storage_->get_fault(request->fault_code);
-    if (!fault) {
+    // Which record
+    std::string resolve_error;
+    const auto target = resolve_target(request->fault_code, request->source_id, resolve_error);
+    if (!target) {
       response->success = false;
-      response->error_message = "Fault not found: " + request->fault_code;
+      response->error_message = resolve_error;
       return;
     }
 
-    rosbag_info = storage_->get_rosbag_file(request->fault_code);
+    rosbag_info = storage_->get_rosbag_file(*target);
     if (!rosbag_info) {
       response->success = false;
       response->error_message = "No rosbag file available for fault: " + request->fault_code;
@@ -1659,7 +1691,7 @@ void FaultManagerNode::handle_list_faults_for_entity(
   // Get all faults from storage
   auto all_faults = storage_->get_all_faults();
 
-  // Filter faults that have this entity in their reporting_sources
+  // Filter the records this entity owns
   for (const auto & fault : all_faults) {
     if (matches_entity(fault.reporting_sources, request->entity_id)) {
       response->faults.push_back(fault);
@@ -1669,6 +1701,44 @@ void FaultManagerNode::handle_list_faults_for_entity(
   response->success = true;
   RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity returned %zu faults for entity '%s'", response->faults.size(),
                request->entity_id.c_str());
+}
+
+std::optional<FaultId> FaultManagerNode::resolve_target(const std::string & fault_code, const std::string & source_id,
+                                                        std::string & error) const {
+  error.clear();
+
+  if (!source_id.empty()) {
+    const FaultId id{fault_code, source_id};
+    if (!storage_->contains(id)) {
+      error = "Fault not found: " + fault_code + " (source " + source_id + ")";
+      return std::nullopt;
+    }
+    return id;
+  }
+
+  // Unscoped. One record: the call means that record. Several: refuse rather than
+  // pick, because acting on an arbitrary owner's record is the failure this identity
+  // change exists to remove, and the caller cannot tell which one it got.
+  const auto candidates = storage_->get_faults_by_code(fault_code);
+  if (candidates.empty()) {
+    error = "Fault not found: " + fault_code;
+    return std::nullopt;
+  }
+  if (candidates.size() > 1) {
+    std::string owners;
+    for (const auto & candidate : candidates) {
+      if (!owners.empty()) {
+        owners += ", ";
+      }
+      owners += candidate.reporting_sources.empty() ? "" : candidate.reporting_sources.front();
+    }
+    error = "ambiguous: " + fault_code + " is reported by " + std::to_string(candidates.size()) + " sources (" +
+            owners + "); set source_id to pick one";
+    return std::nullopt;
+  }
+  return FaultId{fault_code, candidates.front().reporting_sources.empty()
+                                 ? std::string()
+                                 : candidates.front().reporting_sources.front()};
 }
 
 bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting_sources,

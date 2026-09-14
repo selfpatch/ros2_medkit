@@ -43,6 +43,7 @@
 
 namespace {
 
+using ros2_medkit_fault_manager::FaultId;
 using ros2_medkit_fault_manager::FaultStorage;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::rosbag_recording_id;
@@ -95,9 +96,19 @@ class RosbagRetentionParityTest : public ::testing::Test {
     return path.string();
   }
 
+  /// Every row in this suite belongs to one owner: these tests are about retention
+  /// and ordering, which the record identity does not change. Cross-owner separation
+  /// is covered where it belongs, in the storage identity tests.
+  static constexpr const char * kOwner = "/node";
+
+  static FaultId id(const std::string & code) {
+    return FaultId{code, kOwner};
+  }
+
   RosbagFileInfo row(const std::string & code, const std::string & bag_name, int64_t created_ns) {
     RosbagFileInfo info;
     info.fault_code = code;
+    info.owner = kOwner;
     info.file_path = make_bag(bag_name);
     info.recording_id = rosbag_recording_id(info.file_path);
     info.format = "mcap";
@@ -121,7 +132,7 @@ TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsTheBasenameOfEveryStoredRow) 
   this->storage_->store_rosbag_file(this->row("BASENAME", "fault_BASENAME_1", 1000));
   this->storage_->store_rosbag_file(this->row("BASENAME", "fault_BASENAME_2", 2000));
 
-  const auto rows = this->storage_->get_rosbag_files("BASENAME");
+  const auto rows = this->storage_->get_rosbag_files(this->id("BASENAME"));
   ASSERT_EQ(rows.size(), 2u);
   for (const auto & r : rows) {
     EXPECT_EQ(r.recording_id, std::filesystem::path(r.file_path).filename().string());
@@ -136,7 +147,7 @@ TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsDerivedWhenTheCallerLeftItEmp
   info.recording_id.clear();
   this->storage_->store_rosbag_file(info);
 
-  const auto rows = this->storage_->get_rosbag_files("DERIVED");
+  const auto rows = this->storage_->get_rosbag_files(this->id("DERIVED"));
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].recording_id, "fault_DERIVED_1");
 }
@@ -148,7 +159,7 @@ TYPED_TEST(RosbagRetentionParityTest, SeveralRecordingsForOneFaultSurviveUnderAC
   this->storage_->store_rosbag_file(this->row("FLAP", "fault_FLAP_2", 2000));
   this->storage_->store_rosbag_file(this->row("FLAP", "fault_FLAP_3", 3000));
 
-  const auto rows = this->storage_->get_rosbag_files("FLAP");
+  const auto rows = this->storage_->get_rosbag_files(this->id("FLAP"));
   ASSERT_EQ(rows.size(), 3u);
   EXPECT_EQ(rows[0].recording_id, "fault_FLAP_3") << "newest first";
   EXPECT_EQ(rows[2].recording_id, "fault_FLAP_1");
@@ -164,7 +175,7 @@ TYPED_TEST(RosbagRetentionParityTest, CapKeepsTheNewestAndUnlinksTheEvicted) {
   this->storage_->store_rosbag_file(this->row("CAP", "fault_CAP_2", 2000));
   this->storage_->store_rosbag_file(this->row("CAP", "fault_CAP_3", 3000));
 
-  const auto rows = this->storage_->get_rosbag_files("CAP");
+  const auto rows = this->storage_->get_rosbag_files(this->id("CAP"));
   ASSERT_EQ(rows.size(), 2u);
   EXPECT_EQ(rows[0].recording_id, "fault_CAP_3");
   EXPECT_EQ(rows[1].recording_id, "fault_CAP_2");
@@ -179,12 +190,12 @@ TYPED_TEST(RosbagRetentionParityTest, ACapOfOneReproducesThePreviousBehaviourExa
   this->storage_->store_rosbag_file(first);
   this->storage_->store_rosbag_file(this->row("ONE", "fault_ONE_2", 2000));
 
-  const auto rows = this->storage_->get_rosbag_files("ONE");
+  const auto rows = this->storage_->get_rosbag_files(this->id("ONE"));
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].recording_id, "fault_ONE_2");
   EXPECT_FALSE(std::filesystem::exists(first.file_path));
 
-  const auto newest = this->storage_->get_rosbag_file("ONE");
+  const auto newest = this->storage_->get_rosbag_file(this->id("ONE"));
   ASSERT_TRUE(newest.has_value());
   EXPECT_EQ(newest->recording_id, "fault_ONE_2");
 }
@@ -196,7 +207,7 @@ TYPED_TEST(RosbagRetentionParityTest, ACapOfOneIsTheDefaultWithoutConfiguringAny
   this->storage_->store_rosbag_file(first);
   this->storage_->store_rosbag_file(this->row("DEFAULT", "fault_DEFAULT_2", 2000));
 
-  EXPECT_EQ(this->storage_->get_rosbag_files("DEFAULT").size(), 1u);
+  EXPECT_EQ(this->storage_->get_rosbag_files(this->id("DEFAULT")).size(), 1u);
   EXPECT_FALSE(std::filesystem::exists(first.file_path));
 }
 
@@ -205,7 +216,7 @@ TYPED_TEST(RosbagRetentionParityTest, ZeroMeansUnlimited) {
   for (int i = 1; i <= 6; ++i) {
     this->storage_->store_rosbag_file(this->row("UNBOUNDED", "fault_UNBOUNDED_" + std::to_string(i), i * 1000));
   }
-  EXPECT_EQ(this->storage_->get_rosbag_files("UNBOUNDED").size(), 6u);
+  EXPECT_EQ(this->storage_->get_rosbag_files(this->id("UNBOUNDED")).size(), 6u);
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ReStoringTheSamePathIsAnUpsertNotASecondRecording) {
@@ -218,7 +229,7 @@ TYPED_TEST(RosbagRetentionParityTest, ReStoringTheSamePathIsAnUpsertNotASecondRe
   info.duration_sec = 9.0;
   this->storage_->store_rosbag_file(info);
 
-  const auto rows = this->storage_->get_rosbag_files("UPSERT");
+  const auto rows = this->storage_->get_rosbag_files(this->id("UPSERT"));
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].size_bytes, 4096u);
   EXPECT_DOUBLE_EQ(rows[0].duration_sec, 9.0);
@@ -238,7 +249,7 @@ TYPED_TEST(RosbagRetentionParityTest, RefreshingALinkDoesNotMoveItWithinATieGrou
   first.size_bytes = 8192;
   this->storage_->store_rosbag_file(first);
 
-  const auto rows = this->storage_->get_rosbag_files("REFRESH");
+  const auto rows = this->storage_->get_rosbag_files(this->id("REFRESH"));
   ASSERT_EQ(rows.size(), 2u);
   EXPECT_EQ(rows[0].recording_id, "fault_REFRESH_2") << "the refresh must not reorder the tie group";
   EXPECT_EQ(rows[1].recording_id, "fault_REFRESH_1");
@@ -255,7 +266,7 @@ TYPED_TEST(RosbagRetentionParityTest, NewestFirstIsStableWhenAWholeBurstSharesAT
     this->storage_->store_rosbag_file(this->row("TIE", "fault_TIE_" + std::to_string(i), 7000));
   }
 
-  const auto rows = this->storage_->get_rosbag_files("TIE");
+  const auto rows = this->storage_->get_rosbag_files(this->id("TIE"));
   ASSERT_EQ(rows.size(), 4u);
   EXPECT_EQ(rows[0].recording_id, "fault_TIE_4") << "insertion order breaks the tie, newest first";
   EXPECT_EQ(rows[1].recording_id, "fault_TIE_3");
@@ -272,7 +283,7 @@ TYPED_TEST(RosbagRetentionParityTest, ACapTieIsBrokenByInsertionOrderNotArbitrar
   const auto second = this->row("TIECAP", "fault_TIECAP_2", 7000);
   this->storage_->store_rosbag_file(second);
 
-  const auto rows = this->storage_->get_rosbag_files("TIECAP");
+  const auto rows = this->storage_->get_rosbag_files(this->id("TIECAP"));
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].recording_id, "fault_TIECAP_2");
   EXPECT_TRUE(std::filesystem::exists(second.file_path));
@@ -291,7 +302,7 @@ TYPED_TEST(RosbagRetentionParityTest, ABurstRecordingSurvivesWhileASiblingRowRef
   this->storage_->store_rosbag_file(this->row("BURST_A", "fault_BURST_2", 2000));
 
   EXPECT_TRUE(std::filesystem::exists(shared_path)) << "the sibling fault still owns the shared bag";
-  const auto sibling = this->storage_->get_rosbag_files("BURST_B");
+  const auto sibling = this->storage_->get_rosbag_files(this->id("BURST_B"));
   ASSERT_EQ(sibling.size(), 1u);
   EXPECT_EQ(sibling[0].file_path, shared_path);
 }
@@ -322,8 +333,8 @@ TYPED_TEST(RosbagRetentionParityTest, AnUnknownRecordingLooksUpEmptyRatherThanTh
   // The gateway's compatibility path depends on this: empty means "not a recording,
   // try it as a fault code", so it must be a normal answer.
   EXPECT_TRUE(this->storage_->get_rosbag_files_by_recording("fault_NOPE_1").empty());
-  EXPECT_TRUE(this->storage_->get_rosbag_files("NOPE").empty());
-  EXPECT_FALSE(this->storage_->get_rosbag_file("NOPE").has_value());
+  EXPECT_TRUE(this->storage_->get_rosbag_files(this->id("NOPE")).empty());
+  EXPECT_FALSE(this->storage_->get_rosbag_file(this->id("NOPE")).has_value());
 }
 
 TYPED_TEST(RosbagRetentionParityTest, DeletingARecordingRemovesEveryLinkAndTheBag) {
@@ -339,9 +350,9 @@ TYPED_TEST(RosbagRetentionParityTest, DeletingARecordingRemovesEveryLinkAndTheBa
 
   EXPECT_EQ(this->storage_->delete_rosbag_recording("fault_DELREC_1"), 2u);
   EXPECT_FALSE(std::filesystem::exists(shared.file_path));
-  EXPECT_TRUE(this->storage_->get_rosbag_files("DELREC_B").empty());
+  EXPECT_TRUE(this->storage_->get_rosbag_files(this->id("DELREC_B")).empty());
 
-  const auto survivors = this->storage_->get_rosbag_files("DELREC_A");
+  const auto survivors = this->storage_->get_rosbag_files(this->id("DELREC_A"));
   ASSERT_EQ(survivors.size(), 1u) << "the other fault's other recording is untouched";
   EXPECT_EQ(survivors[0].recording_id, "fault_DELREC_2");
   EXPECT_TRUE(std::filesystem::exists(kept.file_path));
@@ -356,8 +367,8 @@ TYPED_TEST(RosbagRetentionParityTest, DeletingAFaultDropsAllItsRecordings) {
   this->storage_->store_rosbag_file(a);
   this->storage_->store_rosbag_file(b);
 
-  EXPECT_TRUE(this->storage_->delete_rosbag_file("DELALL"));
-  EXPECT_TRUE(this->storage_->get_rosbag_files("DELALL").empty());
+  EXPECT_TRUE(this->storage_->delete_rosbag_file(this->id("DELALL")));
+  EXPECT_TRUE(this->storage_->get_rosbag_files(this->id("DELALL")).empty());
   EXPECT_FALSE(std::filesystem::exists(a.file_path));
   EXPECT_FALSE(std::filesystem::exists(b.file_path));
 }
@@ -416,6 +427,7 @@ class SnapshotRetentionParityTest : public ::testing::Test {
     for (size_t i = 0; i < topics; ++i) {
       SnapshotData row;
       row.fault_code = code;
+      row.owner = kOwner;
       row.topic = "/topic_" + std::to_string(i);
       row.message_type = "std_msgs/msg/Float64";
       row.data = R"({"data": )" + std::to_string(capture_id) + "}";
@@ -426,10 +438,18 @@ class SnapshotRetentionParityTest : public ::testing::Test {
     return rows;
   }
 
+  /// Every record in this suite belongs to one owner: these tests are about retention
+  /// and ordering, which the record identity does not change.
+  static constexpr const char * kOwner = "/node";
+
+  static FaultId id(const std::string & code) {
+    return FaultId{code, kOwner};
+  }
+
   void confirm(const std::string & code) {
     rclcpp::Clock clock;
     storage_->report_fault_event(code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                                 ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity", "/node", clock.now(),
+                                 ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity", kOwner, clock.now(),
                                  ros2_medkit_fault_manager::DebounceConfig{});
   }
 
@@ -448,7 +468,7 @@ TYPED_TEST(SnapshotRetentionParityTest, ACaptureLargerThanTheCapIsKeptWholeRathe
 
   this->storage_->store_snapshots(this->capture("BIG", 1, 5));
 
-  const auto rows = this->storage_->get_snapshots("BIG");
+  const auto rows = this->storage_->get_snapshots(this->id("BIG"));
   EXPECT_EQ(rows.size(), 5u) << "a capture over the cap on its own is kept entire";
   for (const auto & row : rows) {
     EXPECT_EQ(row.capture_id, 1);
@@ -463,7 +483,7 @@ TYPED_TEST(SnapshotRetentionParityTest, TheOldestWholeCaptureGoesFirstPastTheCap
   this->storage_->store_snapshots(this->capture("EVICT", 2, 2));
   this->storage_->store_snapshots(this->capture("EVICT", 3, 2));
 
-  const auto rows = this->storage_->get_snapshots("EVICT");
+  const auto rows = this->storage_->get_snapshots(this->id("EVICT"));
   ASSERT_EQ(rows.size(), 4u);
   for (const auto & row : rows) {
     EXPECT_NE(row.capture_id, 1) << "the oldest set goes whole, not row by row";
@@ -480,7 +500,7 @@ TYPED_TEST(SnapshotRetentionParityTest, GetSnapshotsReturnsTheNewestCaptureFirst
   this->storage_->store_snapshots(this->capture("ORDER", 1, 2));
   this->storage_->store_snapshots(this->capture("ORDER", 2, 2));
 
-  const auto rows = this->storage_->get_snapshots("ORDER");
+  const auto rows = this->storage_->get_snapshots(this->id("ORDER"));
   ASSERT_EQ(rows.size(), 4u);
   EXPECT_EQ(rows.front().capture_id, 2) << "newest capture leads";
   EXPECT_EQ(rows.back().capture_id, 1);
@@ -507,9 +527,9 @@ TYPED_TEST(SnapshotRetentionParityTest, ClearFaultKeepsSnapshotsWhenEvidenceIsRe
   this->storage_->set_retain_snapshots_on_clear(true);
   this->storage_->store_snapshots(this->capture("KEEP", 1, 2));
 
-  ASSERT_TRUE(this->storage_->clear_fault("KEEP"));
+  ASSERT_TRUE(this->storage_->clear_fault(this->id("KEEP")));
 
-  EXPECT_EQ(this->storage_->get_snapshots("KEEP").size(), 2u);
+  EXPECT_EQ(this->storage_->get_snapshots(this->id("KEEP")).size(), 2u);
   EXPECT_TRUE(this->storage_->retains_snapshots_on_clear());
 }
 
@@ -518,9 +538,9 @@ TYPED_TEST(SnapshotRetentionParityTest, ClearFaultDropsSnapshotsByDefault) {
   this->confirm("DROP");
   this->storage_->store_snapshots(this->capture("DROP", 1, 2));
 
-  ASSERT_TRUE(this->storage_->clear_fault("DROP"));
+  ASSERT_TRUE(this->storage_->clear_fault(this->id("DROP")));
 
-  EXPECT_TRUE(this->storage_->get_snapshots("DROP").empty());
+  EXPECT_TRUE(this->storage_->get_snapshots(this->id("DROP")).empty());
   EXPECT_FALSE(this->storage_->retains_snapshots_on_clear());
 }
 

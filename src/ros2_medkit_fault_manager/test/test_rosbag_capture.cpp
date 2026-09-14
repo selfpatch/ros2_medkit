@@ -42,12 +42,22 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
+using ros2_medkit_fault_manager::FaultId;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::RosbagCapture;
 using ros2_medkit_fault_manager::RosbagConfig;
 using ros2_medkit_fault_manager::SnapshotConfig;
 
 namespace {
+
+/// Every record this suite drives belongs to one owner. These tests are about the
+/// recording state machine and the bag lifecycle, which the record identity does not
+/// change; the cross-owner cases live with the storage and node tests.
+constexpr const char * kOwner = "/reporter";
+
+FaultId rec(const std::string & code) {
+  return FaultId{code, kOwner};
+}
 
 /// Captures rcutils log output while alive and restores the console handler on
 /// every exit path - leaving the process-global handler installed would swallow
@@ -573,7 +583,7 @@ TEST_F(RosbagCaptureTest, OnFaultPrefailedWhileDisabled) {
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   // Should not throw when disabled
-  EXPECT_NO_THROW(capture.on_fault_prefailed("TEST_FAULT"));
+  EXPECT_NO_THROW(capture.on_fault_prefailed(rec("TEST_FAULT")));
 }
 
 TEST_F(RosbagCaptureTest, OnFaultConfirmedWhileDisabled) {
@@ -581,7 +591,7 @@ TEST_F(RosbagCaptureTest, OnFaultConfirmedWhileDisabled) {
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   // Should not throw when disabled
-  EXPECT_NO_THROW(capture.on_fault_confirmed("TEST_FAULT"));
+  EXPECT_NO_THROW(capture.on_fault_confirmed(rec("TEST_FAULT")));
 }
 
 TEST_F(RosbagCaptureTest, OnFaultClearedWhileDisabled) {
@@ -589,7 +599,7 @@ TEST_F(RosbagCaptureTest, OnFaultClearedWhileDisabled) {
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   // Should not throw when disabled
-  EXPECT_NO_THROW(capture.on_fault_cleared("TEST_FAULT"));
+  EXPECT_NO_THROW(capture.on_fault_cleared(rec("TEST_FAULT")));
 }
 
 TEST_F(RosbagCaptureTest, OnFaultPrefailedStartsLazyCapture) {
@@ -598,7 +608,7 @@ TEST_F(RosbagCaptureTest, OnFaultPrefailedStartsLazyCapture) {
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   EXPECT_FALSE(capture.is_running());
-  capture.on_fault_prefailed("TEST_FAULT");
+  capture.on_fault_prefailed(rec("TEST_FAULT"));
   EXPECT_TRUE(capture.is_running());
 }
 
@@ -677,6 +687,7 @@ TEST_F(RosbagCaptureTest, SharedBagTotalTakesTheLargestRowPerPath) {
   auto store = [this](const char * code, const char * path, size_t bytes) {
     ros2_medkit_fault_manager::RosbagFileInfo info;
     info.fault_code = code;
+    info.owner = kOwner;
     info.file_path = path;
     info.format = "mcap";
     info.duration_sec = 5.0;
@@ -710,11 +721,13 @@ TEST_F(RosbagCaptureTest, EvictionFreesASharedBagOnceAndKeepsTheQuotaHonest) {
   shared.created_at_ns = 1000;
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
     shared.fault_code = code;
+    shared.owner = kOwner;
     storage_->store_rosbag_file(shared);
   }
 
   ros2_medkit_fault_manager::RosbagFileInfo solo;
   solo.fault_code = "UNRELATED";
+  solo.owner = kOwner;
   solo.file_path = solo_path;
   solo.format = "mcap";
   solo.duration_sec = 5.0;
@@ -731,12 +744,12 @@ TEST_F(RosbagCaptureTest, EvictionFreesASharedBagOnceAndKeepsTheQuotaHonest) {
   EXPECT_EQ(evicted, std::vector<std::string>{shared_path});
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 600u);
   EXPECT_FALSE(std::filesystem::exists(shared_path));
-  EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
-  EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_A").has_value());
-  EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_B").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("ROOT_CAUSE")).has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("CORRELATED_A")).has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("CORRELATED_B")).has_value());
 
   // The newer bag fits under the quota and must survive.
-  EXPECT_TRUE(storage_->get_rosbag_file("UNRELATED").has_value());
+  EXPECT_TRUE(storage_->get_rosbag_file(rec("UNRELATED")).has_value());
   EXPECT_TRUE(std::filesystem::exists(solo_path));
 }
 
@@ -758,14 +771,17 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   shared.duration_sec = 5.0;
   shared.created_at_ns = 1000;
   shared.fault_code = "ROOT_CAUSE";
+  shared.owner = kOwner;
   shared.size_bytes = 500;
   storage_->store_rosbag_file(shared);
   shared.fault_code = "CORRELATED_A";
+  shared.owner = kOwner;
   shared.size_bytes = 400;
   storage_->store_rosbag_file(shared);
 
   ros2_medkit_fault_manager::RosbagFileInfo solo;
   solo.fault_code = "UNRELATED";
+  solo.owner = kOwner;
   solo.file_path = solo_path;
   solo.format = "mcap";
   solo.duration_sec = 5.0;
@@ -851,8 +867,10 @@ TEST_F(RosbagCaptureTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
   shared.size_bytes = 10;
   shared.created_at_ns = 1000;
   shared.fault_code = "SHARED_A";
+  shared.owner = kOwner;
   storage_->store_rosbag_file(shared);
   shared.fault_code = "SHARED_B";
+  shared.owner = kOwner;
   storage_->store_rosbag_file(shared);
   ASSERT_TRUE(std::filesystem::exists(old_bag));
 
@@ -862,15 +880,17 @@ TEST_F(RosbagCaptureTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
   std::vector<RosbagFileInfo> rows;
   rows.reserve(2);
   moved.fault_code = "SHARED_A";
+  moved.owner = kOwner;
   rows.push_back(moved);
   moved.fault_code = "SHARED_B";
+  moved.owner = kOwner;
   rows.push_back(moved);
   storage_->store_rosbag_files(rows);
 
   EXPECT_FALSE(std::filesystem::exists(old_bag)) << "the replaced bag leaked: nothing references it any more";
   EXPECT_TRUE(std::filesystem::exists(new_bag)) << "the bag the batch points at was removed";
-  auto row_a = storage_->get_rosbag_file("SHARED_A");
-  auto row_b = storage_->get_rosbag_file("SHARED_B");
+  auto row_a = storage_->get_rosbag_file(rec("SHARED_A"));
+  auto row_b = storage_->get_rosbag_file(rec("SHARED_B"));
   ASSERT_TRUE(row_a.has_value());
   ASSERT_TRUE(row_b.has_value());
   EXPECT_EQ(row_a->file_path, new_bag.string());
@@ -959,9 +979,14 @@ class RosbagNonStandardThrowStorage : public InMemoryFaultStorage {
 /// Storage counting fault lookups, which is what resolving an entity scope costs.
 class RosbagFaultLookupCountingStorage : public InMemoryFaultStorage {
  public:
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override {
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const FaultId & id) const override {
     ++lookups;
-    return InMemoryFaultStorage::get_fault(fault_code);
+    return InMemoryFaultStorage::get_fault(id);
+  }
+
+  bool contains(const FaultId & id) const override {
+    ++lookups;
+    return InMemoryFaultStorage::contains(id);
   }
 
   mutable size_t lookups = 0;
@@ -1004,11 +1029,11 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
     }
   }
 
-  /// Spin until the post-roll finalises and @p fault_code has its metadata row.
-  bool wait_for_row(const std::string & fault_code, std::chrono::milliseconds timeout) {
+  /// Spin until the post-roll finalises and @p id has its metadata row.
+  bool wait_for_row(const FaultId & id, std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      if (storage_->get_rosbag_file(fault_code).has_value()) {
+      if (storage_->get_rosbag_file(id).has_value()) {
         return true;
       }
       spin_for(std::chrono::milliseconds(100));
@@ -1086,18 +1111,18 @@ TEST_F(RosbagCaptureIntegrationTest, FullFaultLifecycleWithNoMessages) {
   EXPECT_TRUE(capture.is_running());
 
   // Simulate fault lifecycle
-  capture.on_fault_prefailed("TEST_FAULT_001");
+  capture.on_fault_prefailed(rec("TEST_FAULT_001"));
 
   // Let some time pass
   spin_for(std::chrono::milliseconds(100));
 
-  capture.on_fault_confirmed("TEST_FAULT_001");
+  capture.on_fault_confirmed(rec("TEST_FAULT_001"));
 
   // Wait for post-fault timer
   spin_for(std::chrono::milliseconds(300));
 
   // Clear the fault
-  capture.on_fault_cleared("TEST_FAULT_001");
+  capture.on_fault_cleared(rec("TEST_FAULT_001"));
 
   // Stop capture
   capture.stop();
@@ -1122,15 +1147,15 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingKeepsAHistoryTheOperatorConfig
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
   capture.start();
   fill_buffer("/keep_history_probe");
-  capture.on_fault_confirmed("KEEPS_HISTORY");
+  capture.on_fault_confirmed(rec("KEEPS_HISTORY"));
   spin_for(std::chrono::milliseconds(300));
 
-  ASSERT_FALSE(storage.get_rosbag_files("KEEPS_HISTORY").empty()) << "nothing was recorded to keep";
-  const auto before = storage.get_rosbag_files("KEEPS_HISTORY").size();
+  ASSERT_FALSE(storage.get_rosbag_files(rec("KEEPS_HISTORY")).empty()) << "nothing was recorded to keep";
+  const auto before = storage.get_rosbag_files(rec("KEEPS_HISTORY")).size();
 
-  capture.on_fault_cleared("KEEPS_HISTORY");
+  capture.on_fault_cleared(rec("KEEPS_HISTORY"));
 
-  EXPECT_EQ(storage.get_rosbag_files("KEEPS_HISTORY").size(), before)
+  EXPECT_EQ(storage.get_rosbag_files(rec("KEEPS_HISTORY")).size(), before)
       << "acknowledging the fault destroyed the recordings the cap was raised to keep";
   capture.stop();
 }
@@ -1158,16 +1183,16 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
   capture.start();
   fill_buffer("/ack_mid_roll_probe");
-  capture.on_fault_confirmed("ACK_MID_ROLL");
+  capture.on_fault_confirmed({"ACK_MID_ROLL", "/node"});
 
   // The acknowledgement arrives while the post-fault window still runs, so the
   // store reports the fault as CLEARED by the time finalize asks.
-  ASSERT_TRUE(storage.clear_fault("ACK_MID_ROLL"));
-  capture.on_fault_cleared("ACK_MID_ROLL");
+  ASSERT_TRUE(storage.clear_fault({"ACK_MID_ROLL", "/node"}));
+  capture.on_fault_cleared({"ACK_MID_ROLL", "/node"});
 
   spin_for(std::chrono::milliseconds(900));  // past the post-roll and the finalize
 
-  EXPECT_FALSE(storage.get_rosbag_files("ACK_MID_ROLL").empty())
+  EXPECT_FALSE(storage.get_rosbag_files({"ACK_MID_ROLL", "/node"}).empty())
       << "the post-roll finalize deleted a history on_fault_cleared had decided to keep";
   capture.stop();
 }
@@ -1186,14 +1211,14 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingStillCleansUpWhenNoHistoryIsCo
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
   capture.start();
   fill_buffer("/cleanup_probe");
-  capture.on_fault_confirmed("CLEANED_UP");
+  capture.on_fault_confirmed(rec("CLEANED_UP"));
   spin_for(std::chrono::milliseconds(300));
 
-  ASSERT_FALSE(storage.get_rosbag_files("CLEANED_UP").empty());
+  ASSERT_FALSE(storage.get_rosbag_files(rec("CLEANED_UP")).empty());
 
-  capture.on_fault_cleared("CLEANED_UP");
+  capture.on_fault_cleared(rec("CLEANED_UP"));
 
-  EXPECT_TRUE(storage.get_rosbag_files("CLEANED_UP").empty()) << "auto_cleanup stopped working at the default cap";
+  EXPECT_TRUE(storage.get_rosbag_files(rec("CLEANED_UP")).empty()) << "auto_cleanup stopped working at the default cap";
   capture.stop();
 }
 
@@ -1207,16 +1232,16 @@ TEST_F(RosbagCaptureIntegrationTest, MultipleFaultsHandled) {
   capture.start();
 
   // Multiple faults in sequence
-  capture.on_fault_prefailed("FAULT_A");
+  capture.on_fault_prefailed(rec("FAULT_A"));
   spin_for(std::chrono::milliseconds(50));
 
-  capture.on_fault_prefailed("FAULT_B");
+  capture.on_fault_prefailed(rec("FAULT_B"));
   spin_for(std::chrono::milliseconds(50));
 
-  capture.on_fault_confirmed("FAULT_A");
+  capture.on_fault_confirmed(rec("FAULT_A"));
   spin_for(std::chrono::milliseconds(50));
 
-  capture.on_fault_confirmed("FAULT_B");
+  capture.on_fault_confirmed(rec("FAULT_B"));
   spin_for(std::chrono::milliseconds(200));
 
   capture.stop();
@@ -1235,15 +1260,15 @@ TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag)
   capture.start();
   fill_buffer("/rosbag_burst_probe");
 
-  capture.on_fault_confirmed("ROOT_CAUSE");
-  capture.on_fault_confirmed("CORRELATED");
+  capture.on_fault_confirmed(rec("ROOT_CAUSE"));
+  capture.on_fault_confirmed(rec("CORRELATED"));
 
   // Let the post-fault timer fire and finalise the recording.
   spin_for(std::chrono::milliseconds(1600));
 
-  auto root = storage_->get_rosbag_file("ROOT_CAUSE");
+  auto root = storage_->get_rosbag_file(rec("ROOT_CAUSE"));
   ASSERT_TRUE(root.has_value()) << "the first fault must produce a bag";
-  auto correlated = storage_->get_rosbag_file("CORRELATED");
+  auto correlated = storage_->get_rosbag_file(rec("CORRELATED"));
   ASSERT_TRUE(correlated.has_value()) << "the fault confirmed during the post-roll lost its recording";
   EXPECT_EQ(correlated->file_path, root->file_path);
   EXPECT_TRUE(std::filesystem::exists(root->file_path));
@@ -1261,23 +1286,68 @@ TEST_F(RosbagCaptureIntegrationTest, ClearingOneFaultOfABurstKeepsTheSharedBag) 
   capture.start();
   fill_buffer("/rosbag_burst_cleanup_probe");
 
-  capture.on_fault_confirmed("ROOT_CAUSE");
-  capture.on_fault_confirmed("CORRELATED");
+  capture.on_fault_confirmed(rec("ROOT_CAUSE"));
+  capture.on_fault_confirmed(rec("CORRELATED"));
   spin_for(std::chrono::milliseconds(1600));
 
-  auto root = storage_->get_rosbag_file("ROOT_CAUSE");
+  auto root = storage_->get_rosbag_file(rec("ROOT_CAUSE"));
   ASSERT_TRUE(root.has_value());
-  ASSERT_TRUE(storage_->get_rosbag_file("CORRELATED").has_value());
+  ASSERT_TRUE(storage_->get_rosbag_file(rec("CORRELATED")).has_value());
   const std::string bag_path = root->file_path;
 
   // Auto-cleanup of one fault must not pull the bag out from under its sibling.
-  capture.on_fault_cleared("CORRELATED");
+  capture.on_fault_cleared(rec("CORRELATED"));
   EXPECT_TRUE(std::filesystem::exists(bag_path));
-  EXPECT_TRUE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
+  EXPECT_TRUE(storage_->get_rosbag_file(rec("ROOT_CAUSE")).has_value());
 
   // The last reference going away does delete it.
-  capture.on_fault_cleared("ROOT_CAUSE");
+  capture.on_fault_cleared(rec("ROOT_CAUSE"));
   EXPECT_FALSE(std::filesystem::exists(bag_path));
+
+  capture.stop();
+}
+
+// R11: the bag directory name and the recording id stay keyed by the CODE, so two
+// owners confirming one code inside a burst attach to the one in-flight recording -
+// and each of them still gets its own rosbag_files row, because the download and the
+// acknowledgement are addressed to a record, not to a code.
+TEST_F(RosbagCaptureIntegrationTest, TwoOwnersOfOneCodeShareTheBagAndGetARowEach) {
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 1.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_two_owners_probe");
+
+  const FaultId owner_a{"BURST_CODE", "/owner_a"};
+  const FaultId owner_b{"BURST_CODE", "/owner_b"};
+  capture.on_fault_confirmed(owner_a);
+  capture.on_fault_confirmed(owner_b);  // lands inside A's post-roll, attaches
+
+  ASSERT_TRUE(wait_for_row(owner_b, std::chrono::milliseconds(8000)));
+
+  auto row_a = storage_->get_rosbag_file(owner_a);
+  auto row_b = storage_->get_rosbag_file(owner_b);
+  ASSERT_TRUE(row_a.has_value());
+  ASSERT_TRUE(row_b.has_value());
+  EXPECT_EQ(row_a->owner, "/owner_a");
+  EXPECT_EQ(row_b->owner, "/owner_b");
+  EXPECT_EQ(row_b->file_path, row_a->file_path) << "one recording, one bag";
+  EXPECT_EQ(row_b->recording_id, row_a->recording_id);
+  EXPECT_EQ(storage_->get_rosbag_files_by_recording(row_a->recording_id).size(), 2u);
+
+  // Acknowledging one owner's record unlinks only that row; the bag survives while
+  // the other owner still holds it.
+  capture.on_fault_cleared(owner_a);
+  EXPECT_FALSE(storage_->get_rosbag_file(owner_a).has_value());
+  ASSERT_TRUE(storage_->get_rosbag_file(owner_b).has_value());
+  EXPECT_TRUE(std::filesystem::exists(row_a->file_path)) << "the other owner still references the bag";
+
+  capture.on_fault_cleared(owner_b);
+  EXPECT_FALSE(storage_->get_rosbag_file(owner_b).has_value());
+  EXPECT_FALSE(std::filesystem::exists(row_a->file_path));
 
   capture.stop();
 }
@@ -1292,23 +1362,23 @@ TEST_F(RosbagCaptureIntegrationTest, FaultClearedDuringPostRollNeverGetsARow) {
   capture.start();
   fill_buffer("/rosbag_cleared_mid_roll_probe");
 
-  capture.on_fault_confirmed("ROOT_CAUSE");
-  capture.on_fault_confirmed("CORRELATED");
+  capture.on_fault_confirmed(rec("ROOT_CAUSE"));
+  capture.on_fault_confirmed(rec("CORRELATED"));
   // The attached fault clears before the post-roll timer fires. Its row has not
   // been written yet - it must be forgotten, not resurrected at finalize, where
   // a leftover row would pin the shared bag forever.
-  capture.on_fault_cleared("CORRELATED");
+  capture.on_fault_cleared(rec("CORRELATED"));
 
-  ASSERT_TRUE(wait_for_row("ROOT_CAUSE", std::chrono::milliseconds(8000)));
-  EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED").has_value())
+  ASSERT_TRUE(wait_for_row(rec("ROOT_CAUSE"), std::chrono::milliseconds(8000)));
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("CORRELATED")).has_value())
       << "a fault cleared during the post-roll must not get a row at finalize";
 
   // With no leftover row the bag belongs to the primary alone: clearing it
   // must unlink the recording.
-  auto root = storage_->get_rosbag_file("ROOT_CAUSE");
+  auto root = storage_->get_rosbag_file(rec("ROOT_CAUSE"));
   ASSERT_TRUE(root.has_value());
-  capture.on_fault_cleared("ROOT_CAUSE");
-  EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
+  capture.on_fault_cleared(rec("ROOT_CAUSE"));
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("ROOT_CAUSE")).has_value());
   EXPECT_FALSE(std::filesystem::exists(root->file_path));
 
   capture.stop();
@@ -1324,21 +1394,21 @@ TEST_F(RosbagCaptureIntegrationTest, PrimaryClearedDuringPostRollLeavesTheBagToI
   capture.start();
   fill_buffer("/rosbag_primary_cleared_probe");
 
-  capture.on_fault_confirmed("ROOT_CAUSE");
-  capture.on_fault_confirmed("CORRELATED");
+  capture.on_fault_confirmed(rec("ROOT_CAUSE"));
+  capture.on_fault_confirmed(rec("CORRELATED"));
   // The fault that opened the recording clears mid post-roll; the attached
   // sibling still needs the bag, so the recording finalises for it alone.
-  capture.on_fault_cleared("ROOT_CAUSE");
+  capture.on_fault_cleared(rec("ROOT_CAUSE"));
 
-  ASSERT_TRUE(wait_for_row("CORRELATED", std::chrono::milliseconds(8000)));
-  EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value())
+  ASSERT_TRUE(wait_for_row(rec("CORRELATED"), std::chrono::milliseconds(8000)));
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("ROOT_CAUSE")).has_value())
       << "the cleared primary must not get a row at finalize";
 
-  auto correlated = storage_->get_rosbag_file("CORRELATED");
+  auto correlated = storage_->get_rosbag_file(rec("CORRELATED"));
   ASSERT_TRUE(correlated.has_value());
   EXPECT_TRUE(std::filesystem::exists(correlated->file_path));
 
-  capture.on_fault_cleared("CORRELATED");
+  capture.on_fault_cleared(rec("CORRELATED"));
   EXPECT_FALSE(std::filesystem::exists(correlated->file_path));
 
   capture.stop();
@@ -1354,16 +1424,16 @@ TEST_F(RosbagCaptureIntegrationTest, BurstFullyClearedDuringPostRollDiscardsTheB
   capture.start();
   fill_buffer("/rosbag_all_cleared_probe");
 
-  capture.on_fault_confirmed("ROOT_CAUSE");
-  capture.on_fault_confirmed("CORRELATED");
-  capture.on_fault_cleared("CORRELATED");
-  capture.on_fault_cleared("ROOT_CAUSE");
+  capture.on_fault_confirmed(rec("ROOT_CAUSE"));
+  capture.on_fault_confirmed(rec("CORRELATED"));
+  capture.on_fault_cleared(rec("CORRELATED"));
+  capture.on_fault_cleared(rec("ROOT_CAUSE"));
 
   // Let the post-roll timer fire with nothing left to register.
   spin_for(std::chrono::milliseconds(1500));
 
-  EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
-  EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("ROOT_CAUSE")).has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("CORRELATED")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "a bag nobody references must not be left on disk";
 
   capture.stop();
@@ -1388,19 +1458,19 @@ TEST_F(RosbagCaptureIntegrationTest, AttachmentCapDropsFaultsPastIt) {
     codes.push_back("BURST_" + std::string(i < 10 ? "0" : "") + std::to_string(i));
   }
   for (const auto & code : codes) {
-    capture.on_fault_confirmed(code);
+    capture.on_fault_confirmed(rec(code));
   }
 
-  ASSERT_TRUE(wait_for_row(codes[0], std::chrono::milliseconds(10000)));
+  ASSERT_TRUE(wait_for_row(rec(codes[0]), std::chrono::milliseconds(10000)));
 
-  auto primary = storage_->get_rosbag_file(codes[0]);
+  auto primary = storage_->get_rosbag_file(rec(codes[0]));
   ASSERT_TRUE(primary.has_value());
   for (size_t i = 1; i < 33; ++i) {
-    auto row = storage_->get_rosbag_file(codes[i]);
+    auto row = storage_->get_rosbag_file(rec(codes[i]));
     ASSERT_TRUE(row.has_value()) << codes[i] << " is within the cap and must resolve to the recording";
     EXPECT_EQ(row->file_path, primary->file_path);
   }
-  EXPECT_FALSE(storage_->get_rosbag_file(codes[33]).has_value())
+  EXPECT_FALSE(storage_->get_rosbag_file(rec(codes[33])).has_value())
       << "fault 34 of the burst is past the cap and is dropped with a WARN";
   EXPECT_EQ(count_bag_dirs(), 1u) << "the dropped fault must not open a second bag";
 
@@ -1444,8 +1514,8 @@ TEST_F(RosbagCaptureIntegrationTest, AttachedFaultTopicsJoinTheEntityScopedRecor
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("FAULT_A");
-  capture.on_fault_confirmed("FAULT_B");  // lands inside A's post-roll, attaches
+  capture.on_fault_confirmed({"FAULT_A", "/scope_source_a"});
+  capture.on_fault_confirmed({"FAULT_B", "/scope_source_b"});  // lands inside A's post-roll, attaches
 
   // Keep both topics flowing during the post-roll so the widened filter has
   // B's data to write.
@@ -1455,10 +1525,10 @@ TEST_F(RosbagCaptureIntegrationTest, AttachedFaultTopicsJoinTheEntityScopedRecor
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("FAULT_B", std::chrono::milliseconds(12000)));
+  ASSERT_TRUE(wait_for_row({"FAULT_B", "/scope_source_b"}, std::chrono::milliseconds(12000)));
 
-  auto row_a = storage_->get_rosbag_file("FAULT_A");
-  auto row_b = storage_->get_rosbag_file("FAULT_B");
+  auto row_a = storage_->get_rosbag_file({"FAULT_A", "/scope_source_a"});
+  auto row_b = storage_->get_rosbag_file({"FAULT_B", "/scope_source_b"});
   ASSERT_TRUE(row_a.has_value());
   ASSERT_TRUE(row_b.has_value());
   EXPECT_EQ(row_b->file_path, row_a->file_path);
@@ -1491,20 +1561,20 @@ TEST_F(RosbagCaptureIntegrationTest, StopDuringPostRollFinalisesTheRecording) {
   capture.start();
   fill_buffer("/rosbag_stop_probe");
 
-  capture.on_fault_confirmed("BEFORE_STOP");
+  capture.on_fault_confirmed(rec("BEFORE_STOP"));
   capture.stop();
 
-  auto before = storage_->get_rosbag_file("BEFORE_STOP");
+  auto before = storage_->get_rosbag_file(rec("BEFORE_STOP"));
   ASSERT_TRUE(before.has_value()) << "a post-roll cut short by stop() must still leave a usable bag";
 
   // Restart and confirm again: the new fault must get its own recording.
   capture.start();
   fill_buffer("/rosbag_stop_probe_2");
 
-  capture.on_fault_confirmed("AFTER_RESTART");
+  capture.on_fault_confirmed(rec("AFTER_RESTART"));
   capture.stop();
 
-  auto after = storage_->get_rosbag_file("AFTER_RESTART");
+  auto after = storage_->get_rosbag_file(rec("AFTER_RESTART"));
   ASSERT_TRUE(after.has_value()) << "confirmation after restart was swallowed by stale recording state";
   EXPECT_NE(after->file_path, before->file_path);
 }
@@ -1529,18 +1599,18 @@ TEST_F(RosbagCaptureIntegrationTest, ConfirmRightAfterFinalizeGetsAPostFaultOnly
   // buffer after the flush - the boundary state is reached deterministically.
   fill_buffer("/rosbag_boundary_probe");
 
-  capture.on_fault_confirmed("BOUNDARY_A");
-  ASSERT_TRUE(wait_for_row("BOUNDARY_A", std::chrono::milliseconds(8000)));
+  capture.on_fault_confirmed(rec("BOUNDARY_A"));
+  ASSERT_TRUE(wait_for_row(rec("BOUNDARY_A"), std::chrono::milliseconds(8000)));
 
   // A's flush drained the deque, its post-roll diverted direct writes, and no
   // publisher exists any more: the buffer is empty. Confirming now used to be
   // a warn-and-return no-op that left the fault with no recording at all.
-  capture.on_fault_confirmed("BOUNDARY_B");
+  capture.on_fault_confirmed(rec("BOUNDARY_B"));
 
-  ASSERT_TRUE(wait_for_row("BOUNDARY_B", std::chrono::milliseconds(8000)))
+  ASSERT_TRUE(wait_for_row(rec("BOUNDARY_B"), std::chrono::milliseconds(8000)))
       << "a fault confirmed right after the previous post-roll finalised must get a post-fault-only bag";
-  auto row_a = storage_->get_rosbag_file("BOUNDARY_A");
-  auto row_b = storage_->get_rosbag_file("BOUNDARY_B");
+  auto row_a = storage_->get_rosbag_file(rec("BOUNDARY_A"));
+  auto row_b = storage_->get_rosbag_file(rec("BOUNDARY_B"));
   ASSERT_TRUE(row_a.has_value());
   ASSERT_TRUE(row_b.has_value());
   EXPECT_NE(row_b->file_path, row_a->file_path) << "the boundary fault opens its own recording, not the closed one";
@@ -1567,15 +1637,15 @@ TEST_F(RosbagCaptureIntegrationTest, BurstFaultAttachesToThePostFaultOnlyRecordi
   capture.start();
   fill_buffer("/rosbag_boundary_attach_probe");
 
-  capture.on_fault_confirmed("BOUNDARY_A");
-  ASSERT_TRUE(wait_for_row("BOUNDARY_A", std::chrono::milliseconds(8000)));
+  capture.on_fault_confirmed(rec("BOUNDARY_A"));
+  ASSERT_TRUE(wait_for_row(rec("BOUNDARY_A"), std::chrono::milliseconds(8000)));
 
-  capture.on_fault_confirmed("BOUNDARY_B");  // empty buffer -> post-fault-only recording
-  capture.on_fault_confirmed("BOUNDARY_C");  // lands inside B's post-roll -> attaches
+  capture.on_fault_confirmed(rec("BOUNDARY_B"));  // empty buffer -> post-fault-only recording
+  capture.on_fault_confirmed(rec("BOUNDARY_C"));  // lands inside B's post-roll -> attaches
 
-  ASSERT_TRUE(wait_for_row("BOUNDARY_B", std::chrono::milliseconds(8000)));
-  auto row_b = storage_->get_rosbag_file("BOUNDARY_B");
-  auto row_c = storage_->get_rosbag_file("BOUNDARY_C");
+  ASSERT_TRUE(wait_for_row(rec("BOUNDARY_B"), std::chrono::milliseconds(8000)));
+  auto row_b = storage_->get_rosbag_file(rec("BOUNDARY_B"));
+  auto row_c = storage_->get_rosbag_file(rec("BOUNDARY_C"));
   ASSERT_TRUE(row_b.has_value());
   ASSERT_TRUE(row_c.has_value()) << "a burst fault confirming inside the post-fault-only window lost its attachment";
   EXPECT_EQ(row_c->file_path, row_b->file_path);
@@ -1595,10 +1665,10 @@ TEST_F(RosbagCaptureIntegrationTest, EmptyBufferWithNoPostFaultWindowGetsNoBag) 
 
   capture.start();
   // No publisher at all: the buffer is empty at confirmation.
-  capture.on_fault_confirmed("NO_WINDOW");
+  capture.on_fault_confirmed(rec("NO_WINDOW"));
   spin_for(std::chrono::milliseconds(300));
 
-  EXPECT_FALSE(storage_->get_rosbag_file("NO_WINDOW").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("NO_WINDOW")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u);
 
   capture.stop();
@@ -1617,10 +1687,10 @@ TEST_F(RosbagCaptureIntegrationTest, FullBagDurationReflectsActualContentNotConf
   capture.start();
   fill_buffer("/rosbag_duration_probe");
 
-  capture.on_fault_confirmed("SHORT_CONTENT");
-  ASSERT_TRUE(wait_for_row("SHORT_CONTENT", std::chrono::milliseconds(8000)));
+  capture.on_fault_confirmed(rec("SHORT_CONTENT"));
+  ASSERT_TRUE(wait_for_row(rec("SHORT_CONTENT"), std::chrono::milliseconds(8000)));
 
-  auto row = storage_->get_rosbag_file("SHORT_CONTENT");
+  auto row = storage_->get_rosbag_file(rec("SHORT_CONTENT"));
   ASSERT_TRUE(row.has_value());
   EXPECT_GT(row->duration_sec, 0.0);
   EXPECT_LE(row->duration_sec, 5.0) << "duration_sec must reflect the ~2.5s actually recorded, not config pre+post";
@@ -1640,9 +1710,9 @@ TEST_F(RosbagCaptureIntegrationTest, ImmediateFinalizeDurationReflectsActualCont
   capture.start();
   fill_buffer("/rosbag_immediate_duration_probe");
 
-  capture.on_fault_confirmed("IMMEDIATE_CONTENT");
+  capture.on_fault_confirmed(rec("IMMEDIATE_CONTENT"));
 
-  auto row = storage_->get_rosbag_file("IMMEDIATE_CONTENT");
+  auto row = storage_->get_rosbag_file(rec("IMMEDIATE_CONTENT"));
   ASSERT_TRUE(row.has_value());
   EXPECT_GT(row->duration_sec, 0.0);
   EXPECT_LE(row->duration_sec, 5.0) << "duration_sec must reflect the ~2s actually buffered, not config duration_sec";
@@ -1672,26 +1742,26 @@ TEST_F(RosbagCaptureIntegrationTest, WriterOpenFailureNeverOpensAPostRollAndReco
   fill_buffer("/rosbag_io_error_probe");
 
   // Buffered flush hits the I/O error.
-  capture.on_fault_confirmed("IO_FAIL_FULL");
+  capture.on_fault_confirmed(rec("IO_FAIL_FULL"));
   // Wait past duration_after_sec: a wrongly-opened post-roll would finalise
   // and store a row for the fault.
   spin_for(std::chrono::milliseconds(900));
-  EXPECT_FALSE(storage_->get_rosbag_file("IO_FAIL_FULL").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("IO_FAIL_FULL")).has_value());
 
   // Empty buffer at the boundary + broken path: the post-fault-only writer
   // open fails. Never open a post-roll after an I/O failure.
-  capture.on_fault_confirmed("IO_FAIL_EMPTY");
+  capture.on_fault_confirmed(rec("IO_FAIL_EMPTY"));
   spin_for(std::chrono::milliseconds(900));
-  EXPECT_FALSE(storage_->get_rosbag_file("IO_FAIL_EMPTY").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("IO_FAIL_EMPTY")).has_value());
 
   // Repair the path (now a directory) - later faults must capture normally.
   std::filesystem::remove(blocked);
   std::filesystem::create_directories(blocked);
   fill_buffer("/rosbag_io_error_probe_2");
-  capture.on_fault_confirmed("IO_RECOVERED");
-  ASSERT_TRUE(wait_for_row("IO_RECOVERED", std::chrono::milliseconds(8000)))
+  capture.on_fault_confirmed(rec("IO_RECOVERED"));
+  ASSERT_TRUE(wait_for_row(rec("IO_RECOVERED"), std::chrono::milliseconds(8000)))
       << "an earlier I/O failure must not corrupt the state machine for a fault with a working path";
-  EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file("IO_RECOVERED")->file_path));
+  EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file(rec("IO_RECOVERED"))->file_path));
 
   capture.stop();
 }
@@ -1712,11 +1782,11 @@ TEST_F(RosbagCaptureIntegrationTest, ZeroMessagePostFaultOnlyBagFinalizesCleanly
     capture.start();
     // No publisher at all: the buffer is empty and the post-roll records nothing.
     const std::string fault_code = "ZERO_MSG_" + format;
-    capture.on_fault_confirmed(fault_code);
+    capture.on_fault_confirmed(rec(fault_code));
 
-    ASSERT_TRUE(wait_for_row(fault_code, std::chrono::milliseconds(8000)))
+    ASSERT_TRUE(wait_for_row(rec(fault_code), std::chrono::milliseconds(8000)))
         << "zero-message post-fault-only bag did not finalise on " << format;
-    auto row = storage_->get_rosbag_file(fault_code);
+    auto row = storage_->get_rosbag_file(rec(fault_code));
     ASSERT_TRUE(row.has_value());
     EXPECT_EQ(row->format, format);
     ASSERT_TRUE(std::filesystem::is_directory(row->file_path));
@@ -1762,16 +1832,16 @@ TEST_F(RosbagCaptureIntegrationTest, PostFaultOnlyBagContainsThePostFaultWindow)
   // A's finalise and B's flush, or B is not the boundary case at all.
   publish_for(pub, std::chrono::milliseconds(2000));
 
-  capture.on_fault_confirmed("CONTENT_A");
-  ASSERT_TRUE(wait_for_row("CONTENT_A", std::chrono::milliseconds(10000)));
+  capture.on_fault_confirmed(rec("CONTENT_A"));
+  ASSERT_TRUE(wait_for_row(rec("CONTENT_A"), std::chrono::milliseconds(10000)));
 
-  capture.on_fault_confirmed("CONTENT_B");
+  capture.on_fault_confirmed(rec("CONTENT_B"));
   // on_fault_confirmed armed B's window before returning, so everything published
   // from here lands inside it and has to reach B's bag.
   publish_for(pub, std::chrono::milliseconds(1000));
 
-  ASSERT_TRUE(wait_for_row("CONTENT_B", std::chrono::milliseconds(10000)));
-  auto row_b = storage_->get_rosbag_file("CONTENT_B");
+  ASSERT_TRUE(wait_for_row(rec("CONTENT_B"), std::chrono::milliseconds(10000)));
+  auto row_b = storage_->get_rosbag_file(rec("CONTENT_B"));
   ASSERT_TRUE(row_b.has_value());
   EXPECT_TRUE(bag_has_topic(row_b->file_path, topic))
       << "the post-fault-only bag never recorded the topic - an empty black box is the failure #574 is about";
@@ -1815,19 +1885,19 @@ TEST_F(RosbagCaptureIntegrationTest, EntityScopedPostFaultOnlyBagCarriesOnlyTheF
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("SCOPED_A");
-  ASSERT_TRUE(wait_for_row("SCOPED_A", std::chrono::milliseconds(12000)));
+  capture.on_fault_confirmed({"SCOPED_A", "/boundary_scope_source_a"});
+  ASSERT_TRUE(wait_for_row({"SCOPED_A", "/boundary_scope_source_a"}, std::chrono::milliseconds(12000)));
 
   // Nothing was published since A's flush drained the buffer: B is the boundary.
-  capture.on_fault_confirmed("SCOPED_B");
+  capture.on_fault_confirmed({"SCOPED_B", "/boundary_scope_source_b"});
   for (int i = 0; i < 20; ++i) {
     pub_a->publish(msg);
     pub_b->publish(msg);
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("SCOPED_B", std::chrono::milliseconds(12000)));
-  auto row_b = storage_->get_rosbag_file("SCOPED_B");
+  ASSERT_TRUE(wait_for_row({"SCOPED_B", "/boundary_scope_source_b"}, std::chrono::milliseconds(12000)));
+  auto row_b = storage_->get_rosbag_file({"SCOPED_B", "/boundary_scope_source_b"});
   ASSERT_TRUE(row_b.has_value());
   EXPECT_GT(bag_message_count(row_b->file_path), 0) << "the entity-scoped post-fault-only bag finalised empty";
   EXPECT_TRUE(bag_has_topic(row_b->file_path, "/boundary_scope_b"))
@@ -1881,7 +1951,7 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("SCOPE_RACE_A");
+  capture.on_fault_confirmed({"SCOPE_RACE_A", "/scope_race_source_a"});
 
   // The racer is the capture pool and this thread is the executor, the production
   // shape. Only the racer ever confirms B, so no two threads call on_fault_confirmed
@@ -1890,7 +1960,7 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   std::atomic<bool> stop_racer{false};
   std::thread racer([&capture, &stop_racer]() {
     while (!stop_racer.load()) {
-      capture.on_fault_confirmed("SCOPE_RACE_B");
+      capture.on_fault_confirmed({"SCOPE_RACE_B", "/scope_race_source_b"});
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   });
@@ -1910,8 +1980,8 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("SCOPE_RACE_B", std::chrono::milliseconds(12000)));
-  auto row_b = storage_->get_rosbag_file("SCOPE_RACE_B");
+  ASSERT_TRUE(wait_for_row({"SCOPE_RACE_B", "/scope_race_source_b"}, std::chrono::milliseconds(12000)));
+  auto row_b = storage_->get_rosbag_file({"SCOPE_RACE_B", "/scope_race_source_b"});
   ASSERT_TRUE(row_b.has_value());
   ASSERT_GT(bag_message_count(row_b->file_path), 0) << "B's recording finalised empty, so its scope was never tested";
   EXPECT_TRUE(bag_has_topic(row_b->file_path, "/scope_race_b")) << "B's bag is missing its own faulting node's topic";
@@ -1956,7 +2026,7 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryConfirmationRacingAFinaliseKeepsIts
 
   capture.start();
   publish_for(pub, std::chrono::milliseconds(1500));
-  capture.on_fault_confirmed("RACE_A");
+  capture.on_fault_confirmed(rec("RACE_A"));
 
   // Hammer the boundary for the whole of A's window: every call while A records
   // attaches and returns, and the first one after the guard drops takes the
@@ -1964,7 +2034,7 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryConfirmationRacingAFinaliseKeepsIts
   std::atomic<bool> stop_racer{false};
   std::thread racer([&capture, &stop_racer]() {
     while (!stop_racer.load()) {
-      capture.on_fault_confirmed("RACE_B");
+      capture.on_fault_confirmed(rec("RACE_B"));
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   });
@@ -1974,8 +2044,8 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryConfirmationRacingAFinaliseKeepsIts
   racer.join();
   publish_for(pub, std::chrono::milliseconds(600));
 
-  ASSERT_TRUE(wait_for_row("RACE_B", std::chrono::milliseconds(12000)));
-  auto row_b = storage_->get_rosbag_file("RACE_B");
+  ASSERT_TRUE(wait_for_row(rec("RACE_B"), std::chrono::milliseconds(12000)));
+  auto row_b = storage_->get_rosbag_file(rec("RACE_B"));
   ASSERT_TRUE(row_b.has_value());
   EXPECT_GT(bag_message_count(row_b->file_path), 0)
       << "the boundary recording finalised empty - its writer was taken by the finalise it raced";
@@ -2001,18 +2071,18 @@ TEST_F(RosbagCaptureIntegrationTest, AttachmentCapAppliesToAPostFaultOnlyRecordi
     codes.push_back("POSTONLY_BURST_" + std::string(i < 10 ? "0" : "") + std::to_string(i));
   }
   for (const auto & code : codes) {
-    capture.on_fault_confirmed(code);
+    capture.on_fault_confirmed(rec(code));
   }
 
-  ASSERT_TRUE(wait_for_row(codes[0], std::chrono::milliseconds(12000)));
-  auto primary = storage_->get_rosbag_file(codes[0]);
+  ASSERT_TRUE(wait_for_row(rec(codes[0]), std::chrono::milliseconds(12000)));
+  auto primary = storage_->get_rosbag_file(rec(codes[0]));
   ASSERT_TRUE(primary.has_value());
   for (size_t i = 1; i < 33; ++i) {
-    auto row = storage_->get_rosbag_file(codes[i]);
+    auto row = storage_->get_rosbag_file(rec(codes[i]));
     ASSERT_TRUE(row.has_value()) << codes[i] << " is within the cap and must resolve to the recording";
     EXPECT_EQ(row->file_path, primary->file_path);
   }
-  EXPECT_FALSE(storage_->get_rosbag_file(codes[33]).has_value())
+  EXPECT_FALSE(storage_->get_rosbag_file(rec(codes[33])).has_value())
       << "fault 34 of the burst is past the cap and is dropped with a WARN";
   EXPECT_EQ(count_bag_dirs(), 1u) << "the dropped fault must not open a second bag";
 
@@ -2030,12 +2100,12 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryFaultClearedDuringItsOwnWindowDisca
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
 
   capture.start();
-  capture.on_fault_confirmed("CLEARED_BOUNDARY");  // empty buffer -> post-fault-only
+  capture.on_fault_confirmed(rec("CLEARED_BOUNDARY"));  // empty buffer -> post-fault-only
   spin_for(std::chrono::milliseconds(200));
-  capture.on_fault_cleared("CLEARED_BOUNDARY");
+  capture.on_fault_cleared(rec("CLEARED_BOUNDARY"));
   spin_for(std::chrono::milliseconds(2000));  // past the window, finalise ran
 
-  EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_BOUNDARY").has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file(rec("CLEARED_BOUNDARY")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "the bag of a fault cleared inside its own window must be discarded";
 
   capture.stop();
@@ -2053,12 +2123,12 @@ TEST_F(RosbagCaptureIntegrationTest, MetadataStoreFailureDiscardsTheBagInsteadOf
   RosbagCapture capture(node_.get(), &failing_storage, rosbag_config, snapshot_config);
 
   capture.start();
-  capture.on_fault_confirmed("STORE_FAILS");  // empty buffer -> post-fault-only
-  spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  capture.on_fault_confirmed(rec("STORE_FAILS"));  // empty buffer -> post-fault-only
+  spin_for(std::chrono::milliseconds(1200));       // past the window, finalise ran
 
   ASSERT_GT(failing_storage.store_attempts, 0u)
       << "the recording never reached the metadata store, so no row and no directory prove nothing";
-  EXPECT_FALSE(failing_storage.get_rosbag_file("STORE_FAILS").has_value());
+  EXPECT_FALSE(failing_storage.get_rosbag_file(rec("STORE_FAILS")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "a bag that no row can reference must not be left on disk";
 
   capture.stop();
@@ -2084,10 +2154,10 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
 
   capture.start();
   fill_buffer("/sweep_failure_probe");
-  capture.on_fault_confirmed("SWEEP_FAILS");
+  capture.on_fault_confirmed(rec("SWEEP_FAILS"));
   spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
 
-  auto row = sweep_failing_storage.get_rosbag_file("SWEEP_FAILS");
+  auto row = sweep_failing_storage.get_rosbag_file(rec("SWEEP_FAILS"));
   ASSERT_TRUE(row.has_value()) << "the metadata store succeeded, so its row must be there";
   // Without this the test would pass on a build where eviction never engaged, and
   // would be proving nothing about a failing sweep at all.
@@ -2116,13 +2186,13 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingStoreLeavesNoBagOnTheImmediatePath)
   fill_buffer("/immediate_store_probe");
   // The buffer has to hold something, or the confirmation returns before it ever
   // opens a bag and there is nothing for the store to fail on.
-  EXPECT_NO_THROW(capture.on_fault_confirmed("IMMEDIATE_STORE_FAILS"));
+  EXPECT_NO_THROW(capture.on_fault_confirmed(rec("IMMEDIATE_STORE_FAILS")));
   spin_for(std::chrono::milliseconds(200));
 
   ASSERT_GT(failing_storage.store_attempts, 0u)
       << "fill_buffer() buffered nothing, so the confirmation returned before opening a bag and the "
          "assertions below hold for the wrong reason";
-  EXPECT_FALSE(failing_storage.get_rosbag_file("IMMEDIATE_STORE_FAILS").has_value());
+  EXPECT_FALSE(failing_storage.get_rosbag_file(rec("IMMEDIATE_STORE_FAILS")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "a bag that no row can reference must not be left on disk";
 
   capture.stop();
@@ -2143,9 +2213,9 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
     capture.start();
     // Nothing has published yet, so the buffer is empty and this takes the boundary
     // path - the startup case, not just the one after a window closes.
-    capture.on_fault_confirmed("QUOTA_ROOMY");
-    ASSERT_TRUE(wait_for_row("QUOTA_ROOMY", std::chrono::milliseconds(8000)));
-    auto row = storage_->get_rosbag_file("QUOTA_ROOMY");
+    capture.on_fault_confirmed(rec("QUOTA_ROOMY"));
+    ASSERT_TRUE(wait_for_row(rec("QUOTA_ROOMY"), std::chrono::milliseconds(8000)));
+    auto row = storage_->get_rosbag_file(rec("QUOTA_ROOMY"));
     ASSERT_TRUE(row.has_value());
     EXPECT_TRUE(std::filesystem::exists(row->file_path));
     capture.stop();
@@ -2159,10 +2229,10 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
     strict.max_total_storage_mb = 0;
     RosbagCapture capture(node_.get(), storage_.get(), strict, snapshot_config);
     capture.start();
-    capture.on_fault_confirmed("QUOTA_TIGHT");
+    capture.on_fault_confirmed(rec("QUOTA_TIGHT"));
     spin_for(std::chrono::milliseconds(1500));
 
-    EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_TIGHT").has_value())
+    EXPECT_FALSE(storage_->get_rosbag_file(rec("QUOTA_TIGHT")).has_value())
         << "the quota did not engage on a post-fault-only recording";
     capture.stop();
   }
@@ -2180,7 +2250,7 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeB
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
 
   capture.start();
-  capture.on_fault_confirmed("SPLIT_BOUNDARY");  // empty buffer -> post-fault-only
+  capture.on_fault_confirmed(rec("SPLIT_BOUNDARY"));  // empty buffer -> post-fault-only
 
   auto pub = node_->create_publisher<std_msgs::msg::String>("/split_probe", 10);
   std_msgs::msg::String msg;
@@ -2190,8 +2260,8 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeB
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("SPLIT_BOUNDARY", std::chrono::milliseconds(12000)));
-  auto row = storage_->get_rosbag_file("SPLIT_BOUNDARY");
+  ASSERT_TRUE(wait_for_row(rec("SPLIT_BOUNDARY"), std::chrono::milliseconds(12000)));
+  auto row = storage_->get_rosbag_file(rec("SPLIT_BOUNDARY"));
   ASSERT_TRUE(row.has_value());
 
   size_t data_files = 0;
@@ -2254,14 +2324,14 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultAttachingToABoundaryRecordingWidensIt
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("WIDEN_C");
-  ASSERT_TRUE(wait_for_row("WIDEN_C", std::chrono::milliseconds(12000)));
+  capture.on_fault_confirmed({"WIDEN_C", "/widen_source_c"});
+  ASSERT_TRUE(wait_for_row({"WIDEN_C", "/widen_source_c"}, std::chrono::milliseconds(12000)));
 
   // Buffer drained by C's flush: this one is the boundary, scoped to C alone.
-  capture.on_fault_confirmed("WIDEN_C2");
+  capture.on_fault_confirmed({"WIDEN_C2", "/widen_source_c"});
   spin_for(std::chrono::milliseconds(300));
   // D confirms inside that window and attaches, so its topics join from here on.
-  capture.on_fault_confirmed("WIDEN_D");
+  capture.on_fault_confirmed({"WIDEN_D", "/widen_source_d"});
   for (int i = 0; i < 30; ++i) {
     pub_c->publish(msg);
     pub_d->publish(msg);
@@ -2269,8 +2339,8 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultAttachingToABoundaryRecordingWidensIt
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("WIDEN_D", std::chrono::milliseconds(12000)));
-  auto row_d = storage_->get_rosbag_file("WIDEN_D");
+  ASSERT_TRUE(wait_for_row({"WIDEN_D", "/widen_source_d"}, std::chrono::milliseconds(12000)));
+  auto row_d = storage_->get_rosbag_file({"WIDEN_D", "/widen_source_d"});
   ASSERT_TRUE(row_d.has_value());
   EXPECT_TRUE(bag_has_topic(row_d->file_path, "/widen_d"))
       << "the attached fault's row serves a boundary recording holding none of its topics";
@@ -2289,9 +2359,9 @@ TEST_F(RosbagCaptureIntegrationTest, FaultClearedBeforeConfirmed) {
   capture.start();
 
   // Prefail then clear (fault didn't confirm)
-  capture.on_fault_prefailed("CLEARED_EARLY");
+  capture.on_fault_prefailed(rec("CLEARED_EARLY"));
   spin_for(std::chrono::milliseconds(50));
-  capture.on_fault_cleared("CLEARED_EARLY");
+  capture.on_fault_cleared(rec("CLEARED_EARLY"));
 
   // Should not crash
   spin_for(std::chrono::milliseconds(100));
@@ -2307,7 +2377,7 @@ TEST_F(RosbagCaptureIntegrationTest, ConfirmedWithoutPrefailed) {
   capture.start();
 
   // Direct confirm (edge case)
-  capture.on_fault_confirmed("DIRECT_CONFIRM");
+  capture.on_fault_confirmed(rec("DIRECT_CONFIRM"));
   spin_for(std::chrono::milliseconds(200));
 
   capture.stop();
@@ -2393,11 +2463,11 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultClearedWhileItsBagWasOpeningGetsNoRow
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
-  capture.on_fault_confirmed("CLEARED_WHILE_OPENING");
-  storage_->clear_fault("CLEARED_WHILE_OPENING");
+  capture.on_fault_confirmed({"CLEARED_WHILE_OPENING", "/test_source"});
+  storage_->clear_fault({"CLEARED_WHILE_OPENING", "/test_source"});
   spin_for(std::chrono::milliseconds(1500));
 
-  EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_WHILE_OPENING").has_value())
+  EXPECT_FALSE(storage_->get_rosbag_file({"CLEARED_WHILE_OPENING", "/test_source"}).has_value())
       << "a fault cleared before its recording finalised kept a row nothing will ever remove";
   EXPECT_EQ(count_bag_dirs(), 0u) << "the bag nobody references any more was left on disk";
 
@@ -2440,7 +2510,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("CAP_PRIMARY");
+  capture.on_fault_confirmed({"CAP_PRIMARY", "/cap_primary_source"});
   // Fill the attachment set past its cap, then confirm the one whose topics matter.
   // The fillers report the PRIMARY node as their source on purpose: a fault whose
   // scope cannot be resolved widens the recording to every topic, which would let the
@@ -2450,19 +2520,20 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
     storage_->report_fault_event(filler, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                  ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap filler", "/cap_primary_source",
                                  clock.now(), debounce);
-    capture.on_fault_confirmed(filler);
+    capture.on_fault_confirmed({filler, "/cap_primary_source"});
   }
-  capture.on_fault_confirmed("CAP_LATE");
+  capture.on_fault_confirmed({"CAP_LATE", "/cap_late_source"});
   for (int i = 0; i < 30; ++i) {
     pub_primary->publish(msg);
     pub_late->publish(msg);
     spin_for(std::chrono::milliseconds(50));
   }
 
-  ASSERT_TRUE(wait_for_row("CAP_PRIMARY", std::chrono::milliseconds(12000)));
-  auto row = storage_->get_rosbag_file("CAP_PRIMARY");
+  ASSERT_TRUE(wait_for_row({"CAP_PRIMARY", "/cap_primary_source"}, std::chrono::milliseconds(12000)));
+  auto row = storage_->get_rosbag_file({"CAP_PRIMARY", "/cap_primary_source"});
   ASSERT_TRUE(row.has_value());
-  EXPECT_FALSE(storage_->get_rosbag_file("CAP_LATE").has_value()) << "the cap is supposed to withhold the lookup key";
+  EXPECT_FALSE(storage_->get_rosbag_file({"CAP_LATE", "/cap_late_source"}).has_value())
+      << "the cap is supposed to withhold the lookup key";
   EXPECT_TRUE(bag_has_topic(row->file_path, "/cap_primary")) << "the recording lost the topics it was opened for";
   EXPECT_TRUE(bag_has_topic(row->file_path, "/cap_late"))
       << "an over-cap fault's topics never reached the bag, so the burst's black box is missing its data";
@@ -2483,10 +2554,10 @@ TEST_F(RosbagCaptureIntegrationTest, AnUnusualExceptionFromTheStoreDoesNotEscape
 
   capture.start();
   fill_buffer("/odd_throw_probe");
-  EXPECT_NO_THROW(capture.on_fault_confirmed("ODD_THROW"));
+  EXPECT_NO_THROW(capture.on_fault_confirmed(rec("ODD_THROW")));
   ASSERT_GT(odd_storage.store_attempts, 0u) << "the store was never reached, so nothing was caught";
 
-  EXPECT_FALSE(odd_storage.get_rosbag_file("ODD_THROW").has_value());
+  EXPECT_FALSE(odd_storage.get_rosbag_file(rec("ODD_THROW")).has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "the bag survived a failed store";
 
   EXPECT_NO_THROW(capture.stop());
@@ -2523,12 +2594,12 @@ TEST_F(RosbagCaptureIntegrationTest, ReconfirmingTheRecordingsOwnFaultResolvesNo
     spin_for(std::chrono::milliseconds(50));
   }
 
-  capture.on_fault_confirmed("RECONFIRMED");
+  capture.on_fault_confirmed({"RECONFIRMED", "/reconfirm_source"});
   const size_t after_first = storage_ptr->lookups;
 
   constexpr int kRepeats = 20;
   for (int i = 0; i < kRepeats; ++i) {
-    capture.on_fault_confirmed("RECONFIRMED");
+    capture.on_fault_confirmed({"RECONFIRMED", "/reconfirm_source"});
   }
 
   EXPECT_LT(storage_ptr->lookups - after_first, static_cast<size_t>(kRepeats))
@@ -2611,7 +2682,7 @@ TEST_F(RosbagCaptureIntegrationTest, ConcurrentCapturesInOneProcessSurviveEachOt
   std::thread confirmer([&]() {
     int n = 0;
     while (!stop_racers.load()) {
-      capture.on_fault_confirmed("PLUGIN_RACE_" + std::to_string(n++));
+      capture.on_fault_confirmed(rec("PLUGIN_RACE_" + std::to_string(n++)));
       confirms_done.fetch_add(1);
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -2640,7 +2711,7 @@ TEST_F(RosbagCaptureIntegrationTest, ConcurrentCapturesInOneProcessSurviveEachOt
       << "the confirming thread barely ran, so few bags were opened off-executor";
   size_t rows = 0;
   for (int i = 0; i < confirms_done.load(); ++i) {
-    if (storage_->get_rosbag_file("PLUGIN_RACE_" + std::to_string(i)).has_value()) {
+    if (storage_->get_rosbag_file(rec("PLUGIN_RACE_" + std::to_string(i))).has_value()) {
       ++rows;
     }
   }

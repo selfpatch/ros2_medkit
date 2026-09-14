@@ -35,6 +35,19 @@ using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::SnapshotCapture;
 using ros2_medkit_fault_manager::SnapshotConfig;
 
+namespace {
+
+/// The owner every record in this suite belongs to. Snapshot capture resolves topics
+/// by fault CODE and writes per RECORD, so one owner is enough except in the
+/// entity-default suite, which resolves the scope from the owner itself.
+constexpr const char * kOwner = "/node";
+
+ros2_medkit_fault_manager::FaultId rec(const std::string & code) {
+  return ros2_medkit_fault_manager::FaultId{code, kOwner};
+}
+
+}  // namespace
+
 class SnapshotCaptureTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -79,10 +92,10 @@ TEST_F(SnapshotCaptureTest, DisabledCaptureSkipsProcessing) {
   config.default_topics = {"/test_topic"};
 
   SnapshotCapture capture(node_.get(), storage_.get(), config);
-  capture.capture("TEST_FAULT");
+  capture.capture(rec("TEST_FAULT"));
 
   // No snapshots should be stored when disabled
-  auto snapshots = storage_->get_snapshots("TEST_FAULT");
+  auto snapshots = storage_->get_snapshots(rec("TEST_FAULT"));
   EXPECT_TRUE(snapshots.empty());
 }
 
@@ -198,10 +211,10 @@ TEST_F(SnapshotCaptureTest, EmptyConfigurationHandledGracefully) {
   // No topics configured at all
 
   SnapshotCapture capture(node_.get(), storage_.get(), config);
-  capture.capture("ANY_FAULT");
+  capture.capture(rec("ANY_FAULT"));
 
   // Should not crash, just log that no topics configured
-  auto snapshots = storage_->get_snapshots("ANY_FAULT");
+  auto snapshots = storage_->get_snapshots(rec("ANY_FAULT"));
   EXPECT_TRUE(snapshots.empty());
 }
 
@@ -227,14 +240,14 @@ TEST_F(SnapshotCaptureTest, OnDemandCaptureHandlesNonExistentTopic) {
   config.default_topics = {"/nonexistent_topic"};
 
   SnapshotCapture capture(node_.get(), storage_.get(), config);
-  capture.capture("TEST_FAULT");
+  capture.capture(rec("TEST_FAULT"));
 
   // Should timeout gracefully, no snapshot stored
-  auto snapshots = storage_->get_snapshots("TEST_FAULT");
+  auto snapshots = storage_->get_snapshots(rec("TEST_FAULT"));
   EXPECT_TRUE(snapshots.empty());
 
   // A configured capture that sampled nothing still records an empty {} frame.
-  auto frame = storage_->get_freeze_frame("TEST_FAULT");
+  auto frame = storage_->get_freeze_frame(rec("TEST_FAULT"));
   ASSERT_TRUE(frame.has_value());
   EXPECT_EQ(frame->data, "{}");
 }
@@ -290,9 +303,9 @@ TEST_F(SnapshotCaptureTest, CaptureWritesFreezeFrameFromConfiguredTopic) {
   }
   ASSERT_GT(node_->count_publishers("/plc/pressure"), 0u);
 
-  capture.capture("PLC_PRESSURE_HIGH");
+  capture.capture(rec("PLC_PRESSURE_HIGH"));
 
-  auto frame = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  auto frame = storage_->get_freeze_frame(rec("PLC_PRESSURE_HIGH"));
   ASSERT_TRUE(frame.has_value());
   auto parsed = nlohmann::json::parse(frame->data);
   ASSERT_TRUE(parsed.contains("/plc/pressure"));
@@ -329,10 +342,10 @@ TEST_F(SnapshotCaptureTest, EmptyRecaptureKeepsRetainedFreezeFrame) {
     }
     ASSERT_GT(node_->count_publishers("/plc/flow"), 0u);
 
-    capture.capture("PLC_FLOW_LOW");
+    capture.capture(rec("PLC_FLOW_LOW"));
   }
 
-  auto frame = storage_->get_freeze_frame("PLC_FLOW_LOW");
+  auto frame = storage_->get_freeze_frame(rec("PLC_FLOW_LOW"));
   ASSERT_TRUE(frame.has_value());
   ASSERT_NE(frame->data, "{}");
 
@@ -345,9 +358,9 @@ TEST_F(SnapshotCaptureTest, EmptyRecaptureKeepsRetainedFreezeFrame) {
   }
   ASSERT_EQ(node_->count_publishers("/plc/flow"), 0u);
 
-  capture.capture("PLC_FLOW_LOW");
+  capture.capture(rec("PLC_FLOW_LOW"));
 
-  auto retained = storage_->get_freeze_frame("PLC_FLOW_LOW");
+  auto retained = storage_->get_freeze_frame(rec("PLC_FLOW_LOW"));
   ASSERT_TRUE(retained.has_value());
   auto parsed = nlohmann::json::parse(retained->data);
   ASSERT_TRUE(parsed.contains("/plc/flow"));
@@ -383,8 +396,8 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
   auto start = std::chrono::steady_clock::now();
   while (!got_frame && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
     rclcpp::spin_some(node_);
-    capture.capture("PLC_TEMP_HIGH");
-    auto frame = storage_->get_freeze_frame("PLC_TEMP_HIGH");
+    capture.capture(rec("PLC_TEMP_HIGH"));
+    auto frame = storage_->get_freeze_frame(rec("PLC_TEMP_HIGH"));
     got_frame = frame.has_value() && frame->data != "{}";
     if (!got_frame) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -392,14 +405,14 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
   }
   ASSERT_TRUE(got_frame);
 
-  auto frame = storage_->get_freeze_frame("PLC_TEMP_HIGH");
+  auto frame = storage_->get_freeze_frame(rec("PLC_TEMP_HIGH"));
   ASSERT_TRUE(frame.has_value());
   auto parsed = nlohmann::json::parse(frame->data);
   ASSERT_TRUE(parsed.contains("/plc/temperature"));
   EXPECT_DOUBLE_EQ(parsed["/plc/temperature"]["data"].get<double>(), 91.5);
 
   // The cache path also stores a per-topic snapshot.
-  auto snapshots = storage_->get_snapshots("PLC_TEMP_HIGH");
+  auto snapshots = storage_->get_snapshots(rec("PLC_TEMP_HIGH"));
   ASSERT_FALSE(snapshots.empty());
   EXPECT_EQ(snapshots.back().topic, "/plc/temperature");
   EXPECT_EQ(snapshots.back().message_type, "std_msgs/msg/Float64");
@@ -413,9 +426,9 @@ TEST_F(SnapshotCaptureTest, UnconfiguredFaultWritesNoFreezeFrame) {
   // No default_topics: an unrelated fault code resolves to an empty capture set.
   SnapshotCapture capture(node_.get(), storage_.get(), config);
 
-  capture.capture("UNMAPPED_FAULT");
+  capture.capture(rec("UNMAPPED_FAULT"));
 
-  EXPECT_FALSE(storage_->get_freeze_frame("UNMAPPED_FAULT").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame(rec("UNMAPPED_FAULT")).has_value());
 }
 
 // @verifies REQ_INTEROP_088
@@ -425,9 +438,9 @@ TEST_F(SnapshotCaptureTest, DisabledCaptureWritesNoFreezeFrame) {
   config.default_topics = {"/plc/pressure"};
   SnapshotCapture capture(node_.get(), storage_.get(), config);
 
-  capture.capture("ANY_FAULT");
+  capture.capture(rec("ANY_FAULT"));
 
-  EXPECT_FALSE(storage_->get_freeze_frame("ANY_FAULT").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame(rec("ANY_FAULT")).has_value());
 }
 
 // Entity-default (zero-config) capture tests. The reporting source is this
@@ -440,6 +453,11 @@ class EntityDefaultCaptureTest : public SnapshotCaptureTest {
     ros2_medkit_fault_manager::DebounceConfig debounce;  // threshold -1: first FAILED confirms
     storage_->report_fault_event(fault_code, 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
                                  "test fault", node_->get_fully_qualified_name(), rclcpp::Clock().now(), debounce);
+  }
+
+  /// The record this node owns: the entity-default scope is resolved from the owner.
+  ros2_medkit_fault_manager::FaultId id(const std::string & fault_code) const {
+    return ros2_medkit_fault_manager::FaultId{fault_code, node_->get_fully_qualified_name()};
   }
 
   /// Wait until this node's publisher on @p topic is visible on the graph.
@@ -476,9 +494,9 @@ TEST_F(EntityDefaultCaptureTest, EntityDefaultCapturesSourceNodeTopics) {
   });
   wait_for_publisher("/entity/own_metric");
 
-  capture.capture("ENTITY_FAULT");
+  capture.capture(id("ENTITY_FAULT"));
 
-  auto frame = storage_->get_freeze_frame("ENTITY_FAULT");
+  auto frame = storage_->get_freeze_frame(id("ENTITY_FAULT"));
   ASSERT_TRUE(frame.has_value());
   auto parsed = nlohmann::json::parse(frame->data);
   ASSERT_TRUE(parsed.contains("/entity/own_metric"));
@@ -500,9 +518,9 @@ TEST_F(EntityDefaultCaptureTest, EntityDefaultDisabledWritesNoFreezeFrame) {
   store_fault_from_this_node("OPTED_OUT_FAULT");
   wait_for_publisher("/entity/opted_out");
 
-  capture.capture("OPTED_OUT_FAULT");
+  capture.capture(id("OPTED_OUT_FAULT"));
 
-  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_FAULT").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame(id("OPTED_OUT_FAULT")).has_value());
 }
 
 // @verifies REQ_INTEROP_088
@@ -530,9 +548,9 @@ TEST_F(EntityDefaultCaptureTest, ExplicitConfigWinsOverEntityDefault) {
   });
   wait_for_publisher("/entity/configured");
 
-  capture.capture("CONFIGURED_FAULT");
+  capture.capture(id("CONFIGURED_FAULT"));
 
-  auto frame = storage_->get_freeze_frame("CONFIGURED_FAULT");
+  auto frame = storage_->get_freeze_frame(id("CONFIGURED_FAULT"));
   ASSERT_TRUE(frame.has_value());
   auto parsed = nlohmann::json::parse(frame->data);
   // Only the explicitly configured topic is captured, never the node's other topics.
@@ -568,11 +586,11 @@ TEST_F(EntityDefaultCaptureTest, ExplicitEmptyConfigEntryOptsOutOfEntityDefault)
   });
   wait_for_publisher("/entity/own_optout");
 
-  capture.capture("OPTED_OUT_SPECIFIC");
-  capture.capture("OPTED_OUT_PATTERN_X");
+  capture.capture(id("OPTED_OUT_SPECIFIC"));
+  capture.capture(id("OPTED_OUT_PATTERN_X"));
 
-  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_SPECIFIC").has_value());
-  EXPECT_FALSE(storage_->get_freeze_frame("OPTED_OUT_PATTERN_X").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame(id("OPTED_OUT_SPECIFIC")).has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame(id("OPTED_OUT_PATTERN_X")).has_value());
 }
 
 // @verifies REQ_INTEROP_088
@@ -586,9 +604,9 @@ TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
   storage_->report_fault_event("PLC_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
                                "plc fault", "beckhoff_plc_app", rclcpp::Clock().now(), debounce);
 
-  capture.capture("PLC_FAULT");
+  capture.capture({"PLC_FAULT", "beckhoff_plc_app"});
 
-  EXPECT_FALSE(storage_->get_freeze_frame("PLC_FAULT").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame({"PLC_FAULT", "beckhoff_plc_app"}).has_value());
 }
 
 // @verifies REQ_INTEROP_088
@@ -618,9 +636,9 @@ TEST_F(EntityDefaultCaptureTest, BarePluginIdNeverMatchesSameNamedNode) {
   });
   wait_for_publisher("/entity/bare_id_metric");
 
-  capture.capture("BARE_ID_FAULT");
+  capture.capture({"BARE_ID_FAULT", node_->get_name()});
 
-  EXPECT_FALSE(storage_->get_freeze_frame("BARE_ID_FAULT").has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame({"BARE_ID_FAULT", node_->get_name()}).has_value());
 }
 
 namespace {
@@ -683,9 +701,9 @@ TEST_F(SnapshotCaptureTest, CaptureIdContinuesFromWhatStorageAlreadyHolds) {
   await_publisher(node_, "/plc/seeded");
 
   confirm_fault(storage_.get(), "SEEDED_FAULT");
-  capture.capture("SEEDED_FAULT");
+  capture.capture(rec("SEEDED_FAULT"));
 
-  const auto rows = storage_->get_snapshots("SEEDED_FAULT");
+  const auto rows = storage_->get_snapshots(rec("SEEDED_FAULT"));
   ASSERT_FALSE(rows.empty());
   EXPECT_GT(rows.front().capture_id, 41) << "the new capture outranks everything already stored";
 }
@@ -714,11 +732,11 @@ TEST_F(SnapshotCaptureTest, ACaptureFinishingAfterAcknowledgementIsNotStored) {
   await_publisher(node_, "/plc/acked");
 
   confirm_fault(storage_.get(), "ACKED_FAULT");
-  ASSERT_TRUE(storage_->clear_fault("ACKED_FAULT"));
+  ASSERT_TRUE(storage_->clear_fault(rec("ACKED_FAULT")));
 
-  capture.capture("ACKED_FAULT");
+  capture.capture(rec("ACKED_FAULT"));
 
-  EXPECT_TRUE(storage_->get_snapshots("ACKED_FAULT").empty())
+  EXPECT_TRUE(storage_->get_snapshots(rec("ACKED_FAULT")).empty())
       << "acknowledgement promised these were gone; the batch must not resurrect them";
 }
 
@@ -747,11 +765,11 @@ TEST_F(SnapshotCaptureTest, ACaptureFinishingAfterAcknowledgementIsStoredWhenEvi
   await_publisher(node_, "/plc/retained");
 
   confirm_fault(storage_.get(), "RETAINED_FAULT");
-  ASSERT_TRUE(storage_->clear_fault("RETAINED_FAULT"));
+  ASSERT_TRUE(storage_->clear_fault(rec("RETAINED_FAULT")));
 
-  capture.capture("RETAINED_FAULT");
+  capture.capture(rec("RETAINED_FAULT"));
 
-  EXPECT_FALSE(storage_->get_snapshots("RETAINED_FAULT").empty());
+  EXPECT_FALSE(storage_->get_snapshots(rec("RETAINED_FAULT")).empty());
 }
 
 int main(int argc, char ** argv) {
