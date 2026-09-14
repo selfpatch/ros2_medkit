@@ -1158,7 +1158,9 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     // The RECORDING, not the fault code: several recordings of one fault would
     // otherwise all carry the same id and collapse into one download.
     rosbag_snapshot.bulk_data_id = rosbag_info.recording_id;
-    rosbag_snapshot.size_bytes = rosbag_info.size_bytes;
+    // What a download of this recording transfers, not what it occupies on disk.
+    // The stored figure is the directory total and stays the quota's business.
+    rosbag_snapshot.size_bytes = rosbag_served_bytes(rosbag_info.file_path, rosbag_info.size_bytes);
     rosbag_snapshot.duration_sec = rosbag_info.duration_sec;
     rosbag_snapshot.format = rosbag_info.format;
     rosbag_snapshot.captured_at_ns = rosbag_info.created_at_ns;
@@ -1491,15 +1493,24 @@ void FaultManagerNode::handle_get_snapshots(
   }
   result["topics"] = topics_json;
 
-  // Include rosbag info if available
+  // Include rosbag info if available.
+  //
+  // No download URL. This payload used to carry one built as
+  // /api/v1/faults/{code}/snapshots/bag, a route that no longer exists and answers
+  // 404, so the field described a download nobody could perform. It is not replaced
+  // here either: a recording is addressed under its entity
+  // (/api/v1/{entity-type}/{id}/bulk-data/rosbags/{recording_id}), and the entity
+  // type is a fact of the gateway's discovery model that the fault manager does not
+  // hold. Any URL built here would be a guess at one of four prefixes. The gateway
+  // resolves the entity itself and builds that URI from the recording id it gets on
+  // the GetFault snapshot entries, which is the one place the mapping is known.
   auto rosbag_info = storage_->get_rosbag_file(request->fault_code);
   if (rosbag_info) {
     nlohmann::json rosbag_json;
     rosbag_json["available"] = true;
     rosbag_json["duration_sec"] = rosbag_info->duration_sec;
-    rosbag_json["size_bytes"] = rosbag_info->size_bytes;
+    rosbag_json["size_bytes"] = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
     rosbag_json["format"] = rosbag_info->format;
-    rosbag_json["download_url"] = "/api/v1/faults/" + request->fault_code + "/snapshots/bag";
     result["rosbag"] = rosbag_json;
   } else {
     result["rosbag"] = {{"available", false}};
@@ -1598,7 +1609,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   response->fault_codes = attached_codes;
   response->format = rosbag_info->format;
   response->duration_sec = rosbag_info->duration_sec;
-  response->size_bytes = rosbag_info->size_bytes;
+  response->size_bytes = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
 
   RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for %s", rosbag_info->file_path.c_str(), subject.c_str());
 }
@@ -1635,7 +1646,7 @@ void FaultManagerNode::handle_list_rosbags(
     response->file_paths.push_back(info.file_path);
     response->formats.push_back(info.format);
     response->durations_sec.push_back(info.duration_sec);
-    response->sizes_bytes.push_back(info.size_bytes);
+    response->sizes_bytes.push_back(rosbag_served_bytes(info.file_path, info.size_bytes));
     response->created_at_ns.push_back(info.created_at_ns);
   }
 

@@ -30,6 +30,8 @@
 #include <mutex>
 #include <optional>
 #include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <set>
 #include <sstream>
@@ -1263,6 +1265,37 @@ std::string fnv1a_hex(const std::string & text) {
   return oss.str();
 }
 
+/// The file @p relative_name names inside the bag at @p bag_path, when that is a
+/// name this side follows: a direct child of the bag directory carrying a storage
+/// extension, which is what rosbag2 writes.
+///
+/// Path concatenation carries no such guarantee. An absolute name replaces the bag
+/// directory outright and a `..` name climbs out of it, so without this test a
+/// metadata.yaml chooses which file on the host gets measured and reported as the
+/// recording's size. The gateway applies the same rule in its own
+/// rosbag_named_storage_file (bulkdata_handlers.cpp); the two packages share no
+/// code, so the rule is written out on both sides and a change to it belongs on
+/// both.
+///
+/// nullopt when the name is not one of those. The caller treats that as it treats
+/// a named file that is absent: the stored total.
+std::optional<std::filesystem::path> named_storage_file(const std::string & bag_path,
+                                                        const std::string & relative_name) {
+  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
+  if (!bag.has_filename()) {
+    bag = bag.parent_path();  // tolerate a trailing slash
+  }
+  const std::filesystem::path named = (bag / relative_name).lexically_normal();
+  if (named.parent_path() != bag) {
+    return std::nullopt;
+  }
+  const std::string extension = named.extension().string();
+  if (extension != ".db3" && extension != ".mcap") {
+    return std::nullopt;
+  }
+  return named;
+}
+
 }  // namespace
 
 std::string RosbagCapture::bag_directory_name(const std::string & fault_code, int64_t timestamp_ms) {
@@ -1325,6 +1358,12 @@ std::string RosbagCapture::generate_bag_path(const std::string & fault_code) con
   return base_path + "/" + bag_directory_name(fault_code, timestamp);
 }
 
+// The recording's footprint, and the figure stored on its rows. It is what the
+// recording costs against max_total_storage_mb and what evicting it frees, so it
+// counts everything in the directory including metadata.yaml and every file of a
+// split. rosbag_served_bytes() below is the other measurement of the same
+// recording, the one the API reports, and the two are deliberately different
+// numbers - see its comment for which question each answers.
 size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   size_t total_size = 0;
 
@@ -1343,6 +1382,48 @@ size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   }
 
   return total_size;
+}
+
+// The bytes a download of this recording actually transfers, which is the one
+// storage file the bulk-data route hands over. calculate_bag_size() above answers
+// the storage question (what the recording costs on disk) and this one answers the
+// client's question (what is about to arrive). The two are separate figures, which
+// is what lets the quota and the API each stay honest: a footprint reported here
+// would overstate every download by metadata.yaml.
+//
+// The served file is the one the bag's own metadata.yaml names, and only when that
+// name points at a storage file inside the bag directory. See the header for every
+// fallback and why none of them logs.
+size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_bytes) {
+  try {
+    rosbag2_storage::MetadataIo metadata_io;
+    if (!metadata_io.metadata_file_exists(bag_path)) {
+      return stored_total_bytes;
+    }
+
+    const rosbag2_storage::BagMetadata metadata = metadata_io.read_metadata(bag_path);
+    // Exactly one, or there is no single served file to measure. Zero means a bag
+    // that recorded nothing addressable. More than one means a split, where the
+    // download hands over one segment and the rest are unreachable through it - a
+    // defect of the download route, not something a size can paper over.
+    if (metadata.relative_file_paths.size() != 1) {
+      return stored_total_bytes;
+    }
+
+    const auto storage_file = named_storage_file(bag_path, metadata.relative_file_paths.front());
+    if (!storage_file) {
+      return stored_total_bytes;
+    }
+    std::error_code ec;
+    const auto served = std::filesystem::file_size(*storage_file, ec);
+    if (ec) {
+      return stored_total_bytes;
+    }
+    return static_cast<size_t>(served);
+  } catch (const std::exception &) {
+    // read_metadata throws on a metadata.yaml that cannot be read or parsed.
+    return stored_total_bytes;
+  }
 }
 
 std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes) {

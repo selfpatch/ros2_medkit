@@ -75,11 +75,13 @@ Quick Start
 
       ros2 launch ros2_medkit_gateway gateway.launch.py
 
-3. **When a fault is confirmed, query its snapshots:**
+3. **When a fault is confirmed, read its snapshots from the fault itself:**
+
+   They are returned inline, under ``environment_data.snapshots``.
 
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+      curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
 
 Configuration Options
 ---------------------
