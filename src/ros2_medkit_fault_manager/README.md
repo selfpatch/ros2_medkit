@@ -4,9 +4,19 @@ Central fault manager node for the ros2_medkit fault management system.
 
 ## Overview
 
-The FaultManager node provides a central point for fault aggregation and lifecycle management.
-It receives fault reports from multiple sources, aggregates them by `fault_code`, and provides
-query and clearing interfaces.
+The FaultManager node provides a central point for fault record keeping and lifecycle management.
+It receives fault reports from multiple sources, keeps one record per `(fault_code, reporting
+source)` pair, and provides query and clearing interfaces.
+
+A record is identified by its `fault_code` and by the `source_id` the `ReportFault` call carried.
+That source is the record's **owner**. Two sources reporting one `fault_code` are two records, each
+with its own status, debounce counter, occurrence count, severity, timestamps, freeze frame,
+snapshots, near-miss series and rosbag links. A clear or an auto-heal driven by one owner never
+touches another owner's record. The services that act on a single record (`~/clear_fault`,
+`~/get_fault`, `~/get_snapshots`, `~/get_rosbag`) carry a `source_id` request field naming the
+owner; leaving it empty is unscoped and applies only when exactly one record carries the
+`fault_code`, otherwise the call fails with a message beginning `ambiguous:` that lists the
+owners and changes nothing.
 
 ## Quick Start
 
@@ -46,15 +56,16 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 ## Features
 
-- **Multi-source aggregation**: Same `fault_code` from different sources creates a single fault
+- **Per-source records**: Same `fault_code` from different sources creates one record per source,
+  each filtered, cleared and healed on its own
 - **Occurrence tracking**: Counts outages, not reports - the count starts at one and rises only
-  when a cleared fault is raised again - and tracks all reporting sources
+  when a cleared record is raised again by its own owner
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
-- **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
-- **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
+- **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per record and retained when the record is cleared
+- **Freeze-frame retention**: One compact JSON freeze-frame per record, retained across `clear_fault` (see below)
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
 - **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
@@ -75,7 +86,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
-Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by fault code. It differs from per-topic snapshots in two ways: snapshots are deleted when the fault is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct fault codes (one row per code, replaced in place) and rows are never evicted.
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two owners confirming one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
@@ -158,8 +169,9 @@ counter walking back down under the latch. Without the field the two cannot be t
 rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
-**reporting source**, while the debounce counter is shared by every source of that fault code. It
-is therefore not by itself the distance to confirmation for the fault as a whole.
+**reporting source**. The counter it describes is that source's own record, so the pair is the
+distance to confirmation for the record. The counter is no longer shared between sources of one
+fault code: each source's reports move only its own record.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their
 own clocks, so a report can arrive carrying a timestamp behind one already stored; ordering the
@@ -176,11 +188,11 @@ retained snapshots, because it records the most recent confirmation while the sn
 to earlier ones. `~/get_snapshots` returns one entry per topic and serves the newest capture of
 that topic, whichever storage backend is in use.
 
-The bound is **per fault code, not per database**. Fault codes are unbounded in cardinality, so a
-reporter emitting a stream of distinct codes still grows the table; the bound caps what any single
-code costs, not the total.
+The bound is **per record, not per database**. Fault codes are unbounded in cardinality and so is
+the set of reporting sources, so a reporter emitting a stream of distinct codes still grows the
+table; the bound caps what any single record costs, not the total.
 
-Retention is **bounded per fault code** by `near_miss.max_per_fault` (default 200), evicting the
+Retention is **bounded per record** by `near_miss.max_per_fault` (default 200), evicting the
 **oldest** entries first. That is the same direction as `snapshots.max_per_fault` and the rosbag
 cap, and for the same reason: a series frozen at boot says nothing about whether the rate is
 changing, and the evidence a technician wants is the evidence from the fault happening now. Set it

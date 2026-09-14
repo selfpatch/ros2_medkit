@@ -135,15 +135,15 @@ Main Components
    - Future implementations can be added in Issue #8: Fault Persistence Options
 
 3. **InMemoryFaultStorage** - Thread-safe in-memory implementation of FaultStorage
-   - Uses ``std::map`` keyed by ``fault_code`` for O(log n) lookups
+   - Uses ``std::map`` keyed by ``FaultId`` for O(log n) lookups, ordered by code first
    - Protected by ``std::mutex`` for concurrent service request handling
-   - Aggregates reports from multiple sources into single fault entries
-   - Implements severity escalation (higher severity overwrites lower)
-   - Tracks occurrence counts and all reporting sources
+   - Keeps one record per reporting source, filtered and cleared independently
+   - Implements severity escalation per record (higher severity overwrites lower)
+   - Tracks occurrence counts per record
 
-4. **FaultState** - Internal representation of a fault entry
+4. **FaultState** - Internal representation of one fault record
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
-   - Uses ``std::set`` for reporting_sources to ensure uniqueness
+   - Carries its owner and emits it as the single entry of reporting_sources
    - Tracks first and last occurrence timestamps
    - Manages fault status lifecycle with debounce (PREFAILED -> CONFIRMED -> CLEARED)
 
@@ -164,8 +164,9 @@ Reports a new fault or updates an existing one.
 - **Input validation**: fault_code and source_id cannot be empty, event_type must be valid
 - **Event types**: FAILED (fault detected) or PASSED (fault condition cleared)
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
-- **Aggregation**: Same fault_code from different sources creates a single fault entry
-- **Severity escalation**: Fault severity is updated if a higher severity is reported
+- **Record identity**: (fault_code, source_id). The same fault_code from different sources
+  creates one record per source, each debounced, cleared and healed on its own
+- **Severity escalation**: A record's severity is updated if its own owner reports a higher one
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
@@ -196,21 +197,29 @@ All ``FaultStorage`` public methods acquire a mutex lock to ensure thread safety
 when handling concurrent service requests. This is essential since ROS 2 service
 callbacks may execute on different threads.
 
-Fault Aggregation
-~~~~~~~~~~~~~~~~~
+Fault Records
+~~~~~~~~~~~~~
 
-Multiple reports of the same ``fault_code`` (from same or different sources) are
-aggregated into a single fault entry. This provides:
+A fault record is identified by the pair ``(fault_code, source_id)``, where the
+``source_id`` is the one the ``ReportFault`` call carried. That source is the record's
+owner. Repeated reports from one source update that source's record; a report from a
+source that owns no record for the code opens a new one. This provides:
 
-- **Deduplication**: Prevents fault flooding from repeated reports
-- **Source tracking**: Identifies all sources reporting the same fault
-- **Occurrence counting**: Tracks how many times a fault was reported
+- **Deduplication**: Prevents fault flooding from one source's repeated reports
+- **Source attribution**: Each record names the one source that owns it
+- **Occurrence counting**: Tracks how many times a record was raised
+
+Keeping the records apart is what makes the per-source state mean anything: the debounce
+counter, the status, the severity, the occurrence count and the timestamps all belong to
+one reporter, so one reporter recovering cannot walk another reporter's fault back from
+confirmation, and one reporter's CRITICAL cannot escalate another's record.
 
 Severity Escalation
 ~~~~~~~~~~~~~~~~~~~
 
-When a fault is re-reported with a higher severity, the stored severity is updated.
-This ensures the fault reflects the worst-case condition. Severity levels are ordered:
+When a record is re-reported by its owner with a higher severity, the stored severity is
+updated. This ensures the record reflects the worst-case condition its own reporter saw.
+Severity levels are ordered:
 ``INFO(0) < WARN(1) < ERROR(2) < CRITICAL(3)``.
 
 Status Lifecycle (Debounce Model)

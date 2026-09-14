@@ -1,7 +1,8 @@
 Fault Manager Configuration
 ===========================
 
-The ``ros2_medkit_fault_manager`` node aggregates and manages faults from multiple sources.
+The ``ros2_medkit_fault_manager`` node keeps and manages one fault record per
+(``fault_code``, reporting source) pair.
 This page documents all configuration parameters.
 
 .. contents:: Table of Contents
@@ -208,8 +209,8 @@ threshold overrides:
 
 - The ``source_id`` is the identifier passed in ``ReportFault`` service requests, typically the
   fully qualified name of the reporting ROS 2 node (e.g., ``/sensors/lidar/front_node``).
-  You can inspect actual ``source_id`` values in the ``reporting_sources`` field of existing
-  faults via ``GET /api/v1/faults``.
+  It also owns the record it creates, so you can inspect actual ``source_id`` values in the
+  one-element ``reporting_sources`` field of existing faults via ``GET /api/v1/faults``.
 - The ``source_id`` from ``ReportFault`` requests is matched against configured prefixes.
 - The **longest matching prefix** wins. For example, ``/sensors/lidar/front`` matches
   ``/sensors/lidar`` over ``/sensors``.
@@ -219,9 +220,11 @@ threshold overrides:
 
 .. note::
 
-   When multiple entities report the same ``fault_code``, each event applies the
-   thresholds resolved from that event's ``source_id``. This means the debounce
-   behavior follows the reporting entity, not the fault.
+   When multiple entities report the same ``fault_code``, each of them owns its own
+   record and each event applies the thresholds resolved from that event's
+   ``source_id``. The debounce counter belongs to the same record, so an entity's
+   configured band governs exactly the counter its own reports move: one entity's
+   reports can neither confirm nor heal another entity's fault.
 
    ``auto_confirm_after_sec`` is global-only and cannot be overridden per-entity.
    Critical faults skip debounce and confirm on their first occurrence; that is

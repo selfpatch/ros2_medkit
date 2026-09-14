@@ -12,8 +12,8 @@ fault_manager:
 
     # Near-miss series: one appended entry per FAILED report that moved the
     # debounce counter without confirming. Retained across clear_fault, bounded
-    # per fault code, oldest evicted first. 0 = unlimited (grows with the
-    # reporting rate).
+    # per record - one (fault_code, reporting source) pair - oldest evicted
+    # first. 0 = unlimited (grows with the reporting rate).
     # near_miss.max_per_fault: 200
 
     # Healing OFF by default: a recovery signal (e.g. action SUCCEEDED) does not
@@ -31,7 +31,7 @@ fault_manager:
     # to entity-scoped capture and is crash-safe (falls back / self-disables if no
     # storage backend is usable). Faults confirming during another fault's
     # post-roll (duration_after_sec) share that recording, one metadata entry per
-    # fault; at most 32 attach on top of the first, the rest get no entry (WARN).
+    # record; at most 32 attach on top of the first, the rest get no entry (WARN).
     snapshots.rosbag.enabled: false
 
     # Capture concurrency bound under fault storms (issue #441). These govern the
