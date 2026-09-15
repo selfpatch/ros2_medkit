@@ -760,6 +760,7 @@ int main(int argc, char ** argv) {
   bool secure = false;
   std::string cert_path, key_path, trust_path, username = "medkit", password = "secret";
   std::string app_uri = "urn:test:alarms:server";
+  bool app_uri_explicit = false;
   std::string di_serial = "SN-0001-TEST";
   UA_UInt32 max_refs_per_node = 0;  // 0 = server default (unlimited)
   for (int i = 1; i < argc; ++i) {
@@ -782,6 +783,7 @@ int main(int argc, char ** argv) {
       trust_path = argv[++i];
     } else if (std::strcmp(argv[i], "--app-uri") == 0 && i + 1 < argc) {
       app_uri = argv[++i];
+      app_uri_explicit = true;
     } else if (std::strcmp(argv[i], "--username") == 0 && i + 1 < argc) {
       username = argv[++i];
     } else if (std::strcmp(argv[i], "--password") == 0 && i + 1 < argc) {
@@ -807,6 +809,14 @@ int main(int argc, char ** argv) {
 #endif
   } else {
     UA_ServerConfig_setMinimal(config, port, nullptr);
+    if (app_uri_explicit) {
+      // The server identity discovery reads and the plugin binds to. ``--app-uri``
+      // gives a second fixture a second identity, so a test that needs two
+      // servers on one host - each on its own port - can stand for two PLCs.
+      // Left at open62541's own default when no test names one.
+      UA_String_clear(&config->applicationDescription.applicationUri);
+      config->applicationDescription.applicationUri = UA_STRING_ALLOC(app_uri.c_str());
+    }
   }
   set_build_info(config);
 
@@ -850,8 +860,9 @@ int main(int argc, char ** argv) {
   std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;
   std::thread reader(stdin_reader_loop);
 
-  // The server is driven by hand rather than by UA_Server_run so that queued
-  // commands execute between iterations, on this thread. run_iterate is called
+  // The server is driven by hand so that queued commands execute between
+  // iterations, on this thread, which UA_Server_run offers no point for.
+  // run_iterate is called
   // with waitInternal false and the loop paced by a short sleep: blocking
   // inside the server would hold a command back until the next scheduled
   // callback, and a command is how a test makes the alarm it is waiting for

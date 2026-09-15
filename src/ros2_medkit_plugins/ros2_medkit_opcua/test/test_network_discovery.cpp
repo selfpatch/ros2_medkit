@@ -536,6 +536,48 @@ TEST(SelectAutoEndpoint, LdsNeverSelectedEvenWhenAnonymousRelaxed) {
   EXPECT_EQ(NetworkDiscovery::select_auto_endpoint(eps, false), nullptr);
 }
 
+TEST(SelectAutoEndpoint, ABoundBridgeLooksForItsOwnServerWhateverItsAddress) {
+  // A bridge already holding a session names the server it wants. Address order
+  // decides nothing then: a foreign server that sorts lower would otherwise win
+  // every sweep and the bound one would never be reached again.
+  const std::string mine = "urn:siemens:s7-1500:line-a";
+  const std::string other = "urn:beckhoff:cx5140:line-b";
+
+  DiscoveredEndpoint foreign;
+  foreign.ip = "192.168.1.10";  // sorts FIRST
+  foreign.port = 4840;
+  foreign.protocol = "opcua";
+  foreign.application_type = 0;
+  foreign.anonymous_none_available = true;
+  foreign.application_uri = other;
+  DiscoveredEndpoint bound = foreign;
+  bound.ip = "192.168.1.50";
+  bound.application_uri = mine;
+
+  std::vector<DiscoveredEndpoint> eps = {foreign, bound};
+  const auto * chosen = NetworkDiscovery::select_auto_endpoint(eps, true, mine);
+  ASSERT_NE(chosen, nullptr) << "the bound server is on the network and was not selected";
+  EXPECT_EQ(chosen->application_uri, mine)
+      << "address order decided the selection, so a lower-sorting foreign server blocks the bound one for good";
+  EXPECT_EQ(chosen->ip, "192.168.1.50");
+
+  // The bound server is not answering anywhere: nothing is selected, so the
+  // endpoint and the standing outage both keep their place.
+  std::vector<DiscoveredEndpoint> foreign_only = {foreign};
+  EXPECT_EQ(NetworkDiscovery::select_auto_endpoint(foreign_only, true, mine), nullptr);
+
+  // Nothing bound: the deterministic lowest ip:port.
+  const auto * first_adoption = NetworkDiscovery::select_auto_endpoint(eps, true, "");
+  ASSERT_NE(first_adoption, nullptr);
+  EXPECT_EQ(first_adoption->ip, "192.168.1.10");
+
+  // A server that names no identity cannot be the bound one.
+  DiscoveredEndpoint anonymous_server = foreign;
+  anonymous_server.application_uri.clear();
+  std::vector<DiscoveredEndpoint> nameless = {anonymous_server};
+  EXPECT_EQ(NetworkDiscovery::select_auto_endpoint(nameless, true, mine), nullptr);
+}
+
 TEST(SelectAutoEndpoint, DeterministicLowestAddressWins) {
   DiscoveredEndpoint a;
   a.ip = "192.168.1.20";

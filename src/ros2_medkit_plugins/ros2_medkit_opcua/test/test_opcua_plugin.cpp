@@ -34,6 +34,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -989,6 +990,12 @@ TEST(RescanStep, AThrowingSweepStillStampsTheCadence) {
   // on the normal path, the next poll iteration would find the cadence due and
   // start another sweep immediately, so a server that makes the identify throw
   // would turn the poll thread into a continuous scanner.
+  //
+  // The rethrow here is not the poll thread surviving on its own - it has no
+  // try, so an exception reaching it is std::terminate. What catches is
+  // rescan_guarded, which is what the plugin's hook actually calls; this
+  // function only guarantees that the stamp is taken before the exception
+  // travels there.
   const auto t0 = std::chrono::steady_clock::time_point{};
   auto clock_now = t0 + std::chrono::seconds(30);
   const auto now = [&clock_now]() {
@@ -1015,6 +1022,49 @@ TEST(RescanStep, AThrowingSweepStillStampsTheCadence) {
   clock_now += std::chrono::seconds(1);
   EXPECT_THROW(OpcuaPlugin::rescan_step(30, now, &last_end, throwing_sweep), std::runtime_error);
   EXPECT_EQ(sweeps, 2);
+}
+
+TEST(RescanGuarded, AThrowingSweepEndsAsNoEndpoint) {
+  // What the poll thread runs. The poll thread has no try of its own, so an
+  // exception reaching it is std::terminate for the whole gateway - a
+  // std::system_error from a thread the parallel scan cannot create, or a
+  // bad_alloc on a wide target list. A sweep that failed is a sweep that found
+  // nothing.
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  auto clock_now = t0 + std::chrono::seconds(30);
+  const auto now = [&clock_now]() {
+    return clock_now;
+  };
+  auto last_end = t0;
+  const auto std_throw = [&clock_now]() -> std::optional<std::string> {
+    clock_now += std::chrono::seconds(120);
+    throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                            "Resource temporarily unavailable");
+  };
+  std::optional<std::string> chosen;
+  ASSERT_NO_THROW(chosen = OpcuaPlugin::rescan_guarded(30, now, &last_end, std_throw));
+  EXPECT_FALSE(chosen.has_value()) << "a failed sweep must not name an endpoint";
+  EXPECT_EQ(last_end, clock_now) << "the cadence stamp is owed even when the sweep threw";
+
+  // Anything at all, std::exception or otherwise: open62541 and the identify
+  // path are C libraries wrapped by C++, and a non-standard throw is still a
+  // terminate without the catch-all.
+  clock_now += std::chrono::seconds(30);
+  const auto alien_throw = []() -> std::optional<std::string> {
+    throw 42;
+  };
+  ASSERT_NO_THROW(chosen = OpcuaPlugin::rescan_guarded(30, now, &last_end, alien_throw));
+  EXPECT_FALSE(chosen.has_value());
+
+  // Positive control on the same harness: a sweep that works still hands its
+  // endpoint through, so the guard is not swallowing the normal path.
+  clock_now += std::chrono::seconds(30);
+  const auto good_sweep = []() -> std::optional<std::string> {
+    return std::string("opc.tcp://192.168.1.10:4840");
+  };
+  chosen = OpcuaPlugin::rescan_guarded(30, now, &last_end, good_sweep);
+  ASSERT_TRUE(chosen.has_value());
+  EXPECT_EQ(*chosen, "opc.tcp://192.168.1.10:4840");
 }
 
 TEST(RescanStep, DoesNothingWithoutACadence) {
@@ -1064,7 +1114,7 @@ TEST(NextReconnectWait, DoublesUpToTheCeiling) {
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(40000ms, 60000ms), 60000ms);
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(60000ms, 60000ms), 60000ms);
   // Capped at a 30 s rescan cadence: the wait never exceeds it, so the rescan is
-  // consulted every cadence instead of every max(cadence, backoff).
+  // consulted once per cadence, which is what the cap is for.
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(20000ms, 30000ms), 30000ms);
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(30000ms, 30000ms), 30000ms);
 }
@@ -1231,7 +1281,20 @@ TEST(DiscoverEndpoint, WithNoRepeatMemoryEveryPassIsReported) {
 // Config-less component identity across an adoption
 // ---------------------------------------------------------------------------
 
-TEST(RederivedComponentIdentity, AdoptionReplacesTheProvisionalEndpointDerivedId) {
+namespace {
+
+// The identity the plugin is serving, as the rule sees it: an id the plugin
+// assigned from a read with no nameplate is a stand-in, anything else is not.
+OpcuaPlugin::ComponentIdentityState serving(const std::string & current_id, bool is_placeholder = false) {
+  OpcuaPlugin::ComponentIdentityState state;
+  state.current_id = current_id;
+  state.current_is_placeholder = is_placeholder;
+  return state;
+}
+
+}  // namespace
+
+TEST(RederivedComponentIdentity, ANameplateTakesOverFromAStandInAndFromTheDefault) {
   // The config-less race, end to end over the derivation path: the gateway
   // starts before the PLC, its start-up scan finds nothing, and the identity is
   // derived from the fallback endpoint plus an empty DeviceInfo.
@@ -1248,32 +1311,91 @@ TEST(RederivedComponentIdentity, AdoptionReplacesTheProvisionalEndpointDerivedId
       fake_identify({{"opc.tcp://192.168.1.10:4840", plc_identity()}}), silent_reporter());
   ASSERT_TRUE(adopted.has_value());
 
-  // The session is up, so the device can finally name itself: the component
-  // must stop being served under the placeholder.
   OpcuaClient::DeviceInfo info;
   info.di_manufacturer = "Siemens AG";
   info.di_model = "CPU 1505SP F";
-  const auto rederived = OpcuaPlugin::rederived_component_identity(provisional.id, info, *adopted);
+  const auto rederived =
+      OpcuaPlugin::rederived_component_identity(serving(provisional.id, /*is_placeholder=*/true), info, *adopted);
   ASSERT_TRUE(rederived.has_value()) << "an adopted device with a nameplate must replace opcua-localhost";
   EXPECT_EQ(rederived->id, "siemens_ag_cpu_1505sp_f");
   EXPECT_EQ(rederived->name, "Siemens AG CPU 1505SP F");
+
+  // The NodeMap default is not a stand-in this plugin assigned, and config-less
+  // mode never serves it - the endpoint always derives an id - so the rule
+  // leaves it where it is. It stays in the clear gate's id set, which is a
+  // question about who reported a fault, not about renaming.
+  EXPECT_FALSE(
+      OpcuaPlugin::rederived_component_identity(serving(NodeMap::kDefaultComponentId), info, *adopted).has_value());
 }
 
-TEST(RederivedComponentIdentity, KeepsTheIdentityWhenNothingChanged) {
-  // Same device on a later reconnect: no rename, so no entity churn and no INFO
-  // line claiming an identity change that did not happen.
+TEST(RederivedComponentIdentity, ANameplateDoesNotUnseatANameplate) {
   OpcuaClient::DeviceInfo info;
   info.di_manufacturer = "Siemens AG";
   info.di_model = "CPU 1505SP F";
-  EXPECT_FALSE(OpcuaPlugin::rederived_component_identity("siemens_ag_cpu_1505sp_f", info, "opc.tcp://192.168.1.10:4840")
-                   .has_value());
+  // Same device on a later reconnect: no rename, so no entity churn and no INFO
+  // line claiming an identity change that did not happen.
+  EXPECT_FALSE(
+      OpcuaPlugin::rederived_component_identity(serving("siemens_ag_cpu_1505sp_f"), info, "opc.tcp://192.168.1.10:4840")
+          .has_value());
 
-  // A nameplate-less server on an adopted endpoint still moves off the
-  // fallback host it was provisionally named after.
-  const auto host_derived = OpcuaPlugin::rederived_component_identity("opcua-localhost", OpcuaClient::DeviceInfo{},
-                                                                      "opc.tcp://192.168.1.10:4840");
+  // A different device answering on the same endpoint is a question about asset
+  // identity, not about a read: the served name stays put.
+  OpcuaClient::DeviceInfo other;
+  other.di_manufacturer = "Beckhoff";
+  other.di_model = "CX5140";
+  EXPECT_FALSE(OpcuaPlugin::rederived_component_identity(serving("siemens_ag_cpu_1505sp_f"), other,
+                                                         "opc.tcp://192.168.1.10:4840")
+                   .has_value());
+}
+
+TEST(RederivedComponentIdentity, AReadWithoutANameplateMovesOneStandInToAnother) {
+  // Adoption with a nameplate-less server: the stand-in follows the endpoint,
+  // because the host it names is not the host being polled any more.
+  const auto host_derived = OpcuaPlugin::rederived_component_identity(
+      serving("opcua-plc1", /*is_placeholder=*/true), OpcuaClient::DeviceInfo{}, "opc.tcp://192.168.1.10:4840");
   ASSERT_TRUE(host_derived.has_value());
   EXPECT_EQ(host_derived->id, "opcua-192_168_1_10");
+
+  // The same host on a different port derives the same stand-in, so nothing
+  // moves: the id is what the rule compares, not the endpoint string.
+  EXPECT_FALSE(OpcuaPlugin::rederived_component_identity(serving("opcua-plc1", /*is_placeholder=*/true),
+                                                         OpcuaClient::DeviceInfo{}, "opc.tcp://plc1:4841")
+                   .has_value())
+      << "an endpoint re-spelling that derives the same id renamed the component";
+}
+
+TEST(RederivedComponentIdentity, AnEmptyReadNeverReplacesANameplateWithTheEndpointFallback) {
+  // read_device_info() answers empty or partial on the first read of a session
+  // whose address space is still coming up, and the re-derivation runs on every
+  // fresh session. Accepting that answer renames a device that had named itself
+  // back to the endpoint stand-in, which moves the component URL and the
+  // <id>_alarms entity and orphans every fault filed under the old id.
+  const std::string nameplate_id = "siemens_ag_cpu_1505sp_f";
+  EXPECT_FALSE(OpcuaPlugin::rederived_component_identity(serving(nameplate_id), OpcuaClient::DeviceInfo{},
+                                                         "opc.tcp://192.168.1.10:4840")
+                   .has_value())
+      << "an empty read renamed a nameplate-derived component to the endpoint fallback";
+
+  // A partial read - the DI nameplate answered, BuildInfo did not, or the other
+  // way round - is a nameplate, so it takes over from a stand-in.
+  OpcuaClient::DeviceInfo partial;
+  partial.product_name = "CPU 1505SP F";
+  const auto from_partial = OpcuaPlugin::rederived_component_identity(
+      serving("opcua-localhost", /*is_placeholder=*/true), partial, "opc.tcp://192.168.1.10:4840");
+  ASSERT_TRUE(from_partial.has_value());
+  EXPECT_EQ(from_partial->id, "cpu_1505sp_f");
+}
+
+TEST(ComponentIdentityShape, ANameplateReadIsWhatSettlesASession) {
+  // The rename rule turns on membership in the plugin's list of stand-in ids,
+  // not on the shape of a string. What a read produced is the other input.
+  EXPECT_FALSE(component_identity_has_nameplate(OpcuaClient::DeviceInfo{}));
+  OpcuaClient::DeviceInfo di;
+  di.di_model = "SPX-1000";
+  EXPECT_TRUE(component_identity_has_nameplate(di));
+  OpcuaClient::DeviceInfo build_info;
+  build_info.manufacturer_name = "SelfPatch Test Manufacturer";
+  EXPECT_TRUE(component_identity_has_nameplate(build_info));
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,6 +1414,33 @@ TEST(DiscoveryCancelledFor, EitherStopSignalEndsASweep) {
   EXPECT_TRUE(OpcuaPlugin::discovery_cancelled_for(/*shutdown_requested=*/false, /*rclcpp_ok=*/false))
       << "a signal during the start-up sweep left it running";
   EXPECT_TRUE(OpcuaPlugin::discovery_cancelled_for(true, false));
+}
+
+TEST(DiscoveryCancelledForContext, ReadsTheNodesOwnContextNotTheProcessDefault) {
+  // A host that constructs its GatewayNode with NodeOptions().context(...) never
+  // initialises the default context, and rclcpp::ok() with no argument is false
+  // for the life of such a process, which cancels every sweep before it starts.
+  // The private context here is that case, and it is alive while the default one
+  // in this process may be either way, so the answer can only come from the
+  // context handed in.
+  auto context = std::make_shared<rclcpp::Context>();
+  context->init(0, nullptr);
+  ASSERT_TRUE(rclcpp::ok(context));
+
+  EXPECT_FALSE(OpcuaPlugin::discovery_cancelled_for_context(/*shutdown_requested=*/false, context))
+      << "a sweep on a live private context cancelled itself";
+  EXPECT_TRUE(OpcuaPlugin::discovery_cancelled_for_context(/*shutdown_requested=*/true, context))
+      << "shutdown() must still end a rescan sweep";
+
+  context->shutdown("simulated SIGTERM");
+  ASSERT_FALSE(rclcpp::ok(context));
+  EXPECT_TRUE(OpcuaPlugin::discovery_cancelled_for_context(/*shutdown_requested=*/false, context))
+      << "a signal on the node's own context left the sweep running";
+
+  // Before set_context() the plugin has no node and no context, which is the
+  // ordinary gateway's default-context case.
+  EXPECT_EQ(OpcuaPlugin::discovery_cancelled_for_context(/*shutdown_requested=*/false, nullptr), !rclcpp::ok());
+  EXPECT_TRUE(OpcuaPlugin::discovery_cancelled_for_context(/*shutdown_requested=*/true, nullptr));
 }
 
 TEST(DiscoveryCancelledFor, RclcppOkIsTheSignalTheStartUpSweepWatches) {
@@ -1344,6 +1493,179 @@ TEST(ClearOrigin, OnlyADeviceReportedClearKeepsTheCorrelationCascade) {
   EXPECT_TRUE(OpcuaPlugin::clear_is_link_state(Origin::LinkState));
   EXPECT_FALSE(OpcuaPlugin::clear_is_link_state(Origin::ScopedOperator));
   EXPECT_FALSE(OpcuaPlugin::clear_is_link_state(Origin::DeviceAlarm));
+}
+
+TEST(LinkStateClearPermitted, EverySourceMustBeOneThisProcessReportedUnder) {
+  const std::string mine = "siemens_ag_cpu_1505sp_f";
+  const std::string placeholder = "opcua-192_168_1_10";
+  const std::unordered_set<std::string> my_ids{mine, placeholder, NodeMap::kDefaultComponentId};
+
+  // The restart case, which is why the decision cannot rest on this process's
+  // own memory: the fault persisted across a gateway restart and still names
+  // the component that raised it.
+  EXPECT_TRUE(OpcuaPlugin::link_state_clear_permitted(/*fault_found=*/true, {mine}, my_ids));
+  // A fault raised while the device had not named itself carries the stand-in
+  // the plugin was serving then, and the same process is the one healing it.
+  EXPECT_TRUE(OpcuaPlugin::link_state_clear_permitted(true, {placeholder}, my_ids));
+  EXPECT_TRUE(OpcuaPlugin::link_state_clear_permitted(true, {placeholder, mine}, my_ids));
+  EXPECT_TRUE(OpcuaPlugin::link_state_clear_permitted(true, {NodeMap::kDefaultComponentId}, my_ids));
+
+  // ClearFault carries no source and clears the whole row, so a fault another
+  // bridge also holds is not this link's to clear - whether it is the only
+  // source or one of several.
+  EXPECT_FALSE(OpcuaPlugin::link_state_clear_permitted(true, {"beckhoff_cx5140"}, my_ids))
+      << "another bridge's outage was cleared by this link coming back";
+  EXPECT_FALSE(OpcuaPlugin::link_state_clear_permitted(true, {"beckhoff_cx5140", mine}, my_ids))
+      << "a row two bridges hold was cleared whole";
+  // A fault with no sources says nothing about who holds it.
+  EXPECT_FALSE(OpcuaPlugin::link_state_clear_permitted(true, {}, my_ids));
+  // Nothing standing: the normal case on a healthy start, and nothing to send.
+  EXPECT_FALSE(OpcuaPlugin::link_state_clear_permitted(/*fault_found=*/false, {mine}, my_ids));
+  // No ids to compare against is not a match.
+  EXPECT_FALSE(OpcuaPlugin::link_state_clear_permitted(true, {mine}, {}));
+}
+
+TEST(CommsLostAnswerApplicable, AnAnswerFromAnEarlierSessionIsNotActedOn) {
+  // The answer describes the store at the moment the probe was served.
+  EXPECT_TRUE(OpcuaPlugin::comms_lost_answer_applicable(/*connected=*/true, /*has_answer=*/true,
+                                                        /*probe_session=*/7, /*live_session=*/7));
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_answer_applicable(/*connected=*/false, /*has_answer=*/true, 7, 7))
+      << "an answer was acted on while the link was down";
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_answer_applicable(/*connected=*/true, /*has_answer=*/false, 7, 7));
+
+  // The case "the link is up" cannot see on its own: the decision is driven
+  // from publish_values, which the poll loop reaches only while connected, so
+  // an answer parked just before a drop is first looked at on the tick AFTER
+  // the reconnect - link up, answer stale, and the outage it describes already
+  // reported by the poller.
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_answer_applicable(/*connected=*/true, /*has_answer=*/true,
+                                                         /*probe_session=*/7, /*live_session=*/8))
+      << "an answer from the session before the outage decided the clear after the reconnect";
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_answer_applicable(true, true, 0, 1));
+}
+
+// ---------------------------------------------------------------------------
+// The device-info read budget a session spends on its identity
+// ---------------------------------------------------------------------------
+
+namespace {
+
+OpcuaClient::DeviceInfo nameplate_info() {
+  OpcuaClient::DeviceInfo info;
+  info.di_manufacturer = "Siemens AG";
+  info.di_model = "CPU 1505SP F";
+  return info;
+}
+
+}  // namespace
+
+TEST(IdentityReads, TheBudgetStopsTheReadsAndTheSpendIsCarried) {
+  int reads = 0;
+  const auto empty_read = [&reads]() {
+    ++reads;
+    return OpcuaClient::DeviceInfo{};
+  };
+  const auto no_pause = [](std::chrono::milliseconds) {
+    return true;
+  };
+
+  // A nameplate-less server: every attempt is spent and none of them settles.
+  const auto first = OpcuaPlugin::identity_reads(/*extra_reads=*/0, /*reads_spent=*/0,
+                                                 OpcuaPlugin::kMaxIdentityPollReads, empty_read, no_pause);
+  EXPECT_TRUE(first.read_made);
+  EXPECT_EQ(first.reads_spent, 1);
+  EXPECT_EQ(reads, 1);
+
+  int spent = first.reads_spent;
+  for (int i = 1; i < OpcuaPlugin::kMaxIdentityPollReads; ++i) {
+    spent = OpcuaPlugin::identity_reads(0, spent, OpcuaPlugin::kMaxIdentityPollReads, empty_read, no_pause).reads_spent;
+  }
+  EXPECT_EQ(spent, OpcuaPlugin::kMaxIdentityPollReads);
+  EXPECT_EQ(reads, OpcuaPlugin::kMaxIdentityPollReads);
+
+  // Past the bound the server is not asked again.
+  const auto past = OpcuaPlugin::identity_reads(0, spent, OpcuaPlugin::kMaxIdentityPollReads, empty_read, no_pause);
+  EXPECT_FALSE(past.read_made) << "the budget was spent and the device was asked anyway";
+  EXPECT_EQ(reads, OpcuaPlugin::kMaxIdentityPollReads) << "a read was made past the bound";
+  EXPECT_EQ(past.reads_spent, OpcuaPlugin::kMaxIdentityPollReads);
+}
+
+TEST(IdentityReads, TheConnectBurstPausesBetweenAttemptsAndStopsOnANameplate) {
+  std::vector<std::chrono::milliseconds> pauses;
+  const auto record_pause = [&pauses](std::chrono::milliseconds pause) {
+    pauses.push_back(pause);
+    return true;
+  };
+
+  // A server whose address space is still filling in: the burst keeps asking,
+  // kIdentityConnectRetryPause apart.
+  int reads = 0;
+  const auto empty_read = [&reads]() {
+    ++reads;
+    return OpcuaClient::DeviceInfo{};
+  };
+  const auto burst = OpcuaPlugin::identity_reads(OpcuaPlugin::kIdentityConnectRetries, /*reads_spent=*/0,
+                                                 OpcuaPlugin::kIdentityConnectRetries + 1, empty_read, record_pause);
+  EXPECT_EQ(reads, OpcuaPlugin::kIdentityConnectRetries + 1);
+  ASSERT_EQ(pauses.size(), static_cast<size_t>(OpcuaPlugin::kIdentityConnectRetries));
+  for (const auto & pause : pauses) {
+    EXPECT_EQ(pause, OpcuaPlugin::kIdentityConnectRetryPause);
+  }
+  EXPECT_FALSE(burst.interrupted);
+
+  // A server that names itself on the second read costs one pause, not three.
+  pauses.clear();
+  int attempt = 0;
+  const auto late_nameplate = [&attempt]() {
+    return ++attempt >= 2 ? nameplate_info() : OpcuaClient::DeviceInfo{};
+  };
+  const auto settled = OpcuaPlugin::identity_reads(
+      OpcuaPlugin::kIdentityConnectRetries, 0, OpcuaPlugin::kIdentityConnectRetries + 1, late_nameplate, record_pause);
+  EXPECT_EQ(attempt, 2);
+  EXPECT_EQ(pauses.size(), 1u);
+  EXPECT_TRUE(component_identity_has_nameplate(settled.info));
+}
+
+TEST(IdentityReads, ARefusedPauseEndsTheBurst) {
+  // What a shutdown does to the burst: the poll thread is what stop() joins, so
+  // it must not sit out the remaining pauses.
+  int reads = 0;
+  const auto empty_read = [&reads]() {
+    ++reads;
+    return OpcuaClient::DeviceInfo{};
+  };
+  const auto refuse = [](std::chrono::milliseconds) {
+    return false;
+  };
+  const auto outcome = OpcuaPlugin::identity_reads(OpcuaPlugin::kIdentityConnectRetries, 0,
+                                                   OpcuaPlugin::kIdentityConnectRetries + 1, empty_read, refuse);
+  EXPECT_EQ(reads, 1) << "the burst carried on after the pause was refused";
+  EXPECT_TRUE(outcome.interrupted);
+  EXPECT_TRUE(outcome.read_made);
+}
+
+TEST(CommsLostAnswerApplicable, AProbeGivenUpOnHasItsAnswerDropped) {
+  // The generation the timeout branch moves on, read from the consume side: an
+  // answer parked against a probe number the poll thread is no longer waiting
+  // for is not the answer to the probe that replaced it. rclcpp takes a pending
+  // entry out before it invokes the callback and outside its own mutex, so a
+  // callback that won that race is still on its way in when the timeout fires.
+  EXPECT_TRUE(OpcuaPlugin::comms_lost_generation_current(/*answered_generation=*/4, /*current_generation=*/4));
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_generation_current(/*answered_generation=*/4, /*current_generation=*/5))
+      << "an answer to a probe already given up on was read as the next probe's";
+}
+
+TEST(CommsLostProbeDue, AllFourConditionsHold) {
+  // A probe costs a round trip and its answer decides whether a fault is
+  // cleared, so each input carries its own veto. The connected term is the one
+  // that keeps a clear off a link that is down.
+  EXPECT_TRUE(OpcuaPlugin::comms_lost_probe_due(/*owed=*/true, /*connected=*/true, /*probe_in_flight=*/false,
+                                                /*store_ready=*/true));
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_probe_due(false, true, false, true)) << "nothing is owed";
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_probe_due(true, false, false, true))
+      << "a clear decided while the link is down would clear a fault that is genuinely standing";
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_probe_due(true, true, true, true)) << "a probe is already outstanding";
+  EXPECT_FALSE(OpcuaPlugin::comms_lost_probe_due(true, true, false, false)) << "the store cannot be asked";
 }
 
 TEST(MakeClearFaultRequest, CarriesTheSkipFlagAndCodeVerbatim) {
@@ -1487,23 +1809,63 @@ TEST(EnqueuePendingDispatch, ADeviceAlarmClearIsNotEvictedAheadOfAnOlderReport) 
   EXPECT_LT(raise - buffer.begin(), device_clear - buffer.begin());
 }
 
-TEST(EnqueuePendingDispatch, ARequeuedClearMovesToTheBackSoOrderStillHolds) {
-  // Report-then-clear for one code must still flush in that order after the
-  // clear is re-enqueued, or the flush would leave the fault standing.
+TEST(EnqueuePendingDispatch, AClearBehindAReportIsAppendedSoThePlcOrderHolds) {
+  // Report-then-clear for one code flushes in that order after the clear is
+  // re-enqueued, or the flush leaves the fault standing.
   std::vector<OpcuaPlugin::PendingFaultDispatch> buffer;
   OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, link_state_clear_entry("PLC_FLAP"));
   OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, report_entry("PLC_FLAP"));
-  EXPECT_EQ(OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches,
-                                                  link_state_clear_entry("PLC_FLAP")),
-            OpcuaPlugin::PendingEnqueueOutcome::ReplacedClear);
+  OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, link_state_clear_entry("PLC_FLAP"));
 
-  ASSERT_EQ(buffer.size(), 2u);
-  EXPECT_EQ(buffer[0].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Report);
-  EXPECT_EQ(buffer[1].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Clear)
+  // The stale leading clear predates the report, so it is not the newest entry
+  // for this code and is not what the incoming clear supersedes. It stays, and
+  // the pair the PLC produced keeps its order behind it.
+  ASSERT_EQ(buffer.size(), 3u);
+  EXPECT_EQ(buffer[0].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Clear);
+  EXPECT_EQ(buffer[1].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Report);
+  EXPECT_EQ(buffer[2].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Clear)
       << "the newest clear must flush after the report it supersedes";
   // Clears for DIFFERENT codes are independent.
   OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, device_clear_entry("PLC_OTHER"));
-  EXPECT_EQ(count_kind(buffer, OpcuaPlugin::PendingFaultDispatch::Kind::Clear), 2u);
+  EXPECT_EQ(count_kind(buffer, OpcuaPlugin::PendingFaultDispatch::Kind::Clear), 3u);
+}
+
+TEST(EnqueuePendingDispatch, RepeatedReconnectClearsCollapseOnlyWhileNothingWasReportedBetween) {
+  // Back-to-back reconnect clears with no report between them are the same
+  // statement made twice: one is enough, and each one after the first says so.
+  std::vector<OpcuaPlugin::PendingFaultDispatch> buffer;
+  EXPECT_EQ(OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches,
+                                                  link_state_clear_entry(kCommsLostFaultCode)),
+            OpcuaPlugin::PendingEnqueueOutcome::Buffered);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_EQ(OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches,
+                                                    link_state_clear_entry(kCommsLostFaultCode)),
+              OpcuaPlugin::PendingEnqueueOutcome::ReplacedClear);
+  }
+  EXPECT_EQ(buffer.size(), 1u) << "repeated reconnect clears must still collapse to one";
+}
+
+TEST(EnqueuePendingDispatch, AClearNeverCoalescesPastAReportForTheSameCode) {
+  // The PLC raised, cleared, raised and cleared the same code while the fault
+  // manager was unreachable. Coalescing the second clear onto the first one -
+  // anywhere in the buffer - flushes Report, Report, Clear, and the second
+  // raise then stands CONFIRMED for good against a device reporting it
+  // inactive. Each pair has to survive in the order the device produced it.
+  std::vector<OpcuaPlugin::PendingFaultDispatch> buffer;
+  OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, report_entry("PLC_TANK_HIGH"));
+  OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches,
+                                        device_clear_entry("PLC_TANK_HIGH"));
+  OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches, report_entry("PLC_TANK_HIGH"));
+  EXPECT_EQ(OpcuaPlugin::enqueue_pending_dispatch(buffer, OpcuaPlugin::kMaxPendingDispatches,
+                                                  device_clear_entry("PLC_TANK_HIGH")),
+            OpcuaPlugin::PendingEnqueueOutcome::Buffered)
+      << "a clear behind a newer report is a new edge, not a supersede";
+
+  ASSERT_EQ(buffer.size(), 4u) << "the second raise/clear pair was coalesced onto the first";
+  EXPECT_EQ(buffer[0].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Report);
+  EXPECT_EQ(buffer[1].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Clear);
+  EXPECT_EQ(buffer[2].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Report);
+  EXPECT_EQ(buffer[3].kind, OpcuaPlugin::PendingFaultDispatch::Kind::Clear);
 }
 
 TEST(AdoptRediscoveredEndpoint, AdoptsOnlyADifferentNonEmptyUrl) {

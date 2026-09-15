@@ -1503,6 +1503,27 @@ void read_di_nameplate(UA_Client * client, uint16_t di_ns, OpcuaClient::DeviceIn
 
 }  // namespace
 
+std::string OpcuaClient::read_server_application_uri() {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  if (!impl_->connected) {
+    return {};
+  }
+  UA_Variant value;
+  UA_Variant_init(&value);
+  std::string uri;
+  // ServerArray is a String[] whose element 0 is the server's own
+  // ApplicationUri (Part 5 SS 12.4).
+  if (UA_Client_readValueAttribute(impl_->client.handle(), UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERARRAY), &value) ==
+      UA_STATUSCODE_GOOD) {
+    if (UA_Variant_hasArrayType(&value, &UA_TYPES[UA_TYPES_STRING]) && value.arrayLength > 0) {
+      const auto * entries = static_cast<const UA_String *>(value.data);
+      uri.assign(reinterpret_cast<const char *>(entries[0].data), entries[0].length);
+    }
+  }
+  UA_Variant_clear(&value);
+  return uri;
+}
+
 OpcuaClient::DeviceInfo OpcuaClient::read_device_info() {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   DeviceInfo info;
