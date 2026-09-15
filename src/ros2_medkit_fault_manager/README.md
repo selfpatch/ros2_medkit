@@ -51,7 +51,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
   when a cleared fault is raised again - and tracks all reporting sources
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Persistent storage**: SQLite backend ensures faults survive node restarts
-- **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
+- **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity and per-fault_code threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
 - **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
@@ -69,6 +69,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `healing_threshold` | int | `3` | Counter value at which faults are healed |
 | `auto_confirm_after_sec` | double | `0.0` | Auto-confirm PREFAILED faults after timeout (0 = disabled) |
 | `entity_thresholds.config_file` | string | `""` | Path to YAML file with per-entity debounce threshold overrides |
+| `fault_thresholds.config_file` | string | `""` | Path to YAML file with per-fault_code debounce threshold overrides, applied on top of the entity ones |
 | `near_miss.max_per_fault` | int | `200` | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
 
 ### Snapshot Parameters
@@ -159,7 +160,10 @@ rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
 **reporting source**, while the debounce counter is shared by every source of that fault code. It
-is therefore not by itself the distance to confirmation for the fault as a whole.
+is therefore not by itself the distance to confirmation for the fault as a whole. Giving the code
+an entry in `fault_thresholds.config_file` makes the two agree again: a fault-code override
+resolves the same for every source, so the recorded threshold is the fault's own. The node warns
+once per code when two sources resolve different policies for it.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their
 own clocks, so a report can arrive carrying a timestamp behind one already stored; ordering the

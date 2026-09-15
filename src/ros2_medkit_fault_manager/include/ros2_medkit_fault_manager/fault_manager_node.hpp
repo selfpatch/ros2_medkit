@@ -24,11 +24,11 @@
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
-#include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
+#include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
@@ -187,9 +187,21 @@ class FaultManagerNode : public rclcpp::Node {
   /// Extract topic name from full topic path (last segment)
   static std::string extract_topic_name(const std::string & topic_path);
 
-  /// Resolve debounce config for a given source_id using entity threshold resolver.
-  /// Falls back to global config if no entity-specific overrides match.
-  DebounceConfig resolve_config(const std::string & source_id) const;
+  /// Resolve the debounce config a report is debounced under.
+  /// Three layers, each applied on top of the last: the global config, the
+  /// longest-prefix entity override matching @p source_id, and the exact-match
+  /// override for @p fault_code. A layer only sets the fields it configures.
+  DebounceConfig resolve_config(const std::string & source_id, const std::string & fault_code) const;
+
+  /// Warn once per fault code when two sources debounce it under different
+  /// policies. The counter belongs to the fault code and the entity override to
+  /// the source, so the report that arrives decides the transition and the other
+  /// source's policy is silently bypassed (issue #276).
+  /// @param fault_code The code just reported.
+  /// @param source_id The source that reported it.
+  /// @param resolved The config that report resolved to.
+  void warn_on_conflicting_debounce_policy(const std::string & fault_code, const std::string & source_id,
+                                           const DebounceConfig & resolved);
 
   /// Create the tamper-evident audit log from parameters (nullptr if disabled).
   std::unique_ptr<FaultAuditLog> create_audit_log();
@@ -215,7 +227,21 @@ class FaultManagerNode : public rclcpp::Node {
   QueueFullPolicy capture_queue_full_policy_{QueueFullPolicy::kRejectNewest};
   DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
-  std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
+  std::unique_ptr<EntityThresholdResolver> threshold_resolver_;      ///< Per-entity threshold overrides
+  std::unique_ptr<FaultCodeThresholdResolver> fault_code_resolver_;  ///< Per-fault_code threshold overrides
+
+  /// The first debounce policy seen for a fault code, and who reported it.
+  /// Kept only to notice a second source resolving a different policy for the
+  /// same code, and warned about once. One entry per fault code the node has
+  /// seen, so it is bounded by the same thing the fault store is. Written from
+  /// the ReportFault callback, which the node's single-threaded executor
+  /// serialises with every other callback that touches node state.
+  struct DebouncePolicyWitness {
+    DebounceConfig config;  ///< The policy the first report resolved to
+    std::string source_id;  ///< The source that reported it
+    bool warned{false};     ///< Whether the conflict has already been reported
+  };
+  std::unordered_map<std::string, DebouncePolicyWitness> debounce_policy_witness_;
 
   /// Tamper-evident audit log of fault transitions (nullptr when disabled).
   std::unique_ptr<FaultAuditLog> audit_log_;

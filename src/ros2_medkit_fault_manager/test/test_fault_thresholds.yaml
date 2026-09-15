@@ -1,0 +1,19 @@
+# Test fault-code thresholds config for integration tests.
+#
+# Every code here is reported by entities that carry their own overrides in
+# test_entity_thresholds.yaml, so a run proves the fault code is the layer that
+# wins and that it resolves the same whichever entity reports.
+SHARED.OVERHEAT:
+  confirmation_threshold: -3
+
+# Pins all three fields, so every source debounces this code identically.
+SHARED.JAM:
+  confirmation_threshold: -4
+  healing_enabled: false
+  healing_threshold: 8
+
+# Pins only the confirmation direction. The healing fields still come from
+# whichever entity reported, so this code is only half settled - and the node
+# still says so.
+SHARED.PARTIAL:
+  confirmation_threshold: -2
