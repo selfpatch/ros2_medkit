@@ -14,6 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <rclcpp/rclcpp.hpp>
+
 #include "ros2_medkit_gateway/discovery/manifest/runtime_linker.hpp"
 
 using namespace ros2_medkit_gateway::discovery;
@@ -802,6 +809,71 @@ TEST_F(RuntimeLinkerTest, MergedInput_PreservesOrphanRuntimeApps) {
   // Orphan still detected in orphan_nodes
   EXPECT_EQ(result.orphan_nodes.size(), 1u);
   EXPECT_EQ(result.orphan_nodes[0], "/nav/planner");
+}
+
+// =============================================================================
+// The gateway's own helper nodes: skipped by the same setting that filters them
+// out of the served apps
+// =============================================================================
+
+TEST(RuntimeLinkerHelperNodes, TheOrphanSkipFollowsTheAppFilterSetting) {
+  // discovery.runtime.filter_internal_nodes decides whether the gateway's own
+  // in-process helper nodes are served as apps. While it is on they are not
+  // entities, so listing them as unmanifested would tell the operator to declare
+  // nodes that can never become apps. Turn it off - which the config docs say
+  // re-exposes them - and they ARE served, so leaving them out of orphan_nodes
+  // hides from /health's unmanifested_nodes exactly the nodes the operator
+  // turned the filter off in order to see.
+  const bool owned_rclcpp = !rclcpp::ok();
+  if (owned_rclcpp) {
+    rclcpp::init(0, nullptr);
+  }
+  auto node = std::make_shared<rclcpp::Node>("runtime_linker_helper_gateway");
+  const std::string self_fqn = node->get_fully_qualified_name();
+  // The subscription helper node the gateway creates in its own namespace.
+  const std::string helper_fqn = self_fqn + "_sub";
+
+  App helper;
+  helper.id = "helper";
+  helper.name = "helper";
+  helper.source = "heuristic";
+  helper.is_online = true;
+  helper.bound_fqn = helper_fqn;
+
+  App foreign;
+  foreign.id = "planner";
+  foreign.name = "planner";
+  foreign.source = "heuristic";
+  foreign.is_online = true;
+  foreign.bound_fqn = "/nav/planner";
+
+  const std::vector<App> runtime_apps{helper, foreign};
+  ManifestConfig config;
+
+  const auto contains = [](const std::vector<std::string> & orphans, const std::string & fqn) {
+    return std::find(orphans.begin(), orphans.end(), fqn) != orphans.end();
+  };
+
+  {
+    RuntimeLinker filtering(node.get(), /*filter_internal_nodes=*/true);
+    const auto result = filtering.link({}, runtime_apps, config);
+    EXPECT_FALSE(contains(result.orphan_nodes, helper_fqn))
+        << "a helper node the app filter removes was reported as unmanifested";
+    EXPECT_TRUE(contains(result.orphan_nodes, foreign.bound_fqn.value()))
+        << "the control: a real unmanifested node is still reported";
+  }
+  {
+    RuntimeLinker serving(node.get(), /*filter_internal_nodes=*/false);
+    const auto result = serving.link({}, runtime_apps, config);
+    EXPECT_TRUE(contains(result.orphan_nodes, helper_fqn))
+        << "with the app filter off the helper is served as an app, so it is unmanifested and must be counted";
+    EXPECT_TRUE(contains(result.orphan_nodes, foreign.bound_fqn.value()));
+  }
+
+  node.reset();
+  if (owned_rclcpp) {
+    rclcpp::shutdown();
+  }
 }
 
 int main(int argc, char ** argv) {

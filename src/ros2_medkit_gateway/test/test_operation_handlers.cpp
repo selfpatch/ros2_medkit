@@ -524,10 +524,10 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     return async_ptr->id;
   }
 
-  // Returns the optional rather than dereferencing it: a non-fatal expectation
-  // followed by an unconditional `*goal_info` turns a missing goal into
-  // undefined behaviour instead of a failure anyone can read. The caller
-  // ASSERTs, which is what stops the test.
+  // Returns the optional, so a missing goal reaches the caller as an empty
+  // value and the caller's ASSERT stops the test with a message. A non-fatal
+  // expectation followed by an unconditional `*goal_info` here would be
+  // undefined behaviour.
   std::optional<ActionGoalInfo> get_tracked_goal_or_fail(const std::string & execution_id) {
     auto goal_info = gateway_node_->get_operation_manager()->get_tracked_goal(execution_id);
     EXPECT_TRUE(goal_info.has_value());

@@ -160,9 +160,9 @@ class TestOwnNodeApps(unittest.TestCase):
     def _graph_fqns_until(cls, awaited, budget):
         """Node FQNs on the graph, polled until *awaited* is a subset.
 
-        The graph query reads the discovery database directly, so this polls
-        rather than spinning an executor. Returns the last set seen even on
-        timeout - the caller asserts on it, so a timeout cannot pass silently.
+        The graph query reads the discovery database directly, so polling is
+        what this needs. Returns the last set seen even on timeout - the caller
+        asserts on it, so a timeout cannot pass silently.
         """
         deadline = time.monotonic() + budget * get_time_scale()
         while True:

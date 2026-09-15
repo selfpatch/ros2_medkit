@@ -352,8 +352,9 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
         }
         // Entity-frame provenance (merge_entity_freeze_frames), only when known.
         // "source" names the capture path (a plugin DataProvider or the
-        // plugin's x-plc-data route). A consumer reads it instead of the
-        // empty topic/message_type an entity frame necessarily carries.
+        // plugin's x-plc-data route). It is where a consumer reads the
+        // provenance from: an entity frame necessarily carries an empty
+        // topic/message_type.
         if (s.contains("source") && s["source"].is_string()) {
           snap["x-medkit"]["source"] = s["source"];
         }

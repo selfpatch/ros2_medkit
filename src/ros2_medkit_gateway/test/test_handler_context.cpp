@@ -1088,7 +1088,7 @@ TEST(IsOwnGatewayHelperNodeTest, MatchesTheThreeHelperSuffixesExactlyAndNothingE
   EXPECT_FALSE(is_own_gateway_helper_node("/other" + self_fqn + "_sub", self_fqn));
   EXPECT_FALSE(is_own_gateway_helper_node("/fault_manager", self_fqn));
 
-  // An unknown self FQN must claim nothing rather than everything.
+  // An unknown self FQN claims nothing.
   EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, ""));
   EXPECT_FALSE(is_own_gateway_helper_node("", self_fqn));
 }
@@ -1192,8 +1192,8 @@ TEST(RememberDroppedDeclaredAppsTest, ReportsTheSetOnceUntilItChanges) {
                                                "plc_bridge -> /ros2_medkit_gateway_fault_clients"};
   EXPECT_FALSE(remember_dropped_declared_apps(two_reordered, remembered));
 
-  // Clearing says nothing, but it is remembered, so the same set coming back
-  // is reported again rather than staying silent for the life of the process.
+  // Clearing says nothing, and it is remembered, so the same set coming back
+  // is reported again.
   EXPECT_FALSE(remember_dropped_declared_apps({}, remembered));
   EXPECT_TRUE(remember_dropped_declared_apps(one, remembered));
 }

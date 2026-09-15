@@ -69,7 +69,8 @@ bool topic_path_matches(const std::string & topic, const std::string & topic_nam
 
 }  // namespace
 
-RuntimeLinker::RuntimeLinker(rclcpp::Node * node) : node_(node) {
+RuntimeLinker::RuntimeLinker(rclcpp::Node * node, bool filter_internal_nodes)
+  : node_(node), filter_internal_nodes_(filter_internal_nodes) {
 }
 
 LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
@@ -185,17 +186,19 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
 
   // Find orphan nodes (runtime apps not matching any manifest app).
   //
-  // The gateway's own in-process helper nodes are skipped. They are not
-  // entities and the app filter removes them, so reporting them here would
-  // tell the operator to declare, in the manifest, nodes that can never
-  // become apps - and the 'error' policy words that report as an instruction
-  // ("Declare them in the manifest"). An empty self FQN, which is what a
-  // linker constructed without a node has, matches nothing and leaves this
-  // behaviour exactly as it was.
+  // The gateway's own in-process helper nodes are skipped WHILE the app filter
+  // removes them - the two are one setting, discovery.runtime.filter_internal_nodes.
+  // With it on they are not entities, so reporting them here would tell the
+  // operator to declare, in the manifest, nodes that can never become apps, and
+  // the 'error' policy words that report as an instruction ("Declare them in
+  // the manifest"). With it off they ARE served as apps, and an unmanifested
+  // served app is precisely what orphan_nodes and /health's orphan_count are
+  // for. An empty self FQN, which is what a linker constructed without a node
+  // has, matches nothing either way.
   const std::string self_fqn = node_ != nullptr ? node_->get_fully_qualified_name() : std::string();
   for (const auto & rt_app : runtime_apps) {
     if (rt_app.bound_fqn.has_value() && matched_nodes.find(rt_app.bound_fqn.value()) == matched_nodes.end()) {
-      if (is_own_gateway_helper_node(rt_app.bound_fqn.value(), self_fqn)) {
+      if (filter_internal_nodes_ && is_own_gateway_helper_node(rt_app.bound_fqn.value(), self_fqn)) {
         continue;
       }
       result.orphan_nodes.push_back(rt_app.bound_fqn.value());

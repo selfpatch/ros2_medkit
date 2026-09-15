@@ -79,10 +79,9 @@ REFRESH_WITNESS_BUDGET = 25.0
 def generate_test_description():
     """Launch one gateway with only its own node moved into a namespace.
 
-    Built here rather than through ``create_gateway_node`` because the remap has
-    to name the gateway node: passing a namespace to the launch action instead
-    would move all four nodes together, which is the case the sibling file
-    already covers.
+    Built here because the remap has to name the gateway node, which
+    ``create_gateway_node`` cannot express: a namespace on the launch action
+    moves all four nodes together, and that case is the sibling file's.
     """
     gateway_node = launch_ros.actions.Node(
         package='ros2_medkit_gateway',

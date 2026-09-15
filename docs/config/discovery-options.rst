@@ -105,9 +105,15 @@ process. Three of them exist in every deployment, named after the gateway node:
 None of these names begins with an underscore, so the convention above does not
 cover them, and without this rule the gateway would list its own plumbing as
 diagnosable Apps. They carry no parameters, services or actions of their own, so
-there is nothing on them to diagnose. They are also left out of the
-``unmanifested_nodes`` report on ``GET /health``: a node that can never be an
-App is not a node to declare in a manifest.
+there is nothing on them to diagnose.
+
+While this setting is ``true`` they are also left out of the linking report on
+``GET /health`` - ``discovery.linking.orphan_count``, and the
+``ros_node_fqns`` of the ``unmanifested_nodes`` warning raised under
+``unmanifested_nodes: error``: a node that can never be an App is not a node to
+declare in a manifest. That report exists only in ``hybrid`` mode, where
+manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
+at all.
 
 **The gateway's own node stays an App.** Its ROS parameters are what the
 gateway serves as that App's configurations, so
@@ -144,7 +150,11 @@ or drop the declaration.
 
 Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
 convention. That re-exposes the three helper nodes as well as the underscore
-ones.
+ones, and in ``hybrid`` mode the linking report follows: a helper node the
+gateway serves as an App is also an undeclared one, so it is counted in
+``discovery.linking.orphan_count`` and, under ``unmanifested_nodes: error``,
+named in the ``ros_node_fqns`` of the ``unmanifested_nodes`` warning. With
+``true`` it appears in neither.
 
 Function Entities from Namespaces
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
