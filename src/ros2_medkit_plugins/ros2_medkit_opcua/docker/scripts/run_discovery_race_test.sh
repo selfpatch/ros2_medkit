@@ -215,12 +215,9 @@ done
   || fail "endpoint still '${endpoint}' (connected='${connected}') after $((2 * RESCAN_INTERVAL_S + 40))s"
 echo "  OK re-scan adopted ${adopted} without a gateway restart"
 
-# The gateway must have adopted the server in the process that started before
-# it, not in a fresh one: a restarted container would pass the check above
-# while proving nothing.
-restarts="$(docker inspect -f '{{.RestartCount}}' "${GATEWAY_NAME}")"
-[[ "${restarts}" == "0" ]] || fail "gateway restarted ${restarts} time(s) during the run"
-echo "  OK gateway never restarted"
+# The gateway containers run with no --restart policy, so a gateway that died
+# stays dead and the endpoint and component assertions above are what report it:
+# the REST API stops answering and they fail. Nothing separate is checked.
 
 # ---------------------------------------------------------------------------
 # Config-less variant: the same race with NO node map.
@@ -310,12 +307,25 @@ connected="$(status_field_for "${renamed}" connected)"
   || fail "renamed component reports endpoint '${endpoint}', expected the adopted server"
 [[ "${connected}" == "True" ]] \
   || fail "renamed component reports connected='${connected}', expected a live session"
-[[ "${renamed}" != "${FALLBACK_COMPONENT_ID}" ]] \
-  || fail "component id never moved off ${FALLBACK_COMPONENT_ID}"
 echo "  OK component renamed to ${renamed}, connected at ${endpoint}"
 
-restarts="$(docker inspect -f '{{.RestartCount}}' "${GATEWAY_NAME}")"
-[[ "${restarts}" == "0" ]] || fail "gateway restarted ${restarts} time(s) during the config-less run"
-echo "  OK gateway never restarted"
+# The provisional component must LEAVE /components while the renamed one is
+# there, read from ONE sample: two components for one PLC is an entity tree the
+# operator has to disambiguate, and everything already filed under the old id
+# would point at a component nothing polls. Given its own deadline because the
+# rename and the discovery refresh that republishes entities are a cycle apart.
+DEADLINE=$((SECONDS + 2 * RESCAN_INTERVAL_S + 40))
+settled=""
+while [[ ${SECONDS} -lt ${DEADLINE} ]]; do
+  ids="$(component_ids)"
+  if [[ " ${ids} " == *" ${renamed} "* && " ${ids} " != *" ${FALLBACK_COMPONENT_ID} "* ]]; then
+    settled="${ids}"
+    break
+  fi
+  sleep 2
+done
+[[ -n "${settled}" ]] \
+  || fail "expected '${renamed}' served and '${FALLBACK_COMPONENT_ID}' gone in one sample, got '${ids}'"
+echo "  OK ${renamed} is served and ${FALLBACK_COMPONENT_ID} is gone"
 
 echo "Discovery race scenario passed."
