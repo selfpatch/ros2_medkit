@@ -18,6 +18,7 @@
 #include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -440,6 +441,9 @@ class GatewayNode : public rclcpp::Node {
   // One-shot WARN when entity_cache capacity is exceeded (grew on first refresh after reserve).
   // Cleared only at construction time; never reset so the WARN fires at most once per run.
   bool warned_cache_grow_{false};
+  /// Declared apps the helper-node rule last warned about, so a static
+  /// misconfiguration is reported when it appears or changes, not every refresh.
+  std::set<std::string> warned_helper_bound_apps_;
 
   // Graph-change-driven discovery refresh.
   //
@@ -498,6 +502,54 @@ class GatewayNode : public rclcpp::Node {
 };
 
 /**
+ * @brief Is this node FQN one of the helper nodes the gateway runs in-process?
+ *
+ * True for the subscription executor's `<fqn>_sub`, the fault-service
+ * transport's `<fqn>_fault_clients`, and the lifecycle reader's
+ * `<fqn>_lifecycle_state_reader`. None of these begins with '_', so the ROS 2
+ * hidden-node convention does not cover them and the gateway would otherwise
+ * list its own plumbing as diagnosable Apps. They carry no parameters and no
+ * services of their own, so there is nothing to diagnose on them.
+ *
+ * False for the gateway node itself. The gateway IS a diagnosable App: its ROS
+ * parameters are served as that App's configurations, and callers read and
+ * write them at `/apps/<gateway>/configurations`. Excluding it would remove the
+ * only entity carrying, for instance, `aggregation.peer_auth_header`, and would
+ * make two gateways watching one graph disagree about that graph, because each
+ * would hide a different node.
+ *
+ * A fault_manager node sharing the process is NOT ours either: it is a
+ * separate, diagnosable component and stays visible.
+ *
+ * Exact matches only. A prefix test would also claim a genuine peer named
+ * `<fqn>_monitor` or `<fqn>2`, and dropping a real node is the worse error.
+ *
+ * Two FQN spellings are recognised, because the three creation sites do not
+ * agree on the namespace: the subscription node is created with the gateway's
+ * own namespace, while the fault-client and lifecycle-reader nodes are created
+ * from the gateway's node NAME alone and so take the process default. A
+ * node-specific namespace remap on the gateway (`-r <gateway>:__ns:=/x`) moves
+ * the gateway and the subscription node and leaves the other two behind, which
+ * is why those two are also matched as `/<name><suffix>`.
+ *
+ * CONTRACT, and the cost of that second spelling: a helper-named node in the
+ * root namespace is treated as plumbing whichever gateway created it. Two
+ * gateways that keep the default node name and differ only in namespace build
+ * the same literal `/<name>_fault_clients` and
+ * `/<name>_lifecycle_state_reader`, so the name cannot say whose it is, and
+ * each will claim the other's. What it is does not depend on who owns it -
+ * those nodes carry nothing to diagnose in either process - and the
+ * alternative is that every namespaced gateway serves and counts its own
+ * plumbing. The subscription node is exempt: it always follows its gateway's
+ * namespace, so a root-namespace one is provably another process's and stays
+ * visible.
+ *
+ * @param node_fqn Fully qualified node name to test ("/ns/node")
+ * @param self_fqn The gateway node's own FQN. An empty value matches nothing
+ */
+bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn);
+
+/**
  * @brief Filter ROS 2 internal nodes from an app list
  *
  * Removes apps whose base name begins with '_' (ROS 2 internal node convention).
@@ -505,11 +557,40 @@ class GatewayNode : public rclcpp::Node {
  * before checking for the underscore prefix, using the routing table for precise
  * prefix detection.
  *
+ * Also removes local apps bound to one of the gateway's in-process helper nodes
+ * (is_own_gateway_helper_node), which the underscore rule cannot see. The
+ * gateway's own node is NOT removed - it is a diagnosable App whose ROS
+ * parameters are served as its configurations. The test is on the bound node
+ * FQN, and only for apps with no routing-table entry: a peer's helper nodes are
+ * the peer's business and are left to the peer's own filter.
+ *
  * @param apps App vector to filter in place
  * @param peer_routing_table Maps entity_id -> peer_name for remote entities
+ * @param self_fqn The gateway node's own FQN. Empty disables the helper check
+ * @param dropped_declared_apps Optional sink for "<app id> -> <node fqn>" of
+ *        every app removed by the helper rule whose source is not runtime
+ *        discovery. Removing a declared entity silently would override the
+ *        manifest without saying so, and this function has no logger
  * @return Number of apps removed
  */
 size_t filter_internal_node_apps(std::vector<App> & apps,
-                                 const std::unordered_map<std::string, std::string> & peer_routing_table);
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table,
+                                 const std::string & self_fqn,
+                                 std::vector<std::string> * dropped_declared_apps = nullptr);
+
+/**
+ * @brief Remember which declared apps were dropped, and say whether that changed
+ *
+ * The condition this gates is a static misconfiguration, while the caller runs
+ * on every graph event and on the refresh cadence, so warning per call would
+ * repeat the same line for the life of the process. Returns true only when the
+ * set differs from the remembered one and is not empty; the remembered set is
+ * updated either way, so a condition that clears and returns is reported again.
+ *
+ * @param dropped App ids (with their bound FQNs) dropped by the helper rule
+ * @param remembered In/out: the set the caller last warned about
+ * @return true when the caller should warn
+ */
+bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
 
 }  // namespace ros2_medkit_gateway

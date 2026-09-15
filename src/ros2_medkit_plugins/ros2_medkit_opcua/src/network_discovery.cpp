@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -71,8 +72,12 @@ bool ipv4_less(const std::string & a, const std::string & b) {
 // ``max_workers`` threads (never more than ``count``) that pull indices off a
 // shared atomic cursor. The single primitive backs both the connect sweep and
 // the GetEndpoints identify so they share the same concurrency bound.
+//
+// ``cancelled`` is polled by every worker before it takes the next index, so an
+// abort stops the fan-out after at most one more probe per worker, whatever is
+// left of the remaining tens of thousands. An empty predicate never cancels.
 template <typename Body>
-void parallel_for(size_t count, int max_workers, Body && body) {
+void parallel_for(size_t count, int max_workers, const std::function<bool()> & cancelled, Body && body) {
   if (count == 0) {
     return;
   }
@@ -80,6 +85,9 @@ void parallel_for(size_t count, int max_workers, Body && body) {
   std::atomic<size_t> next{0};
   const auto worker = [&]() {
     for (;;) {
+      if (cancelled && cancelled()) {
+        return;
+      }
       const size_t i = next.fetch_add(1);
       if (i >= count) {
         return;
@@ -306,9 +314,12 @@ OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j,
   if (j.contains("interval_s") && j["interval_s"].is_number_integer()) {
     const int v = j["interval_s"].get<int>();
     if (v >= 0) {
+      // An explicit 0 is kept as an explicit 0: it means "keep discovery on but
+      // never re-scan", which an unset interval (the built-in cadence) cannot
+      // express.
       cfg.interval_s = v;
     } else {
-      warn_fn("discovery: interval_s must be >= 0 - keeping default (0 = one-shot)");
+      warn_fn("discovery: interval_s must be >= 0 (0 disables re-scanning) - keeping the default cadence");
     }
   }
   if (j.contains("anonymous_none_only") && j["anonymous_none_only"].is_boolean()) {
@@ -333,7 +344,7 @@ std::vector<std::string> NetworkDiscovery::resolve_subnets() const {
   return {local};
 }
 
-std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
+std::vector<DiscoveredEndpoint> NetworkDiscovery::run(const std::function<bool()> & cancelled) {
   // "passive" has no active scan implementation yet (mDNS / LDS FindServers
   // are a documented follow-up) - a no-op stub rather than silently running
   // the active scan mode wasn't asked for. parse_discovery_config() already
@@ -365,13 +376,19 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
   // only the polite fan-out lives here.
   std::vector<Target> open_hits;
   std::mutex hits_mu;
-  parallel_for(targets.size(), cfg_.scan_concurrency, [&](size_t i) {
+  parallel_for(targets.size(), cfg_.scan_concurrency, cancelled, [&](size_t i) {
     const Target & t = targets[i];
     if (scan_(t.ip, t.port, cfg_.connect_timeout_ms)) {
       std::lock_guard<std::mutex> lk(hits_mu);
       open_hits.push_back(t);
     }
   });
+
+  // Cancelled mid-sweep: the hit list is partial, so do not spend an identify
+  // round-trip per hit on a pass whose caller is shutting down.
+  if (cancelled && cancelled()) {
+    return {};
+  }
 
   // Deterministic identify order (numerically lowest ip:port first).
   std::sort(open_hits.begin(), open_hits.end(), [](const Target & a, const Target & b) {
@@ -388,7 +405,7 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
   // sweep, writing each result by index so the deterministic ip:port order
   // (open_hits was sorted above) survives regardless of completion order.
   std::vector<DiscoveredEndpoint> built(open_hits.size());
-  parallel_for(open_hits.size(), cfg_.scan_concurrency, [&](size_t i) {
+  parallel_for(open_hits.size(), cfg_.scan_concurrency, cancelled, [&](size_t i) {
     const Target & t = open_hits[i];
     DiscoveredEndpoint ep;
     ep.ip = t.ip;
@@ -415,6 +432,12 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
     built[i] = std::move(ep);
   });
 
+  // Cancelled during the identify phase: ``built`` holds default-constructed
+  // (empty) entries for the hits no worker reached, which is not a result set.
+  if (cancelled && cancelled()) {
+    return {};
+  }
+
   // 4. Dedup by ApplicationUri (fallback ip:port), sequentially over the
   // deterministic order so the lowest ip:port always wins.
   std::vector<DiscoveredEndpoint> ordered;
@@ -436,7 +459,8 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run() {
 }
 
 const DiscoveredEndpoint * NetworkDiscovery::select_auto_endpoint(const std::vector<DiscoveredEndpoint> & eps,
-                                                                  bool anonymous_none_only) {
+                                                                  bool anonymous_none_only,
+                                                                  const std::string & bound_application_uri) {
   const DiscoveredEndpoint * best = nullptr;
   for (const auto & ep : eps) {
     if (ep.protocol != "opcua" || !ep.identify_error.empty()) {
@@ -447,6 +471,16 @@ const DiscoveredEndpoint * NetworkDiscovery::select_auto_endpoint(const std::vec
     }
     if (anonymous_none_only && !ep.anonymous_none_available) {
       continue;  // secured-only: surfaced as a lead, never auto-connected
+    }
+    if (!bound_application_uri.empty()) {
+      // A caller already holding a session's identity is looking for that one
+      // server at whatever address it now answers on. Address order decides
+      // nothing here: a foreign server that sorts lower would otherwise win
+      // every sweep and the bound one would never be reached again.
+      if (ep.application_uri == bound_application_uri) {
+        return &ep;
+      }
+      continue;
     }
     if (best == nullptr || ipv4_less(ep.ip, best->ip) || (ep.ip == best->ip && ep.port < best->port)) {
       best = &ep;

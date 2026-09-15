@@ -656,9 +656,10 @@ ros2_medkit_gateway:
 | `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
 | `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
-| `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down (issue #496) |
-| `comms_lost_debounce_ms` | `5000` | Continuous down time before `PLC_COMMS_LOST` is raised (debounces reconnect blips; clamped to [0, 3600000] ms) |
+| `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down, and clear it on every successful connect (issue #496) |
+| `comms_lost_debounce_ms` | `5000` | Continuous down time before `PLC_COMMS_LOST` is raised (debounces reconnect blips; clamped to [0, 3600000] ms, with a warning) |
 | `comms_lost_severity` | `ERROR` | SOVD severity bucket for the `PLC_COMMS_LOST` fault |
+| `fault_service_timeout_ms` | `5000` | How long a fault-store read may stay outstanding before the `PLC_COMMS_LOST` decision is owed again (out of range [100, 600000] ms is refused with a warning and the previous value is kept) |
 | `discovery.enabled` | `false` | Opt-in read-only PLC network discovery (auto endpoint). See below |
 
 ### OPC-UA client security (SecurityPolicy, certificates, user auth)
@@ -712,12 +713,18 @@ plugins.opcua.discovery:
   connect_timeout_ms: 600      # per-port TCP connect timeout
   scan_concurrency: 100        # bounded, polite concurrent connect count
   identify_timeout_ms: 6000    # per GetEndpoints identify
-  interval_s: 0                # 0 = one-shot at startup (periodic re-scan: TODO)
+  # re-scan cadence while disconnected. Omit the key for the built-in 30 s,
+  # or set it to 0 to keep discovery on but never re-scan (start-up scan only).
+  interval_s: 30
   anonymous_none_only: true    # only auto-connect None/Anonymous servers
 ```
 
 Environment overrides (Docker / appliance): `OPCUA_DISCOVERY_ENABLED`,
 `OPCUA_DISCOVERY_SUBNETS` (comma-separated CIDRs), `OPCUA_DISCOVERY_INTERVAL_S`.
+Leaving `interval_s` (and `OPCUA_DISCOVERY_INTERVAL_S`) unset means "no cadence
+stated" and takes the 30 s default. An explicit `0` is honoured as written and
+turns the recurring sweep off. A negative value is refused with a warning and
+leaves the cadence unset.
 
 How it works:
 1. Bounded concurrent TCP connect sweep of the configured ports across the
@@ -733,24 +740,112 @@ How it works:
    auto-selects the best None/Anonymous data server (deterministic, lowest
    ip:port) and connects to the **scanned ip:port** - not the advertised
    EndpointUrl, which a server may report as a non-resolvable hostname.
+5. While no session is established, the reconnect loop scans again every
+   `interval_s` (default 30 s), measured from the END of the previous sweep, and
+   adopts the server it is **bound** to at whatever address it now answers on,
+   logging the swap at INFO. The re-scan is consulted once per reconnect attempt, and those are
+   spaced by an exponential backoff, so the backoff ceiling is capped at
+   `interval_s` while discovery is re-scanning, which is what makes the stated
+   cadence the real one: uncapped it would be `max(interval_s, backoff)`. This
+   covers the common race where the gateway and the PLC boot together: the
+   startup scan finds nothing because the PLC is still coming up, and without a
+   re-scan the plugin would retry the fallback endpoint until someone restarted
+   it.
+6. On the first session after such an adoption, a config-less deployment (no
+   node map) re-derives the SOVD component identity from the device itself, so
+   the component stops being served under the provisional `opcua-<host>` name it
+   got when nothing answered. The change is logged at INFO. A rename the connect
+   hook makes happens before the session subscribes, so the conditions the
+   server replays are hosted on the new entity; a rename a later poll makes
+   happens after, which is the residual described below.
+
+   The rename is ruled by what the read produced. A device nameplate takes over
+   from an `opcua-<host>` stand-in; a name the device gave us keeps its place. A
+   read without a nameplate moves one stand-in to another, which is the adoption
+   case where the endpoint changed, and leaves a device-given name alone: the
+   first device-info read of a fresh session can come back empty while the PLC's
+   address space is still filling in.
+
+   The read budget is: **one read at connect** (in `set_context`, for the first
+   session), then per session **up to four in the connect hook** - the first
+   plus three more, 250 ms apart - and **up to five poll reads**. A first
+   session therefore costs at most 1 + 4 + 5 = 10 reads, and every later one at
+   most 9. After that the stand-in stands for the session, and the question is
+   asked again on the next one. A shutdown ends the connect burst without
+   waiting it out and without renaming: the residual is up to one 250 ms pause
+   plus one device-info read already in flight. Plugin start-up pays the burst
+   once, and only when the device answers the first read without a nameplate.
+
+   The stand-ins a fault can have been reported under are the **first eight
+   distinct** ones a process assigns; a stand-in re-adopted later keeps its
+   place.
+
+   When the rename happens, the alarm routing the event path uses is refreshed
+   and the conditions the poller already pinned are moved to the new
+   `<component_id>_alarms` entity. One residual: a condition that changes state
+   between its pin and the rename is reported once under the old entity.
+
+### What the plugin is bound to
+
+The **binding** is the OPC-UA `ApplicationUri` of the server the plugin actually
+held a session with, read off that session (the `ServerArray`, whose first entry
+is that URI). It is not persisted, so it exists only for the life of the process.
+
+- A re-scan looks for **that server and no other**, at any address: the bound
+  `ApplicationUri` is an input to the selection, so a foreign server does not win
+  by sorting lower. A sweep that finds no hit carrying it selects nothing, the
+  endpoint stands and the `PLC_COMMS_LOST` fault stands with it.
+- A **different server at the bound address** is caught when the session comes
+  up: the live `ApplicationUri` is read, the mismatch is logged at WARN, the
+  session is dropped, no link-state clear is sent, and the reconnect loop keeps
+  trying. Both reports are once per distinct URI per outage, and the list is
+  cleared as soon as the bound server is reached again.
+- A PLC that **moved** - new address, same `ApplicationUri` - is re-adopted,
+  which is what the re-scan is for.
+- **Replacing a PLC is a recommissioning**: restart the plugin against the new
+  one. Adopting a different PLC silently would re-point every SOVD entity at
+  hardware nobody asked for and would clear the outage as if the link had healed.
+
+Three cases have no binding, and in each the next adoption is unconstrained:
+
+1. Nothing has been connected yet - the gateway that started before its PLC, and
+   every process after a restart, because the binding is never persisted.
+2. An operator-configured `endpoint_url`, which runs no discovery at all.
+3. A server that publishes **no `ApplicationUri`**: there is nothing to bind to,
+   so after a drop a re-scan accepts whichever server answers. This is logged at
+   WARN when such a server is adopted.
+
+Re-scanning stops as soon as a session is up, and never starts at all when an
+`endpoint_url` is configured.
 
 Safety / OT posture:
 - Everything is read-only: TCP connect + `GetEndpoints` only. No writes, no
   subscriptions, no second long-lived session.
+- The scan is NOT one-shot: while the plugin has no session it repeats every
+  `interval_s` (default 30 s) for as long as it stays disconnected. Set
+  `interval_s: 0` (or `OPCUA_DISCOVERY_INTERVAL_S=0`) to keep discovery on with
+  the start-up scan only, or `enabled: false` to switch it off entirely.
+- A sweep is cancellable, so a stop does not have to wait out a subnet the size
+  of a /16. The start-up sweep runs while the gateway node is still being
+  constructed, so what ends it is `SIGINT` / `SIGTERM`, which the plugin sees
+  through `rclcpp::ok()`. A re-scan sweep runs on the poll thread and is ended
+  by either that or the plugin's own `shutdown()`.
 - An explicitly configured `endpoint_url` (or `OPCUA_ENDPOINT_URL`) always wins;
   discovery then does nothing, so it never opens a second session on a PLC the
   plugin already polls.
-- Secured-only servers (no None/Anonymous endpoint) are surfaced in the startup
-  log as leads requiring operator credentials - never auto-connected or probed.
+- Secured-only servers (no None/Anonymous endpoint) are surfaced in the log as
+  leads requiring operator credentials - never auto-connected or probed. A
+  re-scan whose outcome has not changed reports at DEBUG, so a recurring sweep
+  does not bury the rest of the log under the same report.
 - The scan is bounded (short connect timeout, capped concurrency) and CIDRs
   wider than /16 are rejected to prevent an accidental broad sweep.
 
 Note on passive discovery: a stock Siemens S7-1500 neither multicast-announces
 (mDNS `_opcua-tcp._tcp`) nor registers with an OPC-UA LDS, so passive sources
 find nothing there; the active scan is what discovers it. Passive mDNS / LDS
-`FindServers` sources (useful on Kepware / Prosys / GDS estates) and periodic
-re-scan + multi-endpoint registration are planned follow-ups; this iteration
-delivers the active-scan core and single "auto endpoint" mode.
+`FindServers` sources (useful on Kepware / Prosys / GDS estates) and
+multi-endpoint registration are planned follow-ups. This iteration delivers the
+active-scan core and a single "auto endpoint" mode.
 
 ### Active-condition replay on reconnect (issue #389/#478)
 
@@ -802,6 +897,37 @@ so the alarm clears on `Acknowledge` alone. The default (`true`) is unchanged
 and spec-strict; the relaxed path still requires acknowledgement and needs
 real-S7-1500 validation.
 
+### Connection loss and `PLC_COMMS_LOST` (issue #496)
+
+When the OPC-UA connection stays down for `comms_lost_debounce_ms` continuously,
+the plugin raises one component-scoped `PLC_COMMS_LOST` fault (a shorter blip
+during a normal reconnect does not flap it).
+
+Every successful connect - the initial one and every later reconnect - puts a
+decision about the standing `PLC_COMMS_LOST` on the poll thread. The fault
+manager keys faults by fault code and persists them, which cuts both ways: a
+fault raised before a gateway restart is still standing while the new process
+has no memory of it, so the decision cannot rest on this process's own memory;
+and a gateway that also loads another field-bus bridge shares the one
+`PLC_COMMS_LOST` code with it, so this link coming back says nothing about the
+other bridge's link.
+
+So the plugin asks the fault manager who reported the standing fault, and clears
+it only when **every** reporting source is an id this process could have
+reported under: the component id it serves, the last few `opcua-<host>` stand-ins
+it assigned in this process, and the node-map default a YAML without a
+`component_id` reports under. `ClearFault` carries no source and clears the whole
+row, so a fault whose sources include a foreign one is left standing and the
+decision is logged at INFO. A `PLC_COMMS_LOST` that two bridges raised is cleared
+by an operator; the fault manager has no per-source de-assert.
+
+The decision is driven from the poll thread and only while the session is up, so
+a clear is never sent against a link that is down; an answer that arrives after
+the link dropped is held until the next connect. A store that cannot be reached,
+a probe that goes unanswered within `fault_service_timeout_ms`, and a clear the
+bounded pending-dispatch buffer had to give up under load all leave the decision
+owed, and the next poll takes it again.
+
 Node map entries also support an optional `ros2_topic` field to override the auto-generated ROS 2 topic name for the PLC value bridge:
 
 ```yaml
@@ -838,7 +964,7 @@ Write operations use the `set_` prefix convention:
 | `OPCUA_CONDITION_REPLAY` | `method` / `read` / `auto` / `off` |
 | `OPCUA_REQUIRE_CONFIRM_FOR_CLEAR` | `0`/`false`/`no`/`off` to clear native alarms on Acknowledge alone (Confirm-less servers) |
 | `OPCUA_COMMS_LOST_ENABLED` | `0`/`false`/`no`/`off` to disable the `PLC_COMMS_LOST` fault |
-| `OPCUA_COMMS_LOST_DEBOUNCE_MS` | Continuous down time (ms) before `PLC_COMMS_LOST` is raised (clamped to [0, 3600000] ms; non-numeric / out-of-range keeps the existing value) |
+| `OPCUA_COMMS_LOST_DEBOUNCE_MS` | Continuous down time (ms) before `PLC_COMMS_LOST` is raised. A value above 3600000 ms is clamped, with a warning, as on the JSON path; a non-numeric or negative value is refused with a warning and the existing value is kept |
 
 ## Hardware Deployment
 
@@ -951,6 +1077,16 @@ MEDKIT_OPCUA_VARIANT=write-capable bash scripts/test_all.sh
 
 # Stop
 bash scripts/stop.sh
+```
+
+A separate scenario covers the config-less discovery start-up race, which the
+suite above cannot see because it pins `OPCUA_ENDPOINT_URL` and so
+short-circuits discovery. It starts the gateway before any server, with
+discovery on and no endpoint configured, then brings a server up and asserts
+the gateway adopts it without a restart:
+
+```bash
+bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_discovery_race_test.sh
 ```
 
 ### Test Coverage

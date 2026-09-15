@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -105,10 +106,17 @@ struct OpcuaDiscoveryConfig {
   int scan_concurrency{100};    ///< bounded, polite concurrent connect count
   int identify_timeout_ms{6000};
 
-  /// Re-scan cadence. 0 = one-shot at startup (the only mode implemented in
-  /// this iteration); a positive value is accepted and validated but periodic
-  /// re-scan is a documented follow-up.
-  int interval_s{0};
+  /// Re-scan cadence, in seconds, while no OPC-UA session is established.
+  /// Unset (the key absent) selects the built-in default, an explicit 0 turns
+  /// re-scanning off and keeps the startup scan one-shot - the two are
+  /// deliberately distinct, so a deployment can keep discovery on and still
+  /// stop the recurring sweep (see OpcuaPlugin::effective_rescan_interval_s).
+  /// The startup scan always runs once. The cadence only governs how often the
+  /// disconnected reconnect loop scans again, so a gateway that started before
+  /// its PLC finished booting adopts the PLC when it appears, at that cadence,
+  /// for as long as it stays disconnected. Never used once an endpoint is
+  /// configured explicitly, and never while a session is up.
+  std::optional<int> interval_s;
 
   /// Only auto-register endpoints that expose a None + Anonymous endpoint (what
   /// the plugin connects with today). Secured-only servers are surfaced as
@@ -154,19 +162,34 @@ class NetworkDiscovery {
   /// Run one full discovery pass (blocking). Read-only: TCP connect +
   /// GetEndpoints only. Deduplicated by ApplicationUri (fallback ip:port),
   /// sorted deterministically by ip:port.
-  std::vector<DiscoveredEndpoint> run();
+  ///
+  /// @param cancelled optional abort predicate, polled before every probe and
+  ///        between the sweep and identify phases. A sweep of a legal /16 is
+  ///        tens of thousands of probes and takes minutes, and the caller runs
+  ///        it on the poll thread that a shutdown has to join, so without this
+  ///        a ``docker stop`` grace period would expire mid-sweep. A pass still
+  ///        cancelled at the next phase boundary returns an empty result rather
+  ///        than a partial one, within one in-flight probe per worker.
+  std::vector<DiscoveredEndpoint> run(const std::function<bool()> & cancelled = {});
 
   /// Resolve the subnets to scan: configured ``subnets`` if any, else the
   /// derived local /24. Exposed for logging / tests.
   std::vector<std::string> resolve_subnets() const;
 
-  /// Pick the best endpoint for single-endpoint "auto endpoint" mode: an
-  /// OPC-UA data server (not an LDS) that identified cleanly and, when
-  /// ``anonymous_none_only``, offers a None + Anonymous endpoint. Deterministic
-  /// (lowest ip:port). Returns nullptr when no candidate qualifies. Pure /
-  /// static so the selection policy is unit tested without a network.
+  /// Pick the endpoint for single-endpoint "auto endpoint" mode: an OPC-UA data
+  /// server (not an LDS) that identified cleanly and, when
+  /// ``anonymous_none_only``, offers a None + Anonymous endpoint.
+  ///
+  /// ``bound_application_uri`` is the identity of the server the caller already
+  /// holds a session with. When it is set, the only candidate is the hit
+  /// carrying that ApplicationUri, at whatever address it answers on, and
+  /// nullptr means that server was not found. When it is empty the choice is
+  /// the deterministic lowest ip:port. Returns nullptr when no candidate
+  /// qualifies. Pure / static so the selection policy is unit tested without a
+  /// network.
   static const DiscoveredEndpoint * select_auto_endpoint(const std::vector<DiscoveredEndpoint> & eps,
-                                                         bool anonymous_none_only);
+                                                         bool anonymous_none_only,
+                                                         const std::string & bound_application_uri = {});
 
  private:
   OpcuaDiscoveryConfig cfg_;

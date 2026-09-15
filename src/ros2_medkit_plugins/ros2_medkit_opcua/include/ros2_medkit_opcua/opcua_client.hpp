@@ -132,6 +132,13 @@ class OpcuaClient {
   /// Get the endpoint URL (for status reporting)
   std::string endpoint_url() const;
 
+  /// The connected server's own ApplicationUri, read from the ServerArray
+  /// (ns=0, i=2254), whose first entry is that URI per OPC-UA Part 5. One read
+  /// on the open session, so a caller can tell which server it reached
+  /// independently of the address it reached it at. Empty when the session is
+  /// down, when the read fails, or when the server publishes no ServerArray.
+  std::string read_server_application_uri();
+
   /// Get the current config (for reconnection)
   OpcuaClientConfig current_config() const;
 
