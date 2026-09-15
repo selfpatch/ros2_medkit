@@ -216,6 +216,8 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     }
     auto existing = storage_->get_freeze_frame(fault_code);
     if (existing.has_value() && existing->data != "{}") {
+      // Reporter evidence counts as content here too: a capture that sampled nothing must
+      // not replace a frame whose only contents came from the reporter.
       RCLCPP_WARN(node_->get_logger(), "Nothing captured for fault '%s'; keeping previously retained freeze-frame",
                   fault_code.c_str());
       return;
@@ -224,7 +226,13 @@ void SnapshotCapture::capture(const std::string & fault_code) {
 
   FreezeFrameData frame;
   frame.fault_code = fault_code;
-  frame.data = freeze_frame.dump();
+  // This rebuilds the frame from the topics just sampled, so any evidence a reporter
+  // attached earlier would be dropped by the write. Carry it across: which of the two
+  // paths writes last is a matter of when the fault confirmed, not of intent.
+  {
+    auto existing = storage_->get_freeze_frame(fault_code);
+    frame.data = existing ? preserve_reported_evidence(freeze_frame.dump(), existing->data) : freeze_frame.dump();
+  }
   frame.captured_at_ns = get_wall_clock_ns();
   storage_->store_freeze_frame(frame);
 }

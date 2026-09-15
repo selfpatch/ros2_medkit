@@ -168,6 +168,12 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_correlation_engine test/test_correlation_engine.cpp)
   target_link_libraries(test_correlation_engine fault_manager_lib)
 
+  # Reporter-supplied evidence: the merge, its bounds, and the capture path that
+  # must not erase it.
+  medkit_add_gtest(test_reported_evidence test/test_reported_evidence.cpp)
+  target_link_libraries(test_reported_evidence fault_manager_lib)
+  medkit_target_dependencies(test_reported_evidence rclcpp ros2_medkit_msgs)
+
   # Entity threshold resolver tests
   medkit_add_gtest(test_entity_thresholds test/test_entity_thresholds.cpp)
   target_link_libraries(test_entity_thresholds fault_manager_lib)
@@ -188,6 +194,9 @@ if(BUILD_TESTING)
   # is what is under test rather than an operator's explicit choice.
   medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 90
     LABELS "integration")
+
+  medkit_add_launch_test(test_reported_evidence_integration
+    test/integration/test_reported_evidence.test.py TIMEOUT 60 LABELS "integration")
 
   medkit_add_launch_test(test_entity_thresholds_integration test/integration/test_entity_thresholds_integration.test.py
     TIMEOUT 60 LABELS "integration")

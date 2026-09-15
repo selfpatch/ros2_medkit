@@ -55,36 +55,53 @@ std::shared_ptr<DiagnosticBridgeNode> make_node_with_keyvalue_codes(std::vector<
   options.append_parameter_override("keyvalue_codes", keyvalue_codes);
   return std::make_shared<DiagnosticBridgeNode>(options);
 }
+
+/// A bridge with no configuration beyond the defaults. Severity mapping is a method
+/// rather than a free function now that STALE is configurable, so the cases that used
+/// to call it statically need an instance to call it on.
+std::shared_ptr<DiagnosticBridgeNode> make_default_node() {
+  return std::make_shared<DiagnosticBridgeNode>(rclcpp::NodeOptions());
+}
+
+std::shared_ptr<DiagnosticBridgeNode>
+make_node_with_params(const std::vector<std::pair<std::string, std::string>> & overrides) {
+  rclcpp::NodeOptions options;
+  for (const auto & [name, value] : overrides) {
+    options.append_parameter_override(name, value);
+  }
+  return std::make_shared<DiagnosticBridgeNode>(options);
+}
 }  // namespace
 
 // Test severity mapping
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Warn) {
-  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::WARN);
+  auto result = make_default_node()->map_to_severity(DiagStatus::WARN, "any");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, Fault::SEVERITY_WARN);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Error) {
-  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::ERROR);
+  auto result = make_default_node()->map_to_severity(DiagStatus::ERROR, "any");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, Fault::SEVERITY_ERROR);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Stale) {
-  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::STALE);
+  // Unconfigured, STALE still maps to CRITICAL: the change is opt-in.
+  auto result = make_default_node()->map_to_severity(DiagStatus::STALE, "any");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, Fault::SEVERITY_CRITICAL);
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Ok) {
   // OK should return nullopt (use is_ok_level and send PASSED instead)
-  auto result = DiagnosticBridgeNode::map_to_severity(DiagStatus::OK);
+  auto result = make_default_node()->map_to_severity(DiagStatus::OK, "any");
   EXPECT_FALSE(result.has_value());
 }
 
 TEST_F(DiagnosticBridgeTest, MapToSeverity_Unknown) {
   // Unknown level defaults to ERROR
-  auto result = DiagnosticBridgeNode::map_to_severity(99);
+  auto result = make_default_node()->map_to_severity(99, "any");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, Fault::SEVERITY_ERROR);
 }
@@ -236,6 +253,99 @@ TEST_F(DiagnosticBridgeTest, MapToFaultCode_NameToCodeOverride_PrecedesKeyValueC
 
   // Custom mapping has highest precedence even when keyvalue code is present.
   EXPECT_EQ(node->map_to_fault_code(diagnostic_status("/motor", 1, "", {{"code", "FROM_ATTRIBUTE"}})), "OVERRIDE_CODE");
+}
+
+// ---------------------------------------------------------------------------
+// STALE severity: the level a node can be by design
+// ---------------------------------------------------------------------------
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_DefaultIsCriticalForEveryName) {
+  auto node = make_default_node();
+  EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_CRITICAL);
+  EXPECT_EQ(node->stale_severity_for("anything else"), Fault::SEVERITY_CRITICAL);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_GlobalParameterAppliesToAll) {
+  auto node = make_node_with_params({{"stale_severity", "WARN"}});
+  EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "gps").value(), Fault::SEVERITY_WARN);
+  EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "imu").value(), Fault::SEVERITY_WARN);
+  // Only STALE moves; the levels that are facts rather than decisions stay put.
+  EXPECT_EQ(node->map_to_severity(DiagStatus::ERROR, "gps").value(), Fault::SEVERITY_ERROR);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideBeatsGlobalDefault) {
+  auto node = make_node_with_params({{"stale_severity_overrides.gps", "WARN"}});
+  EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "gps").value(), Fault::SEVERITY_WARN);
+  // The issue's own acceptance criterion: without an override it stays CRITICAL.
+  EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "lidar").value(), Fault::SEVERITY_CRITICAL);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideMatchesOnPrefix) {
+  auto node = make_node_with_params({{"stale_severity_overrides.gps", "WARN"}});
+  // Diagnostic names are conventionally "<component>: <check>", so a prefix is how an
+  // operator names every check a component publishes without listing them.
+  EXPECT_EQ(node->stale_severity_for("gps: fix quality"), Fault::SEVERITY_WARN);
+  EXPECT_EQ(node->stale_severity_for("gpsd"), Fault::SEVERITY_WARN);
+  EXPECT_EQ(node->stale_severity_for("imu: covariance"), Fault::SEVERITY_CRITICAL);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_LongestPrefixWins) {
+  auto node = make_node_with_params({
+      {"stale_severity_overrides.gps", "WARN"},
+      {"stale_severity_overrides.gps: antenna", "ERROR"},
+  });
+  EXPECT_EQ(node->stale_severity_for("gps: antenna shorted"), Fault::SEVERITY_ERROR);
+  EXPECT_EQ(node->stale_severity_for("gps: fix quality"), Fault::SEVERITY_WARN);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideCombinesWithNonCriticalDefault) {
+  auto node = make_node_with_params({
+      {"stale_severity", "WARN"},
+      {"stale_severity_overrides.safety_chain", "CRITICAL"},
+  });
+  // A deployment that treats STALE as routine still needs the one sensor where it is not.
+  EXPECT_EQ(node->stale_severity_for("safety_chain: estop"), Fault::SEVERITY_CRITICAL);
+  EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_UnparseableGlobalFallsBackToCritical) {
+  auto node = make_node_with_params({{"stale_severity", "not-a-severity"}});
+  EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_CRITICAL);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_UnparseableOverrideIsIgnoredNotDefaulted) {
+  auto node = make_node_with_params({
+      {"stale_severity", "WARN"},
+      {"stale_severity_overrides.gps", "WHOOPS"},
+  });
+  // The typo must not be read as CRITICAL: an operator debouncing a noisy GPS would get
+  // the immediate-confirm behaviour they were configuring their way out of.
+  EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, StaleSeverity_NamesAreCaseInsensitive) {
+  auto node = make_node_with_params({{"stale_severity", "warn"}});
+  EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
+}
+
+// @verifies REQ_INTEROP_109
+TEST_F(DiagnosticBridgeTest, ParseSeverityName_AcceptsTheFourNamesAndNothingElse) {
+  EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("INFO").value(), Fault::SEVERITY_INFO);
+  EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("WARN").value(), Fault::SEVERITY_WARN);
+  EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("ERROR").value(), Fault::SEVERITY_ERROR);
+  EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("CRITICAL").value(), Fault::SEVERITY_CRITICAL);
+  EXPECT_FALSE(DiagnosticBridgeNode::parse_severity_name("").has_value());
+  EXPECT_FALSE(DiagnosticBridgeNode::parse_severity_name("2").has_value());
+  EXPECT_FALSE(DiagnosticBridgeNode::parse_severity_name("FATAL").has_value());
 }
 
 int main(int argc, char ** argv) {
