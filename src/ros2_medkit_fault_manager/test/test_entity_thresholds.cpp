@@ -18,8 +18,8 @@
 #include <fstream>
 
 #include "rclcpp/rclcpp.hpp"
-#include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 

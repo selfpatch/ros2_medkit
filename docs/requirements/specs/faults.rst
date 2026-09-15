@@ -48,6 +48,28 @@ Faults
    shall take precedence over global defaults. Unspecified fields shall inherit from global
    configuration. When no entity prefix matches, global defaults shall apply.
 
+.. req:: Per-Fault-Code Debounce Thresholds
+   :id: REQ_INTEROP_107
+   :status: verified
+   :tags: Faults
+
+   The fault manager shall support per-fault_code debounce threshold configuration using
+   exact matching on the reported fault code. A fault-code override for
+   ``confirmation_threshold``, ``healing_enabled``, or ``healing_threshold`` shall take
+   precedence over both the per-entity override resolved for the reporting source and the
+   global defaults. Unspecified fields shall inherit from the layer below. When a fault code
+   has no override, the resolved per-entity or global configuration shall apply unchanged.
+
+.. req:: Conflicting Debounce Policies Are Reported
+   :id: REQ_INTEROP_108
+   :status: verified
+   :tags: Faults
+
+   The debounce counter belongs to the fault code while a per-entity override is resolved
+   from the reporting source. When two sources report one fault code and resolve to
+   different debounce policies, the fault manager shall warn, naming the fault code, both
+   sources and both resolved policies, at most once per fault code for the life of the node.
+
 .. req:: Fault Snapshot and Rosbag Capture
    :id: REQ_INTEROP_088
    :status: verified
