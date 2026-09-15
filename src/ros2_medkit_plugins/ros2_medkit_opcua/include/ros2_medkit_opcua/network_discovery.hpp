@@ -113,9 +113,9 @@ struct OpcuaDiscoveryConfig {
   /// stop the recurring sweep (see OpcuaPlugin::effective_rescan_interval_s).
   /// The startup scan always runs once. The cadence only governs how often the
   /// disconnected reconnect loop scans again, so a gateway that started before
-  /// its PLC finished booting adopts the PLC when it appears instead of retrying
-  /// the fallback endpoint forever. Never used once an endpoint is configured
-  /// explicitly, and never while a session is up.
+  /// its PLC finished booting adopts the PLC when it appears, at that cadence,
+  /// for as long as it stays disconnected. Never used once an endpoint is
+  /// configured explicitly, and never while a session is up.
   std::optional<int> interval_s;
 
   /// Only auto-register endpoints that expose a None + Anonymous endpoint (what
@@ -176,13 +176,20 @@ class NetworkDiscovery {
   /// derived local /24. Exposed for logging / tests.
   std::vector<std::string> resolve_subnets() const;
 
-  /// Pick the best endpoint for single-endpoint "auto endpoint" mode: an
-  /// OPC-UA data server (not an LDS) that identified cleanly and, when
-  /// ``anonymous_none_only``, offers a None + Anonymous endpoint. Deterministic
-  /// (lowest ip:port). Returns nullptr when no candidate qualifies. Pure /
-  /// static so the selection policy is unit tested without a network.
+  /// Pick the endpoint for single-endpoint "auto endpoint" mode: an OPC-UA data
+  /// server (not an LDS) that identified cleanly and, when
+  /// ``anonymous_none_only``, offers a None + Anonymous endpoint.
+  ///
+  /// ``bound_application_uri`` is the identity of the server the caller already
+  /// holds a session with. When it is set, the only candidate is the hit
+  /// carrying that ApplicationUri, at whatever address it answers on, and
+  /// nullptr means that server was not found. When it is empty the choice is
+  /// the deterministic lowest ip:port. Returns nullptr when no candidate
+  /// qualifies. Pure / static so the selection policy is unit tested without a
+  /// network.
   static const DiscoveredEndpoint * select_auto_endpoint(const std::vector<DiscoveredEndpoint> & eps,
-                                                         bool anonymous_none_only);
+                                                         bool anonymous_none_only,
+                                                         const std::string & bound_application_uri = {});
 
  private:
   OpcuaDiscoveryConfig cfg_;
