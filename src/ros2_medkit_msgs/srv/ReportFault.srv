@@ -49,6 +49,20 @@ string description
 # including namespace (e.g., "/powertrain/engine/temp_sensor").
 # This value is added to the fault's reporting_sources array for multi-source tracking.
 string source_id
+
+# Measurements behind this report: the numbers the reporter already had when it decided
+# the condition held (outlier counts, gate statistics, a covariance that went negative).
+# Only read for FAILED events; ignored for PASSED.
+#
+# Kept in the fault's freeze frame under a reserved key, so a reader can tell a value the
+# reporter asserted from one the fault manager sampled off a topic. Evidence travels with
+# the event on purpose: a separate attach call could fail on its own and leave a fault with
+# no numbers, or numbers with no fault.
+#
+# Bounded by the fault manager (count and total size) - a reporter that publishes at 10 Hz
+# must not be able to grow the fault store without limit. Entries past the bound are dropped
+# and the drop is logged, never silently truncated into a half-record.
+diagnostic_msgs/KeyValue[] evidence
 ---
 # Response fields
 

@@ -15,7 +15,43 @@ to the FaultManager as faults.
 | OK (0) | - | Sends PASSED event (healing) |
 | WARN (1) | WARN (1) | Reports fault |
 | ERROR (2) | ERROR (2) | Reports fault |
-| STALE (3) | CRITICAL (3) | Reports fault |
+| STALE (3) | `stale_severity` (CRITICAL by default) | Reports fault |
+
+STALE is the one level whose severity is a deployment decision rather than a fact. A GPS in
+every tunnel and a dead sensor both publish STALE, and CRITICAL
+[bypasses debounce](../ros2_medkit_fault_manager/README.md), so an expected outage confirms a
+CRITICAL fault on its first sample. Set `stale_severity`, or name the noisy sources with
+`stale_severity_overrides`, and those statuses go through debounce like any other.
+
+## Evidence
+
+A FAILED report carries the status's key-values to the fault manager, which keeps them in the
+fault's freeze frame under the reserved key `x-reported` and serves them back from
+`GET /api/v1/apps/{app}/faults/{code}`:
+
+```jsonc
+{
+  "environment_data": {
+    "snapshots": [
+      {
+        "type": "freeze_frame",
+        "name": "freeze_frame",
+        "data": "{\"x-reported\":{\"rejected_fixes\":\"37\",\"nis\":\"0.03\"}}"
+      }
+    ]
+  }
+}
+```
+
+The numbers a publisher already computed to decide something was wrong are usually the whole
+explanation of the fault, and before this they were dropped. The frame's other keys are topic
+names sampled by the fault manager, which are always fully qualified and start with `/`, so a
+reader can always tell a value the reporter asserted from one the fault manager sampled.
+
+`keyvalue_codes` still reads the same values to pick a fault code; the two uses are
+independent and either can be used without the other. Evidence is bounded per fault code (32
+entries, 512 characters per value); entries past the bound are dropped with a throttled
+warning rather than truncated, and the fault is recorded either way.
 
 ## Quick Start
 
@@ -39,6 +75,8 @@ ros2 run ros2_medkit_diagnostic_bridge diagnostic_bridge_node
 | `max_tracked_sources` | integer | `512` | Maximum number of per-source FaultReporter instances retained by the bridge |
 | `name_to_code.<name>` | string | - | Custom mapping from diagnostic name to fault code |
 | `keyvalue_codes` | string[] | - | List of keys used to search the diagnostic values for the fault code |
+| `stale_severity` | string | `CRITICAL` | Severity a STALE status reports at. One of `INFO`, `WARN`, `ERROR`, `CRITICAL` |
+| `stale_severity_overrides.<name>` | string | - | Severity for STALE statuses whose name starts with `<name>`. Longest matching prefix wins |
 
 ### Example Configuration
 

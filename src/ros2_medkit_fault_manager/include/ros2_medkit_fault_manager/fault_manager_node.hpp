@@ -20,8 +20,11 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
@@ -190,6 +193,19 @@ class FaultManagerNode : public rclcpp::Node {
   /// Resolve debounce config for a given source_id using entity threshold resolver.
   /// Falls back to global config if no entity-specific overrides match.
   DebounceConfig resolve_config(const std::string & source_id) const;
+
+  /// Merge reporter-supplied evidence into a fault's freeze frame.
+  ///
+  /// Called for every FAILED report that carries any. Bounded per fault code; entries the
+  /// bounds reject are dropped and logged rather than truncated. The frame is read, merged
+  /// and written back, which is safe because the node's single-threaded executor serialises
+  /// this with every other callback that touches storage.
+  /// @param fault_code The code just reported.
+  /// @param evidence Key-value measurements from the report.
+  /// @param event_time Wall-clock time of the report.
+  void store_reported_evidence(const std::string & fault_code,
+                               const std::vector<diagnostic_msgs::msg::KeyValue> & evidence,
+                               const rclcpp::Time & event_time);
 
   /// Create the tamper-evident audit log from parameters (nullptr if disabled).
   std::unique_ptr<FaultAuditLog> create_audit_log();

@@ -108,6 +108,11 @@ void FaultReporter::load_parameters(const rclcpp::node_interfaces::NodeParameter
 }
 
 void FaultReporter::report(const std::string & fault_code, uint8_t severity, const std::string & description) {
+  report(fault_code, severity, description, {});
+}
+
+void FaultReporter::report(const std::string & fault_code, uint8_t severity, const std::string & description,
+                           const std::vector<diagnostic_msgs::msg::KeyValue> & evidence) {
   // Validate fault_code
   if (fault_code.empty()) {
     RCLCPP_WARN(logger_, "Attempted to report fault with empty fault_code, ignoring");
@@ -120,7 +125,7 @@ void FaultReporter::report(const std::string & fault_code, uint8_t severity, con
     return;
   }
 
-  send_report(fault_code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED, severity, description);
+  send_report(fault_code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED, severity, description, evidence);
 }
 
 void FaultReporter::report_passed(const std::string & fault_code) {
@@ -142,7 +147,8 @@ bool FaultReporter::is_service_ready() const {
 }
 
 void FaultReporter::send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                                const std::string & description) {
+                                const std::string & description,
+                                const std::vector<diagnostic_msgs::msg::KeyValue> & evidence) {
   if (!client_->service_is_ready()) {
     // Use WARN level for high-severity faults that would bypass filtering
     if (event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
@@ -160,6 +166,7 @@ void FaultReporter::send_report(const std::string & fault_code, uint8_t event_ty
   request->severity = severity;
   request->description = description;
   request->source_id = source_id_;
+  request->evidence = evidence;
 
   // Fire and forget - don't block on response
   client_->async_send_request(request);
