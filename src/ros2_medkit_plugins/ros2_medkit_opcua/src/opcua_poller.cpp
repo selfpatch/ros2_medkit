@@ -188,6 +188,35 @@ OpcuaPoller::~OpcuaPoller() {
   stop();
 }
 
+void OpcuaPoller::refresh_alarm_routing() {
+  auto routing = std::make_shared<AlarmRouting>();
+  routing->event_alarms = node_map_.event_alarms();
+  routing->auto_alarms = node_map_.auto_alarms();
+  for (const auto & entry : node_map_.entries()) {
+    routing->entity_by_node_id.emplace(entry.node_id_str, entry.entity_id);
+  }
+  std::lock_guard<std::mutex> lock(alarm_routing_mutex_);
+  alarm_routing_ = std::move(routing);
+}
+
+std::shared_ptr<const OpcuaPoller::AlarmRouting> OpcuaPoller::alarm_routing() const {
+  std::lock_guard<std::mutex> lock(alarm_routing_mutex_);
+  return alarm_routing_;
+}
+
+void OpcuaPoller::repin_auto_alarms_entity(const std::string & old_entity_id, const std::string & new_entity_id) {
+  if (old_entity_id.empty() || new_entity_id.empty() || old_entity_id == new_entity_id) {
+    return;
+  }
+  std::unique_lock lock(conditions_mutex_);
+  for (auto & [condition_id, runtime] : conditions_) {
+    (void)condition_id;
+    if (runtime.entity_id == old_entity_id) {
+      runtime.entity_id = new_entity_id;
+    }
+  }
+}
+
 void OpcuaPoller::start(const PollerConfig & config) {
   if (running_.load()) {
     return;
@@ -196,16 +225,26 @@ void OpcuaPoller::start(const PollerConfig & config) {
   config_ = config;
   running_ = true;
 
-  // Try subscription mode first
-  if (config_.prefer_subscriptions) {
-    setup_subscriptions();
-  }
+  // Same position as the reconnect arm's: whatever the owner must settle before
+  // the link-state edge and before the server replays a condition happens here.
+  // Only meaningful with a session already up - start() on a disconnected
+  // client subscribes nothing, and the reconnect arm fires the hook when one
+  // appears. A hook that rejects the session leaves the poll loop to its
+  // reconnect arm.
+  const bool session_accepted = !client_.is_connected() || !config_.on_connected || config_.on_connected();
 
-  // Issue #386: subscribe to native AlarmConditionType events. Independent
-  // of data-change subscriptions; runs whenever event_alarms and/or
-  // auto_alarms are configured.
-  if (has_alarm_sources()) {
-    setup_event_subscriptions();
+  if (session_accepted) {
+    // Try subscription mode first
+    if (config_.prefer_subscriptions) {
+      setup_subscriptions();
+    }
+
+    // Issue #386: subscribe to native AlarmConditionType events. Independent
+    // of data-change subscriptions; runs whenever event_alarms and/or
+    // auto_alarms are configured.
+    if (has_alarm_sources()) {
+      setup_event_subscriptions();
+    }
   }
 
   // Start poll/reconnect thread regardless (handles reconnection and poll fallback)
@@ -381,7 +420,14 @@ void OpcuaPoller::setup_event_subscriptions() {
 
   event_monitored_item_ids_.clear();
 
-  for (const auto & cfg : effective_alarm_sources(node_map_.event_alarms(), node_map_.auto_alarms())) {
+  // Subscribe time is when the event path's copy of the alarm configuration is
+  // taken, so the monitored items and the routing ``on_event`` will use come
+  // from one state of the node map. Anything the owner renames must therefore
+  // be renamed before here - which is what PollerConfig::on_connected is for.
+  refresh_alarm_routing();
+  const auto routing = alarm_routing();
+
+  for (const auto & cfg : effective_alarm_sources(routing->event_alarms, routing->auto_alarms)) {
     // Per-source select specs so each source can carry its own associated
     // values (issue #389) in addition to the fixed alarm-state fields.
     const auto select_specs = build_alarm_event_select_specs(cfg);
@@ -533,8 +579,15 @@ void OpcuaPoller::read_fallback_replay() {
   // before this path can be relied on there (use ConditionRefresh on Siemens).
   std::set<std::string> seen;
   std::set<std::string> failed_sources;
-  const auto & auto_cfg = node_map_.auto_alarms();
-  for (const auto & cfg : effective_alarm_sources(node_map_.event_alarms(), node_map_.auto_alarms())) {
+  // The same copy the live event path reads, so a replayed condition and a live
+  // one are routed identically. Taken by setup_event_subscriptions() just above
+  // this call, on this thread.
+  const auto routing = alarm_routing();
+  if (!routing) {
+    return;
+  }
+  const AutoAlarmsConfig & auto_cfg = routing->auto_alarms;
+  for (const auto & cfg : effective_alarm_sources(routing->event_alarms, routing->auto_alarms)) {
     bool scan_ok = false;
     auto conditions = client_.read_source_conditions(cfg.source_node_id, &scan_ok);
     if (!scan_ok) {
@@ -625,8 +678,8 @@ void OpcuaPoller::read_fallback_replay() {
         }
         eff.fault_code = NodeMap::derive_auto_fault_code(snap.condition_name, /*source_name=*/"",
                                                          cfg.source_node_id_str, /*event_type_str=*/"", snap.message);
-        const auto * known_entry = node_map_.find_by_node_id(cfg.source_node_id_str);
-        eff.entity_id = known_entry != nullptr ? known_entry->entity_id : auto_cfg.entity_id;
+        const auto known_entry = routing->entity_by_node_id.find(cfg.source_node_id_str);
+        eff.entity_id = known_entry != routing->entity_by_node_id.end() ? known_entry->second : auto_cfg.entity_id;
         eff.severity_override = NodeMap::map_auto_severity(snap.severity, auto_cfg.severity_bands);
         eff.message_override.clear();
         if (auto_cfg.auto_clear) {
@@ -917,7 +970,14 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
 
   AlarmEventConfig eff = cfg;
   bool require_confirm = config_.require_confirm_for_clear;
-  const auto & auto_cfg = node_map_.auto_alarms();
+  // The event path reads the poller's own copy, never node_map_: this runs on
+  // the event pump thread, and the poll thread rewrites the map's alarm config
+  // and entity_defs on a config-less rename. See AlarmRouting.
+  const auto routing = alarm_routing();
+  if (!routing) {
+    return;  // an event delivered before the first subscribe took a copy
+  }
+  const AutoAlarmsConfig & auto_cfg = routing->auto_alarms;
   if (resolved.matched) {
     // Build the effective config for this specific event (resolved
     // fault_code + overrides) so apply_condition_state tracks the right
@@ -947,7 +1007,7 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // monitored item's own (the shared-source fall-through, where cfg IS that
     // explicit source, must still auto-derive its own unmatched events).
     const std::string source_node_str = source_node.toString();
-    for (const auto & explicit_cfg : node_map_.event_alarms()) {
+    for (const auto & explicit_cfg : routing->event_alarms) {
       if (node_ids_equivalent(explicit_cfg.source_node_id_str, cfg.source_node_id_str)) {
         continue;  // this monitored item's own source (shared-source case)
       }
@@ -971,8 +1031,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
     // one; otherwise fall back to auto_alarms.entity_id (default:
     // "<component_id>_alarms" - a separate App, not the PLC root Component;
     // see AutoAlarmsConfig::entity_id).
-    const auto * known_entry = node_map_.find_by_node_id(source_node_str);
-    eff.entity_id = known_entry != nullptr ? known_entry->entity_id : auto_cfg.entity_id;
+    const auto known_entry = routing->entity_by_node_id.find(source_node_str);
+    eff.entity_id = known_entry != routing->entity_by_node_id.end() ? known_entry->second : auto_cfg.entity_id;
     eff.severity_override = NodeMap::map_auto_severity(severity, auto_cfg.severity_bands);
     eff.message_override.clear();  // description = the raw event Message, verbatim
     if (auto_cfg.auto_clear) {
@@ -1204,14 +1264,24 @@ void OpcuaPoller::poll_loop() {
         reconnect_wait = config_.reconnect_interval;
       }
 
-      if (client_.connect(reconnect_config)) {
+      if (client_.connect(reconnect_config) && (!config_.on_connected || config_.on_connected())) {
+        // The hook runs before the link-state edge and before anything is
+        // (re)subscribed: the adopted session is the one that can finally name
+        // the device, the owner's decision about the standing PLC_COMMS_LOST is
+        // taken against the ids it settles on, and the ConditionRefresh burst
+        // that follows the event subscribe pins every replayed condition's
+        // entity at first sight. A hook that rejects the session has dropped it
+        // already, so this arm falls through to the backoff with the outage
+        // untouched. See PollerConfig::on_connected.
         reconnect_wait = config_.reconnect_interval;  // reset on success
-        // Issue #496: connection restored - clear the comms-lost fault. Sent on
-        // EVERY successful reconnect, not only when this process raised it: the
-        // fault manager keys faults by fault_code and persists them, so a fault
-        // raised before a restart is standing in the store with nothing in
-        // memory to remember it. The clear is fire-and-forget and the store
-        // answers "not found" harmlessly when there is nothing to clear.
+        // Issue #496: connection restored - hand the link-state edge to the
+        // owner on EVERY successful reconnect, whatever this process remembers
+        // raising. The fault manager keys faults by fault_code and persists
+        // them, so a fault raised before a restart is standing in the store with
+        // nothing in memory to remember it. What is standing and who reported it
+        // is a question for the owner's callback (see PollerConfig and
+        // OpcuaPlugin's link-state decision), which is where the clear is
+        // decided.
         if (config_.comms_lost_fault_enabled) {
           emit_comms_lost(/*active=*/false);
         }

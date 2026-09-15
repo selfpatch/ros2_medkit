@@ -74,8 +74,8 @@ bool ipv4_less(const std::string & a, const std::string & b) {
 // the GetEndpoints identify so they share the same concurrency bound.
 //
 // ``cancelled`` is polled by every worker before it takes the next index, so an
-// abort stops the fan-out after at most one more probe per worker instead of
-// running the remaining tens of thousands. An empty predicate never cancels.
+// abort stops the fan-out after at most one more probe per worker, whatever is
+// left of the remaining tens of thousands. An empty predicate never cancels.
 template <typename Body>
 void parallel_for(size_t count, int max_workers, const std::function<bool()> & cancelled, Body && body) {
   if (count == 0) {
@@ -459,7 +459,8 @@ std::vector<DiscoveredEndpoint> NetworkDiscovery::run(const std::function<bool()
 }
 
 const DiscoveredEndpoint * NetworkDiscovery::select_auto_endpoint(const std::vector<DiscoveredEndpoint> & eps,
-                                                                  bool anonymous_none_only) {
+                                                                  bool anonymous_none_only,
+                                                                  const std::string & bound_application_uri) {
   const DiscoveredEndpoint * best = nullptr;
   for (const auto & ep : eps) {
     if (ep.protocol != "opcua" || !ep.identify_error.empty()) {
@@ -470,6 +471,16 @@ const DiscoveredEndpoint * NetworkDiscovery::select_auto_endpoint(const std::vec
     }
     if (anonymous_none_only && !ep.anonymous_none_available) {
       continue;  // secured-only: surfaced as a lead, never auto-connected
+    }
+    if (!bound_application_uri.empty()) {
+      // A caller already holding a session's identity is looking for that one
+      // server at whatever address it now answers on. Address order decides
+      // nothing here: a foreign server that sorts lower would otherwise win
+      // every sweep and the bound one would never be reached again.
+      if (ep.application_uri == bound_application_uri) {
+        return &ep;
+      }
+      continue;
     }
     if (best == nullptr || ipv4_less(ep.ip, best->ip) || (ep.ip == best->ip && ep.port < best->port)) {
       best = &ep;
