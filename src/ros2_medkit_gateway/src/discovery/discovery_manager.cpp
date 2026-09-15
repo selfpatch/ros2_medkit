@@ -213,7 +213,8 @@ void DiscoveryManager::build_pipeline() {
 
       // RuntimeLinker only makes sense when runtime is enabled.
       if (config_.runtime_enabled) {
-        pipeline->set_linker(std::make_unique<discovery::RuntimeLinker>(node_), get_manifest_config());
+        pipeline->set_linker(std::make_unique<discovery::RuntimeLinker>(node_, config_.runtime.filter_internal_nodes),
+                             get_manifest_config());
       }
 
       pipeline_ = std::move(pipeline);

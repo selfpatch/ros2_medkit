@@ -61,8 +61,8 @@ HELPER_FQNS = (
     f'/{GATEWAY_NODE}_fault_clients',
     f'/{GATEWAY_NODE}_lifecycle_state_reader',
 )
-# An undeclared node of the test's own, so the warning below is known to be
-# listing things rather than empty for an unrelated reason.
+# An undeclared node of the test's own, so the warning below is known to have
+# something to list.
 WITNESS_NODE = 'own_node_undeclared_witness'
 
 WARN_UNMANIFESTED_NODES = 'unmanifested_nodes'

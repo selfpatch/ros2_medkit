@@ -110,10 +110,13 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
           // do, the App id is derived from the bare node name and only becomes
           // namespace-qualified when some other node collides with it
           // (ros2_runtime_introspection.cpp), so it can change between two
-          // polls while the FQN cannot. The one thing already taken out of it
-          // is the gateway's own in-process helper nodes (runtime_linker.cpp):
-          // they can never become apps, so naming them here would be an
-          // instruction to declare something the app filter then removes.
+          // polls while the FQN cannot. One thing is taken out of it while
+          // discovery.runtime.filter_internal_nodes is on (runtime_linker.cpp):
+          // the gateway's own in-process helper nodes, which the app filter
+          // then removes, so naming them here would be an instruction to
+          // declare something that can never become an App. With the filter off
+          // they are served as Apps and appear here like any other undeclared
+          // node.
           warning.ros_node_fqns = linking->orphan_nodes;
           warnings.push_back(std::move(warning));
         }
