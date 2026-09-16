@@ -588,6 +588,15 @@ if(BUILD_TESTING)
     # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
     # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and
     # OpcuaPlugin::introspect(). GTEST_SKIP when the fixture binary is missing.
+    #
+    # TIMEOUT arithmetic. A passing run of this binary is 94 s on an idle box
+    # (the 27 E2Es take 89 s, 18 s of them fixed settle sleeps the tests carry).
+    # A failing test runs its whole wait budget before it reports; the largest
+    # is TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSwap at 180 s (six
+    # 30 s waits) against 11 s when it passes. Twice the idle pace for a loaded
+    # or sanitizer runner (188 s) plus that one budget net of its passing time
+    # (169 s) is 357 s, so 360 lets one stuck test reach its own FAIL
+    # diagnostics before CTest kills the run.
     medkit_add_gtest(test_opcua_identity
       test/test_opcua_identity.cpp
       src/opcua_plugin.cpp
@@ -598,7 +607,7 @@ if(BUILD_TESTING)
       src/network_discovery.cpp
       src/network_discovery_io.cpp
       src/address_space_browser.cpp
-      TIMEOUT 120
+      TIMEOUT 360
     )
     add_dependencies(test_opcua_identity test_alarm_server)
     target_include_directories(test_opcua_identity PRIVATE

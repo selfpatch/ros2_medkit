@@ -157,11 +157,29 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
     return rescan_refusals_.load();
   }
 
+  /// The endpoint the client is pointed at, and whether a session is up. Read
+  /// by tests that have to see which address a sweep settled on, which no
+  /// stubbed route response carries.
+  std::string endpoint_url_for_test() const {
+    return client_ ? client_->endpoint_url() : client_config_.endpoint_url;
+  }
+  bool connected_for_test() const {
+    return client_ && client_->is_connected();
+  }
+
   /// How many sessions have been dropped for reaching a server other than the
   /// one this bridge is bound to. Read by tests that have to tell that drop
   /// apart from a connect that simply failed.
   uint64_t binding_mismatch_count_for_test() const {
     return binding_mismatch_disconnects_.load();
+  }
+
+  /// The warning the last binding refusal was logged with. Read by tests that
+  /// have to see which recommissioning gesture it names, which no counter
+  /// carries.
+  std::string last_binding_refusal_for_test() const {
+    std::lock_guard<std::mutex> lock(binding_refusal_mutex_);
+    return last_binding_refusal_;
   }
 
   /// The address-space walk configuration after configure() has merged the
@@ -381,7 +399,7 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
     /// ``auto_alarms`` condition, or a threshold rule going false). A one-shot
     /// edge nothing will re-send, and a real resolution, so the cascade stands.
     DeviceAlarm,
-    /// The OPC-UA session came back, so ``PLC_COMMS_LOST`` no longer holds.
+    /// The OPC-UA session came back, which ends the ``PLC_COMMS_LOST`` outage.
     /// Re-derived on the next reconnect if it is lost, and not an operator
     /// resolving a root cause, so it must not cascade.
     LinkState,
@@ -422,6 +440,27 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // manager.
   static bool link_state_clear_permitted(bool fault_found, const std::vector<std::string> & reporting_sources,
                                          const std::unordered_set<std::string> & my_ids);
+
+  // The ApplicationUri kept in ``path``, or empty when there is none to read.
+  //
+  // Empty for an empty ``path`` (persistence disabled), for a file that is
+  // absent or unreadable, and for one whose first line is blank. Trailing
+  // whitespace and the newline are stripped, so a file an operator edited by
+  // hand reads the same as one this plugin wrote. Pure I/O + static so the
+  // round trip is testable without a plugin.
+  static std::string read_persisted_binding(const std::string & path);
+
+  // Write ``application_uri`` to ``path`` as the only line, atomically: a
+  // temporary beside it, then a rename, so a reader never sees half a URI and a
+  // crash mid-write leaves the previous binding intact.
+  //
+  // The parent directory is created when it is missing. Returns an empty string
+  // on success, otherwise the reason, which the caller reports: a binding that
+  // cannot be persisted costs the next process its constraint, and nothing
+  // else - the session it was established on is unaffected. An empty ``path``
+  // or an empty ``application_uri`` writes nothing and succeeds: there is no
+  // binding to keep.
+  static std::string write_persisted_binding(const std::string & path, const std::string & application_uri);
 
   // Whether a parked answer belongs to the probe the poll thread is waiting for.
   //
@@ -760,11 +799,14 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // (OpcuaClient::read_server_application_uri). It is what discovery looks for
   // on every later sweep and what a fresh session is checked against.
   //
-  // Empty until a session has been held: a process that has never connected is
-  // bound to nothing, so its first adoption is unconstrained. It is also empty
-  // for a server that publishes no ApplicationUri, which therefore cannot be
-  // bound to. A restart clears it, because it is never persisted. Written on
-  // the set_context thread, then the poll thread.
+  // Empty until a session has been held or a binding was read from the file: a
+  // process that has neither is bound to nothing, so its first adoption is
+  // unconstrained. It is also empty for a server that publishes no
+  // ApplicationUri, which therefore cannot be bound to. On the discovery path
+  // it is read from discovery.binding_file in configure() and written there on
+  // the first bind, so it survives a restart; with endpoint_url configured the
+  // file is neither read nor written. Written on the set_context thread, then
+  // the poll thread.
   std::string bound_application_uri_;
   // ApplicationUris already reported as not this bridge's, so one outage does
   // not log the same foreign server every interval_s. Bounded, and cleared on
@@ -775,6 +817,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // for reaching a different server (see the *_for_test accessors).
   std::atomic<uint64_t> rescan_refusals_{0};
   std::atomic<uint64_t> binding_mismatch_disconnects_{0};
+  // The text of the last refusal warning, for the *_for_test accessor. Written
+  // on the set_context thread and the poll thread, read from test threads.
+  mutable std::mutex binding_refusal_mutex_;
+  std::string last_binding_refusal_;
 
   // Outcome digest of the previous discovery pass, so an unchanged rescan
   // reports at DEBUG and the whole report goes out once per change, not once
