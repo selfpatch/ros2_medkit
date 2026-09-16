@@ -383,9 +383,9 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction) {
 }
 
 // A record is (fault_code, owner), so the detail names exactly one reporting
-// source and repeats it as x-medkit.source_id, which is the value the
-// per-record routes address the record by. This test used to pin one record
-// carrying three sources; three sources reporting one code are three records
+// source and repeats it as x-medkit.owner, which is the value the per-record
+// routes address the record by. This test used to pin one record
+// carrying three sources. Three sources reporting one code are three records
 // now, and each detail response describes one of them.
 // @verifies REQ_INTEROP_013
 TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
@@ -401,8 +401,13 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
   auto sources = response["x-medkit"]["reporting_sources"];
   ASSERT_EQ(sources.size(), 1);
   EXPECT_EQ(sources[0], "/perception/lidar");
-  ASSERT_TRUE(response["x-medkit"].contains("source_id"));
-  EXPECT_EQ(response["x-medkit"]["source_id"], "/perception/lidar");
+  ASSERT_TRUE(response["x-medkit"].contains("owner"));
+  EXPECT_EQ(response["x-medkit"]["owner"], "/perception/lidar");
+  // Named `owner`, never `source_id`: a fault LIST's x-medkit.source_id is the
+  // addressed entity's namespace path, so one key with two meanings inside one
+  // API is the thing this avoids.
+  EXPECT_FALSE(response["x-medkit"].contains("source_id"))
+      << "the detail must not reuse the list's source_id key for the record owner";
 }
 
 // The other owner of the same code is a different record, and its detail says
@@ -422,8 +427,8 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeparatesOwnersOfOneCode) {
   auto b = to_json(FaultHandlers::build_sovd_fault_response(fault_json(second), env_json(env_data), "/apps/motor"));
 
   EXPECT_EQ(a["item"]["code"], b["item"]["code"]);
-  EXPECT_EQ(a["x-medkit"]["source_id"], "/perception/lidar");
-  EXPECT_EQ(b["x-medkit"]["source_id"], "/control/motor");
+  EXPECT_EQ(a["x-medkit"]["owner"], "/perception/lidar");
+  EXPECT_EQ(b["x-medkit"]["owner"], "/control/motor");
 }
 
 // @verifies REQ_INTEROP_013
@@ -688,6 +693,25 @@ TEST(RecordsOfCodeInScopeTest, OneOwnerInScopeIsEnoughToAuthorizeARecording) {
       << "a component hosting both owners still owns the recording";
   EXPECT_TRUE(in_scope(faults, "SHARED_CODE", {"unrelated_app"}).empty())
       << "an entity owning no record of this code must not be authorized";
+}
+
+// The rosbag download resolves the SAME way the fault routes do when the URL
+// carries a bare fault code: exactly one record in scope names a recording, and
+// several name none of them. Serving the lowest-sorting owner's bag would hand a
+// caller another owner's bytes under a URL that never said whose they were. The
+// recording-id form addresses the bag directly and is unaffected.
+TEST(RecordsOfCodeInScopeTest, SeveralOwnersMakeABareCodeUrlAmbiguous) {
+  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
+
+  const auto both = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
+  ASSERT_EQ(both.size(), 2u) << "a component hosting both owners resolves two records";
+  EXPECT_EQ(both[0].owner, "app_a");
+  EXPECT_EQ(both[1].owner, "app_b");
+
+  // One owner in scope is still one record, so that URL keeps working.
+  const auto single = in_scope(faults, "SHARED_CODE", {"app_a"});
+  ASSERT_EQ(single.size(), 1u);
+  EXPECT_EQ(single[0].owner, "app_a");
 }
 
 TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {

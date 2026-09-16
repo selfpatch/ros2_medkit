@@ -65,7 +65,7 @@ class FaultServiceTransport {
 
   /// Rosbag info for one recording, or for one fault record when `id` is a
   /// fault code. `source_id` names the record's owner and scopes the fault-code
-  /// lookup only; the recording-id path ignores it.
+  /// lookup only. The recording-id path ignores it.
   virtual FaultResult get_rosbag(const std::string & id, const std::string & source_id) = 0;
 
   virtual FaultResult list_rosbags(const std::string & entity_fqn) = 0;

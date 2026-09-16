@@ -134,8 +134,8 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override;
   tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & entity_id,
                                                                          const std::string & fault_code) override;
-  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
-                                                                          const std::string & fault_code) override;
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+  clear_fault(const std::string & entity_id, const std::string & fault_code, const std::string & owner) override;
 
   // Resolve the SOVD severity bucket for an event alarm. An explicit configured
   // override wins; with none configured the raw OPC-UA event Severity (1-1000)
@@ -177,9 +177,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);
-  /// Clear the record this plugin raised: the entity_id is the source_id it
-  /// reported under, and together with fault_code it addresses one record.
-  void send_clear_fault(const std::string & entity_id, const std::string & fault_code);
+  /// Clear one record, addressed by fault_code and the reporting source that
+  /// owns it. On the polled and event paths the owner is the entity this plugin
+  /// reported under. On the REST path it is the owner the gateway resolved,
+  /// which for a component route is one of its hosted apps.
+  void send_clear_fault(const std::string & owner, const std::string & fault_code);
 
   // Dispatch now if the fault_manager service is matched, else buffer the
   // dispatch (bounded, order-preserving) to be flushed once it appears.

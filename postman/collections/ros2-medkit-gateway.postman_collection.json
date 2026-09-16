@@ -1189,7 +1189,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the record with fault_code, severity, severity_label, description, status, timestamps, source_id (the owner) and reporting_sources. Answers 409 (x-medkit-ambiguous-fault) when several sources this component owns report the code, with params.owners naming them."
+            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail whose x-medkit names the record's owner (x-medkit.owner) beside reporting_sources, occurrence_count and severity_label. Answers 409 (x-medkit-ambiguous-fault) when several sources this component owns report the code, with parameters.owners naming them."
           },
           "response": []
         },

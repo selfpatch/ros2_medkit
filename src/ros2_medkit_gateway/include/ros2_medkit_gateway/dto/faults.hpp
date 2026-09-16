@@ -246,23 +246,30 @@ inline constexpr std::string_view dto_name<FaultListAggXMedkit> = "FaultListAggX
 // FaultXMedkit - x-medkit vendor extension inside FaultDetail
 //
 // Wire keys (from build_sovd_fault_response):
-//   occurrence_count, reporting_sources, source_id, severity_label, status_raw
+//   occurrence_count, reporting_sources, owner, severity_label, status_raw
+//
+// The key is `owner`, not `source_id`, deliberately. A fault LIST's x-medkit
+// already carries `source_id` meaning the addressed entity's namespace path
+// (FaultListXMedkit below), so reusing that name here for the record's
+// reporting source would give one key two meanings inside one API.
 // =============================================================================
 struct FaultXMedkit {
   std::optional<int64_t> occurrence_count;
   std::optional<std::vector<std::string>> reporting_sources;
-  /// The reporting source that owns this record, and the `source_id` the
-  /// per-record routes address it by.
-  std::optional<std::string> source_id;
+  /// The reporting source that owns this record. It is what the per-record
+  /// routes take as their `source_id` request field, and the single entry of
+  /// `reporting_sources`.
+  std::optional<std::string> owner;
   std::optional<std::string> severity_label;
   std::optional<std::string> status_raw;
 };
 
 template <>
-inline constexpr auto dto_fields<FaultXMedkit> = std::make_tuple(
-    field("occurrence_count", &FaultXMedkit::occurrence_count),
-    field("reporting_sources", &FaultXMedkit::reporting_sources), field("source_id", &FaultXMedkit::source_id),
-    field("severity_label", &FaultXMedkit::severity_label), field("status_raw", &FaultXMedkit::status_raw));
+inline constexpr auto dto_fields<FaultXMedkit> =
+    std::make_tuple(field("occurrence_count", &FaultXMedkit::occurrence_count),
+                    field("reporting_sources", &FaultXMedkit::reporting_sources), field("owner", &FaultXMedkit::owner),
+                    field("severity_label", &FaultXMedkit::severity_label),
+                    field("status_raw", &FaultXMedkit::status_raw));
 
 template <>
 inline constexpr std::string_view dto_name<FaultXMedkit> = "FaultXMedkit";
@@ -520,8 +527,8 @@ struct SchemaWriter<FaultClearResult> {
         {"x-medkit-opaque", true},
         {"description",
          "Acknowledgement of a clear, shaped by whoever owns the entity. The ROS 2 path answers 204 with "
-         "no body at all; a plugin answers with its backend's own acknowledgement - UDS clear response "
-         "codes, vendor warnings, residual fault state - and the gateway emits it verbatim. Treat the 2xx "
+         "no body at all. A plugin answers with its backend's own acknowledgement (UDS clear response "
+         "codes, vendor warnings, residual fault state) and the gateway emits it verbatim. Treat the 2xx "
          "status, not a body field, as the signal that the clear succeeded."}};
   }
 };

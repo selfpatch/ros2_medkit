@@ -416,7 +416,7 @@ FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & id, const 
   // fields: the fault manager prefers recording_id and falls back to fault_code,
   // which is what keeps a pre-#620 URL (and every existing .test.py that calls this
   // service with a fault code) working unchanged. source_id scopes that fallback
-  // to one record; the recording_id path ignores it.
+  // to one record. The recording_id path ignores it.
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbag::Request>();
   request->recording_id = id;
   request->fault_code = id;

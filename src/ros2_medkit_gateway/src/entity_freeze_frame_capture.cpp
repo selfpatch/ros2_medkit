@@ -452,9 +452,11 @@ bool EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::Fa
     }
   }
 
-  // One entry per record. A frame is stored under the source that reported it,
-  // so a second source confirming the same code adds a record instead of
-  // overwriting the first source's frames.
+  // One entry per record, under the record's owner. An event describes one
+  // record, so `frames` holds one frame and its entity_id IS that owner. A
+  // record read back from an older store or relayed from a peer can still carry
+  // several sources, and each of those is stored under the source that reported
+  // it rather than merged, because frames_for asks for one owner at a time.
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto & frame : frames) {
     const auto key = record_key(fault_code, frame.entity_id);

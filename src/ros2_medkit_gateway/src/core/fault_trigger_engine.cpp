@@ -176,9 +176,12 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  // fault_code is the PRIMARY KEY of the fault-manager store, so two rules
-  // sharing one code would fight over the same stored fault (one rule's clear
-  // erases the other's assertion) and make per-app delete/clear ambiguous.
+  // One rule per fault_code across every app, checked with no app filter. The
+  // fault manager keys a record by (fault_code, reporting source), so two rules
+  // on DIFFERENT apps sharing a code would own two separate records and not
+  // collide there. The reason the engine still refuses it is its own: a code is
+  // how an operator names a rule's condition, and one code asserted by two
+  // rules cannot be read back to either of them.
   const auto dup = std::find_if(rules_.begin(), rules_.end(), [&](const FaultTriggerRule & r) {
     return r.fault_code == rule.fault_code;
   });

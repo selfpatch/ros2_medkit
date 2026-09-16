@@ -253,7 +253,7 @@ class PluginManager : public LogProviderRegistry {
    * A throwing provider is treated as an absent one and falls through to the
    * route: an in-process plugin call must not take the caller's loop down.
    *
-   * @return Parsed content on success; nullopt when the entity is not
+   * @return Parsed content on success. Nullopt when the entity is not
    *         plugin-owned, or neither source can answer.
    */
   std::optional<nlohmann::json> fetch_entity_data_content(const std::string & entity_id);

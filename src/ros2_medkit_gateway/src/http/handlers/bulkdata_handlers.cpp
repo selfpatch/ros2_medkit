@@ -363,7 +363,7 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
 
     // Collect rosbags across all source filters. ListRosbags matches the record
     // owner exactly, so every row it answers with is owned by the filter it was
-    // asked under; the row itself does not carry the owner, so stamp it here
+    // asked under. The row itself does not carry the owner, so stamp it here
     // while that is still known.
     std::vector<json> all_rosbags;
     for (const auto & source_filter : source_filters) {
@@ -465,7 +465,7 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // code is ambiguous and answers nothing at all. Reading the list once also
     // replaces one GetFault round trip per attached code.
     auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
-                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/false,
+                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);
     const json all_faults = held.success ? held.data.value("faults", json::array()) : json::array();
 
@@ -473,7 +473,30 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // that code say which owner to ask the recording for. An id that is really
     // a recording id matches none and the owner stays empty, which is what the
     // recording path ignores anyway.
+    //
+    // Several records of that code in this entity's scope means the URL names
+    // none of them, and each owner keeps its own recordings. Serving the
+    // lowest-sorting owner's bag would hand the caller another owner's bytes
+    // under a URL that never said whose they were, so this refuses the same way
+    // the fault routes do. The recording-id form is unaffected: it addresses
+    // the bag directly and needs no owner.
     auto requested_records = faults::records_of_code_in_scope(all_faults, bulk_data_id, scope);
+    if (requested_records.size() > 1) {
+      std::vector<std::string> owners;
+      owners.reserve(requested_records.size());
+      for (const auto & record : requested_records) {
+        owners.push_back(record.owner);
+      }
+      return tl::unexpected(
+          make_error(409, ERR_AMBIGUOUS_FAULT, "Fault code addresses several records in this entity",
+                     json{{"details",
+                           "Several sources this entity owns report this fault code, and each record keeps its own "
+                           "recordings. Address the recording by its own id, which the fault listing publishes as "
+                           "x-medkit.recording_id."},
+                          {"entity_id", path_info->entity_id},
+                          {"fault_code", bulk_data_id},
+                          {"owners", owners}}));
+    }
     const std::string requested_owner = requested_records.empty() ? std::string{} : requested_records.front().owner;
 
     auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id, requested_owner);

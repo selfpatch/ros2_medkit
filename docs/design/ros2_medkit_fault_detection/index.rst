@@ -65,7 +65,7 @@ last call, which a plugin forwards to the fault manager as report / clear.
 The tracker is keyed by ``fault_code`` alone. That is a property of the tracker,
 not of the fault manager, which identifies a record by ``fault_code`` and the
 reporting source that owns it. A single tracker may therefore be shared across
-many points only if every ``fault_code`` is unique within it; two points emitting
+many points only if every ``fault_code`` is unique within it. Two points emitting
 the same code would alternately raise and clear it each cycle, inside the tracker
 and before any report is sent. Consumers that share one tracker (for example the
 OPC UA poller across all node-map entries and event alarms) must enforce that

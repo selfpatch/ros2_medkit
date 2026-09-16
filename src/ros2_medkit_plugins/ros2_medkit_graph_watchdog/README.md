@@ -224,7 +224,7 @@ record on its own `/apps/<fqn>/faults` page. This detector aggregates by choice.
 graph-level condition is one condition however many nodes it names, the affected set
 changes every tick, and per-node records would make the operator reconstruct the graph
 view from a list raising and clearing under them. One owned entity per code keeps the
-condition addressable as one thing; the affected nodes are named in the description.
+condition addressable as one thing, and the affected nodes are named in the description.
 
 ### Detectors
 

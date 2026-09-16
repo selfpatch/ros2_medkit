@@ -1390,11 +1390,21 @@ Query and manage faults.
    A ``fault_code`` in a URL names a record only when the entity owns exactly one
    record carrying it. When the entity owns several, ``GET`` and ``DELETE`` on
    ``/{entity-path}/faults/{fault_code}`` answer ``409`` with vendor error code
-   ``x-medkit-ambiguous-fault`` and ``params.owners`` listing the owners, rather
+   ``x-medkit-ambiguous-fault`` and ``parameters.owners`` listing the owners, rather
    than acting on whichever record the store listed first. Address one of them
    through the app that owns it, or read them from the entity's fault list.
    Per-entity ``DELETE /{entity-path}/faults`` clears every in-scope record
-   individually, each with its own owner.
+   individually, each with its own owner. A muted record is still addressable on
+   all of these routes: muting hides a symptom from the default listing, it does
+   not make the record unreachable.
+
+   Two nearby keys carry the record's owner and they are deliberately not the
+   same name. A flat fault item's top-level ``source_id`` is the owner, and the
+   detail response's ``x-medkit.owner`` is the same value. A fault LIST's
+   ``x-medkit.source_id`` is something else entirely: the addressed entity's own
+   namespace path, which is empty for an external app. Read ``source_id`` on an
+   item, ``owner`` on a detail, and never the list-level ``source_id`` as an
+   owner.
 
 ``GET /api/v1/faults``
    List all faults across the system.
@@ -1490,7 +1500,7 @@ Query and manage faults.
         "x-medkit": {
           "occurrence_count": 3,
           "reporting_sources": ["/powertrain/motor_controller"],
-          "source_id": "/powertrain/motor_controller",
+          "owner": "/powertrain/motor_controller",
           "severity_label": "ERROR"
         }
       }
@@ -2854,8 +2864,9 @@ link reports itself down.
    ``data_name`` the app does not expose (when enumerable); ``404``
    (``entity-not-found``) when the app itself was never discovered; ``409``
    (``precondition-not-fulfilled``) when the ``fault_code`` is already used by
-   another rule - a rule reports under its own app id, so two rules on one app
-   sharing a code would raise and clear the same record.
+   another rule on ANY app - the engine keeps one rule per code across every
+   app, so a code another app's rule already claims is refused. The error names
+   the rule and the app that holds it.
 
 ``DELETE /api/v1/apps/{app_id}/fault-triggers/{trigger_id}``
    Remove a rule (``204``). A fault currently asserted by the rule is cleared;

@@ -287,11 +287,13 @@ tl::expected<faults::ScopedFault, ErrorInfo> FaultHandlers::resolve_scoped_fault
                                           json{{entity_info.id_field, entity_info.id}, {"fault_code", fault_code}}));
   }
 
-  // Every status: a record the caller addresses by code exists whatever its
-  // lifecycle state, and the detail and clear routes have always served a
-  // cleared or healed one.
+  // Every status AND muted records. A record the caller addresses by code
+  // exists whatever its lifecycle state, and the detail and clear routes have
+  // always served a cleared or healed one. Muting is the correlation engine
+  // hiding a symptom from the default listing, not a reason the record stops
+  // being addressable: leaving it out 404s a record that was reachable before.
   auto result = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
-                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/false,
+                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);
   if (!result.success) {
     return tl::make_unexpected(classify_fault_failure(result.failure, result.error_message, "Failed to get fault",
@@ -498,8 +500,9 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
   if (!reporting_sources.empty()) {
     // The owner, beside the list it is the single entry of: a client reading
     // the detail can address the record it is looking at without unpacking an
-    // array.
-    xm.source_id = reporting_sources.front();
+    // array. Named `owner` and not `source_id` because a fault LIST's x-medkit
+    // already uses `source_id` for the addressed entity's namespace path.
+    xm.owner = reporting_sources.front();
     xm.reporting_sources = std::move(reporting_sources);
   }
   xm.severity_label = severity_to_label(severity);
@@ -974,10 +977,15 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         // in this entity's scope before delegating. Records the fault_manager
         // does not hold (plugin-internal, e.g. on-demand UDS DTCs) fall through
         // to the plugin provider unchanged.
+        // The owner the gateway resolved travels to the provider, because that
+        // is which record this route addresses. It stays empty only when the
+        // fault manager holds no record of this code at all, which is the
+        // plugin-internal case the provider decides for itself.
+        std::string resolved_owner;
         if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
           auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
                                              /*include_cleared=*/true, /*include_healed=*/true,
-                                             /*include_muted=*/false, /*include_clusters=*/false);
+                                             /*include_muted=*/true, /*include_clusters=*/false);
           if (held.success) {
             const auto & all = held.data.value("faults", json::array());
             const bool store_holds_code = std::any_of(all.begin(), all.end(), [&](const json & fault) {
@@ -991,12 +999,13 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
               if (!scoped) {
                 return tl::make_unexpected(scoped.error());
               }
+              resolved_owner = scoped->owner;
             }
           }
         }
 
         try {
-          auto result = fault_prov->clear_fault(entity_id, fault_code);
+          auto result = fault_prov->clear_fault(entity_id, fault_code, resolved_owner);
           if (!result) {
             return tl::make_unexpected(
                 make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
@@ -1081,7 +1090,14 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
               if (code.empty()) {
                 continue;
               }
-              auto clear_result = fault_prov->clear_fault(entity_id, code);
+              // Each listed item names its own record. Sending the entity id
+              // for all of them addresses at most one owner's record and
+              // silently leaves the others standing.
+              auto owner = fault.value("source_id", std::string{});
+              if (owner.empty()) {
+                owner = faults::record_owner(fault);
+              }
+              auto clear_result = fault_prov->clear_fault(entity_id, code, owner);
               if (!clear_result) {
                 failed_codes.push_back(code);
               }

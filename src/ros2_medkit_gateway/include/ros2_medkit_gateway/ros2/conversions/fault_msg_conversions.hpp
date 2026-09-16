@@ -25,7 +25,7 @@ namespace ros2_medkit_gateway::ros2::conversions {
 ///
 /// Produces the flat per-fault representation consumed by `list_faults` items,
 /// the SSE fault-event payload, and the trigger subsystem's notifier change
-/// values. Timestamps become seconds-as-double; severity gains a label, and
+/// values. Timestamps become seconds-as-double, severity gains a label, and
 /// `source_id` names the reporting source that owns the record.
 ///
 /// Lives at the ROS-coupled boundary because three independent call sites

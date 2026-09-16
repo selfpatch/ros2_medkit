@@ -85,10 +85,16 @@ class FaultProvider {
   /// `{"status": "ok"}`) and the OpenAPI schema is opaque
   /// (`x-medkit-opaque:true`).
   ///
-  /// @param entity_id SOVD entity ID
+  /// @param entity_id SOVD entity ID the request addressed
   /// @param fault_code Fault code to clear
-  virtual tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
-                                                                                  const std::string & fault_code) = 0;
+  /// @param owner Reporting source that owns the record, as the gateway resolved
+  ///        it in the entity's fault scope. It is NOT the entity id: a component
+  ///        owns the records its hosted apps reported, so the owner is the app.
+  ///        Empty when the gateway could not resolve one (a record the fault
+  ///        manager does not hold, so the provider's own backend decides), and a
+  ///        provider that cannot scope its clear may ignore it.
+  virtual tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+  clear_fault(const std::string & entity_id, const std::string & fault_code, const std::string & owner = "") = 0;
 };
 
 }  // namespace ros2_medkit_gateway

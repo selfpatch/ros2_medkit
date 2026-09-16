@@ -171,7 +171,7 @@ class FaultHandlers {
    * `reporting_sources` field, or any non-string source entry all return
    * false - there is no vacuous "all match" case.
    *
-   * Public for direct unit testing; called by `resolve_scoped_fault` and
+   * Public for direct unit testing. Called by `resolve_scoped_fault` and
    * indirectly via the per-entity collection routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
@@ -229,7 +229,7 @@ class FaultHandlers {
    * tell from the response which one it got. None in scope is the 404 the
    * routes have always answered.
    *
-   * Public static for direct unit testing; called by `resolve_scoped_fault`.
+   * Public static for direct unit testing. Called by `resolve_scoped_fault`.
    */
   /**
    * @brief Map every reporting source the cache can attribute to the entity
@@ -242,7 +242,7 @@ class FaultHandlers {
    * records straight through another client's lock - while the locking document
    * said the route skips a locked entity's faults.
    *
-   * Public static for direct unit testing; called by `clear_all_faults_global`.
+   * Public static for direct unit testing. Called by `clear_all_faults_global`.
    */
   static std::unordered_map<std::string, std::string> build_source_entity_map(const ThreadSafeEntityCache & cache);
 

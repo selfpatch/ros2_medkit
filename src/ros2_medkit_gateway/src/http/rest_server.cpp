@@ -1191,9 +1191,13 @@ void RESTServer::setup_routes() {
         .description(std::string("Clears a specific fault for this ") + et.singular + ".")
         // FaultHandlers::clear_fault -> validate_lock_access("faults").
         .lock_guarded()
-        // 503 when the fault store cannot be read - clear_fault reads the fault
-        // before clearing it, so it answers the same status the read does.
-        .errors({503})
+        // 409 twice over, from two unrelated causes: lock_guarded() declares the
+        // locked-entity refusal, and x-medkit-ambiguous-fault answers a code
+        // that addresses several of this entity's records. Read `vendor_code`
+        // to tell them apart. 503 when the fault store cannot be read -
+        // clear_fault reads the record before clearing it, so it answers the
+        // same status the read does.
+        .errors({409, 503})
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
     reg.del<http::NoContent>(entity_path + "/faults",

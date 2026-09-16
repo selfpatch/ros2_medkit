@@ -188,8 +188,12 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
             detail = self.get_json(f'/apps/{owner}/faults/{SHARED_CODE}')
             self.assertEqual(detail['item']['code'], SHARED_CODE)
             self.assertEqual(
-                detail['x-medkit']['source_id'], owner,
+                detail['x-medkit']['owner'], owner,
                 f"/apps/{owner} served another owner's record",
+            )
+            self.assertNotIn(
+                'source_id', detail['x-medkit'],
+                "the detail must not reuse the list's source_id key for the owner",
             )
             self.assertEqual(detail['x-medkit']['reporting_sources'], [owner])
 
@@ -281,10 +285,70 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
             'the published fault item must declare the owner it carries',
         )
 
-        detail = spec['paths']['/apps/{app_id}/faults/{fault_code}']['get']
-        self.assertIn(
-            '409', detail['responses'],
-            'the per-entity fault detail route answers 409 on an ambiguous code',
+        route = spec['paths']['/apps/{app_id}/faults/{fault_code}']
+        # The GET is the discriminating half: it carries no lock marker, so its
+        # 409 is there only because the route declares the ambiguous-fault one.
+        # The DELETE is lock-guarded, and that marker declares a 409 of its own
+        # for the locked-entity refusal, so its status alone cannot tell the two
+        # causes apart - the document has one response object per status. The
+        # DELETE assertion is a presence check, not a proof of which 409.
+        for method in ('get', 'delete'):
+            self.assertIn(
+                '409', route[method]['responses'],
+                f'the per-entity fault {method} answers 409 on an ambiguous code '
+                'and has to declare it',
+            )
+
+    def test_075_the_detail_names_the_owner_and_not_the_lists_source_id(self):
+        """x-medkit.owner is the record's owner, source_id belongs to a list.
+
+        @verifies REQ_INTEROP_013
+        """
+        self._raise_both()
+
+        detail = self.get_json(f'/apps/{OWNER_A}/faults/{SHARED_CODE}')
+
+        self.assertEqual(detail['x-medkit']['owner'], OWNER_A)
+        self.assertNotIn('source_id', detail['x-medkit'])
+
+        # The list-level key is the other meaning, and it is still there.
+        listing = self.get_json(f'/apps/{OWNER_A}/faults')
+        self.assertIn('source_id', listing['x-medkit'])
+
+    def test_077_a_bare_code_bag_url_refuses_to_pick_an_owner(self):
+        """A recording URL carrying a bare fault code names no single record.
+
+        Two owners of one code in the component's scope means the compatibility
+        URL (the pre-recording-id form, which carries a fault code) addresses
+        neither record, and each owner keeps its own recordings. Serving the
+        lowest-sorting owner's bytes under that URL would never say whose they
+        were, so it answers the same 409 the fault routes do. Rosbag capture is
+        off in this launch, so the assertion is on the refusal the resolution
+        makes before any bag is looked up, which is exactly the branch Z6 names.
+
+        @verifies REQ_INTEROP_072
+        """
+        self._raise_both()
+
+        response = requests.get(
+            f'{self.BASE_URL}/components/{HOST_COMPONENT}/bulk-data/rosbags/{SHARED_CODE}',
+            timeout=10,
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        body = response.json()
+        self.assertEqual(body.get('vendor_code'), 'x-medkit-ambiguous-fault', body)
+        self.assertEqual(
+            sorted(body['parameters']['owners']), [OWNER_A, OWNER_B], body)
+
+        # One owner in scope is one record, so that entity's own URL is not
+        # ambiguous - it 404s only because no bag was captured.
+        single = requests.get(
+            f'{self.BASE_URL}/apps/{OWNER_A}/bulk-data/rosbags/{SHARED_CODE}', timeout=10
+        )
+        self.assertNotEqual(
+            single.status_code, 409,
+            'one owner in scope must not read as ambiguous',
         )
 
     def test_08_stream_frames_name_the_record_they_describe(self):
@@ -381,7 +445,7 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
                 time.sleep(0.1)
         raise AssertionError(
             f'no event for priming fault {PRIME_CODE} on /faults/stream within '
-            f'{FAULT_TIMEOUT}s; events pipeline never went live'
+            f'{FAULT_TIMEOUT}s, events pipeline never went live'
         )
 
 

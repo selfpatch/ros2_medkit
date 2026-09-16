@@ -21,7 +21,7 @@ Faults
    - ``item``: Fault details with SOVD-compliant ``status`` object (aggregatedStatus, testFailed, confirmedDTC, pendingDTC)
    - ``environment_data``: Extended data records (timestamps) and snapshots array
    - ``environment_data.snapshots[]``: Array of freeze_frame (topic data) and rosbag (bulk-data reference) entries
-   - ``x-medkit``: Extension fields (occurrence_count, reporting_sources, source_id, severity_label)
+   - ``x-medkit``: Extension fields (occurrence_count, reporting_sources, owner, severity_label)
 
 .. req:: DELETE /{entity}/faults
    :id: REQ_INTEROP_014
