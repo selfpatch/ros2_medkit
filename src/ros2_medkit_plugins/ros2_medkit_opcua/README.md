@@ -661,6 +661,7 @@ ros2_medkit_gateway:
 | `comms_lost_severity` | `ERROR` | SOVD severity bucket for the `PLC_COMMS_LOST` fault |
 | `fault_service_timeout_ms` | `5000` | How long a fault-store read may stay outstanding before the `PLC_COMMS_LOST` decision is owed again (out of range [100, 600000] ms is refused with a warning and the previous value is kept) |
 | `discovery.enabled` | `false` | Opt-in read-only PLC network discovery (auto endpoint). See below |
+| `discovery.binding_file` | `/var/lib/ros2_medkit/opcua/binding` | Where the bound server's `ApplicationUri` is kept, so the binding survives a restart. Read and written only while `endpoint_url` is unset. Empty disables persistence and makes every process's first adoption unconstrained. One file per plugin instance. Env: `OPCUA_DISCOVERY_BINDING_FILE` |
 
 ### OPC-UA client security (SecurityPolicy, certificates, user auth)
 
@@ -717,10 +718,13 @@ plugins.opcua.discovery:
   # or set it to 0 to keep discovery on but never re-scan (start-up scan only).
   interval_s: 30
   anonymous_none_only: true    # only auto-connect None/Anonymous servers
+  # where the bound server's ApplicationUri is kept across restarts; "" disables
+  binding_file: /var/lib/ros2_medkit/opcua/binding
 ```
 
 Environment overrides (Docker / appliance): `OPCUA_DISCOVERY_ENABLED`,
-`OPCUA_DISCOVERY_SUBNETS` (comma-separated CIDRs), `OPCUA_DISCOVERY_INTERVAL_S`.
+`OPCUA_DISCOVERY_SUBNETS` (comma-separated CIDRs), `OPCUA_DISCOVERY_INTERVAL_S`,
+`OPCUA_DISCOVERY_BINDING_FILE`.
 Leaving `interval_s` (and `OPCUA_DISCOVERY_INTERVAL_S`) unset means "no cadence
 stated" and takes the 30 s default. An explicit `0` is honoured as written and
 turns the recurring sweep off. A negative value is refused with a warning and
@@ -789,31 +793,93 @@ How it works:
 
 The **binding** is the OPC-UA `ApplicationUri` of the server the plugin actually
 held a session with, read off that session (the `ServerArray`, whose first entry
-is that URI). It is not persisted, so it exists only for the life of the process.
+is that URI). On the discovery path it is written to `discovery.binding_file`
+(default `/var/lib/ros2_medkit/opcua/binding`) the moment it is established and
+read back in `configure()` before the first sweep, so it **is kept across
+restarts**: a process that comes back looks for the server it was bound to and
+no other. With `endpoint_url` configured the file is neither read nor written:
+the operator has named the server, and re-pointing `endpoint_url` at a
+replacement and restarting is the whole gesture.
 
-- A re-scan looks for **that server and no other**, at any address: the bound
-  `ApplicationUri` is an input to the selection, so a foreign server does not win
-  by sorting lower. A sweep that finds no hit carrying it selects nothing, the
-  endpoint stands and the `PLC_COMMS_LOST` fault stands with it.
-- A **different server at the bound address** is caught when the session comes
+- The **start-up sweep and every re-scan look for that server and no other**,
+  at any address: the bound `ApplicationUri` is an input to the selection, so a
+  foreign server does not win by sorting lower. A sweep that finds no hit
+  carrying it selects nothing, the endpoint stands and the `PLC_COMMS_LOST`
+  fault stands with it.
+- A **different server at the bound address** is caught when a session comes
   up: the live `ApplicationUri` is read, the mismatch is logged at WARN, the
   session is dropped, no link-state clear is sent, and the reconnect loop keeps
-  trying. Both reports are once per distinct URI per outage, and the list is
-  cleared as soon as the bound server is reached again.
+  trying. The check runs on every session the reconnect arm opens. A session
+  open62541 re-opens on its own after a channel drop is caught wherever
+  `run_iterate` runs, which is every shape with native alarms on (the event
+  pump and the poll cycle both iterate): after each iterate the client reads
+  its session state, and a session that fell below ACTIVATED after having been
+  active is disconnected explicitly, so the next session is the arm's, checked
+  against the binding, with the native alarm subscription re-created on it.
+  That is what makes a swap visible where nothing reads a value: the
+  config-less deployment with native alarms and no node map, at any poll
+  cadence. open62541 re-opens a session only from `run_iterate`, so with native
+  alarms off nothing is re-opened underneath: a node map's scalar read fails
+  with a connection-closed code, the client is marked down, and the arm's next
+  session is checked the same way. The re-created subscription carries device
+  alarms; that is proven for a swap followed by the bound server's return and
+  for a plain reboot of the bound server, both config-less with native alarms.
+- While a foreign server answers at the bound address, the reconnect arm probes
+  that address at the backoff cadence (capped at `discovery.interval_s` while
+  re-scanning is on), refuses the foreign server each time, and adopts the
+  bound server the moment it answers there again. The plugin remembers the last
+  eight refused URIs and logs a URI once while it is remembered; the list is
+  cleared as soon as the bound server is reached.
 - A PLC that **moved** - new address, same `ApplicationUri` - is re-adopted,
   which is what the re-scan is for.
-- **Replacing a PLC is a recommissioning**: restart the plugin against the new
-  one. Adopting a different PLC silently would re-point every SOVD entity at
-  hardware nobody asked for and would clear the outage as if the link had healed.
+- **Replacing a PLC is a recommissioning**. On the discovery path: remove the
+  binding file (or set `discovery.binding_file` to an empty string) and
+  restart; the refusal WARN names the file. With `endpoint_url` configured:
+  point it at the new PLC and restart. Adopting a different PLC silently would
+  re-point every SOVD entity at hardware nobody asked for and would clear the
+  outage as if the link had healed.
+
+The binding is kept across restarts; removing the file and restarting clears
+it. The binding that was loaded, and the file it came from, are logged at INFO
+on start.
+
+A persisted URI naming a server that is nowhere on the subnet keeps the plugin
+disconnected: it re-scans at the cadence, reports a foreign server once while
+it is among the last eight refused, and holds the outage. There is no expiry -
+an identity that moved silently
+is the thing this exists to catch.
 
 Three cases have no binding, and in each the next adoption is unconstrained:
 
-1. Nothing has been connected yet - the gateway that started before its PLC, and
-   every process after a restart, because the binding is never persisted.
-2. An operator-configured `endpoint_url`, which runs no discovery at all.
+1. Nothing has ever been connected and no binding file was found.
+2. An operator-configured `endpoint_url`, which runs no discovery at all and
+   neither reads nor writes the binding file.
 3. A server that publishes **no `ApplicationUri`**: there is nothing to bind to,
    so after a drop a re-scan accepts whichever server answers. This is logged at
-   WARN when such a server is adopted.
+   WARN when such a server is adopted, and nothing is written to the file. Such
+   a server is adoptable only while no binding is held; with a binding it is
+   refused like any other mismatch.
+
+The file holds one line, the URI. A UTF-8 byte-order mark and surrounding
+whitespace are stripped, a CRLF line ending is accepted, and anything after the
+first line is ignored. A first line holding a NUL or another control character
+is refused with a WARN naming the file and reads as no binding. A URI holding a
+line break is refused at the write with a WARN, since it would read back
+truncated. The file is written through a temporary in the same directory that
+is flushed to disk before it is renamed over the path; a path that is a symlink
+is followed, so its target is what gets replaced. A binding that cannot be
+written - a directory that cannot be created or is not writable - is reported
+at WARN naming the path. The session is unaffected; what is lost is the next
+process's constraint.
+
+The file belongs to **one plugin instance**. A second gateway on the same host,
+or a second instance of this plugin in one gateway, bound to a different PLC
+must set its own `discovery.binding_file`; two instances on the default path
+overwrite each other's binding. The shipped image creates
+`/var/lib/ros2_medkit` for the fault manager database and declares no volume
+for it, so a binding that has to outlive a re-created container needs that
+directory mounted (`docker restart` keeps the writable layer; a new
+`docker run` starts without it).
 
 Re-scanning stops as soon as a session is up, and never starts at all when an
 `endpoint_url` is configured.
@@ -965,6 +1031,7 @@ Write operations use the `set_` prefix convention:
 | `OPCUA_REQUIRE_CONFIRM_FOR_CLEAR` | `0`/`false`/`no`/`off` to clear native alarms on Acknowledge alone (Confirm-less servers) |
 | `OPCUA_COMMS_LOST_ENABLED` | `0`/`false`/`no`/`off` to disable the `PLC_COMMS_LOST` fault |
 | `OPCUA_COMMS_LOST_DEBOUNCE_MS` | Continuous down time (ms) before `PLC_COMMS_LOST` is raised. A value above 3600000 ms is clamped, with a warning, as on the JSON path; a non-numeric or negative value is refused with a warning and the existing value is kept |
+| `OPCUA_DISCOVERY_BINDING_FILE` | Path the bound server's `ApplicationUri` is kept in while `endpoint_url` is unset (empty disables persistence) |
 
 ## Hardware Deployment
 
