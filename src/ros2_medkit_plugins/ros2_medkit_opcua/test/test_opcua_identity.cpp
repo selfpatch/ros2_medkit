@@ -2215,6 +2215,67 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderTheShippedPollCadenceIsCaught) {
   EXPECT_TRUE(delivered) << "a device alarm fired on the returned server never reached the fault store";
 }
 
+// The restart shape on one node: a second plugin instance is built on the node
+// the first one used while the gateway's executor spins. The fault-service
+// clients live in a callback group that executor never collects and are pumped
+// by a thread the plugin owns, so the first instance's clients are destroyed on
+// the thread that calls shutdown(), after their executor thread is joined, and
+// the second instance creates its own on that same thread. A data race between
+// the two is ThreadSanitizer's to report, in the sanitizer build. Every build
+// pins the observable half: the first shutdown returns with its executor thread
+// joined, and the second instance's clients resolve the services.
+TEST_F(OpcuaIdentityE2ETest, ASecondPluginInstanceOnTheSameNodeReachesTheFaultServices) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_two_instances");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_two_instances_faultmgr");
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  RealNodePluginContext ctx(node.get());
+  nlohmann::json config;
+  config["endpoint_url"] = endpoint_;
+  config["poll_interval_ms"] = 100;
+  config["discovery"] = nlohmann::json{{"binding_file", ""}};
+
+  const auto services_ready_within = [](const OpcuaPlugin & plugin, std::chrono::seconds budget) {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while (!plugin.fault_services_ready_for_test() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return plugin.fault_services_ready_for_test();
+  };
+
+  {
+    OpcuaPlugin first;
+    first.configure(config);
+    first.set_context(ctx);
+    ASSERT_TRUE(first.fault_executor_thread_running_for_test()) << "set_context started no client executor thread";
+    ASSERT_TRUE(services_ready_within(first, std::chrono::seconds(10)))
+        << "the first instance's fault-service clients never saw the store";
+    first.shutdown();
+    EXPECT_FALSE(first.fault_executor_thread_running_for_test())
+        << "shutdown returned with the client executor thread still running";
+  }
+
+  OpcuaPlugin second;
+  second.configure(config);
+  second.set_context(ctx);
+  const bool second_ready = services_ready_within(second, std::chrono::seconds(10));
+  second.shutdown();
+  spin.stop();
+
+  EXPECT_TRUE(second_ready) << "the second instance's fault-service clients never saw the store";
+  EXPECT_FALSE(second.fault_executor_thread_running_for_test());
+}
+
 // A PLC reboot is an outage the same server ends, so the identity check has
 // nothing to refuse and the arm reconnects to the server it is bound to. The
 // alarm subscription the arm re-creates there carries device alarms: the
