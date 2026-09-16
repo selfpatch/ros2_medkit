@@ -869,8 +869,9 @@ void FaultManagerNode::handle_report_fault(
       }
       just_confirmed = true;
     } else if (!is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
-      // Fault was already CONFIRMED, data updated (last_occurred, severity, sources).
-      // Not occurrence_count: a re-report inside one occurrence does not touch it.
+      // Record was already CONFIRMED, data updated (last_occurred, severity). Not
+      // reporting_sources: it names the one owner and never grows. Not
+      // occurrence_count: a re-report inside one occurrence does not touch it.
       if (!should_mute) {
         publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED, *fault_after);
       }
@@ -942,10 +943,11 @@ void FaultManagerNode::handle_list_faults(
     response->muted_count = correlation_engine_->get_muted_count();
     response->cluster_count = correlation_engine_->get_cluster_count();
 
-    auto muted_faults = correlation_engine_->get_muted_faults();
-
-    // Include muted faults details if requested
+    // Include muted faults details if requested. One entry per muted RECORD, carrying
+    // its code: MutedFaultInfo keeps its shape, so two owners muted on one code appear
+    // as two entries of that code.
     if (request->include_muted) {
+      const auto muted_faults = correlation_engine_->get_muted_faults();
       response->muted_faults.reserve(muted_faults.size());
       for (const auto & muted : muted_faults) {
         ros2_medkit_msgs::msg::MutedFaultInfo info;
@@ -956,17 +958,16 @@ void FaultManagerNode::handle_list_faults(
         response->muted_faults.push_back(info);
       }
     } else {
-      // Build a set of muted codes for O(1) lookup.
-      std::unordered_set<std::string> muted_codes;
-      for (const auto & muted : muted_faults) {
-        muted_codes.insert(muted.fault_code);
-      }
-
-      // Remove all faults whose code is muted, in one pass.
+      // Hide the muted RECORDS, never every record of a muted code. A root cause mutes
+      // the symptoms of its own owner, so another owner's record of that same code was
+      // never suppressed and hiding it would drop a live fault from the default view.
       auto & faults = response->faults;
       faults.erase(std::remove_if(faults.begin(), faults.end(),
-                                  [&muted_codes](const ros2_medkit_msgs::msg::Fault & fault) {
-                                    return muted_codes.count(fault.fault_code) > 0;
+                                  [this](const ros2_medkit_msgs::msg::Fault & fault) {
+                                    return correlation_engine_->is_muted(
+                                        FaultId{fault.fault_code, fault.reporting_sources.empty()
+                                                                      ? std::string()
+                                                                      : fault.reporting_sources.front()});
                                   }),
                    faults.end());
     }
@@ -1556,6 +1557,17 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   std::vector<std::string> attached_codes;
   std::string subject;
 
+  // fault_codes answers "which faults does this recording cover", so it is a set of
+  // codes. One row per RECORD means a burst of several owners of one code produces
+  // several rows pointing at the same bag, and pushing the code once per row would
+  // repeat it. First-seen order is kept, so the codes still read in the order the
+  // recording collected them.
+  const auto attach_code = [&attached_codes](const std::string & code) {
+    if (std::find(attached_codes.begin(), attached_codes.end(), code) == attached_codes.end()) {
+      attached_codes.push_back(code);
+    }
+  };
+
   if (!request->recording_id.empty()) {
     // Validation stays a hard failure: a traversal-shaped id is malformed on
     // either reading, and falling back would quietly re-admit it as a fault code.
@@ -1571,7 +1583,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       subject = "recording " + request->recording_id;
       rosbag_info = rows.front();
       for (const auto & row : rows) {
-        attached_codes.push_back(row.fault_code);
+        attach_code(row.fault_code);
       }
     } else if (request->fault_code.empty()) {
       response->success = false;
@@ -1607,7 +1619,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     // Report every fault the recording covers, not only the one asked about: the
     // caller authorizes the download against this set.
     for (const auto & row : storage_->get_rosbag_files_by_recording(rosbag_info->recording_id)) {
-      attached_codes.push_back(row.fault_code);
+      attach_code(row.fault_code);
     }
     if (attached_codes.empty()) {
       attached_codes.push_back(request->fault_code);
@@ -1733,7 +1745,7 @@ std::optional<FaultId> FaultManagerNode::resolve_target(const std::string & faul
       owners += candidate.reporting_sources.empty() ? "" : candidate.reporting_sources.front();
     }
     error = "ambiguous: " + fault_code + " is reported by " + std::to_string(candidates.size()) + " sources (" +
-            owners + "); set source_id to pick one";
+            owners + "). Set source_id to pick one.";
     return std::nullopt;
   }
   return FaultId{fault_code, candidates.front().reporting_sources.empty()

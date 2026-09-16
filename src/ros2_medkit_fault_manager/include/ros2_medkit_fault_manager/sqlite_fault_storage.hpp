@@ -123,15 +123,40 @@ class SqliteFaultStorage : public FaultStorage {
 
   /// Move a database whose fault identity is the bare fault_code onto (fault_code, owner).
   ///
-  /// Detected by PRAGMA table_info(faults) lacking `owner`, which is what makes it safe to
-  /// re-run on every open: once the column is there the migration is done. faults and
-  /// freeze_frames are REBUILT (their identity is a PRIMARY KEY, which ALTER TABLE cannot
-  /// change and CREATE TABLE IF NOT EXISTS would silently skip), while snapshots and
-  /// rosbag_files only gain a column. Every backfill takes the owner from the legacy row's
-  /// first reporting source, empty when it had none: that is the only per-source fact the
-  /// old schema holds, so a row with several sources folds onto its first one rather than
-  /// inventing per-source counters, statuses and timestamps that were never recorded.
+  /// Detected per table by PRAGMA table_info lacking `owner`, which is what makes it safe
+  /// to re-run on every open. faults and freeze_frames are REBUILT (their identity is a
+  /// PRIMARY KEY, which ALTER TABLE cannot change and CREATE TABLE IF NOT EXISTS would
+  /// silently skip), while snapshots and rosbag_files only gain a column. The fault owner
+  /// comes from the legacy row's first reporting source, empty when none can be read: that
+  /// is the only per-source fact the old schema holds, so a row with several sources folds
+  /// onto its first one rather than inventing per-source counters, statuses and timestamps
+  /// that were never recorded.
+  ///
+  /// It never refuses to finish. A row whose content cannot be read leaves an empty owner
+  /// and a log line, because a migration that aborts on a row takes the whole database with
+  /// it: the rebuild rolls back and the next open reaches the same row again, forever.
   void migrate_faults_add_owner();
+
+  /// Copy every legacy `faults` row into `faults_new`, deriving the owner in C++.
+  ///
+  /// In C++ rather than one INSERT ... SELECT because the derivation must not depend on the
+  /// column being valid JSON, and SQL's json_extract raises rather than returning NULL on
+  /// text it cannot parse. Caller holds the migration transaction.
+  void copy_legacy_fault_rows();
+
+  /// Give every ownerless child row the owner of its fault, where that is unambiguous.
+  ///
+  /// Runs on every open, not only when a column was just added: a child table can be left
+  /// with empty owners by an open interrupted between the faults rebuild and the backfill,
+  /// or by a database whose child table gained the column while faults was still legacy.
+  /// Such a row is invisible to every (code, owner) read, so leaving it is losing evidence.
+  /// A code carrying several owners is NOT resolved - guessing would hand one owner another
+  /// owner's evidence - and the row keeps its empty owner with a log line naming it.
+  void backfill_child_owners();
+
+  /// Whether any child table still holds a row with an empty owner, so the backfill above
+  /// has something to do. Tables without the column yet are skipped: the migration adds it.
+  bool has_ownerless_child_rows() const;
 
   /// Whether @p table already carries the `owner` column. The four tables are created
   /// by four independent CREATE TABLE IF NOT EXISTS statements, so a database can hold

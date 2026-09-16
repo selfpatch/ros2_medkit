@@ -911,14 +911,23 @@ class TestFaultManagerIntegration(unittest.TestCase):
                                 if f.fault_code == 'MOTOR_COMM_CASCADE')
         self.assertEqual(symptom_owners, ['/cascade_b'])
 
+        # include_muted left at its default on purpose: muting is per record, so the
+        # default query hides B's muted record alone and keeps A's cleared record,
+        # which carries the same code.
         cleared_request = ListFaults.Request()
         cleared_request.statuses = [Fault.STATUS_CLEARED]
-        # include_muted, because the CODE is still muted for the other owner and the
-        # default query drops muted codes wholesale.
-        cleared_request.include_muted = True
         cleared = [f for f in self._call_service(self.list_faults_client, cleared_request).faults
                    if f.fault_code == 'MOTOR_COMM_CASCADE']
         self.assertEqual([f.reporting_sources[0] for f in cleared], ['/cascade_a'])
+
+        # The same default query still hides the record that IS muted: B's symptom is
+        # CONFIRMED under B's own root cause and must not appear.
+        default_request = ListFaults.Request()
+        default_request.statuses = [Fault.STATUS_CONFIRMED]
+        default_confirmed = [f for f in
+                             self._call_service(self.list_faults_client, default_request).faults
+                             if f.fault_code == 'MOTOR_COMM_CASCADE']
+        self.assertEqual(default_confirmed, [])
         print('Auto-clear cascade stayed inside one owner')
 
     def test_24_correlation_auto_cluster(self):
@@ -1033,7 +1042,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print(f'Cleared record reactivated: occurrence_count={fault.occurrence_count}')
 
     def test_26b_scoped_clear_leaves_the_other_owners_record(self):
-        """A scoped clear takes one record; an unscoped clear of two is refused."""
+        """A scoped clear takes one record, an unscoped clear of two is refused."""
         fault_code = 'TEST_SCOPED_CLEAR'
         owners = ['/owner_a', '/owner_b']
 

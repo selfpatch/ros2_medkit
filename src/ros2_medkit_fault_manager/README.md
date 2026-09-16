@@ -18,6 +18,35 @@ owner; leaving it empty is unscoped and applies only when exactly one record car
 `fault_code`, otherwise the call fails with a message beginning `ambiguous:` that lists the
 owners and changes nothing.
 
+### Upgrading a database written before the owner column
+
+A SQLite store written by an earlier release is keyed by the bare `fault_code` and is rebuilt on
+the first open. The owner of each migrated record is the first entry of that row's legacy
+`reporting_sources` value. A row that listed several sources folds onto its first one, because the
+old schema recorded no per-source counter, status or timestamps to split it by, and inventing them
+would put numbers in the store that no report ever produced.
+
+The recovery reads that column as text rather than requiring it to be valid JSON, because earlier
+builds escaped only the quote, the backslash and `\b \f \n \r \t`, so a `source_id` carrying any
+other control byte was written as text no JSON parser accepts. The mapping is exact:
+
+| stored `reporting_sources` | migrated owner |
+|---|---|
+| empty | empty |
+| `sensor_a` (a bare word, not an array) | `sensor_a` |
+| `[]` | empty |
+| `["a<0x01>b"]` | `a<0x01>b` (the control byte is kept) |
+
+An empty owner means no source could be recovered, never that one should be guessed. The record is
+kept and one warning names it. New rows are always written as valid JSON, control bytes escaped as
+`\u00XX`.
+
+Evidence rows (freeze frames, snapshots, rosbag links) take the owner of their fault code when that
+code has exactly one owner. When it has several, or none, the row keeps an empty owner and is named
+in a warning rather than handed to an owner the database cannot prove it belongs to. That backfill
+runs on every open, not only on the open that adds the column, so a store left half-migrated by an
+interrupted run is healed the next time it is opened.
+
 ## Quick Start
 
 By default, faults are confirmed immediately when reported - no additional configuration needed.
@@ -205,7 +234,7 @@ storage API or the database file.
 
 ## Advanced: Tamper-Evident Audit Log
 
-An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a fault reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row with source `auto_heal`, so the fault's END is in the timeline and is not confused with a manual `cleared`. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack); there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. It is **off by default** because it adds a write and storage cost per transition.
+An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. Every row's `source` is the record's owner, the automatic transitions included: the `transition` column already says what moved the row, and with several owners per fault code the source has to answer whose record moved. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack); there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. It is **off by default** because it adds a write and storage cost per transition.
 
 Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only: the manager only ever inserts rows, and `BEFORE UPDATE` / `BEFORE DELETE` triggers reject out-of-band edits (the guarded rotation prune excepted).
 

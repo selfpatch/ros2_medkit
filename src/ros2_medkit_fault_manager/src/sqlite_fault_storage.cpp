@@ -14,11 +14,17 @@
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "rcutils/logging_macros.h"
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -104,6 +110,100 @@ class SqliteStatement {
   sqlite3 * db_;
   sqlite3_stmt * stmt_{nullptr};
 };
+
+/// First reporting source of a LEGACY `reporting_sources` value, recovered without
+/// requiring the text to be valid JSON.
+///
+/// Earlier builds wrote this column with an escape set that covered only the quote,
+/// the backslash and \b \f \n \r \t, so a source_id carrying any other control byte
+/// was stored as text no JSON parser accepts. Asking SQLite's json_extract to read it
+/// raises "malformed JSON", which inside the migration means the rebuild rolls back
+/// and the node refuses to start again for as long as the row exists. The recovery
+/// therefore reads the text itself and treats JSON as a shape it recognises, not as a
+/// precondition.
+///
+/// The mapping, exhaustively:
+///   ""                        -> ""          (nothing recorded)
+///   "sensor_a"                -> "sensor_a"  (bare word, never a JSON array)
+///   "[]"                      -> ""          (array with no source)
+///   "[\"a<0x01>b\"]"          -> "a<0x01>b"  (control byte kept verbatim)
+///   anything unterminated     -> what was read before the text ran out
+/// An empty answer means no source could be recovered, never that the caller should
+/// guess one.
+std::string legacy_first_source(const std::string & raw) {
+  std::size_t pos = 0;
+  while (pos < raw.size() && std::isspace(static_cast<unsigned char>(raw[pos])) != 0) {
+    ++pos;
+  }
+  if (pos >= raw.size()) {
+    return {};
+  }
+
+  // Not an array: an older writer, or a hand-edited database, put the bare source in
+  // the column. Taking it whole is the only reading that loses nothing.
+  if (raw[pos] != '[') {
+    return raw.substr(pos);
+  }
+
+  ++pos;  // past '['
+  while (pos < raw.size() && std::isspace(static_cast<unsigned char>(raw[pos])) != 0) {
+    ++pos;
+  }
+  if (pos >= raw.size() || raw[pos] != '"') {
+    return {};  // "[]", or a first element that is not a string
+  }
+
+  ++pos;  // past the opening quote
+  std::string out;
+  while (pos < raw.size() && raw[pos] != '"') {
+    if (raw[pos] != '\\' || pos + 1 >= raw.size()) {
+      out.push_back(raw[pos]);  // every other byte is itself, control bytes included
+      ++pos;
+      continue;
+    }
+    const char escaped = raw[pos + 1];
+    pos += 2;
+    switch (escaped) {
+      case 'b':
+        out.push_back('\b');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'u': {
+        // Only the \u00XX range this writer ever emits is decoded. Anything wider is
+        // left as written rather than guessed at, because a wrong transcoding would
+        // change an identity that other rows are keyed by.
+        if (pos + 4 <= raw.size() && raw.compare(pos, 2, "00") == 0) {
+          const std::string digits = raw.substr(pos + 2, 2);
+          char * end = nullptr;
+          const auto value = std::strtol(digits.c_str(), &end, 16);
+          if (end != nullptr && *end == '\0') {
+            out.push_back(static_cast<char>(value));
+            pos += 4;
+            break;
+          }
+        }
+        out.push_back('\\');
+        out.push_back('u');
+        break;
+      }
+      default:
+        out.push_back(escaped);  // covers \" and \\, and keeps anything unexpected
+        break;
+    }
+  }
+  return out;
+}
 
 }  // namespace
 
@@ -509,6 +609,138 @@ bool SqliteFaultStorage::table_has_owner(const char * table) const {
   return false;
 }
 
+bool SqliteFaultStorage::has_ownerless_child_rows() const {
+  for (const char * table : {"freeze_frames", "snapshots", "rosbag_files"}) {
+    if (!table_has_owner(table)) {
+      continue;  // the column arrives with the migration, which then fills it
+    }
+    SqliteStatement stmt(db_, (std::string("SELECT 1 FROM ") + table + " WHERE owner = '' LIMIT 1").c_str());
+    if (stmt.step() == SQLITE_ROW) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void SqliteFaultStorage::copy_legacy_fault_rows() {
+  struct LegacyFault {
+    std::string fault_code;
+    std::string description;
+    std::string status;
+    std::string owner;
+    int severity{0};
+    int64_t first_occurred_ns{0};
+    int64_t last_occurred_ns{0};
+    int64_t occurrence_count{0};
+    int64_t debounce_counter{0};
+    int64_t last_failed_ns{0};
+    int64_t last_passed_ns{0};
+    int64_t confirmed_at_ns{0};
+  };
+
+  // Read the whole table before writing a row of it. The write target is a different
+  // table, but the old one is dropped immediately afterwards, and holding a read cursor
+  // across that is a shape worth not having.
+  std::vector<LegacyFault> rows;
+  {
+    SqliteStatement select(db_,
+                           "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+                           "occurrence_count, status, reporting_sources, debounce_counter, last_failed_ns, "
+                           "last_passed_ns, confirmed_at_ns FROM faults");
+    while (select.step() == SQLITE_ROW) {
+      LegacyFault row;
+      row.fault_code = select.column_text(0);
+      row.severity = select.column_int(1);
+      row.description = select.column_text(2);
+      row.first_occurred_ns = select.column_int64(3);
+      row.last_occurred_ns = select.column_int64(4);
+      row.occurrence_count = select.column_int64(5);
+      row.status = select.column_text(6);
+      row.owner = legacy_first_source(select.column_text(7));
+      row.debounce_counter = select.column_int64(8);
+      row.last_failed_ns = select.column_int64(9);
+      row.last_passed_ns = select.column_int64(10);
+      row.confirmed_at_ns = select.column_int64(11);
+      rows.push_back(std::move(row));
+    }
+  }
+
+  SqliteStatement insert(db_,
+                         "INSERT INTO faults_new "
+                         "(fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, "
+                         " status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, "
+                         " confirmed_at_ns, owner) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+  for (const auto & row : rows) {
+    if (row.owner.empty()) {
+      // Kept, not dropped. The fault state is real and an operator can still see it,
+      // it simply belongs to no source that this database ever recorded readably.
+      RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage",
+                             "Fault '%s' carried no readable reporting source, migrated with an empty owner",
+                             row.fault_code.c_str());
+    }
+    insert.reset();
+    insert.bind_text(1, row.fault_code);
+    insert.bind_int(2, row.severity);
+    insert.bind_text(3, row.description);
+    insert.bind_int64(4, row.first_occurred_ns);
+    insert.bind_int64(5, row.last_occurred_ns);
+    insert.bind_int64(6, row.occurrence_count);
+    insert.bind_text(7, row.status);
+    // reporting_sources is rewritten to the one owner at the same time, so the column
+    // and owner agree from the first open after the migration, exactly as every write
+    // keeps them agreeing afterwards. Through serialize_json_array, so the result is
+    // valid JSON even when the value that came in was not.
+    insert.bind_text(8, serialize_json_array({row.owner}));
+    insert.bind_int64(9, row.debounce_counter);
+    insert.bind_int64(10, row.last_failed_ns);
+    insert.bind_int64(11, row.last_passed_ns);
+    insert.bind_int64(12, row.confirmed_at_ns);
+    insert.bind_text(13, row.owner);
+    if (insert.step() != SQLITE_DONE) {
+      throw std::runtime_error(std::string("fault owner migration failed (copy fault rows): ") + sqlite3_errmsg(db_));
+    }
+  }
+}
+
+void SqliteFaultStorage::backfill_child_owners() {
+  char * err_msg = nullptr;
+  for (const char * table : {"freeze_frames", "snapshots", "rosbag_files"}) {
+    if (!table_has_owner(table)) {
+      continue;
+    }
+
+    // Correlated on the child row's own fault_code, and applied only where that code
+    // has exactly ONE owner. The uncorrelated form this replaces picked whichever row
+    // SQLite reached first, which on a code with two owners handed one owner's
+    // snapshots and recordings to the other.
+    const std::string sql = std::string("UPDATE ") + table + " SET owner = (SELECT f.owner FROM faults f WHERE " +
+                            "f.fault_code = " + table + ".fault_code) WHERE owner = '' AND (SELECT COUNT(DISTINCT " +
+                            "f.owner) FROM faults f WHERE f.fault_code = " + table + ".fault_code) = 1";
+    if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg) != SQLITE_OK) {
+      std::string error = err_msg ? err_msg : "Unknown error";
+      sqlite3_free(err_msg);
+      err_msg = nullptr;
+      throw std::runtime_error(std::string("fault owner migration failed (backfill ") + table + ".owner): " + error);
+    }
+
+    // What is left is either evidence for a code no fault row carries any more, or for
+    // a code several owners share. Neither can be assigned without guessing, so it is
+    // named instead. The row stays: no (code, owner) read returns it to an owner, and
+    // deleting an operator's evidence to tidy a column is the worse trade.
+    SqliteStatement leftover(
+        db_,
+        (std::string("SELECT fault_code, COUNT(*) FROM ") + table + " WHERE owner = '' GROUP BY fault_code").c_str());
+    while (leftover.step() == SQLITE_ROW) {
+      RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage",
+                             "%s: %lld row(s) for fault '%s' keep an empty owner, the code has no single owner to "
+                             "assign them to",
+                             table, static_cast<long long>(leftover.column_int64(1)), leftover.column_text(0).c_str());
+    }
+  }
+}
+
 void SqliteFaultStorage::migrate_faults_add_owner() {
   // Probed PER TABLE, not once for the whole migration. A database can hold a legacy
   // faults table next to a snapshots table this release just created with owner
@@ -520,9 +752,15 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
   const bool freeze_frames_needs_owner = !table_has_owner("freeze_frames");
   const bool snapshots_needs_owner = !table_has_owner("snapshots");
   const bool rosbag_files_needs_owner = !table_has_owner("rosbag_files");
+  const bool schema_work =
+      faults_needs_owner || freeze_frames_needs_owner || snapshots_needs_owner || rosbag_files_needs_owner;
 
-  if (!faults_needs_owner && !freeze_frames_needs_owner && !snapshots_needs_owner && !rosbag_files_needs_owner) {
-    return;  // fresh database, or already migrated - safe to re-run on every open
+  // The child backfill is not tied to the ALTER that adds the column, so its own
+  // condition is asked separately: an open interrupted between the faults rebuild and
+  // the backfill, or a child table that gained the column while faults was still
+  // legacy, leaves rows no owner can see. They are healed on the next open.
+  if (!schema_work && !has_ownerless_child_rows()) {
+    return;  // fresh database, or fully migrated - safe to re-run on every open
   }
 
   char * err_msg = nullptr;
@@ -540,11 +778,14 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
     if (faults_needs_owner) {
       // faults: SQLite cannot change a PRIMARY KEY in place and CREATE TABLE IF NOT
       // EXISTS is a no-op on an existing database, so the identity change is the
-      // documented table-rebuild procedure. json_extract on the JSON array gives the
-      // first reporting source, which is the only per-source fact the old schema holds.
-      // A legacy row with several sources therefore folds onto its first one: the old
-      // schema recorded no per-source counter, status or timestamps to split it by, and
-      // inventing them would put numbers in the store that no report ever produced.
+      // documented table-rebuild procedure.
+      //
+      // The DROP first because a rebuild that was interrupted by a crash, or a manual
+      // recovery with an external tool, can leave faults_new behind. Without the DROP
+      // that leftover makes CREATE TABLE fail on every open and the schema stays
+      // legacy forever. It is safe because faults_new is this procedure's scratch
+      // table and nothing else ever reads it.
+      exec("DROP TABLE IF EXISTS faults_new", "drop leftover faults_new");
       exec(
           "CREATE TABLE faults_new ("
           " fault_code TEXT NOT NULL,"
@@ -562,28 +803,17 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
           " owner TEXT NOT NULL)",
           "create new faults table");
 
-      // reporting_sources is rewritten to the one owner at the same time, so the column
-      // and owner agree from the first open after the migration, exactly as every write
-      // keeps them agreeing afterwards.
-      exec(
-          "INSERT INTO faults_new "
-          "(fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count,"
-          " status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns, owner) "
-          "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count,"
-          " status,"
-          " json_array(IFNULL(json_extract(reporting_sources, '$[0]'), '')),"
-          " debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns,"
-          " IFNULL(json_extract(reporting_sources, '$[0]'), '') "
-          "FROM faults",
-          "copy fault rows");
+      copy_legacy_fault_rows();
 
       exec("DROP TABLE faults", "drop old faults table");
       exec("ALTER TABLE faults_new RENAME TO faults", "rename faults");
     }
 
     if (freeze_frames_needs_owner) {
-      // freeze_frames: same problem, same procedure. One row per code becomes one row
-      // for that code's single migrated record.
+      // freeze_frames: same problem, same procedure, same reason for the DROP.
+      // The owner is left empty here and assigned by the shared child backfill below,
+      // so one rule decides who a frame belongs to no matter which open produced it.
+      exec("DROP TABLE IF EXISTS freeze_frames_new", "drop leftover freeze_frames_new");
       exec(
           "CREATE TABLE freeze_frames_new ("
           " fault_code TEXT NOT NULL,"
@@ -593,31 +823,21 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
           "create new freeze_frames table");
       exec(
           "INSERT INTO freeze_frames_new (fault_code, owner, data, captured_at_ns) "
-          "SELECT ff.fault_code, IFNULL((SELECT f.owner FROM faults f WHERE f.fault_code = ff.fault_code), ''),"
-          " ff.data, ff.captured_at_ns FROM freeze_frames ff",
+          "SELECT fault_code, '', data, captured_at_ns FROM freeze_frames",
           "copy freeze frames");
       exec("DROP TABLE freeze_frames", "drop old freeze_frames table");
       exec("ALTER TABLE freeze_frames_new RENAME TO freeze_frames", "rename freeze_frames");
     }
 
     // snapshots and rosbag_files only gain a column: their identity is a rowid, not
-    // the fault code, so ALTER TABLE is enough. Backfilled by joining the migrated
-    // faults on fault_code, which is unambiguous because the migration produced at
-    // most one record per code. A row whose fault is gone keeps the empty owner.
+    // the fault code, so ALTER TABLE is enough. The column arrives empty and the
+    // shared backfill fills it.
     if (snapshots_needs_owner) {
       exec("ALTER TABLE snapshots ADD COLUMN owner TEXT NOT NULL DEFAULT ''", "add snapshots.owner");
-      exec(
-          "UPDATE snapshots SET owner = "
-          "IFNULL((SELECT f.owner FROM faults f WHERE f.fault_code = snapshots.fault_code), '')",
-          "backfill snapshots.owner");
     }
 
     if (rosbag_files_needs_owner) {
       exec("ALTER TABLE rosbag_files ADD COLUMN owner TEXT NOT NULL DEFAULT ''", "add rosbag_files.owner");
-      exec(
-          "UPDATE rosbag_files SET owner = "
-          "IFNULL((SELECT f.owner FROM faults f WHERE f.fault_code = rosbag_files.fault_code), '')",
-          "backfill rosbag_files.owner");
 
       // The rosbag indexes that carry fault_code have to widen with it. CREATE INDEX IF
       // NOT EXISTS in initialize_schema() is a no-op on an index that already exists, so
@@ -626,6 +846,8 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
       exec("DROP INDEX IF EXISTS idx_rosbag_files_fault_path", "drop rosbag unique index");
       exec("DROP INDEX IF EXISTS idx_rosbag_files_fault_created", "drop rosbag fault_created index");
     }
+
+    backfill_child_owners();
 
     exec("COMMIT", "commit");
   } catch (...) {
@@ -733,7 +955,19 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
           oss << "\\t";
           break;
         default:
-          oss << c;
+          // Every remaining byte below 0x20 is a control character JSON forbids raw
+          // inside a string and gives no short escape, so it goes out as \u00XX. A
+          // source_id is whatever the reporter put on the wire, and one stray control
+          // byte used to make this column unparseable for every JSON reader, SQLite's
+          // json_extract included. Bytes at or above 0x20 are passed through, UTF-8
+          // sequences included, which JSON allows.
+          if (static_cast<unsigned char>(c) < 0x20) {
+            char escape[7];
+            std::snprintf(escape, sizeof(escape), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+            oss << escape;
+          } else {
+            oss << c;
+          }
           break;
       }
     }

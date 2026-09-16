@@ -1208,6 +1208,318 @@ TEST_F(SqliteFaultStorageTest, LegacyUniqueConstraintIsRebuiltAwayAndRecordingId
   EXPECT_EQ(all[1].recording_id, "fault_B_200");
 }
 
+namespace {
+
+/// One control byte, kept out of the string literals that use it: written inline,
+/// "\x01" followed by a hex digit would be read as one wider escape.
+constexpr char kCtrl = '\x01';
+
+/// Run one statement on a raw handle, binding @p text as the single parameter. Legacy
+/// fixtures carry bytes that cannot survive being pasted into a SQL literal, so the
+/// values that matter go in through a binding.
+void exec_bound(sqlite3 * raw, const char * sql, const std::string & text) {
+  sqlite3_stmt * stmt = nullptr;
+  ASSERT_EQ(sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr), SQLITE_OK) << sqlite3_errmsg(raw);
+  ASSERT_EQ(sqlite3_bind_text(stmt, 1, text.c_str(), static_cast<int>(text.size()), SQLITE_TRANSIENT), SQLITE_OK);
+  ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE) << sqlite3_errmsg(raw);
+  sqlite3_finalize(stmt);
+}
+
+/// The legacy faults table exactly as the previous releases created it.
+constexpr const char * kLegacyFaultsDdl =
+    "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+    "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+    "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+    "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+    "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+    "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+    "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);";
+
+}  // namespace
+
+// A migration that refuses a row refuses the database. The rebuild runs inside one
+// transaction, so a row it cannot read rolls the whole thing back, and because the
+// migration is re-attempted on every open the node then fails to start for as long as
+// that row exists. The column it reads was written by a serializer that escaped only
+// the quote, the backslash and \b \f \n \r \t, so any other control byte in a
+// source_id produced text no JSON parser accepts. Recovery therefore reads the text
+// itself instead of requiring it to be valid JSON, and a row from which nothing can be
+// read is migrated with an empty owner rather than taking the database down.
+TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMigrate) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+
+  // The five shapes, with the owner each must produce.
+  const std::string ctrl_pair = std::string("a") + kCtrl + "b";
+  const std::string device = std::string("/dev/ttyUSB0") + kCtrl + "reader";
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"", ""},                                // nothing recorded
+      {"sensor_a", "sensor_a"},                // bare word, never an array
+      {"[]", ""},                              // array with no source
+      {"[\"" + ctrl_pair + "\"]", ctrl_pair},  // control byte inside the array
+      {"[\"" + device + "\"]", device},        // the reported real-world case
+  };
+
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+    for (size_t i = 0; i < cases.size(); ++i) {
+      const std::string insert = "INSERT INTO faults VALUES ('CODE_" + std::to_string(i) +
+                                 "', 2, 'legacy', 1, 1, 1, 'CONFIRMED', ?, -1, 1, 0, 0);";
+      exec_bound(raw, insert.c_str(), cases[i].first);
+    }
+    sqlite3_close(raw);
+  }
+
+  // Opening must succeed. On the json_extract path this throws and the process exits.
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const std::string code = "CODE_" + std::to_string(i);
+    EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = '" + code + "'"), cases[i].second)
+        << "owner recovered from " << cases[i].first;
+    EXPECT_TRUE(storage_->contains({code, cases[i].second})) << code << " must be reachable by its migrated owner";
+  }
+  EXPECT_EQ(storage_->size(), cases.size());
+
+  // Whatever came in, what goes back out is valid JSON, so the next release's reader
+  // is not handed the same problem.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT MIN(json_valid(reporting_sources)) FROM faults"), "1");
+
+  // Idempotent: a second open neither rebuilds nor re-derives.
+  storage_.reset();
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+  EXPECT_EQ(storage_->size(), cases.size());
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'CODE_4'"), device);
+}
+
+// A rebuild that was interrupted, or a manual recovery with an external tool, can leave
+// the scratch table behind. CREATE TABLE (no IF NOT EXISTS, deliberately, so a real
+// collision is never silently reused) then fails on every open and the schema stays
+// legacy forever. Dropping the scratch table first inside the same transaction is what
+// makes the migration able to finish the job it started.
+TEST_F(SqliteFaultStorageTest, LeftoverScratchTablesDoNotBlockTheMigration) {
+  for (const char * leftover : {"faults_new", "freeze_frames_new"}) {
+    storage_.reset();
+    std::filesystem::remove(temp_db_path_);
+    {
+      sqlite3 * raw = nullptr;
+      ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+      ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+      ASSERT_EQ(sqlite3_exec(raw,
+                             "INSERT INTO faults VALUES ('LEFTOVER', 2, 'legacy', 1, 1, 1, 'CONFIRMED', "
+                             "'[\"/owner_a\"]', -1, 1, 0, 0);"
+                             "CREATE TABLE freeze_frames (fault_code TEXT PRIMARY KEY, data TEXT NOT NULL, "
+                             "captured_at_ns INTEGER NOT NULL);"
+                             "INSERT INTO freeze_frames VALUES ('LEFTOVER', '{\"/t\":1}', 7);",
+                             nullptr, nullptr, nullptr),
+                SQLITE_OK);
+      // The debris: a scratch table with a shape that does not even match the real one,
+      // so reusing it instead of dropping it could not go unnoticed either.
+      const std::string debris = std::string("CREATE TABLE ") + leftover + " (junk TEXT);";
+      ASSERT_EQ(sqlite3_exec(raw, debris.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+      sqlite3_close(raw);
+    }
+
+    ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()))
+        << "leftover " << leftover << " must not block the rebuild";
+
+    const ros2_medkit_fault_manager::FaultId id{"LEFTOVER", "/owner_a"};
+    EXPECT_TRUE(storage_->contains(id)) << "with leftover " << leftover;
+    EXPECT_TRUE(has_index_over(temp_db_path_, "faults", {"fault_code", "owner"}));
+    ASSERT_TRUE(storage_->get_freeze_frame(id).has_value()) << "with leftover " << leftover;
+    EXPECT_EQ(storage_->get_freeze_frame(id)->captured_at_ns, 7);
+  }
+}
+
+// Evidence is never assigned to an owner the database cannot prove. A code carrying two
+// owners has no single answer, so the child rows keep the empty owner they came with,
+// and neither owner is handed the other's snapshots.
+TEST_F(SqliteFaultStorageTest, ChildRowsOfASharedCodeAreNotGivenAnArbitraryOwner) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    // faults already on the new schema with TWO owners of one code, snapshots still
+    // legacy. Reachable by an open that was interrupted, and by a database an operator
+    // repaired by hand.
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT NOT NULL, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL);"
+                           "INSERT INTO faults VALUES ('SHARED', 2, 'a', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0, '/owner_a');"
+                           "INSERT INTO faults VALUES ('SHARED', 2, 'b', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_b\"]', -1, 1, 0, 0, '/owner_b');"
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "topic TEXT NOT NULL, message_type TEXT NOT NULL, data TEXT NOT NULL, "
+                           "captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('SHARED', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'SHARED'"), "")
+      << "an ambiguous code must leave the row unassigned, not pick a winner";
+  EXPECT_TRUE(storage_->get_snapshots({"SHARED", "/owner_a"}).empty()) << "A must not be handed unproven evidence";
+  EXPECT_TRUE(storage_->get_snapshots({"SHARED", "/owner_b"}).empty()) << "and neither must B";
+  // The row is kept, not deleted: it is still an operator's evidence.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM snapshots"), "1");
+}
+
+// The mirror case: a child table that already carries the column but whose rows were
+// never filled, with exactly one owner to attribute them to. The backfill is not tied
+// to the ALTER that adds the column, so the next open heals them.
+TEST_F(SqliteFaultStorageTest, OwnerlessChildRowsAreHealedOnTheNextOpen) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT NOT NULL, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL);"
+                           "INSERT INTO faults VALUES ('SOLO', 2, 'a', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0, '/owner_a');"
+                           // snapshots is AHEAD of the old migration: the column is there,
+                           // the value never arrived.
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "owner TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL, message_type TEXT NOT NULL, "
+                           "data TEXT NOT NULL, captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, owner, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('SOLO', '', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'SOLO'"), "/owner_a");
+  ASSERT_EQ(storage_->get_snapshots({"SOLO", "/owner_a"}).size(), 1u) << "the owner must now see its own evidence";
+  EXPECT_EQ(storage_->get_snapshots({"SOLO", "/owner_a"}).front().owner, "/owner_a");
+}
+
+// New rows must never reproduce the problem the migration had to recover from: a
+// source_id carrying a control byte round-trips, and what lands in the column is JSON
+// every reader can parse.
+TEST_F(SqliteFaultStorageTest, AControlByteInASourceIdStoresAsValidJson) {
+  const std::string source = std::string("/dev/ttyUSB0") + kCtrl + "reader";
+  rclcpp::Clock clock;
+  storage_->report_fault_event("CTRL_BYTE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "d", source,
+                               clock.now(), default_config());
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT json_valid(reporting_sources) FROM faults WHERE fault_code='CTRL_BYTE'"),
+            "1")
+      << "a raw control byte inside a JSON string is what made the legacy column unreadable";
+  EXPECT_EQ(read_text(temp_db_path_,
+                      "SELECT json_extract(reporting_sources, '$[0]') FROM faults "
+                      "WHERE fault_code='CTRL_BYTE'"),
+            source)
+      << "the escape must be reversible, not lossy";
+
+  auto stored = storage_->get_fault({"CTRL_BYTE", source});
+  ASSERT_TRUE(stored.has_value()) << "the record is keyed by the byte-exact source";
+  ASSERT_EQ(stored->reporting_sources.size(), 1u);
+  EXPECT_EQ(stored->reporting_sources.front(), source);
+}
+
+// The rosbag indexes that carry fault_code have to widen with the record identity, and
+// widening them is the one step no rebuild does for free. LegacyDatabaseGainsTheOwner-
+// ColumnOnOpen cannot show it: its fixture still carries a column UNIQUE on fault_code,
+// so the earlier rosbag migration rebuilds the table, takes every index with it, and
+// the widened shape appears whether or not the owner migration drops anything. The
+// shape that does exercise the drops is the PREVIOUS release, where rosbag_files is
+// already rebuilt and already carries the named indexes and only owner is missing.
+// CREATE INDEX IF NOT EXISTS is a no-op on a name that exists, so without the drops
+// the two-column indexes survive and the upsert has no unique constraint to target.
+TEST_F(SqliteFaultStorageTest, PreviousReleaseRosbagIndexesWidenWithTheRecordIdentity) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);"
+                           "INSERT INTO faults VALUES ('BURST', 3, 'burst', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0);"
+                           // rosbag_files as the previous release left it: no column UNIQUE, a
+                           // recording_id column, and the named indexes over fault_code alone.
+                           "CREATE TABLE rosbag_files (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                           "fault_code TEXT NOT NULL, recording_id TEXT NOT NULL DEFAULT '', "
+                           "file_path TEXT NOT NULL, format TEXT NOT NULL, duration_sec REAL NOT NULL, "
+                           "size_bytes INTEGER NOT NULL, created_at_ns INTEGER NOT NULL);"
+                           "CREATE INDEX idx_rosbag_files_fault_code ON rosbag_files(fault_code);"
+                           "CREATE INDEX idx_rosbag_files_created_at ON rosbag_files(created_at_ns);"
+                           "CREATE INDEX idx_rosbag_files_fault_created ON rosbag_files(fault_code, created_at_ns, id);"
+                           "CREATE INDEX idx_rosbag_files_recording ON rosbag_files(recording_id);"
+                           "CREATE INDEX idx_rosbag_files_path ON rosbag_files(file_path);"
+                           "CREATE UNIQUE INDEX idx_rosbag_files_fault_path ON rosbag_files(fault_code, file_path);"
+                           "INSERT INTO rosbag_files (fault_code, recording_id, file_path, format, duration_sec, "
+                           "size_bytes, created_at_ns) "
+                           "VALUES ('BURST', 'fault_BURST_1', '/bags/fault_BURST_1', 'mcap', 6.0, 512, 11);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  ASSERT_FALSE(has_unique_constraint_index(temp_db_path_, "rosbag_files"))
+      << "fixture must start already rebuilt, or the rebuild would widen the indexes for free";
+  ASSERT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "file_path"}))
+      << "fixture must start on the previous release's two-column unique index";
+
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  bool unique = false;
+  ASSERT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "owner", "file_path"}, &unique));
+  EXPECT_TRUE(unique);
+  EXPECT_FALSE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "file_path"}))
+      << "the narrow unique index must be gone, not left beside the wide one";
+  EXPECT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "owner", "created_at_ns", "id"}))
+      << "the per-record read order index widened too";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM rosbag_files WHERE fault_code = 'BURST'"), "/owner_a");
+
+  // What the widened index buys: two owners of one code link the same bag. Under the
+  // previous release's index the second store would collide, and the upsert cannot
+  // even be prepared without a unique constraint over (fault_code, owner, file_path).
+  RosbagFileInfo link;
+  link.fault_code = "BURST";
+  link.file_path = "/bags/fault_BURST_1";
+  link.format = "mcap";
+  link.duration_sec = 6.0;
+  link.size_bytes = 512;
+  link.created_at_ns = 11;
+  link.owner = "/owner_a";
+  storage_->store_rosbag_file(link);
+  link.owner = "/owner_b";
+  storage_->store_rosbag_file(link);
+
+  const auto rows = storage_->get_rosbag_files_by_recording("fault_BURST_1");
+  ASSERT_EQ(rows.size(), 2u) << "one link per record, both pointing at the one bag";
+  EXPECT_EQ(rows[0].owner, "/owner_a");
+  EXPECT_EQ(rows[1].owner, "/owner_b");
+}
+
 TEST_F(SqliteFaultStorageTest, ReopeningAMigratedDatabaseIsANoOp) {
   // The migration runs on every open, so it has to be idempotent - a second and
   // third open must not rebuild again, lose rows or re-backfill.

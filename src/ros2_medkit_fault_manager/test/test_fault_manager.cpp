@@ -15,9 +15,11 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
@@ -38,7 +40,9 @@
 #include "ros2_medkit_msgs/msg/snapshot.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
+#include "ros2_medkit_msgs/srv/list_faults.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -52,6 +56,8 @@ using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::msg::FaultEvent;
 using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::GetFault;
+using ros2_medkit_msgs::srv::GetRosbag;
+using ros2_medkit_msgs::srv::ListFaults;
 using ros2_medkit_msgs::srv::ListFaultsForEntity;
 using ros2_medkit_msgs::srv::ReportFault;
 
@@ -1190,8 +1196,10 @@ class FaultEventPublishingTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    // Unique namespace per test iteration avoids DDS topic collisions
-    std::string ns = "/test_events_" + std::to_string(test_counter_.fetch_add(1));
+    // Unique namespace per test iteration avoids DDS topic collisions. Kept as a
+    // member so a subclass can add a client of its own on the same namespace.
+    ns_ = "/test_events_" + std::to_string(test_counter_.fetch_add(1));
+    const std::string & ns = ns_;
 
     // Create fault manager node with immediate confirmation
     rclcpp::NodeOptions fm_options;
@@ -1349,6 +1357,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     return *future.get();
   }
 
+  std::string ns_;
   std::shared_ptr<FaultManagerNode> fault_manager_;
   std::shared_ptr<rclcpp::Node> test_node_;
   rclcpp::Subscription<FaultEvent>::SharedPtr event_subscription_;
@@ -1681,6 +1690,10 @@ TEST_F(FaultEventPublishingTest, UnscopedClearOfTwoRecordsIsRefusedAndClearsNoth
   EXPECT_EQ(response->message.rfind("ambiguous:", 0), 0u) << "got: " << response->message;
   EXPECT_NE(response->message.find("/owner_a"), std::string::npos) << "the owners must be in the message";
   EXPECT_NE(response->message.find("/owner_b"), std::string::npos);
+  // The message is prose an operator reads, so it is two sentences, not a semicolon
+  // splice. The instruction has to survive whatever a client does to the rest of it.
+  EXPECT_NE(response->message.find("Set source_id to pick one."), std::string::npos) << "got: " << response->message;
+  EXPECT_EQ(response->message.find(';'), std::string::npos) << "got: " << response->message;
 
   // Nothing was cleared, and nothing was published.
   spin_for(std::chrono::milliseconds(200));
@@ -1734,6 +1747,195 @@ TEST_F(FaultEventPublishingTest, GetFaultResolvesTheSameWayAsClear) {
   ASSERT_TRUE(single.has_value());
   ASSERT_TRUE(single->success);
   EXPECT_EQ(single->fault.severity, Fault::SEVERITY_ERROR);
+}
+
+/// Gives the node a hierarchical rule that mutes symptoms, which is the only way two
+/// owners can hold the same symptom code with exactly one of them muted.
+class MutedFaultListingTest : public FaultEventPublishingTest {
+ protected:
+  std::vector<rclcpp::Parameter> fault_manager_overrides() override {
+    // Written here rather than in SetUp() because the base SetUp() asks for the
+    // overrides before it builds the node, and the node reads the file at construction.
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    config_path_ =
+        std::filesystem::temp_directory_path() / ("test_muted_listing_" + std::to_string(dist(gen)) + ".yaml");
+    std::ofstream out(config_path_);
+    out << R"(
+correlation:
+  enabled: true
+  default_window_ms: 30000
+  patterns:
+    symptom_codes:
+      codes: ["SYMPTOM_*"]
+  rules:
+    - id: root_cascade
+      name: "Root Cascade"
+      mode: hierarchical
+      root_cause:
+        codes: ["ROOT_CAUSE"]
+      symptoms:
+        - pattern: symptom_codes
+      window_ms: 30000
+      mute_symptoms: true
+      auto_clear_with_root: true
+)";
+    out.close();
+
+    auto overrides = FaultEventPublishingTest::fault_manager_overrides();
+    overrides.emplace_back("correlation.config_file", config_path_.string());
+    return overrides;
+  }
+
+  void SetUp() override {
+    FaultEventPublishingTest::SetUp();
+    list_faults_client_ = test_node_->create_client<ListFaults>(ns_ + "/fault_manager/list_faults");
+    ASSERT_TRUE(list_faults_client_->wait_for_service(std::chrono::seconds(5)));
+  }
+
+  void TearDown() override {
+    list_faults_client_.reset();
+    FaultEventPublishingTest::TearDown();
+    std::filesystem::remove(config_path_);
+  }
+
+  std::optional<ListFaults::Response> call_list_faults(bool include_muted) {
+    auto request = std::make_shared<ListFaults::Request>();
+    request->include_muted = include_muted;
+    request->statuses = {Fault::STATUS_CONFIRMED};
+
+    auto future = list_faults_client_->async_send_request(request);
+    if (!spin_until_future_ready(future)) {
+      return std::nullopt;
+    }
+    return *future.get();
+  }
+
+  /// Owners of every listed record carrying @p fault_code, sorted so the order the
+  /// backend happens to return does not decide the assertion.
+  static std::vector<std::string> owners_of(const ListFaults::Response & response, const std::string & fault_code) {
+    std::vector<std::string> owners;
+    for (const auto & fault : response.faults) {
+      if (fault.fault_code == fault_code && !fault.reporting_sources.empty()) {
+        owners.push_back(fault.reporting_sources.front());
+      }
+    }
+    std::sort(owners.begin(), owners.end());
+    return owners;
+  }
+
+  std::filesystem::path config_path_;
+  rclcpp::Client<ListFaults>::SharedPtr list_faults_client_;
+};
+
+// Muting belongs to a RECORD, so the default listing hides the muted record alone.
+// Owner A's symptom is suppressed by A's own root cause. Owner B reported the same
+// code with no root cause of its own, so B's record was never muted and a listing
+// that drops it hides a live CRITICAL fault from the default view.
+TEST_F(MutedFaultListingTest, DefaultListingHidesTheMutedRecordNotTheCode) {
+  ASSERT_TRUE(call_report_fault("ROOT_CAUSE", Fault::SEVERITY_CRITICAL, "/owner_a"));
+  ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, "/owner_a"));
+  ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, "/owner_b"));
+
+  auto visible = call_list_faults(false);
+  ASSERT_TRUE(visible.has_value());
+  EXPECT_EQ(visible->muted_count, 1u) << "only A's symptom record is muted";
+  EXPECT_EQ(owners_of(*visible, "SYMPTOM_SPEED"), std::vector<std::string>{"/owner_b"});
+  // The root cause itself is never muted, so the listing is not simply empty.
+  EXPECT_EQ(owners_of(*visible, "ROOT_CAUSE"), std::vector<std::string>{"/owner_a"});
+
+  auto everything = call_list_faults(true);
+  ASSERT_TRUE(everything.has_value());
+  EXPECT_EQ(owners_of(*everything, "SYMPTOM_SPEED"), (std::vector<std::string>{"/owner_a", "/owner_b"}));
+  // One entry per muted RECORD, carrying its code: the message shape is unchanged.
+  ASSERT_EQ(everything->muted_faults.size(), 1u);
+  EXPECT_EQ(everything->muted_faults.front().fault_code, "SYMPTOM_SPEED");
+  EXPECT_EQ(everything->muted_faults.front().root_cause_code, "ROOT_CAUSE");
+}
+
+/// GetRosbag over the wire, with the links written straight into the node's store: the
+/// recording itself comes from a background capture this suite does not run, and what
+/// is under test is how the handler reports the links, not how they got there.
+class GetRosbagAttachedCodesTest : public FaultEventPublishingTest {
+ protected:
+  void SetUp() override {
+    FaultEventPublishingTest::SetUp();
+    get_rosbag_client_ = test_node_->create_client<GetRosbag>(ns_ + "/fault_manager/get_rosbag");
+    ASSERT_TRUE(get_rosbag_client_->wait_for_service(std::chrono::seconds(5)));
+
+    // The handler serves a link only while its bag is on disk, so the directory has to
+    // exist for the response to be an answer rather than a reap.
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    bag_path_ = std::filesystem::temp_directory_path() / ("test_get_rosbag_" + std::to_string(dist(gen)));
+    std::filesystem::create_directories(bag_path_);
+  }
+
+  void TearDown() override {
+    get_rosbag_client_.reset();
+    FaultEventPublishingTest::TearDown();
+    std::error_code ec;
+    std::filesystem::remove_all(bag_path_, ec);
+  }
+
+  /// Link one record to the single shared recording, the way a burst does.
+  void link_recording(const std::string & fault_code, const std::string & owner) {
+    ros2_medkit_fault_manager::RosbagFileInfo info;
+    info.fault_code = fault_code;
+    info.owner = owner;
+    info.file_path = bag_path_.string();
+    info.format = "mcap";
+    info.duration_sec = 5.0;
+    info.size_bytes = 100;
+    info.created_at_ns = 1000;
+    fault_manager_->get_storage_for_test().store_rosbag_file(info);
+  }
+
+  std::optional<GetRosbag::Response> call_get_rosbag(const std::string & fault_code, const std::string & source_id) {
+    auto request = std::make_shared<GetRosbag::Request>();
+    request->fault_code = fault_code;
+    request->source_id = source_id;
+
+    auto future = get_rosbag_client_->async_send_request(request);
+    if (!spin_until_future_ready(future)) {
+      return std::nullopt;
+    }
+    return *future.get();
+  }
+
+  std::filesystem::path bag_path_;
+  rclcpp::Client<GetRosbag>::SharedPtr get_rosbag_client_;
+};
+
+// fault_codes answers which faults a recording covers, so it is a set of codes. Two
+// owners of one code are two links to the one bag, and repeating the code would make
+// the caller authorize the same download twice over.
+TEST_F(GetRosbagAttachedCodesTest, ACodeSharedByTwoOwnersIsReportedOnce) {
+  ASSERT_TRUE(call_report_fault("BURST_CODE", Fault::SEVERITY_CRITICAL, "/owner_a"));
+  ASSERT_TRUE(call_report_fault("BURST_CODE", Fault::SEVERITY_CRITICAL, "/owner_b"));
+  link_recording("BURST_CODE", "/owner_a");
+  link_recording("BURST_CODE", "/owner_b");
+
+  auto response = call_get_rosbag("BURST_CODE", "/owner_a");
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->success) << response->error_message;
+  EXPECT_EQ(response->fault_codes, std::vector<std::string>{"BURST_CODE"});
+}
+
+// The control on the same harness: deduplicating must not collapse the set itself.
+// A burst of two different codes on one bag still reports both, in first-seen order.
+TEST_F(GetRosbagAttachedCodesTest, EveryDistinctCodeOfTheBurstIsReported) {
+  ASSERT_TRUE(call_report_fault("BURST_FIRST", Fault::SEVERITY_CRITICAL, "/owner_a"));
+  ASSERT_TRUE(call_report_fault("BURST_SECOND", Fault::SEVERITY_CRITICAL, "/owner_a"));
+  link_recording("BURST_FIRST", "/owner_a");
+  link_recording("BURST_SECOND", "/owner_a");
+
+  auto response = call_get_rosbag("BURST_FIRST", "/owner_a");
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->success) << response->error_message;
+  EXPECT_EQ(response->fault_codes, (std::vector<std::string>{"BURST_FIRST", "BURST_SECOND"}));
 }
 
 // @verifies REQ_INTEROP_012
@@ -2395,10 +2597,12 @@ TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
   EXPECT_EQ(result.checked, 4);
 }
 
-// Completeness: an auto-healed fault must record its END. One FAILED confirms the
-// fault (occurred + confirmed); two PASSED drive the debounce counter to the
-// healing threshold, which must append a distinct "healed" row (source auto_heal),
-// and the full occurred -> confirmed -> healed chain must verify.
+// Completeness: an auto-healed record must record its END. One FAILED confirms the
+// record (occurred + confirmed), two PASSED drive the debounce counter to the
+// healing threshold, which must append a distinct "healed" row. That row names the
+// record's OWNER: the transition column already says the heal was automatic, so the
+// source is free to answer the question the transition cannot, whose record ended.
+// The full occurred -> confirmed -> healed chain must verify.
 TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
   auto send_report = [&](uint8_t event_type) {
     auto req = std::make_shared<ReportFault::Request>();
