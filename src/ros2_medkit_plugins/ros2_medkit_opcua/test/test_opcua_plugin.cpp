@@ -24,8 +24,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -907,6 +911,194 @@ TEST(DiscoverEndpoint, DisabledDiscoveryScansNothing) {
   EXPECT_FALSE(scanned) << "a disabled discovery must not touch the network";
 }
 
+// ---------------------------------------------------------------------------
+// The binding file: what a restarted process reads its constraint from
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A directory of this process's own, so two worktrees running the suite at once
+// do not delete each other's fixtures.
+class ScopedBindingDir {
+ public:
+  ScopedBindingDir() {
+    std::string pattern = (std::filesystem::temp_directory_path() / "medkit_opcua_binding_XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    const char * made = mkdtemp(buffer.data());
+    if (made == nullptr) {
+      throw std::runtime_error("mkdtemp(" + pattern + ") failed: " + std::strerror(errno));
+    }
+    dir_ = std::filesystem::path(made);
+  }
+  ~ScopedBindingDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+  ScopedBindingDir(const ScopedBindingDir &) = delete;
+  ScopedBindingDir & operator=(const ScopedBindingDir &) = delete;
+  ScopedBindingDir(ScopedBindingDir &&) = delete;
+  ScopedBindingDir & operator=(ScopedBindingDir &&) = delete;
+
+  std::string file(const std::string & name) const {
+    return (dir_ / name).string();
+  }
+  const std::filesystem::path & dir() const {
+    return dir_;
+  }
+
+ private:
+  std::filesystem::path dir_;
+};
+
+void write_file(const std::string & path, const std::string & contents) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.is_open()) << "cannot open " << path;
+  out << contents;
+  ASSERT_TRUE(out.good()) << "write to " << path << " failed";
+}
+
+}  // namespace
+
+TEST(PersistedBinding, AUriWrittenIsTheUriReadBack) {
+  ScopedBindingDir tmp;
+  const std::string path = tmp.file("nested/binding");
+  const std::string uri = "urn:siemens:s7-1500:line-a";
+
+  // The parent directory does not exist yet: the write makes it, which is what
+  // the state directory of a container that mounts one needs.
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding(path, uri), "");
+  EXPECT_TRUE(std::filesystem::exists(path));
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(path), uri);
+
+  // The temporary the atomic write goes through does not survive it, so a
+  // later reader cannot find a half-written binding lying beside the real one.
+  EXPECT_FALSE(std::filesystem::exists(path + ".tmp"));
+
+  // A second binding replaces the first, and the file still holds one line.
+  const std::string other = "urn:beckhoff:cx5140:line-b";
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding(path, other), "");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(path), other);
+  std::ifstream in(path);
+  std::string first;
+  std::getline(in, first);
+  EXPECT_EQ(first, other);
+  EXPECT_FALSE(std::getline(in, first)) << "the binding file carries more than the URI";
+}
+
+TEST(PersistedBinding, NothingToKeepAndNowhereToKeepIt) {
+  ScopedBindingDir tmp;
+
+  // Persistence disabled: nothing is written and nothing is read.
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding("", "urn:siemens:s7-1500:line-a"), "");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(""), "");
+
+  // A server with no ApplicationUri has no binding to keep.
+  const std::string path = tmp.file("binding");
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding(path, ""), "");
+  EXPECT_FALSE(std::filesystem::exists(path));
+
+  // Never written: a process starting here has never been bound.
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(tmp.file("absent")), "");
+
+  const std::string uri = "urn:siemens:s7-1500:line-a";
+
+  // Written by hand with nothing on the first line.
+  const std::string blank = tmp.file("blank");
+  write_file(blank, "   \n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(blank), "")
+      << "a blank line was read as a binding, which constrains the plugin to a server named by nothing";
+
+  // Written by hand with the URI and a trailing newline and spaces.
+  const std::string padded = tmp.file("padded");
+  write_file(padded, "  " + uri + "  \n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(padded), uri);
+
+  // An editor that writes CRLF.
+  const std::string crlf = tmp.file("crlf");
+  write_file(crlf, uri + "\r\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(crlf), uri) << "the carriage return stayed in the URI";
+
+  // An editor that writes a UTF-8 BOM. It is invisible in a log, so a binding
+  // carrying one shows the refusal as two identical URIs.
+  const std::string bom = tmp.file("bom");
+  write_file(bom, std::string("\xEF\xBB\xBF") + uri + "\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(bom), uri) << "the byte-order mark stayed in the URI";
+
+  // Anything after the first line is not part of the binding.
+  const std::string extra = tmp.file("extra");
+  write_file(extra, uri + "\nurn:test:ignored\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(extra), uri);
+
+  // A file holding something that is not an ApplicationUri.
+  const std::string nul = tmp.file("nul");
+  write_file(nul, std::string("urn:test:\0plc", 13) + "\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(nul), "") << "a NUL byte was read as part of a binding";
+  const std::string control = tmp.file("control");
+  write_file(control, "urn:test:\x01plc\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(control), "") << "a control character was read as part of a binding";
+  const std::string del = tmp.file("del");
+  write_file(del, "urn:test:\x7Fplc\n");
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(del), "") << "DEL was read as part of a binding";
+
+  // A URI that would read back truncated is refused at the write, whichever
+  // line break it carries.
+  const std::string split = tmp.file("split");
+  EXPECT_NE(OpcuaPlugin::write_persisted_binding(split, "urn:test:a\nurn:test:b"), "");
+  EXPECT_FALSE(std::filesystem::exists(split));
+  const std::string split_cr = tmp.file("split_cr");
+  EXPECT_NE(OpcuaPlugin::write_persisted_binding(split_cr, "urn:test:a\rurn:test:b"), "");
+  EXPECT_FALSE(std::filesystem::exists(split_cr));
+}
+
+TEST(PersistedBinding, AParentThatCannotHoldTheFileIsReportedAndNotThrown) {
+  ScopedBindingDir tmp;
+  // A regular FILE where the parent directory has to be: create_directories
+  // fails with ENOTDIR for every user, root included, so this exercises the
+  // failure branch wherever the suite runs.
+  const std::string parent = tmp.file("afile");
+  write_file(parent, "not a directory\n");
+  const std::string path = parent + "/binding";
+
+  std::string failure;
+  ASSERT_NO_THROW(failure = OpcuaPlugin::write_persisted_binding(path, "urn:siemens:s7-1500:line-a"));
+  EXPECT_NE(failure, "") << "a parent that cannot hold the file was reported as a successful write";
+  EXPECT_NE(failure.find(parent), std::string::npos)
+      << "the failure does not name the path an operator has to fix: " << failure;
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(path), "");
+}
+
+TEST(PersistedBinding, ASymlinkedPathKeepsItsTarget) {
+  ScopedBindingDir tmp;
+  const std::string uri = "urn:siemens:s7-1500:line-a";
+  std::error_code ec;
+
+  // A file symlink: an operator points the configured path at a file they keep
+  // elsewhere. Replacing the link with a plain file leaves that file stale.
+  const std::string real_file = tmp.file("real_binding");
+  write_file(real_file, "urn:test:stale\n");
+  const std::string link = tmp.file("link_binding");
+  std::filesystem::create_symlink(real_file, link, ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding(link, uri), "");
+  EXPECT_TRUE(std::filesystem::is_symlink(link)) << "the symlink was replaced by a plain file";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(real_file), uri) << "the symlink's target was not updated";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(link), uri);
+
+  // A file symlink whose target does not exist yet, which is the state before
+  // the first bind: the target is created and the link is kept.
+  const std::string absent_target = tmp.file("absent_binding");
+  const std::string dangling = tmp.file("dangling_binding");
+  std::filesystem::create_symlink(absent_target, dangling, ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  EXPECT_EQ(OpcuaPlugin::write_persisted_binding(dangling, uri), "");
+  EXPECT_TRUE(std::filesystem::is_symlink(dangling)) << "the dangling symlink was replaced by a plain file";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(absent_target), uri) << "the symlink's target was not created";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(dangling), uri);
+}
+
 TEST(EffectiveRescanInterval, DefaultsWhenDiscoveryIsOnWithNoCadenceAndIsOffOtherwise) {
   OpcuaDiscoveryConfig cfg = rescan_cfg();
   // Config-less: discovery on, no interval stated -> the built-in cadence, not
@@ -1646,8 +1838,8 @@ TEST(IdentityReads, ARefusedPauseEndsTheBurst) {
 
 TEST(CommsLostAnswerApplicable, AProbeGivenUpOnHasItsAnswerDropped) {
   // The generation the timeout branch moves on, read from the consume side: an
-  // answer parked against a probe number the poll thread is no longer waiting
-  // for is not the answer to the probe that replaced it. rclcpp takes a pending
+  // answer parked against a probe number the poll thread has moved past is not
+  // the answer to the probe that replaced it. rclcpp takes a pending
   // entry out before it invokes the callback and outside its own mutex, so a
   // callback that won that race is still on its way in when the timeout fires.
   EXPECT_TRUE(OpcuaPlugin::comms_lost_generation_current(/*answered_generation=*/4, /*current_generation=*/4));

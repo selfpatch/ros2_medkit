@@ -481,6 +481,25 @@ class OpcuaClient {
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+
+  /// Drops the bookkeeping of a session that is gone, with client_mutex held:
+  /// the generation moves first so an in-flight trampoline from the old
+  /// subscription drops its work, then the event contexts and subscription
+  /// handles are released. Nothing is deleted server-side, because the session
+  /// that held them is gone. Every path that marks the client disconnected
+  /// ends here, and connect() runs it before a new session is published, so
+  /// the monitored-item ids the next session hands out, which start from 1
+  /// again, register fresh contexts under their own ids.
+  void drop_session_bookkeeping_locked();
+
+  /// Marks the client disconnected when ``e`` is a transport-level loss
+  /// (connection closed, secure channel closed, not connected) and drops the
+  /// session's bookkeeping; a per-node error such as BadNodeIdUnknown leaves
+  /// the session up. Called with client_mutex held from every operation that
+  /// can observe the drop, so OpcuaPoller's reconnect logic, keyed off
+  /// is_connected(), fires whichever operation saw it first.
+  /// @return true when this call flipped the client to disconnected.
+  bool mark_disconnected_on_transport_error(const opcua::BadStatus & e);
 };
 
 }  // namespace ros2_medkit_gateway

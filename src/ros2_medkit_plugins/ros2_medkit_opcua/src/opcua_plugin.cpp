@@ -33,15 +33,37 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 
 namespace ros2_medkit_gateway {
 
 namespace {
+
+// Flush one path's data to the device. Returns the reason on failure.
+std::string fsync_path(const std::string & path, bool is_directory) {
+  const int fd = ::open(path.c_str(), is_directory ? (O_RDONLY | O_DIRECTORY) : O_WRONLY);
+  if (fd < 0) {
+    return "cannot open " + path + " to flush it: " + std::strerror(errno);
+  }
+  const int rc = ::fsync(fd);
+  const int saved = errno;
+  ::close(fd);
+  if (rc != 0) {
+    return "flushing " + path + " failed: " + std::strerror(saved);
+  }
+  return {};
+}
 
 // Named logger so per-operation traces respect ROS log level filtering
 // (bburda review on PR #387). Quiet at INFO; ``--log-level
@@ -469,6 +491,23 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     }
   }
 
+  if (auto * env = std::getenv("OPCUA_DISCOVERY_BINDING_FILE")) {
+    discovery_config_.binding_file = env;
+  }
+  // Before the startup sweep, which the binding steers: a process that was
+  // bound when it stopped looks for that server and no other.
+  // Discovery's binding, and only discovery's: an operator who pinned
+  // endpoint_url has already said which server this is, and re-pointing it at a
+  // replacement is the whole gesture. A file left behind by an earlier
+  // config-less run must not refuse the server the operator named.
+  if (!endpoint_configured_) {
+    bound_application_uri_ = read_persisted_binding(discovery_config_.binding_file);
+    if (!bound_application_uri_.empty()) {
+      log_info("OPC-UA: bound to uri='" + bound_application_uri_ + "' from " + discovery_config_.binding_file +
+               ". Remove that file and restart to bind to a different server.");
+    }
+  }
+
   // Default the discovery I/O to the real probes; test builds override these
   // before set_context() to exercise the auto-endpoint path offline.
   if (!discovery_scan_fn_) {
@@ -647,9 +686,9 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   }
 #endif
 
-  // The session is bound to the server it reached, read off the session itself.
-  // Nothing is bound yet on this path, so this only records the identity; the
-  // check it performs matters on every later connect.
+  // The session is checked against the binding, which on the discovery path may
+  // already have been read from discovery.binding_file, and establishes it when
+  // there is none. A session that reached a different server is dropped here.
   const bool connected = client_->connect(client_config_) && bind_or_drop_session();
   if (connected) {
     log_info("Connected to OPC-UA server: " + client_config_.endpoint_url);
@@ -2287,10 +2326,18 @@ void OpcuaPlugin::run_startup_discovery() {
   // executor spins, so nothing can call shutdown() until this returns. What ends
   // it is the SIGINT / SIGTERM that rclcpp's own handler turns into
   // !rclcpp::ok() - see discovery_cancelled().
-  const auto chosen = discover_endpoint(discovery_config_, endpoint_configured_, discovery_scan_fn_,
-                                        discovery_identify_fn_, discovery_reporter(&last_discovery_outcome_), [this]() {
-                                          return discovery_cancelled();
-                                        });
+  std::string selected_uri;
+  const auto chosen = discover_endpoint(
+      discovery_config_, endpoint_configured_, discovery_scan_fn_, discovery_identify_fn_,
+      discovery_reporter(&last_discovery_outcome_),
+      [this]() {
+        return discovery_cancelled();
+      },
+      // The binding steers this sweep the way it steers a rescan: a process
+      // that was bound when it stopped looks for that server at whatever
+      // address it now answers on, and selects nothing when it is absent.
+      &selected_uri, bound_application_uri_);
+  static_cast<void>(selected_uri);
   // Stamp when the sweep FINISHED: the rescan cadence is measured from the end
   // of the previous sweep, so a long sweep is not immediately followed by
   // another one.
@@ -2345,6 +2392,125 @@ OpcuaPlugin::DiscoveryReporter OpcuaPlugin::discovery_reporter(std::string * pre
   return reporter;
 }
 
+std::string OpcuaPlugin::read_persisted_binding(const std::string & path) {
+  if (path.empty()) {
+    return {};
+  }
+  std::ifstream in(path);
+  if (!in) {
+    return {};
+  }
+  std::string line;
+  if (!std::getline(in, line)) {
+    return {};
+  }
+  // A UTF-8 BOM is what an editor on Windows leaves in front of the URI. It is
+  // invisible in a log, so a binding carrying one shows the refusal as two
+  // identical URIs.
+  static const std::string kUtf8Bom = "\xEF\xBB\xBF";
+  if (line.compare(0, kUtf8Bom.size(), kUtf8Bom) == 0) {
+    line.erase(0, kUtf8Bom.size());
+  }
+  const auto end = line.find_last_not_of(" \t\r\n");
+  if (end == std::string::npos) {
+    return {};
+  }
+  line.erase(end + 1);
+  const auto begin = line.find_first_not_of(" \t");
+  if (begin == std::string::npos) {
+    return {};
+  }
+  line = line.substr(begin);
+  // An ApplicationUri is printable. A NUL or another control character means
+  // the file holds something else - a binary blob, a truncated write - and a
+  // binding read out of it would refuse every server for a reason nobody can
+  // see in a log.
+  const auto control = std::find_if(line.begin(), line.end(), [](char c) {
+    return static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) == 0x7F;
+  });
+  if (control != line.end()) {
+    RCLCPP_WARN(opcua_plugin_logger(),
+                "%s holds a control character where an ApplicationUri belongs; reading it as no binding", path.c_str());
+    return {};
+  }
+  return line;
+}
+
+std::string OpcuaPlugin::write_persisted_binding(const std::string & path, const std::string & application_uri) {
+  if (path.empty() || application_uri.empty()) {
+    return {};
+  }
+  if (application_uri.find_first_of("\r\n") != std::string::npos) {
+    return "the ApplicationUri contains a line break and would read back truncated";
+  }
+  std::error_code ec;
+  // Follow a symlink to what it points at, so the rename below replaces the
+  // target an operator pointed the path at. The link is read first, because a
+  // link whose target does not exist yet is the state before the first bind
+  // and weakly_canonical leaves such a link unresolved; the chain is bounded so
+  // a loop ends in the fallback. weakly_canonical then resolves the components
+  // that exist and leaves the rest.
+  constexpr int kMaxSymlinkHops = 32;
+  std::filesystem::path target(path);
+  for (int hops = 0; hops < kMaxSymlinkHops && std::filesystem::is_symlink(target, ec) && !ec; ++hops) {
+    const std::filesystem::path link_target = std::filesystem::read_symlink(target, ec);
+    if (ec) {
+      break;
+    }
+    target = link_target.is_absolute() ? link_target : target.parent_path() / link_target;
+  }
+  ec.clear();
+  const std::filesystem::path resolved = std::filesystem::weakly_canonical(target, ec);
+  if (!ec && !resolved.empty()) {
+    target = resolved;
+  }
+  ec.clear();
+  const std::filesystem::path parent = target.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec && !std::filesystem::is_directory(parent)) {
+      return "cannot create " + parent.string() + ": " + ec.message();
+    }
+    ec.clear();
+  }
+  // Same directory, so the rename below stays within one filesystem.
+  const std::filesystem::path tmp = target.string() + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::trunc);
+    if (!out) {
+      return "cannot open " + tmp.string() + " for writing";
+    }
+    out << application_uri << "\n";
+    out.flush();
+    if (!out) {
+      return "write to " + tmp.string() + " failed";
+    }
+  }
+  // The fsync makes the temporary's bytes durable before the rename publishes
+  // its name, so a power loss after the rename finds the URI on disk. Without
+  // it the name can outlive the bytes, leaving an empty file that reads as
+  // "never bound" and lets the next process adopt whichever server answers.
+  const std::string sync_failure = fsync_path(tmp.string(), /*is_directory=*/false);
+  if (!sync_failure.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return sync_failure;
+  }
+  std::filesystem::rename(tmp, target, ec);
+  if (ec) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return "rename to " + target.string() + " failed: " + ec.message();
+  }
+  // The directory entry the rename created, so the file is findable after a
+  // power loss. Best effort: a filesystem that refuses this has still written
+  // the file.
+  if (!parent.empty()) {
+    static_cast<void>(fsync_path(parent.string(), /*is_directory=*/true));
+  }
+  return {};
+}
+
 bool OpcuaPlugin::note_refused_application_uri(const std::string & uri) {
   if (std::find(refused_application_uris_.begin(), refused_application_uris_.end(), uri) !=
       refused_application_uris_.end()) {
@@ -2365,10 +2531,25 @@ bool OpcuaPlugin::bind_or_drop_session() {
 
   if (bound_application_uri_.empty()) {
     // Nothing bound yet: this session names the server every later sweep looks
-    // for. A server that publishes no ApplicationUri leaves the binding empty
-    // and stays unbindable, which the discovery report already says.
+    // for, and the next process reads it back from the binding file. A server
+    // that publishes no ApplicationUri leaves the binding empty and stays
+    // unbindable, which the discovery report already says, and nothing is
+    // persisted for it.
     bound_application_uri_ = live_uri;
     refused_application_uris_.clear();
+    if (!live_uri.empty() && !endpoint_configured_) {
+      const std::string failure = write_persisted_binding(discovery_config_.binding_file, live_uri);
+      if (failure.empty()) {
+        if (!discovery_config_.binding_file.empty()) {
+          log_info("OPC-UA: bound to uri='" + live_uri + "', kept in " + discovery_config_.binding_file);
+        }
+      } else {
+        log_warn("OPC-UA: bound to uri='" + live_uri + "' but could not keep it in " + discovery_config_.binding_file +
+                 " (" + failure +
+                 "). This session is unaffected; the next process starts unbound and adopts whichever server "
+                 "answers.");
+      }
+    }
     return true;
   }
 
@@ -2380,10 +2561,21 @@ bool OpcuaPlugin::bind_or_drop_session() {
 
   binding_mismatch_disconnects_.fetch_add(1);
   if (note_refused_application_uri(live_uri)) {
-    log_warn("OPC-UA: " + client_->endpoint_url() + " answers as uri='" + live_uri +
-             "', which is not the server this bridge is bound to (uri='" + bound_application_uri_ +
-             "'). Dropping the session and keeping the standing outage. Replacing a PLC is a recommissioning: "
-             "restart the plugin against the new one.");
+    // The gesture that rebinds: on the discovery path the file holds the
+    // binding, so the file is what an operator removes; with endpoint_url
+    // pinned, or with persistence off, nothing outlives the process and a
+    // restart against the new server is the whole gesture.
+    const std::string gesture = !endpoint_configured_ && !discovery_config_.binding_file.empty()
+                                    ? "remove " + discovery_config_.binding_file + " and restart"
+                                    : "restart the plugin against the new one";
+    const std::string refusal = "OPC-UA: " + client_->endpoint_url() + " answers as uri='" + live_uri +
+                                "', which is not the server this bridge is bound to (uri='" + bound_application_uri_ +
+                                "'). Dropping the session and keeping the standing outage. Replacing a PLC is a "
+                                "recommissioning: " +
+                                gesture + ".";
+    log_warn(refusal);
+    std::lock_guard<std::mutex> lock(binding_refusal_mutex_);
+    last_binding_refusal_ = refusal;
   }
   client_->disconnect();
   return false;

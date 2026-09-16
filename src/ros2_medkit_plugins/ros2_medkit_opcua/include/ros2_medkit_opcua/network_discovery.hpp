@@ -122,6 +122,20 @@ struct OpcuaDiscoveryConfig {
   /// the plugin connects with today). Secured-only servers are surfaced as
   /// leads requiring operator credentials, never auto-connected.
   bool anonymous_none_only{true};
+
+  /// Where the ApplicationUri of the server the plugin is bound to is kept, so
+  /// the binding survives a restart and a restarted process does not adopt
+  /// whichever server answers. One line, the URI. Empty disables persistence,
+  /// which makes every process's first adoption unconstrained again. The
+  /// default sits under /var/lib/ros2_medkit, which the shipped image creates
+  /// for the fault manager database and declares no VOLUME for, so surviving a
+  /// re-created container (``docker restart`` keeps the writable layer, a new
+  /// ``docker run`` starts without it) needs the operator to mount that
+  /// directory. A path whose
+  /// directory cannot be created or written is reported once and the process
+  /// runs without persistence. Read and written only while endpoint_url is
+  /// unset.
+  std::string binding_file = "/var/lib/ros2_medkit/opcua/binding";
 };
 
 /// Probe whether a TCP port is open. Injected so the orchestrator is unit
