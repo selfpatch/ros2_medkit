@@ -1221,6 +1221,7 @@ keeps a history.
 - **Type-aware writes** - Plugin reads the OPC-UA node's data type before writing to avoid type mismatches (e.g., writing float32 to a REAL node, not float64).
 - **Node map driven** - All entity mapping is in YAML config, not code. Same plugin binary works with any PLC by changing the config file.
 - **Env var overrides** - `OPCUA_ENDPOINT_URL` and `OPCUA_NODE_MAP_PATH` override YAML config for Docker deployment flexibility.
+- **Fault-service clients on the plugin's own thread** - the `ReportFault`, `ClearFault` and `GetFault` clients live in a callback group the gateway's executor never collects and are pumped by a thread the plugin owns, so they are created, dispatched and destroyed on the plugin's threads; a plugin shut down while another creates an entity on the same node never runs a client destructor on a gateway executor thread.
 - **Read-only is a build property, not a setting** - the shipped binary contains no OPC-UA write path, and CI proves it by inspecting the object rather than by reading a configuration value. A setting can be flipped on a running box; an absent symbol cannot.
 
 ## License

@@ -75,6 +75,12 @@ The plugin supports two data paths, selected by the ``prefer_subscriptions`` con
 (``poll_interval_ms``, default 1000 ms). Simple, predictable, no event loop needed, sufficient
 for diagnostic use cases where latency below one second does not add value.
 
+Alongside the poll thread and the event pump, the plugin runs a client executor thread of
+its own: the ``ReportFault``, ``ClearFault`` and ``GetFault`` clients live in a callback
+group the gateway's executor never collects, so their creation, response dispatch and
+destruction all happen on the plugin's threads, and a plugin shut down while another creates
+an entity on the same node never runs a client destructor on a gateway executor thread.
+
 **Subscription** - registers OPC-UA monitored items and receives change notifications at
 ``subscription_interval_ms``. Lower CPU cost on large node sets, but requires a running OPC-UA
 client event loop. Kept as an opt-in path because many PLC servers have limits on the number

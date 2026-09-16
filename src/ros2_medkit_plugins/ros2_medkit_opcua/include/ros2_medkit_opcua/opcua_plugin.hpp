@@ -43,6 +43,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -103,6 +104,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
     return "opcua";
   }
   void configure(const nlohmann::json & config) override;
+  /// Precondition: called at most once per instance. It creates the
+  /// fault-service clients and starts the thread that pumps them, and a second
+  /// call would assign over that running std::thread, which is std::terminate.
+  /// The gateway makes that one call, through PluginManager::set_context.
   void set_context(ros2_medkit_gateway::PluginContext & context) override;
   std::vector<PluginRoute> get_routes() override;
   void shutdown() override;
@@ -180,6 +185,15 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   std::string last_binding_refusal_for_test() const {
     std::lock_guard<std::mutex> lock(binding_refusal_mutex_);
     return last_binding_refusal_;
+  }
+
+  /// Whether the three fault-service clients see their services. Read by tests
+  /// that build two plugin instances in sequence on one node.
+  bool fault_services_ready_for_test() const;
+  /// Whether the thread that pumps the fault-service clients is running. False
+  /// before set_context() and after shutdown() has joined it.
+  bool fault_executor_thread_running_for_test() const {
+    return fault_executor_thread_.joinable();
   }
 
   /// The address-space walk configuration after configure() has merged the
@@ -868,6 +882,27 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // ROS 2 service clients for fault reporting
   struct FaultClients;
   std::unique_ptr<FaultClients> fault_clients_;
+  // The callback group the three clients live in, made with
+  // automatically_add_to_executor_with_node=false so the gateway's executor
+  // never collects them. rclcpp::AnyExecutable holds a strong reference to the
+  // client it dispatches, so a client in the node's default group can have its
+  // last reference dropped, and ~Client run against the node's entity registry,
+  // on a gateway executor thread while another plugin or the gateway creates an
+  // entity on the same node. With the group on a private executor, creation
+  // (set_context), response dispatch (fault_executor_thread_) and destruction
+  // (shutdown(), after that thread is joined) all happen on this plugin's
+  // threads. Response callbacks therefore run on fault_executor_thread_.
+  rclcpp::CallbackGroup::SharedPtr fault_client_group_;
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> fault_executor_;
+  std::thread fault_executor_thread_;
+  std::atomic<bool> fault_executor_stop_{false};
+  // Starts fault_executor_thread_. Precondition: the thread is not running,
+  // which set_context()'s once-per-instance contract guarantees; context_ and
+  // fault_executor_ are set before the call.
+  void start_fault_executor();
+  // Raises the stop flag, cancels the current wait and joins the thread.
+  // Idempotent.
+  void stop_fault_executor();
 
   // Ordered buffer of pending fault report/clear dispatches. ReportFault /
   // ClearFault are fire-and-forget, so a report sent before the fault_manager

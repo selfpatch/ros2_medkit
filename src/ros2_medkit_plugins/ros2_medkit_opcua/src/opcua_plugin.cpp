@@ -17,6 +17,14 @@
 #include "ros2_medkit_opcua/device_identity.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+// create_client() takes its callback group with a rclcpp::QoS from rclcpp 28
+// (Jazzy) on; earlier releases offer the rmw_qos_profile_t form. Humble ships
+// no <rclcpp/version.h>, so the header's absence identifies it.
+#if defined(__has_include)
+#if __has_include(<rclcpp/version.h>)
+#include <rclcpp/version.h>
+#endif
+#endif
 #include <rcutils/logging.h>
 #include <ros2_medkit_msgs/msg/fault.hpp>
 #include <ros2_medkit_msgs/srv/clear_fault.hpp>
@@ -207,6 +215,26 @@ std::vector<uint16_t> parse_json_ns_list(const nlohmann::json & arr, const char 
   }
   return out;
 }
+}  // namespace
+
+namespace {
+
+/// create_client() with an explicit callback group, in the form the linked
+/// rclcpp wants.
+template <typename ServiceT>
+typename rclcpp::Client<ServiceT>::SharedPtr create_client_in_group(rclcpp::Node * node, const std::string & name,
+                                                                    const rclcpp::CallbackGroup::SharedPtr & group) {
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
+  return node->create_client<ServiceT>(name, rclcpp::ServicesQoS(), group);
+#else
+  return node->create_client<ServiceT>(name, rmw_qos_profile_services_default, group);
+#endif
+}
+
+/// How long one pass of the client executor waits for work before it re-reads
+/// the stop flag. Bounds shutdown latency only: a response wakes the wait.
+constexpr std::chrono::milliseconds kFaultExecutorWait{100};
+
 }  // namespace
 
 struct OpcuaPlugin::FaultClients {
@@ -662,10 +690,21 @@ void OpcuaPlugin::set_context(PluginContext & context) {
 
   auto * node = ctx_->node();
   if (node) {
-    fault_clients_->report = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
-    fault_clients_->clear = node->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
-    fault_clients_->get_fault = node->create_client<ros2_medkit_msgs::srv::GetFault>("/fault_manager/get_fault");
+    // The clients live in a group the gateway's executor never collects and are
+    // pumped by a thread this plugin owns, so every reference to them stays on
+    // this plugin's threads (see fault_client_group_).
+    fault_client_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
+                                                      /*automatically_add_to_executor_with_node=*/false);
+    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    fault_executor_->add_callback_group(fault_client_group_, node->get_node_base_interface());
+    fault_clients_->report = create_client_in_group<ros2_medkit_msgs::srv::ReportFault>(
+        node, "/fault_manager/report_fault", fault_client_group_);
+    fault_clients_->clear = create_client_in_group<ros2_medkit_msgs::srv::ClearFault>(
+        node, "/fault_manager/clear_fault", fault_client_group_);
+    fault_clients_->get_fault =
+        create_client_in_group<ros2_medkit_msgs::srv::GetFault>(node, "/fault_manager/get_fault", fault_client_group_);
     context_ = node->get_node_base_interface()->get_context();
+    start_fault_executor();
   }
 
   run_startup_discovery();
@@ -862,13 +901,13 @@ void OpcuaPlugin::shutdown() {
   if (poller_) {
     poller_->stop();
   }
-  // The poll thread is joined, so nothing else drives the decision. Dropping the
-  // client releases the plugin's reference to it and takes the outstanding
-  // request out of its pending map; it does NOT recall a callback the executor
-  // has already taken off the wait set. Bumping the generation makes such a
-  // callback a no-op even while the plugin is alive, and once the plugin is
-  // destroyed the weak_ptr it holds stops locking at all - which is the part a
-  // mutex here could never provide.
+  // The poll thread is joined, so nothing drives the decision; the client
+  // executor thread is joined next, so no response callback of ours runs after
+  // this returns and the clients can be dropped on this thread. The generation
+  // bump keeps an answer that was parked before the join from being read by a
+  // later probe, and the weak_ptr the callback holds is what makes a callback
+  // outlive-safe should the state block go before the client does.
+  stop_fault_executor();
   comms_lost_decision_owed_.store(false);
   comms_lost_probe_in_flight_ = false;
   {
@@ -877,12 +916,60 @@ void OpcuaPlugin::shutdown() {
     comms_lost_probe_state_->answered = false;
     comms_lost_probe_state_->sources.clear();
   }
-  if (fault_clients_ && fault_clients_->get_fault) {
-    fault_clients_->get_fault->remove_pending_request(comms_lost_probe_request_id_);
+  // Dropping a client takes its outstanding requests out of its pending map.
+  // All three go here, on the thread that called shutdown(), so ~Client never
+  // runs on an executor thread against a node another plugin may be creating an
+  // entity on.
+  if (fault_clients_) {
+    if (fault_clients_->get_fault) {
+      fault_clients_->get_fault->remove_pending_request(comms_lost_probe_request_id_);
+    }
     fault_clients_->get_fault.reset();
+    fault_clients_->clear.reset();
+    fault_clients_->report.reset();
   }
+  fault_executor_.reset();
+  fault_client_group_.reset();
   client_->disconnect();
   log_info("OPC-UA plugin shutdown complete");
+}
+
+void OpcuaPlugin::start_fault_executor() {
+  fault_executor_stop_.store(false);
+  fault_executor_thread_ = std::thread([this]() {
+    // Runs until shutdown() raises the stop flag or the node's context is shut
+    // down, whichever comes first; a context shut down ahead of the plugin
+    // leaves nothing for the clients to dispatch. One wait per pass, bounded,
+    // so a stop requested before a wait began is still seen within
+    // kFaultExecutorWait. An exception out of the executor ends the thread too,
+    // and shutdown() joins it as usual.
+    while (!fault_executor_stop_.load() && rclcpp::ok(context_)) {
+      try {
+        fault_executor_->spin_once(kFaultExecutorWait);
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(opcua_plugin_logger(), "fault-service client executor stopped: %s", e.what());
+        break;
+      } catch (...) {
+        break;
+      }
+    }
+  });
+}
+
+void OpcuaPlugin::stop_fault_executor() {
+  fault_executor_stop_.store(true);
+  if (fault_executor_) {
+    fault_executor_->cancel();
+  }
+  if (fault_executor_thread_.joinable()) {
+    fault_executor_thread_.join();
+  }
+}
+
+bool OpcuaPlugin::fault_services_ready_for_test() const {
+  return fault_clients_ && fault_clients_->report && fault_clients_->clear && fault_clients_->get_fault &&
+         fault_clients_->report->service_is_ready() && fault_clients_->clear->service_is_ready() &&
+         fault_clients_->get_fault->service_is_ready();
 }
 
 // -- IntrospectionProvider --
@@ -1624,10 +1711,10 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   try {
     auto future = fault_clients_->get_fault->async_send_request(
         request, [weak_state, generation](rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedFuture answer) {
-          // Executor thread. It parks the answer and nothing else: the decision
-          // reads component ids, which only the poll thread may do. The state is
-          // reached through a weak_ptr, so a callback the executor had already
-          // taken when the plugin went away touches nothing.
+          // The plugin's client executor thread. It parks the answer and nothing
+          // else: the decision reads component ids, which only the poll thread
+          // may do. The state is reached through a weak_ptr, so a callback that
+          // outlives the plugin's state block touches nothing.
           const auto state = weak_state.lock();
           if (!state) {
             return;
