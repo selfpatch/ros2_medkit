@@ -42,10 +42,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -611,11 +613,9 @@ TEST_F(OpcuaIdentityE2ETest, DiNameplateReadFollowsBrowseContinuationPoints) {
 // A gateway that restarts after a comms outage never raised PLC_COMMS_LOST in
 // THIS process, yet the fault manager keys faults by fault_code alone and
 // persists them, so the fault raised before the restart is still standing.
-// The reconnect arm used to clear only when its own in-memory
-// ``comms_lost_raised_`` flag was set, which no restart can satisfy, so the
-// fault stayed CONFIRMED for good. The clear now goes out on every successful
-// connect. Driven against the live fixture because the arm can only be reached
-// by a connect that actually succeeds.
+// The clear goes out on every successful connect, whatever this process's own
+// ``comms_lost_raised_`` flag says. Driven against the live fixture because
+// the arm can only be reached by a connect that actually succeeds.
 TEST_F(OpcuaIdentityE2ETest, SuccessfulConnectClearsCommsLostNeverRaisedHere) {
   OpcuaClient client;
   OpcuaClientConfig config;
@@ -795,6 +795,37 @@ class RealNodePluginContext : public FakePluginContext {
 
  private:
   rclcpp::Node * node_;
+};
+
+// A directory of this process's own, so two worktrees running the suite at once
+// do not delete each other's fixtures.
+class ScopedTempDir {
+ public:
+  ScopedTempDir() {
+    std::string pattern = (std::filesystem::temp_directory_path() / "medkit_opcua_e2e_XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    const char * made = mkdtemp(buffer.data());
+    if (made == nullptr) {
+      throw std::runtime_error("mkdtemp(" + pattern + ") failed: " + std::strerror(errno));
+    }
+    dir_ = std::filesystem::path(made);
+  }
+  ~ScopedTempDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+  ScopedTempDir(const ScopedTempDir &) = delete;
+  ScopedTempDir & operator=(const ScopedTempDir &) = delete;
+  ScopedTempDir(ScopedTempDir &&) = delete;
+  ScopedTempDir & operator=(ScopedTempDir &&) = delete;
+
+  std::string file(const std::string & name) const {
+    return (dir_ / name).string();
+  }
+
+ private:
+  std::filesystem::path dir_;
 };
 
 // Poll until an OPC-UA session can be opened at ``endpoint``. A fixture prints
@@ -1823,6 +1854,573 @@ TEST_F(OpcuaIdentityE2ETest, TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSw
   EXPECT_TRUE(recovered) << "the bound server at " << url_for(other_address)
                          << " was not re-adopted, so the outage never ended";
   EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty()) << "the outage was cleared but the row still stands";
+}
+
+// The binding outlives the process that made it. The second instance here
+// starts from the file the first one wrote, refuses the foreign fixture
+// answering at the bound address while the standing outage is kept, and takes
+// the original fixture when it returns. Its refusal names the file, which is
+// what an operator removes to bind to a different server.
+TEST_F(OpcuaIdentityE2ETest, ARestartedPluginKeepsTheBindingAndRefusesAForeignServer) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_persisted_binding");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_persisted_binding_faultmgr");
+
+  server_.stop();  // this test drives its own fixtures
+  constexpr int kOpcuaPort = 4840;
+  const std::string bound_address = "127.0.0.1";
+  const std::string foreign_uri = "urn:test:a-different-plc";
+  ScopedTempDir binding_dir;
+  const std::string binding_file = binding_dir.file("binding");
+
+  std::mutex sweep_mutex;
+  std::string served_uri;
+  const auto scan = [](const std::string & ip, uint16_t port, int) {
+    return port == kOpcuaPort && ip == "127.0.0.1";
+  };
+  const auto identify = [&sweep_mutex, &served_uri](const std::string & url, int) {
+    IdentifyResult result;
+    result.ok = true;
+    result.advertised_url = url;
+    {
+      std::lock_guard<std::mutex> lock(sweep_mutex);
+      result.application_uri = served_uri;
+    }
+    result.application_name = "Test PLC";
+    result.application_type = 0;  // Server
+    result.anonymous_none_available = true;
+    return result;
+  };
+  const auto sweep_serves = [&sweep_mutex, &served_uri](const std::string & uri) {
+    std::lock_guard<std::mutex> lock(sweep_mutex);
+    served_uri = uri;
+  };
+
+  AlarmServer bound_server;
+  ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort))
+      << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
+  const std::string bound_uri = live_application_uri("opc.tcp://" + bound_address + ":4840");
+  ASSERT_FALSE(bound_uri.empty());
+  ASSERT_NE(bound_uri, foreign_uri);
+  sweep_serves(bound_uri);
+
+  FaultStoreStub store(fault_manager);
+  store.seed(kCommsLostFaultCode, {"test_runtime"});
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  const std::string yaml_path = write_minimal_node_map();
+  const auto plugin_config = [&]() {
+    nlohmann::json config;
+    config["node_map_path"] = yaml_path;
+    config["poll_interval_ms"] = 100;
+    config["comms_lost_debounce_ms"] = 200;
+    config["discovery"] = nlohmann::json{{"enabled", true},
+                                         {"subnets", nlohmann::json::array({"127.0.0.1/32"})},
+                                         {"ports", nlohmann::json::array({kOpcuaPort})},
+                                         {"interval_s", 2},
+                                         {"binding_file", binding_file}};
+    return config;
+  };
+  const auto wait_for = [](const std::function<bool()> & done, std::chrono::seconds budget) {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return done();
+  };
+  const auto cleared_count = [&store]() {
+    const auto codes = store.cleared_codes();
+    return std::count(codes.begin(), codes.end(), std::string(kCommsLostFaultCode));
+  };
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/test_plc", "/test_plc/test_runtime/tank"};
+
+  // ---- the process that binds ---------------------------------------------
+  {
+    OpcuaPlugin first;
+    first.set_discovery_io_for_test(scan, identify);
+    first.configure(plugin_config());
+    first.set_context(ctx);
+    ASSERT_TRUE(wait_for(
+        [&]() {
+          return cleared_count() > 0;
+        },
+        std::chrono::seconds(30)))
+        << "the first instance never adopted the fixture, so nothing was bound";
+    first.shutdown();
+  }
+  ASSERT_TRUE(std::filesystem::exists(binding_file)) << "the binding was not kept, so a restart is unconstrained";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(binding_file), bound_uri);
+  const auto clears_after_first = cleared_count();
+
+  // ---- the PLC is swapped while nothing is running -------------------------
+  // The first instance's clear emptied the row; the outage that follows its
+  // shutdown is what stands now, and clearing it is what adopting a server
+  // would look like.
+  store.seed(kCommsLostFaultCode, {"test_runtime"});
+  bound_server.stop();
+  AlarmServer squatter;
+  ASSERT_TRUE(squatter.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
+  ASSERT_EQ(live_application_uri("opc.tcp://" + bound_address + ":4840"), foreign_uri);
+  // The sweep reports the bound identity at the bound address, so nothing
+  // before the connect can tell the two apart.
+  sweep_serves(bound_uri);
+
+  // ---- the process that starts from the file -------------------------------
+  OpcuaPlugin second;
+  second.set_discovery_io_for_test(scan, identify);
+  second.configure(plugin_config());
+  second.set_context(ctx);
+
+  ASSERT_TRUE(wait_for(
+      [&]() {
+        return second.binding_mismatch_count_for_test() > 0;
+      },
+      std::chrono::seconds(30)))
+      << "the restarted instance polled a different PLC as if it were the one it had been bound to";
+  const std::string refusal = second.last_binding_refusal_for_test();
+  EXPECT_NE(refusal.find("remove " + binding_file + " and restart"), std::string::npos)
+      << "the refusal does not name the file an operator removes to rebind: " << refusal;
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  EXPECT_EQ(cleared_count(), clears_after_first) << "the swapped-in server cleared the outage";
+  EXPECT_FALSE(store.sources_of(kCommsLostFaultCode).empty());
+
+  // ---- the bound PLC comes back --------------------------------------------
+  squatter.stop();
+  AlarmServer restored;
+  ASSERT_TRUE(restored.start(fixture_binary(), kOpcuaPort));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
+  const bool recovered = wait_for(
+      [&]() {
+        return cleared_count() > clears_after_first;
+      },
+      std::chrono::seconds(60));
+
+  spin.stop();
+  second.shutdown();
+  restored.stop();
+  std::remove(yaml_path.c_str());
+
+  EXPECT_TRUE(recovered) << "the bound server was not taken back, so the outage never ended";
+}
+
+// open62541's run_iterate drives its own connect whenever the session is below
+// ACTIVATED, so a channel that dropped is re-opened against whatever answers the
+// address now. These three shapes are the ones where nothing else notices: no
+// scalar read to fail, or one slow enough that the re-connect wins first. What
+// makes them observable is the client reading its session state after each
+// iterate and handing the reconnect back to the arm.
+TEST_F(OpcuaIdentityE2ETest, ASwapUnderAConfigLessSessionIsCaught) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_swap_configless");
+
+  constexpr int kOpcuaPort = 4840;
+  const std::string foreign_uri = "urn:test:swapped-plc";
+  server_.stop();
+
+  AlarmServer bound_server;
+  ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  // Config-less: no node map, so nothing is polled by value and only the event
+  // pump iterates. auto_alarms is what the shipped DiagBox shape runs.
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:4840";
+  config["poll_interval_ms"] = 100;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  config["discovery"] = nlohmann::json{{"binding_file", ""}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+  ASSERT_TRUE(plugin.connected_for_test()) << "the plugin never connected, so this proves nothing";
+
+  // The PLC is swapped for a different one at the same address.
+  bound_server.stop();
+  AlarmServer swapped;
+  ASSERT_TRUE(swapped.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (plugin.binding_mismatch_count_for_test() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const auto mismatches = plugin.binding_mismatch_count_for_test();
+  const std::string refusal = plugin.last_binding_refusal_for_test();
+  plugin.shutdown();
+  swapped.stop();
+
+  EXPECT_GT(mismatches, 0u)
+      << "the session was re-opened underneath the client against a different PLC and nothing checked it";
+  // A pinned endpoint_url holds no file, so the gesture the refusal names is a
+  // restart against the new server.
+  EXPECT_NE(refusal.find("restart the plugin against the new one"), std::string::npos) << refusal;
+  EXPECT_EQ(refusal.find("remove "), std::string::npos) << "a pinned endpoint_url names no file to remove: " << refusal;
+}
+
+TEST_F(OpcuaIdentityE2ETest, AnOutageUnderAConfigLessSessionIsObserved) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_outage_configless");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_outage_configless_faultmgr");
+
+  constexpr int kOpcuaPort = 4840;
+  server_.stop();
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  AlarmServer bound_server;
+  ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:4840";
+  config["poll_interval_ms"] = 100;
+  config["comms_lost_debounce_ms"] = 500;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  config["discovery"] = nlohmann::json{{"binding_file", ""}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+  ASSERT_TRUE(plugin.connected_for_test()) << "the plugin never connected, so this proves nothing";
+
+  // The PLC goes away with nothing polling a value: the outage has to be seen
+  // through the session state alone.
+  bound_server.stop();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  const auto outage_reported = [&store]() {
+    const auto reported = store.reported();
+    return std::find(reported.begin(), reported.end(), std::string(kCommsLostFaultCode)) != reported.end();
+  };
+  while (!outage_reported() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const bool reported = outage_reported();
+  const bool still_connected = plugin.connected_for_test();
+
+  spin.stop();
+  plugin.shutdown();
+
+  EXPECT_FALSE(still_connected) << "the client reports a live session against a PLC that is gone";
+  EXPECT_TRUE(reported) << "the outage was never observed, so PLC_COMMS_LOST has no input in this shape";
+}
+
+// The shipped shape: config-less with native alarms at the default 1000 ms poll
+// cadence. Nothing reads a value, so the session state read after each iterate
+// is the only thing that can see the swap, and the event pump iterates ten
+// times per poll, so a session re-opened underneath the client would win long
+// before anything else noticed. After the bound server returns, the alarm
+// subscription the arm re-creates on it carries a device alarm to the store.
+TEST_F(OpcuaIdentityE2ETest, ASwapUnderTheShippedPollCadenceIsCaught) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_swap_shipped");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_swap_shipped_faultmgr");
+
+  constexpr int kOpcuaPort = 4840;
+  const std::string foreign_uri = "urn:test:swapped-plc";
+  server_.stop();
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  AlarmServer bound_server;
+  ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:4840";
+  config["poll_interval_ms"] = 1000;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  config["discovery"] = nlohmann::json{{"binding_file", ""}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+  ASSERT_TRUE(plugin.connected_for_test()) << "the plugin never connected, so this proves nothing";
+
+  bound_server.stop();
+  AlarmServer swapped;
+  ASSERT_TRUE(swapped.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+  while (plugin.binding_mismatch_count_for_test() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const auto mismatches = plugin.binding_mismatch_count_for_test();
+
+  // The bound server returns: the arm takes it and re-creates the alarm
+  // subscription on it.
+  swapped.stop();
+  AlarmServer restored;
+  ASSERT_TRUE(restored.start(fixture_binary(), kOpcuaPort));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+  const auto recover_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+  while (!plugin.connected_for_test() && std::chrono::steady_clock::now() < recover_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const bool recovered = plugin.connected_for_test();
+
+  // The ConditionRefresh burst that follows the re-subscribe settles before the
+  // baseline is taken, so the report counted below is the one the fire caused.
+  // The fire is retried because an event fired before the subscribe is not
+  // delivered: the retry is the subscription handshake.
+  bool delivered = false;
+  if (recovered) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const size_t before = store.reported().size();
+    const auto fire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (store.reported().size() <= before && std::chrono::steady_clock::now() < fire_deadline) {
+      ASSERT_TRUE(restored.send("fire Overpressure 750"));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    delivered = store.reported().size() > before;
+  }
+
+  spin.stop();
+  plugin.shutdown();
+  restored.stop();
+
+  EXPECT_GT(mismatches, 0u) << "a swapped PLC was polled as the bound one under the shipped cadence";
+  EXPECT_TRUE(recovered) << "the bound server came back and the arm never took it";
+  EXPECT_TRUE(delivered) << "a device alarm fired on the returned server never reached the fault store";
+}
+
+// A PLC reboot is an outage the same server ends, so the identity check has
+// nothing to refuse and the arm reconnects to the server it is bound to. The
+// alarm subscription the arm re-creates there carries device alarms: the
+// monitored-item id the rebooted server hands out is the one the dead session
+// held, and a context still registered under it would keep the new one out of
+// the map while open62541 holds a pointer to it, silencing every alarm until a
+// restart.
+TEST_F(OpcuaIdentityE2ETest, ADeviceAlarmIsDeliveredAfterTheBoundServerReboots) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_reboot_alarm");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_reboot_alarm_faultmgr");
+
+  constexpr int kOpcuaPort = 4840;
+  server_.stop();
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  AlarmServer bound_server;
+  ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  // Config-less with native alarms: nothing reads a value, so the outage is seen
+  // through the session state and the reconnect is the arm's.
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:4840";
+  config["poll_interval_ms"] = 100;
+  config["comms_lost_debounce_ms"] = 500;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  config["discovery"] = nlohmann::json{{"binding_file", ""}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+  ASSERT_TRUE(plugin.connected_for_test()) << "the plugin never connected, so this proves nothing";
+
+  const auto reported_count = [&store]() {
+    return store.reported().size();
+  };
+  // The fire is retried because an event fired before the subscribe is not
+  // delivered: the retry is the subscription handshake.
+  const auto fire_until_reported = [&](AlarmServer & fixture, size_t above) {
+    const auto fire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (reported_count() <= above && std::chrono::steady_clock::now() < fire_deadline) {
+      if (!fixture.send("fire Overpressure 750")) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    return reported_count() > above;
+  };
+  // The first session delivers, so a silent path after the reboot is the
+  // reconnect's doing.
+  ASSERT_TRUE(fire_until_reported(bound_server, 0)) << "no alarm reached the fault store on the first session";
+
+  // The PLC reboots: the same server goes away and comes back.
+  bound_server.stop();
+  const auto down_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (plugin.connected_for_test() && std::chrono::steady_clock::now() < down_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  ASSERT_FALSE(plugin.connected_for_test()) << "the outage was never observed";
+
+  AlarmServer rebooted;
+  ASSERT_TRUE(rebooted.start(fixture_binary(), kOpcuaPort));
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+  const auto up_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+  while (!plugin.connected_for_test() && std::chrono::steady_clock::now() < up_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  ASSERT_TRUE(plugin.connected_for_test()) << "the arm never took the rebooted server";
+
+  // The ConditionRefresh burst that follows the re-subscribe settles before the
+  // baseline is taken, so the report counted is the one the fire caused.
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool delivered = fire_until_reported(rebooted, reported_count());
+
+  spin.stop();
+  plugin.shutdown();
+  rebooted.stop();
+
+  EXPECT_TRUE(delivered)
+      << "a device alarm fired after the reboot never reached the fault store: the re-created subscription is dead";
+}
+
+// A pinned endpoint_url is the operator saying which server this is, so the
+// binding file is neither read nor written on that path: a file an earlier
+// config-less run left behind must not refuse the server the operator named.
+TEST_F(OpcuaIdentityE2ETest, AConfiguredEndpointIgnoresTheBindingFile) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_pinned_endpoint");
+
+  ScopedTempDir binding_dir;
+  const std::string binding_file = binding_dir.file("binding");
+  ASSERT_EQ(OpcuaPlugin::write_persisted_binding(binding_file, "urn:test:a-different-plc"), "");
+  const auto written_at = std::filesystem::last_write_time(binding_file);
+
+  const std::string yaml_path = write_minimal_node_map();
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = endpoint_;
+  config["node_map_path"] = yaml_path;
+  config["poll_interval_ms"] = 100;
+  config["discovery"] = nlohmann::json{{"enabled", true}, {"binding_file", binding_file}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/test_plc", "/test_plc/test_runtime/tank"};
+  plugin.set_context(ctx);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+
+  const auto mismatches = plugin.binding_mismatch_count_for_test();
+  const bool connected = plugin.connected_for_test();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
+
+  EXPECT_EQ(mismatches, 0u)
+      << "a file from an earlier config-less run refused the server the operator pinned endpoint_url at";
+  EXPECT_TRUE(connected) << "the session the operator asked for was dropped";
+  EXPECT_EQ(OpcuaPlugin::read_persisted_binding(binding_file), "urn:test:a-different-plc")
+      << "the pinned-endpoint path wrote the binding file";
+  EXPECT_EQ(std::filesystem::last_write_time(binding_file), written_at)
+      << "the pinned-endpoint path rewrote the binding file";
+}
+
+// The startup sweep looks for the bound server, at whatever address it answers
+// on. Selection is what carries the binding; without it the sweep takes the
+// lowest address and the process spends its life being refused there.
+TEST_F(OpcuaIdentityE2ETest, TheStartupSweepSelectsTheBoundServerNotTheLowestAddress) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_startup_binding");
+
+  server_.stop();
+  constexpr int kOpcuaPort = 4840;
+  const std::string foreign_uri = "urn:test:a-different-plc";
+  auto binding_dir = ScopedTempDir();
+  const std::string binding_file = binding_dir.file("binding");
+
+  AlarmServer fixture;
+  ASSERT_TRUE(fixture.start(fixture_binary(), kOpcuaPort))
+      << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+  const std::string bound_uri = live_application_uri("opc.tcp://127.0.0.1:4840");
+  ASSERT_FALSE(bound_uri.empty());
+  ASSERT_NE(bound_uri, foreign_uri);
+  ASSERT_EQ(OpcuaPlugin::write_persisted_binding(binding_file, bound_uri), "");
+
+  // Both addresses are open; the lower one serves a foreign identity and the
+  // higher one the bound identity.
+  const auto scan = [](const std::string & ip, uint16_t port, int) {
+    return port == kOpcuaPort && (ip == "127.0.0.1" || ip == "127.0.0.2");
+  };
+  const auto identify = [&foreign_uri, &bound_uri](const std::string & url, int) {
+    IdentifyResult result;
+    result.ok = true;
+    result.advertised_url = url;
+    result.application_uri = url.find("127.0.0.2") != std::string::npos ? bound_uri : foreign_uri;
+    result.application_name = "Test PLC";
+    result.application_type = 0;  // Server
+    result.anonymous_none_available = true;
+    return result;
+  };
+
+  const std::string yaml_path = write_minimal_node_map();
+  const auto run_with_cadence = [&](int interval_s) {
+    OpcuaPlugin plugin;
+    plugin.set_discovery_io_for_test(scan, identify);
+    nlohmann::json config;
+    config["node_map_path"] = yaml_path;
+    config["poll_interval_ms"] = 100;
+    config["discovery"] = nlohmann::json{{"enabled", true},
+                                         {"subnets", nlohmann::json::array({"127.0.0.0/30"})},
+                                         {"ports", nlohmann::json::array({kOpcuaPort})},
+                                         {"interval_s", interval_s},
+                                         {"binding_file", binding_file}};
+    plugin.configure(config);
+    RealNodePluginContext ctx(node.get());
+    ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/test_plc", "/test_plc/test_runtime/tank"};
+    plugin.set_context(ctx);
+    const std::string endpoint = plugin.endpoint_url_for_test();
+    plugin.shutdown();
+    return endpoint;
+  };
+
+  // The address the sweep settled on is the whole assertion: one fixture
+  // answers on both loopback addresses with the bound identity, so the session
+  // passes the identity check whichever address it was opened at.
+  EXPECT_EQ(run_with_cadence(2), "opc.tcp://127.0.0.2:4840")
+      << "the startup sweep took the lowest address, so the bound server is reached only by a later rescan";
+
+  // interval_s: 0 keeps discovery on with the startup scan one-shot, so a
+  // startup sweep that ignores the binding pins the process to the foreign
+  // address for life.
+  EXPECT_EQ(run_with_cadence(0), "opc.tcp://127.0.0.2:4840")
+      << "with no rescan the startup sweep is the only one, and it selected a server this bridge is not bound to";
+
+  fixture.stop();
+  std::remove(yaml_path.c_str());
 }
 
 // The order the whole rename fix rests on: PollerConfig::on_connected runs

@@ -222,7 +222,8 @@ OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j,
                                                   "scan_concurrency",
                                                   "identify_timeout_ms",
                                                   "interval_s",
-                                                  "anonymous_none_only"};
+                                                  "anonymous_none_only",
+                                                  "binding_file"};
   for (const auto & item : j.items()) {
     if (std::find(kKnown.begin(), kKnown.end(), item.key()) == kKnown.end()) {
       warn_fn("discovery: unknown key '" + item.key() + "' ignored");
@@ -231,6 +232,9 @@ OpcuaDiscoveryConfig parse_discovery_config(const nlohmann::json & j,
 
   if (j.contains("enabled") && j["enabled"].is_boolean()) {
     cfg.enabled = j["enabled"].get<bool>();
+  }
+  if (j.contains("binding_file") && j["binding_file"].is_string()) {
+    cfg.binding_file = j["binding_file"].get<std::string>();
   }
   if (j.contains("mode") && j["mode"].is_string()) {
     const std::string mode = j["mode"].get<std::string>();

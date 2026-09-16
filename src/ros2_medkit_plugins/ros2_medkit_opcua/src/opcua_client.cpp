@@ -94,24 +94,6 @@ struct EventCallbackContext {
 
 namespace {
 
-/// Set the connected flag to false when the BadStatus code indicates a
-/// terminal connection loss (as opposed to e.g. BadNodeIdUnknown which is a
-/// per-node issue). Called from read_value, read_values and write_value so
-/// that OpcuaPoller's reconnect logic (which keys off is_connected()) fires
-/// regardless of which operation detected the drop first. Also bumps the
-/// subscription generation so any in-flight event callbacks from the dying
-/// subscription are filtered out by the trampoline.
-void maybe_mark_disconnected(std::atomic<bool> & connected_flag, std::atomic<uint64_t> & generation,
-                             const opcua::BadStatus & e) {
-  const auto code = e.code();
-  if (code == UA_STATUSCODE_BADCONNECTIONCLOSED || code == UA_STATUSCODE_BADSECURECHANNELCLOSED ||
-      code == UA_STATUSCODE_BADNOTCONNECTED) {
-    if (connected_flag.exchange(false)) {
-      generation.fetch_add(1, std::memory_order_release);
-    }
-  }
-}
-
 OpcuaValue variant_to_value(const opcua::Variant & var) {
   if (var.isEmpty()) {
     return std::string("<empty>");
@@ -535,6 +517,11 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
 
     impl_->client.config().setTimeout(static_cast<uint32_t>(config.connect_timeout.count()));
     impl_->client.connect(config.endpoint_url);
+    // Whatever the previous session left behind is dropped before this one is
+    // published: the ids this server hands out start from 1 again, and an
+    // event context still registered under one of them would keep the new
+    // context out of the map while open62541 holds a pointer to it.
+    drop_session_bookkeeping_locked();
     impl_->connected = true;
     impl_->connect_generation.fetch_add(1, std::memory_order_release);
 
@@ -563,9 +550,10 @@ void OpcuaClient::disconnect() {
     // dying subscription drop their work in the trampoline (they read
     // generation atomically) before we touch the storage they reference.
     // The ``if (impl_->connected)`` guard ensures we bump exactly once even
-    // when ``maybe_mark_disconnected`` already fired earlier on a transport
-    // error path - that helper uses ``exchange(false)`` and would have
-    // already bumped, leaving impl_->connected = false here.
+    // when ``mark_disconnected_on_transport_error`` already fired earlier on a
+    // transport error path - that helper uses ``exchange(false)`` and has
+    // already bumped and dropped the bookkeeping, leaving
+    // impl_->connected = false here.
     impl_->generation.fetch_add(1, std::memory_order_release);
     try {
       // Issue #386: clear event monitored items BEFORE deleting subscriptions.
@@ -703,7 +691,7 @@ std::vector<OpcuaClient::BrowseChild> OpcuaClient::browse_detailed(const opcua::
       result.push_back(std::move(child));
     }
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
   }
 
   return result;
@@ -724,7 +712,7 @@ std::string OpcuaClient::read_variable_type_name(const opcua::NodeId & variable_
     }
     return builtin_data_type_name(data_type.getIdentifierAs<uint32_t>());
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
     return {};
   }
 }
@@ -756,7 +744,7 @@ OpcuaClient::AccessLevelInfo OpcuaClient::read_access_level(const opcua::NodeId 
     info.writable = effective.anyOf(opcua::AccessLevel::CurrentWrite);
     info.ok = true;
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
   }
 
   return info;
@@ -780,7 +768,7 @@ ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
     result.good = true;
   } catch (const opcua::BadStatus & e) {
     result.good = false;
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
   }
 
   return result;
@@ -809,7 +797,7 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
       r.good = true;
     } catch (const opcua::BadStatus & e) {
       r.good = false;
-      maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+      mark_disconnected_on_transport_error(e);
     }
     results.push_back(std::move(r));
   }
@@ -981,7 +969,7 @@ OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value
     }
     return {};
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
     auto code = e.code();
     if (code == UA_STATUSCODE_BADTYPEMISMATCH) {
       return tl::make_unexpected(WriteErrorInfo{WriteError::TypeMismatch, e.what()});
@@ -1273,7 +1261,7 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       *scan_ok = true;
     }
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
     // scan_ok stays false: a browse failure must not be read as "no conditions".
   }
 
@@ -1696,8 +1684,58 @@ void OpcuaClient::run_iterate(uint16_t timeout_ms) {
   try {
     impl_->client.runIterate(timeout_ms);
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
+    return;
   }
+  // runIterate drives open62541's own connectIterate whenever the session is
+  // below ACTIVATED, so a channel that dropped is re-opened and a session
+  // activated against whatever answers the address now - underneath this
+  // client, with no connect() of ours and nothing to check what it reached.
+  // Reading the state here is what turns that into a disconnect the owner's
+  // reconnect path handles: the session it rebuilds is one it opened and
+  // checked, and the subscriptions it lost are re-created there.
+  UA_SecureChannelState channel_state = UA_SECURECHANNELSTATE_CLOSED;
+  UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
+  UA_StatusCode connect_status = UA_STATUSCODE_GOOD;
+  UA_Client_getState(impl_->client.handle(), &channel_state, &session_state, &connect_status);
+  if (session_state >= UA_SESSIONSTATE_ACTIVATED) {
+    return;
+  }
+  if (!impl_->connected.exchange(false)) {
+    return;
+  }
+  drop_session_bookkeeping_locked();
+  RCLCPP_WARN(opcua_client_logger(),
+              "OPC-UA session dropped underneath the client (session state %d, channel %d, status %s); "
+              "disconnecting so the reconnect path owns the next session",
+              static_cast<int>(session_state), static_cast<int>(channel_state), UA_StatusCode_name(connect_status));
+  try {
+    impl_->client.disconnect();
+  } catch (...) {
+  }
+}
+
+void OpcuaClient::drop_session_bookkeeping_locked() {
+  impl_->generation.fetch_add(1, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks_mutex);
+    impl_->event_callbacks.clear();
+  }
+  std::lock_guard<std::mutex> sub_lock(impl_->sub_mutex);
+  impl_->subscriptions.clear();
+}
+
+bool OpcuaClient::mark_disconnected_on_transport_error(const opcua::BadStatus & e) {
+  const auto code = e.code();
+  if (code != UA_STATUSCODE_BADCONNECTIONCLOSED && code != UA_STATUSCODE_BADSECURECHANNELCLOSED &&
+      code != UA_STATUSCODE_BADNOTCONNECTED) {
+    return false;
+  }
+  if (!impl_->connected.exchange(false)) {
+    return false;
+  }
+  drop_session_bookkeeping_locked();
+  return true;
 }
 
 uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
@@ -1908,7 +1946,7 @@ OpcuaClient::call_method(const opcua::NodeId & object_id, const opcua::NodeId & 
     }
     return outputs;
   } catch (const opcua::BadStatus & e) {
-    maybe_mark_disconnected(impl_->connected, impl_->generation, e);
+    mark_disconnected_on_transport_error(e);
     return tl::make_unexpected(status_to_method_error(e.code(), e.what()));
   }
 }

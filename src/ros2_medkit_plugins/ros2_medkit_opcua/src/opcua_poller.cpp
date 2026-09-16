@@ -1290,14 +1290,13 @@ void OpcuaPoller::poll_loop() {
         if (config_.prefer_subscriptions) {
           setup_subscriptions();
         }
-        // Issue #386: re-subscribe to AlarmCondition events after reconnect
-        // and re-fire ConditionRefresh so we recover any conditions that
-        // changed state while we were offline. The OpcuaClient's
-        // generation counter has already advanced (incremented in
-        // disconnect()/maybe_mark_disconnected), so any stale event
-        // callbacks captured from the previous subscription are filtered
-        // out by the trampoline before re-subscription registers fresh
-        // contexts.
+        // Re-subscribe to AlarmCondition events on the new session and re-fire
+        // ConditionRefresh so conditions that changed state while the link was
+        // down are recovered. The client dropped the previous session's event
+        // contexts and subscription handles when it marked itself disconnected,
+        // and again inside connect(), so the monitored-item ids this session
+        // hands out, which start from 1 again, register fresh contexts under
+        // their own ids.
         event_subscription_id_ = 0;
         event_monitored_item_ids_.clear();
         if (has_alarm_sources()) {
