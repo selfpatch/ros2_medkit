@@ -390,7 +390,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     }
   }
   if (config.contains("fault_service_timeout_ms")) {
-    const auto raw = config["fault_service_timeout_ms"];
+    const auto & raw = config["fault_service_timeout_ms"];
     if (raw.is_number_integer()) {
       const int64_t ms = raw.get<int64_t>();
       if (ms >= 100 && ms <= 600000) {
@@ -1418,8 +1418,8 @@ void OpcuaPlugin::apply_auto_alarms_param(const nlohmann::json & value, AutoAlar
           warn("plugins.opcua.auto_alarms.severity_bands: unknown key '" + key + "' - ignored");
         }
       }
-      if (!(cfg.severity_bands.critical_min >= cfg.severity_bands.error_min &&
-            cfg.severity_bands.error_min >= cfg.severity_bands.warning_min)) {
+      if (cfg.severity_bands.critical_min < cfg.severity_bands.error_min ||
+          cfg.severity_bands.error_min < cfg.severity_bands.warning_min) {
         warn(
             "plugins.opcua.auto_alarms.severity_bands must satisfy critical >= error >= warning - "
             "resetting to the default bands (801/501/201)");
@@ -1708,9 +1708,13 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   std::weak_ptr<CommsLostProbeState> weak_state = comms_lost_probe_state_;
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
   request->fault_code = kCommsLostFaultCode;
+  // rclcpp selects the response-callback overload of async_send_request only for
+  // a callable whose parameter list is exactly (SharedFuture); a const reference
+  // parameter matches no overload. The future is therefore taken by value.
+  using GetFaultFuture = rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedFuture;
   try {
     auto future = fault_clients_->get_fault->async_send_request(
-        request, [weak_state, generation](rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedFuture answer) {
+        request, [weak_state, generation](GetFaultFuture answer) {  // NOLINT(performance-unnecessary-value-param)
           // The plugin's client executor thread. It parks the answer and nothing
           // else: the decision reads component ids, which only the poll thread
           // may do. The state is reached through a weak_ptr, so a callback that
@@ -1720,7 +1724,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
             return;
           }
           try {
-            const auto response = answer.get();
+            const auto & response = answer.get();
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->generation != generation) {
               return;  // answer to a probe that has already been given up on
@@ -2577,7 +2581,7 @@ std::string OpcuaPlugin::write_persisted_binding(const std::string & path, const
   // its name, so a power loss after the rename finds the URI on disk. Without
   // it the name can outlive the bytes, leaving an empty file that reads as
   // "never bound" and lets the next process adopt whichever server answers.
-  const std::string sync_failure = fsync_path(tmp.string(), /*is_directory=*/false);
+  std::string sync_failure = fsync_path(tmp.string(), /*is_directory=*/false);
   if (!sync_failure.empty()) {
     std::error_code ignored;
     std::filesystem::remove(tmp, ignored);
@@ -2678,7 +2682,7 @@ std::optional<std::string> OpcuaPlugin::rescan_endpoint_for_reconnect() {
   const int interval_s = effective_rescan_interval_s(discovery_config_, endpoint_configured_);
 
   std::string candidate_uri;
-  const auto chosen = rescan_guarded(
+  auto chosen = rescan_guarded(
       interval_s,
       []() {
         return std::chrono::steady_clock::now();
