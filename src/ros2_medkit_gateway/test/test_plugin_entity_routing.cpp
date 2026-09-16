@@ -14,6 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <stdexcept>
+
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
@@ -128,6 +131,103 @@ class MockMixedFitnessPlugin : public GatewayPlugin, public DataProvider, public
     return entity_id == "data_entity";
   }
 };
+
+// A plugin that serves /data ONLY through its DataProvider: no vendor route,
+// which is what an in-tree plugin looks like.
+class ProviderOnlyPlugin : public GatewayPlugin, public DataProvider {
+ public:
+  std::string name() const override {
+    return "provider_only";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & entity_id) override {
+    if (throws_) {
+      throw std::runtime_error("provider exploded");
+    }
+    return dto::DataListResult{
+        json{{"connected", true},
+             {"items", json::array({{{"id", "level"}, {"value", 7.5}, {"entity", entity_id}}})}}};
+  }
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & resource) override {
+    return dto::DataValue{json{{"value", resource}}};
+  }
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
+    return dto::DataWriteResult{json{{"status", "ok"}}};
+  }
+
+  bool throws_ = false;
+};
+
+// A plugin that exposes no DataProvider at all and registers no route either,
+// which is every grouping-only plugin.
+class NoDataPlugin : public GatewayPlugin {
+ public:
+  std::string name() const override {
+    return "no_data";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+};
+
+// =============================================================================
+// fetch_entity_data_content - which source an entity's /data comes from
+//
+// Provider first, the plugin's own vendor route only when it exposes no
+// provider. The fault-trigger engine reads rule values through this and
+// enumerates a rule's data points through it, so reading the route first meant
+// a rule on a provider-served app evaluated to nothing every tick and sat
+// there silently.
+// =============================================================================
+
+TEST(PluginEntityDataContent, ProviderServesAnEntityWithNoVendorRoute) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderOnlyPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_only", {"tank"});
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value()) << "an entity served by a DataProvider must not read as having no data";
+  ASSERT_TRUE(content->contains("items"));
+  EXPECT_EQ((*content)["items"][0]["id"], "level");
+  EXPECT_DOUBLE_EQ((*content)["items"][0]["value"].get<double>(), 7.5);
+}
+
+TEST(PluginEntityDataContent, AThrowingProviderFallsThroughInsteadOfEscaping) {
+  // The fault-trigger engine calls this on its own evaluation loop; a plugin
+  // exception must not leave that loop.
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderOnlyPlugin>();
+  plugin->throws_ = true;
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_only", {"tank"});
+
+  std::optional<json> content;
+  EXPECT_NO_THROW(content = mgr.fetch_entity_data_content("tank"));
+  // No vendor route behind it, so there is nothing left to answer with.
+  EXPECT_FALSE(content.has_value());
+}
+
+TEST(PluginEntityDataContent, NeitherProviderNorRouteIsNullopt) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<NoDataPlugin>());
+  mgr.register_entity_ownership("no_data", {"grouping"});
+
+  EXPECT_FALSE(mgr.fetch_entity_data_content("grouping").has_value());
+}
+
+TEST(PluginEntityDataContent, AnUnownedEntityIsNullopt) {
+  PluginManager mgr;
+  EXPECT_FALSE(mgr.fetch_entity_data_content("nobody").has_value());
+}
 
 // =============================================================================
 // Entity Ownership Tests

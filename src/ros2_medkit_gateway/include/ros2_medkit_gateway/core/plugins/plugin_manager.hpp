@@ -235,6 +235,29 @@ class PluginManager : public LogProviderRegistry {
   std::optional<nlohmann::json> fetch_entity_data_via_route(const std::string & entity_id,
                                                             const std::string & item = "");
 
+  /**
+   * @brief The entity's current data content, from whichever source its owning
+   *        plugin actually serves /data through.
+   *
+   * The owning plugin's `DataProvider::list_data` first, and only when the
+   * plugin exposes no provider for that entity, the plugin's own data route via
+   * `fetch_entity_data_via_route`. That is the order the /data endpoint itself
+   * resolves in, so a caller reading through this sees exactly what a client
+   * reading the entity would see.
+   *
+   * Reading the route first instead is not a fallback, it is a different
+   * answer: a plugin that serves /data through a provider and registers no
+   * vendor route returns nothing at all, and every caller downstream reads that
+   * as "this entity has no data right now".
+   *
+   * A throwing provider is treated as an absent one and falls through to the
+   * route: an in-process plugin call must not take the caller's loop down.
+   *
+   * @return Parsed content on success; nullopt when the entity is not
+   *         plugin-owned, or neither source can answer.
+   */
+  std::optional<nlohmann::json> fetch_entity_data_content(const std::string & entity_id);
+
   /// Whether the entity's owning plugin registered a GET data route
   /// (x-plc-data) that fetch_entity_data_via_route() could dispatch. Cheap
   /// route-table check, no handler invocation - capability advertising uses

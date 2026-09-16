@@ -431,6 +431,25 @@ bool PluginManager::has_entity_data_route(const std::string & entity_id) {
   return false;
 }
 
+std::optional<nlohmann::json> PluginManager::fetch_entity_data_content(const std::string & entity_id) {
+  // Rationale is on the declaration: provider first, vendor route only when the
+  // owner exposes no provider for this entity.
+  if (auto * data_prov = get_data_provider_for_entity(entity_id)) {
+    try {
+      if (auto result = data_prov->list_data(entity_id)) {
+        return result->content;
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s': %s; trying its route",
+                  entity_id.c_str(), e.what());
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s'; trying its route",
+                  entity_id.c_str());
+    }
+  }
+  return fetch_entity_data_via_route(entity_id);
+}
+
 std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(const std::string & entity_id,
                                                                          const std::string & item) {
   const std::string full_path =

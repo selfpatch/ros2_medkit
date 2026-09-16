@@ -1976,13 +1976,21 @@ void GatewayNode::init_fault_trigger_engine() {
   }
   const int poll_ms = static_cast<int>(poll_ms_used);
 
-  // Value fetch: same in-process x-plc-data route the freeze-frame capture uses,
-  // so a rule always sees exactly the value the /data endpoint would serve.
-  auto fetcher = [this](const std::string & app_id, const std::string & data_name) -> std::optional<double> {
-    if (!plugin_mgr_) {
-      return std::nullopt;
-    }
-    const auto content = plugin_mgr_->fetch_entity_data_via_route(app_id);
+  // The owning plugin's own DataProvider first, its vendor route only as a
+  // fallback. This is the order the freeze-frame capture and trigger creation
+  // already use, and reading the route first meant a rule on an app whose
+  // plugin serves /data through a provider and exposes no vendor route could
+  // never evaluate: the fetch returned nullopt every tick and the rule sat
+  // there holding its state, silently doing nothing.
+  auto entity_data_content = [this](const std::string & app_id) -> std::optional<nlohmann::json> {
+    return plugin_mgr_ ? plugin_mgr_->fetch_entity_data_content(app_id) : std::nullopt;
+  };
+
+  // Value fetch: the same content the /data endpoint would serve, so a rule
+  // always sees exactly the value a client reading that app would see.
+  auto fetcher = [entity_data_content](const std::string & app_id,
+                                       const std::string & data_name) -> std::optional<double> {
+    const auto content = entity_data_content(app_id);
     // A down link serves frozen last-known values; nullopt holds rule state
     // (fault_trigger_engine) instead of firing on a stale number all outage.
     if (!content || !EntityFreezeFrameCapture::content_has_live_data(*content) ||
@@ -2029,13 +2037,11 @@ void GatewayNode::init_fault_trigger_engine() {
     }
   };
 
-  // Data-point enumeration for create-time validation: same in-process route as
-  // the fetcher, so "exists" means exactly "the fetcher could ever read it".
-  auto data_point_names = [this](const std::string & app_id) -> std::optional<std::vector<std::string>> {
-    if (!plugin_mgr_) {
-      return std::nullopt;
-    }
-    const auto content = plugin_mgr_->fetch_entity_data_via_route(app_id);
+  // Data-point enumeration for create-time validation: the same content source
+  // as the fetcher, in the same order, so "exists" means exactly "the fetcher
+  // could ever read it".
+  auto data_point_names = [entity_data_content](const std::string & app_id) -> std::optional<std::vector<std::string>> {
+    const auto content = entity_data_content(app_id);
     if (!content || !EntityFreezeFrameCapture::content_has_live_data(*content)) {
       return std::nullopt;
     }

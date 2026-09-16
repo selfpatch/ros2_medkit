@@ -2815,6 +2815,14 @@ plugin is loaded. Without it the routes stay mounted and answer ``501``
 use, so a client can tell "this build has no threshold engine" apart from "no
 such app or rule".
 
+A rule reads its value from whichever source the owning plugin serves the app's
+``/data`` through: the plugin's data provider first, its own vendor data route
+only when it exposes no provider. Rule evaluation and the create-time data-point
+check use the same resolution in the same order, so a point that validates on
+create is one the engine can read. A rule the engine cannot read holds its state
+rather than firing on a stale value, which is also what it does while the app's
+link reports itself down.
+
 ``GET /api/v1/apps/{app_id}/fault-triggers``
    List the app's rules. The owning app is the one in the path; it is not
    repeated in the item, and neither is the engine's internal cross latch.
