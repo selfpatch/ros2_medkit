@@ -34,6 +34,7 @@
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
+#include "ros2_medkit_msgs/srv/list_faults.hpp"
 
 using namespace std::chrono_literals;
 using ros2_medkit_gateway::FaultFailure;
@@ -45,6 +46,7 @@ using ros2_medkit_msgs::srv::ClearFault;
 using ros2_medkit_msgs::srv::GetFault;
 using ros2_medkit_msgs::srv::GetRosbag;
 using ros2_medkit_msgs::srv::GetSnapshots;
+using ros2_medkit_msgs::srv::ListFaults;
 
 class FaultManagerTest : public ::testing::Test {
  protected:
@@ -779,6 +781,42 @@ TEST_F(FaultManagerTest, GetRosbagSendsTheOwningSourceInTheRequest) {
   stop_spinning();
 
   EXPECT_EQ(received_source, "app_b");
+}
+
+// A muted entry describes one record, so it has to name the owner. Without it
+// the correlation view hands a client a bare fault_code, which addresses as many
+// records as there are sources reporting it - the ambiguity the per-record
+// identity exists to remove, reintroduced one layer up.
+TEST_F(FaultManagerTest, MutedFaultEntriesNameTheRecordTheyDescribe) {
+  auto service = node_->create_service<ListFaults>(
+      "/fault_manager/list_faults",
+      [](const std::shared_ptr<ListFaults::Request> & /*request*/, const std::shared_ptr<ListFaults::Response> & res) {
+        ros2_medkit_msgs::msg::MutedFaultInfo muted;
+        muted.fault_code = "SHARED_SYMPTOM";
+        muted.root_cause_code = "ROOT";
+        muted.rule_id = "cascade";
+        muted.delay_ms = 150;
+        muted.source_id = "app_b";
+        res->muted_faults.push_back(muted);
+        res->muted_count = 1;
+      });
+
+  start_spinning();
+  FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));
+
+  auto result = fault_manager.list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                          /*include_cleared=*/false, /*include_healed=*/false,
+                                          /*include_muted=*/true, /*include_clusters=*/false);
+  stop_spinning();
+
+  ASSERT_TRUE(result.success) << result.error_message;
+  ASSERT_TRUE(result.data.contains("muted_faults"));
+  ASSERT_EQ(result.data["muted_faults"].size(), 1u);
+  const auto & entry = result.data["muted_faults"][0];
+  EXPECT_EQ(entry["fault_code"], "SHARED_SYMPTOM");
+  EXPECT_EQ(entry["root_cause_code"], "ROOT");
+  ASSERT_TRUE(entry.contains("source_id")) << "a muted entry must name the record's owner";
+  EXPECT_EQ(entry["source_id"], "app_b");
 }
 
 int main(int argc, char ** argv) {

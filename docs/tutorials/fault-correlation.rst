@@ -339,7 +339,8 @@ Response always includes:
          "fault_code": "MOTOR_COMM_001",
          "root_cause_code": "ESTOP_001",
          "rule_id": "estop_cascade",
-         "delay_ms": 150
+         "delay_ms": 150,
+         "source_id": "/powertrain/motor_controller"
        }
      ]
    }

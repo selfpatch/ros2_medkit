@@ -256,10 +256,14 @@ FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id
   if (include_muted && !response->muted_faults.empty()) {
     json muted_array = json::array();
     for (const auto & muted : response->muted_faults) {
+      // source_id is what makes the entry addressable: a muted record is one
+      // record, and its code alone names as many as there are sources
+      // reporting it.
       muted_array.push_back({{"fault_code", muted.fault_code},
                              {"root_cause_code", muted.root_cause_code},
                              {"rule_id", muted.rule_id},
-                             {"delay_ms", muted.delay_ms}});
+                             {"delay_ms", muted.delay_ms},
+                             {"source_id", muted.source_id}});
     }
     result.data["muted_faults"] = muted_array;
   }
