@@ -245,7 +245,11 @@ std::vector<MutedFaultData> CorrelationEngine::get_muted_faults() const {
   result.reserve(muted_faults_.size());
 
   for (const auto & [muted_id, data] : muted_faults_) {
-    result.push_back(data);
+    // Owner taken from the key rather than from the stored copy, so the entry always
+    // names the record it is filed under.
+    MutedFaultData entry = data;
+    entry.owner = muted_id.owner;
+    result.push_back(entry);
   }
 
   return result;

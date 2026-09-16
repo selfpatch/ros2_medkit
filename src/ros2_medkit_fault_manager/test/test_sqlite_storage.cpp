@@ -16,11 +16,15 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdarg>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <set>
 #include <string>
@@ -28,6 +32,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -1225,6 +1230,63 @@ void exec_bound(sqlite3 * raw, const char * sql, const std::string & text) {
   sqlite3_finalize(stmt);
 }
 
+/// Captures rcutils log output while alive and restores the console handler on every
+/// exit path, so a live capture never swallows the output of later cases in this
+/// binary. Same shape as the one the rosbag suite uses: the handler is a plain C
+/// function pointer with no user-data slot, so the live capture is reached through a
+/// file-static, atomic because the handler is process-global.
+class LogCapture {
+ public:
+  LogCapture() {
+    active().store(this);
+    rcutils_logging_set_output_handler(&LogCapture::handler);
+  }
+  ~LogCapture() {
+    rcutils_logging_set_output_handler(rcutils_logging_console_output_handler);
+    active().store(nullptr);
+  }
+  LogCapture(const LogCapture &) = delete;
+  LogCapture & operator=(const LogCapture &) = delete;
+  LogCapture(LogCapture &&) = delete;
+  LogCapture & operator=(LogCapture &&) = delete;
+
+  int count(const std::string & needle) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return static_cast<int>(std::count_if(lines_.begin(), lines_.end(), [&needle](const std::string & line) {
+      return line.find(needle) != std::string::npos;
+    }));
+  }
+
+ private:
+  static std::atomic<LogCapture *> & active() {
+    static std::atomic<LogCapture *> current{nullptr};
+    return current;
+  }
+
+  static void handler(const rcutils_log_location_t * /*location*/, int /*severity*/, const char * /*name*/,
+                      rcutils_time_point_value_t /*timestamp*/, const char * format, va_list * args) {
+    char buf[1024];
+    va_list copy;
+    va_copy(copy, *args);
+    // The format string arrives through the handler signature, so there is no literal
+    // to write here. Scoped to the single call, as in the rosbag suite.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    vsnprintf(buf, sizeof(buf), format, copy);
+#pragma GCC diagnostic pop
+    va_end(copy);
+    LogCapture * capture = active().load();
+    if (capture == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lk(capture->mutex_);
+    capture->lines_.emplace_back(buf);
+  }
+
+  mutable std::mutex mutex_;
+  std::vector<std::string> lines_;
+};
+
 /// The legacy faults table exactly as the previous releases created it.
 constexpr const char * kLegacyFaultsDdl =
     "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
@@ -1252,12 +1314,15 @@ TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMig
   // The five shapes, with the owner each must produce.
   const std::string ctrl_pair = std::string("a") + kCtrl + "b";
   const std::string device = std::string("/dev/ttyUSB0") + kCtrl + "reader";
+  const std::string kLegacy = ros2_medkit_fault_manager::kLegacyOwner;
   const std::vector<std::pair<std::string, std::string>> cases = {
-      {"", ""},                                // nothing recorded
-      {"sensor_a", "sensor_a"},                // bare word, never an array
-      {"[]", ""},                              // array with no source
-      {"[\"" + ctrl_pair + "\"]", ctrl_pair},  // control byte inside the array
-      {"[\"" + device + "\"]", device},        // the reported real-world case
+      {"", kLegacy},                               // nothing recorded
+      {"sensor_a", "sensor_a"},                    // bare word, never an array
+      {"[]", kLegacy},                             // array with no source
+      {"[\"" + ctrl_pair + "\"]", ctrl_pair},      // control byte inside the array
+      {"[\"" + device + "\"]", device},            // the reported real-world case
+      {"\xEF\xBB\xBF[\"/bom_source\"]", kLegacy},  // array behind a byte-order mark
+      {"{\"source\": \"/wrapped\"}", kLegacy},     // an object, not the array this reads
   };
 
   {
@@ -1281,6 +1346,9 @@ TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMig
         << "owner recovered from " << cases[i].first;
     EXPECT_TRUE(storage_->contains({code, cases[i].second})) << code << " must be reachable by its migrated owner";
   }
+  // No migrated record is left unaddressable. The empty owner belongs to child rows
+  // alone, and a fault carrying it could not be named by any source_id.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM faults WHERE owner = ''"), "0");
   EXPECT_EQ(storage_->size(), cases.size());
 
   // Whatever came in, what goes back out is valid JSON, so the next release's reader
@@ -1292,6 +1360,66 @@ TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMig
   ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
   EXPECT_EQ(storage_->size(), cases.size());
   EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'CODE_4'"), device);
+}
+
+// R60 end to end: a record whose source cannot be read is still a record. It gets the
+// synthetic owner, its evidence is filed under that owner like any other record's, and
+// the store then reaches a resting state. The resting state is the point: while a fault
+// carried an empty owner its child rows could never be assigned to anyone, yet they
+// still looked like pending work, so every single open re-entered the migration write
+// transaction and logged a warning that nothing would ever resolve.
+TEST_F(SqliteFaultStorageTest, AnUnreadableSourceYieldsALegacyRecordAndThenSettles) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "INSERT INTO faults VALUES ('ORPHANED', 2, 'legacy', 1, 1, 1, 'CONFIRMED', "
+                           "'', -1, 1, 0, 0);"
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "topic TEXT NOT NULL, message_type TEXT NOT NULL, data TEXT NOT NULL, "
+                           "captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('ORPHANED', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  const std::string legacy = ros2_medkit_fault_manager::kLegacyOwner;
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'ORPHANED'"), legacy);
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT reporting_sources FROM faults WHERE fault_code = 'ORPHANED'"),
+            "[\"" + legacy + "\"]")
+      << "the column and the owner must agree, so a raw reader sees the same name";
+  EXPECT_TRUE(storage_->contains({"ORPHANED", legacy})) << "the record must be addressable by source_id";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'ORPHANED'"), legacy);
+  ASSERT_EQ(storage_->get_snapshots({"ORPHANED", legacy}).size(), 1u);
+
+  // A tripwire that fires on any write to the child table, armed only now, so it sees
+  // the SECOND open and nothing the first one did.
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE tripwire (note TEXT);"
+                           "CREATE TRIGGER tripwire_snapshots AFTER UPDATE ON snapshots "
+                           "BEGIN INSERT INTO tripwire VALUES ('backfill ran'); END;",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK)
+        << sqlite3_errmsg(raw);
+    sqlite3_close(raw);
+  }
+
+  storage_.reset();
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM tripwire"), "0")
+      << "a settled store must not rewrite child rows on every open";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'ORPHANED'"), legacy);
 }
 
 // A rebuild that was interrupted, or a manual recovery with an external tool, can leave
@@ -1322,8 +1450,14 @@ TEST_F(SqliteFaultStorageTest, LeftoverScratchTablesDoNotBlockTheMigration) {
       sqlite3_close(raw);
     }
 
+    // The drop is announced, because throwing away a table an operator may have been
+    // in the middle of recovering by hand has to be visible in the log.
+    std::unique_ptr<LogCapture> log = std::make_unique<LogCapture>();
     ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()))
         << "leftover " << leftover << " must not block the rebuild";
+    const int named = log->count(std::string("scratch table '") + leftover + "'");
+    log.reset();
+    EXPECT_EQ(named, 1) << "the dropped table must be named in the log: " << leftover;
 
     const ros2_medkit_fault_manager::FaultId id{"LEFTOVER", "/owner_a"};
     EXPECT_TRUE(storage_->contains(id)) << "with leftover " << leftover;

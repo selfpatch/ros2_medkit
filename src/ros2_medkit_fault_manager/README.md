@@ -14,7 +14,7 @@ with its own status, debounce counter, occurrence count, severity, timestamps, f
 snapshots, near-miss series and rosbag links. A clear or an auto-heal driven by one owner never
 touches another owner's record. The services that act on a single record (`~/clear_fault`,
 `~/get_fault`, `~/get_snapshots`, `~/get_rosbag`) carry a `source_id` request field naming the
-owner; leaving it empty is unscoped and applies only when exactly one record carries the
+owner. Leaving it empty is unscoped and applies only when exactly one record carries the
 `fault_code`, otherwise the call fails with a message beginning `ambiguous:` that lists the
 owners and changes nothing.
 
@@ -32,20 +32,29 @@ other control byte was written as text no JSON parser accepts. The mapping is ex
 
 | stored `reporting_sources` | migrated owner |
 |---|---|
-| empty | empty |
+| empty | `legacy` |
 | `sensor_a` (a bare word, not an array) | `sensor_a` |
-| `[]` | empty |
+| `[]` | `legacy` |
 | `["a<0x01>b"]` | `a<0x01>b` (the control byte is kept) |
+| anything that is neither a JSON array nor a bare word (an object wrapper, a value behind a byte-order mark) | `legacy` |
 
-An empty owner means no source could be recovered, never that one should be guessed. The record is
-kept and one warning names it. New rows are always written as valid JSON, control bytes escaped as
-`\u00XX`.
+A migrated record never carries an empty owner. Where no source can be read the record gets the
+synthetic owner `legacy` and one warning names it, so it stays addressable through `source_id` like
+any other record: `ClearFault` and `GetFault` take `legacy` and act on it alone, and it appears
+under that name in an `ambiguous:` refusal. New rows are always written as valid JSON, control
+bytes escaped as `\u00XX`.
 
-Evidence rows (freeze frames, snapshots, rosbag links) take the owner of their fault code when that
-code has exactly one owner. When it has several, or none, the row keeps an empty owner and is named
-in a warning rather than handed to an owner the database cannot prove it belongs to. That backfill
-runs on every open, not only on the open that adds the column, so a store left half-migrated by an
-interrupted run is healed the next time it is opened.
+The empty owner therefore means exactly one thing: an evidence row (freeze frame, snapshot, rosbag
+link) not yet assigned to a record. Such a row takes the owner of its fault code when that code has
+exactly one owner. When it has several, or none, the row keeps the empty owner and is named in a
+warning rather than handed to an owner the database cannot prove it belongs to. That backfill runs
+on any open that finds a row it can actually assign, not only on the open that adds the column, so
+a store left half-migrated by an interrupted run is healed the next time it is opened, while a row
+nothing can resolve is left alone instead of being retried forever.
+
+The table names `faults_new` and `freeze_frames_new` are reserved for the rebuild. Anything found
+under those names is debris from a rebuild that did not finish and is dropped on open, with a
+warning naming the table.
 
 ## Quick Start
 
@@ -115,7 +124,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
-Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two owners confirming one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two owners confirming one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement), and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row. A configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
@@ -219,7 +228,7 @@ that topic, whichever storage backend is in use.
 
 The bound is **per record, not per database**. Fault codes are unbounded in cardinality and so is
 the set of reporting sources, so a reporter emitting a stream of distinct codes still grows the
-table; the bound caps what any single record costs, not the total.
+table. The bound caps what any single record costs, not the total.
 
 Retention is **bounded per record** by `near_miss.max_per_fault` (default 200), evicting the
 **oldest** entries first. That is the same direction as `snapshots.max_per_fault` and the rosbag
@@ -234,7 +243,7 @@ storage API or the database file.
 
 ## Advanced: Tamper-Evident Audit Log
 
-An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. Every row's `source` is the record's owner, the automatic transitions included: the `transition` column already says what moved the row, and with several owners per fault code the source has to answer whose record moved. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack); there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. It is **off by default** because it adds a write and storage cost per transition.
+An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. Every row's `source` is the record's owner, the automatic transitions included: the `transition` column already says what moved the row, and with several owners per fault code the source has to answer whose record moved. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack), and there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. It is **off by default** because it adds a write and storage cost per transition.
 
 Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only: the manager only ever inserts rows, and `BEFORE UPDATE` / `BEFORE DELETE` triggers reject out-of-band edits (the guarded rotation prune excepted).
 
@@ -482,7 +491,9 @@ ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
 Response includes:
 - `muted_count`: Number of muted symptom faults
 - `cluster_count`: Number of active fault clusters
-- `muted_faults[]`: Details of muted faults (when `include_muted=true`)
+- `muted_faults[]`: Details of muted records (when `include_muted=true`), one entry per muted
+  record. Muting is per record, so a symptom muted under one owner's root cause never hides
+  another owner's record of the same code, and each entry names its owner in `source_id`.
 - `clusters[]`: Details of active clusters (when `include_clusters=true`)
 
 ### REST API (via Gateway)
@@ -503,7 +514,8 @@ Response fields:
       "fault_code": "MOTOR_COMM_FL",
       "root_cause_code": "ESTOP_001",
       "rule_id": "estop_cascade",
-      "delay_ms": 50
+      "delay_ms": 50,
+      "source_id": "/powertrain/motor_controller"
     }
   ],
   "clusters": [

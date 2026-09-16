@@ -1848,10 +1848,125 @@ TEST_F(MutedFaultListingTest, DefaultListingHidesTheMutedRecordNotTheCode) {
   auto everything = call_list_faults(true);
   ASSERT_TRUE(everything.has_value());
   EXPECT_EQ(owners_of(*everything, "SYMPTOM_SPEED"), (std::vector<std::string>{"/owner_a", "/owner_b"}));
-  // One entry per muted RECORD, carrying its code: the message shape is unchanged.
+  // One entry per muted RECORD, naming both halves of its identity.
   ASSERT_EQ(everything->muted_faults.size(), 1u);
   EXPECT_EQ(everything->muted_faults.front().fault_code, "SYMPTOM_SPEED");
   EXPECT_EQ(everything->muted_faults.front().root_cause_code, "ROOT_CAUSE");
+  EXPECT_EQ(everything->muted_faults.front().source_id, "/owner_a");
+}
+
+// Two owners muted on one code are two entries of that code. Without the owner on the
+// wire they are indistinguishable, and a reader cannot tell one muted record from the
+// other, nor address either of them.
+TEST_F(MutedFaultListingTest, MutedEntriesOfOneCodeAreToldApartByTheirOwner) {
+  for (const char * owner : {"/owner_a", "/owner_b"}) {
+    ASSERT_TRUE(call_report_fault("ROOT_CAUSE", Fault::SEVERITY_CRITICAL, owner));
+    ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, owner));
+  }
+
+  auto everything = call_list_faults(true);
+  ASSERT_TRUE(everything.has_value());
+  EXPECT_EQ(everything->muted_count, 2u);
+
+  std::vector<std::string> muted_owners;
+  for (const auto & muted : everything->muted_faults) {
+    EXPECT_EQ(muted.fault_code, "SYMPTOM_SPEED");
+    EXPECT_EQ(muted.root_cause_code, "ROOT_CAUSE");
+    muted_owners.push_back(muted.source_id);
+  }
+  std::sort(muted_owners.begin(), muted_owners.end());
+  EXPECT_EQ(muted_owners, (std::vector<std::string>{"/owner_a", "/owner_b"}));
+
+  // With both muted the default listing shows neither, which is what makes the owner
+  // on the entry the only way to tell the two suppressed records apart.
+  auto visible = call_list_faults(false);
+  ASSERT_TRUE(visible.has_value());
+  EXPECT_TRUE(owners_of(*visible, "SYMPTOM_SPEED").empty());
+}
+
+/// A node backed by a database written before the owner column existed, so the record
+/// the migration produced can be exercised over the wire the way a client reaches it.
+class LegacyOwnedRecordTest : public FaultEventPublishingTest {
+ protected:
+  std::vector<rclcpp::Parameter> fault_manager_overrides() override {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    db_path_ = std::filesystem::temp_directory_path() / ("test_legacy_owner_" + std::to_string(dist(gen)) + ".db");
+
+    // One legacy row whose reporting_sources records nothing readable. The migration
+    // has to give it a name, because a record nobody can address is a record an
+    // operator cannot clear.
+    sqlite3 * raw = nullptr;
+    EXPECT_EQ(sqlite3_open(db_path_.string().c_str(), &raw), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);"
+                           "INSERT INTO faults VALUES ('SHARED_CODE', 2, 'from an older release', 1, 1, 1, "
+                           "'CONFIRMED', '', -1, 1, 0, 0);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+
+    return {
+        rclcpp::Parameter("storage_type", "sqlite"),
+        rclcpp::Parameter("database_path", db_path_.string()),
+        rclcpp::Parameter("confirmation_threshold", -1),
+    };
+  }
+
+  void TearDown() override {
+    FaultEventPublishingTest::TearDown();
+    std::filesystem::remove(db_path_);
+    std::filesystem::remove(db_path_.string() + "-wal");
+    std::filesystem::remove(db_path_.string() + "-shm");
+  }
+
+  std::filesystem::path db_path_;
+};
+
+// The migrated record is addressable like any other. A live source reporting the same
+// code creates a second record beside it, and from there the ordinary rules apply: the
+// unscoped call is refused and names both owners, and a scoped call reaches exactly one.
+// An empty owner would fail all of this, because no source_id could ever name it.
+TEST_F(LegacyOwnedRecordTest, AMigratedRecordIsAddressableBesideALiveSource) {
+  const std::string legacy = ros2_medkit_fault_manager::kLegacyOwner;
+
+  ASSERT_TRUE(call_report_fault("SHARED_CODE", Fault::SEVERITY_CRITICAL, "/live_source"));
+  ASSERT_TRUE(spin_until([this]() {
+    return !received_events_.empty();
+  }));
+
+  // Scoped read reaches the migrated record, not the live one.
+  auto migrated = call_get_fault("SHARED_CODE", legacy);
+  ASSERT_TRUE(migrated.has_value());
+  ASSERT_TRUE(migrated->success) << migrated->error_message;
+  ASSERT_EQ(migrated->fault.reporting_sources.size(), 1u);
+  EXPECT_EQ(migrated->fault.reporting_sources.front(), legacy);
+  EXPECT_EQ(migrated->fault.description, "from an older release");
+
+  // Unscoped is ambiguous, and the refusal names the migrated owner rather than
+  // leaving a blank where an owner should be.
+  const auto refused = clear_fault_response("SHARED_CODE");
+  ASSERT_TRUE(refused.has_value());
+  EXPECT_FALSE(refused->success);
+  EXPECT_EQ(refused->message.rfind("ambiguous:", 0), 0u) << "got: " << refused->message;
+  EXPECT_NE(refused->message.find(legacy), std::string::npos) << "got: " << refused->message;
+  EXPECT_NE(refused->message.find("/live_source"), std::string::npos) << "got: " << refused->message;
+  EXPECT_EQ(refused->message.find("()"), std::string::npos)
+      << "an empty owner would show as a blank entry: " << refused->message;
+
+  // Scoped clear takes the migrated record alone.
+  ASSERT_TRUE(call_clear_fault("SHARED_CODE", legacy));
+  auto live = call_get_fault("SHARED_CODE", "/live_source");
+  ASSERT_TRUE(live.has_value());
+  ASSERT_TRUE(live->success) << live->error_message;
+  EXPECT_EQ(live->fault.status, Fault::STATUS_CONFIRMED) << "the live source's record must be untouched";
 }
 
 /// GetRosbag over the wire, with the links written straight into the node's store: the

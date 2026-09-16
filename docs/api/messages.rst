@@ -152,7 +152,10 @@ prefix (for example ``/robot1/fault_manager/events``).
 MutedFaultInfo.msg
 ~~~~~~~~~~~~~~~~~~
 
-Information about correlated (muted) symptom faults.
+Information about a correlated (muted) symptom record. One entry per muted RECORD:
+a root cause mutes the symptoms of its own reporting source only, so two sources
+muted on one ``fault_code`` produce two entries carrying that code, told apart by
+``source_id``.
 
 .. code-block:: text
 
@@ -160,6 +163,7 @@ Information about correlated (muted) symptom faults.
    string root_cause_code  # Root cause that triggered muting
    string rule_id          # Correlation rule ID that matched
    uint32 delay_ms         # Time delay from root cause [ms]
+   string source_id        # Reporting source that owns the muted record
 
 ClusterInfo.msg
 ~~~~~~~~~~~~~~~
@@ -244,7 +248,7 @@ Clear/acknowledge one fault record.
 call applies only when exactly one record carries the ``fault_code``, and fails otherwise
 with ``success=false`` and a ``message`` beginning ``ambiguous:`` that lists the owners.
 An ambiguous call clears nothing. ``GetFault``, ``GetSnapshots`` and ``GetRosbag`` carry
-the same field and resolve the same way; on ``GetRosbag`` it scopes the ``fault_code``
+the same field and resolve the same way. On ``GetRosbag`` it scopes the ``fault_code``
 lookup only, and the ``recording_id`` path ignores it.
 
 When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a

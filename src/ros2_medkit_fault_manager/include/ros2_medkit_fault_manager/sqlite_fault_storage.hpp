@@ -25,6 +25,16 @@
 
 namespace ros2_medkit_fault_manager {
 
+/// Owner given to a record migrated out of a database that recorded no readable
+/// reporting source.
+///
+/// A migrated record is never left with an empty owner. It would be unreachable
+/// through the source_id every single-record service takes, and it would leave the
+/// child backfill looking for work on every open. The empty owner means one thing
+/// only, a child row (freeze frame, snapshot, rosbag link) not yet assigned to a
+/// record, and keeping that meaning unambiguous is what this constant is for.
+inline constexpr const char * kLegacyOwner = "legacy";
+
 /// SQLite-based fault storage implementation with persistence
 /// Thread-safe implementation using mutex protection
 class SqliteFaultStorage : public FaultStorage {
@@ -154,9 +164,21 @@ class SqliteFaultStorage : public FaultStorage {
   /// owner's evidence - and the row keeps its empty owner with a log line naming it.
   void backfill_child_owners();
 
-  /// Whether any child table still holds a row with an empty owner, so the backfill above
-  /// has something to do. Tables without the column yet are skipped: the migration adds it.
-  bool has_ownerless_child_rows() const;
+  /// Whether any child row is waiting for an owner the database can actually prove, so the
+  /// backfill above has work to do. Deliberately the backfill's own condition and not just
+  /// "owner is empty": a row whose code has several owners or none can never be assigned,
+  /// and treating it as pending would re-enter the write transaction on every open forever.
+  /// Tables without the column yet are skipped: the migration adds it.
+  bool has_assignable_child_rows() const;
+
+  /// Whether @p table exists, asked of sqlite_master. Used to tell a leftover scratch table
+  /// apart from a clean start, which DROP TABLE IF EXISTS on its own cannot report.
+  bool table_exists(const char * table) const;
+
+  /// Drop one of the migration's scratch tables, warning first when it was really there.
+  /// `faults_new` and `freeze_frames_new` are reserved for this procedure, so debris under
+  /// those names is always an unfinished rebuild and never somebody's data.
+  void drop_scratch_table(const char * table);
 
   /// Whether @p table already carries the `owner` column. The four tables are created
   /// by four independent CREATE TABLE IF NOT EXISTS statements, so a database can hold

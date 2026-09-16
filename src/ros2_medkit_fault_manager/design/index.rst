@@ -202,7 +202,7 @@ Fault Records
 
 A fault record is identified by the pair ``(fault_code, source_id)``, where the
 ``source_id`` is the one the ``ReportFault`` call carried. That source is the record's
-owner. Repeated reports from one source update that source's record; a report from a
+owner. Repeated reports from one source update that source's record. A report from a
 source that owns no record for the code opens a new one. This provides:
 
 - **Deduplication**: Prevents fault flooding from one source's repeated reports

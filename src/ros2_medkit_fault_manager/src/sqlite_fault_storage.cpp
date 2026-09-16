@@ -122,27 +122,36 @@ class SqliteStatement {
 /// therefore reads the text itself and treats JSON as a shape it recognises, not as a
 /// precondition.
 ///
+/// A record always ends up addressable. Where nothing can be read the answer is the
+/// synthetic owner `legacy`, never the empty string: an empty owner means one thing
+/// only, a child row not yet assigned to a record, and a fault carrying it would be
+/// unreachable through source_id and would keep the child backfill looking for work.
+///
 /// The mapping, exhaustively:
-///   ""                        -> ""          (nothing recorded)
+///   ""                        -> "legacy"    (nothing recorded)
 ///   "sensor_a"                -> "sensor_a"  (bare word, never a JSON array)
-///   "[]"                      -> ""          (array with no source)
+///   "[]"                      -> "legacy"    (array with no source)
 ///   "[\"a<0x01>b\"]"          -> "a<0x01>b"  (control byte kept verbatim)
+///   "<BOM>[...]", "{...}"     -> "legacy"    (neither an array nor a bare word)
 ///   anything unterminated     -> what was read before the text ran out
-/// An empty answer means no source could be recovered, never that the caller should
-/// guess one.
 std::string legacy_first_source(const std::string & raw) {
   std::size_t pos = 0;
   while (pos < raw.size() && std::isspace(static_cast<unsigned char>(raw[pos])) != 0) {
     ++pos;
   }
   if (pos >= raw.size()) {
-    return {};
+    return kLegacyOwner;
   }
 
-  // Not an array: an older writer, or a hand-edited database, put the bare source in
-  // the column. Taking it whole is the only reading that loses nothing.
   if (raw[pos] != '[') {
-    return raw.substr(pos);
+    // Not an array. Only a bare word is recoverable here, meaning text carrying no
+    // JSON punctuation at all: an older writer, or a hand edit, put the source in the
+    // column unquoted. Anything else (a byte-order mark in front of the array, an
+    // object wrapper, a quoted scalar) is structure this function does not claim to
+    // read, and returning it whole would mint an owner out of punctuation.
+    const bool bare_word =
+        raw.find_first_of("[]{}\",:", pos) == std::string::npos && static_cast<unsigned char>(raw[pos]) < 0x80;
+    return bare_word ? raw.substr(pos) : std::string(kLegacyOwner);
   }
 
   ++pos;  // past '['
@@ -150,7 +159,7 @@ std::string legacy_first_source(const std::string & raw) {
     ++pos;
   }
   if (pos >= raw.size() || raw[pos] != '"') {
-    return {};  // "[]", or a first element that is not a string
+    return kLegacyOwner;  // "[]", or a first element that is not a string
   }
 
   ++pos;  // past the opening quote
@@ -202,7 +211,7 @@ std::string legacy_first_source(const std::string & raw) {
         break;
     }
   }
-  return out;
+  return out.empty() ? std::string(kLegacyOwner) : out;
 }
 
 }  // namespace
@@ -609,17 +618,48 @@ bool SqliteFaultStorage::table_has_owner(const char * table) const {
   return false;
 }
 
-bool SqliteFaultStorage::has_ownerless_child_rows() const {
+bool SqliteFaultStorage::has_assignable_child_rows() const {
   for (const char * table : {"freeze_frames", "snapshots", "rosbag_files"}) {
     if (!table_has_owner(table)) {
       continue;  // the column arrives with the migration, which then fills it
     }
-    SqliteStatement stmt(db_, (std::string("SELECT 1 FROM ") + table + " WHERE owner = '' LIMIT 1").c_str());
+    // The same condition the backfill's UPDATE applies, so "is there work" and "what
+    // the work does" cannot disagree. Asking only for an empty owner would call a row
+    // that no open can ever assign (its code has several owners, or none) pending
+    // work forever, and every open would re-enter the write transaction and repeat
+    // the warning that says the row cannot be assigned.
+    const std::string sql = std::string("SELECT 1 FROM ") + table + " t WHERE t.owner = '' AND (SELECT COUNT(" +
+                            "DISTINCT f.owner) FROM faults f WHERE f.fault_code = t.fault_code) = 1 LIMIT 1";
+    SqliteStatement stmt(db_, sql.c_str());
     if (stmt.step() == SQLITE_ROW) {
       return true;
     }
   }
   return false;
+}
+
+bool SqliteFaultStorage::table_exists(const char * table) const {
+  SqliteStatement stmt(db_, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+  stmt.bind_text(1, table);
+  return stmt.step() == SQLITE_ROW;
+}
+
+void SqliteFaultStorage::drop_scratch_table(const char * table) {
+  // Announced rather than done quietly. Debris under these names means an earlier
+  // rebuild did not finish, or someone repaired the database by hand, and an operator
+  // reading the log after a surprising restart should find out that this open threw
+  // work away. The names are reserved for this procedure, so nothing else loses data.
+  if (table_exists(table)) {
+    RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage",
+                           "Dropping leftover migration scratch table '%s' from an unfinished earlier rebuild", table);
+  }
+  char * err_msg = nullptr;
+  const std::string sql = std::string("DROP TABLE IF EXISTS ") + table;
+  if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error(std::string("fault owner migration failed (drop leftover ") + table + "): " + error);
+  }
 }
 
 void SqliteFaultStorage::copy_legacy_fault_rows() {
@@ -673,12 +713,13 @@ void SqliteFaultStorage::copy_legacy_fault_rows() {
                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
   for (const auto & row : rows) {
-    if (row.owner.empty()) {
+    if (row.owner == kLegacyOwner) {
       // Kept, not dropped. The fault state is real and an operator can still see it,
-      // it simply belongs to no source that this database ever recorded readably.
+      // it simply belongs to no source that this database ever recorded readably. It
+      // gets a name rather than an empty owner so it stays addressable by source_id.
       RCUTILS_LOG_WARN_NAMED("sqlite_fault_storage",
-                             "Fault '%s' carried no readable reporting source, migrated with an empty owner",
-                             row.fault_code.c_str());
+                             "Fault '%s' carried no readable reporting source, migrated under owner '%s'",
+                             row.fault_code.c_str(), kLegacyOwner);
     }
     insert.reset();
     insert.bind_text(1, row.fault_code);
@@ -759,7 +800,7 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
   // condition is asked separately: an open interrupted between the faults rebuild and
   // the backfill, or a child table that gained the column while faults was still
   // legacy, leaves rows no owner can see. They are healed on the next open.
-  if (!schema_work && !has_ownerless_child_rows()) {
+  if (!schema_work && !has_assignable_child_rows()) {
     return;  // fresh database, or fully migrated - safe to re-run on every open
   }
 
@@ -785,7 +826,7 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
       // that leftover makes CREATE TABLE fail on every open and the schema stays
       // legacy forever. It is safe because faults_new is this procedure's scratch
       // table and nothing else ever reads it.
-      exec("DROP TABLE IF EXISTS faults_new", "drop leftover faults_new");
+      drop_scratch_table("faults_new");
       exec(
           "CREATE TABLE faults_new ("
           " fault_code TEXT NOT NULL,"
@@ -813,7 +854,7 @@ void SqliteFaultStorage::migrate_faults_add_owner() {
       // freeze_frames: same problem, same procedure, same reason for the DROP.
       // The owner is left empty here and assigned by the shared child backfill below,
       // so one rule decides who a frame belongs to no matter which open produced it.
-      exec("DROP TABLE IF EXISTS freeze_frames_new", "drop leftover freeze_frames_new");
+      drop_scratch_table("freeze_frames_new");
       exec(
           "CREATE TABLE freeze_frames_new ("
           " fault_code TEXT NOT NULL,"

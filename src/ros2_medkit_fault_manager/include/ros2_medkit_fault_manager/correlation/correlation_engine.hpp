@@ -65,10 +65,13 @@ struct ProcessClearResult {
 };
 
 /// Information about a muted record (for ListFaults response).
-/// Shape unchanged: MutedFaultInfo carries the CODE, so a muted (code, owner) appears
-/// on the wire as its code.
+/// Carries both halves of the record identity: two owners muted on one code are two
+/// entries of that code, told apart by owner.
 struct MutedFaultData {
   std::string fault_code;
+  /// Reporting source that owns the muted record. Filled from the map key, so it
+  /// cannot drift from the record this entry describes.
+  std::string owner;
   std::string root_cause_code;
   std::string rule_id;
   uint32_t delay_ms{0};

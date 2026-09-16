@@ -763,7 +763,7 @@ void FaultManagerNode::capture_on_confirm(const FaultId & id) {
                              static_cast<unsigned long long>(capture_pool_->dropped_captures()));
         break;
       case EnqueueResult::kRejectedShuttingDown:
-        RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", id.fault_code.c_str());
+        RCLCPP_DEBUG(get_logger(), "Capture pool shutting down, skipped capture for '%s'", id.fault_code.c_str());
         break;
     }
   }
@@ -944,8 +944,8 @@ void FaultManagerNode::handle_list_faults(
     response->cluster_count = correlation_engine_->get_cluster_count();
 
     // Include muted faults details if requested. One entry per muted RECORD, carrying
-    // its code: MutedFaultInfo keeps its shape, so two owners muted on one code appear
-    // as two entries of that code.
+    // both halves of its identity, so two owners muted on one code are two entries of
+    // that code told apart by source_id.
     if (request->include_muted) {
       const auto muted_faults = correlation_engine_->get_muted_faults();
       response->muted_faults.reserve(muted_faults.size());
@@ -955,6 +955,7 @@ void FaultManagerNode::handle_list_faults(
         info.root_cause_code = muted.root_cause_code;
         info.rule_id = muted.rule_id;
         info.delay_ms = muted.delay_ms;
+        info.source_id = muted.owner;
         response->muted_faults.push_back(info);
       }
     } else {
