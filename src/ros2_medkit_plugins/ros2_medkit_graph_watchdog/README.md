@@ -217,13 +217,14 @@ directly - the obvious choice - makes them reachable from no endpoint at all:
 it. There is no server-level `/faults/{code}` route either, so the flat `/faults` list
 was the only place these faults existed.
 
-Hanging each fault on the FQN of the node it is ABOUT does not work either: fault
-identity in the store is `fault_code` alone (`fault_code TEXT PRIMARY KEY`) while
-`reporting_sources` accumulates into a set on that one record, and `fault_in_source_scope`
-requires EVERY source to be in scope - so two dead nodes would hide
-`GRAPH_NODE_DISAPPEARED` from both of their `/apps/<fqn>/faults` pages. One owned entity
-per code keeps exactly one reporting source per record; the affected nodes are named in
-the description.
+Hanging each fault on the FQN of the node it is ABOUT is a different design, not an
+impossible one: a record is (`fault_code`, reporting source), so raising
+`GRAPH_NODE_DISAPPEARED` under each dead node's FQN would give each of them its own
+record on its own `/apps/<fqn>/faults` page. This detector aggregates by choice. A
+graph-level condition is one condition however many nodes it names, the affected set
+changes every tick, and per-node records would make the operator reconstruct the graph
+view from a list raising and clearing under them. One owned entity per code keeps the
+condition addressable as one thing; the affected nodes are named in the description.
 
 ### Detectors
 
@@ -298,9 +299,8 @@ means the subscriber does not constrain that policy, so it is always compatible.
 and depth are not RxO-compatibility dimensions and are deliberately not checked.
 
 **Aggregated fault, not per-topic**, via the shared `AggregatedFault` helper
-(`aggregated_fault.hpp`): the fault_manager
-identifies a fault by `fault_code` alone, so one `GRAPH_QOS_MISMATCH` per mismatched
-topic would collide into a single record under the shared code. One graph-level fault
+(`aggregated_fault.hpp`): a mismatch is a property of the graph, not of one topic, and
+the mismatched set changes every tick. One graph-level fault
 enumerates every currently-mismatched topic; it clears (`EVENT_PASSED`) on every tick
 where nothing is mismatched, subject to the same `healing_enabled` requirement
 described in "Closing the loop" above to actually reach HEALED.
@@ -415,8 +415,8 @@ plugins:
 ```
 
 **Aggregated fault, not per-pair**, via the same `AggregatedFault` helper `qos_mismatch`
-uses - the fault_manager identifies a fault by `fault_code` alone, so one `GRAPH_ORPHAN`
-per near-miss pair would collide into a single record under the shared code. One
+uses, and for the same reason: an orphaned pair is a property of the graph and the
+orphaned set changes every tick. One
 graph-level fault enumerates every currently-orphaned pair, keyed by the canonical
 `<publisher_topic> <-> <subscriber_topic>` string; it clears (`EVENT_PASSED`) on every
 tick where nothing is orphaned, subject to the same `healing_enabled` requirement
@@ -473,8 +473,8 @@ whoever reads the fault.
 
 **Aggregated fault, not per-node.** All drift in the graph is one graph-level
 `GRAPH_PARAM_DRIFT`, not a fault per owning node, for the same reason as the other
-detectors: the fault_manager identifies a fault by `fault_code` alone, so per-node faults
-would collide into a single record. The description enumerates every currently-drifted
+detectors: drift is a graph-level condition and the drifted set changes every tick.
+The description enumerates every currently-drifted
 `(node, parameter)` pair, up to a cap of 480 characters - past that the text is truncated. Each
 app's own contribution is trimmed to 150 characters before that, so one node drifting on many
 parameters cannot fill the 480 by itself, and the entries are ordered `expect` violations first,
@@ -1043,9 +1043,9 @@ the tick thread, the only thread that ever pumps these callbacks, so nothing it 
 queued is delivered afterwards.
 
 **Aggregated fault, not per-node**, via the shared `AggregatedFault` helper - the same
-rationale as every other detector here: the fault_manager identifies a fault by
-`fault_code` alone, so one `GRAPH_NODE_INACTIVE` per stuck node would collide into a
-single record under the shared code. Three graph-level faults, each enumerating every
+rationale as every other detector here: a stuck node is reported as part of a
+graph-level condition whose affected set changes every tick.
+Three graph-level faults, each enumerating every
 currently affected node for ITS OWN code, each description capped independently at 480
 characters with a truncation marker. Like `orphan` and `param_drift`, all three are
 fixed-severity `AggregatedFault` members at class scope (`aggregated_inactive_`,
@@ -1065,7 +1065,7 @@ independently.** The description used to list affected nodes in fqn order
 interesting but not once the cap is full: a fleet sharing
 `require_active: ["controller_server"]` across a dozen robots fills the 480-char cap from
 the alphabetically-earliest ones, and a THIRTEENTH robot going inactive afterward would
-be silently invisible forever - one shared `fault_code`, one record, no way to tell the
+be silently invisible forever - one aggregated fault, one description, no way to tell the
 operator which of thirteen actually broke. The tracker reports which fqns entered EACH
 fault's content on THIS tick - `newly_affected`, `newly_unreadable`, `newly_not_managed` -
 and each list orders only its OWN fault's `AggregatedFault::emit_ordered` call, since the
@@ -1526,10 +1526,11 @@ SAME occurrence continuing, not a new one, so restarting the dead node fast enou
 before anyone acknowledges it will not move the count.
 
 The honest limits, read off this branch's fault-manager storage rather than assumed: the
-per-fault rosbag store enforces `fault_code` as UNIQUE, so a fault can hold at most one
-recording at a time - a later confirmation's capture replaces the earlier one on disk rather
-than accumulating a history. The freeze frame is the same shape: one row per `fault_code`,
-overwritten on every capture, so a fifth occurrence's captured values overwrite the first's.
+rosbag store is unique on `(fault_code, owner, file_path)`, so one record keeps a history of
+recordings and the cap governs how many. The freeze frame is one row per record
+(`(fault_code, owner)`), overwritten on every capture, so a fifth occurrence's captured
+values overwrite the first's. Both are per record, so another source reporting the same
+code keeps its own.
 What survives every occurrence by default is the count itself; a hash-chained record of
 every raise/clear/heal transition also exists, but only once the fault manager's own
 `audit_log.enabled` is turned on, which it is not by default. Recordings and the freeze
@@ -1563,10 +1564,9 @@ operator, not by the passage of a restart.
 
 Re-seeding the tracker from the fault store at startup would change it, and today it cannot be
 done. `/fault_manager/list_faults` would tell this detector that a `GRAPH_NODE_DISAPPEARED`
-record is outstanding and that it is among its reporting sources - but not WHICH nodes it
-names, which is the only thing that would make a fresh instance's silence meaningful. The fault
-manager keeps one record per `fault_code`, and this detector folds every dead key into that one
-record's description. That description is this detector's own deterministic text, so for a
+record is outstanding and that it owns it - but not WHICH nodes it names, which is the only
+thing that would make a fresh instance's silence meaningful. This detector raises one
+aggregated fault under one owner and folds every dead key into that record's description. That description is this detector's own deterministic text, so for a
 record that never hit `kMaxDescriptionChars` the key list could in principle be read back out of
 it - the detector does not, because past the cap the remainder is collapsed into a count and the
 names are gone for good, and a re-seeding rule that works only for small faults is worse than

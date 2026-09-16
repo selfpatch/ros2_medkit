@@ -37,12 +37,14 @@ namespace ros2_medkit_graph_watchdog {
 /// `/faults/{code}` route either, so the flat `/faults` list was the only place these
 /// faults existed.
 ///
-/// Hanging each fault on the FQN of the node it is ABOUT does not work either:
-/// fault identity in the store is `fault_code` alone (`fault_code TEXT PRIMARY KEY`),
-/// and `reporting_sources` accumulates into a set on that one record while
-/// `fault_in_source_scope` requires EVERY source to be in scope. Two dead nodes would
-/// therefore hide GRAPH_NODE_DISAPPEARED from both of their `/apps/<fqn>/faults` pages.
-/// One owned entity per code keeps exactly one source per record.
+/// Hanging each fault on the FQN of the node it is ABOUT is a different design,
+/// not an impossible one: a record is (fault_code, reporting source), so raising
+/// GRAPH_NODE_DISAPPEARED under each dead node's FQN would give each of them its
+/// own record on its own `/apps/<fqn>/faults` page. This detector aggregates by
+/// choice. A graph-level condition is one condition however many nodes it names,
+/// the affected set changes every tick, and per-node records would make the
+/// operator reconstruct the graph view from a list that raises and clears under
+/// them. One owned entity per code keeps the condition addressable as one thing.
 ///
 /// Same shape as the ADS plugin's device entity, for the same reason.
 inline constexpr const char * kGraphWatchdogEntityId = "graph_watchdog";

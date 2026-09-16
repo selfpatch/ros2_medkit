@@ -1062,7 +1062,7 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
     send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
     log_info("Alarm cleared: " + signal.fault_code + " on " + entity_id);
-    send_clear_fault(signal.fault_code);
+    send_clear_fault(entity_id, signal.fault_code);
   }
 }
 
@@ -1240,8 +1240,8 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       log_info("AlarmCondition HEALED (latched, awaiting ack/confirm): " + delivery.fault_code);
       break;
     case AlarmAction::ClearFault:
-      log_info("AlarmCondition CLEARED: " + delivery.fault_code);
-      send_clear_fault(delivery.fault_code);
+      log_info("AlarmCondition CLEARED: " + delivery.fault_code + " on " + delivery.entity_id);
+      send_clear_fault(delivery.entity_id, delivery.fault_code);
       break;
     case AlarmAction::NoOp:
       break;
@@ -1281,14 +1281,19 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
   });
 }
 
-void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
+void OpcuaPlugin::send_clear_fault(const std::string & entity_id, const std::string & fault_code) {
   if (!fault_clients_->clear) {
     log_warn("ClearFault service client not available");
     return;
   }
 
+  // The record is (fault_code, source_id) and send_report_fault raised it under
+  // this entity_id, so the clear names the same owner. Clearing by code alone
+  // would reach whichever source the store resolved, which on a box running two
+  // plugin instances is another device's still-active fault.
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
+  request->source_id = entity_id;
 
   send_or_buffer([this, request]() {
     fault_clients_->clear->async_send_request(request);
@@ -2100,8 +2105,16 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
-  // list_entity_faults returns a bare JSON array of fault objects scoped to
-  // this entity (see PluginContext contract).
+  // The entity match is the LIST, not a comparison here. list_entity_faults
+  // returns a bare JSON array already scoped to this entity (see PluginContext
+  // contract): the fault manager's records filtered by the entity's resolved
+  // source set, plus the peers' answers for this same entity. So an item of
+  // this code in that array is a record this entity owns, and another entity's
+  // record of the same code never reaches this loop.
+  //
+  // Comparing the item's source_id to entity_id instead would be wrong, not
+  // merely redundant: a COMPONENT owns the records its hosted apps reported,
+  // whose owner is the app id, and the comparison would 404 them.
   auto faults = ctx_->list_entity_faults(entity_id);
   if (faults.is_array()) {
     for (const auto & f : faults) {
@@ -2111,8 +2124,8 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     }
   }
 
-  return tl::make_unexpected(
-      FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "Fault not found: " + fault_code, 404});
+  return tl::make_unexpected(FaultProviderErrorInfo{
+      FaultProviderError::FaultNotFound, "Fault not found: " + fault_code + " on entity " + entity_id, 404});
 }
 
 tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,
@@ -2121,7 +2134,9 @@ tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_f
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
-  send_clear_fault(fault_code);
+  // The entity_id is the record's owner, not decoration on the answer: a clear
+  // addressed to entity A must not reach entity B's record of the same code.
+  send_clear_fault(entity_id, fault_code);
   return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }

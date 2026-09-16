@@ -177,7 +177,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);
-  void send_clear_fault(const std::string & fault_code);
+  /// Clear the record this plugin raised: the entity_id is the source_id it
+  /// reported under, and together with fault_code it addresses one record.
+  void send_clear_fault(const std::string & entity_id, const std::string & fault_code);
 
   // Dispatch now if the fault_manager service is matched, else buffer the
   // dispatch (bounded, order-preserving) to be flushed once it appears.

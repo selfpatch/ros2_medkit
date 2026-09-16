@@ -375,13 +375,14 @@ nodes:
 # config, so the loader logs a warning and skips that bit rule while still loading
 # the rest of the config.
 #
-# Fault codes must be globally unique across ALL fault sources - every `alarm` /
-# `status_bits` / `fault_enum` entry AND every `event_alarms` entry (including
-# each of its `mappings[].fault_code`) - regardless of which entity owns them. The fault manager keys and clears faults by
-# fault_code alone, so a code reused on two sources (even on different entities,
-# even one polled and one event-driven) would flap raise/clear or clear the other
-# source's fault. The loader rejects the whole file at load with an actionable
-# error naming both sources.
+# Fault codes must be unique across ALL fault sources in this file - every
+# `alarm` / `status_bits` / `fault_enum` entry AND every `event_alarms` entry
+# (including each of its `mappings[].fault_code`) - regardless of which entity
+# owns them. The reason is this plugin's own shared `FaultTransitionTracker`,
+# which is keyed by fault_code alone: two sources emitting one code would
+# alternately raise and clear it every cycle, before either report is sent. The
+# loader rejects the whole file at load with an actionable error naming both
+# sources.
 
 # Native OPC-UA AlarmConditionType events (issue #386). Subscribes to alarms
 # defined inside the PLC (Siemens Program_Alarm / ProDiag, Beckhoff TF6100,
@@ -585,9 +586,9 @@ no node-map file required.
   SourceNode + EventType + Message. The SourceNode is folded into every tier so
   two distinct conditions sharing a ConditionName/SourceName but sitting on
   different sources (e.g. two identical FB instances each raising
-  "Overpressure") never collapse onto one code - the fault manager keys/clears
-  by code alone, so a collision would let one condition's clear wipe the
-  other's still-active fault. Message is NOT folded into the slug tiers, so a
+  "Overpressure") never collapse onto one code - the shared transition tracker
+  is keyed by code alone, so a collision would flap raise/clear between the two
+  conditions every cycle. Message is NOT folded into the slug tiers, so a
   condition whose Message differs between its active and inactive notifications
   still maps to one code. The hash tier additionally folds in the Message
   deliberately - a real Siemens S7-1500 multiplexes every `Program_Alarm` of
@@ -1004,10 +1005,10 @@ GET /api/v1/apps/tank_process/faults
 ```
 
 When the value returns below threshold, the plugin calls the fault manager's
-`~/clear_fault` service (`/fault_manager/clear_fault`) for that fault code. That
-is the same service an operator's
-`DELETE /api/v1/apps/{app_id}/faults/{fault_code}` ends up calling, so a device
-de-assert is a clear like any other. It drops the fault's value snapshots unless
+`~/clear_fault` service (`/fault_manager/clear_fault`) for that fault code and
+the entity that reported it, which together address one record. That is the same
+service an operator's `DELETE /api/v1/apps/{app_id}/faults/{fault_code}` ends up
+calling, so a device de-assert is a clear like any other. It drops the fault's value snapshots unless
 `snapshots.retain_on_clear` is set, and its rosbag recording unless
 `snapshots.rosbag.auto_cleanup` is off or `snapshots.rosbag.max_bags_per_fault`
 keeps a history.

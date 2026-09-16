@@ -27,11 +27,13 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -692,6 +694,27 @@ TEST_F(OpcuaPluginTest, GetFaultFound) {
   EXPECT_EQ(result->content.value("fault_code", ""), "PLC_LOW_LEVEL");
 }
 
+// A fault code is half of a record's identity, so a detail read on entity A must
+// not serve entity B's record of the same code. What keeps them apart is the
+// entity-scoped list this scan runs over, not a comparison inside the scan, and
+// that is what this pins: two owners of one code, and only the addressed
+// entity's record comes back.
+TEST_F(OpcuaPluginTest, GetFaultServesOnlyTheAddressedEntitysRecordOfASharedCode) {
+  ctx_.all_faults = {{"faults",
+                      {{{"fault_code", "SHARED_CODE"}, {"source_id", "other_tank"}, {"severity", 2}},
+                       {{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}, {"severity", 3}}}}};
+
+  auto result = plugin_.get_fault("tank", "SHARED_CODE");
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->content.value("source_id", ""), "tank") << "served another owner's record of the same code";
+  EXPECT_EQ(result->content.value("severity", 0), 3);
+
+  auto other = plugin_.get_fault("other_tank", "SHARED_CODE");
+  ASSERT_TRUE(other.has_value());
+  EXPECT_EQ(other->content.value("source_id", ""), "other_tank");
+}
+
 // -- configure() validation (issue #481) --
 
 TEST(OpcuaPluginConfigureTest, ThrowsOnInvalidNodeMap) {
@@ -1174,6 +1197,92 @@ struct ScopedExecutorSpin {
 // threads. It must complete without heap corruption and is clean under
 // ThreadSanitizer - the DDS/rclcpp machinery it drives is covered by
 // tsan_suppressions.txt, the same paths the gateway service tests exercise.
+// The plugin raises under the entity it polled, so its clear has to name the
+// same owner: a record is (fault_code, source_id), and a clear carrying no
+// source reaches whichever record the store resolves - on a box running a second
+// plugin instance against another device, that is the other device's still-active
+// fault.
+TEST(OpcuaPluginFaultIdentity, ClearFaultSendsTheOwningEntityAsSourceId) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_clear_owner_plugin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_clear_owner_faultmgr");
+
+  std::mutex seen_mutex;
+  std::vector<std::pair<std::string, std::string>> cleared;  // (fault_code, source_id)
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
+                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+        res->accepted = true;
+      });
+  auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
+      "/fault_manager/clear_fault",
+      [&cleared, &seen_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
+                              std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+        {
+          std::lock_guard<std::mutex> lock(seen_mutex);
+          cleared.emplace_back(req->fault_code, req->source_id);
+        }
+        res->success = true;
+      });
+
+  const std::string yaml_path = "/tmp/test_opcua_clear_owner_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: owner_plc
+component_id: owner_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";  // nothing listening; the fault sink drives the drain
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/owner_plc", "/owner_plc/owner_runtime/tank"};
+  plugin.set_context(ctx);
+
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
+  static_cast<void>(plugin.clear_fault("tank", "SHARED_CODE"));
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(seen_mutex);
+      if (!cleared.empty()) {
+        break;
+      }
+    }
+    static_cast<void>(plugin.clear_fault("tank", "SHARED_CODE"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  spinner.stop();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
+
+  std::lock_guard<std::mutex> lock(seen_mutex);
+  ASSERT_FALSE(cleared.empty()) << "no ClearFault reached the stub fault manager";
+  EXPECT_EQ(cleared.front().first, "SHARED_CODE");
+  EXPECT_EQ(cleared.front().second, "tank") << "the clear must name the entity the plugin reported under";
+}
+
 TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_pending_reports_regression");

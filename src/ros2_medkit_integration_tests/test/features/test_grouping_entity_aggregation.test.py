@@ -33,14 +33,16 @@ because the qualifier itself is ambiguous.
 ADDRESSING SECOND, and it has exactly two cases, decided per collection rather
 than per handler:
 
-  a LEAF-OWNED item  - a topic, an operation, a configuration key - belongs to
-                       one leaf, and is addressed "<leaf>:<item>".
-  an AGGREGATE item  - a fault, which has one code and a SET of reporting
-                       sources - belongs to the aggregate itself, and is
+  a LEAF-OWNED item  - a topic, an operation, a configuration key, a fault
+                       record - belongs to one leaf, and is addressed
+                       "<leaf>:<item>". A fault record is (fault_code,
+                       reporting source), and the source is the leaf.
+  an AGGREGATE item  - one a grouping computes over its members rather than
+                       holds - belongs to the aggregate itself, and is
                        addressed by its own id while naming its contributors.
 
-Faults, logs and bulk-data are not exceptions to the model; they are the second
-case. Which case a collection is, is declared once.
+Logs and bulk-data are not exceptions to the model. Which case a collection is,
+is declared once.
 
 WHAT THIS SUITE EXISTS TO PREVENT, all three measured on this topology:
 
