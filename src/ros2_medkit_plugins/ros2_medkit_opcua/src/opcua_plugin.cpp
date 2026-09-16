@@ -2124,8 +2124,8 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     }
   }
 
-  return tl::make_unexpected(FaultProviderErrorInfo{
-      FaultProviderError::FaultNotFound, "Fault not found: " + fault_code + " on entity " + entity_id, 404});
+  return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::FaultNotFound,
+                                                    "Fault not found: " + fault_code + " on entity " + entity_id, 404});
 }
 
 tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,

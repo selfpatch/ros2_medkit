@@ -149,8 +149,7 @@ class ProviderOnlyPlugin : public GatewayPlugin, public DataProvider {
       throw std::runtime_error("provider exploded");
     }
     return dto::DataListResult{
-        json{{"connected", true},
-             {"items", json::array({{{"id", "level"}, {"value", 7.5}, {"entity", entity_id}}})}}};
+        json{{"connected", true}, {"items", json::array({{{"id", "level"}, {"value", 7.5}, {"entity", entity_id}}})}}};
   }
   tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
                                                                 const std::string & resource) override {

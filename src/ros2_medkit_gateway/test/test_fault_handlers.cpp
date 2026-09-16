@@ -621,11 +621,11 @@ std::vector<ros2_medkit_gateway::faults::ScopedFault> in_scope(const json & faul
 
 // @verifies REQ_INTEROP_013
 TEST(SelectScopedFaultTest, OneRecordInScopeIsTheRecordAndNamesItsOwner) {
-  const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b"),
-                                   record("OTHER_CODE", "app_a")});
+  const json faults =
+      json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b"), record("OTHER_CODE", "app_a")});
 
-  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id",
-                                                   "app_a");
+  auto picked =
+      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
 
   ASSERT_TRUE(picked.has_value()) << picked.error().message;
   EXPECT_EQ(picked->owner, "app_a");
@@ -636,8 +636,8 @@ TEST(SelectScopedFaultTest, OneRecordInScopeIsTheRecordAndNamesItsOwner) {
 TEST(SelectScopedFaultTest, NoRecordInScopeIs404) {
   const json faults = json::array({record("SHARED_CODE", "app_b")});
 
-  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id",
-                                                   "app_a");
+  auto picked =
+      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
 
   ASSERT_FALSE(picked.has_value());
   EXPECT_EQ(picked.error().http_status, 404);
@@ -741,7 +741,7 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   fault.occurrence_count = 3;
   fault.status = "active";
   fault.reporting_sources = {"brake_ecu"};  // a record carries its one owner
-  fault.last_passed.sec = 1200;  // absent-when-zero covered separately below
+  fault.last_passed.sec = 1200;             // absent-when-zero covered separately below
 
   const json wire = conversions::fault_to_json(fault);
 

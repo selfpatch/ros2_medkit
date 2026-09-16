@@ -259,12 +259,10 @@ struct FaultXMedkit {
 };
 
 template <>
-inline constexpr auto dto_fields<FaultXMedkit> =
-    std::make_tuple(field("occurrence_count", &FaultXMedkit::occurrence_count),
-                    field("reporting_sources", &FaultXMedkit::reporting_sources),
-                    field("source_id", &FaultXMedkit::source_id),
-                    field("severity_label", &FaultXMedkit::severity_label),
-                    field("status_raw", &FaultXMedkit::status_raw));
+inline constexpr auto dto_fields<FaultXMedkit> = std::make_tuple(
+    field("occurrence_count", &FaultXMedkit::occurrence_count),
+    field("reporting_sources", &FaultXMedkit::reporting_sources), field("source_id", &FaultXMedkit::source_id),
+    field("severity_label", &FaultXMedkit::severity_label), field("status_raw", &FaultXMedkit::status_raw));
 
 template <>
 inline constexpr std::string_view dto_name<FaultXMedkit> = "FaultXMedkit";

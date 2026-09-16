@@ -59,4 +59,3 @@ Faults
    endpoints on the fault's reporting entity. For faults already confirmed when the
    capturing component starts (e.g. the gateway restarts while a fault is standing), an
    equivalent snapshot shall be captured at startup and marked with its capture origin.
-

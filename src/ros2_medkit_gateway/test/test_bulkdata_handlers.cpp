@@ -115,8 +115,12 @@ namespace {
 /// which is the owner of the record the recording belongs to.
 json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024,
                 const std::string & owner = "app_a") {
-  return json{{"fault_code", fault_code}, {"recording_id", recording_id}, {"file_path", "/var/bags/" + recording_id},
-              {"format", "mcap"},         {"duration_sec", 5.0},          {"size_bytes", size_bytes},
+  return json{{"fault_code", fault_code},
+              {"recording_id", recording_id},
+              {"file_path", "/var/bags/" + recording_id},
+              {"format", "mcap"},
+              {"duration_sec", 5.0},
+              {"size_bytes", size_bytes},
               {"owner", owner}};
 }
 

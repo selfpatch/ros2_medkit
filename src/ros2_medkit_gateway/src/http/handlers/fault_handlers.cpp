@@ -228,8 +228,8 @@ ErrorInfo FaultHandlers::classify_fault_failure(FaultFailure failure, const std:
   return make_error(503, ERR_SERVICE_UNAVAILABLE, unavailable_summary, params);
 }
 
-std::unordered_map<std::string, std::string> FaultHandlers::build_source_entity_map(
-    const ThreadSafeEntityCache & cache) {
+std::unordered_map<std::string, std::string>
+FaultHandlers::build_source_entity_map(const ThreadSafeEntityCache & cache) {
   std::unordered_map<std::string, std::string> source_to_entity;
   for (const auto & app : cache.get_apps()) {
     // The same resolution the fault scope uses: an external app's bare id, any
@@ -248,9 +248,9 @@ std::unordered_map<std::string, std::string> FaultHandlers::build_source_entity_
   return source_to_entity;
 }
 
-tl::expected<faults::ScopedFault, ErrorInfo> FaultHandlers::select_scoped_fault(
-    std::vector<faults::ScopedFault> records, const std::string & fault_code, const std::string & id_field,
-    const std::string & entity_id) {
+tl::expected<faults::ScopedFault, ErrorInfo>
+FaultHandlers::select_scoped_fault(std::vector<faults::ScopedFault> records, const std::string & fault_code,
+                                   const std::string & id_field, const std::string & entity_id) {
   if (records.empty()) {
     return tl::make_unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
@@ -854,8 +854,8 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
               const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
               json env_data_json = mgr_result.data.value("environment_data", json::object());
               if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
-                env_data_json =
-                    merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code, scoped->owner));
+                env_data_json = merge_entity_freeze_frames(std::move(env_data_json),
+                                                           capture->frames_for(fault_code, scoped->owner));
               }
               auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
               return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
@@ -902,7 +902,8 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
 
     json env_data_json = result.data.value("environment_data", json::object());
     if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
-      env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code, scoped->owner));
+      env_data_json =
+          merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code, scoped->owner));
     }
     auto detail = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
 

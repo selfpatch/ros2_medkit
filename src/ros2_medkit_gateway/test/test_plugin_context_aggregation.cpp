@@ -183,13 +183,11 @@ class FakeFaultTransport : public ros2_medkit_gateway::FaultServiceTransport {
                                                bool /*skip_correlation_auto_clear*/) override {
     return {false, json::object(), "not implemented"};
   }
-  ros2_medkit_gateway::FaultResult get_snapshots(const std::string & /*fault_code*/,
-                                                 const std::string & /*source_id*/,
+  ros2_medkit_gateway::FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*source_id*/,
                                                  const std::string & /*topic*/) override {
     return {false, json::object(), "not implemented"};
   }
-  ros2_medkit_gateway::FaultResult get_rosbag(const std::string & /*id*/,
-                                              const std::string & /*source_id*/) override {
+  ros2_medkit_gateway::FaultResult get_rosbag(const std::string & /*id*/, const std::string & /*source_id*/) override {
     return {false, json::object(), "not implemented"};
   }
   ros2_medkit_gateway::FaultResult list_rosbags(const std::string & /*entity_fqn*/) override {

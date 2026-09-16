@@ -107,8 +107,8 @@ std::string record_key(const std::string & fault_code, const std::string & owner
 
 }  // namespace
 
-std::vector<EntityFreezeFrameCapture::Frame>
-EntityFreezeFrameCapture::frames_for(const std::string & fault_code, const std::string & owner) const {
+std::vector<EntityFreezeFrameCapture::Frame> EntityFreezeFrameCapture::frames_for(const std::string & fault_code,
+                                                                                  const std::string & owner) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = frames_.find(record_key(fault_code, owner));
   return it != frames_.end() ? it->second : std::vector<Frame>{};
