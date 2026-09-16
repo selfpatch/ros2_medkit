@@ -80,10 +80,10 @@ namespace ros2_medkit_gateway {
 
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-std::string PluginRequest::path_param(size_t) const {
+std::string PluginRequest::path_param(size_t /*index*/) const {
   return {};
 }
-std::string PluginRequest::header(const std::string &) const {
+std::string PluginRequest::header(const std::string & /*name*/) const {
   return {};
 }
 const std::string & PluginRequest::path() const {
@@ -94,15 +94,16 @@ const std::string & PluginRequest::body() const {
   static const std::string empty;
   return empty;
 }
-std::string PluginRequest::query_param(const std::string &) const {
+std::string PluginRequest::query_param(const std::string & /*name*/) const {
   return {};
 }
 
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
-void PluginResponse::send_json(const nlohmann::json &) {
+void PluginResponse::send_json(const nlohmann::json & /*data*/) {
 }
-void PluginResponse::send_error(int, const std::string &, const std::string &, const nlohmann::json &) {
+void PluginResponse::send_error(int /*status*/, const std::string & /*error_code*/, const std::string & /*message*/,
+                                const nlohmann::json & /*parameters*/) {
 }
 
 // -- FakePluginContext: node() is null (no ROS graph), just enough for
@@ -119,35 +120,38 @@ class FakePluginContext : public RosPluginContext {
     auto it = entities.find(id);
     return it != entities.end() ? std::optional<PluginEntityInfo>(it->second) : std::nullopt;
   }
-  std::vector<PluginEntityInfo> get_child_apps(const std::string &) const override {
+  std::vector<PluginEntityInfo> get_child_apps(const std::string & /*component_id*/) const override {
     return {};
   }
-  nlohmann::json list_entity_faults(const std::string &) const override {
+  nlohmann::json list_entity_faults(const std::string & /*entity_id*/) const override {
     // Contract: a bare JSON array of fault objects (empty for this fake).
     return nlohmann::json::array();
   }
-  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest &, PluginResponse &,
+  std::optional<PluginEntityInfo> validate_entity_for_route(const PluginRequest & /*req*/, PluginResponse & /*res*/,
                                                             const std::string & entity_id) const override {
     return get_entity(entity_id);
   }
-  void register_capability(SovdEntityType, const std::string &) override {
+  void register_capability(SovdEntityType /*entity_type*/, const std::string & /*capability_name*/) override {
   }
-  void register_entity_capability(const std::string &, const std::string &) override {
+  void register_entity_capability(const std::string & /*entity_id*/, const std::string & /*capability_name*/) override {
   }
-  std::vector<std::string> get_type_capabilities(SovdEntityType) const override {
+  std::vector<std::string> get_type_capabilities(SovdEntityType /*entity_type*/) const override {
     return {};
   }
-  std::vector<std::string> get_entity_capabilities(const std::string &) const override {
+  std::vector<std::string> get_entity_capabilities(const std::string & /*entity_id*/) const override {
     return {};
   }
-  LockAccessResult check_lock(const std::string &, const std::string &, const std::string &) const override {
+  LockAccessResult check_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+                              const std::string & /*collection*/) const override {
     return {true, "", "", ""};
   }
-  tl::expected<LockInfo, LockError> acquire_lock(const std::string &, const std::string &,
-                                                 const std::vector<std::string> &, int) override {
+  tl::expected<LockInfo, LockError> acquire_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+                                                 const std::vector<std::string> & /*scopes*/,
+                                                 int /*expiration_seconds*/) override {
     return tl::make_unexpected(LockError{"not supported", "", 409, std::nullopt});
   }
-  tl::expected<void, LockError> release_lock(const std::string &, const std::string &) override {
+  tl::expected<void, LockError> release_lock(const std::string & /*entity_id*/,
+                                             const std::string & /*client_id*/) override {
     return tl::make_unexpected(LockError{"not supported", "", 409, std::nullopt});
   }
   IntrospectionInput get_entity_snapshot() const override {
@@ -157,9 +161,9 @@ class FakePluginContext : public RosPluginContext {
     return nlohmann::json::object();
   }
   void register_sampler(
-      const std::string &,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &)
-      override {
+      const std::string & /*collection*/,
+      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
+      /*fn*/) override {
   }
   ResourceChangeNotifier * get_resource_change_notifier() override {
     return nullptr;
@@ -197,9 +201,17 @@ int reserve_local_port() {
 // prints the "READY " handshake line on stdout. SIGTERM on teardown.
 class AlarmServer {
  public:
+  AlarmServer() = default;
   ~AlarmServer() {
     stop();
   }
+  // Owns a child process and its pipe descriptors, so a member-wise copy or move
+  // would leave two objects stopping the same process and closing the same
+  // descriptors.
+  AlarmServer(const AlarmServer &) = delete;
+  AlarmServer & operator=(const AlarmServer &) = delete;
+  AlarmServer(AlarmServer &&) = delete;
+  AlarmServer & operator=(AlarmServer &&) = delete;
 
   bool start(const std::string & binary, int port, const std::vector<std::string> & extra_args = {}) {
     int pipefd[2];
@@ -687,6 +699,8 @@ struct ScopedRclcpp {
   }
   ScopedRclcpp(const ScopedRclcpp &) = delete;
   ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
+  ScopedRclcpp(ScopedRclcpp &&) = delete;
+  ScopedRclcpp & operator=(ScopedRclcpp &&) = delete;
 };
 
 // Spins an executor on its own thread and guarantees cancel -> join on every
@@ -893,8 +907,9 @@ class FaultStoreStub {
 
   void open_reports() {
     report_srv_ = node_->create_service<ros2_medkit_msgs::srv::ReportFault>(
-        "/fault_manager/report_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> req,
-                                              std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+        "/fault_manager/report_fault",
+        [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & req,
+               const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
           {
             std::lock_guard<std::mutex> lock(mutex_);
             reported_.push_back(req->fault_code);
@@ -909,8 +924,8 @@ class FaultStoreStub {
 
   void open_clears() {
     clear_srv_ = node_->create_service<ros2_medkit_msgs::srv::ClearFault>(
-        "/fault_manager/clear_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
-                                             std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+        "/fault_manager/clear_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                                             const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
           {
             std::lock_guard<std::mutex> lock(mutex_);
             cleared_.push_back(*req);
@@ -923,8 +938,8 @@ class FaultStoreStub {
   void open_reads(bool answer_immediately = true) {
     answer_reads_.store(answer_immediately);
     read_srv_ = node_->create_service<ros2_medkit_msgs::srv::GetFault>(
-        "/fault_manager/get_fault", [this](const std::shared_ptr<rmw_request_id_t> header,
-                                           const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> req) {
+        "/fault_manager/get_fault", [this](const std::shared_ptr<rmw_request_id_t> & header,
+                                           const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & req) {
           if (answer_reads_.load()) {
             answer_read(*header, req->fault_code);
             return;
@@ -1666,7 +1681,7 @@ TEST_F(OpcuaIdentityE2ETest, AFaultRaisedUnderTheStandInHealsAfterTheDeviceNames
   ASSERT_TRUE(wait_until_connectable());
 
   const auto heal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
-  while (store.sources_of(kCommsLostFaultCode).size() != 0 && std::chrono::steady_clock::now() < heal_deadline) {
+  while (!store.sources_of(kCommsLostFaultCode).empty() && std::chrono::steady_clock::now() < heal_deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
