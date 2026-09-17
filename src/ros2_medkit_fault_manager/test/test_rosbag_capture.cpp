@@ -959,7 +959,7 @@ class RosbagNonStandardThrowStorage : public InMemoryFaultStorage {
 /// Storage counting fault lookups, which is what resolving an entity scope costs.
 class RosbagFaultLookupCountingStorage : public InMemoryFaultStorage {
  public:
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override {
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) override {
     ++lookups;
     return InMemoryFaultStorage::get_fault(fault_code);
   }

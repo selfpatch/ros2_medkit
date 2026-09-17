@@ -19,7 +19,12 @@
 
 namespace ros2_medkit_fault_manager {
 
-PgFaultStorage::PgFaultStorage(const std::string & conn_info) : conn_info_(conn_info) {
+PgFaultStorage::PgFaultStorage(const std::string & conn_info) : PgFaultStorage(conn_info, 1, 500) {
+}
+
+PgFaultStorage::PgFaultStorage(const std::string & conn_info, const int max_retries,
+                               const unsigned reconnection_delay_ms)
+  : conn_info_(conn_info), max_retries_(max_retries), reconnection_delay_(reconnection_delay_ms) {
   try {
     db_conn_ = std::make_unique<pqxx::connection>(conn_info);
   } catch (const std::exception & e) {
@@ -38,6 +43,33 @@ PgFaultStorage::~PgFaultStorage() {
   }
 }
 
+template <typename... Args>
+pqxx::result PgFaultStorage::execute(pqxx::work & tx, const std::string & query, Args &&... args) {
+  auto curr_retry = max_retries_;
+  while (!db_conn_->is_open() && curr_retry-- < 0) {
+    try {
+      db_conn_ = std::make_unique<pqxx::connection>(conn_info_);
+      if (!db_conn_->is_open()) {
+        // throw pqxx::broken_connection("execute (during reconnection) PostgreSQL error");
+        std::this_thread::sleep_for(std::chrono::milliseconds(reconnection_delay_));
+        continue;
+      }
+      break;
+    } catch (const std::exception & e) {
+      std::cerr << "Reconnection failed: " << e.what() << std::endl;
+      // throw pqxx::broken_connection(std::string("execute (during reconnection) PostgreSQL error: ") + e.what());
+    }
+  }
+  if (!db_conn_->is_open()) {
+    // throw pqxx::broken_connection("execute (during reconnection) PostgreSQL error");
+    throw IgnorableConnectionException("execute (during reconnection) PostgreSQL error");
+  }
+  if (sizeof...(Args) > 0) {
+    return tx.exec_params(query, std::forward<Args>(args)...);
+  }
+  return tx.exec(query);
+}
+
 void PgFaultStorage::set_debounce_config(const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
   config_ = config;
@@ -51,7 +83,8 @@ DebounceConfig PgFaultStorage::get_debounce_config() const {
 void PgFaultStorage::initialize_schema() {
   pqxx::work tx(*db_conn_);
   try {
-    tx.exec(R"(
+    // tx.exec(R"(
+    execute(tx, R"(
       CREATE TABLE IF NOT EXISTS faults (
         fault_code TEXT PRIMARY KEY,
         severity INTEGER NOT NULL,
@@ -68,25 +101,8 @@ void PgFaultStorage::initialize_schema() {
       );
     )");
 
-    // NOTE: Since PostgreSQL support came after the 'confirmed_at_ns' column
-    // was introduced, we should not check for backwards compatibility
-
-    // Migration: releases that advanced last_occurred_ns on PASSED events left
-    // inflated rows behind, and a latched CONFIRMED fault that only ever heals
-    // would keep the wrong timestamp forever. last_failed_ns holds the true
-    // last occurrence; last_occurred_ns can only exceed it via that old bug.
-    tx.exec(
-        "UPDATE faults SET last_occurred_ns = last_failed_ns WHERE last_failed_ns > 0 AND last_occurred_ns > "
-        "last_failed_ns");
-
     // Create snapshots table for storing topic data captured when faults are confirmed
-    // Migration: snapshots gained capture_id, which groups the rows of one capture.
-    // Without it the per-fault cap could not tell where a capture ended and trimmed
-    // by row, storing a confirmation's values in part. Rows written before it read
-    // as capture 0 - one legacy set, which is how they behaved anyway.
-    // NOTE: The sqlite version adds another column (capture_id) on a separate step. We are doing it on creation, since
-    // no previous version exists to ensure compatibility right from the start
-    tx.exec(R"(
+    execute(tx, R"(
       CREATE TABLE IF NOT EXISTS snapshots (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
@@ -102,7 +118,7 @@ void PgFaultStorage::initialize_schema() {
     // Create freeze_frames table: one compact JSON dict of captured topic values per fault
     // code. Unlike snapshots, freeze frames are keyed by fault_code and are NOT removed on
     // clear_fault, so the confirmed-state record is retained after acknowledgement.
-    tx.exec(R"(
+    execute(tx, R"(
       CREATE TABLE IF NOT EXISTS freeze_frames (
         fault_code TEXT PRIMARY KEY,
         data TEXT NOT NULL,
@@ -110,14 +126,12 @@ void PgFaultStorage::initialize_schema() {
       );
     )");
 
-    // NOTE: The capture_id migration check is not required since the PostgreSQL integration came after it
-
     // Create near_misses table: append-only series of FAILED reports that moved the debounce
     // counter without confirming the fault. One row per qualifying report, never updated in
     // place, and NOT removed on clear_fault - acknowledging a fault cycle must not erase how
     // often that code approached confirmation. Bounded per fault code by the caller-supplied
     // limit, evicting the oldest rows first.
-    tx.exec(R"(
+    execute(tx, R"(
       CREATE TABLE IF NOT EXISTS near_misses (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
@@ -131,8 +145,6 @@ void PgFaultStorage::initialize_schema() {
       CREATE INDEX IF NOT EXISTS idx_near_misses_fault_code ON near_misses(fault_code, id);
     )");
 
-    // NOTE: The resulting_status migration check is not required since the PostgreSQL integration came after it
-
     // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
     // several faults of a burst link to one bag, and one fault links to several bags
     // over time. Bytes belong to file_path, not to the row.
@@ -141,9 +153,7 @@ void PgFaultStorage::initialize_schema() {
     // CREATE UNIQUE INDEX, never as a column constraint. The original
     // `fault_code TEXT NOT NULL UNIQUE` could not be dropped with ALTER TABLE and
     // forced the full table rebuild in the sqlite version.
-    // NOTE: Since the PostgreSQL integration came after the UNIQUE fault_code was removed, the migration steps are
-    // omitted and all indices are created without the conflicts
-    tx.exec(R"(
+    execute(tx, R"(
       CREATE TABLE IF NOT EXISTS rosbag_files (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
@@ -163,6 +173,9 @@ void PgFaultStorage::initialize_schema() {
     )");
 
     tx.commit();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error("Schema initialization failed: " + std::string(e.what()));
@@ -325,6 +338,9 @@ bool PgFaultStorage::report_fault_event(const std::string & fault_code, uint8_t 
         report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config, tx);
     tx.commit();
     return is_new_occurrence;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("report_fault_event PostgreSQL error: ") + e.what());
@@ -338,12 +354,12 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
   int64_t timestamp_ns = timestamp.nanoseconds();
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
-  // NOTE: Do I need to SELECT here with FOR UPDATE to secure the selected row?
+  // No row lock needed: mutex_ serializes every call on this connection, and one database belongs to exactly one
   // Check if fault exists
-  auto res = tx.exec_params(
-      "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, confirmed_at_ns, "
-      "first_occurred_ns FROM faults WHERE fault_code = $1",
-      fault_code);
+  auto res = execute(tx,
+                     "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, confirmed_at_ns, "
+                     "first_occurred_ns FROM faults WHERE fault_code = $1",
+                     fault_code);
 
   if (!res.empty()) {
     // Fault exists - update it
@@ -414,19 +430,19 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
       }
 
       if (description.empty()) {
-        tx.exec_params(
-            "UPDATE faults SET severity = $1, last_occurred_ns = $2, last_failed_ns = $3, occurrence_count = $4, "
-            "reporting_sources = $5, status = $6, debounce_counter = $7, confirmed_at_ns = $8, "
-            "first_occurred_ns = $9 WHERE fault_code = $10",
-            new_severity, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources), new_status,
-            debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
+        execute(tx,
+                "UPDATE faults SET severity = $1, last_occurred_ns = $2, last_failed_ns = $3, occurrence_count = $4, "
+                "reporting_sources = $5, status = $6, debounce_counter = $7, confirmed_at_ns = $8, "
+                "first_occurred_ns = $9 WHERE fault_code = $10",
+                new_severity, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources), new_status,
+                debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
       } else {
-        tx.exec_params(
-            "UPDATE faults SET severity = $1, description = $2, last_occurred_ns = $3, last_failed_ns = $4, "
-            "occurrence_count = $5, reporting_sources = $6, status = $7, debounce_counter = $8, "
-            "confirmed_at_ns = $9, first_occurred_ns = $10 WHERE fault_code = $11",
-            new_severity, description, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources), new_status,
-            debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
+        execute(tx,
+                "UPDATE faults SET severity = $1, description = $2, last_occurred_ns = $3, last_failed_ns = $4, "
+                "occurrence_count = $5, reporting_sources = $6, status = $7, debounce_counter = $8, "
+                "confirmed_at_ns = $9, first_occurred_ns = $10 WHERE fault_code = $11",
+                new_severity, description, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources),
+                new_status, debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
       }
 
       if (is_near_miss(true, new_status)) {
@@ -442,8 +458,8 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
       // last_occurred_ns is deliberately NOT touched: a PASSED event is the fault
       // ENDING, not occurring. Bumping it made a long-stale CONFIRMED fault look
       // freshly active. The PASSED instant is recorded in last_passed_ns.
-      tx.exec_params("UPDATE faults SET last_passed_ns = $1, status = $2, debounce_counter = $3 WHERE fault_code = $4",
-                     timestamp_ns, new_status, debounce_counter, fault_code);
+      execute(tx, "UPDATE faults SET last_passed_ns = $1, status = $2, debounce_counter = $3 WHERE fault_code = $4",
+              timestamp_ns, new_status, debounce_counter, fault_code);
     }
 
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
@@ -464,7 +480,8 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
   }
 
   const bool confirmed_now = initial_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-  tx.exec_params(
+  execute(
+      tx,
       "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, "
       "status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns) "
       "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
@@ -480,7 +497,7 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
 }
 
 std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                                      const std::vector<std::string> & statuses) const {
+                                                                      const std::vector<std::string> & statuses) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   try {
@@ -511,8 +528,8 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filte
       sql += " AND severity = $2";
     }
 
-    auto res = filter_by_severity ? tx.exec_params(sql, status_filter_vector, static_cast<int>(severity))
-                                  : tx.exec_params(sql, status_filter_vector);
+    auto res = filter_by_severity ? execute(tx, sql, status_filter_vector, static_cast<int>(severity))
+                                  : execute(tx, sql, status_filter_vector);
     tx.commit();
 
     std::vector<ros2_medkit_msgs::msg::Fault> result;
@@ -530,17 +547,21 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filte
       result.push_back(fault);
     }
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("list_faults PostgreSQL error: ") + e.what());
   }
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   try {
-    auto res = tx.exec_params(
+    auto res = execute(
+        tx,
         "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
         "reporting_sources, last_passed_ns FROM faults WHERE fault_code = $1",
         fault_code);
@@ -561,6 +582,9 @@ std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std:
     fault.last_passed = rclcpp::Time(r["last_passed_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
     tx.commit();
     return fault;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_fault PostgreSQL error: ") + e.what());
@@ -580,14 +604,17 @@ bool PgFaultStorage::clear_fault(const std::string & fault_code) {
     // for: with recordings retained past a clear, deleting the readings that go with
     // them leaves a fault holding bags whose matching values are gone.
     if (!retain_snapshots_on_clear_) {
-      tx.exec_params("DELETE FROM snapshots WHERE fault_code = $1", fault_code);
+      execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", fault_code);
     }
 
-    auto res = tx.exec_params("UPDATE faults SET status = $1 WHERE fault_code = $2",
-                              ros2_medkit_msgs::msg::Fault::STATUS_CLEARED, fault_code);
+    auto res = execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2",
+                       ros2_medkit_msgs::msg::Fault::STATUS_CLEARED, fault_code);
     const bool changed = res.affected_rows() > 0;
     tx.commit();
     return changed;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("clear_fault PostgreSQL error: ") + e.what());
@@ -603,7 +630,7 @@ std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared() {
     // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
     // so the returned list matches the rows actually reclassified below.
     auto res =
-        tx.exec_params("SELECT fault_code FROM faults WHERE status = $1", ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+        execute(tx, "SELECT fault_code FROM faults WHERE status = $1", ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     std::vector<std::string> reclassified;
     for (const auto & r : res) {
       reclassified.push_back(r["fault_code"].as<std::string>());
@@ -617,40 +644,49 @@ std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared() {
     // has to reach here too: otherwise the setting holds until the next restart and then the
     // reclassification deletes exactly what it was set to keep.
     if (!retain_snapshots_on_clear_) {
-      tx.exec_params("DELETE FROM snapshots WHERE fault_code IN (SELECT fault_code FROM faults WHERE status = $1)",
-                     ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+      execute(tx, "DELETE FROM snapshots WHERE fault_code IN (SELECT fault_code FROM faults WHERE status = $1)",
+              ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     }
-    tx.exec_params("UPDATE faults SET status = $1 WHERE status = $2", ros2_medkit_msgs::msg::Fault::STATUS_CLEARED,
-                   ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+    execute(tx, "UPDATE faults SET status = $1 WHERE status = $2", ros2_medkit_msgs::msg::Fault::STATUS_CLEARED,
+            ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     tx.commit();
     return reclassified;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("reclassify_healed_as_cleared PostgreSQL error: ") + e.what());
   }
 }
 
-size_t PgFaultStorage::size() const {
+size_t PgFaultStorage::size() {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   try {
-    auto res = tx.exec("SELECT COUNT(*) AS sz FROM faults");
+    auto res = execute(tx, "SELECT COUNT(*) AS sz FROM faults");
     tx.commit();
     return res.empty() ? 0 : static_cast<size_t>(res[0]["sz"].as<int64_t>());
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("size PostgreSQL error: ") + e.what());
   }
 }
 
-bool PgFaultStorage::contains(const std::string & fault_code) const {
+bool PgFaultStorage::contains(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   try {
-    auto res = tx.exec_params("SELECT 1 FROM faults WHERE fault_code = $1 LIMIT 1", fault_code);
+    auto res = execute(tx, "SELECT 1 FROM faults WHERE fault_code = $1 LIMIT 1", fault_code);
     tx.commit();
     return !res.empty();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("contains PostgreSQL error: ") + e.what());
@@ -673,20 +709,23 @@ std::vector<std::string> PgFaultStorage::check_time_based_confirmation(const rcl
     // Collect the codes that will flip first so the caller can audit each one. The
     // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
     // so the returned list matches the rows actually confirmed below.
-    auto res = tx.exec_params(
-        "SELECT fault_code FROM faults WHERE status = $1 AND last_failed_ns <= $2 AND last_failed_ns > 0 ",
-        ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
+    auto res =
+        execute(tx, "SELECT fault_code FROM faults WHERE status = $1 AND last_failed_ns <= $2 AND last_failed_ns > 0 ",
+                ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
     for (const auto & r : res) {
       confirmed.push_back(r["fault_code"].as<std::string>());
     }
 
     if (!confirmed.empty()) {
-      tx.exec_params("UPDATE faults SET status = $1, confirmed_at_ns = $2 WHERE status = $3 AND last_failed_ns <= $4 ",
-                     ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED, current_ns,
-                     ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
+      execute(tx, "UPDATE faults SET status = $1, confirmed_at_ns = $2 WHERE status = $3 AND last_failed_ns <= $4 ",
+              ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED, current_ns,
+              ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
     }
     tx.commit();
     return confirmed;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("check_time_based_confirmation PostgreSQL error: ") + e.what());
@@ -725,7 +764,8 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
   pqxx::work tx(*db_conn_);
   try {
     for (const auto & snapshot : snapshots) {
-      tx.exec_params(
+      execute(
+          tx,
           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns, capture_id) VALUES ($1, $2, "
           "$3, $4, $5, $6)",
           snapshot.fault_code, snapshot.topic, snapshot.message_type, snapshot.data, snapshot.captured_at_ns,
@@ -742,27 +782,30 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
       // is smaller than this fault's topic count and tearing it would be the very
       // thing being fixed.
       auto res =
-          tx.exec_params("SELECT MAX(capture_id) AS max_capture_id FROM snapshots WHERE fault_code = $1", fault_code);
+          execute(tx, "SELECT MAX(capture_id) AS max_capture_id FROM snapshots WHERE fault_code = $1", fault_code);
       int64_t newest_capture = 0;
       if (!res.empty()) {
         newest_capture = res[0]["max_capture_id"].as<int64_t>();
       }
       while (true) {
-        auto count_res = tx.exec_params("SELECT COUNT(*) AS sz FROM snapshots WHERE fault_code = $1", fault_code);
+        auto count_res = execute(tx, "SELECT COUNT(*) AS sz FROM snapshots WHERE fault_code = $1", fault_code);
         if (count_res.empty() || count_res[0]["sz"].as<size_t>() <= max_snapshots_per_fault_) {
           break;
         }
-        auto trim_res = tx.exec_params(
-            "DELETE FROM snapshots WHERE fault_code = $1 AND capture_id = "
-            "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = $1) "
-            "AND capture_id <> $2",
-            fault_code, newest_capture);
+        auto trim_res = execute(tx,
+                                "DELETE FROM snapshots WHERE fault_code = $1 AND capture_id = "
+                                "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = $1) "
+                                "AND capture_id <> $2",
+                                fault_code, newest_capture);
         if (trim_res.affected_rows() == 0) {
           break;
         }
       }
     }
     tx.commit();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("store_snapshots PostgreSQL error: ") + e.what());
@@ -770,7 +813,7 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
 }
 
 std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & fault_code,
-                                                        const std::string & topic_filter) const {
+                                                        const std::string & topic_filter) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
@@ -788,7 +831,7 @@ std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & faul
       sql += " AND TOPIC = $2";
     }
     sql += " ORDER BY capture_id DESC, captured_at_ns DESC";
-    auto res = topic_filter.empty() ? tx.exec_params(sql, fault_code) : tx.exec_params(sql, fault_code, topic_filter);
+    auto res = topic_filter.empty() ? execute(tx, sql, fault_code) : execute(tx, sql, fault_code, topic_filter);
     tx.commit();
     for (const auto & r : res) {
       SnapshotData snapshot;
@@ -801,22 +844,28 @@ std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & faul
       result.push_back(snapshot);
     }
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_snapshots PostgreSQL error: ") + e.what());
   }
 }
 
-int64_t PgFaultStorage::get_max_capture_id() const {
+int64_t PgFaultStorage::get_max_capture_id() {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   try {
     // Global, not per fault: the counter that mints these is global, and seeding it
     // below any id already on disk is what lets a restart evict the capture it just
     // wrote. NULL on an empty table reads back as 0.
-    auto res = tx.exec("SELECT COALESCE(MAX(capture_id), 0) AS max_capture FROM snapshots");
+    auto res = execute(tx, "SELECT COALESCE(MAX(capture_id), 0) AS max_capture FROM snapshots");
     tx.commit();
     return res.empty() ? 0 : res[0]["max_capture"].as<int64_t>();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_max_capture_id PostgreSQL error: ") + e.what());
@@ -829,25 +878,28 @@ void PgFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
 
   try {
     // Keyed by fault_code (PRIMARY KEY): a re-confirm replaces the previous frame.
-    tx.exec_params(
-        "INSERT INTO freeze_frames (fault_code, data, captured_at_ns) VALUES ($1, $2, $3) ON CONFLICT(fault_code) "
-        "DO "
-        "UPDATE SET data = $2, captured_at_ns = $3 ",
-        frame.fault_code, frame.data, frame.captured_at_ns);
+    execute(tx,
+            "INSERT INTO freeze_frames (fault_code, data, captured_at_ns) VALUES ($1, $2, $3) ON CONFLICT(fault_code) "
+            "DO "
+            "UPDATE SET data = $2, captured_at_ns = $3 ",
+            frame.fault_code, frame.data, frame.captured_at_ns);
     tx.commit();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("store_freeze_frame PostgreSQL error: ") + e.what());
   }
 }
 
-std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   try {
     auto res =
-        tx.exec_params("SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = $1", fault_code);
+        execute(tx, "SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = $1", fault_code);
     if (res.affected_rows() == 0) {
       tx.commit();
       return std::nullopt;
@@ -858,6 +910,9 @@ std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const std::strin
     frame.captured_at_ns = res[0]["captured_at_ns"].as<int64_t>();
     tx.commit();
     return frame;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_freeze_frame PostgreSQL error: ") + e.what());
@@ -880,17 +935,20 @@ size_t PgFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   // a larger bound (or none) stays over the new bound until each fault code happens to record
   // another near miss - and a code that never does keeps its rows for good.
   try {
-    auto res = tx.exec_params(
-        "DELETE FROM near_misses WHERE id IN ("
-        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
-        "(PARTITION BY fault_code ORDER BY id DESC) AS rn FROM near_misses) "
-        "WHERE rn > $1)",
-        static_cast<int64_t>(max_count));
+    auto res = execute(tx,
+                       "DELETE FROM near_misses WHERE id IN ("
+                       "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
+                       "(PARTITION BY fault_code ORDER BY id DESC) AS rn FROM near_misses) AS ranked "
+                       "WHERE rn > $1)",
+                       static_cast<int64_t>(max_count));
     tx.commit();
     const auto dropped = res.affected_rows();
     // Returned rather than logged: the storage layer has no logger, and a bound applied by mistake
     // deletes history that cannot be recovered, so the caller has to be able to report it.
     return static_cast<size_t>(dropped);
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("set_max_near_misses_per_fault PostgreSQL error: ") + e.what());
@@ -901,11 +959,11 @@ void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int
                                              int32_t debounce_counter, const DebounceConfig & config, uint8_t severity,
                                              const std::string & source_id, const std::string & resulting_status,
                                              pqxx::work & tx) {
-  tx.exec_params(
-      "INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, "
-      "source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-      fault_code, occurred_at_ns, debounce_counter, config.confirmation_threshold, static_cast<int>(severity),
-      source_id, resulting_status);
+  execute(tx,
+          "INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, "
+          "source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+          fault_code, occurred_at_ns, debounce_counter, config.confirmation_threshold, static_cast<int>(severity),
+          source_id, resulting_status);
 
   if (max_near_misses_per_fault_ == 0 ||
       max_near_misses_per_fault_ > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
@@ -920,22 +978,22 @@ void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int
   // clocks, so a report can arrive with a timestamp behind one already stored; ordering eviction
   // by timestamp would then drop the row that was just appended and make the two backends, which
   // append in arrival order, disagree on the same input.
-  tx.exec_params(
-      "DELETE FROM near_misses WHERE fault_code = $1 AND id NOT IN "
-      "(SELECT id FROM near_misses WHERE fault_code = $1 ORDER BY id DESC LIMIT $2)",
-      fault_code, static_cast<int64_t>(max_near_misses_per_fault_));
+  execute(tx,
+          "DELETE FROM near_misses WHERE fault_code = $1 AND id NOT IN "
+          "(SELECT id FROM near_misses WHERE fault_code = $1 ORDER BY id DESC LIMIT $2)",
+          fault_code, static_cast<int64_t>(max_near_misses_per_fault_));
 }
 
-std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & fault_code) const {
+std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   try {
-    auto res = tx.exec_params(
-        "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
-        "severity, source_id, resulting_status FROM near_misses WHERE fault_code = $1 "
-        "ORDER BY id ASC",
-        fault_code);
+    auto res = execute(tx,
+                       "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
+                       "severity, source_id, resulting_status FROM near_misses WHERE fault_code = $1 "
+                       "ORDER BY id ASC",
+                       fault_code);
 
     std::vector<NearMissRecord> result;
     for (const auto & r : res) {
@@ -951,6 +1009,9 @@ std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & 
     }
     tx.commit();
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_near_misses PostgreSQL error: ") + e.what());
@@ -983,6 +1044,9 @@ void PgFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & info
   {
     // NOTE: The transaction object is scoped here, to allow for path_referenced() to use its own. The initial lock is
     // used universally
+    if (!db_conn_->is_open()) {
+      db_conn_ = std::make_unique<pqxx::connection>(conn_info_);
+    }
     pqxx::work tx(*db_conn_);
     try {
       for (const auto & info : infos) {
@@ -990,6 +1054,9 @@ void PgFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & info
         evicted.insert(evicted.end(), std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
       }
       tx.commit();
+    } catch (const pqxx::broken_connection & e) {
+      tx.abort();
+      throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
     } catch (const std::exception & e) {
       tx.abort();
       throw std::runtime_error(std::string("store_rosbag_files PostgreSQL error: ") + e.what());
@@ -1002,9 +1069,14 @@ void PgFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & info
   // iteration then evicts, leaking the directory.
   const std::set<std::string> unique_paths(evicted.begin(), evicted.end());
   for (const auto & path : unique_paths) {
-    if (path_referenced(path)) {
-      continue;
+    try {
+      if (path_referenced(path)) {
+        continue;
+      }
+    } catch (const std::exception & e) {
+      continue;  // The rows are already committed, so keep the directory.
     }
+
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
   }
@@ -1026,33 +1098,27 @@ std::vector<std::string> PgFaultStorage::store_rosbag_file_locked(const RosbagFi
   // id, and the in-memory backend keeps its sequence number across a refresh, so a
   // delete-and-reinsert would put the two backends in a different order for a
   // re-stored row inside a tie group.
-  tx.exec_params(
-      "INSERT INTO rosbag_files "
-      "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
-      "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-      "ON CONFLICT (fault_code, file_path) DO UPDATE SET "
-      "recording_id = EXCLUDED.recording_id, format = EXCLUDED.format, "
-      "duration_sec = EXCLUDED.duration_sec, size_bytes = EXCLUDED.size_bytes, "
-      "created_at_ns = EXCLUDED.created_at_ns",
-      row.fault_code, row.recording_id, row.file_path, row.format, row.duration_sec,
-      static_cast<int64_t>(row.size_bytes), row.created_at_ns);
+  execute(tx,
+          "INSERT INTO rosbag_files "
+          "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
+          "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+          "ON CONFLICT (fault_code, file_path) DO UPDATE SET "
+          "recording_id = EXCLUDED.recording_id, format = EXCLUDED.format, "
+          "duration_sec = EXCLUDED.duration_sec, size_bytes = EXCLUDED.size_bytes, "
+          "created_at_ns = EXCLUDED.created_at_ns",
+          row.fault_code, row.recording_id, row.file_path, row.format, row.duration_sec,
+          static_cast<int64_t>(row.size_bytes), row.created_at_ns);
 
   if (max_rosbags_per_fault_ == 0) {
     return {};  // unlimited per fault; only the global byte quota bounds this
   }
 
-  // Keep the newest N recordings of this fault. Oldest-first eviction, the same
-  // direction as evict_bags_over_quota, so the two eviction owners never need a
-  // tiebreak. At N = 1 this reproduces the pre-#620 behaviour exactly: the new
-  // recording replaces the old and the old bag is unlinked.
-  //
-  // NOTE: DELETE -> RETURNING is used to merge the SQLite SELECT+DELETE pair into one statement to minimise
-  // transactions with the database and eliminate synchronization issues
-  auto res = tx.exec_params(
-      "DELETE FROM rosbag_files WHERE fault_code = $1 AND id NOT IN "
-      "(SELECT id FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC LIMIT $2) "
-      "RETURNING file_path",
-      row.fault_code, static_cast<int64_t>(max_rosbags_per_fault_));
+  auto res =
+      execute(tx,
+              "DELETE FROM rosbag_files WHERE fault_code = $1 AND id NOT IN "
+              "(SELECT id FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC LIMIT $2) "
+              "RETURNING file_path",
+              row.fault_code, static_cast<int64_t>(max_rosbags_per_fault_));
 
   std::set<std::string> evicted;
   for (const auto & r : res) {
@@ -1081,14 +1147,15 @@ constexpr const char * kRosbagColumns =
 
 }  // namespace
 
-std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files(const std::string & fault_code) const {
+std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   try {
-    auto res = tx.exec_params(std::string("SELECT ") + kRosbagColumns +
-                                  " FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC",
-                              fault_code);
+    auto res = execute(tx,
+                       std::string("SELECT ") + kRosbagColumns +
+                           " FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC",
+                       fault_code);
     tx.commit();
 
     std::vector<RosbagFileInfo> result;
@@ -1096,20 +1163,24 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files(const std::string &
       result.push_back(read_rosbag_row(r));
     }
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_rosbag_files PostgreSQL error: ") + e.what());
   }
 }
 
-std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) const {
+std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   try {
-    auto res = tx.exec_params(std::string("SELECT ") + kRosbagColumns +
-                                  " FROM rosbag_files WHERE recording_id = $1 ORDER BY fault_code ASC",
-                              recording_id);
+    auto res = execute(tx,
+                       std::string("SELECT ") + kRosbagColumns +
+                           " FROM rosbag_files WHERE recording_id = $1 ORDER BY fault_code ASC",
+                       recording_id);
     tx.commit();
 
     std::vector<RosbagFileInfo> result;
@@ -1117,6 +1188,9 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files_by_recording(const 
       result.push_back(read_rosbag_row(r));
     }
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_rosbag_files_by_recording PostgreSQL error: ") + e.what());
@@ -1142,12 +1216,15 @@ size_t PgFaultStorage::delete_rosbag_recording(const std::string & recording_id)
     try {
       // NOTE: DELETE -> RETURNING is used to merge the SQLite SELECT+DELETE pair into one statement to minimise
       // transactions with the database and eliminate synchronization issues
-      auto res = tx.exec_params("DELETE FROM rosbag_files WHERE recording_id = $1 RETURNING file_path", recording_id);
+      auto res = execute(tx, "DELETE FROM rosbag_files WHERE recording_id = $1 RETURNING file_path", recording_id);
       for (const auto & r : res) {
         paths.insert(r["file_path"].as<std::string>());
       }
       removed = static_cast<size_t>(res.affected_rows());
       tx.commit();
+    } catch (const pqxx::broken_connection & e) {
+      tx.abort();
+      throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
     } catch (const std::exception & e) {
       tx.abort();
       throw std::runtime_error(std::string("delete_rosbag_recording PostgreSQL error: ") + e.what());
@@ -1164,7 +1241,7 @@ size_t PgFaultStorage::delete_rosbag_recording(const std::string & recording_id)
   return removed;
 }
 
-std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
@@ -1174,11 +1251,11 @@ std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string 
     // would serve an arbitrary recording - non-deterministically, which no test
     // catches reliably. id breaks the tie because a burst stamps one created_at_ns
     // across all its rows.
-    auto res = tx.exec_params(
-        "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-        "FROM rosbag_files WHERE fault_code = $1 "
-        "ORDER BY created_at_ns DESC, id DESC LIMIT 1",
-        fault_code);
+    auto res = execute(tx,
+                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "FROM rosbag_files WHERE fault_code = $1 "
+                       "ORDER BY created_at_ns DESC, id DESC LIMIT 1",
+                       fault_code);
     tx.commit();
     if (res.empty()) {
       return std::nullopt;
@@ -1192,6 +1269,9 @@ std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string 
     info.size_bytes = static_cast<size_t>(res[0]["size_bytes"].as<int64_t>());
     info.created_at_ns = res[0]["created_at_ns"].as<int64_t>();
     return info;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_rosbag_file PostgreSQL error: ") + e.what());
@@ -1213,7 +1293,7 @@ bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
       // unreadable for good, and still charged against the storage quota, which sums
       // rows. This way the worst case is an orphaned directory instead.
       // NOTE: DELETE -> RETURNING is used to merge the SQLite SELECT+DELETE pair into one statement to minimise
-      auto res = tx.exec_params("DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", fault_code);
+      auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", fault_code);
       // Every path, not the first one: a fault holds as many recordings as its cap
       // allows, and stepping (sqlite term) once would unlink one bag and leak the rest - rows gone,
       // directories left behind, uncounted by a quota that sums rows.
@@ -1223,6 +1303,9 @@ bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
 
       deleted = res.affected_rows() > 0;
       tx.commit();
+    } catch (const pqxx::broken_connection & e) {
+      tx.abort();
+      throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
     } catch (const std::exception & e) {
       tx.abort();
       throw std::runtime_error(std::string("delete_rosbag_file PostgreSQL error: ") + e.what());
@@ -1262,7 +1345,7 @@ size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & faul
         // code can name several recordings now, and the sweep must be able to
         // reclaim every one of their bags.
         // NOTE: DELETE -> RETURNING is used to merge the SQLite SELECT+DELETE pair into one statement to minimise
-        auto res = tx.exec_params("DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", code);
+        auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", code);
         for (const auto & r : res) {
           paths.insert(r["file_path"].as<std::string>());
         }
@@ -1271,6 +1354,9 @@ size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & faul
         }
       }
       tx.commit();
+    } catch (const pqxx::broken_connection & e) {
+      tx.abort();
+      throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
     } catch (const std::exception & e) {
       tx.abort();
       throw std::runtime_error(std::string("delete_rosbag_files PostgreSQL error: ") + e.what());
@@ -1287,46 +1373,53 @@ size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & faul
   return deleted;
 }
 
-bool PgFaultStorage::path_referenced(const std::string & file_path) const {
+bool PgFaultStorage::path_referenced(const std::string & file_path) {
   pqxx::work tx(*db_conn_);
   try {
-    auto res = tx.exec_params("SELECT COUNT(*) FROM rosbag_files WHERE file_path = $1", file_path);
+    auto res = execute(tx, "SELECT COUNT(*) FROM rosbag_files WHERE file_path = $1", file_path);
     tx.commit();
     return !res.empty() && res[0]["count"].as<int64_t>() > 0;
     ;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("path_referenced PostgreSQL error: ") + e.what());
   }
 }
 
-size_t PgFaultStorage::get_total_rosbag_storage_bytes() const {
+size_t PgFaultStorage::get_total_rosbag_storage_bytes() {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   // Sum per bag, not per fault: one recording can back a burst of correlated
   // faults, and double-counting it would evict bags that still fit the quota.
   try {
-    auto res = tx.exec(
-        "SELECT COALESCE(SUM(size_bytes),0) AS sz FROM (SELECT MAX(size_bytes) AS size_bytes FROM rosbag_files "
-        "GROUP BY file_path)");
+    auto res =
+        execute(tx,
+                "SELECT COALESCE(SUM(size_bytes),0) AS sz FROM (SELECT MAX(size_bytes) AS size_bytes FROM rosbag_files "
+                "GROUP BY file_path) AS per_bag");
     tx.commit();
     return res.empty() ? 0 : res[0]["sz"].as<size_t>();
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_total_rosbag_storage_bytes PostgreSQL error: ") + e.what());
   }
 }
 
-std::vector<RosbagFileInfo> PgFaultStorage::get_all_rosbag_files() const {
+std::vector<RosbagFileInfo> PgFaultStorage::get_all_rosbag_files() {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   std::vector<RosbagFileInfo> result;
 
   try {
-    auto res = tx.exec(
-        "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-        "FROM rosbag_files ORDER BY created_at_ns ASC, id ASC");
+    auto res = execute(tx,
+                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
+                       "FROM rosbag_files ORDER BY created_at_ns ASC, id ASC");
     tx.commit();
 
     for (const auto & r : res) {
@@ -1342,24 +1435,24 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_all_rosbag_files() const {
     }
 
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_all_rosbag_files PostgreSQL error: ") + e.what());
   }
 }
 
-std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
+std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
 
   std::vector<RosbagFileInfo> result;
 
-  // Join rosbag_files with faults table and filter by reporting_sources containing entity_fqn.
-  // Use json_each() for proper JSON array querying instead of LIKE, which treats
-  // '_' as a single-char wildcard and would produce false positives on ROS names.
-  // NOTE: Use jsonb as an equivalent of json_each on sqlite
   try {
-    auto res = tx.exec_params(
+    auto res = execute(
+        tx,
         "SELECT r.fault_code, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, r.created_at_ns "
         "FROM rosbag_files r "
         "JOIN faults f ON r.fault_code = f.fault_code "
@@ -1381,17 +1474,21 @@ std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::s
     }
 
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("list_rosbags_for_entity PostgreSQL error: ") + e.what());
   }
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() const {
+std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() {
   std::lock_guard<std::mutex> lock(mutex_);
   pqxx::work tx(*db_conn_);
   try {
-    auto res = tx.exec(
+    auto res = execute(
+        tx,
         "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
         "reporting_sources, last_passed_ns FROM faults");
     std::vector<ros2_medkit_msgs::msg::Fault> result;
@@ -1410,6 +1507,9 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() const
     }
     tx.commit();
     return result;
+  } catch (const pqxx::broken_connection & e) {
+    tx.abort();
+    throw IgnorableConnectionException(std::string("Failed to connect to PostgreSQL: ") + e.what());
   } catch (const std::exception & e) {
     tx.abort();
     throw std::runtime_error(std::string("get_all_faults PostgreSQL error: ") + e.what());

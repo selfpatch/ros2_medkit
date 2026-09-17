@@ -37,11 +37,11 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 ## Services
 
-| Service | Type | Description |
-|---------|------|-------------|
-| `~/report_fault` | `ros2_medkit_msgs/srv/ReportFault` | Report a fault occurrence |
-| `~/list_faults` | `ros2_medkit_msgs/srv/ListFaults` | Query faults with filtering |
-| `~/clear_fault` | `ros2_medkit_msgs/srv/ClearFault` | Clear/acknowledge a fault |
+| Service           | Type                                | Description                     |
+| ----------------- | ----------------------------------- | ------------------------------- |
+| `~/report_fault`  | `ros2_medkit_msgs/srv/ReportFault`  | Report a fault occurrence       |
+| `~/list_faults`   | `ros2_medkit_msgs/srv/ListFaults`   | Query faults with filtering     |
+| `~/clear_fault`   | `ros2_medkit_msgs/srv/ClearFault`   | Clear/acknowledge a fault       |
 | `~/get_snapshots` | `ros2_medkit_msgs/srv/GetSnapshots` | Get topic snapshots for a fault |
 
 ## Features
@@ -60,17 +60,17 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 ## Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `storage_type` | string | `"sqlite"` | Storage backend: `"sqlite"` or `"memory"` or `"postgres"` |
-| `database_path` | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file |
-| `database_url` | string | `"postgresql://user:password@localhost:5432/ros2_medkit_faults_database"` | Connection URL to the PostgreSQL database |
-| `confirmation_threshold` | int | `-1` | Counter value at which faults are confirmed |
-| `healing_enabled` | bool | `false` | Enable automatic healing via PASSED events |
-| `healing_threshold` | int | `3` | Counter value at which faults are healed |
-| `auto_confirm_after_sec` | double | `0.0` | Auto-confirm PREFAILED faults after timeout (0 = disabled) |
-| `entity_thresholds.config_file` | string | `""` | Path to YAML file with per-entity debounce threshold overrides |
-| `near_miss.max_per_fault` | int | `200` | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
+| Parameter                       | Type   | Default                            | Description                                                                     |
+| ------------------------------- | ------ | ---------------------------------- | ------------------------------------------------------------------------------- |
+| `storage_type`                  | string | `"sqlite"`                         | Storage backend: `"sqlite"` or `"memory"` or `"postgres"`                       |
+| `database_path`                 | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file                                                    |
+| `database_url`                  | string | `""`                               | Connection URL to the PostgreSQL database                                       |
+| `confirmation_threshold`        | int    | `-1`                               | Counter value at which faults are confirmed                                     |
+| `healing_enabled`               | bool   | `false`                            | Enable automatic healing via PASSED events                                      |
+| `healing_threshold`             | int    | `3`                                | Counter value at which faults are healed                                        |
+| `auto_confirm_after_sec`        | double | `0.0`                              | Auto-confirm PREFAILED faults after timeout (0 = disabled)                      |
+| `entity_thresholds.config_file` | string | `""`                               | Path to YAML file with per-entity debounce threshold overrides                  |
+| `near_miss.max_per_fault`       | int    | `200`                              | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
 
 ### Snapshot Parameters
 
@@ -80,28 +80,30 @@ Each confirm also writes a **freeze-frame**: a single compact JSON object mappin
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
-That single-writer property also shapes what each fault of a burst gets. Nothing is buffered while a post-fault window is open (messages go straight into the open bag), and the flush that opened that bag already emptied the ring buffer, so a fault confirming right *after* the window closes has no pre-fault history available. What a confirmation gets is decided by the buffer, so a fault arriving before any captured topic has published lands the same way. It gets a **post-fault-only bag**: its own recording holding just its `duration_after_sec` window, entered through the same post-roll state machine, so later faults of the burst attach to it normally. With `duration_after_sec: 0` there is no window to record into and such a fault gets no bag; if the bag cannot be written at all, no recording is opened and no metadata row is stored. The `duration_sec` on a stored bag is the span the recording was open rather than the configured windows, so a post-fault-only bag usually reports roughly `duration_after_sec` where a full one reports its buffered history too. It is a recording span, not a content span: a window during which nothing was published still reports the seconds it covered. It can also exceed `duration_sec + duration_after_sec`, because the ring buffer is pruned only when a message arrives - a topic that stops publishing keeps its last window buffered until the next confirmation flushes it, which is deliberate for a black box. See `docs/config/fault-manager.rst` for the full lifecycle.
+That single-writer property also shapes what each fault of a burst gets. Nothing is buffered while a post-fault window is open (messages go straight into the open bag), and the flush that opened that bag already emptied the ring buffer, so a fault confirming right _after_ the window closes has no pre-fault history available. What a confirmation gets is decided by the buffer, so a fault arriving before any captured topic has published lands the same way. It gets a **post-fault-only bag**: its own recording holding just its `duration_after_sec` window, entered through the same post-roll state machine, so later faults of the burst attach to it normally. With `duration_after_sec: 0` there is no window to record into and such a fault gets no bag; if the bag cannot be written at all, no recording is opened and no metadata row is stored. The `duration_sec` on a stored bag is the span the recording was open rather than the configured windows, so a post-fault-only bag usually reports roughly `duration_after_sec` where a full one reports its buffered history too. It is a recording span, not a content span: a window during which nothing was published still reports the seconds it covered. It can also exceed `duration_sec + duration_after_sec`, because the ring buffer is pruned only when a message arrives - a topic that stops publishing keeps its last window buffered until the next confirmation flushes it, which is deliberate for a black box. See `docs/config/fault-manager.rst` for the full lifecycle.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `snapshots.enabled` | bool | `true` | Enable/disable snapshot capture |
-| `snapshots.background_capture` | bool | `false` | Use background subscriptions (caches latest message) vs on-demand capture |
-| `snapshots.timeout_sec` | double | `1.0` | Timeout waiting for topic message (on-demand mode) |
-| `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
-| `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
-| `snapshots.config_file` | string | `""` | Path to YAML config for `fault_specific` and `patterns` |
-| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault code. |
-| `snapshots.max_per_fault` | int | `10` | Max snapshots retained per fault. |
-| `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer. |
-| `snapshots.capture_queue_depth` | int | `16` | Max pending captures before the full-queue policy applies (>= 1). |
-| `snapshots.capture_queue_full_policy` | string | `reject_newest` | Policy when the queue is full: `reject_newest` or `drop_oldest`. |
+| Parameter                             | Type     | Default         | Description                                                                                                                |
+| ------------------------------------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `snapshots.enabled`                   | bool     | `true`          | Enable/disable snapshot capture                                                                                            |
+| `snapshots.background_capture`        | bool     | `false`         | Use background subscriptions (caches latest message) vs on-demand capture                                                  |
+| `snapshots.timeout_sec`               | double   | `1.0`           | Timeout waiting for topic message (on-demand mode)                                                                         |
+| `snapshots.max_message_size`          | int      | `65536`         | Maximum message size in bytes (larger messages skipped)                                                                    |
+| `snapshots.default_topics`            | string[] | `[]`            | Topics to capture for all faults                                                                                           |
+| `snapshots.config_file`               | string   | `""`            | Path to YAML config for `fault_specific` and `patterns`                                                                    |
+| `snapshots.recapture_cooldown_sec`    | double   | `60.0`          | Min seconds between captures for the same fault code.                                                                      |
+| `snapshots.max_per_fault`             | int      | `10`            | Max snapshots retained per fault.                                                                                          |
+| `snapshots.capture_pool_size`         | int      | `2`             | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer. |
+| `snapshots.capture_queue_depth`       | int      | `16`            | Max pending captures before the full-queue policy applies (>= 1).                                                          |
+| `snapshots.capture_queue_full_policy` | string   | `reject_newest` | Policy when the queue is full: `reject_newest` or `drop_oldest`.                                                           |
 
 **Topic Resolution Priority:**
+
 1. `fault_specific` - Exact match for fault code (configured via YAML config file)
 2. `patterns` - Regex pattern match (configured via YAML config file)
 3. `default_topics` - Fallback for all faults
 
 **Example YAML config file** (`snapshots.yaml`):
+
 ```yaml
 fault_specific:
   MOTOR_OVERHEAT:
@@ -136,7 +138,7 @@ format used by black-box capture (`snapshots.rosbag.format`, see Rosbag Capture 
 
 **Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
 
-**PostgreSQL**: Faults are persisted to disk and survive node restarts. Needs an external PostgreSQL server.
+**PostgreSQL**: Faults are stored in an external PostgreSQL server and survive node restarts. The audit log stays a local SQLite file next to `database_path`.
 
 ## Near-Miss Series
 
@@ -200,21 +202,21 @@ An optional append-only, hash-chained audit log records every fault state transi
 
 Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only: the manager only ever inserts rows, and `BEFORE UPDATE` / `BEFORE DELETE` triggers reject out-of-band edits (the guarded rotation prune excepted).
 
-**Completeness is an integrity property.** `verify()` proves nothing was *deleted* from the chain, but it cannot prove a transition that was *never appended*. So a silently dropped append is a hole `verify()` can never see. Every transition on the write path is therefore audited (occurred, timer/threshold confirmations, auto-heal, and clears), and an append failure is never swallowed silently: it increments a dropped-writes counter and clears an "audit healthy" flag. **These are in-process signals only** (C++ getters on the node). This revision exposes no service/REST/health endpoint that surfaces audit health or lets an operator run `verify()` at runtime, so the signals are **not operator-observable at runtime yet** - a runtime read/verify/health surface is future work. With `audit_log.fail_closed` set, an append failure is re-raised as a **fail-FAST** error so a compliance-strict deployment learns the audit broke. This does **not** roll back the fault-state change that already committed: the audit log and the fault store are **separate SQLite databases**, so there is no cross-DB atomicity, and `fail_closed` is a broken-audit alarm requiring operator action, not a rollback. The default (`fail_closed=false`) keeps fault processing running; either way the in-process signals record the gap.
+**Completeness is an integrity property.** `verify()` proves nothing was _deleted_ from the chain, but it cannot prove a transition that was _never appended_. So a silently dropped append is a hole `verify()` can never see. Every transition on the write path is therefore audited (occurred, timer/threshold confirmations, auto-heal, and clears), and an append failure is never swallowed silently: it increments a dropped-writes counter and clears an "audit healthy" flag. **These are in-process signals only** (C++ getters on the node). This revision exposes no service/REST/health endpoint that surfaces audit health or lets an operator run `verify()` at runtime, so the signals are **not operator-observable at runtime yet** - a runtime read/verify/health surface is future work. With `audit_log.fail_closed` set, an append failure is re-raised as a **fail-FAST** error so a compliance-strict deployment learns the audit broke. This does **not** roll back the fault-state change that already committed: the audit log and the fault store are **separate SQLite databases**, so there is no cross-DB atomicity, and `fail_closed` is a broken-audit alarm requiring operator action, not a rollback. The default (`fail_closed=false`) keeps fault processing running; either way the in-process signals record the gap.
 
-`verify()` walks the persisted chain oldest-first and recomputes every link: editing a row breaks its `record_hash`, and deleting a row breaks the next row's `prev_hash` linkage. Deleting the newest row *while leaving the head untouched* is caught by the persisted-head check (the head is read straight from the DB). However, deleting the newest row(s) **and** repointing the head with a single `UPDATE audit_chain_head SET seq=..., record_hash=...` to the prior row's values costs no more than any other casual edit - it is **not** the "recompute the entire chain" the threat model below might suggest - and the truncated chain still verifies. There is no external record that a later `seq` ever existed, so this tail-truncation is undetectable by design.
+`verify()` walks the persisted chain oldest-first and recomputes every link: editing a row breaks its `record_hash`, and deleting a row breaks the next row's `prev_hash` linkage. Deleting the newest row _while leaving the head untouched_ is caught by the persisted-head check (the head is read straight from the DB). However, deleting the newest row(s) **and** repointing the head with a single `UPDATE audit_chain_head SET seq=..., record_hash=...` to the prior row's values costs no more than any other casual edit - it is **not** the "recompute the entire chain" the threat model below might suggest - and the truncated chain still verifies. There is no external record that a later `seq` ever existed, so this tail-truncation is undetectable by design.
 
-**Threat model (read this).** The chain is **unkeyed**, and the head and segment anchors live in the **same writable SQLite file** as the rows. `verify()` therefore catches edits or deletions that did **not** also recompute the chain - that is, casual or accidental tampering, and the bookkeeping bugs that would otherwise lose records. The append-only triggers are defense-in-depth: `audit_log` rejects out-of-band UPDATE/DELETE, `audit_anchors` carries the same guard-gated triggers so an out-of-band INSERT/UPDATE/DELETE of an anchor is rejected too, and the rotation-prune guard (`audit_prune_guard`) is itself protected by a trigger so an external writer cannot simply flip it open and then delete a prefix (or forge an anchor) - that flip is only permitted from the in-process connection that holds a per-connection temp marker. The single-row chain head (`audit_chain_head`) is intentionally **not** trigger-protected (a trigger there would block the legitimate head update inside the append transaction); a casual edit or delete of the head is instead caught by `verify()` via the seq/hash/head-mismatch checks. None of this stops an attacker with write access to the file: such an attacker can create the same temp marker or drop the triggers, and recompute the entire chain (head and anchors included) to forge a self-consistent history - and cheaper still, the tail-truncation above and the forged prefix-truncation below need no recompute at all. The triggers are **not** a security boundary - this is tamper-**evident**, not tamper-**proof**. True tamper-*proofing* requires a key or signature over the head (so it cannot be recomputed without the key) or external anchoring of the head hash to an append-only store you do not control; both are out of scope here and belong to the audit-log exporter / signing follow-up.
+**Threat model (read this).** The chain is **unkeyed**, and the head and segment anchors live in the **same writable SQLite file** as the rows. `verify()` therefore catches edits or deletions that did **not** also recompute the chain - that is, casual or accidental tampering, and the bookkeeping bugs that would otherwise lose records. The append-only triggers are defense-in-depth: `audit_log` rejects out-of-band UPDATE/DELETE, `audit_anchors` carries the same guard-gated triggers so an out-of-band INSERT/UPDATE/DELETE of an anchor is rejected too, and the rotation-prune guard (`audit_prune_guard`) is itself protected by a trigger so an external writer cannot simply flip it open and then delete a prefix (or forge an anchor) - that flip is only permitted from the in-process connection that holds a per-connection temp marker. The single-row chain head (`audit_chain_head`) is intentionally **not** trigger-protected (a trigger there would block the legitimate head update inside the append transaction); a casual edit or delete of the head is instead caught by `verify()` via the seq/hash/head-mismatch checks. None of this stops an attacker with write access to the file: such an attacker can create the same temp marker or drop the triggers, and recompute the entire chain (head and anchors included) to forge a self-consistent history - and cheaper still, the tail-truncation above and the forged prefix-truncation below need no recompute at all. The triggers are **not** a security boundary - this is tamper-**evident**, not tamper-**proof**. True tamper-_proofing_ requires a key or signature over the head (so it cannot be recomputed without the key) or external anchoring of the head hash to an append-only store you do not control; both are out of scope here and belong to the audit-log exporter / signing follow-up.
 
-**Retention/rotation**: when more than `audit_log.retention_max_records` rows are retained, the oldest segment is *sealed* (its final `seq` + hash are persisted as an anchor) and then pruned. The surviving tail still verifies because the oldest retained row links back to the sealed anchor. Only the anchor at the current prune boundary is kept - the same rotation drops older anchors - so `audit_anchors` stays bounded (one row) instead of growing one row per rotation. Because `verify()` treats any matching sealed anchor as a valid tail root, a **forged** prefix-truncation (an out-of-band actor deletes a prefix and inserts a matching anchor) is **indistinguishable** from legitimate pruning: "the surviving tail still verifies" therefore covers a forged truncation exactly as well as a real one. The guard-gated `audit_anchors` triggers raise the bar for this (casual/accidental only) but, like every trigger here, a write-capable adversary can drop them - so this stays tamper-**evident**, not tamper-**proof**.
+**Retention/rotation**: when more than `audit_log.retention_max_records` rows are retained, the oldest segment is _sealed_ (its final `seq` + hash are persisted as an anchor) and then pruned. The surviving tail still verifies because the oldest retained row links back to the sealed anchor. Only the anchor at the current prune boundary is kept - the same rotation drops older anchors - so `audit_anchors` stays bounded (one row) instead of growing one row per rotation. Because `verify()` treats any matching sealed anchor as a valid tail root, a **forged** prefix-truncation (an out-of-band actor deletes a prefix and inserts a matching anchor) is **indistinguishable** from legitimate pruning: "the surviving tail still verifies" therefore covers a forged truncation exactly as well as a real one. The guard-gated `audit_anchors` triggers raise the bar for this (casual/accidental only) but, like every trigger here, a write-capable adversary can drop them - so this stays tamper-**evident**, not tamper-**proof**.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `audit_log.enabled` | bool | `false` | Enable the tamper-evident audit log |
-| `audit_log.transitions` | string | `"all"` | Which transitions to record: `"all"` (occurred/confirmed/healed/cleared) or `"confirmed_only"`. Lifecycle markers are always recorded. |
-| `audit_log.database_path` | string | `""` | SQLite path. Empty => sibling `fault_audit.db` next to the fault DB (or `:memory:` for in-memory fault stores) |
-| `audit_log.retention_max_records` | int | `0` | Seal + prune the oldest segment beyond this many retained records (0 = unlimited) |
-| `audit_log.fail_closed` | bool | `false` | When `true`, an audit append failure is re-raised as a fail-FAST error signalling the audit chain is broken and needs operator action. It does **not** roll back the already-committed fault-state change (the fault store is a separate DB - no cross-DB atomicity). When `false`, the failure is logged and counted and fault processing continues. Either way the gap is recorded via the in-process dropped-writes / audit-healthy signals (not operator-observable at runtime yet). |
+| Parameter                         | Type   | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit_log.enabled`               | bool   | `false` | Enable the tamper-evident audit log                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `audit_log.transitions`           | string | `"all"` | Which transitions to record: `"all"` (occurred/confirmed/healed/cleared) or `"confirmed_only"`. Lifecycle markers are always recorded.                                                                                                                                                                                                                                                                                                                                                   |
+| `audit_log.database_path`         | string | `""`    | SQLite path. Empty => sibling `fault_audit.db` next to the fault DB (or `:memory:` for in-memory fault stores)                                                                                                                                                                                                                                                                                                                                                                           |
+| `audit_log.retention_max_records` | int    | `0`     | Seal + prune the oldest segment beyond this many retained records (0 = unlimited)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `audit_log.fail_closed`           | bool   | `false` | When `true`, an audit append failure is re-raised as a fail-FAST error signalling the audit chain is broken and needs operator action. It does **not** roll back the already-committed fault-state change (the fault store is a separate DB - no cross-DB atomicity). When `false`, the failure is logged and counted and fault processing continues. Either way the gap is recorded via the in-process dropped-writes / audit-healthy signals (not operator-observable at runtime yet). |
 
 ## Usage
 
@@ -377,17 +379,17 @@ ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
 
 ### Correlation Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `correlation.config_file` | string | `""` | Path to correlation YAML config (empty = disabled) |
-| `correlation.cleanup_interval_sec` | double | `5.0` | Interval for cleaning up expired pending correlations (seconds) |
+| Parameter                          | Type   | Default | Description                                                     |
+| ---------------------------------- | ------ | ------- | --------------------------------------------------------------- |
+| `correlation.config_file`          | string | `""`    | Path to correlation YAML config (empty = disabled)              |
+| `correlation.cleanup_interval_sec` | double | `5.0`   | Interval for cleaning up expired pending correlations (seconds) |
 
 ### Configuration File Format
 
 ```yaml
 correlation:
   enabled: true
-  default_window_ms: 500  # Default time window for symptom detection
+  default_window_ms: 500 # Default time window for symptom detection
 
   # Reusable fault patterns (supports wildcards with *)
   patterns:
@@ -408,8 +410,8 @@ correlation:
       symptoms:
         - pattern: motor_errors
         - pattern: drive_faults
-      window_ms: 1000           # Symptoms within 1s of root cause
-      mute_symptoms: true       # Don't publish symptom events
+      window_ms: 1000 # Symptoms within 1s of root cause
+      mute_symptoms: true # Don't publish symptom events
       auto_clear_with_root: true # Clear symptoms when root cause clears
 
     # Auto-cluster rule: Group communication errors
@@ -418,15 +420,16 @@ correlation:
       mode: auto_cluster
       match:
         - pattern: comm_errors
-      min_count: 3              # Need 3 faults to form cluster
-      window_ms: 500            # Within 500ms
-      show_as_single: true      # Only show representative fault
-      representative: highest_severity  # first | most_recent | highest_severity
+      min_count: 3 # Need 3 faults to form cluster
+      window_ms: 500 # Within 500ms
+      show_as_single: true # Only show representative fault
+      representative: highest_severity # first | most_recent | highest_severity
 ```
 
 ### Pattern Wildcards
 
 Patterns support `*` wildcard matching:
+
 - `MOTOR_*` matches `MOTOR_COMM`, `MOTOR_TIMEOUT`, `MOTOR_DRIVE_FAULT`
 - `*_COMM_*` matches `MOTOR_COMM_FL`, `SENSOR_COMM_TIMEOUT`
 - `*_TIMEOUT` matches `MOTOR_TIMEOUT`, `SENSOR_TIMEOUT`
@@ -442,6 +445,7 @@ ros2 service call /fault_manager/list_faults ros2_medkit_msgs/srv/ListFaults \
 ```
 
 Response includes:
+
 - `muted_count`: Number of muted symptom faults
 - `cluster_count`: Number of active fault clusters
 - `muted_faults[]`: Details of muted faults (when `include_muted=true`)
@@ -450,10 +454,12 @@ Response includes:
 ### REST API (via Gateway)
 
 Query parameters for GET `/api/v1/faults`:
+
 - `include_muted=true`: Include muted fault details in response
 - `include_clusters=true`: Include cluster details in response
 
 Response fields:
+
 ```json
 {
   "faults": [...],
@@ -485,6 +491,7 @@ Response fields:
 ```
 
 When clearing a root cause fault, `auto_cleared_codes` lists symptoms that were auto-cleared:
+
 ```json
 {
   "status": "success",
