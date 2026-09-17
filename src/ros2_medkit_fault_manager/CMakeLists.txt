@@ -37,53 +37,10 @@ find_package(ros2_medkit_serialization REQUIRED)
 if(POSTGRES_SUPPORT)
   find_package(PostgreSQL REQUIRED)
   include(FetchContent)
-
-  fetchcontent_declare(pqxx
-    GIT_REPOSITORY https://github.com/jtv/libpqxx.git
-    GIT_TAG        7.10.7
-    GIT_SHALLOW    TRUE
-  )
-
-  # Save medkit flags to restore them later. Not required per-se, but doesn't hurt to handle them either
-  set(_medkit_saved_cxx_flags "${CMAKE_CXX_FLAGS}")
-  get_directory_property(_medkit_saved_opts COMPILE_OPTIONS)
-  string(REGEX REPLACE "(^| )-W[^ ]*" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-  set_directory_properties(PROPERTIES COMPILE_OPTIONS "")
-
-  # The following lines are just to future proof the handling.
-  # Currently not required, and needs CMake3.24 and CMake3.3 respectively (without breaking older versions)
-  set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
-  unset(CMAKE_CXX_INCLUDE_WHAT_YOU_USE)
-
-  # ros2_medkit_clang_tidy is called later, but guard pqxx either way
-  unset(CMAKE_CXX_CLANG_TIDY)
-  # pqxx appears to avoid building tests and docs when compiled externally as a dependency
-  # The lines below ensure that it doesn't
-  set(SKIP_BUILD_TEST ON)
-  set(BUILD_DOC OFF)
-  set(BUILD_TOOLS OFF)
-
-  fetchcontent_makeavailable(pqxx)
-
-  # Restore medkit flags now that pqxx is compiled
-  set(CMAKE_CXX_FLAGS "${_medkit_saved_cxx_flags}")
-  set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_medkit_saved_opts}")
-
-  # Make headers available to SYSTEM
-  # Once CMake3.25 is globally supported (Ubuntu 22.04 ships with CMake3.22)
-  # the snippet below could be replaced with fetchcontent_declare(pqxx ... SYSTEM)
-  foreach(_pqxx_tgt pqxx pqxx_shared pqxx_static)
-    if(TARGET ${_pqxx_tgt})
-      target_compile_options(${_pqxx_tgt} PRIVATE -w)
-      get_target_property(_pqxx_inc ${_pqxx_tgt} INTERFACE_INCLUDE_DIRECTORIES)
-      if(_pqxx_inc)
-        set_target_properties(${_pqxx_tgt} PROPERTIES
-          INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pqxx_inc}")
-      endif()
-    endif()
-  endforeach()
+  FetchContent_Declare(  pqxx  GIT_REPOSITORY https://github.com/jtv/libpqxx.git  GIT_TAG 7.10.7)
+  FetchContent_MakeAvailable(pqxx)
+  # target_compile_options(pqxx PRIVATE -Wno-switch-enum)
 endif()
-
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # OpenSSL EVP SHA-256 for the tamper-evident audit log hash chain
@@ -309,8 +266,8 @@ endif()
 endif()
 
 if(POSTGRES_SUPPORT)
-  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT=1)
+  target_compile_definitions(fault_manager_lib PRIVATE POSTGRES_SUPPORT=1)
 else()
-  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT=0)
+  target_compile_definitions(fault_manager_lib PRIVATE POSTGRES_SUPPORT=0)
 endif()
 ament_package()

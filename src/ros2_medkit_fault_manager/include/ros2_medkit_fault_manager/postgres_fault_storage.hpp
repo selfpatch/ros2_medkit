@@ -125,17 +125,12 @@ class PgFaultStorage : public FaultStorage {
   }
 
  private:
-  /// Wrapper the pqxx exec function
+  /// Helper function that handles pqxx reconnections
+  // void ensure_conne
+
+  /// Wrapper the pqxx exec_params function to implement a reconnection mechanism
   template <typename... Args>
   pqxx::result execute(pqxx::work & tx, const std::string & query, Args &&... args);
-
-  /// The function that establishes connection
-  void ensure_connection();
-
-  /// Wrapper of the execute function to encapsulate the recconection mechanism
-  /// while keeping the transaction pqxx::work object safe
-  template <typename Fn>
-  auto run_in_transaction(const char * what, Fn && fn) -> decltype(fn(std::declval<pqxx::work &>()));
 
   /// Initialize database schema (create tables if they don't exist)
   void initialize_schema();
