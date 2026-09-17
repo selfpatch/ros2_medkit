@@ -28,11 +28,20 @@ namespace ros2_medkit_fault_manager {
 /// Thread-safe implementation using mutex protection on connection access
 class PgFaultStorage : public FaultStorage {
  public:
+  using FaultStorage::IgnorableConnectionException;
   /// Create PostgreSQL fault storage
   /// @param conn_info Connection string or DSN (e.g.,
   /// "postgresql://user:password@localhost:5432/ros2_medkit_faults_database")
   /// @throws std::runtime_error if database cannot be connected to or initialized
   explicit PgFaultStorage(const std::string & conn_info);
+
+  /// Create PostgreSQL fault storage
+  /// @param conn_info Connection string or DSN (e.g.,
+  /// "postgresql://user:password@localhost:5432/ros2_medkit_faults_database")
+  /// @param max_retries Maximum retries when attempting to reconnect
+  /// @param reconnection_delay_ms The delay in milliseconds between each recconection attempt
+  /// @throws std::runtime_error if database cannot be connected to or initialized
+  explicit PgFaultStorage(const std::string & conn_info, const int max_retries, const unsigned reconnection_delay_ms);
 
   /// Destructor - closes database connection
   ~PgFaultStorage() override;
@@ -51,15 +60,15 @@ class PgFaultStorage : public FaultStorage {
                           const rclcpp::Time & timestamp, const DebounceConfig & config) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) const override;
+                                                        const std::vector<std::string> & statuses) override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) override;
 
   bool clear_fault(const std::string & fault_code) override;
 
-  size_t size() const override;
+  size_t size() override;
 
-  bool contains(const std::string & fault_code) const override;
+  bool contains(const std::string & fault_code) override;
 
   std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
@@ -72,26 +81,26 @@ class PgFaultStorage : public FaultStorage {
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") const override;
-  int64_t get_max_capture_id() const override;
+                                          const std::string & topic_filter = "") override;
+  int64_t get_max_capture_id() override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) override;
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
+  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
-  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) override;
+  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) override;
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
   size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) override;
-  size_t get_total_rosbag_storage_bytes() const override;
-  std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
-  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
+  size_t get_total_rosbag_storage_bytes() override;
+  std::vector<RosbagFileInfo> get_all_rosbag_files() override;
+  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() override;
   std::vector<std::string> reclassify_healed_as_cleared() override;
 
   /// Get the connection info string used to initialize the database
@@ -99,12 +108,34 @@ class PgFaultStorage : public FaultStorage {
     return conn_info_;
   }
 
+  /// Get the hostname of the PostgreSQL server
+  const std::string hostname() const {
+    return db_conn_->hostname();
+  }
+
+  /// Get the port of the PostgreSQL server
+  const std::string port() const {
+    return db_conn_->port();
+  }
+
+  /// Get the database of the PostgreSQL server
+  const std::string dbname() const {
+    return db_conn_->dbname();
+  }
+
  private:
+  /// Helper function that handles pqxx reconnections
+  // void ensure_conne
+
+  /// Wrapper the pqxx exec_params function to implement a reconnection mechanism
+  template <typename... Args>
+  pqxx::result execute(pqxx::work & tx, const std::string & query, Args &&... args);
+
   /// Initialize database schema (create tables if they don't exist)
   void initialize_schema();
 
   /// Whether any fault at all still references @p file_path. Caller holds mutex_.
-  bool path_referenced(const std::string & file_path) const;
+  bool path_referenced(const std::string & file_path);
 
   /// store_rosbag_file body without taking mutex_. Caller holds mutex_ and
   /// manages transaction scope. Returns replaced bag path if applicable.
@@ -146,6 +177,8 @@ class PgFaultStorage : public FaultStorage {
   /// Defaults to 1, the pre-#620 behaviour: a new recording replaces the old one.
   /// 0 = unlimited, bounded only by max_total_storage_mb.
   size_t max_rosbags_per_fault_{1};
+  int max_retries_{1};  /// < 0 = unlimited
+  unsigned reconnection_delay_{500};
 };
 
 }  // namespace ros2_medkit_fault_manager

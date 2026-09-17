@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.14)
 project(ros2_medkit_fault_manager)
+
+option(POSTGRES_SUPPORT "Enable PostgreSQL support" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,7 +34,13 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
-find_package(PostgreSQL REQUIRED)
+if(POSTGRES_SUPPORT)
+  find_package(PostgreSQL REQUIRED)
+  include(FetchContent)
+  FetchContent_Declare(  pqxx  GIT_REPOSITORY https://github.com/jtv/libpqxx.git  GIT_TAG 7.10.7)
+  FetchContent_MakeAvailable(pqxx)
+  # target_compile_options(pqxx PRIVATE -Wno-switch-enum)
+endif()
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # OpenSSL EVP SHA-256 for the tamper-evident audit log hash chain
@@ -46,20 +54,27 @@ find_package(rosbag2_storage REQUIRED)
 medkit_detect_compat_defs()
 
 # Library target (shared between executable and tests)
+set(FAULT_MANAGER_FILES
+    src/capture_thread_pool.cpp
+    src/fault_manager_node.cpp
+    src/fault_storage.cpp
+    src/sqlite_fault_storage.cpp
+    src/fault_audit_log.cpp
+    src/snapshot_capture.cpp
+    src/rosbag_capture.cpp
+    src/correlation/types.cpp
+    src/correlation/config_parser.cpp
+    src/correlation/pattern_matcher.cpp
+    src/correlation/correlation_engine.cpp
+    src/entity_threshold_resolver.cpp
+)
+if(POSTGRES_SUPPORT)
+  list(APPEND FAULT_MANAGER_FILES
+    src/postgres_fault_storage.cpp
+  )
+endif()
 add_library(fault_manager_lib STATIC
-  src/capture_thread_pool.cpp
-  src/fault_manager_node.cpp
-  src/fault_storage.cpp
-  src/postgres_fault_storage.cpp
-  src/sqlite_fault_storage.cpp
-  src/fault_audit_log.cpp
-  src/snapshot_capture.cpp
-  src/rosbag_capture.cpp
-  src/correlation/types.cpp
-  src/correlation/config_parser.cpp
-  src/correlation/pattern_matcher.cpp
-  src/correlation/correlation_engine.cpp
-  src/entity_threshold_resolver.cpp
+  ${FAULT_MANAGER_FILES}
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -75,12 +90,20 @@ medkit_target_dependencies(fault_manager_lib PUBLIC
   rosbag2_storage
 )
 
+set(FAULT_MANAGER_TARGET_LIBS
+    SQLite::SQLite3
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+    OpenSSL::Crypto
+)
+
+if(POSTGRES_SUPPORT)
+  list(APPEND FAULT_MANAGER_TARGET_LIBS
+    pqxx
+  )
+endif()
 target_link_libraries(fault_manager_lib PUBLIC
-  SQLite::SQLite3
-  nlohmann_json::nlohmann_json
-  pqxx
-  yaml-cpp::yaml-cpp
-  OpenSSL::Crypto
+  ${FAULT_MANAGER_TARGET_LIBS}
 )
 
 medkit_apply_compat_defs(fault_manager_lib)
@@ -138,11 +161,13 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_sqlite_storage test/test_sqlite_storage.cpp)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
   medkit_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
-  
+
   # PostgreSQL storage tests
+if(POSTGRES_SUPPORT)
   medkit_add_gtest(test_postgres_storage test/test_postgres_storage.cpp)
   target_link_libraries(test_postgres_storage fault_manager_lib)
   medkit_target_dependencies(test_postgres_storage rclcpp ros2_medkit_msgs)
+endif()
 
   # Rosbag retention parity: every assertion runs against both storage backends.
   medkit_add_gtest(test_rosbag_storage_parity test/test_rosbag_storage_parity.cpp)
@@ -240,4 +265,9 @@ if(BUILD_TESTING)
   ros2_medkit_relax_vendor_warnings()
 endif()
 
+if(POSTGRES_SUPPORT)
+  target_compile_definitions(fault_manager_lib PRIVATE POSTGRES_SUPPORT=1)
+else()
+  target_compile_definitions(fault_manager_lib PRIVATE POSTGRES_SUPPORT=0)
+endif()
 ament_package()

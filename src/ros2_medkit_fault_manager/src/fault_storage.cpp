@@ -257,9 +257,8 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   return false;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault>
-InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                  const std::vector<std::string> & statuses) const {
+std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                                                            const std::vector<std::string> & statuses) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -302,7 +301,7 @@ InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = faults_.find(fault_code);
@@ -336,12 +335,12 @@ bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
   return true;
 }
 
-size_t InMemoryFaultStorage::size() const {
+size_t InMemoryFaultStorage::size() {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.size();
 }
 
-bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
+bool InMemoryFaultStorage::contains(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   return faults_.find(fault_code) != faults_.end();
 }
@@ -452,7 +451,7 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
 }
 
 std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string & fault_code,
-                                                              const std::string & topic_filter) const {
+                                                              const std::string & topic_filter) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
@@ -472,7 +471,7 @@ std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string 
   return result;
 }
 
-int64_t InMemoryFaultStorage::get_max_capture_id() const {
+int64_t InMemoryFaultStorage::get_max_capture_id() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   int64_t max_id = 0;
@@ -487,7 +486,7 @@ void InMemoryFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
   freeze_frames_[frame.fault_code] = frame;
 }
 
-std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = freeze_frames_.find(fault_code);
   if (it == freeze_frames_.end()) {
@@ -541,7 +540,7 @@ size_t InMemoryFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   return evicted;
 }
 
-std::vector<NearMissRecord> InMemoryFaultStorage::get_near_misses(const std::string & fault_code) const {
+std::vector<NearMissRecord> InMemoryFaultStorage::get_near_misses(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = near_misses_.find(fault_code);
   if (it == near_misses_.end()) {
@@ -643,7 +642,7 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
   }
 }
 
-std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Newest, matching the SQLite backend's ORDER BY created_at_ns DESC, id DESC.
@@ -662,7 +661,7 @@ std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::s
   return best->info;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files(const std::string & fault_code) const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files(const std::string & fault_code) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<const RosbagRow *> mine;
@@ -683,8 +682,7 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files(const std::st
   return result;
 }
 
-std::vector<RosbagFileInfo>
-InMemoryFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -759,13 +757,13 @@ size_t InMemoryFaultStorage::delete_rosbag_recording(const std::string & recordi
   return removed;
 }
 
-bool InMemoryFaultStorage::path_referenced(const std::string & file_path) const {
+bool InMemoryFaultStorage::path_referenced(const std::string & file_path) {
   return std::any_of(rosbag_files_.begin(), rosbag_files_.end(), [&](const RosbagRow & row) {
     return row.info.file_path == file_path;
   });
 }
 
-size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {
+size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Sum per bag, not per fault: one recording can back a burst of correlated
@@ -786,7 +784,7 @@ size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {
   return total;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<const RosbagRow *> rows;
@@ -809,7 +807,7 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
   return result;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<const RosbagRow *> rows;
@@ -837,7 +835,7 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const 
   return result;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults() const {
+std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<ros2_medkit_msgs::msg::Fault> result;
