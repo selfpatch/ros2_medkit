@@ -38,7 +38,7 @@ if(POSTGRES_SUPPORT)
   find_package(PostgreSQL REQUIRED)
   include(FetchContent)
 
-  FetchContent_Declare(pqxx
+  fetchcontent_declare(pqxx
     GIT_REPOSITORY https://github.com/jtv/libpqxx.git
     GIT_TAG        7.10.7
     GIT_SHALLOW    TRUE
@@ -63,7 +63,7 @@ if(POSTGRES_SUPPORT)
   set(BUILD_DOC OFF)
   set(BUILD_TOOLS OFF)
 
-  FetchContent_MakeAvailable(pqxx)
+  fetchcontent_makeavailable(pqxx)
 
   # Restore medkit flags now that pqxx is compiled
   set(CMAKE_CXX_FLAGS "${_medkit_saved_cxx_flags}")
@@ -71,7 +71,7 @@ if(POSTGRES_SUPPORT)
 
   # Make headers available to SYSTEM
   # Once CMake3.25 is globally supported (Ubuntu 22.04 ships with CMake3.22)
-  # the snippet below could be replaced with FetchContent_Declare(pqxx ... SYSTEM)
+  # the snippet below could be replaced with fetchcontent_declare(pqxx ... SYSTEM)
   foreach(_pqxx_tgt pqxx pqxx_shared pqxx_static)
     if(TARGET ${_pqxx_tgt})
       target_compile_options(${_pqxx_tgt} PRIVATE -w)
