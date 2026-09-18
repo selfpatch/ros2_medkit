@@ -64,6 +64,7 @@
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp"
 #include "ros2_medkit_gateway/ros2_common/callback_groups.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
@@ -501,53 +502,7 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<std::thread> server_thread_;
 };
 
-/**
- * @brief Is this node FQN one of the helper nodes the gateway runs in-process?
- *
- * True for the subscription executor's `<fqn>_sub`, the fault-service
- * transport's `<fqn>_fault_clients`, and the lifecycle reader's
- * `<fqn>_lifecycle_state_reader`. None of these begins with '_', so the ROS 2
- * hidden-node convention does not cover them and the gateway would otherwise
- * list its own plumbing as diagnosable Apps. They carry no parameters and no
- * services of their own, so there is nothing to diagnose on them.
- *
- * False for the gateway node itself. The gateway IS a diagnosable App: its ROS
- * parameters are served as that App's configurations, and callers read and
- * write them at `/apps/<gateway>/configurations`. Excluding it would remove the
- * only entity carrying, for instance, `aggregation.peer_auth_header`, and would
- * make two gateways watching one graph disagree about that graph, because each
- * would hide a different node.
- *
- * A fault_manager node sharing the process is NOT ours either: it is a
- * separate, diagnosable component and stays visible.
- *
- * Exact matches only. A prefix test would also claim a genuine peer named
- * `<fqn>_monitor` or `<fqn>2`, and dropping a real node is the worse error.
- *
- * Two FQN spellings are recognised, because the three creation sites do not
- * agree on the namespace: the subscription node is created with the gateway's
- * own namespace, while the fault-client and lifecycle-reader nodes are created
- * from the gateway's node NAME alone and so take the process default. A
- * node-specific namespace remap on the gateway (`-r <gateway>:__ns:=/x`) moves
- * the gateway and the subscription node and leaves the other two behind, which
- * is why those two are also matched as `/<name><suffix>`.
- *
- * CONTRACT, and the cost of that second spelling: a helper-named node in the
- * root namespace is treated as plumbing whichever gateway created it. Two
- * gateways that keep the default node name and differ only in namespace build
- * the same literal `/<name>_fault_clients` and
- * `/<name>_lifecycle_state_reader`, so the name cannot say whose it is, and
- * each will claim the other's. What it is does not depend on who owns it -
- * those nodes carry nothing to diagnose in either process - and the
- * alternative is that every namespaced gateway serves and counts its own
- * plumbing. The subscription node is exempt: it always follows its gateway's
- * namespace, so a root-namespace one is provably another process's and stays
- * visible.
- *
- * @param node_fqn Fully qualified node name to test ("/ns/node")
- * @param self_fqn The gateway node's own FQN. An empty value matches nothing
- */
-bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn);
+using ros2_common::is_own_gateway_helper_node;
 
 /**
  * @brief Filter ROS 2 internal nodes from an app list

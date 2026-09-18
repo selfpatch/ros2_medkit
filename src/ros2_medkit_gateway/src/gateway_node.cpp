@@ -15,7 +15,6 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
@@ -1598,47 +1597,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 }
 
-bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn) {
-  if (self_fqn.empty() || node_fqn.empty()) {
-    return false;
-  }
-  // The helper nodes the gateway creates inside its own process. Each one's FQN
-  // is fixed by how its creation site builds the node, which is not the same
-  // for all three:
-  //   "_sub"                     Ros2SubscriptionExecutor passes the gateway's
-  //                              own namespace (ros2_subscription_executor.cpp),
-  //                              so this one always shares it.
-  //   "_fault_clients"           Ros2FaultServiceTransport and
-  //   "_lifecycle_state_reader"  Ros2LifecycleStateReader build their node from
-  //                              the gateway's node NAME alone, so they take
-  //                              whatever namespace the process defaults to.
-  // Usually that is the gateway's namespace too and all three spellings
-  // coincide. They come apart when only the gateway is moved - a node-specific
-  // remap, `-r <gateway>:__ns:=/x` - which leaves the last two where the
-  // process default put them. Both spellings are then ours, so both are
-  // matched for those two; `_sub` is matched only in the gateway's namespace,
-  // because a root-namespace `<name>_sub` provably belongs to another process.
-  struct HelperNode {
-    const char * suffix;
-    bool follows_gateway_namespace;
-  };
-  static constexpr std::array<HelperNode, 3> kHelperNodes{{
-      {"_sub", true},
-      {"_fault_clients", false},
-      {"_lifecycle_state_reader", false},
-  }};
-  const auto last_slash = self_fqn.rfind('/');
-  const std::string bare_name = last_slash == std::string::npos ? self_fqn : self_fqn.substr(last_slash + 1);
-  // Exact matches only: a prefix test would also claim a genuine peer named
-  // "<fqn>_monitor" or "<fqn>2", and hiding a real node is the worse error.
-  return std::any_of(kHelperNodes.begin(), kHelperNodes.end(), [&](const HelperNode & helper) {
-    if (node_fqn == self_fqn + helper.suffix) {
-      return true;
-    }
-    return !helper.follows_gateway_namespace && !bare_name.empty() && node_fqn == "/" + bare_name + helper.suffix;
-  });
-}
-
 size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
                                      const std::string & self_fqn) {
   size_t count = 0;
@@ -1688,8 +1646,8 @@ void GatewayNode::log_startup_summary() {
         ++topic_count;
       }
     }
-    peer_node_count =
-        count_peer_nodes(get_node_graph_interface()->get_node_names_and_namespaces(), get_fully_qualified_name());
+    // Read through discovery's own reader, so a leftover discovery leaves out is not a peer either.
+    peer_node_count = count_peer_nodes(discovery_mgr_->read_graph_nodes().nodes, get_fully_qualified_name());
   } catch (const std::exception & e) {
     RCLCPP_DEBUG(get_logger(), "Startup summary: graph query failed: %s", e.what());
   }

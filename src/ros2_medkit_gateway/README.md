@@ -7,7 +7,7 @@ HTTP gateway node for the ros2_medkit diagnostics system.
 The ROS 2 Medkit Gateway exposes ROS 2 system information and data through a RESTful HTTP API. It automatically discovers nodes in the ROS 2 system, organizes them into a SOVD-aligned entity hierarchy (Areas, Components, Apps, Functions), and provides endpoints to query and interact with them.
 
 **Key Features:**
-- **Auto-discovery**: Automatically detects ROS 2 nodes and topics
+- **Auto-discovery**: Automatically detects ROS 2 nodes and topics. A node the gateway saw running that the ROS graph still lists after its participant left, with no endpoints, is not exposed, and a warning is logged when that starts (see "How long a departed node keeps being listed" in `docs/config/server.rst`)
 - **SOVD entity model**: Areas, Components (host-level), Apps (ROS 2 nodes), and Functions (namespace-based logical grouping)
 - **REST API**: Standard HTTP/JSON interface
 - **Incremental entity cache**: Discovery refresh diffs add/remove/change and performs zero structural allocations in the cache layer at steady state (object-pool backed, fixed capacity reserved at init via `entity_cache.capacity`)

@@ -42,10 +42,17 @@ publish beacons.
 Rate Limiting
 ~~~~~~~~~~~~~
 
-A ``TokenBucket`` rate limiter (default 100 messages/second) protects the gateway
-from beacon floods. The bucket refills continuously and drops excess messages with
-a single log warning. The rate limiter is thread-safe, as the DDS callback may fire
-from any executor thread.
+A ``TokenBucket`` rate limiter (default 100 messages/second, at most 10000) protects the
+gateway from beacon floods. The bucket refills continuously and drops excess messages
+without a log. The rate limiter is thread-safe, as the DDS callback may fire from any
+executor thread.
+
+``configure()`` replaces a value above its maximum, ``+inf`` included, by the maximum, and
+NaN or a value below the minimum by the minimum, with a warning. The check is the in-range
+test negated, so NaN fails it. ``max_hints`` is read as an int64 before it is narrowed; a
+64-bit integer outside 1 to 2147483647 becomes the nearer bound, and a value that is not an
+integer keeps the default, each with a warning. The parameter parser reads an integer that
+does not fit in 64 bits as a double, so it keeps the default.
 
 Timestamp Back-Projection
 ~~~~~~~~~~~~~~~~~~~~~~~~~

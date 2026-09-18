@@ -27,6 +27,7 @@
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/discovery/merge_pipeline.hpp"
 #include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 
 #include <map>
 #include <memory>
@@ -182,6 +183,9 @@ class DiscoveryManager : public ServiceActionResolver {
    * @return Vector of discovered App entities (empty in runtime-only mode)
    */
   std::vector<App> discover_apps();
+
+  /// The ROS graph's node list through runtime discovery's reader, without its leftovers. Logs nothing.
+  ros2_common::GraphNodeList read_graph_nodes();
 
   /**
    * @brief Discover all functions

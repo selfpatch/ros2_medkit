@@ -17,6 +17,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -39,6 +41,7 @@
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 #include "ros2_medkit_param_beacon/parameter_client_interface.hpp"
 
 class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
@@ -46,6 +49,10 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
  public:
   ParameterBeaconPlugin() = default;
   ~ParameterBeaconPlugin() noexcept override;
+  ParameterBeaconPlugin(const ParameterBeaconPlugin &) = delete;
+  ParameterBeaconPlugin & operator=(const ParameterBeaconPlugin &) = delete;
+  ParameterBeaconPlugin(ParameterBeaconPlugin &&) = delete;
+  ParameterBeaconPlugin & operator=(ParameterBeaconPlugin &&) = delete;
 
   /// Constructor with injectable client factory (for testing).
   explicit ParameterBeaconPlugin(ros2_medkit_param_beacon::ParameterClientFactory factory)
@@ -66,6 +73,9 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
   ros2_medkit_beacon::BeaconHintStore & store() {
     return *store_;
   }
+  const rclcpp::Node::SharedPtr & param_node() const {
+    return param_node_;
+  }
 
  private:
   // Polling
@@ -77,9 +87,17 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // Client management
   std::shared_ptr<ros2_medkit_param_beacon::ParameterClientInterface> get_or_create_client(const std::string & fqn);
-  void evict_stale_clients();
+  /// Drop the client, and the backoff, of every node that is not among this cycle's targets.
+  void evict_stale_clients(const std::vector<std::string> & targets);
+  /// Count one more timeout for the node and set how many cycles skip it.
+  void back_off(const std::string & fqn);
 
   // Config
+  /// Longest duration in seconds. Fast DDS keeps a wait's seconds in an int32; a longer wait spins.
+  static constexpr double kMaxSeconds = 2147483647.0;
+  /// max_hints takes 1 to kMaxHints.
+  static constexpr std::int64_t kMaxHints = 2147483647;
+  static constexpr std::size_t kDefaultMaxHints = 10000;
   std::string parameter_prefix_{"ros2_medkit.discovery"};
   std::chrono::duration<double> poll_interval_{5.0};
   double poll_budget_sec_{10.0};
@@ -87,6 +105,8 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // State
   ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};
+  /// The gateway node's FQN. Graph reads skip it and its helper nodes.
+  std::string gateway_fqn_;
   rclcpp::Node::SharedPtr param_node_;
   std::thread poll_thread_;
   std::atomic<bool> shutdown_requested_{false};
@@ -102,12 +122,14 @@ class ParameterBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin,
   std::map<std::string, std::shared_ptr<ros2_medkit_param_beacon::ParameterClientInterface>> clients_;
   ros2_medkit_param_beacon::ParameterClientFactory client_factory_;
 
-  // Serialization for SyncParametersClient operations (never hold while acquiring clients_mutex_)
+  // Serializes parameter client calls (never hold while acquiring clients_mutex_)
   std::mutex param_ops_mutex_;
 
   // Node list (shared between introspect and poll threads)
   mutable std::shared_mutex nodes_mutex_;
   std::vector<std::string> poll_targets_;
+  // Reads the graph when poll_targets_ is empty. Hides leftovers of nodes its own reads saw running.
+  ros2_medkit_gateway::ros2_common::GraphNodeListReader graph_node_reader_;
 
   // Backoff tracking
   std::unordered_map<std::string, int> backoff_counts_;

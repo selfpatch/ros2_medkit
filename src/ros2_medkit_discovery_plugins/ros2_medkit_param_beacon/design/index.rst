@@ -21,9 +21,9 @@ components.
 How It Works
 ------------
 
-1. During each poll cycle, the plugin retrieves the current list of ROS 2 nodes
-   from the gateway's entity cache
-2. For each node, it creates (or reuses) an ``AsyncParametersClient`` and fetches
+1. During each poll cycle, the plugin takes its targets from the last ``introspect()``
+   input, or reads the ROS 2 graph when that input had none
+2. For each node, it creates (or reuses) a ``RealParameterClient`` and fetches
    all parameters matching the configured prefix
 3. Parameters are parsed into a ``BeaconHint``: ``entity_id``, ``stable_id``,
    ``function_ids``, ``metadata.*`` keys, etc.
@@ -46,18 +46,25 @@ their parameters once at startup.
 Client Management
 ~~~~~~~~~~~~~~~~~
 
-The plugin maintains a cache of ``AsyncParametersClient`` instances keyed by node
-FQN. Clients for nodes that disappear from the graph are evicted after a
-configurable timeout. A lock ordering protocol (``nodes_mutex_`` then
-``clients_mutex_`` then ``param_ops_mutex_``) prevents deadlocks between the
-poll thread and the introspection callback.
+The plugin keeps one ``RealParameterClient`` per node FQN across cycles. It holds an
+``rclcpp::Client`` for ``list_parameters`` and one for ``get_parameters`` on the plugin's
+own node, and spins that node on its own executor for the length of a call. A request that
+gets no answer within ``param_timeout_sec`` is removed from its client with
+``remove_pending_request()``, so a node that never answers leaves nothing pending.
+
+At the start of each cycle the poll thread drops the clients of nodes that are not among the
+cycle's targets, also when there are none. Only the poll thread spins the plugin's node, and
+only inside a call, so no executor holds a client when the poll thread, or ``shutdown()``
+after joining it, destroys one. A lock ordering protocol (``nodes_mutex_`` then
+``clients_mutex_`` then ``param_ops_mutex_``) prevents deadlocks between the poll thread and
+the introspection callback.
 
 Backoff and Budget
 ~~~~~~~~~~~~~~~~~~
 
 Nodes that fail to respond (timeout, unavailable) accumulate a backoff counter.
 Subsequent poll cycles skip backed-off nodes with exponentially increasing skip
-counts. A per-cycle time budget (default 10 seconds) prevents a few slow nodes
+counts. Any answer clears the counter, including a get answer without values. A per-cycle time budget (default 10 seconds) prevents a few slow nodes
 from starving the rest of the poll targets. The start offset rotates each cycle
 so that all nodes eventually get polled even under budget pressure.
 
