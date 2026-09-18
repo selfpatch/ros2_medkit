@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <stdexcept>
 
 namespace ros2_medkit_gateway {
@@ -87,6 +88,11 @@ AuthConfigBuilder & AuthConfigBuilder::with_issuer(const std::string & issuer) {
   return *this;
 }
 
+AuthConfigBuilder & AuthConfigBuilder::with_public_routes(const std::vector<std::string> & public_routes) {
+  config_.public_routes = public_routes;
+  return *this;
+}
+
 AuthConfigBuilder & AuthConfigBuilder::add_client(const std::string & client_id, const std::string & client_secret,
                                                   UserRole role) {
   ClientCredentials creds;
@@ -150,7 +156,14 @@ std::string role_to_string(UserRole role) {
 
 UserRole string_to_role(const std::string & role_str) {
   std::string lower_role = role_str;
-  std::transform(lower_role.begin(), lower_role.end(), lower_role.begin(), ::tolower);
+  // ::tolower takes an int whose value must be representable as unsigned char
+  // or equal EOF. Where char is signed, any byte from 0x80 up arrives negative
+  // and the call is undefined by the standard; the cast makes it defined for
+  // every byte on every platform, which is what lets a role name carrying one
+  // be compared and refused like any other unknown role.
+  std::transform(lower_role.begin(), lower_role.end(), lower_role.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
 
   if (lower_role == "viewer") {
     return UserRole::VIEWER;

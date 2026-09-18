@@ -2869,16 +2869,37 @@ Endpoint limits can also be overridden with patterns:
 Response Headers
 ~~~~~~~~~~~~~~~~
 
-When rate limiting is enabled, the gateway includes the following HTTP response headers on every check:
+When rate limiting is enabled, the gateway includes the following HTTP response
+headers on answers to callers the limiter may speak to - a caller whose
+credential it accepted, or any caller on a route that needs none:
 
 - ``X-RateLimit-Limit``: The effective RPM limit applied.
 - ``X-RateLimit-Remaining``: Number of requests remaining in the current minute window.
 - ``X-RateLimit-Reset``: Unix epoch time (in seconds) when the limit bucket resets.
 
+They are withheld from a refusal the gateway makes before it has accepted
+anybody. The allowance, the reset time and the retry delay are limiter state,
+and a ``401`` for a missing credential or the ``429`` described below carries
+none of it.
+
 Rejection (429 Too Many Requests)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If a request exceeds the available tokens, it is rejected with an HTTP 429 status code and a ``Retry-After`` header indicating the number of seconds to wait before retrying.
+If a request exceeds the available tokens, it is rejected with an HTTP 429 status code. On a route that needs no credential the answer also carries a ``Retry-After`` header with the number of seconds to wait before retrying; on a protected route it does not, whatever credential the caller holds.
+
+One refusal is narrower. On a protected route, a caller whose allowance is gone
+and who presented an ``Authorization`` header is answered ``429`` **before** the
+token is verified, so an over-limit caller costs the gateway no signature check.
+Nothing about that caller has been verified at that point, so the answer carries
+no ``Retry-After``, no ``X-RateLimit-*``, and an empty ``parameters`` object. A
+caller presenting no header at all keeps the ordinary ``401``.
+
+The credential makes no difference here: the limiter refuses before it is
+examined, so a client holding a perfectly good token gets the same bare
+``429``. **On a protected route there is no retry hint**, which is what a
+closed-profile client has to be built around. Pace from the
+``X-RateLimit-Reset`` on the last answer that carried one - any ``2xx`` does.
+On a protected route no ``Retry-After`` arrives.
 
 **Example Response:**
 

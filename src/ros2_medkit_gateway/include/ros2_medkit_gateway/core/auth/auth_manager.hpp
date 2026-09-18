@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -128,6 +129,20 @@ class AuthManager {
   bool requires_authentication(const std::string & method, const std::string & path) const;
 
   /**
+   * @brief Whether an operator listed this route in `auth.public_routes`
+   *
+   * The question a handler asks before withholding part of its answer from an
+   * uncredentialed caller. Narrower than "no credential was required here":
+   * under `require_auth_for: "write"` every GET is answered anonymously
+   * because of the requirement level, and nobody decided that route by route.
+   *
+   * @param method HTTP method
+   * @param path Request path
+   * @return true if the route is exempted by name
+   */
+  bool is_public_route(const std::string & method, const std::string & path) const;
+
+  /**
    * @brief The policy half of `requires_authentication`
    *
    * Borrowed, never null, owned by this manager. Exposed so a reader that has
@@ -186,6 +201,23 @@ class AuthManager {
    */
   bool enable_client(const std::string & client_id);
 
+  /// How many times a token signature has been put through the verifier.
+  ///
+  /// The instrument for the claim that an over-limit caller does not pay for a
+  /// signature check: a status code alone cannot tell "the limiter answered
+  /// first" from "the verifier ran and its answer was discarded". Counted at
+  /// the top of validate_token, so it covers every caller of it.
+  size_t token_validation_count() const {
+    return token_validations_.load(std::memory_order_relaxed);
+  }
+
+  /// How many refresh records are currently held.
+  ///
+  /// Public so a test can observe that the sweep actually runs. The count is
+  /// the thing the unbounded-growth claim is about, and asserting on it is the
+  /// only way to tell a sweep that works from one that is never called.
+  size_t refresh_token_count() const;
+
  private:
   /**
    * @brief Generate a JWT token
@@ -194,12 +226,19 @@ class AuthManager {
    */
   std::string generate_jwt(const JwtClaims & claims) const;
 
+  /// Whether decode_jwt refuses a token past its `exp`. The signature and the
+  /// issuer are verified either way.
+  enum class Expiry { CHECK, IGNORE };
+
   /**
    * @brief Decode and verify a JWT token
    * @param token JWT token string
+   * @param expiry Whether a token past its `exp` is refused. revoke_refresh_token
+   *               passes Expiry::IGNORE: the access tokens minted from an expired
+   *               refresh token are exactly the ones still live.
    * @return JwtClaims if valid
    */
-  tl::expected<JwtClaims, std::string> decode_jwt(const std::string & token) const;
+  tl::expected<JwtClaims, std::string> decode_jwt(const std::string & token, Expiry expiry = Expiry::CHECK) const;
 
   /**
    * @brief Generate a unique token ID
@@ -230,6 +269,16 @@ class AuthManager {
 
   AuthConfig config_;
 
+  // RS256 key material, read from disk once in the constructor. Empty under
+  // HS256, where the secret is the configured string and there is no file.
+  // Const after construction, so the request threads read them without a lock.
+  std::string rs256_private_key_;
+  std::string rs256_public_key_;
+
+  // Signature verifications performed, read through token_validation_count().
+  // Relaxed ordering: it is a counter nothing synchronises on.
+  mutable std::atomic<size_t> token_validations_{0};
+
   // RBAC entries check_authorization matches against, populated via
   // add_route_permissions() before the server starts listening. Empty until
   // then, and an empty set authorizes nothing - see add_route_permissions().
@@ -241,6 +290,10 @@ class AuthManager {
   // Client credentials storage (thread-safe)
   mutable std::mutex clients_mutex_;
   std::unordered_map<std::string, ClientCredentials> clients_;
+
+  /// Drop every expired record. The caller must already hold
+  /// refresh_tokens_mutex_; cleanup_expired_tokens() is the locking wrapper.
+  size_t cleanup_expired_locked();
 
   // Refresh token storage (thread-safe)
   mutable std::mutex refresh_tokens_mutex_;

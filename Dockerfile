@@ -164,8 +164,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy built workspace from builder (builder uses /root/ws, runtime uses /home/medkit/ws)
 COPY --from=builder /root/ws/install/ ${COLCON_WS}/install/
 
-# Default config - can be overridden via volume mount
-COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
+# Three layers, applied left to right by the entrypoint, each one able to
+# override the one before it:
+#
+#   base.yaml      the file the package ships, so the image and a source
+#                  install share one posture, so the two cannot drift
+#   container.yaml the two values a container needs on top of it
+#   params.yaml    the mount point, and the last word among the files
+#
+# The image's own copy of params.yaml repeats container.yaml, so an unmounted
+# container is exactly the second layer. Mounting a file replaces that copy and
+# nothing else: base.yaml still supplies every key the mounted file leaves out,
+# and the mounted file wins wherever it speaks - server.host and
+# refresh_interval_ms included. rclcpp applies the merged node entries in order
+# of first appearance, and the entrypoint puts these files before the caller's
+# arguments, so a `-p` the caller passes wins over the files; had the image put
+# those two keys in front of the files as `-p` arguments, a mounted file could
+# set neither.
+#
+# For the closed profile, point --params-file at
+# config/gateway_params.secure.yaml inside the image.
+COPY src/ros2_medkit_gateway/config/gateway_params.yaml /etc/ros2_medkit/base.yaml
+COPY docker/container_params.yaml /etc/ros2_medkit/container.yaml
+COPY docker/container_params.yaml /etc/ros2_medkit/params.yaml
 
 # When running via ros2 run (as this container does), plugin .so paths must be
 # configured explicitly via plugins.<name>.path parameters in the params file.
@@ -188,4 +209,19 @@ USER medkit
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "--params-file", "/etc/ros2_medkit/params.yaml"]
+# Empty, and explicitly so: the base image sets a CMD of its own, and inheriting
+# it would send `docker run <image>` down the entrypoint's "exec a command"
+# branch when it should start the gateway.
+#
+# The three config layers live in the entrypoint, which puts them in front of
+# whatever arguments a caller passes. Here they would be part of the CMD, and a
+# caller passing arguments replaces the CMD - so `docker run <image> --ros-args
+# -p server.port:=9090` would drop all three and bind loopback inside the
+# container.
+#
+# To run the closed profile, point --params-file at the packaged file:
+#   docker run <image> --ros-args --params-file \
+#     /home/medkit/ws/install/ros2_medkit_gateway/share/ros2_medkit_gateway/config/gateway_params.secure.yaml
+# That profile enables TLS, so the container also needs a certificate and key
+# (server.tls.cert_file / server.tls.key_file) or it refuses to start.
+CMD []
