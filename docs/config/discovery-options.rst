@@ -514,6 +514,17 @@ Configuration
        # Default: 100
        plugins.topic_beacon.max_messages_per_second: 100
 
+``beacon_ttl_sec`` takes 0.1 to 2147483647 s, ``beacon_expiry_sec`` 1.0 to 2147483647 s, and
+``max_messages_per_second`` 1 to 10000. A value above its maximum, including ``.inf`` in a
+parameter file, becomes the maximum. NaN, ``-.inf`` and a value below the minimum become the
+minimum. The gateway logs a warning naming the key, the value and what replaced it. Messages
+over the rate limit are dropped without a log.
+
+``max_hints`` takes an integer from 1 to 2147483647. A 64-bit integer outside that range
+becomes the nearer bound, with the same warning. The parameter parser reads an integer that
+does not fit in 64 bits as a double. A double, such as ``1.0e12`` or ``.nan``, is refused with
+a warning and the default 10000 is used.
+
 Beacon Lifecycle
 ^^^^^^^^^^^^^^^^
 
@@ -668,6 +679,36 @@ Configuration
        # Maximum number of hints to keep in memory
        # Default: 10000
        plugins.parameter_beacon.max_hints: 10000
+
+Every duration takes its minimum - 0.1 s, and 1.0 s for ``beacon_expiry_sec`` - up to
+2147483647 s. Fast DDS keeps the seconds of a wait in a 32-bit signed integer, and a longer
+``param_timeout_sec`` would make the poll thread spin. A value above the maximum, including
+``.inf`` in a parameter file, becomes the maximum. NaN, ``-.inf`` and a value below the
+minimum become the minimum. The gateway logs a warning naming the key, the value and what
+replaced it.
+
+``max_hints`` takes an integer from 1 to 2147483647. A 64-bit integer outside that range
+becomes the nearer bound, with the same warning. The parameter parser reads an integer that
+does not fit in 64 bits as a double. A double, such as ``1.0e12`` or ``.nan``, is refused with
+a warning and the default 10000 is used.
+
+In ``runtime_only`` and ``manifest_only`` mode the plugin reads its poll targets from the
+ROS graph. In ``hybrid`` mode the merge pipeline passes it the discovered Apps, but the
+gateway's refresh then calls it again with no Apps, which clears them. So a poll cycle mostly
+reads the graph there too; only a cycle that starts between the two calls polls the nodes of
+the online Apps that discovery bound to a node. A graph read skips hidden nodes (a name
+starting with ``_``), the gateway's own node and its helper nodes (``<gateway>_sub``,
+``<gateway>_fault_clients`` and ``<gateway>_lifecycle_state_reader``): they carry no beacon.
+
+A parameter request that gets no answer within ``param_timeout_sec`` - waiting for the
+service, listing parameters or getting their values - is given up and removed from its
+client, and the node is skipped for the next 1, 2, 4 and then 8 poll cycles while it keeps
+timing out. A node that answers is polled on every cycle, also when its answer carries no
+values: rclpy answers so when one of the parameters asked for is declared with a type and no
+value, and the plugin then stores no hint for the node. None of this is logged.
+
+Each node keeps one parameter client across poll cycles. A node that is no longer a poll
+target, also when no node is, loses its client and its skip count.
 
 Parameter Naming
 ^^^^^^^^^^^^^^^^
