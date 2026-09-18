@@ -33,6 +33,10 @@
   <test_depend>launch_testing</test_depend>
   <test_depend>launch_ros</test_depend>
   <test_depend>ament_index_python</test_depend>
+  <test_depend>rcl</test_depend>
+  <test_depend>rmw</test_depend>
+  <test_depend>rmw_dds_common</test_depend>
+  <test_depend>rosidl_typesupport_cpp</test_depend>
   <test_depend>python3-requests</test_depend>
   <test_depend>python3-jsonschema</test_depend>
   <test_depend>ament_cmake_flake8</test_depend>

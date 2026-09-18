@@ -120,15 +120,17 @@ class MockPluginContext : public RosPluginContext {
   ros2_medkit_gateway::ConditionRegistry * get_condition_registry() override {
     return nullptr;
   }
-  ros2_medkit_gateway::LockAccessResult check_lock(const std::string &, const std::string &,
-                                                   const std::string &) const override {
+  ros2_medkit_gateway::LockAccessResult check_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+                                                   const std::string & /*collection*/) const override {
     return ros2_medkit_gateway::LockAccessResult{true, "", "", ""};
   }
   tl::expected<ros2_medkit_gateway::LockInfo, ros2_medkit_gateway::LockError>
-  acquire_lock(const std::string &, const std::string &, const std::vector<std::string> &, int) override {
+  acquire_lock(const std::string & /*entity_id*/, const std::string & /*client_id*/,
+               const std::vector<std::string> & /*scopes*/, int /*expiration_seconds*/) override {
     return tl::make_unexpected(ros2_medkit_gateway::LockError{"lock-disabled", "Not available", 503, std::nullopt});
   }
-  tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string &, const std::string &) override {
+  tl::expected<void, ros2_medkit_gateway::LockError> release_lock(const std::string & /*entity_id*/,
+                                                                  const std::string & /*client_id*/) override {
     return tl::make_unexpected(ros2_medkit_gateway::LockError{"lock-disabled", "Not available", 503, std::nullopt});
   }
 
