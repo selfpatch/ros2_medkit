@@ -290,6 +290,10 @@ std::vector<App> DiscoveryManager::discover_apps() {
   return runtime_introspection_->discover_apps();
 }
 
+ros2_common::GraphNodeList DiscoveryManager::read_graph_nodes() {
+  return runtime_introspection_->read_graph_nodes();
+}
+
 std::vector<Function> DiscoveryManager::discover_functions() {
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
     return manifest_manager_->get_functions();
