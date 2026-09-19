@@ -72,6 +72,8 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
+          # Upgrade the image to the apt sync rosdep installs from: packages from two syncs can be ABI-incompatible.
+          apt-get upgrade -y
           apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs libyaml-cpp-dev libssl-dev
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           for attempt in 1 2 3; do rosdep update && break; [ "$attempt" = 3 ] && exit 1; echo "rosdep update attempt $attempt failed, retrying" >&2; sleep 5; done
