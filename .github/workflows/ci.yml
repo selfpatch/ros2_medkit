@@ -278,6 +278,132 @@ jobs:
             log/
             build/*/test_results/
 
+  # The fault manager's PostgreSQL backend (-DPOSTGRES_SUPPORT=ON) on every distro. Every other job
+  # builds with the option OFF, its default. 14 is the oldest supported server.
+  postgres:
+    name: postgres (${{ matrix.ros_distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ros_distro: humble
+            os_image: ros:humble-ros-base
+            ccache_prefix: ccache-humble-
+          - ros_distro: jazzy
+            os_image: ros:jazzy-ros-base
+            # Not ccache-jazzy-: see the note in graph-watchdog.
+            ccache_prefix: ccache-jazzy-test-
+          - ros_distro: lyrical
+            os_image: ros:lyrical-ros-base
+            ccache_prefix: ccache-lyrical-
+    container:
+      image: ${{ matrix.os_image }}
+      # See graph-watchdog for the /dev/shm size.
+      options: --shm-size=1g
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: medkit
+          POSTGRES_PASSWORD: medkit
+          POSTGRES_DB: faults
+        options: >-
+          --health-cmd "pg_isready -U medkit -d faults"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ccache
+        run: |
+          apt-get update
+          apt-get install -y ccache
+
+      - name: Restore ccache
+        # Restore, never save, as in graph-watchdog: the distro's own sweep holds the objects of
+        # the dependencies, and this job adds only the fault manager and libpqxx.
+        uses: actions/cache/restore@v4
+        with:
+          path: /root/.cache/ccache
+          key: ${{ matrix.ccache_prefix }}${{ github.sha }}
+          restore-keys: |
+            ${{ matrix.ccache_prefix }}
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          # Upgrade the image to the apt sync rosdep installs from: packages from two syncs can be ABI-incompatible.
+          apt-get upgrade -y
+          # libpq-dev and git: POSTGRES_SUPPORT needs libpq and fetches libpqxx at configure time.
+          apt-get install -y ros-${{ matrix.ros_distro }}-test-msgs libpq-dev git
+          if [ "${{ matrix.ros_distro }}" = "humble" ] || [ "${{ matrix.ros_distro }}" = "jazzy" ]; then
+            apt-get install -y ros-${{ matrix.ros_distro }}-rmw-cyclonedds-cpp
+          fi
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          for attempt in 1 2 3; do rosdep update && break; [ "$attempt" = 3 ] && exit 1; echo "rosdep update attempt $attempt failed, retrying" >&2; sleep 5; done
+          rosdep install --from-paths src --ignore-src -y \
+            --skip-keys "ament_cmake_clang_tidy ament_cmake_clang_format"
+
+      - name: Build packages
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 500M
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          ccache -z
+          colcon build --symlink-install \
+            --packages-up-to ros2_medkit_fault_manager \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPOSTGRES_SUPPORT=ON \
+            --event-handlers console_direct+
+          ccache -s
+          ./scripts/ccache_report.sh "${{ matrix.ros_distro }}-postgres"
+
+      - name: Record the test step start
+        run: echo "TEST_STEP_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Run fault manager tests against PostgreSQL
+        timeout-minutes: 30
+        env:
+          # The DDS choice belongs to the distro, as in graph-watchdog.
+          RMW_IMPLEMENTATION: ${{ (matrix.ros_distro == 'humble' || matrix.ros_distro == 'jazzy') && 'rmw_cyclonedds_cpp' || '' }}
+          # The job runs in a container, so the service name is the host name.
+          ROS2_MEDKIT_TEST_PG_CONN: postgresql://medkit:medkit@postgres:5432/faults
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon test --return-code-on-test-failure \
+            --packages-select ros2_medkit_fault_manager \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+
+
+      - name: Check the run completed, and record the environment
+        if: always()
+        uses: ./.github/actions/test-margin-and-environment
+        with:
+          start: ${{ env.TEST_STEP_START }}
+          cap-minutes: '30'
+
+      - name: Show test results
+        if: always()
+        run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-postgres-${{ matrix.ros_distro }}
+          path: |
+            log/
+            build/*/test_results/
+
   # Builds AND tests Jazzy. These were two jobs (jazzy-build -> jazzy-test)
   # passing a tarred build/ + install/ tree between them. That split dates from
   # when lint ran off the same artifact in parallel; lint has since moved to
