@@ -38,32 +38,51 @@ if(POSTGRES_SUPPORT)
   find_package(PostgreSQL REQUIRED)
   include(FetchContent)
 
+  # EXCLUDE_FROM_ALL keeps libpqxx out of this package's install. CMake < 3.28 has no such
+  # option in fetchcontent_declare, so the subdirectory is added by hand below.
+  set(_pqxx_exclude_from_all "")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    set(_pqxx_exclude_from_all EXCLUDE_FROM_ALL)
+  endif()
   fetchcontent_declare(pqxx
     GIT_REPOSITORY https://github.com/jtv/libpqxx.git
     GIT_TAG        7.10.7
     GIT_SHALLOW    TRUE
+    ${_pqxx_exclude_from_all}
   )
 
   # Save medkit flags to restore them later. Not required per-se, but doesn't hurt to handle them either
   set(_medkit_saved_cxx_flags "${CMAKE_CXX_FLAGS}")
   get_directory_property(_medkit_saved_opts COMPILE_OPTIONS)
-  string(REGEX REPLACE "(^| )-W[^ ]*" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  string(REGEX REPLACE "(^|[ ])-W[^ ]*" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   set_directory_properties(PROPERTIES COMPILE_OPTIONS "")
 
-  # The following lines are just to future proof the handling.
-  # Currently not required, and needs CMake3.24 and CMake3.3 respectively (without breaking older versions)
+  # No warnings-as-errors, include-what-you-use or clang-tidy for pqxx. An empty normal variable
+  # hides a cache value from -D; unset() would expose it. Restored after pqxx.
+  set(_medkit_saved_warning_as_error "${CMAKE_COMPILE_WARNING_AS_ERROR}")
   set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
-  unset(CMAKE_CXX_INCLUDE_WHAT_YOU_USE)
-
-  # ros2_medkit_clang_tidy is called later, but guard pqxx either way
-  unset(CMAKE_CXX_CLANG_TIDY)
-  # pqxx appears to avoid building tests and docs when compiled externally as a dependency
-  # The lines below ensure that it doesn't
+  set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE "")
+  set(CMAKE_CXX_CLANG_TIDY "")
+  # Keep the libpqxx tests out of this build. Its BUILD_DOC is OFF by default; setting it here makes
+  # CMake 3.22 warn about CMP0077.
   set(SKIP_BUILD_TEST ON)
-  set(BUILD_DOC OFF)
-  set(BUILD_TOOLS OFF)
 
-  fetchcontent_makeavailable(pqxx)
+  # libpqxx must be static: it is not installed. ament on Lyrical defaults BUILD_SHARED_LIBS to ON.
+  set(_medkit_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF)
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    fetchcontent_makeavailable(pqxx)
+  else()
+    fetchcontent_getproperties(pqxx)
+    if(NOT pqxx_POPULATED)
+      fetchcontent_populate(pqxx)
+      add_subdirectory(${pqxx_SOURCE_DIR} ${pqxx_BINARY_DIR} EXCLUDE_FROM_ALL)
+    endif()
+  endif()
+  set(BUILD_SHARED_LIBS "${_medkit_saved_build_shared_libs}")
+  set(CMAKE_COMPILE_WARNING_AS_ERROR "${_medkit_saved_warning_as_error}")
+  unset(CMAKE_CXX_INCLUDE_WHAT_YOU_USE)
+  unset(CMAKE_CXX_CLANG_TIDY)
 
   # Restore medkit flags now that pqxx is compiled
   set(CMAKE_CXX_FLAGS "${_medkit_saved_cxx_flags}")
@@ -141,8 +160,10 @@ set(FAULT_MANAGER_TARGET_LIBS
 )
 
 if(POSTGRES_SUPPORT)
+  # libpq directly as well: the connection string is checked with PQconninfoParse.
   list(APPEND FAULT_MANAGER_TARGET_LIBS
     pqxx
+    PostgreSQL::PostgreSQL
   )
 endif()
 target_link_libraries(fault_manager_lib PUBLIC
@@ -308,9 +329,8 @@ endif()
   ros2_medkit_relax_vendor_warnings()
 endif()
 
+# Defined only when ON: the sources test it with #ifdef.
 if(POSTGRES_SUPPORT)
-  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT=1)
-else()
-  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT=0)
+  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT)
 endif()
 ament_package()

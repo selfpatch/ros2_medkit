@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -198,8 +199,7 @@ struct RosbagFileInfo {
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
-  // A custom exception to be used by fault storage implementations to signify an connection exception that should be
-  // ignored
+  /// Thrown by a backend that cannot reach its database server. The node keeps running and answers with an error.
   class IgnorableConnectionException : public std::exception {
    protected:
     std::string message;
@@ -243,12 +243,12 @@ class FaultStorage {
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
   virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                                const std::vector<std::string> & statuses) = 0;
+                                                                const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
   /// @return The fault if found, nullopt otherwise
-  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) = 0;
+  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
 
   /// Clear a fault by fault_code (manual acknowledgment). Drops the fault's per-topic snapshots;
   /// the freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
@@ -258,10 +258,10 @@ class FaultStorage {
   virtual bool clear_fault(const std::string & fault_code) = 0;
 
   /// Get total number of stored faults
-  virtual size_t size() = 0;
+  virtual size_t size() const = 0;
 
   /// Check if a fault exists
-  virtual bool contains(const std::string & fault_code) = 0;
+  virtual bool contains(const std::string & fault_code) const = 0;
 
   /// Check and confirm PREFAILED faults that have been pending too long (time-based confirmation)
   /// @param current_time Current timestamp for age calculation
@@ -329,7 +329,7 @@ class FaultStorage {
   /// @param topic_filter Optional topic filter (empty = all topics)
   /// @return Vector of snapshots for the fault
   virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                                  const std::string & topic_filter = "") = 0;
+                                                  const std::string & topic_filter = "") const = 0;
 
   /// Highest capture_id any stored snapshot holds, across every fault (0 when none).
   ///
@@ -337,7 +337,7 @@ class FaultStorage {
   /// hand out ids BELOW the ones already on disk: the eviction that protects
   /// MAX(capture_id) would then guard an old set and drop the one just written.
   /// SnapshotCapture seeds its counter from this at construction.
-  virtual int64_t get_max_capture_id() {
+  virtual int64_t get_max_capture_id() const {
     return 0;
   }
 
@@ -354,7 +354,7 @@ class FaultStorage {
   /// @param fault_code The fault code to look up
   /// @return The freeze-frame if one was captured, nullopt otherwise (including fault
   ///         codes with no capture configured, which never get a row)
-  virtual std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) = 0;
+  virtual std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const = 0;
 
   /// Set the maximum number of near-miss entries retained per fault code.
   ///
@@ -373,7 +373,7 @@ class FaultStorage {
   /// The series survives clear_fault; an unknown or never-near-missed code returns empty.
   /// @param fault_code The fault code to look up
   /// @return The retained near-miss entries in chronological order
-  virtual std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) = 0;
+  virtual std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const = 0;
 
   /// Store rosbag file metadata for a fault
   /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
@@ -406,15 +406,15 @@ class FaultStorage {
   /// serves an arbitrary recording, which no test catches reliably.
   /// @param fault_code The fault code to get rosbag for
   /// @return Rosbag file info if exists, nullopt otherwise
-  virtual std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) = 0;
+  virtual std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const = 0;
 
   /// Every recording of a fault, newest first.
-  virtual std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) = 0;
+  virtual std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const = 0;
 
   /// Every row of one recording - one per fault the recording covers. Backs the
   /// bulk-data download and the entity authorization scope check, both of which
   /// start from a recording id and need the faults behind it.
-  virtual std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) = 0;
+  virtual std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const = 0;
 
   /// Delete one whole recording: every fault's link to it, and the bag. This is the
   /// right unit for quota eviction and for a bag that has vanished from disk - both
@@ -448,20 +448,20 @@ class FaultStorage {
   /// Get total size of all stored rosbag files in bytes, counting a shared
   /// recording once regardless of how many faults reference it
   /// @return Total size in bytes
-  virtual size_t get_total_rosbag_storage_bytes() = 0;
+  virtual size_t get_total_rosbag_storage_bytes() const = 0;
 
   /// Get all rosbag files ordered by creation time (oldest first)
   /// @return Vector of rosbag file info
-  virtual std::vector<RosbagFileInfo> get_all_rosbag_files() = 0;
+  virtual std::vector<RosbagFileInfo> get_all_rosbag_files() const = 0;
 
   /// Get rosbags for all faults associated with an entity
   /// @param entity_fqn The entity's fully qualified name to filter by
   /// @return Vector of rosbag file info for faults reported by this entity
-  virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) = 0;
+  virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() = 0;
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
 
   /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
   /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
@@ -492,15 +492,15 @@ class InMemoryFaultStorage : public FaultStorage {
                           const rclcpp::Time & timestamp, const DebounceConfig & config) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) override;
+                                                        const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) override;
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
-  size_t size() override;
+  size_t size() const override;
 
-  bool contains(const std::string & fault_code) override;
+  bool contains(const std::string & fault_code) const override;
 
   std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
@@ -511,30 +511,30 @@ class InMemoryFaultStorage : public FaultStorage {
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") override;
-  int64_t get_max_capture_id() override;
+                                          const std::string & topic_filter = "") const override;
+  int64_t get_max_capture_id() const override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) override;
+  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
 
   void set_max_rosbags_per_fault(size_t max_count) override;
 
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) override;
+  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   /// All-or-nothing, as the base class requires: the batch is built beside the live
   /// map and swapped in, so a throw leaves the store exactly as it was.
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) override;
-  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
-  size_t get_total_rosbag_storage_bytes() override;
-  std::vector<RosbagFileInfo> get_all_rosbag_files() override;
-  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() override;
+  size_t get_total_rosbag_storage_bytes() const override;
+  std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
+  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
   std::vector<std::string> reclassify_healed_as_cleared() override;
 
  private:
@@ -551,7 +551,7 @@ class InMemoryFaultStorage : public FaultStorage {
   /// only be unlinked once the last of them is gone. Caller holds mutex_.
 
   /// Whether any row at all still references @p file_path. Caller holds mutex_.
-  bool path_referenced(const std::string & file_path);
+  bool path_referenced(const std::string & file_path) const;
 
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
