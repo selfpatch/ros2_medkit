@@ -85,8 +85,76 @@ filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
 SOVD entities. The filter applies to both locally discovered Apps and
 peer-discovered Apps (after stripping the peer prefix).
 
+The same switch also excludes the helper nodes the gateway runs inside its own
+process. Three of them exist in every deployment, named after the gateway node:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Node
+     - What it is
+   * - ``<gateway>_sub``
+     - The subscription executor that serves ``/data`` reads and cyclic
+       subscriptions.
+   * - ``<gateway>_fault_clients``
+     - The service clients that talk to the fault manager.
+   * - ``<gateway>_lifecycle_state_reader``
+     - The client that reads managed nodes' lifecycle state.
+
+None of these names begins with an underscore, so the convention above does not
+cover them, and without this rule the gateway would list its own plumbing as
+diagnosable Apps. They carry no parameters, services or actions of their own, so
+there is nothing on them to diagnose.
+
+While this setting is ``true`` they are also left out of the linking report on
+``GET /health`` - ``discovery.linking.orphan_count``, and the
+``ros_node_fqns`` of the ``unmanifested_nodes`` warning raised under
+``unmanifested_nodes: error``: a node that can never be an App is not a node to
+declare in a manifest. That report exists only in ``hybrid`` mode, where
+manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
+at all.
+
+**The gateway's own node stays an App.** Its ROS parameters are what the
+gateway serves as that App's configurations, so
+``/apps/<gateway>/configurations`` is where a client reads and writes them -
+there is no other entity carrying, for instance,
+``aggregation.peer_auth_header``. Two gateways watching one graph also have to
+agree about what is on it, which they cannot do if each hides a different node.
+
+Namespaces: the subscription node is created with the gateway's own namespace,
+while the other two are created from the gateway's node name alone and take the
+process default namespace. A process-wide remap (``-r __ns:=/line_a``) moves all
+four together; a remap naming the gateway alone
+(``-r ros2_medkit_gateway:__ns:=/line_a``) moves the gateway and the
+subscription node and leaves the other two in the default namespace. Both
+spellings are recognised, so the rule holds either way.
+
+.. note::
+
+   A node named ``<gateway>_fault_clients`` or
+   ``<gateway>_lifecycle_state_reader`` in the **root** namespace is treated as
+   plumbing whichever gateway created it. Two gateways that keep the default
+   node name and differ only in namespace produce the same fully qualified name
+   for those two nodes, so the name cannot say whose they are, and each gateway
+   will filter the other's. They carry nothing to diagnose in either process,
+   and the alternative is that a namespaced gateway lists and counts its own
+   plumbing. Give each gateway its own node name (``-r __node:=gateway_a``, as
+   :doc:`../tutorials/multi-instance` does) when several run on one ROS graph
+   and you want each one's nodes distinguishable. The subscription node is not
+   affected: it always follows its gateway's namespace.
+
+A manifest- or plugin-declared App bound to one of these nodes is not served,
+and the gateway logs a warning naming it: bind the App to the node you meant,
+or drop the declaration.
+
 Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
-convention.
+convention. That re-exposes the three helper nodes as well as the underscore
+ones, and in ``hybrid`` mode the linking report follows: a helper node the
+gateway serves as an App is also an undeclared one, so it is counted in
+``discovery.linking.orphan_count`` and, under ``unmanifested_nodes: error``,
+named in the ``ros_node_fqns`` of the ``unmanifested_nodes`` warning. With
+``true`` it appears in neither.
 
 Function Entities from Namespaces
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -446,6 +514,17 @@ Configuration
        # Default: 100
        plugins.topic_beacon.max_messages_per_second: 100
 
+``beacon_ttl_sec`` takes 0.1 to 2147483647 s, ``beacon_expiry_sec`` 1.0 to 2147483647 s, and
+``max_messages_per_second`` 1 to 10000. A value above its maximum, including ``.inf`` in a
+parameter file, becomes the maximum. NaN, ``-.inf`` and a value below the minimum become the
+minimum. The gateway logs a warning naming the key, the value and what replaced it. Messages
+over the rate limit are dropped without a log.
+
+``max_hints`` takes an integer from 1 to 2147483647. A 64-bit integer outside that range
+becomes the nearer bound, with the same warning. The parameter parser reads an integer that
+does not fit in 64 bits as a double. A double, such as ``1.0e12`` or ``.nan``, is refused with
+a warning and the default 10000 is used.
+
 Beacon Lifecycle
 ^^^^^^^^^^^^^^^^
 
@@ -600,6 +679,36 @@ Configuration
        # Maximum number of hints to keep in memory
        # Default: 10000
        plugins.parameter_beacon.max_hints: 10000
+
+Every duration takes its minimum - 0.1 s, and 1.0 s for ``beacon_expiry_sec`` - up to
+2147483647 s. Fast DDS keeps the seconds of a wait in a 32-bit signed integer, and a longer
+``param_timeout_sec`` would make the poll thread spin. A value above the maximum, including
+``.inf`` in a parameter file, becomes the maximum. NaN, ``-.inf`` and a value below the
+minimum become the minimum. The gateway logs a warning naming the key, the value and what
+replaced it.
+
+``max_hints`` takes an integer from 1 to 2147483647. A 64-bit integer outside that range
+becomes the nearer bound, with the same warning. The parameter parser reads an integer that
+does not fit in 64 bits as a double. A double, such as ``1.0e12`` or ``.nan``, is refused with
+a warning and the default 10000 is used.
+
+In ``runtime_only`` and ``manifest_only`` mode the plugin reads its poll targets from the
+ROS graph. In ``hybrid`` mode the merge pipeline passes it the discovered Apps, but the
+gateway's refresh then calls it again with no Apps, which clears them. So a poll cycle mostly
+reads the graph there too; only a cycle that starts between the two calls polls the nodes of
+the online Apps that discovery bound to a node. A graph read skips hidden nodes (a name
+starting with ``_``), the gateway's own node and its helper nodes (``<gateway>_sub``,
+``<gateway>_fault_clients`` and ``<gateway>_lifecycle_state_reader``): they carry no beacon.
+
+A parameter request that gets no answer within ``param_timeout_sec`` - waiting for the
+service, listing parameters or getting their values - is given up and removed from its
+client, and the node is skipped for the next 1, 2, 4 and then 8 poll cycles while it keeps
+timing out. A node that answers is polled on every cycle, also when its answer carries no
+values: rclpy answers so when one of the parameters asked for is declared with a type and no
+value, and the plugin then stores no hint for the node. None of this is logged.
+
+Each node keeps one parameter client across poll cycles. A node that is no longer a poll
+target, also when no node is, loses its client and its skip count.
 
 Parameter Naming
 ^^^^^^^^^^^^^^^^

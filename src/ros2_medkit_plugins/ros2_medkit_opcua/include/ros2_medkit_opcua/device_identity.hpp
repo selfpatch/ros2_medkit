@@ -53,6 +53,13 @@ struct ComponentIdentity {
 /// if ``endpoint_url`` is unparseable and no identity fields are present.
 ComponentIdentity derive_component_identity(const OpcuaClient::DeviceInfo & info, const std::string & endpoint_url);
 
+/// True when ``info`` names the device itself - a DI nameplate or a BuildInfo
+/// manufacturer/product. ``derive_component_identity`` then returns a
+/// device-derived id (cases 1-2). False for an empty or unusable read, which is
+/// what a server answers on the first read of a session whose address space is
+/// not up yet.
+bool component_identity_has_nameplate(const OpcuaClient::DeviceInfo & info);
+
 /// Whether a live nameplate read over this connection may outrank the
 /// operator-authored manifest in the identity merge.
 ///

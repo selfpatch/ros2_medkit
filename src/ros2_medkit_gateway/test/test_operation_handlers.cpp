@@ -524,10 +524,14 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     return async_ptr->id;
   }
 
-  ActionGoalInfo get_tracked_goal_or_fail(const std::string & execution_id) {
+  // Returns the optional, so a missing goal reaches the caller as an empty
+  // value and the caller's ASSERT stops the test with a message. A non-fatal
+  // expectation followed by an unconditional `*goal_info` here would be
+  // undefined behaviour.
+  std::optional<ActionGoalInfo> get_tracked_goal_or_fail(const std::string & execution_id) {
     auto goal_info = gateway_node_->get_operation_manager()->get_tracked_goal(execution_id);
     EXPECT_TRUE(goal_info.has_value());
-    return *goal_info;
+    return goal_info;
   }
 
   CorsConfig cors_{};
@@ -978,7 +982,15 @@ TEST_F(OperationHandlersFixtureTest, GetOperationResolvesAQualifiedIdToItsMember
 }
 
 TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocation) {
-  const auto execution_id = create_action_execution(20);
+  // The fixture server pushes one sequence element per 100 ms tick and succeeds
+  // at the requested length, so the order sets how long the goal stays
+  // cancellable: 20 finishes on its own in under two seconds, which a loaded or
+  // instrumented runner can spend on the create plus the cancel round trip, and
+  // the goal is then SUCCEEDED with nothing left to stop. 50 is the largest
+  // order handle_goal accepts and buys about five seconds, which is the whole
+  // point of asking for it - the assertions below are about an accepted stop,
+  // not about how fast the machine is.
+  const auto execution_id = create_action_execution(50);
   ASSERT_FALSE(execution_id.empty());
 
   auto raw_req =
@@ -989,7 +1001,9 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocati
   body.capability = "stop";
 
   auto result = handlers_->update_execution(typed, body);
-  auto goal_info = get_tracked_goal_or_fail(execution_id);
+  auto tracked = get_tracked_goal_or_fail(execution_id);
+  ASSERT_TRUE(tracked.has_value());
+  const auto & goal_info = *tracked;
 
   if (result.has_value()) {
     const auto & exec = result.value().first.value;
@@ -1007,8 +1021,26 @@ TEST_F(OperationHandlersFixtureTest, UpdateExecutionStopReturnsAcceptedAndLocati
     EXPECT_TRUE(has_location);
     ASSERT_TRUE(exec.id.has_value());
     EXPECT_EQ(*exec.id, execution_id);
-    EXPECT_EQ(exec.status, "running");
-    EXPECT_EQ(goal_info.status, ActionGoalStatus::CANCELING);
+
+    // An accepted stop promises the goal is on its way out: CANCELING while
+    // the server winds down, CANCELED once it has. It never promises which of
+    // the two the caller observes, and a server that cancels within the
+    // round trip lands on CANCELED directly. What it does rule out is a goal
+    // that is still running (ACCEPTED, EXECUTING) or one that completed
+    // anyway (SUCCEEDED): those mean the stop did not take.
+    EXPECT_TRUE(goal_info.status == ActionGoalStatus::CANCELING || goal_info.status == ActionGoalStatus::CANCELED)
+        << "tracked status after an accepted stop: " << ros2_medkit_gateway::action_status_to_string(goal_info.status);
+
+    // The body renders the status the handler read, which is at or before the
+    // one read above - a goal only moves CANCELING -> CANCELED, never back. So
+    // a goal still CANCELING here cannot have been CANCELED when the handler
+    // looked, which pins the body exactly; a goal already CANCELED admits
+    // either rendering.
+    if (goal_info.status == ActionGoalStatus::CANCELING) {
+      EXPECT_EQ(exec.status, "running");
+    } else {
+      EXPECT_TRUE(exec.status == "running" || exec.status == "failed") << "execution status in body: " << exec.status;
+    }
   } else {
     // The fixture's action server always ACCEPTS cancels, so the only
     // realistic failure here is a lost/late CancelGoal response whose

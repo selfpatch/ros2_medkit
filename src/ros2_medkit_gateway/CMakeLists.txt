@@ -728,6 +728,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_refresh_debounce gateway_core)
   endif()
 
+  # Node-list reader decisions (header-only), plus one case against a real rcl node
+  medkit_add_gtest(test_graph_node_list test/test_graph_node_list.cpp)
+  if(TARGET test_graph_node_list)
+    medkit_target_dependencies(test_graph_node_list rclcpp)
+    target_include_directories(test_graph_node_list PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
+
   # SlotStore object pool (pure C++17, no ROS node)
   medkit_add_gtest(test_slot_store test/test_slot_store.cpp)
   if(TARGET test_slot_store)

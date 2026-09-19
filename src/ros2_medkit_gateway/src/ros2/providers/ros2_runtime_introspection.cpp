@@ -49,7 +49,12 @@ bool Ros2RuntimeIntrospection::is_internal_service(const std::string & service_p
          service_path.find("/_action/") != std::string::npos;
 }
 
-Ros2RuntimeIntrospection::Ros2RuntimeIntrospection(rclcpp::Node * node) : node_(node) {
+Ros2RuntimeIntrospection::Ros2RuntimeIntrospection(rclcpp::Node * node)
+  : node_(node), leftover_node_reporter_(node->get_logger()) {
+}
+
+ros2_common::GraphNodeList Ros2RuntimeIntrospection::read_graph_nodes() {
+  return graph_node_reader_.read(*node_->get_node_graph_interface());
 }
 
 void Ros2RuntimeIntrospection::set_config(const RuntimeConfig & config) {
@@ -86,14 +91,14 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
   auto node_graph = node_->get_node_graph_interface();
   std::vector<std::pair<std::string, std::string>> names_and_namespaces;
   try {
-    names_and_namespaces = node_graph->get_node_names_and_namespaces();
+    // Leftovers go before the bare-name collision count, so they never rename a live node.
+    auto node_list = graph_node_reader_.read(*node_graph);
+    leftover_node_reporter_.report(node_list);
+    names_and_namespaces = std::move(node_list.nodes);
   } catch (const std::runtime_error & ex) {
-    // rclcpp throws "rcl node's context is invalid" when get_node_names_*
-    // is called after rclcpp::shutdown (e.g. refresh timer fires once
-    // between SIGINT handling and the executor stopping). Swallow and
-    // return empty so ~GatewayNode's shutdown path isn't aborted mid-run
-    // by std::terminate; callers handle empty gracefully.
-    RCLCPP_DEBUG(node_->get_logger(), "get_node_names_and_namespaces threw during shutdown: %s", ex.what());
+    // A graph query throws once rclcpp is shut down, e.g. a refresh between SIGINT and the
+    // executor stopping. Return empty so the shutdown path does not end in std::terminate.
+    RCLCPP_DEBUG(node_->get_logger(), "Reading the node list threw during shutdown: %s", ex.what());
     return {};
   }
 

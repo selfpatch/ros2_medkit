@@ -20,7 +20,7 @@ never be called dead) cannot, by itself, discriminate a correct detector from no
 all, because both produce the same silence; those scenarios are marked as such in each class's
 own docstring below.
 
-Runs as TEN separate CTest targets (see CMakeLists.txt), each launching its OWN
+Runs as ELEVEN separate CTest targets (see CMakeLists.txt), each launching its OWN
 gateway+fault_manager+demo-node stack, exactly as test_lifecycle_expectation_e2e.test.py
 does and for the same reason: the plugin reads its config once at set_context() time, so
 different configs need different gateway launches. WATCHDOG_E2E_SCENARIO selects which
@@ -79,6 +79,9 @@ launch and which assertions run:
   trick the detector plays. See TestNodeDeathRestartLoopOccurrences's own docstring for why
   this class stops at occurrence_count and does not attempt the per-occurrence RECORDING
   half of this row.
+- "ghost_departure": a late discovery sample leaves the watched node as a leftover 0.5 s
+  after its participant left. GRAPH_NODE_DISAPPEARED still appears: the gateway keeps the
+  leftover out of the entity cache.
 - "restart_rebaseline": a node dies, the fault confirms, then the gateway is killed by PID
   and comes back with the node still gone. RECORDS the boundary, the way
   TestLifecycleExpectationRestartDeparted does for the sibling detector: the fault stays
@@ -135,6 +138,11 @@ from ros2_medkit_test_utils.constants import (  # noqa: E402
     get_time_scale,
 )
 from ros2_medkit_test_utils.coverage import get_coverage_env  # noqa: E402
+from ros2_medkit_test_utils.graph_fixtures import (  # noqa: E402
+    LeftoverNode,
+    observed_enclaves,
+    wait_observed,
+)
 
 # No default on purpose - a default makes this file FAIL OPEN (see harness-consuming
 # siblings' identical rationale): if the CTest ENVIRONMENT property never reaches the
@@ -280,6 +288,12 @@ ROS2CLI_CYCLES = 3
 # default (10.0), or the poll could time out before stability was ever even reachable.
 STABLE_TRACKED_COUNT_TIMEOUT_SEC = 40.0 * TIME_SCALE
 
+# ---- the "ghost_departure" scenario's own fixture ----------------------------------------
+# Give-up bound for the fixture, which waits up to 30 s itself.
+GHOST_INJECTION_TIMEOUT_SEC = 45.0 * TIME_SCALE
+# Late-sample delay, far inside the detector's miss grace (MISS_GRACE x TICK_INTERVAL_MS).
+GHOST_LEFTOVER_DELAY_SEC = 0.5
+
 # ---- the "restart_loop_occurrences" scenario's own target -------------------------------
 # The claim under test is that occurrence_count tracks the number of genuine deaths. Three
 # distinct occurrences demonstrate that exactly as well as five: what would falsify the claim
@@ -377,6 +391,8 @@ def generate_test_description():
         pass  # target node launched by hand below, respawning under this test's control
     elif SCENARIO == 'restart_rebaseline':
         gateway_respawn = True  # this scenario's own subject, like lifecycle's "main"
+    elif SCENARIO == 'ghost_departure':
+        pass  # the test runs the target node inside ghost_node_injector, which leaves it over
     else:
         raise RuntimeError(f'WATCHDOG_E2E_SCENARIO={SCENARIO!r} has no launch configuration')
 
@@ -498,6 +514,11 @@ def _wait_until_port_is_down(port, timeout=60.0, interval=0.2):
             return True
         time.sleep(interval)
     return False
+
+
+def _gateway_output(proc_output, gateway_node):
+    """Everything the gateway process has printed so far."""
+    return ''.join(output.text.decode(errors='replace') for output in proc_output[gateway_node])
 
 
 def _poll_apps_absent(port, app_id, timeout=30.0, interval=0.5):
@@ -1476,6 +1497,72 @@ class TestNodeDeathRestartRebaseline(unittest.TestCase):
         )
 
 
+class TestNodeDeathGhostDeparture(unittest.TestCase):
+    """A node that departs and leaves a leftover of itself in the graph is still reported.
+
+    ghost_node_injector runs the node, removes its participant and re-creates it as a
+    leftover after GHOST_LEFTOVER_DELAY_SEC, well inside the miss grace. A leftover the
+    gateway listed would keep the App present and hide the death.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        rclpy.init()
+        cls.observer = rclpy.create_node('_ghost_departure_observer')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.observer.destroy_node()
+        rclpy.shutdown()
+
+    def test_departure_raises_with_a_leftover_of_the_node_in_the_graph(
+            self, proc_output, gateway_node):
+        fqn = f'{TARGET_NAMESPACE}/{TARGET_NODE}'
+        leftover = LeftoverNode(fqn, GHOST_LEFTOVER_DELAY_SEC)
+        self.addCleanup(leftover.stop, 30.0 * TIME_SCALE)
+        self.assertTrue(
+            leftover.wait_ready(GHOST_INJECTION_TIMEOUT_SEC),
+            f'ghost_node_injector never got {fqn} running:\n{leftover.output()}')
+        # app_id-scoped for the reason TestNodeDeathRaise gives.
+        self.assertTrue(
+            wait_until_watchdog_armed(PORT, timeout=ARM_TIMEOUT_SEC, app_id=TARGET_NODE),
+            f'graph_watchdog never reported {TARGET_NODE} armed, so no raise below could '
+            'mean anything',
+        )
+
+        leftover.leave()
+        self.assertTrue(
+            wait_observed(self.observer, fqn, lambda enclaves: enclaves == [''],
+                          GHOST_LEFTOVER_DELAY_SEC + GHOST_INJECTION_TIMEOUT_SEC),
+            f'after its participant left, the test process graph lists {fqn} with '
+            f'{observed_enclaves(self.observer, fqn)} rather than once as a leftover, so this '
+            'scenario would be the "raise" scenario under another name')
+        # Only the gateway's own read logs this, so its graph holds the leftover too.
+        warning = f"Node '{fqn}' is not exposed"
+        deadline = time.monotonic() + GHOST_INJECTION_TIMEOUT_SEC
+        while (warning not in _gateway_output(proc_output, gateway_node)
+               and time.monotonic() < deadline):
+            time.sleep(0.2)
+        self.assertTrue(
+            warning in _gateway_output(proc_output, gateway_node),
+            f'the gateway never warned about the leftover of {fqn}, so its graph may never have '
+            'listed it')
+        self.assertTrue(
+            _poll_apps_absent(PORT, TARGET_NODE, timeout=DEPARTURE_TIMEOUT_SEC, interval=0.2),
+            f'{TARGET_NODE} never left GET /apps after its participant left - the leftover of '
+            'it kept the App present, so the detector cannot see the departure',
+        )
+
+        fault = poll_faults(PORT, FAULT_CODE, timeout=RAISE_TIMEOUT_SEC)
+        if fault is None:
+            self.fail(f'{FAULT_CODE} never raised after {TARGET_NODE} left a leftover of itself')
+        self.assertIn(TARGET_NODE, fault.get('description', ''))
+        self.assertEqual(
+            observed_enclaves(self.observer, fqn), [''],
+            'the leftover left the graph as well, so this run does not show a departure being '
+            'seen through one')
+
+
 # Each CTest target launches this file with one scenario, so only that scenario's case may
 # run. Removing the others from the module (rather than skipping them) means each run
 # reports exactly one case, and a missing result is a real failure rather than an expected
@@ -1491,6 +1578,7 @@ _SCENARIO_CASES = {
     'fast_tick_floor': 'TestNodeDeathFastTickFloor',
     'restart_loop_occurrences': 'TestNodeDeathRestartLoopOccurrences',
     'restart_rebaseline': 'TestNodeDeathRestartRebaseline',
+    'ghost_departure': 'TestNodeDeathGhostDeparture',
 }
 if SCENARIO not in _SCENARIO_CASES:
     raise RuntimeError(

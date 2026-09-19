@@ -16,6 +16,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 #include "ros2_medkit_beacon_common/beacon_response_builder.hpp"
 
@@ -33,14 +39,7 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
 TopicBeaconPlugin::~TopicBeaconPlugin() noexcept {
-  // On Lyrical (originally observed on Rolling), ~rclcpp::Subscription can throw
-  // graph_listener::NodeNotFoundError once rclcpp::shutdown() has invalidated
-  // the context. An exception escaping a destructor calls std::terminate(),
-  // so swallow it here.
-  try {
-    shutdown();
-  } catch (...) {
-  }
+  shutdown();
 }
 
 std::string TopicBeaconPlugin::name() const {
@@ -53,23 +52,57 @@ void TopicBeaconPlugin::configure(const nlohmann::json & config) {
   BeaconHintStore::Config store_config;
   auto beacon_ttl = config.value("beacon_ttl_sec", 10.0);
   auto beacon_expiry = config.value("beacon_expiry_sec", 300.0);
-  auto max_hints = static_cast<size_t>(std::max(config.value("max_hints", 10000), 1));
   auto max_mps = config.value("max_messages_per_second", 100.0);
 
-  // Clamp to safe minimums
-  if (beacon_ttl < 0.1) {
-    log_warn("beacon_ttl_sec clamped from " + std::to_string(beacon_ttl) + " to 0.1");
-    beacon_ttl = 0.1;
-  }
-  if (beacon_expiry < 1.0) {
-    log_warn("beacon_expiry_sec clamped from " + std::to_string(beacon_expiry) + " to 1.0");
-    beacon_expiry = 1.0;
-  }
-  // max_hints already clamped to >= 1 via std::max above
-  if (max_mps < 1.0) {
-    log_warn("max_messages_per_second clamped from " + std::to_string(max_mps) + " to 1.0");
-    max_mps = 1.0;
-  }
+  // max_hints is checked as int64 before it narrows. An integer outside 1 to kMaxHints becomes the nearer
+  // bound. Any other value, a double included, is rejected and the default stays.
+  auto read_max_hints = [this, &config]() -> std::size_t {
+    const auto it = config.find("max_hints");
+    if (it == config.end()) {
+      return kDefaultMaxHints;
+    }
+    if (!it->is_number_integer()) {
+      std::ostringstream message;
+      message << std::setprecision(12) << "max_hints ";
+      if (it->is_number_float()) {
+        message << it->get<double>();
+      } else {
+        message << it->dump();
+      }
+      message << " is not an integer, using " << kDefaultMaxHints;
+      log_warn(message.str());
+      return kDefaultMaxHints;
+    }
+    // Only an unsigned JSON integer can exceed int64; it is above kMaxHints either way.
+    constexpr auto kInt64Max = std::numeric_limits<std::int64_t>::max();
+    const bool beyond_int64 =
+        it->is_number_unsigned() && it->get<std::uint64_t>() > static_cast<std::uint64_t>(kInt64Max);
+    const std::int64_t value = beyond_int64 ? kInt64Max : it->get<std::int64_t>();
+    const std::int64_t clamped = std::clamp<std::int64_t>(value, 1, kMaxHints);
+    if (clamped != value) {
+      log_warn("max_hints clamped from " + it->dump() + " to " + std::to_string(clamped));
+    }
+    return static_cast<std::size_t>(clamped);
+  };
+  const std::size_t max_hints = read_max_hints();
+
+  // A value above its maximum, +inf included, becomes the maximum. NaN and a value below the minimum
+  // become the minimum.
+  auto clamp = [this](const char * key, double value, double minimum, double maximum) {
+    // In-range test negated so NaN fails it. Do not apply clang-tidy's De Morgan rewrite: it lets NaN through.
+    // NOLINTNEXTLINE(readability-simplify-boolean-expr)
+    if (!(std::isfinite(value) && value >= minimum && value <= maximum)) {
+      const double clamped = value > maximum ? maximum : minimum;
+      std::ostringstream message;
+      message << std::setprecision(12) << key << " clamped from " << value << " to " << clamped;
+      log_warn(message.str());
+      return clamped;
+    }
+    return value;
+  };
+  beacon_ttl = clamp("beacon_ttl_sec", beacon_ttl, 0.1, kMaxSeconds);
+  beacon_expiry = clamp("beacon_expiry_sec", beacon_expiry, 1.0, kMaxSeconds);
+  max_mps = clamp("max_messages_per_second", max_mps, 1.0, kMaxMessagesPerSecond);
 
   store_config.beacon_ttl_sec = beacon_ttl;
   store_config.beacon_expiry_sec = beacon_expiry;
@@ -99,7 +132,8 @@ void TopicBeaconPlugin::set_context(PluginContext & context) {
 
   // Create subscription on configured topic
   subscription_ = node->create_subscription<ros2_medkit_msgs::msg::MedkitDiscoveryHint>(
-      topic_, rclcpp::QoS(100).reliable(), [this](const ros2_medkit_msgs::msg::MedkitDiscoveryHint::SharedPtr msg) {
+      topic_, rclcpp::QoS(100).reliable(),
+      [this](const ros2_medkit_msgs::msg::MedkitDiscoveryHint::ConstSharedPtr & msg) {
         on_beacon(msg);
       });
 
@@ -114,13 +148,8 @@ void TopicBeaconPlugin::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  // ~rclcpp::Subscription can throw on Lyrical (and Rolling) when the rclcpp
-  // context was torn down before us; swallow so plugin_manager shutdown and
-  // the plugin destructor calling back into us do not abort the process.
-  try {
-    subscription_.reset();
-  } catch (...) {
-  }
+  // The callback captures this. A callback the executor already took returns early in on_beacon().
+  subscription_.reset();
 }
 
 std::vector<GatewayPlugin::PluginRoute> TopicBeaconPlugin::get_routes() {
@@ -172,7 +201,7 @@ IntrospectionResult TopicBeaconPlugin::introspect(const IntrospectionInput & inp
   return result;
 }
 
-void TopicBeaconPlugin::on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::SharedPtr & msg) {
+void TopicBeaconPlugin::on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::ConstSharedPtr & msg) {
   if (shutdown_requested_.load()) {
     return;
   }

@@ -26,6 +26,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -73,6 +74,8 @@ std::unique_ptr<Detector> make_node_death() {
 // Aggregated fault source: no Component in the test snapshot, so graph_source_id() falls
 // back to this literal (see aggregated_fault.hpp).
 constexpr const char * kGraphSource = "graph_watchdog";
+// source_id of the requests flush_reports() sends; no count or lookup in this file reads it.
+constexpr const char * kFlushSource = "nd_it_flush";
 
 /// Captures rcutils log output for as long as it is alive and restores the console handler
 /// on every exit path.
@@ -251,6 +254,14 @@ class NodeDeathIntegrationTest : public ::testing::Test {
       }
     }
     return n;
+  }
+
+  /// Wait until the fake service recorded every report sent so far: it answers one client's
+  /// requests in order. False if no answer came in time.
+  static bool flush_reports() {
+    auto request = std::make_shared<ReportFault::Request>();
+    request->source_id = kFlushSource;
+    return client_->async_send_request(request).future.wait_for(5s) == std::future_status::ready;
   }
 
   bool any_failed_desc_contains(const std::string & source_id, const std::vector<std::string> & needles) {
@@ -846,7 +857,8 @@ TEST_F(NodeDeathIntegrationTest, X2_TheFloorMakesAConfiguredMissGraceBehaveDiffe
     det_below->tick(ctx_below);
     gate_above.update(snap_above, static_cast<std::uint64_t>(tick));
     det_above->tick(ctx_above);
-    std::this_thread::sleep_for(5ms);
+    // A report is attributed to the tick that sent it only once it has been recorded.
+    ASSERT_TRUE(flush_reports()) << "the fake fault service never answered at tick " << tick;
     if (below_raised_at < 0 && any_failed_desc_contains(kGraphSource, {"floor_below_node"})) {
       below_raised_at = tick;
     }

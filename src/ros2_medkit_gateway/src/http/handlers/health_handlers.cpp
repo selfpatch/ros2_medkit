@@ -104,13 +104,19 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
               "policy to 'warn' or 'ignore'.";
           // The subjects of this warning are ROS nodes, so they go in
           // ros_node_fqns and entity_ids stays empty. Not a formality: the
-          // orphan list is taken from the UNFILTERED runtime app list
-          // (runtime_layer.cpp), before gap-fill, the namespace filters and
-          // the policy filter, so some of these nodes have no SOVD entity at
-          // all - and for those that do, the App id is derived from the bare
-          // node name and only becomes namespace-qualified when some other
-          // node collides with it (ros2_runtime_introspection.cpp), so it can
-          // change between two polls while the FQN cannot.
+          // orphan list is taken from the runtime app list (runtime_layer.cpp)
+          // before gap-fill, the namespace filters and the policy filter, so
+          // some of these nodes have no SOVD entity at all - and for those that
+          // do, the App id is derived from the bare node name and only becomes
+          // namespace-qualified when some other node collides with it
+          // (ros2_runtime_introspection.cpp), so it can change between two
+          // polls while the FQN cannot. One thing is taken out of it while
+          // discovery.runtime.filter_internal_nodes is on (runtime_linker.cpp):
+          // the gateway's own in-process helper nodes, which the app filter
+          // then removes, so naming them here would be an instruction to
+          // declare something that can never become an App. With the filter off
+          // they are served as Apps and appear here like any other undeclared
+          // node.
           warning.ros_node_fqns = linking->orphan_nodes;
           warnings.push_back(std::move(warning));
         }

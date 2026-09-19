@@ -162,6 +162,20 @@ install(TARGETS topics_test_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(launch_testing_ament_cmake REQUIRED)
 
+  # Graph fixtures for the test_graph_leftover_nodes suites, installed for tests in any package.
+  # ghost_node_injector writes rmw_dds_common's discovery message itself.
+  find_package(rcl REQUIRED)
+  find_package(rmw REQUIRED)
+  find_package(rmw_dds_common REQUIRED)
+  find_package(rosidl_typesupport_cpp REQUIRED)
+  add_executable(ghost_node_injector demo_nodes/ghost_node_injector.cpp)
+  target_include_directories(ghost_node_injector PRIVATE ${_demo_include_dir})
+  medkit_target_dependencies(ghost_node_injector rclcpp rcl rmw rmw_dds_common rosidl_typesupport_cpp std_msgs)
+  add_executable(endpointless_node demo_nodes/endpointless_node.cpp)
+  target_include_directories(endpointless_node PRIVATE ${_demo_include_dir})
+  medkit_target_dependencies(endpointless_node rclcpp rcl)
+  install(TARGETS ghost_node_injector endpointless_node DESTINATION lib/${PROJECT_NAME})
+
   # Lint the Python that makes up this package. Without this the whole package
   # sits outside `colcon test -L linter`, so the documented lint command passes
   # while none of these files are checked, and the pre-commit hooks are the
@@ -348,6 +362,8 @@ if(BUILD_TESTING)
     test_graph_provider_sse 300
     test_peer_recovery 300
     test_triggers_restore_before_discovery 300
+    # Seven cases share one gateway, and their scaled give-up bounds add up past 120s.
+    test_graph_leftover_nodes 300
     # Three discovery budgets in setUpClass before the first case runs, and a
     # broken merge spends all of them. The glob default cuts that short and
     # reports a timeout with no test name, which is the one answer that says
