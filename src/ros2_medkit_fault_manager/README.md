@@ -50,7 +50,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Occurrence tracking**: Counts outages, not reports - the count starts at one and rises only
   when a cleared fault is raised again - and tracks all reporting sources
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
-- **Persistent storage**: SQLite backend ensures faults survive node restarts
+- **Persistent storage**: SQLite (default) or PostgreSQL backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
@@ -62,9 +62,9 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 | Parameter                       | Type   | Default                            | Description                                                                     |
 | ------------------------------- | ------ | ---------------------------------- | ------------------------------------------------------------------------------- |
-| `storage_type`                  | string | `"sqlite"`                         | Storage backend: `"sqlite"` or `"memory"` or `"postgres"`                       |
+| `storage_type`                  | string | `"sqlite"`                         | Storage backend: `"sqlite"`, `"memory"` or `"postgres"`                         |
 | `database_path`                 | string | `"/var/lib/ros2_medkit/faults.db"` | Path to SQLite database file                                                    |
-| `database_url`                  | string | `""`                               | Connection URL to the PostgreSQL database                                       |
+| `database_url`                  | string | `""`                               | PostgreSQL connection string; empty = libpq environment variables               |
 | `confirmation_threshold`        | int    | `-1`                               | Counter value at which faults are confirmed                                     |
 | `healing_enabled`               | bool   | `false`                            | Enable automatic healing via PASSED events                                      |
 | `healing_threshold`             | int    | `3`                                | Counter value at which faults are healed                                        |
@@ -138,7 +138,17 @@ format used by black-box capture (`snapshots.rosbag.format`, see Rosbag Capture 
 
 **Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
 
-**PostgreSQL**: Faults are stored in an external PostgreSQL server and survive node restarts. The audit log stays a local SQLite file next to `database_path`.
+**PostgreSQL**: Faults are stored in an external PostgreSQL server (14 or newer) and survive node restarts. The audit log stays a local SQLite file next to `database_path`. One database belongs to exactly one fault manager; give each fault manager its own database or schema.
+
+PostgreSQL support is off by default. To build it, install `libpq-dev` and pass `-DPOSTGRES_SUPPORT=ON`:
+
+```bash
+colcon build --packages-select ros2_medkit_fault_manager --cmake-args -DPOSTGRES_SUPPORT=ON
+```
+
+The build downloads libpqxx 7.10.7 from GitHub at configure time and links it statically; rosdep installs nothing for it. Keep the password out of `database_url`: leave it empty and set `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD` (or use `~/.pgpass`). The node never logs the connection string, and it removes the password from error text it logs.
+
+A wrong configuration stops the node at startup with exit code 1: a connection string libpq cannot parse, or a server that accepts the connection but does not allow creating the schema, or a table that lacks a column the node uses. A server that cannot be reached (including a wrong password or a missing database) does not stop it: the node runs without storage, services with an error field answer `Fault storage unavailable`, and `ReportFault` answers `accepted=false`. After a failed connection attempt, requests fail at once for 5 s and the next request tries again. An attempt waits at most 2 s per host address unless `connect_timeout` or `PGCONNECT_TIMEOUT` says otherwise, and a request on an open connection to a server that went off the network fails after `tcp_user_timeout` (5 s). With a libpq service, these values come from the service file. See `docs/config/fault-manager.rst` for the full table.
 
 ## Near-Miss Series
 

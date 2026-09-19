@@ -25,6 +25,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <stdexcept>
 
 #include "ros2_medkit_fault_manager/correlation/config_parser.hpp"
 #ifdef POSTGRES_SUPPORT
@@ -114,6 +115,11 @@ std::string validate_recording_id(const std::string & recording_id) {
     return "recording_id cannot contain '..'";
   }
   return "";  // Valid
+}
+
+/// Response text for a request the fault storage server could not serve.
+std::string storage_unavailable(const std::exception & e) {
+  return std::string("Fault storage unavailable: ") + e.what();
 }
 
 }  // namespace
@@ -246,12 +252,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Apply near-miss retention bound to storage (0 = unlimited). Applying it also trims a series
   // that a previous run left over the bound, which deletes history for good, so say when it does.
+  // Storage that is unreachable at startup skips the trim; the bound still applies to new entries.
   size_t evicted_near_misses = 0;
   try {
     evicted_near_misses = storage_->set_max_near_misses_per_fault(static_cast<size_t>(max_near_misses));
   } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
+    RCLCPP_WARN(get_logger(), "Skipped the startup near-miss trim, fault storage unavailable: %s", e.what());
   }
   if (evicted_near_misses > 0) {
     RCLCPP_WARN(get_logger(),
@@ -280,32 +286,25 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // would behave inconsistently under the latch, so reclassify it as CLEARED at startup. Each flipped
   // fault is audited (the audit log is already constructed above); without this the reclassification
   // would be invisible to the audit log's verify().
+  // Storage that is unreachable at startup skips it until the next start.
   if (!global_config_.healing_enabled) {
-    std::vector<std::string> reclassified = {};
     try {
-      reclassified = storage_->reclassify_healed_as_cleared();
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-      return;
-    }
-    if (!reclassified.empty()) {
-      if (audit_log_) {
-        const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
-        for (const auto & fault_code : reclassified) {
-          std::optional<ros2_medkit_msgs::msg::Fault> fault;
-          try {
-            fault = storage_->get_fault(fault_code);
-          } catch (const FaultStorage::IgnorableConnectionException & e) {
-            RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-            return;
-          }
-          if (fault) {
-            audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
+      const auto reclassified = storage_->reclassify_healed_as_cleared();
+      if (!reclassified.empty()) {
+        if (audit_log_) {
+          const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
+          for (const auto & fault_code : reclassified) {
+            auto fault = storage_->get_fault(fault_code);
+            if (fault) {
+              audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
+            }
           }
         }
+        RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED",
+                    reclassified.size());
       }
-      RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED",
-                  reclassified.size());
+    } catch (const FaultStorage::IgnorableConnectionException & e) {
+      RCLCPP_WARN(get_logger(), "Startup HEALED reclassification not done, fault storage unavailable: %s", e.what());
     }
   }
 
@@ -410,12 +409,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     // The cap lives in the storage backend, not in RosbagCapture: it has to be
     // atomic with the insert, the unlink has to happen after the backend's commit,
     // and the "is this bag still referenced" rule is backend-private.
-    try {
-      storage_->set_max_rosbags_per_fault(snapshot_config.rosbag.max_bags_per_fault);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-      return;
-    }
+    storage_->set_max_rosbags_per_fault(snapshot_config.rosbag.max_bags_per_fault);
     rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
 
     // The recapture cooldown gates the capture job as a whole, bags included, so it
@@ -591,10 +585,15 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
 #ifdef POSTGRES_SUPPORT
   if (storage_type_ == "postgres") {
     auto postgres_fault_storage = std::make_unique<PgFaultStorage>(database_url_);
-    RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage - Host: %s, Port: %s, Database: %s",
-                postgres_fault_storage->hostname().c_str(), postgres_fault_storage->port().c_str(),
-                postgres_fault_storage->dbname().c_str());
+    RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage (%s)", postgres_fault_storage->target().c_str());
+    if (!postgres_fault_storage->connected()) {
+      RCLCPP_WARN(get_logger(), "PostgreSQL is unreachable: running without fault storage until it connects");
+    }
     return postgres_fault_storage;
+  }
+#else
+  if (storage_type_ == "postgres") {
+    throw std::runtime_error("storage_type 'postgres' needs a build with -DPOSTGRES_SUPPORT=ON");
   }
 #endif
 
@@ -1078,7 +1077,18 @@ void FaultManagerNode::handle_clear_fault(
     return;
   }
 
-  // Process through correlation engine first (to get auto-clear list).
+  // Storage first: a clear that the storage refuses must not change the correlation state.
+  bool cleared = false;
+  try {
+    cleared = storage_->clear_fault(request->fault_code);
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->message = storage_unavailable(e);
+    return;
+  }
+
+  // Then the correlation engine (to get the auto-clear list).
   // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
   // correlated symptom fault codes. Per-entity DELETE routes set it to true
   // so they cannot reach across entity boundaries via the correlation graph.
@@ -1086,14 +1096,6 @@ void FaultManagerNode::handle_clear_fault(
   if (correlation_engine_ && !request->skip_correlation_auto_clear) {
     auto clear_result = correlation_engine_->process_clear(request->fault_code);
     auto_cleared_codes = clear_result.auto_cleared_codes;
-  }
-
-  bool cleared = false;
-  try {
-    cleared = storage_->clear_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
   }
 
   response->success = cleared;
@@ -1113,6 +1115,7 @@ void FaultManagerNode::handle_clear_fault(
         storage_->clear_fault(symptom_code);
       } catch (const FaultStorage::IgnorableConnectionException & e) {
         RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+        response->message = storage_unavailable(e);
         return;
       }
       if (audit_log_) {
@@ -1121,6 +1124,7 @@ void FaultManagerNode::handle_clear_fault(
           symptom = storage_->get_fault(symptom_code);
         } catch (const FaultStorage::IgnorableConnectionException & e) {
           RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+          response->message = storage_unavailable(e);
           return;
         }
         if (symptom) {
@@ -1156,6 +1160,7 @@ void FaultManagerNode::handle_clear_fault(
       fault = storage_->get_fault(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->message = storage_unavailable(e);
       return;
     }
     if (fault) {
@@ -1198,6 +1203,8 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     fault = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
   if (!fault) {
@@ -1221,6 +1228,8 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     stored_snapshots = storage_->get_snapshots(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
   for (const auto & stored_snapshot : stored_snapshots) {
@@ -1248,6 +1257,8 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
       frame = storage_->get_freeze_frame(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->success = false;
+      response->error_message = storage_unavailable(e);
       return;
     }
     if (frame) {
@@ -1281,6 +1292,8 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
     }
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
 
@@ -1320,8 +1333,9 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   // Validate max_message_size (must be positive before casting to size_t)
   auto max_message_size_param = declare_parameter<int>("snapshots.max_message_size", 65536);
   if (max_message_size_param <= 0) {
-    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %ld. Using default 65536",
-                static_cast<long>(max_message_size_param));
+    // long long: the parameter type is long on some distros and int on others.
+    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %lld. Using default 65536",
+                static_cast<long long>(max_message_size_param));
     max_message_size_param = 65536;
   }
   config.max_message_size = static_cast<size_t>(max_message_size_param);
@@ -1545,6 +1559,8 @@ void FaultManagerNode::handle_get_snapshots(
     fault = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
   if (!fault) {
@@ -1559,6 +1575,8 @@ void FaultManagerNode::handle_get_snapshots(
     snapshots = storage_->get_snapshots(request->fault_code, request->topic);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
 
@@ -1627,6 +1645,8 @@ void FaultManagerNode::handle_get_snapshots(
     rosbag_info = storage_->get_rosbag_file(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
   if (rosbag_info) {
@@ -1676,6 +1696,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       rows = storage_->get_rosbag_files_by_recording(request->recording_id);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->success = false;
+      response->error_message = storage_unavailable(e);
       return;
     }
     if (!rows.empty()) {
@@ -1706,6 +1728,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       fault = storage_->get_fault(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->success = false;
+      response->error_message = storage_unavailable(e);
       return;
     }
     if (!fault) {
@@ -1718,6 +1742,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       rosbag_info = storage_->get_rosbag_file(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->success = false;
+      response->error_message = storage_unavailable(e);
       return;
     }
     if (!rosbag_info) {
@@ -1733,6 +1759,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       }
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+      response->success = false;
+      response->error_message = storage_unavailable(e);
       return;
     }
     if (attached_codes.empty()) {
@@ -1783,6 +1811,8 @@ void FaultManagerNode::handle_list_rosbags(
     rosbags = storage_->list_rosbags_for_entity(request->entity_fqn);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
 
@@ -1798,6 +1828,8 @@ void FaultManagerNode::handle_list_rosbags(
           storage_->delete_rosbag_recording(info.recording_id);
         } catch (const FaultStorage::IgnorableConnectionException & e) {
           RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+          response->success = false;
+          response->error_message = storage_unavailable(e);
           return;
         }
       }
@@ -1836,6 +1868,8 @@ void FaultManagerNode::handle_list_faults_for_entity(
     all_faults = storage_->get_all_faults();
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
     return;
   }
 
