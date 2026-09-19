@@ -51,6 +51,8 @@ class Ros2LifecycleStateReader : public LifecycleStateReader {
   std::optional<std::string> get_state(const std::string & get_state_service_path) override;
 
  private:
+  friend struct Ros2LifecycleStateReaderTestAccess;
+
   std::shared_ptr<rclcpp::Node> client_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::chrono::duration<double> timeout_;
