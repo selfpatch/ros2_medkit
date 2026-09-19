@@ -1878,8 +1878,14 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
         // One deadline for the whole wait, polled in slices so shutdown can
         // abort it (wait_for_services itself shares the slice across clients).
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto context = get_node_base_interface()->get_context();
         bool ready = false;
         while (!ready && !should_abort()) {
+          // After rclcpp::shutdown() every wait returns at once, so the loop would spin.
+          if (!rclcpp::ok(context)) {
+            RCLCPP_INFO(get_logger(), "Standing-fault freeze-frame catch-up skipped: rclcpp is shutting down");
+            return standing;
+          }
           const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
           if (remaining <= std::chrono::duration<double>::zero()) {
             break;
