@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <exception>
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
@@ -19,7 +20,15 @@
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ros2_medkit_fault_manager::FaultManagerNode>();
+  std::shared_ptr<ros2_medkit_fault_manager::FaultManagerNode> node;
+  // A node that cannot start is a configuration error: log why and exit with code 1.
+  try {
+    node = std::make_shared<ros2_medkit_fault_manager::FaultManagerNode>();
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("fault_manager"), "Fault manager did not start: %s", e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

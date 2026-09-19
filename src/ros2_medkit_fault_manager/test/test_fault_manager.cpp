@@ -55,6 +55,18 @@ using ros2_medkit_msgs::srv::GetFault;
 using ros2_medkit_msgs::srv::ListFaultsForEntity;
 using ros2_medkit_msgs::srv::ReportFault;
 
+namespace {
+
+/// Runs the ready work of @p node once. rclcpp::spin_some(node) is deprecated on Lyrical.
+void spin_some_once(const rclcpp::Node::SharedPtr & node) {
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin_some();
+  executor.remove_node(node);
+}
+
+}  // namespace
+
 /// Default debounce config for tests (matches DebounceConfig defaults: threshold=-1, no healing)
 static DebounceConfig default_config() {
   return DebounceConfig{};
@@ -871,7 +883,7 @@ class FaultManagerNodeTest : public ::testing::Test {
 
 TEST_F(FaultManagerNodeTest, NodeCreation) {
   EXPECT_STREQ(node_->get_name(), "fault_manager");
-  EXPECT_EQ(node_->get_storage_for_test().size(), 0u);
+  EXPECT_EQ(node_->get_storage().size(), 0u);
   EXPECT_EQ(node_->get_storage_type(), "memory");
 }
 
@@ -972,7 +984,7 @@ TEST(FaultManagerNodeParameterTest, AppliesNearMissRetentionBound) {
 
   drive_near_misses(node->get_storage_for_test(), 10);
 
-  EXPECT_EQ(node->get_storage_for_test().get_near_misses("PUMP_PRESSURE_LOW").size(), 4u);
+  EXPECT_EQ(node->get_storage().get_near_misses("PUMP_PRESSURE_LOW").size(), 4u);
 }
 
 TEST(FaultManagerNodeParameterTest, NearMissRetentionDefaultsToBounded) {
@@ -983,7 +995,7 @@ TEST(FaultManagerNodeParameterTest, NearMissRetentionDefaultsToBounded) {
   drive_near_misses(node->get_storage_for_test(), 205);
 
   // The documented default is 200 per fault code, and it must be in force without configuration.
-  EXPECT_EQ(node->get_storage_for_test().get_near_misses("PUMP_PRESSURE_LOW").size(), 200u);
+  EXPECT_EQ(node->get_storage().get_near_misses("PUMP_PRESSURE_LOW").size(), 200u);
 }
 
 TEST(FaultManagerNodeParameterTest, NegativeNearMissBoundFallsBackToDefault) {
@@ -997,7 +1009,7 @@ TEST(FaultManagerNodeParameterTest, NegativeNearMissBoundFallsBackToDefault) {
 
   drive_near_misses(node->get_storage_for_test(), 205);
 
-  EXPECT_EQ(node->get_storage_for_test().get_near_misses("PUMP_PRESSURE_LOW").size(), 200u);
+  EXPECT_EQ(node->get_storage().get_near_misses("PUMP_PRESSURE_LOW").size(), 200u);
 }
 
 TEST(FaultManagerNodeParameterTest, ZeroNearMissBoundIsUnlimited) {
@@ -1010,7 +1022,7 @@ TEST(FaultManagerNodeParameterTest, ZeroNearMissBoundIsUnlimited) {
 
   drive_near_misses(node->get_storage_for_test(), 205);
 
-  EXPECT_EQ(node->get_storage_for_test().get_near_misses("PUMP_PRESSURE_LOW").size(), 205u);
+  EXPECT_EQ(node->get_storage().get_near_misses("PUMP_PRESSURE_LOW").size(), 205u);
 }
 
 TEST(FaultManagerNodeParameterTest, ParsesDropOldestPolicy) {
@@ -1092,8 +1104,8 @@ class FaultEventPublishingTest : public ::testing::Test {
   void spin_for(std::chrono::milliseconds duration) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < duration) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
@@ -1104,8 +1116,8 @@ class FaultEventPublishingTest : public ::testing::Test {
                   std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (predicate()) {
         return true;
       }
@@ -1119,8 +1131,8 @@ class FaultEventPublishingTest : public ::testing::Test {
   bool spin_until_future_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }
@@ -1530,7 +1542,7 @@ TEST_F(FreezeFrameRetentionTest, GetFaultServesRetainedFreezeFrameAfterClear) {
   // Capture runs asynchronously on the pool; wait for a non-empty freeze-frame.
   ASSERT_TRUE(spin_until(
       [this]() {
-        auto frame = fault_manager_->get_storage_for_test().get_freeze_frame("FF_FAULT");
+        auto frame = fault_manager_->get_storage().get_freeze_frame("FF_FAULT");
         return frame.has_value() && frame->data != "{}";
       },
       std::chrono::milliseconds(10000)));
@@ -1586,13 +1598,13 @@ TEST_F(UnlimitedSnapshotRetentionTest, RetentionAppliesWithNoPerFaultCap) {
 
   ASSERT_TRUE(spin_until(
       [this]() {
-        return !fault_manager_->get_storage_for_test().get_snapshots("UNCAPPED_FAULT").empty();
+        return !fault_manager_->get_storage().get_snapshots("UNCAPPED_FAULT").empty();
       },
       std::chrono::milliseconds(10000)));
 
   ASSERT_TRUE(call_clear_fault("UNCAPPED_FAULT"));
 
-  EXPECT_FALSE(fault_manager_->get_storage_for_test().get_snapshots("UNCAPPED_FAULT").empty())
+  EXPECT_FALSE(fault_manager_->get_storage().get_snapshots("UNCAPPED_FAULT").empty())
       << "acknowledgement deleted readings the operator asked to keep";
 }
 
@@ -2038,8 +2050,8 @@ class FaultAuditIntegrationTest : public ::testing::Test {
   bool spin_until_ready(FutureT & future) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }
@@ -2254,14 +2266,14 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   rclcpp::Clock clock(RCL_SYSTEM_TIME);
   node->get_storage_for_test().report_fault_event("AUTO_CONF_1", ReportFault::Request::EVENT_FAILED,
                                                   Fault::SEVERITY_ERROR, "stuck", "/robot/src", clock.now(), config);
-  ASSERT_EQ(node->get_storage_for_test().get_fault("AUTO_CONF_1")->status, Fault::STATUS_PREFAILED);
+  ASSERT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_PREFAILED);
 
   // Spin until a confirmed audit row appears or the budget expires (the wall
   // timer fires once per second).
   bool saw_confirmed = false;
   auto start = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
-    rclcpp::spin_some(node);
+    spin_some_once(node);
     for (const auto & rec : audit->read()) {
       if (rec.event.fault_code == "AUTO_CONF_1" &&
           rec.event.transition == ros2_medkit_fault_manager::kTransitionConfirmed) {
@@ -2276,7 +2288,7 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   }
 
   EXPECT_TRUE(saw_confirmed) << "timer-driven confirmation was not audited";
-  EXPECT_EQ(node->get_storage_for_test().get_fault("AUTO_CONF_1")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_CONFIRMED);
   EXPECT_TRUE(audit->verify().ok);
 }
 
@@ -2329,7 +2341,7 @@ TEST(FaultAuditStartupReclassifyTest, StartupReclassifyAppendsClearedRow) {
     });
     auto node = std::make_shared<FaultManagerNode>(options);
 
-    EXPECT_EQ(node->get_storage_for_test().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
+    EXPECT_EQ(node->get_storage().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
 
     const auto * audit = node->get_audit_log_for_test();
     ASSERT_NE(audit, nullptr);
@@ -2366,7 +2378,7 @@ TEST(FaultAuditStartupReclassifyTest, DisabledAuditStillReclassifies) {
     });
     auto node = std::make_shared<FaultManagerNode>(options);
 
-    EXPECT_EQ(node->get_storage_for_test().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
+    EXPECT_EQ(node->get_storage().get_fault("STALE_HEALED")->status, Fault::STATUS_CLEARED);
     EXPECT_EQ(node->get_audit_log_for_test(), nullptr);
     EXPECT_FALSE(std::filesystem::exists(dir / "fault_audit.db"));
   }
@@ -2910,8 +2922,8 @@ class SnapshotReadPathTest : public ::testing::Test {
   bool spin_until_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
     const auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }

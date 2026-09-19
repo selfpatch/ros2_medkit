@@ -12,19 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <gtest/gtest.h>
+#include <libpq-fe.h>
 
 #include <pqxx/pqxx>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdarg>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <random>
 #include <set>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/postgres_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -115,7 +137,7 @@ class PgFaultStorageTest : public ::testing::Test {
   int64_t read_confirmed_at(const std::string & fault_code) {
     auto conn = raw_connection();
     pqxx::work tx(*conn);
-    auto res = tx.exec_params("SELECT confirmed_at_ns FROM faults WHERE fault_code = $1", fault_code);
+    auto res = tx.exec("SELECT confirmed_at_ns FROM faults WHERE fault_code = $1", pqxx::params{fault_code});
     tx.commit();
     return res.empty() ? -1 : res[0][0].as<int64_t>();
   }
@@ -280,9 +302,6 @@ TEST_F(PgFaultStorageTest, PassedEventDoesNotAdvanceLastOccurred) {
   EXPECT_EQ(rclcpp::Time(fault->last_passed).nanoseconds(), passed_at.nanoseconds());
 }
 
-// NOTE: skipping test ReopenRepairsLastOccurredInflatedByOldPassedBug for older database schema since PostgreSQL
-// integration came after it
-
 TEST_F(PgFaultStorageTest, GetClearedFaults) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
@@ -370,10 +389,673 @@ TEST_F(PgFaultStorageTest, TimestampPrecision) {
   EXPECT_EQ(last_ts.nanoseconds(), test_ns);
 }
 
-// NOTE: PostgreSQL has no ":memory:" equivalent
-// A failed database connection is tested instead
-TEST(PgFaultStorageConnectionTest, DatabaseConnectionErrorException) {
-  EXPECT_THROW(PgFaultStorage(base_conn_info() + "_g4rb4g3"), std::runtime_error);
+namespace {
+
+/// One keyword of base_conn_info() as libpq reads it; empty when absent.
+std::string base_conn_option(const std::string & keyword) {
+  char * err = nullptr;
+  PQconninfoOption * options = PQconninfoParse(base_conn_info().c_str(), &err);
+  if (err != nullptr) {
+    PQfreemem(err);
+  }
+  std::string value;
+  for (const PQconninfoOption * o = options; o != nullptr && o->keyword != nullptr; ++o) {
+    if (keyword == o->keyword && o->val != nullptr) {
+      value = o->val;
+    }
+  }
+  PQconninfoFree(options);
+  return value;
+}
+
+/// key=value connection string to the test server with the given user, password and extra options.
+std::string conn_as(const std::string & user, const std::string & password, const std::string & extra = "") {
+  return "host=" + base_conn_option("host") + " port=" + base_conn_option("port") +
+         " dbname=" + base_conn_option("dbname") + " user=" + user + " password=" + password + extra;
+}
+
+std::string unique_suffix() {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  return std::to_string(std::uniform_int_distribution<uint64_t>()(gen));
+}
+
+}  // namespace
+
+// A database that does not exist yet is not a configuration error: the storage starts without it.
+TEST(PgFaultStorageConnectionTest, StartsWithoutAnUnreachableDatabase) {
+  PgFaultStorage storage(base_conn_info() + "_g4rb4g3");
+  EXPECT_FALSE(storage.connected());
+  EXPECT_THROW(storage.size(), ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException);
+}
+
+// The schema is created on the first connection that succeeds, after the constructor.
+TEST(PgFaultStorageConnectionTest, CreatesTheSchemaWhenTheDatabaseAppears) {
+  std::unique_ptr<pqxx::connection> admin;
+  try {
+    admin = std::make_unique<pqxx::connection>(base_conn_info());
+  } catch (const std::exception & e) {
+    GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+  }
+  const std::string db = "medkit_late_" + unique_suffix();
+  const std::string base = base_conn_info();
+  const std::string late_url = base.substr(0, base.rfind('/') + 1) + db;
+
+  {
+    PgFaultStorage storage(late_url);
+    ASSERT_FALSE(storage.connected());
+    EXPECT_THROW(storage.size(), ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException);
+
+    {
+      pqxx::nontransaction ntx(*admin);
+      ntx.exec("CREATE DATABASE " + ntx.quote_name(db));
+    }
+
+    // The next connection round starts once the backoff after the failed one has passed.
+    rclcpp::Clock clock;
+    bool stored = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!stored && std::chrono::steady_clock::now() < deadline) {
+      try {
+        storage.report_fault_event("LATE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "late", "/node",
+                                   clock.now(), default_config());
+        stored = true;
+      } catch (const ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException &) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      }
+    }
+    ASSERT_TRUE(stored) << "the storage never connected after the database was created";
+    EXPECT_TRUE(storage.connected());
+    EXPECT_EQ(storage.size(), 1u);
+  }
+
+  pqxx::nontransaction ntx(*admin);
+  ntx.exec("DROP DATABASE IF EXISTS " + ntx.quote_name(db) + " WITH (FORCE)");
+}
+
+/// Collects every rcutils log message while alive.
+class LogCapture {
+ public:
+  LogCapture() : previous_(rcutils_logging_get_output_handler()) {
+    std::lock_guard<std::mutex> lock(mutex());
+    captured().clear();
+    rcutils_logging_set_output_handler(&LogCapture::handler);
+  }
+  ~LogCapture() {
+    rcutils_logging_set_output_handler(previous_);
+  }
+  LogCapture(const LogCapture &) = delete;
+  LogCapture & operator=(const LogCapture &) = delete;
+  LogCapture(LogCapture &&) = delete;
+  LogCapture & operator=(LogCapture &&) = delete;
+
+  std::string text() const {
+    std::lock_guard<std::mutex> lock(mutex());
+    return captured();
+  }
+
+ private:
+  static void handler(const rcutils_log_location_t * /*location*/, int /*severity*/, const char * /*name*/,
+                      rcutils_time_point_value_t /*timestamp*/, const char * format, va_list * args) {
+    va_list copy;
+    va_copy(copy, *args);
+    std::array<char, 4096> buffer{};
+    // The format comes from the logging call site. clang reports -Wformat-nonliteral here, GCC does not.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    std::vsnprintf(buffer.data(), buffer.size(), format, copy);
+#pragma GCC diagnostic pop
+    va_end(copy);
+    std::lock_guard<std::mutex> lock(mutex());
+    captured() += buffer.data();
+    captured() += '\n';
+  }
+  static std::mutex & mutex() {
+    static std::mutex m;
+    return m;
+  }
+  static std::string & captured() {
+    static std::string text;
+    return text;
+  }
+
+  rcutils_logging_output_handler_t previous_;
+};
+
+/// TCP server on 127.0.0.1 that counts the connections it accepts and answers per mode.
+class CountingListener {
+ public:
+  enum class Mode {
+    kClose,         ///< close at once
+    kHold,          ///< keep open, never answer, until release()
+    kEchoPassword,  ///< ask for a clear-text password, then fail with a message that contains it
+    kCloseOnQuery,  ///< complete the handshake, close on the first query
+  };
+
+  explicit CountingListener(Mode mode = Mode::kClose) : mode_(mode) {
+    fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = sizeof(addr);
+    if (fd_ < 0 || ::bind(fd_, reinterpret_cast<sockaddr *>(&addr), len) != 0 || ::listen(fd_, 16) != 0 ||
+        ::getsockname(fd_, reinterpret_cast<sockaddr *>(&addr), &len) != 0) {
+      throw std::runtime_error("cannot open the test listener");
+    }
+    port_ = ntohs(addr.sin_port);
+    thread_ = std::thread([this] {
+      run();
+    });
+  }
+  ~CountingListener() {
+    stop_ = true;
+    thread_.join();
+    release();
+    for (const int client : watched_) {
+      ::close(client);
+    }
+    ::close(fd_);
+  }
+  CountingListener(const CountingListener &) = delete;
+  CountingListener & operator=(const CountingListener &) = delete;
+  CountingListener(CountingListener &&) = delete;
+  CountingListener & operator=(CountingListener &&) = delete;
+
+  /// Closes the held connections.
+  void release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const int client : held_) {
+      ::close(client);
+    }
+    held_.clear();
+  }
+
+  int port() const {
+    return port_;
+  }
+  int accepted() const {
+    return accepted_;
+  }
+  std::vector<std::chrono::steady_clock::time_point> accept_times() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return accept_times_;
+  }
+
+ private:
+  static std::string be32(uint32_t value) {
+    return {static_cast<char>((value >> 24) & 0xFF), static_cast<char>((value >> 16) & 0xFF),
+            static_cast<char>((value >> 8) & 0xFF), static_cast<char>(value & 0xFF)};
+  }
+  static std::string message(char type, const std::string & body) {
+    return std::string(1, type) + be32(static_cast<uint32_t>(body.size() + 4)) + body;
+  }
+  static std::string cstr(const std::string & text) {
+    return text + std::string(1, '\0');
+  }
+  /// Reads @p size bytes, or fewer when the peer closes or stays silent for 2 s.
+  static std::string read_bytes(int fd, size_t size) {
+    std::string out;
+    while (out.size() < size) {
+      pollfd pfd{fd, POLLIN, 0};
+      if (::poll(&pfd, 1, 2000) <= 0) {
+        break;
+      }
+      std::array<char, 512> buffer{};
+      const ssize_t got = ::recv(fd, buffer.data(), std::min(buffer.size(), size - out.size()), 0);
+      if (got <= 0) {
+        break;
+      }
+      out.append(buffer.data(), static_cast<size_t>(got));
+    }
+    return out;
+  }
+  /// Body of the next message; @p startup for the untyped startup packet.
+  static std::string read_message(int fd, bool startup) {
+    if (!startup) {
+      read_bytes(fd, 1);
+    }
+    const std::string header = read_bytes(fd, 4);
+    if (header.size() < 4) {
+      return {};
+    }
+    const auto byte = [&header](size_t i) {
+      return static_cast<uint32_t>(static_cast<unsigned char>(header[i]));
+    };
+    const uint32_t size = (byte(0) << 24) | (byte(1) << 16) | (byte(2) << 8) | byte(3);
+    return size < 4 ? std::string{} : read_bytes(fd, size - 4);
+  }
+  static void send_all(int fd, const std::string & data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+      const ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+      if (n <= 0) {
+        return;
+      }
+      sent += static_cast<size_t>(n);
+    }
+  }
+
+  void run() {
+    while (!stop_) {
+      std::vector<pollfd> fds{{fd_, POLLIN, 0}};
+      for (const int client : watched_) {
+        fds.push_back({client, POLLIN, 0});
+      }
+      if (::poll(fds.data(), fds.size(), 20) <= 0) {
+        continue;
+      }
+      for (size_t i = 1; i < fds.size(); ++i) {
+        if (fds[i].revents != 0) {
+          ::close(fds[i].fd);
+          watched_.erase(std::find(watched_.begin(), watched_.end(), fds[i].fd));
+        }
+      }
+      if ((fds[0].revents & POLLIN) != 0) {
+        const int client = ::accept(fd_, nullptr, nullptr);
+        if (client >= 0) {
+          serve(client);
+        }
+      }
+    }
+  }
+
+  void serve(int client) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      accept_times_.push_back(std::chrono::steady_clock::now());
+    }
+    ++accepted_;
+    switch (mode_) {
+      case Mode::kClose:
+        ::close(client);
+        return;
+      case Mode::kHold: {
+        std::lock_guard<std::mutex> lock(mutex_);
+        held_.push_back(client);
+        return;
+      }
+      case Mode::kEchoPassword: {
+        read_message(client, true);
+        send_all(client, message('R', be32(3)));
+        std::string password = read_message(client, false);
+        if (!password.empty() && password.back() == '\0') {
+          password.pop_back();
+        }
+        send_all(client, message('E', cstr("SFATAL") + cstr("VFATAL") + cstr("C28P01") +
+                                          cstr("Mauthentication rejected; supplied password was " + password) +
+                                          std::string(1, '\0')));
+        ::close(client);
+        return;
+      }
+      case Mode::kCloseOnQuery: {
+        read_message(client, true);
+        std::string out = message('R', be32(0));
+        for (const auto & [key, value] :
+             std::vector<std::pair<std::string, std::string>>{{"server_version", "16.0"},
+                                                              {"server_encoding", "UTF8"},
+                                                              {"client_encoding", "UTF8"},
+                                                              {"standard_conforming_strings", "on"},
+                                                              {"integer_datetimes", "on"},
+                                                              {"DateStyle", "ISO, MDY"}}) {
+          out += message('S', cstr(key) + cstr(value));
+        }
+        out += message('K', be32(1) + be32(2));
+        out += message('Z', "I");
+        send_all(client, out);
+        watched_.push_back(client);
+        return;
+      }
+    }
+  }
+
+  Mode mode_;
+  int fd_{-1};
+  int port_{0};
+  std::atomic<bool> stop_{false};
+  std::atomic<int> accepted_{0};
+  mutable std::mutex mutex_;
+  std::vector<int> held_;
+  std::vector<std::chrono::steady_clock::time_point> accept_times_;
+  std::vector<int> watched_;  ///< only touched by thread_
+  std::thread thread_;
+};
+
+/// Sets or unsets an environment variable for one scope.
+class ScopedEnv {
+ public:
+  ScopedEnv(const char * name, const char * value) : name_(name) {
+    if (const char * old = std::getenv(name)) {
+      old_ = old;
+    }
+    if (value != nullptr) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+  }
+  ~ScopedEnv() {
+    if (old_) {
+      setenv(name_.c_str(), old_->c_str(), 1);
+    } else {
+      unsetenv(name_.c_str());
+    }
+  }
+  ScopedEnv(const ScopedEnv &) = delete;
+  ScopedEnv & operator=(const ScopedEnv &) = delete;
+  ScopedEnv(ScopedEnv &&) = delete;
+  ScopedEnv & operator=(ScopedEnv &&) = delete;
+
+ private:
+  std::string name_;
+  std::optional<std::string> old_;
+};
+
+/// Connection string to @p server without TLS or GSS negotiation.
+std::string local_conn(const CountingListener & server) {
+  return "host=127.0.0.1 port=" + std::to_string(server.port()) + " dbname=x user=x sslmode=disable gssencmode=disable";
+}
+
+struct UnansweredStart {
+  std::chrono::steady_clock::duration elapsed;
+  bool connected;
+  std::string target;
+};
+
+/// Starts a storage against a held @p server, gives it at most 8 s, then releases the server.
+UnansweredStart start_unanswered(const std::string & conn, CountingListener & server) {
+  const auto start = std::chrono::steady_clock::now();
+  auto result = std::async(std::launch::async, [&conn] {
+    PgFaultStorage storage(conn, 0, 0);
+    return std::make_pair(storage.connected(), storage.target());
+  });
+  const auto status = result.wait_for(std::chrono::seconds(8));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  server.release();
+  EXPECT_EQ(status, std::future_status::ready) << "the attempt did not time out";
+  const auto [connected, target] = result.get();
+  return {elapsed, connected, target};
+}
+
+// Connection attempts with the node's retry policy, counted and timed at the server: two 500 ms
+// apart when the storage starts, none during the 5 s backoff, then one per round.
+TEST(PgFaultStorageConnectionTest, OneAttemptPerRoundAfterTheBackoff) {
+  using ros2_medkit_fault_manager::FaultStorage;
+  CountingListener server;
+  PgFaultStorage storage(local_conn(server));
+  ASSERT_FALSE(storage.connected());
+  const auto attempts = server.accept_times();
+  ASSERT_EQ(attempts.size(), 2u);
+  EXPECT_GE(attempts[1] - attempts[0], std::chrono::milliseconds(450));
+
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_THROW(storage.size(), FaultStorage::IgnorableConnectionException);
+  EXPECT_THROW(storage.size(), FaultStorage::IgnorableConnectionException);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(100)) << "did not fail at once";
+  EXPECT_EQ(server.accepted(), 2);
+
+  std::this_thread::sleep_until(start + std::chrono::milliseconds(4500));
+  EXPECT_THROW(storage.size(), FaultStorage::IgnorableConnectionException);
+  EXPECT_EQ(server.accepted(), 2) << "the backoff ended before 5 s";
+
+  std::this_thread::sleep_until(start + std::chrono::milliseconds(5500));
+  EXPECT_THROW(storage.size(), FaultStorage::IgnorableConnectionException);
+  EXPECT_EQ(server.accepted(), 3);
+}
+
+// A server that accepts the connection and never answers. Without connect_timeout in database_url
+// the attempt still ends after the default of 2 s.
+TEST(PgFaultStorageConnectionTest, AnUnansweredAttemptEndsAfterTheDefaultTimeout) {
+  ScopedEnv no_env_timeout("PGCONNECT_TIMEOUT", nullptr);
+  CountingListener server(CountingListener::Mode::kHold);
+  const auto result = start_unanswered(local_conn(server), server);
+  EXPECT_FALSE(result.connected);
+  EXPECT_LT(result.elapsed, std::chrono::seconds(4));
+  EXPECT_EQ(server.accepted(), 1);
+}
+
+// connect_timeout in database_url, or PGCONNECT_TIMEOUT, replaces the default of 2 s.
+TEST(PgFaultStorageConnectionTest, AGivenConnectTimeoutReplacesTheDefault) {
+  for (const bool from_env : {false, true}) {
+    ScopedEnv env_timeout("PGCONNECT_TIMEOUT", from_env ? "3" : nullptr);
+    CountingListener server(CountingListener::Mode::kHold);
+    const auto result = start_unanswered(local_conn(server) + (from_env ? "" : " connect_timeout=3"), server);
+    EXPECT_GE(result.elapsed, std::chrono::milliseconds(2500)) << (from_env ? "PGCONNECT_TIMEOUT" : "database_url");
+    EXPECT_LT(result.elapsed, std::chrono::milliseconds(4500)) << (from_env ? "PGCONNECT_TIMEOUT" : "database_url");
+  }
+}
+
+// With a libpq service, the service file sets the timeout. The storage adds no default over it, and
+// the target names the service.
+TEST(PgFaultStorageConnectionTest, AServiceKeepsItsOwnConnectTimeout) {
+  CountingListener server(CountingListener::Mode::kHold);
+  const auto file = std::filesystem::temp_directory_path() / ("medkit_pg_service_" + unique_suffix() + ".conf");
+  {
+    std::ofstream out(file);
+    out << "[alpha]\nhost=127.0.0.1\nport=" << server.port()
+        << "\ndbname=x\nuser=x\nsslmode=disable\ngssencmode=disable\nconnect_timeout=3\n";
+  }
+  ScopedEnv service_file("PGSERVICEFILE", file.c_str());
+  ScopedEnv no_env_timeout("PGCONNECT_TIMEOUT", nullptr);
+  const auto result = start_unanswered("service=alpha", server);
+  std::filesystem::remove(file);
+  EXPECT_EQ(server.accepted(), 1) << "the service was not used";
+  EXPECT_GE(result.elapsed, std::chrono::milliseconds(2500));
+  EXPECT_LT(result.elapsed, std::chrono::milliseconds(4500));
+  EXPECT_EQ(result.target, "service=alpha");
+}
+
+// An empty database_url takes the server from the libpq environment variables.
+TEST(PgFaultStorageConnectionTest, AnEmptyDatabaseUrlUsesTheEnvironment) {
+  CountingListener server;
+  const std::string port = std::to_string(server.port());
+  ScopedEnv host("PGHOST", "127.0.0.1");
+  ScopedEnv port_env("PGPORT", port.c_str());
+  ScopedEnv dbname("PGDATABASE", "x");
+  ScopedEnv user("PGUSER", "x");
+  ScopedEnv ssl("PGSSLMODE", "disable");
+  ScopedEnv gss("PGGSSENCMODE", "disable");
+  PgFaultStorage storage("", 0, 0);
+  EXPECT_EQ(server.accepted(), 1);
+  EXPECT_NE(storage.target().find("host=127.0.0.1 port=" + port + " dbname=x user=x"), std::string::npos)
+      << storage.target();
+}
+
+// An empty host or port in database_url overrides PGHOST and PGPORT, in libpq and in the target.
+TEST(PgFaultStorageConnectionTest, TheTargetShowsAnEmptyOverride) {
+  ScopedEnv host("PGHOST", "env-host.invalid");
+  ScopedEnv port("PGPORT", "6543");
+  PgFaultStorage storage("host='' port='' dbname=x user=x connect_timeout=2", 0, 0);
+  EXPECT_EQ(storage.target().find("env-host.invalid"), std::string::npos) << storage.target();
+  EXPECT_EQ(storage.target().find("6543"), std::string::npos) << storage.target();
+}
+
+// The server writes the error text, and a hostile one can put the password it received in it.
+// The storage removes the password it knows before it logs or reports that text.
+TEST(PgFaultStorageConnectionTest, APasswordEchoedByTheServerIsRemoved) {
+  const std::string secret = "Echo-Secret-" + unique_suffix();
+  for (const bool from_env : {false, true}) {
+    CountingListener server(CountingListener::Mode::kEchoPassword);
+    ScopedEnv env_password("PGPASSWORD", from_env ? secret.c_str() : nullptr);
+    LogCapture log;
+    PgFaultStorage storage(local_conn(server) + (from_env ? "" : " password=" + secret), 0, 0);
+    std::string reported;
+    try {
+      storage.size();
+    } catch (const ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException & e) {
+      reported = e.what();
+    }
+    const std::string logged = log.text();
+    const char * source = from_env ? "PGPASSWORD" : "database_url";
+    EXPECT_NE(logged.find("supplied password was"), std::string::npos) << source << ": no server message";
+    EXPECT_EQ(logged.find(secret), std::string::npos) << source << ": " << logged;
+    EXPECT_NE(reported.find("supplied password was"), std::string::npos) << source << ": " << reported;
+    EXPECT_EQ(reported.find(secret), std::string::npos) << source << ": " << reported;
+  }
+}
+
+// A server that drops every connection on its first query. When the transaction retries run out,
+// the backoff starts: the next request fails at once and opens no connection.
+TEST(PgFaultStorageConnectionTest, ATransactionThatKeepsFailingStartsTheBackoff) {
+  CountingListener server(CountingListener::Mode::kCloseOnQuery);
+  PgFaultStorage storage(local_conn(server), 1, 50);
+  ASSERT_FALSE(storage.connected());
+  const int after_start = server.accepted();
+  EXPECT_EQ(after_start, 2);
+  EXPECT_THROW(storage.size(), ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException);
+  EXPECT_EQ(server.accepted(), after_start);
+}
+
+// database_url is passed to libpq in key='value' form. A URI password with a quote, a backslash
+// and a space must survive that.
+TEST(PgFaultStorageConnectionTest, ConnectsWithAPasswordThatNeedsEscaping) {
+  std::unique_ptr<pqxx::connection> admin;
+  try {
+    admin = std::make_unique<pqxx::connection>(base_conn_info());
+  } catch (const std::exception & e) {
+    GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+  }
+  const std::string suffix = unique_suffix();
+  const std::string role = "medkit_esc_" + suffix;
+  const std::string schema = "medkit_esc_schema_" + suffix;
+  const std::string password = "p'a\\ss w";
+  {
+    pqxx::nontransaction ntx(*admin);
+    ntx.exec("CREATE ROLE " + ntx.quote_name(role) + " LOGIN PASSWORD " + ntx.quote(password));
+    ntx.exec("CREATE SCHEMA " + ntx.quote_name(schema) + " AUTHORIZATION " + ntx.quote_name(role));
+  }
+  const std::string uri = "postgresql://" + role + ":p%27a%5Css%20w@" + base_conn_option("host") + ":" +
+                          base_conn_option("port") + "/" + base_conn_option("dbname") + "?options=-csearch_path%3D" +
+                          schema;
+  {
+    PgFaultStorage storage(uri);
+    EXPECT_TRUE(storage.connected());
+    EXPECT_EQ(storage.size(), 0u);
+  }
+  pqxx::nontransaction ntx(*admin);
+  ntx.exec("DROP SCHEMA IF EXISTS " + ntx.quote_name(schema) + " CASCADE");
+  ntx.exec("DROP ROLE IF EXISTS " + ntx.quote_name(role));
+}
+
+// A wrong password is not decidable from libpq's text alone, so the storage starts without the
+// database. Neither the errors, the log nor the target carries the password. The test server must
+// require a password (the CI service and the compose files do).
+TEST(PgFaultStorageConnectionTest, AWrongPasswordIsNeverEchoed) {
+  const std::string secret = "Wr0ng-Secret-" + unique_suffix();
+  LogCapture log;
+  PgFaultStorage storage(conn_as(base_conn_option("user"), secret));
+  ASSERT_FALSE(storage.connected()) << "the test server accepted a wrong password";
+  EXPECT_EQ(storage.target().find(secret), std::string::npos);
+  try {
+    storage.size();
+    ADD_FAILURE() << "size() reached a server that rejected the password";
+  } catch (const ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException & e) {
+    EXPECT_EQ(std::string(e.what()).find(secret), std::string::npos) << e.what();
+  }
+  const std::string logged = log.text();
+  EXPECT_NE(logged.find("password authentication failed"), std::string::npos) << "no connection error logged";
+  EXPECT_EQ(logged.find(secret), std::string::npos) << logged;
+}
+
+// A string libpq cannot parse is a wrong configuration. libpq's own message would quote the
+// fragment after the space, which here is the tail of the password.
+TEST(PgFaultStorageConnectionTest, AMalformedConnectionStringStopsWithoutEchoingIt) {
+  const std::string tail = "tail-of-the-password";
+  try {
+    PgFaultStorage storage("host=localhost password=first " + tail);
+    ADD_FAILURE() << "a malformed connection string was accepted";
+  } catch (const std::invalid_argument & e) {
+    EXPECT_EQ(std::string(e.what()).find(tail), std::string::npos) << e.what();
+    EXPECT_EQ(std::string(e.what()).find("first"), std::string::npos) << e.what();
+  }
+}
+
+// A server that accepts the connection but refuses the schema is a wrong configuration.
+TEST(PgFaultStorageConnectionTest, AServerThatRefusesTheSchemaStopsTheStartup) {
+  std::unique_ptr<pqxx::connection> admin;
+  try {
+    admin = std::make_unique<pqxx::connection>(base_conn_info());
+  } catch (const std::exception & e) {
+    GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+  }
+  const std::string suffix = unique_suffix();
+  const std::string role = "medkit_ro_" + suffix;
+  const std::string schema = "medkit_ro_schema_" + suffix;
+  {
+    pqxx::nontransaction ntx(*admin);
+    ntx.exec("CREATE ROLE " + ntx.quote_name(role) + " LOGIN PASSWORD 'ro-pass'");
+    ntx.exec("CREATE SCHEMA " + ntx.quote_name(schema));
+    ntx.exec("GRANT USAGE ON SCHEMA " + ntx.quote_name(schema) + " TO " + ntx.quote_name(role));
+  }
+
+  EXPECT_THROW(PgFaultStorage(conn_as(role, "ro-pass", " options='-csearch_path=" + schema + "'")), std::runtime_error);
+
+  pqxx::nontransaction ntx(*admin);
+  ntx.exec("DROP SCHEMA IF EXISTS " + ntx.quote_name(schema) + " CASCADE");
+  ntx.exec("DROP ROLE IF EXISTS " + ntx.quote_name(role));
+}
+
+// A faults table of another layout is a wrong configuration: the storage does not start.
+TEST(PgFaultStorageConnectionTest, ATableOfAnotherLayoutStopsTheStartup) {
+  std::unique_ptr<pqxx::connection> admin;
+  try {
+    admin = std::make_unique<pqxx::connection>(base_conn_info());
+  } catch (const std::exception & e) {
+    GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+  }
+  const std::string schema = "medkit_layout_" + unique_suffix();
+  {
+    pqxx::nontransaction ntx(*admin);
+    ntx.exec("CREATE SCHEMA " + ntx.quote_name(schema));
+    ntx.exec("CREATE TABLE " + ntx.quote_name(schema) + ".faults (fault_code TEXT PRIMARY KEY, status TEXT NOT NULL)");
+  }
+
+  EXPECT_THROW(PgFaultStorage(conn_as(base_conn_option("user"), base_conn_option("password"),
+                                      " options='-csearch_path=" + schema + "'")),
+               std::runtime_error);
+
+  pqxx::nontransaction ntx(*admin);
+  ntx.exec("DROP SCHEMA IF EXISTS " + ntx.quote_name(schema) + " CASCADE");
+}
+
+// A connection the server ends is opened again, and the schema is created again on the new one.
+TEST(PgFaultStorageConnectionTest, ALostConnectionIsOpenedAgainWithTheSchema) {
+  std::unique_ptr<pqxx::connection> admin;
+  try {
+    admin = std::make_unique<pqxx::connection>(base_conn_info());
+  } catch (const std::exception & e) {
+    GTEST_FAIL() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+  }
+  const std::string suffix = unique_suffix();
+  const std::string schema = "medkit_reconnect_" + suffix;
+  const std::string application = "medkit_reconnect_" + suffix;
+  {
+    pqxx::nontransaction ntx(*admin);
+    ntx.exec("CREATE SCHEMA " + ntx.quote_name(schema));
+  }
+  rclcpp::Clock clock;
+  {
+    PgFaultStorage storage(conn_as(base_conn_option("user"), base_conn_option("password"),
+                                   " application_name=" + application + " options='-csearch_path=" + schema + "'"));
+    ASSERT_TRUE(storage.connected());
+    storage.report_fault_event("LOST_A", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "a", "/node",
+                               clock.now(), default_config());
+    EXPECT_EQ(storage.size(), 1u);
+
+    // A fresh, empty schema behind the next connection, and the current connection ended.
+    {
+      pqxx::nontransaction ntx(*admin);
+      ntx.exec("DROP SCHEMA " + ntx.quote_name(schema) + " CASCADE");
+      ntx.exec("CREATE SCHEMA " + ntx.quote_name(schema));
+      ntx.exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = " +
+               ntx.quote(application));
+    }
+    EXPECT_EQ(storage.size(), 0u);
+    storage.report_fault_event("LOST_B", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "b", "/node",
+                               clock.now(), default_config());
+    EXPECT_EQ(storage.size(), 1u);
+  }
+  pqxx::nontransaction ntx(*admin);
+  ntx.exec("DROP SCHEMA IF EXISTS " + ntx.quote_name(schema) + " CASCADE");
 }
 
 // Test reporting sources JSON handling
@@ -755,7 +1437,6 @@ TEST_F(PgFaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
 
 // A database written by an older build can hold a runaway counter. It must be clamped back on first
 // touch so re-confirmation is bounded, not ~INT32 events away.
-// NOTE: This should not be possible in the PostgreSQL implementation, but tested it could prove useful nonetheless
 TEST_F(PgFaultStorageTest, RunawayCounterFromOldRowRecovers) {
   rclcpp::Clock clock;
   DebounceConfig config;
@@ -844,6 +1525,32 @@ TEST_F(PgFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+// The returned codes are exactly the rows confirmed: the node audits and publishes only those.
+TEST_F(PgFaultStorageTest, TimeBasedConfirmationConfirmsOnlyReturnedFaults) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.auto_confirm_after_sec = 10.0;
+  storage_->set_debounce_config(config);
+
+  auto now = clock.now();
+  storage_->report_fault_event("TIMED", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                               now, config);
+  storage_->report_fault_event("NO_FAILURE_TIME", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", now, config);
+  // A PREFAILED row without a failure time is not eligible.
+  exec_raw("UPDATE faults SET last_failed_ns = 0 WHERE fault_code = 'NO_FAILURE_TIME'");
+
+  auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
+  auto confirmed = storage_->check_time_based_confirmation(after_timeout);
+  ASSERT_EQ(confirmed.size(), 1u);
+  EXPECT_EQ(confirmed[0], "TIMED");
+
+  auto skipped = storage_->get_fault("NO_FAILURE_TIME");
+  ASSERT_TRUE(skipped.has_value());
+  EXPECT_EQ(skipped->status, Fault::STATUS_PREFAILED);
+}
+
 TEST_F(PgFaultStorageTest, ConfirmedAtRecordedOnImmediateConfirmation) {
   rclcpp::Clock clock;
   auto t = clock.now();
@@ -892,9 +1599,7 @@ TEST_F(PgFaultStorageTest, ConfirmedAtRecordedOnTimeBasedConfirmation) {
   EXPECT_EQ(read_confirmed_at("F"), after_timeout.nanoseconds());
 }
 
-// NOTE: The old database confirmed at (ConfirmedAtColumnMigratedIntoOldDatabase) test is not implemented
-// since PostgreSQL support was introduced after the new schema. Instead, a row insertion without confirmation is tested
-// towards its default value (0).
+// A row inserted without confirmed_at_ns gets the column default 0.
 TEST_F(PgFaultStorageTest, ConfirmedAtDefaultsToZeroForExternallyInsertedRow) {
   exec_raw(
       "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
@@ -928,8 +1633,6 @@ RosbagFileInfo make_rosbag(const std::string & code, const std::string & path, i
 }
 
 }  // namespace
-// NOTE: skipping tests for older database schema since PostgreSQL integration came after it
-
 TEST_F(PgFaultStorageTest, OneFaultKeepsSeveralRecordingsWhenTheCapAllows) {
   storage_->set_max_rosbags_per_fault(3);
   storage_->store_rosbag_file(make_rosbag("FLAP", "/bags/fault_FLAP_100", 100));
@@ -1508,8 +2211,6 @@ TEST_F(PgFaultStorageTest, RestoreWithNewPathKeepsTheBagASiblingStillReferences)
   auto sibling = storage_->get_rosbag_file("Y");
   ASSERT_TRUE(sibling.has_value());
   EXPECT_EQ(sibling->file_path, shared_path);
-
-  // NOTE: I am skipping the remove_all from here, since the destructor takes care of it
 }
 
 // Burst-level batch operations (one PostgreSQL transaction per burst).
@@ -1951,8 +2652,6 @@ TEST_F(PgFaultStorageTest, NearMissBoundZeroIsUnlimited) {
   EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 150u);
 }
 
-// NOTE: Skipping test for older builds that did not include the near_misses table
-
 TEST_F(PgFaultStorageTest, NearMissSeriesSurvivesHealedReclassification) {
   // Startup reclassification is the other place that drops a fault's captured data; it must
   // leave the series alone for the same reason clear_fault does.
@@ -2184,9 +2883,6 @@ TEST_F(PgFaultStorageTest, NearMissResultingStatusSurvivesReopen) {
   ASSERT_EQ(series.size(), 1u);
   EXPECT_EQ(series[0].resulting_status, Fault::STATUS_PREFAILED);
 }
-
-// NOTE: Skipping the NearMissResultingStatusColumnAddedToOlderTable since PostgreSQL integration came after the column
-// added
 
 TEST_F(PgFaultStorageTest, NearMissSeriesEmptyForUnknownFault) {
   EXPECT_TRUE(storage_->get_near_misses("NEVER_REPORTED").empty());

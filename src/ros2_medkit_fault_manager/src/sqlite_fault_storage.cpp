@@ -886,8 +886,9 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
   return true;  // New fault created
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                                          const std::vector<std::string> & statuses) {
+std::vector<ros2_medkit_msgs::msg::Fault>
+SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -956,7 +957,7 @@ std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::list_faults(bool f
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const std::string & fault_code) {
+std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_,
@@ -1057,7 +1058,7 @@ std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared() {
   return reclassified;
 }
 
-size_t SqliteFaultStorage::size() {
+size_t SqliteFaultStorage::size() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT COUNT(*) FROM faults");
@@ -1069,7 +1070,7 @@ size_t SqliteFaultStorage::size() {
   return static_cast<size_t>(stmt.column_int64(0));
 }
 
-bool SqliteFaultStorage::contains(const std::string & fault_code) {
+bool SqliteFaultStorage::contains(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT 1 FROM faults WHERE fault_code = ? LIMIT 1");
@@ -1219,7 +1220,7 @@ void SqliteFaultStorage::store_snapshots(const std::vector<SnapshotData> & snaps
 }
 
 std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & fault_code,
-                                                            const std::string & topic_filter) {
+                                                            const std::string & topic_filter) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
@@ -1255,7 +1256,7 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
   return result;
 }
 
-int64_t SqliteFaultStorage::get_max_capture_id() {
+int64_t SqliteFaultStorage::get_max_capture_id() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Global, not per fault: the counter that mints these is global, and seeding it
@@ -1284,7 +1285,7 @@ void SqliteFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
   }
 }
 
-std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::string & fault_code) {
+std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, "SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = ?");
@@ -1377,7 +1378,7 @@ void SqliteFaultStorage::record_near_miss_locked(const std::string & fault_code,
   }
 }
 
-std::vector<NearMissRecord> SqliteFaultStorage::get_near_misses(const std::string & fault_code) {
+std::vector<NearMissRecord> SqliteFaultStorage::get_near_misses(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<NearMissRecord> result;
@@ -1556,7 +1557,7 @@ constexpr const char * kRosbagColumns =
 
 }  // namespace
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files(const std::string & fault_code) {
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, (std::string("SELECT ") + kRosbagColumns +
@@ -1571,7 +1572,7 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files(const std::stri
   return result;
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) {
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files_by_recording(const std::string & recording_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, (std::string("SELECT ") + kRosbagColumns +
@@ -1634,7 +1635,7 @@ size_t SqliteFaultStorage::delete_rosbag_recording(const std::string & recording
   return removed;
 }
 
-std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) {
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // ORDER BY is load-bearing now that a fault can hold several recordings. Without
@@ -1754,13 +1755,13 @@ size_t SqliteFaultStorage::delete_rosbag_files(const std::vector<std::string> & 
   return deleted;
 }
 
-bool SqliteFaultStorage::path_referenced(const std::string & file_path) {
+bool SqliteFaultStorage::path_referenced(const std::string & file_path) const {
   SqliteStatement stmt(db_, "SELECT COUNT(*) FROM rosbag_files WHERE file_path = ?");
   stmt.bind_text(1, file_path);
   return stmt.step() == SQLITE_ROW && stmt.column_int64(0) > 0;
 }
 
-size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() {
+size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Sum per bag, not per fault: one recording can back a burst of correlated
@@ -1777,7 +1778,7 @@ size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() {
   return static_cast<size_t>(stmt.column_int64(0));
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() {
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -1801,7 +1802,7 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() {
   return result;
 }
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) {
+std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
@@ -1834,7 +1835,7 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
   return result;
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() {
+std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_,

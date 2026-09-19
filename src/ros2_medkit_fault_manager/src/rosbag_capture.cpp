@@ -618,9 +618,13 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
     }
   }
 
-  // Delete the bag file for this fault
-  if (storage_->delete_rosbag_file(fault_code)) {
-    RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+  // Delete the bag file for this fault. Called from the clear service, where a throw terminates the process.
+  try {
+    if (storage_->delete_rosbag_file(fault_code)) {
+      RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "Auto-cleanup of the bag for fault '%s' failed: %s", fault_code.c_str(), e.what());
   }
 }
 
@@ -1622,7 +1626,16 @@ void RosbagCapture::finalize_post_fault_recording() {
     if (!config_.auto_cleanup || keeps_history()) {
       return true;
     }
-    const auto fault = storage_->get_fault(code);
+    // Runs on the post-fault timer, where a throw terminates the process. A store that cannot answer
+    // keeps the row: the bag stays referenced.
+    std::optional<ros2_medkit_msgs::msg::Fault> fault;
+    try {
+      fault = storage_->get_fault(code);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(node_->get_logger(), "Could not read fault '%s' before storing its bag, keeping its row: %s",
+                  code.c_str(), e.what());
+      return true;
+    }
     // Absent is not cleared. A caller driving the capture directly, or a fault the
     // store never saw, must keep its row - only a fault the store still holds AND
     // reports as cleared loses one.

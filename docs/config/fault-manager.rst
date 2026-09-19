@@ -18,13 +18,9 @@ Storage
 
    fault_manager:
      ros__parameters:
-       storage_type: "sqlite"              # Storage backend: "sqlite" or "memory" or "postgres"
+       storage_type: "sqlite"              # Storage backend: "sqlite", "memory" or "postgres"
        database_path: "/var/lib/ros2_medkit/faults.db"  # Path for sqlite storage
-       database_url: "" # The url supports the following two patterns:
-                        # Pattern 1: "postgresql://user:password@localhost:5432/ros2_medkit_faults_database"
-                        # Pattern 2: "host=localhost port=5432 dbname=rosmedkit_faults_database user=user password=password"
-                        # The recommended way to configure the connection is to use the PostgreSQL environment variables `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` and `PGDATABASE`
-                        # This ensures that the connection info cannot leak through ROS parameters
+       database_url: ""                    # PostgreSQL connection string; empty = libpq environment variables
 
 .. list-table::
    :header-rows: 1
@@ -35,13 +31,92 @@ Storage
      - Description
    * - ``storage_type``
      - ``sqlite``
-     - Storage backend. ``sqlite`` persists faults to disk, ``memory`` keeps in RAM only.
+     - Storage backend. ``sqlite`` persists faults to disk, ``memory`` keeps in RAM only, ``postgres``
+       stores them in a PostgreSQL server (see `PostgreSQL Storage`_).
    * - ``database_path``
      - ``/var/lib/ros2_medkit/faults.db``
      - File path for SQLite database. Directory must exist and be writable.
    * - ``database_url``
-     - ````
-     - Connection URL for PostgreSQL database. The PostgreSQL server must be running with the appropriate user and password. The recommended way to configure the connection is to use the PostgreSQL environment variables `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` and `PGDATABASE`
+     - ``""``
+     - PostgreSQL connection string, as a URI (``postgresql://db-host:5432/faults``) or as
+       ``key=value`` pairs. Empty takes the connection from the libpq environment variables
+       (``PGHOST``, ``PGPORT``, ``PGDATABASE``, ``PGUSER``, ``PGPASSWORD``) and ``~/.pgpass``.
+       Keep the password out of this parameter: any process on the ROS graph can read parameters.
+
+PostgreSQL Storage
+~~~~~~~~~~~~~~~~~~
+
+PostgreSQL support is off by default. To build it, install ``libpq-dev`` and configure the
+package with ``-DPOSTGRES_SUPPORT=ON``. The build downloads libpqxx 7.10.7 from GitHub and links
+it statically, so it needs network access at configure time. rosdep installs nothing for it.
+
+.. code-block:: bash
+
+   colcon build --packages-select ros2_medkit_fault_manager --cmake-args -DPOSTGRES_SUPPORT=ON
+
+A build without the option stops at startup when ``storage_type`` is ``postgres``.
+
+- Supported servers: PostgreSQL 14 and newer.
+- One database belongs to exactly one fault manager. Fault codes are the primary key, so two fault
+  managers on one database merge their faults and delete each other's rosbag rows. Give each fault
+  manager its own database, or its own schema with ``options=-csearch_path=<schema>`` in the
+  connection string.
+- The audit log stays a local SQLite file, see ``audit_log.database_path``.
+- The node never logs ``database_url``. It logs host, port, database and user, or the service
+  name. Error text from the server is logged and returned with the password from ``database_url``
+  or ``PGPASSWORD`` replaced by ``***``.
+
+A wrong configuration stops the node at startup: it logs the reason and exits with code 1. A
+server that cannot be reached does not:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Situation
+     - Fault manager
+   * - ``database_url`` is not a valid connection string
+     - Does not start. The error does not quote the string, because it can hold the password.
+   * - The server accepts the connection, but the schema cannot be created (for example, the
+       user has no ``CREATE`` privilege), or an existing table lacks a column the node uses
+     - Does not start. The error is the message of the server.
+   * - The server cannot be reached at startup: refused, timeout, unknown host, wrong password,
+       missing database or role
+     - Starts without storage and logs the reason. Requests try to connect, and the schema is
+       created on the first connection that succeeds.
+   * - The server goes away while the node runs
+     - Keeps running. A request that waits for the server fails after ``tcp_user_timeout``, then
+       requests try to reconnect.
+
+A wrong password or a missing database counts as unreachable. libpq reports these only as text,
+and some of them pass on their own, for example a database that a container creates while it
+starts. Values that libpq checks only when it connects, such as ``sslmode=required`` or
+``port=abc``, also count as unreachable: the node runs without storage and logs libpq's reason on
+every attempt. If the server can be reached only later and then refuses the schema, the node stops
+at that point.
+
+When a connection is lost, the node tries twice, 500 ms apart. After a failed round, requests fail
+at once for 5 seconds, then the next request tries once more. An attempt waits at most
+``connect_timeout`` seconds (default 2) for each host address, so a server that does not answer
+holds the node for about 2 seconds every 7 seconds. A host list, or a host name with several
+addresses, multiplies that wait. Host name lookup is not part of it; give the address in
+``hostaddr`` to skip it.
+
+On an open connection, libpq drops the connection when sent data stays unacknowledged for
+``tcp_user_timeout`` milliseconds (default 5000), and TCP keepalive probes start after
+``keepalives_idle`` seconds of silence (default 5). This bounds a request to a server that went
+off the network. A server process that stops answering while its host still acknowledges packets
+is not bounded: the request, and with it the node, waits for that server.
+
+Set these values in ``database_url``; ``PGCONNECT_TIMEOUT`` also sets ``connect_timeout``. With a
+libpq service (``service=`` or ``PGSERVICE``) the node adds none of these defaults, so set them in
+the service file.
+
+While there is no storage, a service that has an error field answers ``Fault storage unavailable``.
+``ListFaults`` has no error field and answers with an empty list. The near-miss trim and the
+reclassification of HEALED faults run only at startup, so they are skipped when the server cannot
+be reached then. Snapshot capture starts with the first answer of the server. The bags of a fault
+cleared while the server cannot be reached are not deleted then.
 
 Debounce Settings
 ~~~~~~~~~~~~~~~~~
@@ -589,7 +664,9 @@ by default: with it off there is no table, no file and no write cost.
    * - ``audit_log.database_path``
      - ``""``
      - Where the audit database lives. Empty puts it beside the fault database,
-       or in memory when the fault store is itself in memory or unknown storage type.
+       or in memory when the fault store is in memory or of an unknown type. With
+       ``storage_type: postgres`` it is a local SQLite file ``fault_audit.db`` next to
+       ``database_path``, so the audit trail stays on the robot.
 
 Correlation Configuration
 -------------------------
@@ -632,6 +709,7 @@ Complete Example
        # Storage
        storage_type: "sqlite"
        database_path: "/var/lib/ros2_medkit/faults.db"
+       database_url: ""
 
        # Debounce for a reporter that repeats its events while a condition holds:
        # three FAILED events confirm, and four PASSED events heal from there.

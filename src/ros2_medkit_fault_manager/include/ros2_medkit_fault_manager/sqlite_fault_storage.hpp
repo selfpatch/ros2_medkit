@@ -51,15 +51,15 @@ class SqliteFaultStorage : public FaultStorage {
                           const rclcpp::Time & timestamp, const DebounceConfig & config) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) override;
+                                                        const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) override;
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
-  size_t size() override;
+  size_t size() const override;
 
-  bool contains(const std::string & fault_code) override;
+  bool contains(const std::string & fault_code) const override;
 
   std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
@@ -72,27 +72,27 @@ class SqliteFaultStorage : public FaultStorage {
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") override;
-  int64_t get_max_capture_id() override;
+                                          const std::string & topic_filter = "") const override;
+  int64_t get_max_capture_id() const override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) override;
+  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
 
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) override;
+  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) override;
-  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
   bool delete_rosbag_file(const std::string & fault_code) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
   size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) override;
-  size_t get_total_rosbag_storage_bytes() override;
-  std::vector<RosbagFileInfo> get_all_rosbag_files() override;
-  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() override;
+  size_t get_total_rosbag_storage_bytes() const override;
+  std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
+  std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
   std::vector<std::string> reclassify_healed_as_cleared() override;
 
   /// Get the database path
@@ -125,7 +125,7 @@ class SqliteFaultStorage : public FaultStorage {
   /// only be unlinked once the last of them is gone. Caller holds mutex_.
 
   /// Whether any fault at all still references @p file_path. Caller holds mutex_.
-  bool path_referenced(const std::string & file_path);
+  bool path_referenced(const std::string & file_path) const;
 
   /// store_rosbag_file body without taking mutex_. Caller holds mutex_ and
   /// unlinks the returned replaced-bag path once the row change is durable.
