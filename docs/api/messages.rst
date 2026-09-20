@@ -294,6 +294,63 @@ Retrieve diagnostic snapshots captured at fault occurrence time.
 
 See :doc:`/tutorials/snapshots` for detailed usage.
 
+SetPlannedStop.srv / GetPlannedStop.srv
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Declare, withdraw and read a planned stop on the fault manager.
+
+.. code-block:: text
+
+   # SetPlannedStop.srv
+   bool active          # true declares a planned stop, false withdraws it
+   string reason        # why the plant is stopped
+   string declared_by   # who declared the transition
+   ---
+   bool success         # true when the request was applied
+   string message       # status or error description
+   bool was_active      # the state of the switch before this request
+
+   # GetPlannedStop.srv
+   ---
+   bool active                       # whether a planned stop is declared
+   string reason                     # the reason given; retained after the withdrawal
+   string declared_by                # who declared it; retained after the withdrawal
+   builtin_interfaces/Time since     # when it was declared
+   builtin_interfaces/Time ended_at  # when it was withdrawn; zero while one is in force
+
+While a planned stop is on, it owns every fault cycle that *starts* - a new fault,
+one raised again after being cleared, or one that fails again after healing. An
+owned fault is reported, debounced, confirmed, captured and audited unchanged, and
+is marked as muted: absent from the default ``ListFaults`` response, counted in
+``muted_count``, and listed under ``muted_faults`` with ``rule_id: planned_stop``
+when ``include_muted`` is set. A cycle that started before the stop is untouched.
+
+Publication matches a rule-muted symptom exactly: ``EVENT_CONFIRMED`` and
+``EVENT_UPDATED`` are withheld whichever kind of report produced them,
+``EVENT_CLEARED`` is published as usual.
+
+Withdrawing the stop does two things that do not cover the same faults. It *unmutes*
+every fault it owns whose entry is the stop's own - a fault a hierarchical rule has
+since claimed stays muted, and returns to the stop's mute if that rule's root cause
+is acknowledged while the stop is still on. It *announces* the subset of those that
+is CONFIRMED and that no live cluster is hiding, one ``EVENT_CONFIRMED`` each.
+
+An auto-cluster rule hides a non-representative member without an entry of its own -
+it suppresses that member's events on each report - so such a member is unmuted and
+NOT announced, with nothing written in the stop's place. Afterwards the burst matches
+one that never met a planned stop in ``muted_faults``, in the counts, in the cluster
+listing and in the audit log, but not in the event stream: a confirmation that fell
+inside the stop and behind a cluster is never announced. What is announced is the
+representative, when the stop owned its cycle. A cluster hides only the reports that
+fall inside its ``window_ms``; one after that starts a new burst, and the fault is
+announced at the switch-off like any owned fault. Cluster membership is not
+persisted, so a stop that spanned a restart releases every fault the store says it
+owns and announces the CONFIRMED ones among them. The audit records exist only when
+``audit_log.enabled`` is set, which it is not by default.
+
+See :doc:`/config/fault-manager` for the configuration that decides whether the
+declaration survives a restart and whether the transitions are audited.
+
 MedkitDiscoveryHint.msg
 ~~~~~~~~~~~~~~~~~~~~~~~
 
