@@ -1,0 +1,11 @@
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    container_name: ros2_medkit_postgres_test
+    network_mode: host
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ros2_medkit_faults_database

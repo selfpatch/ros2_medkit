@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.14)
 project(ros2_medkit_fault_manager)
+
+option(POSTGRES_SUPPORT "Enable PostgreSQL support" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,6 +34,75 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
+if(POSTGRES_SUPPORT)
+  find_package(PostgreSQL REQUIRED)
+  include(FetchContent)
+
+  # EXCLUDE_FROM_ALL keeps libpqxx out of this package's install. CMake < 3.28 has no such
+  # option in fetchcontent_declare, so the subdirectory is added by hand below.
+  set(_pqxx_exclude_from_all "")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    set(_pqxx_exclude_from_all EXCLUDE_FROM_ALL)
+  endif()
+  fetchcontent_declare(pqxx
+    GIT_REPOSITORY https://github.com/jtv/libpqxx.git
+    GIT_TAG        7.10.7
+    GIT_SHALLOW    TRUE
+    ${_pqxx_exclude_from_all}
+  )
+
+  # Save medkit flags to restore them later. Not required per-se, but doesn't hurt to handle them either
+  set(_medkit_saved_cxx_flags "${CMAKE_CXX_FLAGS}")
+  get_directory_property(_medkit_saved_opts COMPILE_OPTIONS)
+  string(REGEX REPLACE "(^|[ ])-W[^ ]*" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "")
+
+  # No warnings-as-errors, include-what-you-use or clang-tidy for pqxx. An empty normal variable
+  # hides a cache value from -D; unset() would expose it. Restored after pqxx.
+  set(_medkit_saved_warning_as_error "${CMAKE_COMPILE_WARNING_AS_ERROR}")
+  set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+  set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE "")
+  set(CMAKE_CXX_CLANG_TIDY "")
+  # Keep the libpqxx tests out of this build. Its BUILD_DOC is OFF by default; setting it here makes
+  # CMake 3.22 warn about CMP0077.
+  set(SKIP_BUILD_TEST ON)
+
+  # libpqxx must be static: it is not installed. ament on Lyrical defaults BUILD_SHARED_LIBS to ON.
+  set(_medkit_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF)
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    fetchcontent_makeavailable(pqxx)
+  else()
+    fetchcontent_getproperties(pqxx)
+    if(NOT pqxx_POPULATED)
+      fetchcontent_populate(pqxx)
+      add_subdirectory(${pqxx_SOURCE_DIR} ${pqxx_BINARY_DIR} EXCLUDE_FROM_ALL)
+    endif()
+  endif()
+  set(BUILD_SHARED_LIBS "${_medkit_saved_build_shared_libs}")
+  set(CMAKE_COMPILE_WARNING_AS_ERROR "${_medkit_saved_warning_as_error}")
+  unset(CMAKE_CXX_INCLUDE_WHAT_YOU_USE)
+  unset(CMAKE_CXX_CLANG_TIDY)
+
+  # Restore medkit flags now that pqxx is compiled
+  set(CMAKE_CXX_FLAGS "${_medkit_saved_cxx_flags}")
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_medkit_saved_opts}")
+
+  # Make headers available to SYSTEM
+  # Once CMake3.25 is globally supported (Ubuntu 22.04 ships with CMake3.22)
+  # the snippet below could be replaced with fetchcontent_declare(pqxx ... SYSTEM)
+  foreach(_pqxx_tgt pqxx pqxx_shared pqxx_static)
+    if(TARGET ${_pqxx_tgt})
+      target_compile_options(${_pqxx_tgt} PRIVATE -w)
+      get_target_property(_pqxx_inc ${_pqxx_tgt} INTERFACE_INCLUDE_DIRECTORIES)
+      if(_pqxx_inc)
+        set_target_properties(${_pqxx_tgt} PROPERTIES
+          INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_pqxx_inc}")
+      endif()
+    endif()
+  endforeach()
+endif()
+
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 # OpenSSL EVP SHA-256 for the tamper-evident audit log hash chain
@@ -45,19 +116,27 @@ find_package(rosbag2_storage REQUIRED)
 medkit_detect_compat_defs()
 
 # Library target (shared between executable and tests)
+set(FAULT_MANAGER_FILES
+    src/capture_thread_pool.cpp
+    src/fault_manager_node.cpp
+    src/fault_storage.cpp
+    src/sqlite_fault_storage.cpp
+    src/fault_audit_log.cpp
+    src/snapshot_capture.cpp
+    src/rosbag_capture.cpp
+    src/correlation/types.cpp
+    src/correlation/config_parser.cpp
+    src/correlation/pattern_matcher.cpp
+    src/correlation/correlation_engine.cpp
+    src/entity_threshold_resolver.cpp
+)
+if(POSTGRES_SUPPORT)
+  list(APPEND FAULT_MANAGER_FILES
+    src/postgres_fault_storage.cpp
+  )
+endif()
 add_library(fault_manager_lib STATIC
-  src/capture_thread_pool.cpp
-  src/fault_manager_node.cpp
-  src/fault_storage.cpp
-  src/sqlite_fault_storage.cpp
-  src/fault_audit_log.cpp
-  src/snapshot_capture.cpp
-  src/rosbag_capture.cpp
-  src/correlation/types.cpp
-  src/correlation/config_parser.cpp
-  src/correlation/pattern_matcher.cpp
-  src/correlation/correlation_engine.cpp
-  src/entity_threshold_resolver.cpp
+  ${FAULT_MANAGER_FILES}
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -73,11 +152,22 @@ medkit_target_dependencies(fault_manager_lib PUBLIC
   rosbag2_storage
 )
 
+set(FAULT_MANAGER_TARGET_LIBS
+    SQLite::SQLite3
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+    OpenSSL::Crypto
+)
+
+if(POSTGRES_SUPPORT)
+  # libpq directly as well: the connection string is checked with PQconninfoParse.
+  list(APPEND FAULT_MANAGER_TARGET_LIBS
+    pqxx
+    PostgreSQL::PostgreSQL
+  )
+endif()
 target_link_libraries(fault_manager_lib PUBLIC
-  SQLite::SQLite3
-  nlohmann_json::nlohmann_json
-  yaml-cpp::yaml-cpp
-  OpenSSL::Crypto
+  ${FAULT_MANAGER_TARGET_LIBS}
 )
 
 medkit_apply_compat_defs(fault_manager_lib)
@@ -135,6 +225,13 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_sqlite_storage test/test_sqlite_storage.cpp)
   target_link_libraries(test_sqlite_storage fault_manager_lib)
   medkit_target_dependencies(test_sqlite_storage rclcpp ros2_medkit_msgs)
+
+  # PostgreSQL storage tests
+if(POSTGRES_SUPPORT)
+  medkit_add_gtest(test_postgres_storage test/test_postgres_storage.cpp)
+  target_link_libraries(test_postgres_storage fault_manager_lib)
+  medkit_target_dependencies(test_postgres_storage rclcpp ros2_medkit_msgs)
+endif()
 
   # Rosbag retention parity: every assertion runs against both storage backends.
   medkit_add_gtest(test_rosbag_storage_parity test/test_rosbag_storage_parity.cpp)
@@ -232,4 +329,8 @@ if(BUILD_TESTING)
   ros2_medkit_relax_vendor_warnings()
 endif()
 
+# Defined only when ON: the sources test it with #ifdef.
+if(POSTGRES_SUPPORT)
+  target_compile_definitions(fault_manager_lib PUBLIC POSTGRES_SUPPORT)
+endif()
 ament_package()
