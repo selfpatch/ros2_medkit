@@ -31,6 +31,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
@@ -1608,10 +1609,10 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
       fqn += "/";
     }
     fqn += name;
-    // Exclude the gateway's own nodes by exact FQN: the main node and its known
-    // internal helpers. A plain prefix match would also drop a genuine peer whose
-    // name starts with the gateway name (e.g. "<fqn>_monitor" or "<fqn>2").
-    if (fqn == self_fqn || fqn == self_fqn + "_sub" || fqn == self_fqn + "_fault_clients") {
+    // The gateway is not a peer of itself, and neither are the helper nodes it
+    // runs in its own process: a gateway alone on the graph has zero peers,
+    // which is what raises the empty-graph warning.
+    if (fqn == self_fqn || is_own_gateway_helper_node(fqn, self_fqn)) {
       continue;
     }
     ++count;
@@ -1645,8 +1646,8 @@ void GatewayNode::log_startup_summary() {
         ++topic_count;
       }
     }
-    peer_node_count =
-        count_peer_nodes(get_node_graph_interface()->get_node_names_and_namespaces(), get_fully_qualified_name());
+    // Read through discovery's own reader, so a leftover discovery leaves out is not a peer either.
+    peer_node_count = count_peer_nodes(discovery_mgr_->read_graph_nodes().nodes, get_fully_qualified_name());
   } catch (const std::exception & e) {
     RCLCPP_DEBUG(get_logger(), "Startup summary: graph query failed: %s", e.what());
   }
@@ -2463,14 +2464,32 @@ void GatewayNode::refresh_cache() {
       }
     }
 
-    // Filter ROS 2 internal nodes (underscore prefix convention).
+    // Filter ROS 2 internal nodes (underscore prefix convention) and this
+    // gateway's own helper nodes.
     // Controlled by discovery.runtime.filter_internal_nodes parameter (default: true).
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter
     // in runtime_only mode) and any peer apps that slipped through fetch_entities.
     if (filter_internal_nodes_) {
-      auto removed = filter_internal_node_apps(apps, peer_routing_table);
+      std::vector<std::string> dropped_declared_apps;
+      auto removed =
+          filter_internal_node_apps(apps, peer_routing_table, get_fully_qualified_name(), &dropped_declared_apps);
       if (removed > 0) {
-        RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix)", removed);
+        RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix or own helper node)", removed);
+      }
+      // Warn on the set, not on the refresh. The condition is a static
+      // misconfiguration - an app declared against a helper node stays declared
+      // - while this function runs on every graph event and again on the
+      // backstop cadence, which the integration fixtures set to one second. The
+      // same one-shot discipline as the entity-cache WARN below, widened to
+      // re-fire when the set of offending apps actually changes.
+      if (remember_dropped_declared_apps(dropped_declared_apps, warned_helper_bound_apps_)) {
+        for (const auto & dropped : dropped_declared_apps) {
+          RCLCPP_WARN(get_logger(),
+                      "Declared app '%s' is bound to one of this gateway's own in-process helper nodes and is not "
+                      "served. Those nodes carry no parameters, services or actions to diagnose. Bind the app to the "
+                      "node you meant, or drop the declaration.",
+                      dropped.c_str());
+        }
       }
     }
 
@@ -2566,10 +2585,22 @@ void GatewayNode::stop_rest_server() {
   }
 }
 
+bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered) {
+  std::set<std::string> current(dropped.begin(), dropped.end());
+  if (current == remembered) {
+    return false;
+  }
+  remembered = std::move(current);
+  // An empty set is remembered so the condition clearing and coming back warns
+  // again, but there is nothing to say about no apps at all.
+  return !remembered.empty();
+}
+
 size_t filter_internal_node_apps(std::vector<App> & apps,
-                                 const std::unordered_map<std::string, std::string> & peer_routing_table) {
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table,
+                                 const std::string & self_fqn, std::vector<std::string> * dropped_declared_apps) {
   auto before = apps.size();
-  auto end = std::remove_if(apps.begin(), apps.end(), [&peer_routing_table](const App & app) {
+  auto end = std::remove_if(apps.begin(), apps.end(), [&](const App & app) {
     std::string original_id = app.id;
     auto rt_it = peer_routing_table.find(app.id);
     if (rt_it != peer_routing_table.end()) {
@@ -2579,6 +2610,28 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
       if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
         original_id = original_id.substr(prefix.size());
       }
+    } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
+      // A local app bound to one of this gateway's own helper nodes. Those
+      // names do not start with '_' ("<gateway>_sub",
+      // "<gateway>_fault_clients", ...), so only the FQN test catches them, and
+      // without it the gateway advertises its own plumbing as diagnosable apps.
+      // The gateway's own node is deliberately not covered: its ROS parameters
+      // are served as that App's configurations, so callers reach them at
+      // /apps/<gateway>/configurations. Remote entities are skipped too - a
+      // peer's helper nodes carry the same FQNs and are the peer's own filter's
+      // business.
+      //
+      // Dropping a runtime-discovered app is the whole point and stays quiet.
+      // Dropping one somebody DECLARED is different: in manifest and hybrid
+      // mode the manifest is the source of truth, so removing an entry from it
+      // without a word is a silent override. The declared sources are the ones
+      // the merge pipeline already protects from orphan suppression, so the
+      // same predicate decides it here; those are reported to the caller, which
+      // owns the logger.
+      if (dropped_declared_apps != nullptr && discovery::is_protected_source(app.source)) {
+        dropped_declared_apps->push_back(app.id + " -> " + app.effective_fqn());
+      }
+      return true;
     }
     // ROS 2 internal nodes use _ prefix convention
     return !original_id.empty() && original_id[0] == '_';

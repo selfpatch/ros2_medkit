@@ -28,10 +28,13 @@
 #include <open62541/server_config_default.h>
 #include <open62541/types_generated.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -41,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -69,7 +73,14 @@ void log_state(const Condition & c) {
 }
 
 std::map<std::string, Condition> g_conditions;
-std::mutex g_mutex;
+// Guards the command queue between the stdin reader and the server thread.
+// Every UA_Server_* call in this process runs on the server thread: this
+// open62541 is built with UA_MULTITHREADING 0, so a second thread touching the
+// address space while the server iterates is an unsynchronised use of a
+// single-threaded library - and the subsystem that breaks first is the one
+// under test, Alarms & Conditions.
+std::mutex g_commands_mutex;
+std::deque<std::string> g_commands;
 std::atomic<bool> g_running{true};
 
 void stop_handler(int) {
@@ -605,18 +616,33 @@ void add_di_nameplate(UA_Server * server, const std::string & serial) {
                             UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), va_order, nullptr, nullptr);
 }
 
-void cli_loop(UA_Server * server, UA_UInt16 ns) {
+// Reads command lines and queues them. Deliberately free of UA_Server_* calls:
+// this thread blocks in getline for most of the fixture's life and must not
+// reach into the server while it is iterating.
+void stdin_reader_loop() {
   std::string line;
   while (g_running && std::getline(std::cin, line)) {
+    std::lock_guard<std::mutex> guard(g_commands_mutex);
+    g_commands.push_back(line);
+  }
+}
+
+// Runs one queued command. Called from the server thread only.
+void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line) {
+  {
     std::istringstream iss(line);
     std::string cmd, name;
     iss >> cmd >> name;
     if (cmd == "quit") {
       g_running = false;
       std::cout << "OK quit" << std::endl;
-      break;
+      // Only the server loop stops here. What ends the reader is EOF, which
+      // the writer produces by closing its end of the pipe - close(2) on this
+      // process's own descriptor does not release a reader already parked in
+      // read(2). So the join below waits for the caller to let go of stdin,
+      // which AlarmServer::stop() does before it signals the server.
+      return;
     }
-    std::lock_guard<std::mutex> guard(g_mutex);
     // ``set <NodeName> <int>`` writes a polled Int32 variable (StatusWord /
     // FaultCode). Handled before the condition lookup because these nodes are
     // plain variables, not AlarmCondition instances in g_conditions.
@@ -624,7 +650,7 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
       long val = 0;
       if (!(iss >> val)) {
         std::cout << "ERR set_missing_value:" << name << std::endl;
-        continue;
+        return;
       }
       UA_Int32 v32 = static_cast<UA_Int32>(val);
       UA_Variant var;
@@ -637,7 +663,7 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
       } else {
         std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
       }
-      continue;
+      return;
     }
     // ``sysevent`` fires a non-condition BaseEventType on the Server object
     // (i=2253); it has no <name> and is not in g_conditions, so handle it
@@ -649,12 +675,12 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
       } else {
         std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << std::endl;
       }
-      continue;
+      return;
     }
     auto it = g_conditions.find(name);
     if (cmd != "quit" && it == g_conditions.end()) {
       std::cout << "ERR unknown_condition:" << name << std::endl;
-      continue;
+      return;
     }
     Condition & cref = it->second;
     UA_StatusCode rc = UA_STATUSCODE_BADNOTSUPPORTED;
@@ -713,7 +739,7 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
       }
     } else {
       std::cout << "ERR unknown_cmd:" << cmd << std::endl;
-      continue;
+      return;
     }
     if (rc == UA_STATUSCODE_GOOD) {
       std::cout << "OK " << name << std::endl;
@@ -734,6 +760,7 @@ int main(int argc, char ** argv) {
   bool secure = false;
   std::string cert_path, key_path, trust_path, username = "medkit", password = "secret";
   std::string app_uri = "urn:test:alarms:server";
+  bool app_uri_explicit = false;
   std::string di_serial = "SN-0001-TEST";
   UA_UInt32 max_refs_per_node = 0;  // 0 = server default (unlimited)
   for (int i = 1; i < argc; ++i) {
@@ -756,6 +783,7 @@ int main(int argc, char ** argv) {
       trust_path = argv[++i];
     } else if (std::strcmp(argv[i], "--app-uri") == 0 && i + 1 < argc) {
       app_uri = argv[++i];
+      app_uri_explicit = true;
     } else if (std::strcmp(argv[i], "--username") == 0 && i + 1 < argc) {
       username = argv[++i];
     } else if (std::strcmp(argv[i], "--password") == 0 && i + 1 < argc) {
@@ -781,6 +809,14 @@ int main(int argc, char ** argv) {
 #endif
   } else {
     UA_ServerConfig_setMinimal(config, port, nullptr);
+    if (app_uri_explicit) {
+      // The server identity discovery reads and the plugin binds to. ``--app-uri``
+      // gives a second fixture a second identity, so a test that needs two
+      // servers on one host - each on its own port - can stand for two PLCs.
+      // Left at open62541's own default when no test names one.
+      UA_String_clear(&config->applicationDescription.applicationUri);
+      config->applicationDescription.applicationUri = UA_STRING_ALLOC(app_uri.c_str());
+    }
   }
   set_build_info(config);
 
@@ -822,18 +858,49 @@ int main(int argc, char ** argv) {
   }
 
   std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;
-  std::thread cli(cli_loop, server, ns);
+  std::thread reader(stdin_reader_loop);
 
-  UA_StatusCode rc = UA_Server_run(server, reinterpret_cast<volatile UA_Boolean *>(&g_running));
-  g_running = false;
-  // The exit code is 1 for every bad status, so print the status itself:
-  // otherwise a server that ends on its own leaves the driving test with a
-  // closed stdin pipe and no reason anywhere.
+  // The server is driven by hand so that queued commands execute between
+  // iterations, on this thread, which UA_Server_run offers no point for.
+  // run_iterate is called
+  // with waitInternal false and the loop paced by a short sleep: blocking
+  // inside the server would hold a command back until the next scheduled
+  // callback, and a command is how a test makes the alarm it is waiting for
+  // happen.
+  UA_StatusCode rc = UA_Server_run_startup(server);
   if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run rc=" << UA_StatusCode_name(rc) << std::endl;
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << std::endl;
   }
-  if (cli.joinable()) {
-    cli.join();
+  while (rc == UA_STATUSCODE_GOOD && g_running) {
+    // The return is how long the server may idle until its next scheduled
+    // callback, not a status: open62541 reports no mid-run failure through it,
+    // and UA_Server_run did not either - its own return is run_shutdown's. It
+    // does bound the pause below, which is otherwise kept small so a queued
+    // command is never held back by a server that has nothing to do.
+    const UA_UInt16 idle_ms = UA_Server_run_iterate(server, false);
+    for (;;) {
+      std::string line;
+      {
+        std::lock_guard<std::mutex> guard(g_commands_mutex);
+        if (g_commands.empty()) {
+          break;
+        }
+        line = std::move(g_commands.front());
+        g_commands.pop_front();
+      }
+      execute_command(server, ns, line);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<UA_UInt16>(idle_ms, 1, 2)));
+  }
+  if (rc == UA_STATUSCODE_GOOD) {
+    rc = UA_Server_run_shutdown(server);
+    if (rc != UA_STATUSCODE_GOOD) {
+      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << std::endl;
+    }
+  }
+  g_running = false;
+  if (reader.joinable()) {
+    reader.join();
   }
   UA_Server_delete(server);
   return rc == UA_STATUSCODE_GOOD ? 0 : 1;

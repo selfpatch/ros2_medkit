@@ -17,6 +17,14 @@
 #include "ros2_medkit_opcua/device_identity.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+// create_client() takes its callback group with a rclcpp::QoS from rclcpp 28
+// (Jazzy) on; earlier releases offer the rmw_qos_profile_t form. Humble ships
+// no <rclcpp/version.h>, so the header's absence identifies it.
+#if defined(__has_include)
+#if __has_include(<rclcpp/version.h>)
+#include <rclcpp/version.h>
+#endif
+#endif
 #include <rcutils/logging.h>
 #include <ros2_medkit_msgs/msg/fault.hpp>
 #include <ros2_medkit_msgs/srv/clear_fault.hpp>
@@ -33,14 +41,37 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
+#include <thread>
 
 namespace ros2_medkit_gateway {
 
 namespace {
+
+// Flush one path's data to the device. Returns the reason on failure.
+std::string fsync_path(const std::string & path, bool is_directory) {
+  const int fd = ::open(path.c_str(), is_directory ? (O_RDONLY | O_DIRECTORY) : O_WRONLY);
+  if (fd < 0) {
+    return "cannot open " + path + " to flush it: " + std::strerror(errno);
+  }
+  const int rc = ::fsync(fd);
+  const int saved = errno;
+  ::close(fd);
+  if (rc != 0) {
+    return "flushing " + path + " failed: " + std::strerror(saved);
+  }
+  return {};
+}
 
 // Named logger so per-operation traces respect ROS log level filtering
 // (bburda review on PR #387). Quiet at INFO; ``--log-level
@@ -186,9 +217,33 @@ std::vector<uint16_t> parse_json_ns_list(const nlohmann::json & arr, const char 
 }
 }  // namespace
 
+namespace {
+
+/// create_client() with an explicit callback group, in the form the linked
+/// rclcpp wants.
+template <typename ServiceT>
+typename rclcpp::Client<ServiceT>::SharedPtr create_client_in_group(rclcpp::Node * node, const std::string & name,
+                                                                    const rclcpp::CallbackGroup::SharedPtr & group) {
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
+  return node->create_client<ServiceT>(name, rclcpp::ServicesQoS(), group);
+#else
+  return node->create_client<ServiceT>(name, rmw_qos_profile_services_default, group);
+#endif
+}
+
+/// How long one pass of the client executor waits for work before it re-reads
+/// the stop flag. Bounds shutdown latency only: a response wakes the wait.
+constexpr std::chrono::milliseconds kFaultExecutorWait{100};
+
+}  // namespace
+
 struct OpcuaPlugin::FaultClients {
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report;
   rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear;
+  /// Read side of the store, used by nothing but the link-state clear gate:
+  /// PLC_COMMS_LOST is keyed by code alone, so before clearing it this asks who
+  /// reported it (see link_state_clear_permitted).
+  rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedPtr get_fault;
 };
 
 OpcuaPlugin::OpcuaPlugin()
@@ -307,7 +362,12 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
   };
   if (config.contains("comms_lost_debounce_ms")) {
     const long long ms = config["comms_lost_debounce_ms"].get<long long>();
-    poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamp_debounce_ms(ms));
+    const long clamped = clamp_debounce_ms(ms);
+    if (static_cast<long long>(clamped) != ms) {
+      log_warn("plugins.opcua.comms_lost_debounce_ms=" + std::to_string(ms) + " is outside [0, " +
+               std::to_string(kMaxCommsLostDebounceMs) + "] ms - using " + std::to_string(clamped) + " ms");
+    }
+    poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamped);
   }
   if (auto * env = std::getenv("OPCUA_COMMS_LOST_DEBOUNCE_MS")) {
     // Keep the existing value on a non-numeric / out-of-range / negative
@@ -318,12 +378,33 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     char * end = nullptr;
     const long ms = std::strtol(env, &end, 10);
     if (end != env && *end == '\0' && errno != ERANGE && ms >= 0) {
-      poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamp_debounce_ms(ms));
+      const long clamped = clamp_debounce_ms(ms);
+      if (clamped != ms) {
+        log_warn(std::string("OPCUA_COMMS_LOST_DEBOUNCE_MS=") + env + " is outside [0, " +
+                 std::to_string(kMaxCommsLostDebounceMs) + "] ms - using " + std::to_string(clamped) + " ms");
+      }
+      poller_config_.comms_lost_debounce = std::chrono::milliseconds(clamped);
     } else {
       log_warn(std::string("Ignoring invalid OPCUA_COMMS_LOST_DEBOUNCE_MS='") + env +
                "' (want a non-negative integer <= 3600000 ms)");
     }
   }
+  if (config.contains("fault_service_timeout_ms")) {
+    const auto & raw = config["fault_service_timeout_ms"];
+    if (raw.is_number_integer()) {
+      const int64_t ms = raw.get<int64_t>();
+      if (ms >= 100 && ms <= 600000) {
+        fault_service_timeout_ = std::chrono::milliseconds(ms);
+      } else {
+        log_warn("plugins.opcua.fault_service_timeout_ms out of range [100, 600000] - keeping " +
+                 std::to_string(fault_service_timeout_.count()) + " ms");
+      }
+    } else {
+      log_warn("plugins.opcua.fault_service_timeout_ms is not an integer - keeping " +
+               std::to_string(fault_service_timeout_.count()) + " ms");
+    }
+  }
+
   if (config.contains("comms_lost_severity")) {
     poller_config_.comms_lost_severity = config["comms_lost_severity"].get<std::string>();
   }
@@ -435,6 +516,23 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
       discovery_config_.interval_s = static_cast<int>(v);
     } else {
       log_warn(std::string("Ignoring invalid OPCUA_DISCOVERY_INTERVAL_S='") + env + "' (want a non-negative integer)");
+    }
+  }
+
+  if (auto * env = std::getenv("OPCUA_DISCOVERY_BINDING_FILE")) {
+    discovery_config_.binding_file = env;
+  }
+  // Before the startup sweep, which the binding steers: a process that was
+  // bound when it stopped looks for that server and no other.
+  // Discovery's binding, and only discovery's: an operator who pinned
+  // endpoint_url has already said which server this is, and re-pointing it at a
+  // replacement is the whole gesture. A file left behind by an earlier
+  // config-less run must not refuse the server the operator named.
+  if (!endpoint_configured_) {
+    bound_application_uri_ = read_persisted_binding(discovery_config_.binding_file);
+    if (!bound_application_uri_.empty()) {
+      log_info("OPC-UA: bound to uri='" + bound_application_uri_ + "' from " + discovery_config_.binding_file +
+               ". Remove that file and restart to bind to a different server.");
     }
   }
 
@@ -592,8 +690,21 @@ void OpcuaPlugin::set_context(PluginContext & context) {
 
   auto * node = ctx_->node();
   if (node) {
-    fault_clients_->report = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
-    fault_clients_->clear = node->create_client<ros2_medkit_msgs::srv::ClearFault>("/fault_manager/clear_fault");
+    // The clients live in a group the gateway's executor never collects and are
+    // pumped by a thread this plugin owns, so every reference to them stays on
+    // this plugin's threads (see fault_client_group_).
+    fault_client_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
+                                                      /*automatically_add_to_executor_with_node=*/false);
+    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    fault_executor_->add_callback_group(fault_client_group_, node->get_node_base_interface());
+    fault_clients_->report = create_client_in_group<ros2_medkit_msgs::srv::ReportFault>(
+        node, "/fault_manager/report_fault", fault_client_group_);
+    fault_clients_->clear = create_client_in_group<ros2_medkit_msgs::srv::ClearFault>(
+        node, "/fault_manager/clear_fault", fault_client_group_);
+    fault_clients_->get_fault =
+        create_client_in_group<ros2_medkit_msgs::srv::GetFault>(node, "/fault_manager/get_fault", fault_client_group_);
+    context_ = node->get_node_base_interface()->get_context();
+    start_fault_executor();
   }
 
   run_startup_discovery();
@@ -614,7 +725,10 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   }
 #endif
 
-  const bool connected = client_->connect(client_config_);
+  // The session is checked against the binding, which on the discovery path may
+  // already have been read from discovery.binding_file, and establishes it when
+  // there is none. A session that reached a different server is dropped here.
+  const bool connected = client_->connect(client_config_) && bind_or_drop_session();
   if (connected) {
     log_info("Connected to OPC-UA server: " + client_config_.endpoint_url);
   } else {
@@ -630,10 +744,28 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   // consistent. Only in config-less mode: an explicit node map owns the name.
   if (node_map_path_.empty()) {
     const OpcuaClient::DeviceInfo info = connected ? client_->read_device_info() : OpcuaClient::DeviceInfo{};
+    const bool has_nameplate = component_identity_has_nameplate(info);
     const ComponentIdentity ci = derive_component_identity(info, client_config_.endpoint_url);
     if (!ci.id.empty()) {
+      if (!has_nameplate) {
+        // A stand-in: the device said nothing, so the id names the endpoint.
+        // Recording it is what lets a fault reported under it be recognised as
+        // this bridge's once the device does name itself.
+        remember_placeholder_id(ci.id);
+      }
       node_map_.set_component_identity(ci.id, ci.name);
       log_info("Component identity derived from device: id='" + ci.id + "', name='" + ci.name + "'");
+    }
+    // Which session this identity speaks for. Stamped only by a read that
+    // produced a nameplate, on the same rule the poll path follows, so a first
+    // session whose address space was still coming up is asked again rather
+    // than serving the stand-in until the next session.
+    if (connected && has_nameplate) {
+      component_identity_generation_ = client_->connection_generation();
+    }
+    if (connected) {
+      component_identity_read_generation_ = client_->connection_generation();
+      component_identity_poll_reads_ = 0;
     }
 
     // Zero-config native A&C: with no node map and no explicit auto_alarms
@@ -649,6 +781,13 @@ void OpcuaPlugin::set_context(PluginContext & context) {
                  node_map_.auto_alarms().source_node_id_str + ", entity " + node_map_.auto_alarms().entity_id + ")");
       }
     }
+  }
+
+  // A session is up, so a link-state decision about PLC_COMMS_LOST is due. The
+  // decision itself waits for the poll thread, which owns the component ids the
+  // gate compares against.
+  if (connected) {
+    owe_comms_lost_decision();
   }
 
   if (connected && node_map_.auto_browse_config().enabled) {
@@ -692,6 +831,40 @@ void OpcuaPlugin::set_context(PluginContext & context) {
   poller_config_.report_sink_ready = [this]() {
     return fault_clients_->report && fault_clients_->report->service_is_ready();
   };
+  // Fired once per session, before the poller (re)subscribes and before the
+  // server replays a single condition. The config-less rename has to be settled
+  // by then: apply_condition_state pins a fault's entity at the first sighting
+  // of its ConditionId, so a rename afterwards would strand the replayed faults
+  // under the entity it drops. The poller takes its own copy of the alarm
+  // routing at subscribe time, i.e. straight after this returns, so the copy
+  // already carries the new name.
+  poller_config_.on_connected = [this]() {
+    // The session is checked against the binding before anything is derived
+    // from it. A session that reached a different server is dropped here, and
+    // the poller is told so, which keeps the standing outage and the endpoint
+    // exactly where they were.
+    if (!bind_or_drop_session()) {
+      return false;
+    }
+    maybe_rederive_component_identity(kIdentityConnectRetries);
+    return true;
+  };
+  // Config-less discovery with no configured endpoint: let the poller's
+  // reconnect arm ask for a fresh scan while it is down. Without this the
+  // startup scan is the only one that ever runs, so a gateway that scanned
+  // while its PLC was still booting retries the fallback endpoint forever and
+  // only a restart finds the PLC.
+  const int rescan_interval_s = effective_rescan_interval_s(discovery_config_, endpoint_configured_);
+  if (rescan_interval_s > 0) {
+    poller_config_.rediscover_endpoint = [this]() {
+      return rescan_endpoint_for_reconnect();
+    };
+    // The rescan is consulted once per reconnect attempt, so the real adoption
+    // cadence is max(interval_s, backoff). Cap the backoff at the cadence so
+    // the documented "re-scan every interval_s while down" is the true one.
+    poller_config_.max_reconnect_interval = effective_max_reconnect_wait(
+        poller_config_.reconnect_interval, poller_config_.max_reconnect_interval, rescan_interval_s);
+  }
   poller_->start(poller_config_);
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
            ")");
@@ -728,8 +901,75 @@ void OpcuaPlugin::shutdown() {
   if (poller_) {
     poller_->stop();
   }
+  // The poll thread is joined, so nothing drives the decision; the client
+  // executor thread is joined next, so no response callback of ours runs after
+  // this returns and the clients can be dropped on this thread. The generation
+  // bump keeps an answer that was parked before the join from being read by a
+  // later probe, and the weak_ptr the callback holds is what makes a callback
+  // outlive-safe should the state block go before the client does.
+  stop_fault_executor();
+  comms_lost_decision_owed_.store(false);
+  comms_lost_probe_in_flight_ = false;
+  {
+    std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
+    ++comms_lost_probe_state_->generation;
+    comms_lost_probe_state_->answered = false;
+    comms_lost_probe_state_->sources.clear();
+  }
+  // Dropping a client takes its outstanding requests out of its pending map.
+  // All three go here, on the thread that called shutdown(), so ~Client never
+  // runs on an executor thread against a node another plugin may be creating an
+  // entity on.
+  if (fault_clients_) {
+    if (fault_clients_->get_fault) {
+      fault_clients_->get_fault->remove_pending_request(comms_lost_probe_request_id_);
+    }
+    fault_clients_->get_fault.reset();
+    fault_clients_->clear.reset();
+    fault_clients_->report.reset();
+  }
+  fault_executor_.reset();
+  fault_client_group_.reset();
   client_->disconnect();
   log_info("OPC-UA plugin shutdown complete");
+}
+
+void OpcuaPlugin::start_fault_executor() {
+  fault_executor_stop_.store(false);
+  fault_executor_thread_ = std::thread([this]() {
+    // Runs until shutdown() raises the stop flag or the node's context is shut
+    // down, whichever comes first; a context shut down ahead of the plugin
+    // leaves nothing for the clients to dispatch. One wait per pass, bounded,
+    // so a stop requested before a wait began is still seen within
+    // kFaultExecutorWait. An exception out of the executor ends the thread too,
+    // and shutdown() joins it as usual.
+    while (!fault_executor_stop_.load() && rclcpp::ok(context_)) {
+      try {
+        fault_executor_->spin_once(kFaultExecutorWait);
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(opcua_plugin_logger(), "fault-service client executor stopped: %s", e.what());
+        break;
+      } catch (...) {
+        break;
+      }
+    }
+  });
+}
+
+void OpcuaPlugin::stop_fault_executor() {
+  fault_executor_stop_.store(true);
+  if (fault_executor_) {
+    fault_executor_->cancel();
+  }
+  if (fault_executor_thread_.joinable()) {
+    fault_executor_thread_.join();
+  }
+}
+
+bool OpcuaPlugin::fault_services_ready_for_test() const {
+  return fault_clients_ && fault_clients_->report && fault_clients_->clear && fault_clients_->get_fault &&
+         fault_clients_->report->service_is_ready() && fault_clients_->clear->service_is_ready() &&
+         fault_clients_->get_fault->service_is_ready();
 }
 
 // -- IntrospectionProvider --
@@ -767,7 +1007,11 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   // Fault scope grants bare-id ownership only to external entities; the poller
   // reports PLC_COMMS_LOST under this component's own id.
   comp.external = true;
-  comp.description = "PLC runtime connected at " + client_config_.endpoint_url;
+  // Read the endpoint off the client, not off client_config_: a reconnect
+  // rescan can adopt a different server after startup, and the client is the
+  // one that holds the endpoint actually being connected to.
+  const std::string live_endpoint = client_ ? client_->endpoint_url() : client_config_.endpoint_url;
+  comp.description = "PLC runtime connected at " + live_endpoint;
 
   // INV2: fill the asset-identity nameplate from the live server's device-info
   // (ServerStatus/BuildInfo + optional OPC-UA DI nameplate). Read once per
@@ -778,7 +1022,7 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   if (client_ && client_->is_connected()) {
     const uint64_t session_generation = client_->connection_generation();
     if (session_generation != device_identity_generation_) {
-      device_identity_ = opcua_device_info_to_identity(client_->read_device_info(), client_config_.endpoint_url);
+      device_identity_ = opcua_device_info_to_identity(client_->read_device_info(), live_endpoint);
       device_identity_generation_ = session_generation;
       if (!device_identity_.empty()) {
         log_info("Populated asset identity from OPC-UA device-info (manufacturer='" + device_identity_.manufacturer +
@@ -1059,10 +1303,27 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
 
   if (signal.active) {
     log_info("Alarm activated: " + signal.fault_code + " on " + entity_id);
+    if (clear_origin_for_signal(signal.fault_code) == ClearOrigin::LinkState) {
+      // A raise of the link-state code. The store can answer a probe from
+      // before it has processed this report, so the decision that follows earns
+      // one more (see comms_lost_raise_since_decision_).
+      comms_lost_raise_since_decision_.store(true);
+    }
     send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
     log_info("Alarm cleared: " + signal.fault_code + " on " + entity_id);
-    send_clear_fault(signal.fault_code);
+    // The poller's comms-lost clear on a successful reconnect is the same
+    // link-state event as the connect-time one and takes the same route: the
+    // poller knows this link came back, not whose PLC_COMMS_LOST is standing in
+    // a store keyed by code alone, so the decision belongs to the poll thread
+    // and the gate. Every other code here is the device reporting its condition
+    // inactive, which is a real resolution and a one-shot edge, so it keeps the
+    // cascade and the buffer treats it as such.
+    if (clear_origin_for_signal(signal.fault_code) == ClearOrigin::LinkState) {
+      owe_comms_lost_decision();
+    } else {
+      send_clear_fault(signal.fault_code, ClearOrigin::DeviceAlarm);
+    }
   }
 }
 
@@ -1157,8 +1418,8 @@ void OpcuaPlugin::apply_auto_alarms_param(const nlohmann::json & value, AutoAlar
           warn("plugins.opcua.auto_alarms.severity_bands: unknown key '" + key + "' - ignored");
         }
       }
-      if (!(cfg.severity_bands.critical_min >= cfg.severity_bands.error_min &&
-            cfg.severity_bands.error_min >= cfg.severity_bands.warning_min)) {
+      if (cfg.severity_bands.critical_min < cfg.severity_bands.error_min ||
+          cfg.severity_bands.error_min < cfg.severity_bands.warning_min) {
         warn(
             "plugins.opcua.auto_alarms.severity_bands must satisfy critical >= error >= warning - "
             "resetting to the default bands (801/501/201)");
@@ -1241,7 +1502,11 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       break;
     case AlarmAction::ClearFault:
       log_info("AlarmCondition CLEARED: " + delivery.fault_code);
-      send_clear_fault(delivery.fault_code);
+      // The device itself reported the condition cleared (Part 9 lifecycle), so
+      // this IS a resolution at the source and the correlation engine may act on
+      // it. DeviceAlarm is also the default, spelled out here because this is
+      // the one call site where the cascade is deliberately kept.
+      send_clear_fault(delivery.fault_code, ClearOrigin::DeviceAlarm);
       break;
     case AlarmAction::NoOp:
       break;
@@ -1276,42 +1541,296 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
     request->severity = ros2_medkit_msgs::msg::Fault::SEVERITY_INFO;
   }
 
-  send_or_buffer([this, request]() {
-    fault_clients_->report->async_send_request(request);
-  });
+  send_or_buffer({PendingFaultDispatch::Kind::Report, fault_code, /*link_state=*/false, [this, request]() {
+                    fault_clients_->report->async_send_request(request);
+                  }});
 }
 
-void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
+ros2_medkit_msgs::srv::ClearFault::Request OpcuaPlugin::make_clear_fault_request(const std::string & fault_code,
+                                                                                 bool skip_correlation_auto_clear) {
+  ros2_medkit_msgs::srv::ClearFault::Request request;
+  request.fault_code = fault_code;
+  request.skip_correlation_auto_clear = skip_correlation_auto_clear;
+  return request;
+}
+
+void OpcuaPlugin::send_clear_fault(const std::string & fault_code, ClearOrigin origin) {
   if (!fault_clients_->clear) {
     log_warn("ClearFault service client not available");
     return;
   }
 
-  auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
-  request->fault_code = fault_code;
+  auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>(
+      make_clear_fault_request(fault_code, clear_skips_correlation(origin)));
 
-  send_or_buffer([this, request]() {
-    fault_clients_->clear->async_send_request(request);
+  send_or_buffer({PendingFaultDispatch::Kind::Clear, fault_code, clear_is_link_state(origin), [this, request]() {
+                    fault_clients_->clear->async_send_request(request);
+                  }});
+}
+
+bool OpcuaPlugin::link_state_clear_permitted(bool fault_found, const std::vector<std::string> & reporting_sources,
+                                             const std::unordered_set<std::string> & my_ids) {
+  if (!fault_found || reporting_sources.empty()) {
+    return false;
+  }
+  return std::all_of(reporting_sources.begin(), reporting_sources.end(), [&my_ids](const std::string & source) {
+    return my_ids.count(source) > 0;
   });
 }
 
-void OpcuaPlugin::send_or_buffer(std::function<void()> dispatch) {
+std::unordered_set<std::string> OpcuaPlugin::reporting_ids_of_this_process() const {
+  std::unordered_set<std::string> ids(placeholder_ids_.begin(), placeholder_ids_.end());
+  // A node map that names no component_id reports under the NodeMap default, so
+  // a fault carrying it is this bridge's.
+  ids.insert(NodeMap::kDefaultComponentId);
+  const std::string current = node_map_.component_id();
+  if (!current.empty()) {
+    ids.insert(current);
+  }
+  return ids;
+}
+
+void OpcuaPlugin::owe_comms_lost_decision() {
+  if (!poller_config_.comms_lost_fault_enabled) {
+    return;
+  }
+  comms_lost_decision_owed_.store(true);
+}
+
+void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources) {
+  const std::unordered_set<std::string> my_ids = reporting_ids_of_this_process();
+  if (!link_state_clear_permitted(found, reporting_sources, my_ids)) {
+    std::string sources;
+    for (const auto & source : reporting_sources) {
+      if (!sources.empty()) {
+        sources += ", ";
+      }
+      sources += source;
+    }
+    log_info(std::string(kCommsLostFaultCode) + " is held by sources this bridge did not report under [" + sources +
+             "] - leaving it standing. A fault two bridges raised is cleared by an operator; the fault manager has "
+             "no per-source de-assert.");
+    return;
+  }
+  // LinkState: this says the session came back, not that an operator resolved
+  // anything, so a correlation rule naming PLC_COMMS_LOST as a root cause must
+  // not cascade-clear the symptoms the outage produced.
+  log_info(std::string("OPC-UA connection established, clearing this bridge's ") + kCommsLostFaultCode);
+  send_clear_fault(kCommsLostFaultCode, ClearOrigin::LinkState);
+}
+
+void OpcuaPlugin::drive_comms_lost_decision() {
+  if (!poller_config_.comms_lost_fault_enabled || !fault_clients_->get_fault) {
+    return;
+  }
+  const bool connected = client_ && client_->is_connected();
+  const uint64_t live_session = client_ ? client_->connection_generation() : 0;
+
+  // An answer the executor thread parked, and only one belonging to the probe
+  // this thread is waiting for. Consuming it here keeps the gate's inputs - the
+  // component ids - on the thread that renames them.
+  bool found = false;
+  std::vector<std::string> sources;
+  bool have_answer = false;
+  {
+    std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
+    if (comms_lost_probe_state_->answered && comms_lost_generation_current(comms_lost_probe_state_->answered_generation,
+                                                                           comms_lost_probe_state_->generation)) {
+      found = comms_lost_probe_state_->found;
+      sources.swap(comms_lost_probe_state_->sources);
+      comms_lost_probe_state_->answered = false;
+      have_answer = true;
+    }
+  }
+  if (have_answer) {
+    comms_lost_probe_in_flight_ = false;
+    if (!comms_lost_answer_applicable(connected, /*has_answer=*/true, comms_lost_probe_session_, live_session)) {
+      // The session the probe was sent on is gone. This tick is the first one
+      // after a reconnect, so the link reads as up while the answer describes
+      // the store from before an outage that has since been reported. It is
+      // dropped and the decision is taken again on this session.
+      comms_lost_decision_owed_.store(true);
+      RCLCPP_DEBUG(opcua_plugin_logger(), "%s answer belongs to an earlier session; asking again on this one",
+                   kCommsLostFaultCode);
+      return;
+    }
+    apply_comms_lost_answer(found, sources);
+    // The store may have answered from before a ReportFault this process had
+    // already sent, so a decision with a raise behind it earns one more.
+    if (comms_lost_raise_since_decision_.exchange(false)) {
+      comms_lost_decision_owed_.store(true);
+    }
+    return;
+  }
+
+  // A probe whose answer never came. Dropping the request is what stops the
+  // client's pending map from growing one entry per connect; bumping the
+  // generation is what stops a late answer being read as the next probe's.
+  if (comms_lost_probe_in_flight_) {
+    if (std::chrono::steady_clock::now() - comms_lost_probe_sent_ >= fault_service_timeout_) {
+      fault_clients_->get_fault->remove_pending_request(comms_lost_probe_request_id_);
+      // rclcpp takes the pending entry out before it runs the callback, and
+      // outside the mutex, so a callback that won that race is still on its way
+      // here. Moving the generation on is what makes it park at a stale one and
+      // be dropped.
+      {
+        std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
+        ++comms_lost_probe_state_->generation;
+        comms_lost_probe_state_->answered = false;
+        comms_lost_probe_state_->sources.clear();
+      }
+      comms_lost_probe_in_flight_ = false;
+      comms_lost_decision_owed_.store(true);
+      log_warn(std::string("fault store did not answer within ") + std::to_string(fault_service_timeout_.count()) +
+               " ms; the " + kCommsLostFaultCode + " decision stays owed");
+    }
+    return;
+  }
+
+  if (!comms_lost_probe_due(comms_lost_decision_owed_.load(), connected, comms_lost_probe_in_flight_,
+                            fault_clients_->get_fault->service_is_ready())) {
+    return;
+  }
+  // Taken BEFORE the send: an owe raised by the REST or event-pump thread while
+  // the request is going out has to survive it, and a store(false) after the
+  // send would swallow it.
+  if (!comms_lost_decision_owed_.exchange(false)) {
+    return;
+  }
+
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
+    generation = ++comms_lost_probe_state_->generation;
+    comms_lost_probe_state_->answered = false;
+    comms_lost_probe_state_->sources.clear();
+  }
+  std::weak_ptr<CommsLostProbeState> weak_state = comms_lost_probe_state_;
+  auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
+  request->fault_code = kCommsLostFaultCode;
+  // rclcpp selects the response-callback overload of async_send_request only for
+  // a callable whose parameter list is exactly (SharedFuture); a const reference
+  // parameter matches no overload. The future is therefore taken by value.
+  using GetFaultFuture = rclcpp::Client<ros2_medkit_msgs::srv::GetFault>::SharedFuture;
+  try {
+    auto future = fault_clients_->get_fault->async_send_request(
+        request, [weak_state, generation](GetFaultFuture answer) {  // NOLINT(performance-unnecessary-value-param)
+          // The plugin's client executor thread. It parks the answer and nothing
+          // else: the decision reads component ids, which only the poll thread
+          // may do. The state is reached through a weak_ptr, so a callback that
+          // outlives the plugin's state block touches nothing.
+          const auto state = weak_state.lock();
+          if (!state) {
+            return;
+          }
+          try {
+            const auto & response = answer.get();
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->generation != generation) {
+              return;  // answer to a probe that has already been given up on
+            }
+            state->found = response->success;
+            state->sources = response->fault.reporting_sources;
+            state->answered_generation = generation;
+            state->answered = true;
+            ++state->answers;
+          } catch (...) {
+            // A broken promise (the client was reset under us) leaves the
+            // decision owed, which the poll thread resolves on its own terms.
+          }
+        });
+    comms_lost_probe_request_id_ = future.request_id;
+    comms_lost_probe_sent_ = std::chrono::steady_clock::now();
+    comms_lost_probe_session_ = live_session;
+    comms_lost_probe_in_flight_ = true;
+  } catch (const std::exception & e) {
+    // The owe was taken before the send. Nothing went out, so it goes back:
+    // the poll thread has no catch of its own and a lost owe is a fault left
+    // standing for good.
+    comms_lost_decision_owed_.store(true);
+    RCLCPP_WARN(opcua_plugin_logger(), "fault store request failed to go out (%s); the %s decision stays owed",
+                e.what(), kCommsLostFaultCode);
+  }
+}
+
+OpcuaPlugin::PendingEnqueueOutcome OpcuaPlugin::enqueue_pending_dispatch(std::vector<PendingFaultDispatch> & buffer,
+                                                                         size_t max_size, PendingFaultDispatch entry) {
+  const bool is_clear = entry.kind == PendingFaultDispatch::Kind::Clear;
+
+  // At most one pending clear per fault code, and only while nothing has been
+  // reported for that code since. Search from the BACK and stop at the first
+  // entry carrying this code: a Clear there is superseded and moves to the back,
+  // a Report there means the code was raised again and the incoming clear
+  // belongs behind it. Coalescing past that Report would reorder the pair -
+  // Report, Clear, Report, Clear flushed as Report, Report, Clear, leaving the
+  // second raise standing while the device says inactive. Repeated reconnect
+  // clears, which have no report between them, still collapse to one.
+  bool replaced = false;
+  if (is_clear) {
+    for (auto it = buffer.rbegin(); it != buffer.rend(); ++it) {
+      if (it->fault_code != entry.fault_code) {
+        continue;
+      }
+      if (it->kind == PendingFaultDispatch::Kind::Clear) {
+        buffer.erase(std::next(it).base());
+        replaced = true;
+      }
+      break;
+    }
+  }
+
+  PendingEnqueueOutcome outcome = replaced ? PendingEnqueueOutcome::ReplacedClear : PendingEnqueueOutcome::Buffered;
+  if (buffer.size() >= max_size) {
+    // Only a link-state clear is re-derivable: the next reconnect sends it
+    // again. A full buffer gives that up first, and refuses an incoming one, so
+    // every dispatch nothing will re-send stays. Everything else - reports, a
+    // device alarm's inactive edge, an operator's scoped clear - is one-shot and
+    // ages out oldest-first.
+    const auto oldest_link_state = std::find_if(buffer.begin(), buffer.end(), [](const PendingFaultDispatch & pending) {
+      return pending.kind == PendingFaultDispatch::Kind::Clear && pending.link_state;
+    });
+    if (oldest_link_state != buffer.end()) {
+      buffer.erase(oldest_link_state);
+      outcome = PendingEnqueueOutcome::EvictedLinkStateClear;
+    } else if (is_clear && entry.link_state) {
+      return PendingEnqueueOutcome::Refused;
+    } else {
+      buffer.erase(buffer.begin());
+      outcome = PendingEnqueueOutcome::EvictedOldest;
+    }
+  }
+
+  buffer.push_back(std::move(entry));
+  return outcome;
+}
+
+void OpcuaPlugin::send_or_buffer(PendingFaultDispatch entry) {
   // Bound the buffer so a deployment with no fault_manager cannot grow it
-  // without limit; drop the oldest (least relevant) pending dispatch.
-  // Runs on both the poll thread and the REST clear_fault thread, so the vector
-  // mutation is serialised by pending_reports_mutex_.
-  constexpr size_t kMaxPendingReports = 256;
-  bool dropped_oldest = false;
+  // without limit. Reached from the poll thread (alarm and event callbacks, and
+  // the link-state decision in publish_values) and from the REST thread
+  // (FaultProvider::clear_fault), so the vector mutation is serialised by
+  // pending_reports_mutex_.
+  PendingEnqueueOutcome outcome = PendingEnqueueOutcome::Buffered;
   {
     std::lock_guard<std::mutex> lock(pending_reports_mutex_);
-    if (pending_reports_.size() >= kMaxPendingReports) {
-      pending_reports_.erase(pending_reports_.begin());
-      dropped_oldest = true;
-    }
-    pending_reports_.push_back(std::move(dispatch));
+    outcome = enqueue_pending_dispatch(pending_reports_, kMaxPendingDispatches, std::move(entry));
   }
-  if (dropped_oldest) {
-    log_warn("pending fault report buffer full (" + std::to_string(kMaxPendingReports) + "), dropping oldest");
+  if (outcome == PendingEnqueueOutcome::EvictedOldest) {
+    log_warn("pending fault dispatch buffer full (" + std::to_string(kMaxPendingDispatches) +
+             "), dropping the oldest dispatch");
+  } else if (outcome == PendingEnqueueOutcome::EvictedLinkStateClear) {
+    log_warn("pending fault dispatch buffer full (" + std::to_string(kMaxPendingDispatches) +
+             "), dropping a link-state clear the next reconnect re-derives");
+  } else if (outcome == PendingEnqueueOutcome::Refused) {
+    log_warn("pending fault dispatch buffer full of one-shot dispatches (" + std::to_string(kMaxPendingDispatches) +
+             "), dropping this link-state clear instead");
+  }
+  if (outcome == PendingEnqueueOutcome::EvictedLinkStateClear || outcome == PendingEnqueueOutcome::Refused) {
+    // The buffer ranks a link-state clear last on the grounds that the next
+    // reconnect re-derives it, which holds for the poller's reconnect clear and
+    // not for one a successful connect queued. Recording the debt is what
+    // covers the connect case; the poll thread pays it.
+    owe_comms_lost_decision();
   }
   // Drains immediately (in order) if the sink is already matched.
   flush_pending_reports();
@@ -1327,16 +1846,13 @@ void OpcuaPlugin::flush_pending_reports() {
   // the vector is never being reallocated by a concurrent send_or_buffer while it
   // is iterated here (the use-after-free that corrupted the heap), and so the ROS
   // service call never runs under the mutex.
-  std::vector<std::function<void()>> batch;
+  std::vector<PendingFaultDispatch> batch;
   {
     std::lock_guard<std::mutex> lock(pending_reports_mutex_);
-    if (pending_reports_.empty()) {
-      return;
-    }
     batch.swap(pending_reports_);
   }
-  for (auto & dispatch : batch) {
-    dispatch();
+  for (auto & entry : batch) {
+    entry.dispatch();
   }
 }
 
@@ -1396,6 +1912,172 @@ void OpcuaPlugin::run_auto_browse() {
            (result.depth_cap_hit ? " [depth cap reached on at least one branch]" : ""));
 }
 
+std::optional<ComponentIdentity> OpcuaPlugin::rederived_component_identity(const ComponentIdentityState & state,
+                                                                           const OpcuaClient::DeviceInfo & info,
+                                                                           const std::string & endpoint_url) {
+  const ComponentIdentity ci = derive_component_identity(info, endpoint_url);
+  if (ci.id.empty() || ci.id == state.current_id) {
+    return std::nullopt;
+  }
+  if (component_identity_has_nameplate(info)) {
+    // A name the device gave itself takes over from a stand-in. A second
+    // nameplate is a different device answering on the same endpoint: that is a
+    // decision about asset identity, so the served name keeps its place and the
+    // read does not move it.
+    return state.current_is_placeholder ? std::optional<ComponentIdentity>(ci) : std::nullopt;
+  }
+  // No nameplate: the derivation is the neutral opcua-<host> stand-in. It
+  // follows the endpoint from one stand-in to the next, which is the adoption
+  // case, and leaves a device-given name alone - read_device_info() answers
+  // empty or partial on the first read of a session whose address space is
+  // still coming up, and one such read would otherwise move the component URL,
+  // the <id>_alarms entity and every fault filed under them onto a stand-in.
+  return state.current_is_placeholder ? std::optional<ComponentIdentity>(ci) : std::nullopt;
+}
+
+OpcuaPlugin::IdentityReadOutcome
+OpcuaPlugin::identity_reads(int extra_reads, int reads_spent, int max_reads,
+                            const std::function<OpcuaClient::DeviceInfo()> & read_fn,
+                            const std::function<bool(std::chrono::milliseconds)> & pause_fn) {
+  IdentityReadOutcome outcome;
+  outcome.reads_spent = reads_spent;
+  for (int attempt = 0; attempt <= extra_reads; ++attempt) {
+    if (outcome.reads_spent >= max_reads) {
+      return outcome;
+    }
+    if (attempt > 0 && pause_fn && !pause_fn(kIdentityConnectRetryPause)) {
+      outcome.interrupted = true;
+      return outcome;
+    }
+    outcome.info = read_fn();
+    ++outcome.reads_spent;
+    outcome.read_made = true;
+    if (component_identity_has_nameplate(outcome.info)) {
+      return outcome;
+    }
+  }
+  return outcome;
+}
+
+void OpcuaPlugin::maybe_rederive_component_identity(int extra_reads) {
+  // An explicit node map owns the component name. Only the config-less path
+  // derives it from the device.
+  if (!node_map_path_.empty() || !client_ || !client_->is_connected()) {
+    return;
+  }
+  const uint64_t generation = client_->connection_generation();
+  if (generation == component_identity_generation_) {
+    return;  // identity already speaks for this session
+  }
+  if (generation != component_identity_read_generation_) {
+    component_identity_read_generation_ = generation;
+    component_identity_poll_reads_ = 0;
+  }
+
+  const std::string live_endpoint = client_->endpoint_url();
+  // The connect burst carries its own budget (one read plus kIdentityConnectRetries
+  // attempts); the poll path spends kMaxIdentityPollReads across the session.
+  const bool is_connect_burst = extra_reads > 0;
+  const int budget = is_connect_burst ? extra_reads + 1 : kMaxIdentityPollReads;
+  const int spent = is_connect_burst ? 0 : component_identity_poll_reads_;
+  const auto outcome = identity_reads(
+      extra_reads, spent, budget,
+      [this]() {
+        return client_->read_device_info();
+      },
+      [this](std::chrono::milliseconds pause) {
+        // A shutdown must not wait the burst out: the gateway calls shutdown()
+        // once its executor has returned, and the poll thread is what stop()
+        // joins.
+        if (shutdown_requested_.load()) {
+          return false;
+        }
+        std::this_thread::sleep_for(pause);
+        return !shutdown_requested_.load();
+      });
+  if (!is_connect_burst) {
+    component_identity_poll_reads_ = outcome.reads_spent;
+  }
+  if (outcome.interrupted) {
+    // A shutdown ended the burst. Renaming now would take the node-map lock and
+    // re-pin conditions on the way out, for an identity the process is not
+    // going to serve.
+    return;
+  }
+  if (!outcome.read_made) {
+    // The poll budget for this session is spent. Stamping the session stops the
+    // reads; the stand-in stands until the next one, when the question is asked
+    // again.
+    if (!is_connect_burst) {
+      component_identity_generation_ = generation;
+    }
+    return;
+  }
+  const bool has_nameplate = component_identity_has_nameplate(outcome.info);
+
+  ComponentIdentityState state;
+  state.current_id = node_map_.component_id();
+  state.current_is_placeholder =
+      std::find(placeholder_ids_.begin(), placeholder_ids_.end(), state.current_id) != placeholder_ids_.end();
+
+  const auto rederived = rederived_component_identity(state, outcome.info, live_endpoint);
+  if (has_nameplate) {
+    // The device named itself, so this session's identity is settled. A read
+    // with no nameplate leaves the stamp alone: it is the read that is
+    // provisional, not the session, and the address space of a PLC that has
+    // just come up fills in over the following seconds. Stamping it would pin
+    // the stand-in until the NEXT session.
+    component_identity_generation_ = generation;
+  }
+  if (!rederived) {
+    return;
+  }
+
+  const std::string previous_id = state.current_id;
+  const std::string previous_alarms_entity = previous_id + "_alarms";
+  if (!has_nameplate) {
+    // The adopted id is another stand-in, so it joins the list a fault reported
+    // under it is recognised by.
+    remember_placeholder_id(rederived->id);
+  }
+  {
+    // Serialize against the REST read paths, which hold references into
+    // node_map_ (entity_defs) while they answer.
+    std::unique_lock<std::shared_mutex> lock(node_map_mutex_);
+    // The auto_alarms fallback entity is derived from the component id, so a
+    // default-derived one has to follow the rename. An operator-chosen entity_id
+    // does not match the derived form and is left alone.
+    auto & auto_alarms = node_map_.mutable_auto_alarms();
+    if (auto_alarms.entity_id == previous_alarms_entity) {
+      auto_alarms.entity_id.clear();
+    }
+    node_map_.set_component_identity(rederived->id, rederived->name);
+    // Re-derives the fallback entity id and rebuilds entity_defs, so every
+    // reference to the component id moves together.
+    node_map_.finalize_auto_alarms_overlay();
+  }
+  if (poller_) {
+    // Two things in the poller carry the old entity id: the copy of the alarm
+    // config the event path routes new conditions with, and the conditions it
+    // already pinned. Both move here. A condition that changes state between
+    // the pin and this call is reported once under the old entity.
+    poller_->refresh_alarm_routing();
+    poller_->repin_auto_alarms_entity(previous_alarms_entity, node_map_.auto_alarms().entity_id);
+  }
+  log_info("Component identity re-derived from the adopted device at " + live_endpoint + ": id='" + rederived->id +
+           "', name='" + rederived->name + "' (was '" + previous_id + "')");
+}
+
+void OpcuaPlugin::remember_placeholder_id(const std::string & id) {
+  if (std::find(placeholder_ids_.begin(), placeholder_ids_.end(), id) != placeholder_ids_.end()) {
+    return;  // already one of this process's stand-ins; it keeps its place
+  }
+  if (placeholder_ids_.size() >= kMaxPlaceholderIds) {
+    return;  // the first kMaxPlaceholderIds distinct stand-ins are what is kept
+  }
+  placeholder_ids_.push_back(id);
+}
+
 void OpcuaPlugin::maybe_rebrowse_on_reconnect() {
   if (!node_map_.auto_browse_config().enabled || !client_ || !client_->is_connected()) {
     return;
@@ -1414,6 +2096,16 @@ void OpcuaPlugin::publish_values(const PollSnapshot & snap) {
   // Poll-thread hook: drain any fault reports buffered before fault_manager was
   // discovered, so a late sink still receives them.
   flush_pending_reports();
+  // Poll-thread hook: one step of the owed link-state decision about
+  // PLC_COMMS_LOST. Here, because the gate compares against component ids this
+  // thread is the only writer of.
+  drive_comms_lost_decision();
+  // Poll-thread retry for an identity that is not settled yet. The connect hook
+  // is where the rename normally happens, ahead of the subscribe; this call
+  // covers a device-info read that came back with no nameplate because the PLC's
+  // address space was still filling in. It is a no-op from the moment the device
+  // names itself, and from the moment kMaxIdentityPollReads is spent.
+  maybe_rederive_component_identity(/*extra_reads=*/0);
   // Poll-thread hook: (re)run auto_browse after a fresh session so a PLC that
   // came up (or restarted) after the initial connect still gets walked.
   maybe_rebrowse_on_reconnect();
@@ -1508,37 +2200,148 @@ void OpcuaPlugin::log_security_profile() const {
   }
 }
 
-void OpcuaPlugin::run_startup_discovery() {
-  if (!discovery_config_.enabled) {
-    return;
+int OpcuaPlugin::effective_rescan_interval_s(const OpcuaDiscoveryConfig & config, bool endpoint_configured) {
+  if (!config.enabled || endpoint_configured) {
+    return 0;
+  }
+  // Unset means "discovery is on but no cadence was stated" - the config-less
+  // deployment, which takes the built-in default. An explicit 0 is an operator
+  // saying "do not re-scan", and is honoured as written.
+  return config.interval_s.value_or(kDefaultRescanIntervalS);
+}
+
+std::chrono::milliseconds OpcuaPlugin::effective_max_reconnect_wait(std::chrono::milliseconds base,
+                                                                    std::chrono::milliseconds default_ceiling,
+                                                                    int rescan_interval_s) {
+  if (rescan_interval_s <= 0) {
+    return default_ceiling;  // no rescan: the plain backoff ceiling applies
+  }
+  const auto cadence = std::chrono::milliseconds(static_cast<int64_t>(rescan_interval_s) * 1000);
+  return std::max(base, std::min(default_ceiling, cadence));
+}
+
+std::optional<std::string> OpcuaPlugin::rescan_step(int interval_s,
+                                                    const std::function<std::chrono::steady_clock::time_point()> & now,
+                                                    std::chrono::steady_clock::time_point * last_scan_end,
+                                                    const std::function<std::optional<std::string>()> & sweep) {
+  if (interval_s <= 0 || !now || last_scan_end == nullptr || !sweep) {
+    return std::nullopt;
+  }
+  if (now() - *last_scan_end < std::chrono::seconds(interval_s)) {
+    return std::nullopt;
+  }
+  // Stamp the END of the sweep: a legal /16 runs for minutes, and stamping its
+  // start would make the next one due the moment this one returned - the poll
+  // thread would sweep back to back and only attempt a reconnect once a sweep.
+  // A sweep that threw still consumed that time, so the stamp is owed either
+  // way, or the next poll iteration would start another one immediately. The
+  // rethrow is what preserves the caller's choice; the poll thread has no try of
+  // its own, so the caller that runs on it is rescan_guarded.
+  try {
+    const auto result = sweep();
+    *last_scan_end = now();
+    return result;
+  } catch (...) {
+    *last_scan_end = now();
+    throw;
+  }
+}
+
+std::optional<std::string>
+OpcuaPlugin::rescan_guarded(int interval_s, const std::function<std::chrono::steady_clock::time_point()> & now,
+                            std::chrono::steady_clock::time_point * last_scan_end,
+                            const std::function<std::optional<std::string>()> & sweep) {
+  // A handler reached by bad_alloc allocates nothing on our side: the log goes
+  // through a fixed format string, and the catch-all arm through a literal.
+  try {
+    return rescan_step(interval_s, now, last_scan_end, sweep);
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(opcua_plugin_logger(), "OPC-UA discovery: rescan sweep failed (%s); the endpoint stands", e.what());
+  } catch (...) {
+    RCLCPP_WARN(opcua_plugin_logger(),
+                "OPC-UA discovery: rescan sweep failed with a non-standard exception; the endpoint stands");
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> OpcuaPlugin::discover_endpoint(const OpcuaDiscoveryConfig & config, bool endpoint_configured,
+                                                          const PortScanFn & scan, const IdentifyFn & identify,
+                                                          const DiscoveryReporter & reporter,
+                                                          const std::function<bool()> & cancelled,
+                                                          std::string * application_uri,
+                                                          const std::string & bound_application_uri) {
+  if (application_uri != nullptr) {
+    application_uri->clear();
+  }
+  if (!config.enabled) {
+    return std::nullopt;
   }
   // Never override an explicitly configured endpoint: discovery must not open a
   // second session on a PLC the operator already targets (and already polls).
-  if (endpoint_configured_) {
-    log_info("OPC-UA discovery enabled but endpoint_url is explicitly configured (" + client_config_.endpoint_url +
-             "); skipping auto-discovery to avoid a second session.");
-    return;
-  }
-  if (discovery_config_.interval_s > 0) {
-    log_warn("OPC-UA discovery interval_s=" + std::to_string(discovery_config_.interval_s) +
-             " set, but periodic re-scan is not implemented yet; running a one-shot scan at startup.");
+  if (endpoint_configured) {
+    return std::nullopt;
   }
 
-  NetworkDiscovery discovery(discovery_config_, discovery_scan_fn_, discovery_identify_fn_);
+  // The pass reports through a buffer, because whether the report is
+  // operator-visible or a DEBUG trace depends on the outcome, and the outcome is
+  // only known once the sweep is done. A rescan runs for the life of a
+  // disconnected process, so an unchanged outcome must not repeat its whole
+  // report (a secured-only site would log the same WARN every interval_s).
+  struct ReportLine {
+    bool warning;
+    std::string text;
+  };
+  std::vector<ReportLine> report;
+  std::string outcome;
+  const auto info_line = [&report, &outcome](const std::string & text) {
+    report.push_back({false, text});
+    outcome += text;
+    outcome += '\n';
+  };
+  const auto warn_line = [&report, &outcome](const std::string & text) {
+    report.push_back({true, text});
+    outcome += text;
+    outcome += '\n';
+  };
+  const auto emit = [&report, &outcome, &reporter]() {
+    const bool repeat = reporter.previous_outcome != nullptr && *reporter.previous_outcome == outcome;
+    if (reporter.previous_outcome != nullptr) {
+      *reporter.previous_outcome = outcome;
+    }
+    for (const auto & line : report) {
+      const auto & sink = repeat ? reporter.debug : (line.warning ? reporter.warn : reporter.info);
+      if (sink) {
+        sink(line.text);
+      }
+    }
+  };
+
+  NetworkDiscovery discovery(config, scan, identify);
 
   const auto subnets = discovery.resolve_subnets();
   if (subnets.empty()) {
-    log_warn("OPC-UA discovery: no subnet configured and could not derive a local /24; nothing to scan.");
-    return;
+    warn_line("OPC-UA discovery: no subnet configured and could not derive a local /24, nothing to scan.");
+    emit();
+    return std::nullopt;
   }
   std::string subnet_list;
   for (const auto & s : subnets) {
     subnet_list += (subnet_list.empty() ? "" : ", ") + s;
   }
-  log_info("OPC-UA discovery: read-only active scan of [" + subnet_list + "] on " +
-           std::to_string(discovery_config_.ports.size()) + " port(s)...");
+  // The announcement goes out NOW, ahead of the buffered report: a sweep of a
+  // wide subnet runs for minutes, and an operator watching start-up has to see
+  // that the gateway is scanning. It says what the pass is about to do, which is
+  // known before the outcome is, so it stays out of the outcome digest and is
+  // levelled on its own - the first pass announces at INFO, a rescan at DEBUG so
+  // the recurring sweep does not repeat it every interval.
+  const bool first_pass = reporter.previous_outcome == nullptr || reporter.previous_outcome->empty();
+  const auto & announce_sink = first_pass ? reporter.info : reporter.debug;
+  if (announce_sink) {
+    announce_sink("OPC-UA discovery: read-only active scan of [" + subnet_list + "] on " +
+                  std::to_string(config.ports.size()) + " port(s)...");
+  }
 
-  const std::vector<DiscoveredEndpoint> found = discovery.run();
+  const std::vector<DiscoveredEndpoint> found = discovery.run(cancelled);
 
   // Summarize what was found and what was skipped (leads, LDS, secured-only).
   size_t data_servers = 0;
@@ -1562,26 +2365,362 @@ void OpcuaPlugin::run_startup_discovery() {
     if (!ep.anonymous_none_available) {
       ++secured_only;
     }
-    log_info("OPC-UA discovery: found data server " + ep.endpoint_url + " (uri='" + ep.application_uri +
-             "', product='" + ep.product_uri + "', None/Anonymous=" + (ep.anonymous_none_available ? "yes" : "no") +
-             ")");
+    info_line("OPC-UA discovery: found data server " + ep.endpoint_url + " (uri='" + ep.application_uri +
+              "', product='" + ep.product_uri + "', None/Anonymous=" + (ep.anonymous_none_available ? "yes" : "no") +
+              ")");
   }
-  log_info("OPC-UA discovery summary: " + std::to_string(data_servers) + " data server(s), " +
-           std::to_string(discovery_servers) + " discovery server(s)/LDS, " + std::to_string(secured_only) +
-           " secured-only (need credentials), " + std::to_string(leads) + " non-OPC-UA/unidentified lead(s).");
+  info_line("OPC-UA discovery summary: " + std::to_string(data_servers) + " data server(s), " +
+            std::to_string(discovery_servers) + " discovery server(s)/LDS, " + std::to_string(secured_only) +
+            " secured-only (need credentials), " + std::to_string(leads) + " non-OPC-UA/unidentified lead(s).");
 
   const DiscoveredEndpoint * chosen =
-      NetworkDiscovery::select_auto_endpoint(found, discovery_config_.anonymous_none_only);
+      NetworkDiscovery::select_auto_endpoint(found, config.anonymous_none_only, bound_application_uri);
   if (chosen == nullptr) {
-    log_warn(
-        "OPC-UA discovery: no auto-connectable None/Anonymous data server found; leaving endpoint at default. "
-        "Secured-only servers require operator credentials.");
+    if (!bound_application_uri.empty()) {
+      warn_line("OPC-UA discovery: the server this bridge is bound to (uri='" + bound_application_uri +
+                "') is not on the scanned network, leaving the endpoint unchanged.");
+    } else {
+      warn_line(
+          "OPC-UA discovery: no auto-connectable None/Anonymous data server found, leaving the endpoint unchanged. "
+          "Secured-only servers require operator credentials.");
+    }
+    emit();
+    return std::nullopt;
+  }
+
+  info_line("OPC-UA discovery: selected endpoint " + chosen->endpoint_url + " (uri='" + chosen->application_uri + "')");
+  if (chosen->application_uri.empty()) {
+    warn_line("OPC-UA discovery: " + chosen->endpoint_url +
+              " reports no ApplicationUri. This bridge cannot bind to it, so after a drop a re-scan accepts whichever "
+              "server answers.");
+  }
+  emit();
+  if (application_uri != nullptr) {
+    *application_uri = chosen->application_uri;
+  }
+  return chosen->endpoint_url;
+}
+
+void OpcuaPlugin::run_startup_discovery() {
+  if (!discovery_config_.enabled) {
+    return;
+  }
+  if (endpoint_configured_) {
+    log_info("OPC-UA discovery enabled but endpoint_url is explicitly configured (" + client_config_.endpoint_url +
+             "). Skipping auto-discovery to avoid a second session.");
     return;
   }
 
-  client_config_.endpoint_url = chosen->endpoint_url;
-  log_info("OPC-UA discovery: auto-selected endpoint " + chosen->endpoint_url + " (uri='" + chosen->application_uri +
-           "') - handing to the connect + introspect path.");
+  // The startup scan is the first pass, so its outcome digest is still empty and
+  // the report comes out in full. It is cancellable too, but not by shutdown():
+  // this runs inside set_context(), i.e. during node construction and before the
+  // executor spins, so nothing can call shutdown() until this returns. What ends
+  // it is the SIGINT / SIGTERM that rclcpp's own handler turns into
+  // !rclcpp::ok() - see discovery_cancelled().
+  std::string selected_uri;
+  const auto chosen = discover_endpoint(
+      discovery_config_, endpoint_configured_, discovery_scan_fn_, discovery_identify_fn_,
+      discovery_reporter(&last_discovery_outcome_),
+      [this]() {
+        return discovery_cancelled();
+      },
+      // The binding steers this sweep the way it steers a rescan: a process
+      // that was bound when it stopped looks for that server at whatever
+      // address it now answers on, and selects nothing when it is absent.
+      &selected_uri, bound_application_uri_);
+  static_cast<void>(selected_uri);
+  // Stamp when the sweep FINISHED: the rescan cadence is measured from the end
+  // of the previous sweep, so a long sweep is not immediately followed by
+  // another one.
+  last_discovery_scan_end_ = std::chrono::steady_clock::now();
+
+  if (!chosen) {
+    // The startup scan can legitimately find nothing - a gateway that boots
+    // alongside its PLC routinely scans while the PLC is still coming up. With a
+    // cadence the endpoint stays at its default and the reconnect arm rescans,
+    // so the PLC is still adopted once it answers. With re-scanning switched off
+    // (an explicit interval_s: 0) this scan IS the last one, and the operator
+    // has to be told which of the two they configured.
+    const int startup_interval_s = effective_rescan_interval_s(discovery_config_, endpoint_configured_);
+    if (startup_interval_s > 0) {
+      log_info("OPC-UA discovery: startup scan selected no endpoint. The reconnect loop rescans every " +
+               std::to_string(startup_interval_s) + "s while down.");
+    } else {
+      log_warn(
+          "OPC-UA discovery: startup scan selected no endpoint and re-scanning is off (interval_s: 0). The endpoint "
+          "stays at " +
+          client_config_.endpoint_url + " until the plugin is restarted.");
+    }
+    return;
+  }
+
+  client_config_.endpoint_url = *chosen;
+  log_info("OPC-UA discovery: auto-selected endpoint " + *chosen + " - handing to the connect + introspect path.");
+}
+
+bool OpcuaPlugin::discovery_cancelled() const {
+  // rclcpp::ok() only reads a context's atomic shutdown flag, so it is safe to
+  // call from the set_context thread and the poll thread alike. Which context is
+  // the point: the gateway node's own, not the process-wide default, because a
+  // host that built its node on a private context leaves the default one
+  // uninitialised and every sweep would cancel before it started. The rule
+  // itself, and why both signals are needed, lives in discovery_cancelled_for.
+  return discovery_cancelled_for_context(shutdown_requested_.load(), context_);
+}
+
+OpcuaPlugin::DiscoveryReporter OpcuaPlugin::discovery_reporter(std::string * previous_outcome) const {
+  DiscoveryReporter reporter;
+  reporter.info = [this](const std::string & m) {
+    log_info(m);
+  };
+  reporter.warn = [this](const std::string & m) {
+    log_warn(m);
+  };
+  reporter.debug = [](const std::string & m) {
+    RCLCPP_DEBUG(opcua_plugin_logger(), "%s", m.c_str());
+  };
+  reporter.previous_outcome = previous_outcome;
+  return reporter;
+}
+
+std::string OpcuaPlugin::read_persisted_binding(const std::string & path) {
+  if (path.empty()) {
+    return {};
+  }
+  std::ifstream in(path);
+  if (!in) {
+    return {};
+  }
+  std::string line;
+  if (!std::getline(in, line)) {
+    return {};
+  }
+  // A UTF-8 BOM is what an editor on Windows leaves in front of the URI. It is
+  // invisible in a log, so a binding carrying one shows the refusal as two
+  // identical URIs.
+  static const std::string kUtf8Bom = "\xEF\xBB\xBF";
+  if (line.compare(0, kUtf8Bom.size(), kUtf8Bom) == 0) {
+    line.erase(0, kUtf8Bom.size());
+  }
+  const auto end = line.find_last_not_of(" \t\r\n");
+  if (end == std::string::npos) {
+    return {};
+  }
+  line.erase(end + 1);
+  const auto begin = line.find_first_not_of(" \t");
+  if (begin == std::string::npos) {
+    return {};
+  }
+  line = line.substr(begin);
+  // An ApplicationUri is printable. A NUL or another control character means
+  // the file holds something else - a binary blob, a truncated write - and a
+  // binding read out of it would refuse every server for a reason nobody can
+  // see in a log.
+  const auto control = std::find_if(line.begin(), line.end(), [](char c) {
+    return static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) == 0x7F;
+  });
+  if (control != line.end()) {
+    RCLCPP_WARN(opcua_plugin_logger(),
+                "%s holds a control character where an ApplicationUri belongs; reading it as no binding", path.c_str());
+    return {};
+  }
+  return line;
+}
+
+std::string OpcuaPlugin::write_persisted_binding(const std::string & path, const std::string & application_uri) {
+  if (path.empty() || application_uri.empty()) {
+    return {};
+  }
+  if (application_uri.find_first_of("\r\n") != std::string::npos) {
+    return "the ApplicationUri contains a line break and would read back truncated";
+  }
+  std::error_code ec;
+  // Follow a symlink to what it points at, so the rename below replaces the
+  // target an operator pointed the path at. The link is read first, because a
+  // link whose target does not exist yet is the state before the first bind
+  // and weakly_canonical leaves such a link unresolved; the chain is bounded so
+  // a loop ends in the fallback. weakly_canonical then resolves the components
+  // that exist and leaves the rest.
+  constexpr int kMaxSymlinkHops = 32;
+  std::filesystem::path target(path);
+  for (int hops = 0; hops < kMaxSymlinkHops && std::filesystem::is_symlink(target, ec) && !ec; ++hops) {
+    const std::filesystem::path link_target = std::filesystem::read_symlink(target, ec);
+    if (ec) {
+      break;
+    }
+    target = link_target.is_absolute() ? link_target : target.parent_path() / link_target;
+  }
+  ec.clear();
+  const std::filesystem::path resolved = std::filesystem::weakly_canonical(target, ec);
+  if (!ec && !resolved.empty()) {
+    target = resolved;
+  }
+  ec.clear();
+  const std::filesystem::path parent = target.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec && !std::filesystem::is_directory(parent)) {
+      return "cannot create " + parent.string() + ": " + ec.message();
+    }
+    ec.clear();
+  }
+  // Same directory, so the rename below stays within one filesystem.
+  const std::filesystem::path tmp = target.string() + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::trunc);
+    if (!out) {
+      return "cannot open " + tmp.string() + " for writing";
+    }
+    out << application_uri << "\n";
+    out.flush();
+    if (!out) {
+      return "write to " + tmp.string() + " failed";
+    }
+  }
+  // The fsync makes the temporary's bytes durable before the rename publishes
+  // its name, so a power loss after the rename finds the URI on disk. Without
+  // it the name can outlive the bytes, leaving an empty file that reads as
+  // "never bound" and lets the next process adopt whichever server answers.
+  std::string sync_failure = fsync_path(tmp.string(), /*is_directory=*/false);
+  if (!sync_failure.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return sync_failure;
+  }
+  std::filesystem::rename(tmp, target, ec);
+  if (ec) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    return "rename to " + target.string() + " failed: " + ec.message();
+  }
+  // The directory entry the rename created, so the file is findable after a
+  // power loss. Best effort: a filesystem that refuses this has still written
+  // the file.
+  if (!parent.empty()) {
+    static_cast<void>(fsync_path(parent.string(), /*is_directory=*/true));
+  }
+  return {};
+}
+
+bool OpcuaPlugin::note_refused_application_uri(const std::string & uri) {
+  if (std::find(refused_application_uris_.begin(), refused_application_uris_.end(), uri) !=
+      refused_application_uris_.end()) {
+    return false;
+  }
+  refused_application_uris_.push_back(uri);
+  if (refused_application_uris_.size() > kMaxRefusedApplicationUris) {
+    refused_application_uris_.erase(refused_application_uris_.begin());
+  }
+  return true;
+}
+
+bool OpcuaPlugin::bind_or_drop_session() {
+  if (!client_ || !client_->is_connected()) {
+    return false;
+  }
+  const std::string live_uri = client_->read_server_application_uri();
+
+  if (bound_application_uri_.empty()) {
+    // Nothing bound yet: this session names the server every later sweep looks
+    // for, and the next process reads it back from the binding file. A server
+    // that publishes no ApplicationUri leaves the binding empty and stays
+    // unbindable, which the discovery report already says, and nothing is
+    // persisted for it.
+    bound_application_uri_ = live_uri;
+    refused_application_uris_.clear();
+    if (!live_uri.empty() && !endpoint_configured_) {
+      const std::string failure = write_persisted_binding(discovery_config_.binding_file, live_uri);
+      if (failure.empty()) {
+        if (!discovery_config_.binding_file.empty()) {
+          log_info("OPC-UA: bound to uri='" + live_uri + "', kept in " + discovery_config_.binding_file);
+        }
+      } else {
+        log_warn("OPC-UA: bound to uri='" + live_uri + "' but could not keep it in " + discovery_config_.binding_file +
+                 " (" + failure +
+                 "). This session is unaffected; the next process starts unbound and adopts whichever server "
+                 "answers.");
+      }
+    }
+    return true;
+  }
+
+  if (live_uri == bound_application_uri_) {
+    // Bound server reached. A later outage reports a foreign server again.
+    refused_application_uris_.clear();
+    return true;
+  }
+
+  binding_mismatch_disconnects_.fetch_add(1);
+  if (note_refused_application_uri(live_uri)) {
+    // The gesture that rebinds: on the discovery path the file holds the
+    // binding, so the file is what an operator removes; with endpoint_url
+    // pinned, or with persistence off, nothing outlives the process and a
+    // restart against the new server is the whole gesture.
+    const std::string gesture = !endpoint_configured_ && !discovery_config_.binding_file.empty()
+                                    ? "remove " + discovery_config_.binding_file + " and restart"
+                                    : "restart the plugin against the new one";
+    const std::string refusal = "OPC-UA: " + client_->endpoint_url() + " answers as uri='" + live_uri +
+                                "', which is not the server this bridge is bound to (uri='" + bound_application_uri_ +
+                                "'). Dropping the session and keeping the standing outage. Replacing a PLC is a "
+                                "recommissioning: " +
+                                gesture + ".";
+    log_warn(refusal);
+    std::lock_guard<std::mutex> lock(binding_refusal_mutex_);
+    last_binding_refusal_ = refusal;
+  }
+  client_->disconnect();
+  return false;
+}
+
+std::optional<std::string> OpcuaPlugin::rescan_endpoint_for_reconnect() {
+  // A sweep is a bounded but multi-second blocking call on the poll thread, and
+  // stop() has to wait for whatever it is in the middle of. Do not start one the
+  // shutdown is going to throw away.
+  if (discovery_cancelled()) {
+    return std::nullopt;
+  }
+  const int interval_s = effective_rescan_interval_s(discovery_config_, endpoint_configured_);
+
+  std::string candidate_uri;
+  auto chosen = rescan_guarded(
+      interval_s,
+      []() {
+        return std::chrono::steady_clock::now();
+      },
+      &last_discovery_scan_end_,
+      [this, &candidate_uri]() {
+        return discover_endpoint(
+            discovery_config_, endpoint_configured_, discovery_scan_fn_, discovery_identify_fn_,
+            discovery_reporter(&last_discovery_outcome_),
+            [this]() {
+              return discovery_cancelled();
+            },
+            &candidate_uri, bound_application_uri_);
+      });
+  // The live client config, not client_config_: this runs on the poll thread
+  // and client_config_ is read by the refresh thread in introspect(). The
+  // client owns the endpoint once connect() has been called with it, and its
+  // accessors are mutex-guarded.
+  const std::string current = client_ ? client_->endpoint_url() : client_config_.endpoint_url;
+  if (!chosen) {
+    // Selection had the binding and found nothing carrying it, so the server
+    // this bridge polls is not answering anywhere on the scanned network. The
+    // endpoint stands and the outage with it; the connect the reconnect arm
+    // keeps attempting is the one that recovers when the server comes back.
+    if (!bound_application_uri_.empty()) {
+      rescan_refusals_.fetch_add(1);
+    }
+    return std::nullopt;
+  }
+  if (*chosen == current) {
+    // The address did not move. A DIFFERENT server answering at this address is
+    // caught by the connect that follows (bind_or_drop_session), which is where
+    // the session's own identity is read.
+    return std::nullopt;
+  }
+
+  log_info("OPC-UA discovery: rescan while disconnected adopted endpoint " + *chosen + " (was " + current + ")");
+  return chosen;
 }
 
 nlohmann::json OpcuaPlugin::build_data_response(const std::string & entity_id) const {
@@ -2121,7 +3260,13 @@ tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_f
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
-  send_clear_fault(fault_code);
+  // This is the per-entity SOVD route DELETE /{entity}/faults/{code}. The
+  // gateway sets skip_correlation_auto_clear on its own branch of that route so
+  // an operator scoped to one entity cannot cascade-clear symptoms reported by
+  // apps in other entities, and a plugin-owned entity must not be the hole in
+  // that rule: the request goes through this provider instead, so the same flag
+  // has to be set here.
+  send_clear_fault(fault_code, ClearOrigin::ScopedOperator);
   return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }

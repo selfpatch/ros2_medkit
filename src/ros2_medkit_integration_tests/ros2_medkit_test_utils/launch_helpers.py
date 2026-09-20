@@ -101,7 +101,7 @@ LIDAR_FAULTY_PARAMS = {
 # ---------------------------------------------------------------------------
 
 def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
-                        extra_params=None, coverage=True, extra_env=None,
+                        extra_params=None, parameter_files=(), coverage=True, extra_env=None,
                         respawn=False, respawn_delay=1.0):
     """Create a ``gateway_node`` launch action with standard config.
 
@@ -114,6 +114,10 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         so their names do not collide (e.g. ``gateway_with_scripts``).
     extra_params : dict or None
         Additional ROS parameters merged into the node config.
+    parameter_files : sequence of str
+        Parameter files passed after those parameters, for values a Python dict cannot
+        spell the way a user's file does (``.nan``, ``.inf``). A key set in both takes the
+        file's value.
     coverage : bool
         If True, set GCOV_PREFIX env vars for code coverage collection.
     extra_env : dict or None
@@ -152,7 +156,7 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         executable='gateway_node',
         name=name,
         output='screen',
-        parameters=[params],
+        parameters=[params, *parameter_files],
         additional_env=env,
         respawn=respawn,
         respawn_delay=respawn_delay,
