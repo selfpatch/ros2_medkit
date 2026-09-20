@@ -329,6 +329,9 @@ class EntityDetailStatusLinkTest : public ::testing::Test {
   }
 
   static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
   }
 
   void SetUp() override {
@@ -471,6 +474,9 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
   }
 
   static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
   }
 
   void SetUp() override {
