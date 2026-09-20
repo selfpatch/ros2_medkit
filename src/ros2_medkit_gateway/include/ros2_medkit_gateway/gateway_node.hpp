@@ -26,6 +26,7 @@
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_environment.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
@@ -335,6 +336,28 @@ class GatewayNode : public rclcpp::Node {
   /// so a misconfigured bringup is not a silent empty tree.
   void log_startup_summary();
 
+  /// Writes the posture in force back into `auth.enabled` and
+  /// `auth.require_auth_for`, then refuses every later write to `auth.*` and
+  /// `aggregation.peer_auth_header`.
+  ///
+  /// The environment can decide the posture, and until this runs the two
+  /// parameters still carry the params file's values - so `ros2 param get`
+  /// would contradict what the gateway enforces. The three parameters that
+  /// carry secrets are not written here: they are declared with a sentinel
+  /// and `ignore_override` in the constructor, in every auth state.
+  ///
+  /// The on-set callback registered at the end refuses every later write to
+  /// these, because the configuration is consumed once at construction and a
+  /// silent success would report a change nobody applied.
+  ///
+  /// @param auth_enabled      The posture in force
+  /// @param require_auth_for  The requirement level in force
+  void apply_effective_auth_parameters(bool auth_enabled, const std::string & require_auth_for);
+
+  /// Refuses runtime writes to `auth.*` and `aggregation.peer_auth_header`;
+  /// installed by apply_effective_auth_parameters once the posture is settled.
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr auth_parameter_guard_;
+
   // Configuration parameters
   std::string server_host_;
   int server_port_;
@@ -489,6 +512,11 @@ class GatewayNode : public rclcpp::Node {
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
+
+  /// Sweeps expired refresh records. The store is cleared by nothing else on a
+  /// refresh-only workload, so without this it grows for the life of the
+  /// process.
+  rclcpp::TimerBase::SharedPtr refresh_token_cleanup_timer_;
 
   // Timer for periodic cleanup of expired locks
   rclcpp::TimerBase::SharedPtr lock_cleanup_timer_;

@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -30,6 +31,8 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_environment.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_requirement_policy.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
@@ -45,6 +48,39 @@
 using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+// A parameter override by name, read without declaring the parameter.
+//
+// The map is the node parameters interface's, which is where a params file, a
+// `-p` argument and a programmatic override all end up merged;
+// NodeOptions::parameter_overrides() carries the programmatic ones only.
+using ParameterOverrides = std::map<std::string, rclcpp::ParameterValue>;
+
+std::string override_string(const ParameterOverrides & overrides, const std::string & name) {
+  const auto found = overrides.find(name);
+  if (found == overrides.end()) {
+    return std::string();
+  }
+  if (found->second.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+    throw std::invalid_argument(name + " must be a string");
+  }
+  return found->second.get<std::string>();
+}
+
+std::vector<std::string> override_string_array(const ParameterOverrides & overrides, const std::string & name) {
+  const auto found = overrides.find(name);
+  if (found == overrides.end()) {
+    return {};
+  }
+  if (found->second.get_type() != rclcpp::ParameterType::PARAMETER_STRING_ARRAY) {
+    throw std::invalid_argument(name + " must be a list of strings");
+  }
+  return found->second.get<std::vector<std::string>>();
+}
+
+}  // namespace
 
 GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
@@ -165,14 +201,51 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
-  declare_parameter("auth.jwt_secret", "");
   declare_parameter("auth.jwt_public_key", "");
   declare_parameter("auth.jwt_algorithm", "HS256");
   declare_parameter("auth.token_expiry_seconds", 3600);
   declare_parameter("auth.refresh_token_expiry_seconds", 86400);
   declare_parameter("auth.require_auth_for", "write");
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
-  declare_parameter("auth.clients", std::vector<std::string>{});
+  declare_parameter("auth.public_routes", std::vector<std::string>{});
+
+  // The parameters that carry secrets are never declared with their value.
+  //
+  // A declared value is served by the parameter services to any participant
+  // on the domain and published on /parameter_events, so the signing secret,
+  // the client list and the bearer this gateway presents to its peers are
+  // taken from the node's overrides here, handed to their consumers below,
+  // and declared with a sentinel naming the origin and `ignore_override` - in
+  // every auth state, because an open gateway still carries the secrets of the
+  // file that asked for auth, and a peer sharing that file signs with them.
+  // Under RS256 `auth.jwt_secret` is a key path and is served no more than a
+  // secret would be. The on-set guard installed by
+  // apply_effective_auth_parameters keeps the sentinels from being written.
+  //
+  // The environment is resolved here because the sentinels name it; its
+  // notices are logged with the rest of the auth configuration below.
+  const auto auth_env = resolve_auth_environment_from_process();
+  const auto & secret_overrides = get_node_parameters_interface()->get_parameter_overrides();
+  const std::string configured_jwt_secret = override_string(secret_overrides, "auth.jwt_secret");
+  const std::vector<std::string> configured_clients = override_string_array(secret_overrides, "auth.clients");
+  const std::string configured_peer_auth_header = override_string(secret_overrides, "aggregation.peer_auth_header");
+  {
+    const rcl_interfaces::msg::ParameterDescriptor plain;
+    std::string secret_shown;
+    if (!auth_env.jwt_secret.empty()) {
+      secret_shown = "<from MEDKIT_JWT_SECRET>";
+    } else if (!configured_jwt_secret.empty()) {
+      secret_shown = "<set at start>";
+    }
+    declare_parameter("auth.jwt_secret", secret_shown, plain, /*ignore_override=*/true);
+    const std::vector<std::string> clients_shown =
+        auth_env.clients_given ? redact_client_entries(auth_env.clients, "<from MEDKIT_CLIENTS>")
+                               : redact_client_entries(configured_clients, "<set at start>");
+    declare_parameter("auth.clients", clients_shown, plain, /*ignore_override=*/true);
+    declare_parameter("aggregation.peer_auth_header",
+                      configured_peer_auth_header.empty() ? std::string() : std::string("<set at start>"), plain,
+                      /*ignore_override=*/true);
+  }
 
   // OpenAPI documentation endpoints
   declare_parameter("docs.enabled", true);
@@ -252,7 +325,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.mdns_name", std::string(""));  // defaults to hostname
   // Security: forward Authorization header to peers (default: false to prevent token leakage)
   declare_parameter("aggregation.forward_auth", false);
-  declare_parameter("aggregation.peer_auth_header", "");
   // Security: require TLS for all peer URLs (default: false)
   declare_parameter("aggregation.require_tls", false);
   // URL scheme for mDNS-discovered peer URLs (default: "http")
@@ -435,7 +507,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                         .with_key_file(get_parameter("server.tls.key_file").as_string())
                         .with_ca_file(get_parameter("server.tls.ca_file").as_string())
                         .with_min_version(get_parameter("server.tls.min_version").as_string())
-                        // TODO(future): Add .with_mutual_tls() when implemented
                         .build();
       // Note: HttpServerManager will log TLS configuration details
     } catch (const std::exception & e) {
@@ -455,23 +526,111 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Build Authentication configuration (REQ_INTEROP_086, REQ_INTEROP_087)
-  bool auth_enabled = get_parameter("auth.enabled").as_bool();
+  //
+  // The environment gets the first word, and this is the only place that rule
+  // lives. Everything upstream - the container entrypoint, gateway.launch.py -
+  // passes the three variables through and holds no copy of it, because the
+  // paths that reach this node are not all the same: `docker run <img> ros2
+  // launch ... bringup.launch.py` and `ros2 run ros2_medkit_gateway
+  // gateway_node` both exec past any `-p` an entrypoint would have added, and
+  // a rule applied in a launch file reaches only the launches that include it.
+  // Reading the variables where the parameters are read covers every path by
+  // construction. `auth_env` was resolved with the parameter declarations
+  // above, because the sentinels the secret parameters are declared with name
+  // where the value came from.
+  for (const auto & notice : auth_env.notices) {
+    RCLCPP_WARN(get_logger(), "%s", notice.c_str());
+  }
+
+  // Routes the operator has taken outside authentication, validated before the
+  // posture is decided.
+  //
+  // A malformed entry is a configuration error whenever the key is set, and
+  // `auth.enabled` does not change that: a list validated only while
+  // authentication is on means a typo sits unnoticed until somebody closes the
+  // gateway, which is the worst moment to discover it. A typo must stop the
+  // gateway while somebody is watching - silently dropping an entry would leave
+  // a route protected that the operator believes is reachable, and silently
+  // widening it would be worse.
+  //
+  // A blank entry is skipped and never refused: `[""]` is how a ROS 2 YAML file
+  // writes an empty string sequence.
+  const auto public_routes = get_parameter("auth.public_routes").as_string_array();
+  for (const auto & entry : public_routes) {
+    if (is_blank_public_route_entry(entry)) {
+      continue;
+    }
+    auto parsed = parse_public_route(entry);
+    if (!parsed) {
+      RCLCPP_FATAL(get_logger(), "auth.public_routes entry \"%s\" is invalid: %s", entry.c_str(),
+                   parsed.error().c_str());
+      throw std::runtime_error("auth.public_routes entry \"" + entry + "\" is invalid: " + parsed.error());
+    }
+  }
+
+  bool auth_enabled = auth_env.applies ? auth_env.enabled : get_parameter("auth.enabled").as_bool();
+  // The requirement level actually in force, kept in scope for the write-back
+  // below. "none" while authentication is off, which is what the gateway then
+  // enforces whatever any parameter says.
+  std::string effective_require_auth_for = "none";
   if (auth_enabled) {
     try {
+      // "all" whenever the environment is what closed this gateway: "write"
+      // leaves every read open, and the entity tree, the fault history and the
+      // operation list are the disclosure.
+      const std::string require_auth_for =
+          auth_env.require_auth_for_all ? std::string("all") : get_parameter("auth.require_auth_for").as_string();
+      effective_require_auth_for = require_auth_for;
+      const bool secret_from_environment = !auth_env.jwt_secret.empty();
+      const std::string jwt_secret = secret_from_environment ? auth_env.jwt_secret : configured_jwt_secret;
+      const std::string jwt_algorithm = get_parameter("auth.jwt_algorithm").as_string();
+
+      // MEDKIT_JWT_SECRET carries a secret, and under RS256 `auth.jwt_secret`
+      // is a path to a private key file. The combination has no reading that
+      // works: taken as a path it names no file, taken as a key it is not one.
+      // Refusing here says so while the operator is watching, in place of an
+      // open() failure quoting a value nobody wants in a log.
+      if (secret_from_environment && string_to_algorithm(jwt_algorithm) == JwtAlgorithm::RS256) {
+        throw std::invalid_argument(
+            "MEDKIT_JWT_SECRET is set and auth.jwt_algorithm is RS256. The environment variable carries a shared "
+            "secret, which is HS256; RS256 reads auth.jwt_secret as a path to a private key file. Set "
+            "auth.jwt_algorithm to HS256, or configure the RS256 key paths and unset MEDKIT_JWT_SECRET.");
+      }
+
+      // A list the operator wrote and the gateway could not use even once.
+      // Starting anyway produces a gateway closed to everybody including its
+      // operator, which is the same failure as a missing secret and is refused
+      // the same way. An EMPTY MEDKIT_CLIENTS is a different statement and
+      // reaches this point with entries_seen at zero; it warns and starts.
+      if (auth_env.clients_given && auth_env.client_entries_seen > 0 && auth_env.clients.empty()) {
+        throw std::invalid_argument(
+            "every MEDKIT_CLIENTS entry was refused, so no client can obtain a token and every route would refuse "
+            "every caller. The WARN lines above name each entry by position.");
+      }
+
       AuthConfigBuilder auth_builder;
       auth_builder.with_enabled(true)
-          .with_jwt_secret(get_parameter("auth.jwt_secret").as_string())
+          .with_jwt_secret(jwt_secret)
           .with_jwt_public_key(get_parameter("auth.jwt_public_key").as_string())
-          .with_algorithm(string_to_algorithm(get_parameter("auth.jwt_algorithm").as_string()))
+          .with_algorithm(string_to_algorithm(jwt_algorithm))
           .with_token_expiry(static_cast<int>(get_parameter("auth.token_expiry_seconds").as_int()))
           .with_refresh_token_expiry(static_cast<int>(get_parameter("auth.refresh_token_expiry_seconds").as_int()))
-          .with_require_auth_for(string_to_auth_requirement(get_parameter("auth.require_auth_for").as_string()))
+          .with_require_auth_for(string_to_auth_requirement(require_auth_for))
           .with_issuer(get_parameter("auth.issuer").as_string());
 
       // Parse clients from configuration
       // Format: "client_id:client_secret:role" (e.g., "admin:secret123:admin")
-      auto clients = get_parameter("auth.clients").as_string_array();
+      const auto & clients = auth_env.clients_given ? auth_env.clients : configured_clients;
+      if (clients.empty()) {
+        RCLCPP_WARN(get_logger(),
+                    "Authentication is on and no client is configured, so nothing can obtain a token. Set "
+                    "auth.clients, or MEDKIT_CLIENTS=<id>:<secret>:admin in the environment.");
+      }
+      // Positions are 1-based and count every entry as given, so a warning
+      // names what the operator can point at in the list.
+      std::size_t client_position = 0;
       for (const auto & client_str : clients) {
+        ++client_position;
         if (client_str.empty()) {
           continue;
         }
@@ -486,35 +645,79 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
             UserRole role = string_to_role(role_str);
             auth_builder.add_client(client_id, client_secret, role);
             RCLCPP_INFO(get_logger(), "Registered client '%s' with role '%s'", client_id.c_str(), role_str.c_str());
-          } catch (const std::exception & e) {
-            RCLCPP_WARN(get_logger(), "Invalid role '%s' for client '%s': %s", role_str.c_str(), client_id.c_str(),
-                        e.what());
+          } catch (const std::exception &) {
+            // The role field is not quoted: an entry written `id:role:secret`
+            // puts the secret there.
+            RCLCPP_WARN(get_logger(),
+                        "auth.clients entry %zu for id '%s' names an unknown role (viewer, operator, configurator "
+                        "or admin) and was dropped.",
+                        client_position, client_id.c_str());
           }
         } else {
-          RCLCPP_WARN(get_logger(), "Invalid client format: '%s'. Expected 'client_id:client_secret:role'",
-                      client_str.c_str());
+          // The entry is NOT echoed. Whatever else a malformed entry is, it is
+          // a line somebody put a secret in, and a startup log is shipped,
+          // aggregated and kept. The id is quoted only where a colon makes it
+          // readable; with none there is nothing to quote that is not secret.
+          if (first_colon == std::string::npos) {
+            RCLCPP_WARN(get_logger(), "auth.clients entry %zu has no ':' and was dropped. Expected 'id:secret:role'.",
+                        client_position);
+          } else {
+            RCLCPP_WARN(get_logger(), "auth.clients entry %zu for id '%s' is not 'id:secret:role' and was dropped.",
+                        client_position, client_str.substr(0, first_colon).c_str());
+          }
         }
       }
 
+      auth_builder.with_public_routes(public_routes);
+
       auth_config_ = auth_builder.build();
       RCLCPP_INFO(get_logger(), "Authentication enabled - algorithm: %s, require_auth_for: %s",
-                  algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
-                  get_parameter("auth.require_auth_for").as_string().c_str());
+                  algorithm_to_string(auth_config_.jwt_algorithm).c_str(), require_auth_for.c_str());
+      for (const auto & entry : public_routes) {
+        if (is_blank_public_route_entry(entry)) {
+          continue;
+        }
+        // One line per route, at WARN: every entry here is a hole somebody
+        // opened on purpose, and an operator reading the startup log should see
+        // the whole public surface without going to look for the config file.
+        RCLCPP_WARN(get_logger(), "auth.public_routes: %s is answered WITHOUT a credential", entry.c_str());
+      }
     } catch (const std::exception & e) {
-      // Fail closed: authentication was explicitly requested but could not be
-      // built (e.g. empty jwt_secret). Refuse to start rather than silently
+      // Fail closed: authentication was requested but could not be configured
+      // (e.g. an empty or too-short jwt_secret). Refuse to start, because
       // serving an unauthenticated API under a configuration that asked for
-      // auth.
+      // auth is the outcome the setting exists to prevent.
+      //
+      // The source line names where the refused value came from, and the
+      // environment supplies exactly three: the secret, the client list and
+      // the posture. Everything else - the expiries, the algorithm, the
+      // issuer, the public routes - is read from the parameters whether or not
+      // the environment closed this gateway, so naming the environment for
+      // those sends an operator to variables that had nothing to do with it,
+      // and naming the parameters for a secret sends them to a file the
+      // gateway did not read.
+      const bool env_supplied_the_secret = !auth_env.jwt_secret.empty();
+      const bool env_supplied_the_clients = auth_env.clients_given;
+      std::string source = "The settings came from the parameters: auth.*.";
+      if (env_supplied_the_secret || env_supplied_the_clients) {
+        source = "The environment supplied ";
+        source += env_supplied_the_secret ? "auth.jwt_secret (MEDKIT_JWT_SECRET)" : "";
+        source += (env_supplied_the_secret && env_supplied_the_clients) ? " and " : "";
+        source += env_supplied_the_clients ? "auth.clients (MEDKIT_CLIENTS)" : "";
+        source += "; every other auth.* value came from the parameters.";
+      }
       RCLCPP_FATAL(get_logger(),
-                   "Authentication is enabled (auth.enabled=true) but the auth configuration is invalid: %s. "
-                   "Refusing to start unauthenticated - fix the auth configuration or disable auth.",
-                   e.what());
+                   "Authentication is enabled but the auth configuration is invalid: %s. %s "
+                   "Refusing to start unauthenticated.",
+                   e.what(), source.c_str());
       throw std::runtime_error(std::string("Invalid authentication configuration: ") + e.what());
     }
   } else {
     RCLCPP_INFO(get_logger(), "Authentication: disabled");
     auth_config_ = AuthConfig{};
   }
+
+  apply_effective_auth_parameters(auth_enabled, effective_require_auth_for);
 
   // Build Rate Limiting configuration
   bool rate_limit_enabled = get_parameter("rate_limiting.enabled").as_bool();
@@ -1190,7 +1393,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.discover = get_parameter("aggregation.discover").as_bool();
     agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
     agg_config.forward_auth = get_parameter("aggregation.forward_auth").as_bool();
-    agg_config.peer_auth_header = get_parameter("aggregation.peer_auth_header").as_string();
+    agg_config.peer_auth_header = configured_peer_auth_header;
     agg_config.require_tls = get_parameter("aggregation.require_tls").as_bool();
     agg_config.peer_scheme = get_parameter("aggregation.peer_scheme").as_string();
     if (agg_config.peer_scheme != "http" && agg_config.peer_scheme != "https") {
@@ -1566,6 +1769,26 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     }
   });
 
+  // Periodic sweep of expired refresh records (every 5 minutes).
+  //
+  // The store grows by one record per authorisation and shrinks only when a
+  // sweep runs. The authorisation and refresh paths each run one, so a busy
+  // gateway is swept by its own traffic; a gateway whose clients have gone
+  // quiet is swept by nothing else, and their records would sit in the map
+  // until the process ends. The timer bounds the store whatever the traffic
+  // mix, and it is cheap: the sweep walks the map under one lock and drops
+  // records nothing minted from can still be valid.
+  refresh_token_cleanup_timer_ = create_wall_timer(std::chrono::minutes(5), [this]() {
+    auto * auth_manager = rest_server_ ? rest_server_->auth_manager() : nullptr;
+    if (auth_manager == nullptr) {
+      return;
+    }
+    size_t removed = auth_manager->cleanup_expired_tokens();
+    if (removed > 0) {
+      RCLCPP_DEBUG(get_logger(), "Cleaned up %zu expired refresh token records", removed);
+    }
+  });
+
   // Start REST server with configured host, port, CORS, auth, and TLS
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
                                               rate_limit_config_, tls_config_);
@@ -1633,6 +1856,54 @@ std::string GatewayNode::connectable_host(const std::string & bind_host) {
     return "[" + bind_host + "]";
   }
   return bind_host;
+}
+
+void GatewayNode::apply_effective_auth_parameters(bool auth_enabled, const std::string & require_auth_for) {
+  // Introspection has to agree with enforcement.
+  //
+  // The environment decides the posture, and the parameters hold whatever the
+  // params file said until this writes the decision back. Without it `ros2
+  // param get auth.enabled` reports the file on a gateway refusing every
+  // request, so an operator reading the parameters to find out how a container
+  // is running is told the opposite of the truth.
+  //
+  // No secret is written back here or anywhere. auth.jwt_secret, auth.clients
+  // and aggregation.peer_auth_header are declared with a sentinel and
+  // `ignore_override` at the top of the constructor, in every auth state, and
+  // the guard below keeps them so.
+  std::vector<rclcpp::Parameter> effective;
+  effective.emplace_back("auth.enabled", auth_enabled);
+  effective.emplace_back("auth.require_auth_for", require_auth_for);
+
+  for (const auto & parameter : effective) {
+    // One at a time, so a rejected parameter names itself. set_parameters()
+    // reports per-parameter results that are easy to drop on the floor.
+    auto result = set_parameter(parameter);
+    if (!result.successful) {
+      RCLCPP_WARN(get_logger(), "Could not write back %s: %s", parameter.get_name().c_str(), result.reason.c_str());
+    }
+  }
+
+  // Registered AFTER the write-back above, which is the only writer this node
+  // has for these. Everything after this point is somebody outside asking for a
+  // runtime change the gateway cannot make: the auth configuration and the
+  // peer bearer are read once at construction and handed to AuthManager,
+  // RESTServer, the route table and AggregationManager, so accepting a set
+  // would report a change nobody applied - and for the three secrets it would
+  // also put a value where only a sentinel is served.
+  auth_parameter_guard_ = add_on_set_parameters_callback([](const std::vector<rclcpp::Parameter> & parameters) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    for (const auto & parameter : parameters) {
+      const std::string & name = parameter.get_name();
+      if (name.rfind("auth.", 0) == 0 || name == "aggregation.peer_auth_header") {
+        result.successful = false;
+        result.reason = name + " is read at start; restart the gateway with the new configuration";
+        return result;
+      }
+    }
+    return result;
+  });
 }
 
 void GatewayNode::log_startup_summary() {

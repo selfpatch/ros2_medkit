@@ -122,6 +122,19 @@ class RESTServer {
   std::unique_ptr<AuthMiddleware> auth_middleware_;
   std::unique_ptr<RateLimiter> rate_limiter_;
 
+ public:
+  /// The manager holding this server's clients and refresh records, or nullptr
+  /// while authentication is off.
+  ///
+  /// Borrowed, owned here. Exposed so the node can drive the periodic sweep of
+  /// expired refresh records: the store lives for the life of the process and a
+  /// deployment that only ever refreshes tokens reaches no other code that
+  /// would clear it.
+  AuthManager * auth_manager() const {
+    return auth_manager_.get();
+  }
+
+ private:
   // HTTP/HTTPS server manager
   std::unique_ptr<HttpServerManager> http_server_;
 

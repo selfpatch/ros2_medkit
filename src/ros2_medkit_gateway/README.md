@@ -1507,10 +1507,10 @@ TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **d
 | `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
 | `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
 | `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
-| `server.tls.ca_file`         | string | `""`    | Optional CA certificate (reserved for future mutual TLS support).          |
+| `server.tls.ca_file`         | string | `""`    | CA that signs CLIENT certificates. Setting it enables mutual TLS and REQUIRES a client certificate from every caller. |
 | `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
 
-> **Note:** Mutual TLS (client certificate verification) is planned for a future release.
+> **Note:** Mutual TLS is available: set `server.tls.ca_file`.
 
 **Roles and Permissions:**
 

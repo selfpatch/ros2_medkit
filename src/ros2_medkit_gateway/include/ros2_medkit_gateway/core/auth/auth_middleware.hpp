@@ -90,6 +90,54 @@ class AuthMiddleware {
   AuthMiddlewareResult process(const AuthRequest & request) const;
 
   /**
+   * @brief Whether this route needs a credential at all
+   *
+   * The same question `process` asks first, exposed so a caller that has to
+   * decide something BEFORE running `process` - the rate limiter, choosing
+   * whether it may answer - reads the one policy object, so there is a single
+   * copy of the rule.
+   *
+   * @param request The HTTP request abstraction
+   * @return true if the route requires authentication
+   */
+  bool requires_authentication(const AuthRequest & request) const;
+
+  /**
+   * @brief Whether an exhausted limiter answers before the token is verified
+   *
+   * Verifying a signature is the expensive half of `process`, and an
+   * over-limit caller is one the gateway has already decided to refuse. So
+   * when all three hold - the allowance is gone, the caller presented an
+   * Authorization header, and the route needs one - the 429 is the answer and
+   * the verifier never runs.
+   *
+   * The header is what separates the two refusals, and the test is its
+   * PRESENCE: the value is never parsed here, so a `Basic` header or a bare
+   * word takes this path exactly as a bearer does. With no header at all,
+   * `process` short-circuits before it extracts or verifies anything, so the
+   * anonymous 401 already costs nothing and stays the answer.
+   *
+   * The 429 this produces reports the refusal and nothing else - no
+   * `Retry-After`, no `X-RateLimit-*` - because nothing about the caller has
+   * been verified at this point. Limiter state reaches a caller the gateway
+   * accepted, or one on a route needing no credential, and those are answered
+   * further down.
+   *
+   * @param rate_limited                  The allowance for this caller is gone
+   * @param has_authorization_header      The caller sent an Authorization header
+   * @param route_requires_authentication The route needs a credential
+   * @return true if the limiter answers and the verifier is skipped
+   *
+   * @note The caller evaluates the third argument only when the first two
+   *       hold; the route lookup is work this predicate cannot avoid once it
+   *       has been done.
+   */
+  static bool rate_limit_precedes_validation(bool rate_limited, bool has_authorization_header,
+                                             bool route_requires_authentication) {
+    return rate_limited && has_authorization_header && route_requires_authentication;
+  }
+
+  /**
    * @brief Extract bearer token from Authorization header
    * @param auth_header The Authorization header value
    * @return Token string if valid Bearer format, nullopt otherwise
