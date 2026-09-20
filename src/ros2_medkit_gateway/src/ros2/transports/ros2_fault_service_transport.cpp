@@ -102,6 +102,9 @@ Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node
   // race against the calling thread destroying the response shared_ptr - both
   // happen inline on the caller's thread inside spin_until_future_complete().
   client_node_ = std::make_shared<rclcpp::Node>(std::string(node_->get_name()) + "_fault_clients");
+  // Joins the graph listener while the context is valid. A first join after
+  // rclcpp::shutdown() half-registers the node and ~NodeGraph aborts.
+  static_cast<void>(client_node_->get_graph_event());
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(client_node_);
 

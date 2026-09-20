@@ -70,15 +70,50 @@ deadlock:rclcpp::Context*
 # rclcpp GenericClient: std::future shared state racing between the
 # executor thread that fulfils the response promise (_M_do_set ->
 # unique_ptr::swap) and the caller thread reading via future::get().
-# The happens-before is established by rclcpp's pthread_once around
-# _State_baseV2::wait, but TSan does not see pthread_once as
-# synchronisation when the wait completes after the promise was
-# already satisfied. Suppress the standard-library frames that surface
-# the rclcpp/glibc internal synchronisation - the race lives in the
-# stdc++ future implementation, not in our handlers.
+# The setter runs under libstdc++'s call_once and then release-stores
+# _State_baseV2::_M_status; wait() synchronises against that with an
+# acquire load on the same atomic. TSan does model call_once and atomic
+# acquire/release, but for GenericClient the setter chain
+# (handle_response -> promise::set_value -> _M_set_result) is compiled
+# into librclcpp, so the release store is uninstrumented and that side
+# of the edge is invisible to it - the race lives in the rclcpp/glibc
+# internal synchronisation, not in our handlers. rclcpp::Client<T>'s own
+# handle_response is a header template instantiated in our binaries,
+# where the same store IS instrumented, so these reports do not arise
+# there. Suppress the standard-library frames that surface the
+# GenericClient case.
 race:std::__future_base::_State_baseV2*
 race:std::__uniq_ptr_impl*_Result_base*
 race:std::unique_ptr*_Result_base*
+# Same shared state, its _Result object rather than the state itself. The
+# executor thread drops the last reference to a client future's shared
+# state, and the report shows the freeing frame unsymbolized inside
+# librclcpp. TSan intercepts the operator delete, since that is instrumented
+# in the allocator, but never saw the acquire on the shared_ptr refcount
+# that would have ordered it after the caller's read, so it pairs the free
+# with the caller's read of _Result_base::_M_error inside _M_get_result.
+# Anchored on rclcpp::detail::FutureAndRequestId::get() (client.hpp): it is
+# the read side of this report, and of any get() through the wrapper, it is
+# header code compiled into our binaries so it is always symbolized, and it
+# names exactly the class - a future rclcpp handed us for a client request -
+# without matching any std::future the gateway builds itself (run_sync, the
+# aggregation and configuration fan-outs, the topic sampler). The pattern is
+# anchored on ::get() rather than left open at the end: the wrapper's other
+# members (the destructor, wait_for) are deliberately not matched here - a
+# report on them would be a different report and gets its own line with its
+# own evidence. A module pattern such as race:librclcpp.so would also match
+# the unsymbolized frame - TSan matches function, file and module name as an
+# unanchored substring - but it would suppress every report with any
+# librclcpp frame on either stack, ours or not.
+race:rclcpp::detail::FutureAndRequestId*::get()
+# On Humble, rclcpp::GenericClient does not exist (Iron+ only); the
+# gateway's own compat::GenericServiceClient stands in for it
+# (generic_client_compat.hpp), and its FutureAndRequestId::get() is the
+# same read through the same library state as the pattern above. Named
+# explicitly rather than left to the general rule above - the same
+# narrow, named exception to the "never suppress our code" rule as the
+# OperationManager::call_service suppression below.
+race:ros2_medkit_gateway::compat::GenericServiceClient::FutureAndRequestId::get()
 
 # rclcpp GenericClient response staging: the executor thread fills the
 # generic response via rclcpp::GenericClient::create_response() before
@@ -117,7 +152,8 @@ race:rclcpp::GenericClient::create_response*
 # racing WRITES live in rclcpp/libstdc++ (create_response, std::string mutate);
 # our OperationManager::call_service frame is only the consumer of a value the
 # std::future contract hands us once the promise is satisfied - the
-# happens-before that rclcpp establishes via pthread_once is invisible to TSan.
+# release-store side of that handoff runs inside uninstrumented librclcpp,
+# so TSan never sees it and pairs the write with our read instead.
 # We must match on this frame because the adjacent librclcpp create_response
 # frame is frequently UNSYMBOLIZED (<null> at librclcpp.so+0x14xxxx), so the
 # create_response symbol line above does not catch those reports. A library
