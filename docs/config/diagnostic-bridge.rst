@@ -37,7 +37,19 @@ The diagnostic bridge:
      - SEVERITY_ERROR (2)
    * - STALE
      - FAILED
-     - SEVERITY_ERROR (2)
+     - ``stale_severity``, SEVERITY_CRITICAL (3) by default
+
+.. warning::
+
+   This table previously documented STALE as SEVERITY_ERROR. The bridge has always sent
+   SEVERITY_CRITICAL, and CRITICAL **bypasses debounce** in the fault manager, so a STALE
+   status confirms a CRITICAL fault on its first sample.
+
+   That matters because STALE is the one level a node can reach by design: a GPS goes STALE
+   in every tunnel, an IMU reports covariance -1 while it settles. Left unconfigured, every
+   such outage is a confirmed CRITICAL fault. Use ``stale_severity`` to set the level, or
+   ``stale_severity_overrides`` to name just the sources that go STALE on purpose; those
+   statuses then debounce like any other.
 
 Parameters
 ----------
@@ -49,6 +61,9 @@ Parameters
        diagnostics_topic: "/diagnostics"   # Topic to subscribe to
        auto_generate_codes: true           # Auto-generate fault codes from names
        keyvalue_codes: ["fault_code"]      # Take the code from these key-value keys
+       stale_severity: "WARN"              # What a STALE status reports at
+       # Per-source, longest matching prefix wins:
+       "stale_severity_overrides.gps": "WARN"
 
 .. list-table::
    :header-rows: 1
@@ -71,6 +86,57 @@ Parameters
        as its value, so a publisher can name its own code instead of relying on
        a mapping. Checked after ``name_to_code`` and before auto-generation.
        Empty strings in the list are ignored.
+   * - ``stale_severity``
+     - ``CRITICAL``
+     - Severity a STALE status reports at, one of ``INFO``, ``WARN``, ``ERROR``,
+       ``CRITICAL`` (case-insensitive). Applies to STALE only: the other levels are
+       facts about the status, not deployment decisions. A name that does not parse
+       is reported and ``CRITICAL`` is used.
+   * - ``stale_severity_overrides.<name>``
+     - ``-``
+     - Severity for STALE statuses whose name starts with ``<name>``. Diagnostic names
+       are conventionally ``<component>: <check>``, so a component prefix covers every
+       check it publishes. The **longest matching prefix** wins. An override that does
+       not parse is reported and **ignored**, leaving ``stale_severity`` in force -
+       applying ``CRITICAL`` to a typo would restore the immediate-confirm behaviour the
+       operator was configuring their way out of.
+
+Evidence
+--------
+
+A FAILED report carries the ``DiagnosticStatus`` key-values to the fault manager, which keeps
+them in the fault's freeze frame and serves them from
+``GET /api/v1/apps/{app}/faults/{code}``:
+
+.. code-block:: console
+
+   $ curl -s localhost:8080/api/v1/apps/sensor_fusion/faults/FUSION_DIVERGED | jq '.environment_data.snapshots[0].data | fromjson'
+   {
+     "x-reported": {
+       "rejected_fixes": "37",
+       "nis": "0.03"
+     }
+   }
+
+A node that publishes outlier counts and gate statistics has already computed why it is
+unhappy; before this the bridge read those values only to pick a fault code and dropped the
+rest, so the fault record said a node complained but not what it saw.
+
+Evidence is written on **every** FAILED report, not only the one that confirms the fault, so a
+code that keeps approaching confirmation without reaching it still carries the numbers behind
+its near misses.
+
+The frame's other keys are topic names sampled by the fault manager, always fully qualified
+and so always starting with ``/``. ``x-reported`` cannot collide with one, which is what lets
+a reader tell a value the reporter asserted from one the fault manager sampled.
+
+.. note::
+
+   Evidence is bounded per fault code: at most 32 entries, and values longer than 512
+   characters are dropped whole rather than truncated, because half a number read back later
+   is worse than a logged absence. Drops are reported with a throttled warning and the fault
+   is recorded either way. A key already stored can always be updated, so a steady reporter
+   at the bound can still refresh its own numbers.
 
 Custom Fault Code Mappings
 --------------------------

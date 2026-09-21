@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
@@ -136,6 +137,44 @@ struct FreezeFrameData {
   std::string data;  ///< Compact JSON object: {"<topic>": <value>, ...}
   int64_t captured_at_ns{0};
 };
+
+/// Key inside the freeze-frame JSON object under which reporter-supplied evidence is kept.
+///
+/// The frame's other keys are ROS topic names, which are always fully qualified and so
+/// always start with '/'. This name cannot collide with one, which is what lets a reader
+/// tell a value the reporter asserted from one the fault manager sampled off a topic.
+inline constexpr const char * kReportedEvidenceKey = "x-reported";
+
+/// Most evidence entries kept for one fault code. A reporter publishing at 10 Hz must not
+/// be able to grow the fault store without limit, and a fault explained by more than this
+/// many numbers is not explained by them.
+inline constexpr size_t kMaxEvidenceEntries = 32;
+
+/// Longest evidence value kept, in characters. Longer values are dropped whole rather than
+/// truncated: half a number read back later is worse than a logged absence.
+inline constexpr size_t kMaxEvidenceValueChars = 512;
+
+/// Merge reporter-supplied evidence into a freeze-frame JSON document.
+///
+/// @param frame_json Existing frame ("" or invalid JSON is treated as an empty object).
+/// @param evidence Key-value pairs from the report, in arrival order.
+/// @param dropped Set to the number of entries rejected by the bounds above.
+/// @return The frame with the evidence merged under kReportedEvidenceKey. Later reports
+///         update the keys they name and leave the rest, so a fault accumulates what its
+///         sources said rather than keeping only the last report's view.
+std::string merge_reported_evidence(const std::string & frame_json,
+                                    const std::vector<std::pair<std::string, std::string>> & evidence,
+                                    size_t & dropped);
+
+/// Carry reporter evidence from an existing frame into a newly built one.
+///
+/// A confirmation capture rebuilds the frame from the topics it sampled and would otherwise
+/// drop evidence reported before it. Ordering decides which of the two writes lands last, so
+/// the capture path must preserve rather than replace.
+std::string preserve_reported_evidence(const std::string & frame_json, const std::string & previous_json);
+
+/// Whether a freeze-frame document carries reporter evidence.
+bool has_reported_evidence(const std::string & frame_json);
 
 /// Derive a recording's public identity from its bag path: the directory basename,
 /// `fault_<CODE>_<millis>`. Faults of one burst share a recording and therefore share

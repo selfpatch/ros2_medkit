@@ -818,6 +818,14 @@ void FaultManagerNode::handle_report_fault(
 
   response->accepted = true;
 
+  // Keep the numbers the reporter had when it decided the condition held. Written on every
+  // FAILED report, not only on the one that confirms: a fault that never confirms still owes
+  // its near-miss series an explanation, and a reporter that stops publishing after the first
+  // report would otherwise leave nothing behind.
+  if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED && !request->evidence.empty()) {
+    store_reported_evidence(request->fault_code, request->evidence, event_time);
+  }
+
   // Get updated fault state to publish event
   auto fault_after = storage_->get_fault(request->fault_code);
   if (fault_after) {
@@ -1135,8 +1143,14 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   // With retention on, snapshots never run out, so "none left" would never fire and the frame -
   // which is the state at the MOST RECENT confirmation - would stay hidden behind snapshots of
   // earlier occurrences. Serve it in that case too.
-  if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
-    auto frame = storage_->get_freeze_frame(request->fault_code);
+  //
+  // A frame carrying reporter evidence is served whatever the snapshots are doing. The gate
+  // above exists because a frame of sampled topic values duplicates the snapshots beside it;
+  // evidence the reporter asserted is not in them at all, so withholding it would lose the
+  // only record of the numbers behind the fault.
+  auto frame = storage_->get_freeze_frame(request->fault_code);
+  const bool frame_carries_evidence = frame && has_reported_evidence(frame->data);
+  if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear() || frame_carries_evidence) {
     if (frame) {
       ros2_medkit_msgs::msg::Snapshot snapshot;
       snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
@@ -1698,6 +1712,40 @@ DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id) c
   // config that violates confirmation_threshold < 0 <= healing_threshold (the counter would stick).
   sanitize_debounce_config(config);
   return config;
+}
+
+void FaultManagerNode::store_reported_evidence(const std::string & fault_code,
+                                               const std::vector<diagnostic_msgs::msg::KeyValue> & evidence,
+                                               const rclcpp::Time & event_time) {
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(evidence.size());
+  for (const auto & kv : evidence) {
+    pairs.emplace_back(kv.key, kv.value);
+  }
+
+  auto existing = storage_->get_freeze_frame(fault_code);
+  const std::string base = existing ? existing->data : std::string{};
+
+  size_t dropped = 0;
+  FreezeFrameData frame;
+  frame.fault_code = fault_code;
+  frame.data = merge_reported_evidence(base, pairs, dropped);
+  // The frame's timestamp is when its contents were last established, and this write
+  // establishes some of them. A capture on a later confirm moves it again.
+  frame.captured_at_ns = event_time.nanoseconds();
+  storage_->store_freeze_frame(frame);
+
+  if (dropped > 0) {
+    // Throttled: a reporter that trips a bound trips it on every report, and the operator
+    // needs to see it periodically, not once per event. Local Clock copy because
+    // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue on Humble/Lyrical; the throttle
+    // state is a static at the call site, so the copy costs nothing.
+    rclcpp::Clock throttle_clock(*get_clock());
+    RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 60000,
+                         "Dropped %zu evidence entry/entries for fault '%s': at most %zu entries are kept per code "
+                         "and a value may not exceed %zu characters. The fault is recorded either way.",
+                         dropped, fault_code.c_str(), kMaxEvidenceEntries, kMaxEvidenceValueChars);
+  }
 }
 
 }  // namespace ros2_medkit_fault_manager
