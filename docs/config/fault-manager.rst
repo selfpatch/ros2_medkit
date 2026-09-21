@@ -221,11 +221,103 @@ threshold overrides:
 
    When multiple entities report the same ``fault_code``, each event applies the
    thresholds resolved from that event's ``source_id``. This means the debounce
-   behavior follows the reporting entity, not the fault.
+   behavior follows the reporting entity, not the fault. The debounce counter,
+   however, belongs to the fault code, so the two entities share one counter under
+   two policies - see `Per-Fault-Code Thresholds`_ for what that does and how to
+   settle it. The node warns when it happens.
 
    ``auto_confirm_after_sec`` is global-only and cannot be overridden per-entity.
    Critical faults skip debounce and confirm on their first occurrence; that is
    built in, not a parameter, so it can be neither disabled nor set per entity.
+
+Per-Fault-Code Thresholds
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Per-entity thresholds are the right tool when you know which subsystems are noisy but not
+which codes they will emit. They have one limit: the debounce counter is kept per
+``fault_code``, while the override is chosen per ``source_id``. Two entities reporting one
+code therefore share a counter and debounce it under two policies, and the report that
+happens to arrive decides the transition:
+
+.. code-block:: text
+
+   motor  (confirmation_threshold=-5) reports OVERHEAT -> counter=-1, PREFAILED
+   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-2, CONFIRMED
+
+The motor's policy was bypassed. Per-fault_code thresholds are the layer that removes
+that: they are matched on the code itself, so they resolve the same whoever reports.
+
+.. code-block:: yaml
+
+   fault_manager:
+     ros__parameters:
+       # Path to YAML file with per-fault_code overrides
+       fault_thresholds:
+         config_file: "/etc/ros2_medkit/fault_thresholds.yaml"
+
+The file is a map of fault codes to threshold overrides, the same three fields an entity
+override carries:
+
+.. code-block:: yaml
+
+   # fault_thresholds.yaml
+   MOTOR_OVERHEAT:
+     confirmation_threshold: -5    # five events, whoever reports them
+     healing_threshold: 10
+
+   LIDAR_FAIL:
+     confirmation_threshold: -1    # instant
+     healing_threshold: 1
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``fault_thresholds.config_file``
+     - ``""``
+     - Path to YAML file with per-fault_code threshold overrides. Empty = disabled.
+
+**How the layers combine:**
+
+- Three layers, each applied on top of the last: the **global** defaults, then the
+  **entity** override whose prefix matches the reporting ``source_id``, then the
+  **fault code's** own override. A field a layer does not set is left as the layer below
+  had it, so ``fault_code`` > ``source_id`` > global for every field independently.
+- Matching on the code is **exact**. A fault code is an identifier, not a path: an entry
+  for ``MOTOR`` does not capture ``MOTOR_OVERHEAT`` the way ``/sensors`` captures
+  ``/sensors/lidar``.
+- A code that is not listed resolves exactly as it did before: entity override if one
+  matches, global otherwise. The layer is opt-in and changes nothing on its own.
+- Like the entity file, this one is loaded once at node startup. Changes require a restart.
+
+.. note::
+
+   An override that names only some fields settles only those. If ``MOTOR_OVERHEAT`` pins
+   ``confirmation_threshold`` but not ``healing_threshold``, the healing direction still
+   follows whichever entity reported, and the node still reports the conflict below. Pin
+   all three fields to settle a code completely.
+
+**When one code is debounced two ways**
+
+The node resolves the policy for every report, and warns the first time two sources resolve
+different policies for one code:
+
+.. code-block:: text
+
+   [WARN] Fault code 'OVERHEAT' is debounced two ways: '/powertrain/motor/left' resolves
+   confirmation=-5 healing_enabled=false healing=10, '/sensors/lidar/front' resolves
+   confirmation=-1 healing_enabled=true healing=1. The debounce counter belongs to the
+   fault code, so whichever source reports decides the transition and the other policy is
+   bypassed. Give the code an entry in fault_thresholds.config_file to settle it.
+
+The warning names both sources and both resolved policies, and is emitted **once per fault
+code** for the life of the node, so a busy reporter does not turn it into a log storm. It
+is a diagnostic, not an error: the configuration is legal and the fault is still debounced,
+just not under a policy an operator chose. Giving the code an entry in
+``fault_thresholds.config_file`` that pins all three fields ends it.
 
 Snapshot Configuration
 ----------------------
@@ -636,6 +728,10 @@ Complete Example
        # Per-entity debounce overrides
        entity_thresholds:
          config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
+
+       # Per-fault_code debounce overrides (applied on top of the entity ones)
+       fault_thresholds:
+         config_file: "/etc/ros2_medkit/fault_thresholds.yaml"
 
        # Snapshots
        snapshots:

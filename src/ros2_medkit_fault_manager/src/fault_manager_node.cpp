@@ -327,6 +327,48 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     }
   }
 
+  // Load per-fault_code threshold overrides (optional). Applied after the entity layer, so a
+  // code listed here debounces the same whichever source reports it.
+  auto fault_thresholds_file = declare_parameter<std::string>("fault_thresholds.config_file", "");
+  if (!fault_thresholds_file.empty()) {
+    auto entries = FaultCodeThresholdResolver::load_from_yaml(fault_thresholds_file);
+    // Same field-by-field merge as the entity layer, so the same validation: an override can
+    // break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
+    // Checked against the global config, which is the base when no entity override matches.
+    for (auto & entry : entries) {
+      DebounceConfig merged = global_config_;
+      if (entry.confirmation_threshold) {
+        merged.confirmation_threshold = *entry.confirmation_threshold;
+      }
+      if (entry.healing_threshold) {
+        merged.healing_threshold = *entry.healing_threshold;
+      }
+      if (!sanitize_debounce_config(merged)) {
+        RCLCPP_WARN(get_logger(),
+                    "Fault code '%s' debounce thresholds invalid (need confirmation_threshold < 0 <= "
+                    "healing_threshold); using safe defaults",
+                    entry.fault_code.c_str());
+        if (entry.confirmation_threshold) {
+          entry.confirmation_threshold = merged.confirmation_threshold;
+        }
+        if (entry.healing_threshold) {
+          entry.healing_threshold = merged.healing_threshold;
+        }
+      }
+    }
+    if (!entries.empty()) {
+      fault_code_resolver_ = std::make_unique<FaultCodeThresholdResolver>(std::move(entries));
+      RCLCPP_INFO(get_logger(), "Loaded %zu per-fault_code threshold overrides from %s", fault_code_resolver_->size(),
+                  fault_thresholds_file.c_str());
+      if (auto_confirm_after_sec_ > 0.0) {
+        RCLCPP_WARN(get_logger(),
+                    "Per-fault_code thresholds are configured but auto_confirm_after_sec=%.1f is also set. "
+                    "Auto-confirmation will bypass fault-code debounce policies for PREFAILED faults.",
+                    auto_confirm_after_sec_);
+      }
+    }
+  }
+
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
       "~/report_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
@@ -807,9 +849,10 @@ void FaultManagerNode::handle_report_fault(
   auto fault_before = storage_->get_fault(request->fault_code);
   std::string status_before = fault_before ? fault_before->status : "";
 
-  // Resolve per-entity debounce config (longest-prefix match on source_id)
-  // TODO(#276): warn when different entities resolve different configs for the same fault_code
-  auto resolved_config = resolve_config(request->source_id);
+  // Resolve the debounce config: global, then the entity override matching
+  // source_id, then the fault code's own override.
+  auto resolved_config = resolve_config(request->source_id, request->fault_code);
+  warn_on_conflicting_debounce_policy(request->fault_code, request->source_id, resolved_config);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
   const rclcpp::Time event_time = get_wall_clock_time();
@@ -1689,15 +1732,43 @@ bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting
   return false;
 }
 
-DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id) const {
+DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id, const std::string & fault_code) const {
   DebounceConfig config = global_config_;
   if (threshold_resolver_) {
     config = threshold_resolver_->resolve(source_id, global_config_);
+  }
+  // The fault code is the last layer: it is what the debounce counter belongs to, so an
+  // override on it settles the policy whichever source reported.
+  if (fault_code_resolver_) {
+    config = fault_code_resolver_->resolve(fault_code, config);
   }
   // Defensive: the merged config is validated at load time, but never hand the storage backend a
   // config that violates confirmation_threshold < 0 <= healing_threshold (the counter would stick).
   sanitize_debounce_config(config);
   return config;
+}
+
+void FaultManagerNode::warn_on_conflicting_debounce_policy(const std::string & fault_code,
+                                                           const std::string & source_id,
+                                                           const DebounceConfig & resolved) {
+  auto [it, inserted] =
+      debounce_policy_witness_.try_emplace(fault_code, DebouncePolicyWitness{resolved, source_id, false});
+  if (inserted || it->second.warned || debounce_policy_equal(it->second.config, resolved)) {
+    return;
+  }
+
+  // One counter, two policies: the report that arrives decides the transition, so the other
+  // source's debounce policy is bypassed for as long as both report this code.
+  it->second.warned = true;
+  RCLCPP_WARN(get_logger(),
+              "Fault code '%s' is debounced two ways: '%s' resolves confirmation=%d healing_enabled=%s healing=%d, "
+              "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the fault "
+              "code, so whichever source reports decides the transition and the other policy is bypassed. Give the "
+              "code an entry in fault_thresholds.config_file to settle it for every source.",
+              fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
+              it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold,
+              source_id.c_str(), resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false",
+              resolved.healing_threshold);
 }
 
 }  // namespace ros2_medkit_fault_manager

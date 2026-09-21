@@ -57,7 +57,7 @@ add_library(fault_manager_lib STATIC
   src/correlation/config_parser.cpp
   src/correlation/pattern_matcher.cpp
   src/correlation/correlation_engine.cpp
-  src/entity_threshold_resolver.cpp
+  src/threshold_resolver.cpp
 )
 
 target_include_directories(fault_manager_lib PUBLIC
@@ -173,6 +173,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_entity_thresholds fault_manager_lib)
   medkit_target_dependencies(test_entity_thresholds rclcpp ros2_medkit_msgs)
 
+  # Fault-code threshold resolver tests
+  medkit_add_gtest(test_fault_code_thresholds test/test_fault_code_thresholds.cpp)
+  target_link_libraries(test_fault_code_thresholds fault_manager_lib)
+  medkit_target_dependencies(test_fault_code_thresholds rclcpp ros2_medkit_msgs)
+
   # Integration tests
   install(DIRECTORY test
     DESTINATION share/${PROJECT_NAME}
@@ -191,6 +196,9 @@ if(BUILD_TESTING)
 
   medkit_add_launch_test(test_entity_thresholds_integration test/integration/test_entity_thresholds_integration.test.py
     TIMEOUT 60 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_code_thresholds_integration
+    test/integration/test_fault_code_thresholds_integration.test.py TIMEOUT 60 LABELS "integration")
 
   # Drives healing with the event counts a one-event-per-transition reporter
   # actually sends: one FAILED per raise, one PASSED per clear. Parametrized over
