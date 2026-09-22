@@ -86,7 +86,9 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
   }
 
   // Continue the sequence the store already holds; see capture_seq_.
-  capture_seq_.store(storage_->get_max_capture_id());
+  if (!seed_capture_seq()) {
+    RCLCPP_WARN(node_->get_logger(), "Fault storage unavailable: snapshot capture ids are seeded on the first capture");
+  }
 
   // Compile regex patterns for performance
   size_t failed_patterns = 0;
@@ -121,6 +123,23 @@ SnapshotCapture::~SnapshotCapture() {
   background_subscriptions_.clear();
 }
 
+bool SnapshotCapture::seed_capture_seq() {
+  if (capture_seq_seeded_.load()) {
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(capture_seq_seed_mutex_);
+  if (capture_seq_seeded_.load()) {
+    return true;
+  }
+  try {
+    capture_seq_.store(storage_->get_max_capture_id());
+  } catch (const FaultStorage::IgnorableConnectionException &) {
+    return false;
+  }
+  capture_seq_seeded_.store(true);
+  return true;
+}
+
 void SnapshotCapture::capture(const std::string & fault_code) {
   if (!config_.enabled) {
     RCLCPP_DEBUG(node_->get_logger(), "Snapshot capture disabled, skipping for fault '%s'", fault_code.c_str());
@@ -143,6 +162,12 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     // subscriptions are created. A freeze-frame lookup for such a fault returns not-found
     // (get_freeze_frame() == nullopt); absence of a row means "no capture configured".
     RCLCPP_DEBUG(node_->get_logger(), "No topics configured for fault '%s'", fault_code.c_str());
+    return;
+  }
+
+  if (!seed_capture_seq()) {
+    RCLCPP_WARN(node_->get_logger(), "Skipping snapshot capture for fault '%s': fault storage unavailable",
+                fault_code.c_str());
     return;
   }
 

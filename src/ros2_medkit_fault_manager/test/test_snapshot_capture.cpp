@@ -35,6 +35,34 @@ using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::SnapshotCapture;
 using ros2_medkit_fault_manager::SnapshotConfig;
 
+namespace {
+
+/// Runs the ready work of @p node once. rclcpp::spin_some(node) is deprecated on Lyrical.
+void spin_some_once(const rclcpp::Node::SharedPtr & node) {
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin_some();
+  executor.remove_node(node);
+}
+
+/// Waits until the graph reports a type for @p topic. A background subscription is created only
+/// when the constructor resolves the type, and a publisher created on this node reaches the graph
+/// some time after create_publisher returns.
+void await_topic_type(const rclcpp::Node::SharedPtr & node, const std::string & topic) {
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    const auto names_and_types = node->get_topic_names_and_types();
+    const auto it = names_and_types.find(topic);
+    if (it != names_and_types.end() && !it->second.empty()) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  FAIL() << "the graph never reported a type for " << topic;
+}
+
+}  // namespace
+
 class SnapshotCaptureTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -259,6 +287,10 @@ struct ScopedPublisherThread {
       thread.join();
     }
   }
+  ScopedPublisherThread(const ScopedPublisherThread &) = delete;
+  ScopedPublisherThread & operator=(const ScopedPublisherThread &) = delete;
+  ScopedPublisherThread(ScopedPublisherThread &&) = delete;
+  ScopedPublisherThread & operator=(ScopedPublisherThread &&) = delete;
 };
 
 // @verifies REQ_INTEROP_088
@@ -369,8 +401,10 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
     }
   });
 
-  // The publisher already exists on this node, so the topic type is resolvable
-  // when the constructor sets up the background subscription.
+  // The constructor sets up the background subscription only for a topic whose type the graph
+  // already carries, so wait for it before constructing.
+  await_topic_type(node_, "/plc/temperature");
+
   SnapshotConfig config;
   config.enabled = true;
   config.background_capture = true;
@@ -382,7 +416,7 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
   bool got_frame = false;
   auto start = std::chrono::steady_clock::now();
   while (!got_frame && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
-    rclcpp::spin_some(node_);
+    spin_some_once(node_);
     capture.capture("PLC_TEMP_HIGH");
     auto frame = storage_->get_freeze_frame("PLC_TEMP_HIGH");
     got_frame = frame.has_value() && frame->data != "{}";
@@ -686,6 +720,70 @@ TEST_F(SnapshotCaptureTest, CaptureIdContinuesFromWhatStorageAlreadyHolds) {
   capture.capture("SEEDED_FAULT");
 
   const auto rows = storage_->get_snapshots("SEEDED_FAULT");
+  ASSERT_FALSE(rows.empty());
+  EXPECT_GT(rows.front().capture_id, 41) << "the new capture outranks everything already stored";
+}
+
+/// In-memory store whose capture-id lookup fails while `reachable` is false, as the PostgreSQL
+/// backend does while its server is down.
+class UnreachableAtStartStorage : public InMemoryFaultStorage {
+ public:
+  int64_t get_max_capture_id() const override {
+    if (!reachable) {
+      throw ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException("database unreachable");
+    }
+    return InMemoryFaultStorage::get_max_capture_id();
+  }
+
+  bool reachable = true;
+};
+
+// A store that cannot answer at construction is seeded on the first capture, so the new capture
+// still outranks what the store already holds.
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, CaptureIdIsSeededOnTheFirstCaptureWhenTheStoreWasUnreachable) {
+  UnreachableAtStartStorage storage;
+  storage.set_max_snapshots_per_fault(0);
+
+  ros2_medkit_fault_manager::SnapshotData earlier;
+  earlier.fault_code = "SOMETHING_ELSE";
+  earlier.topic = "/old";
+  earlier.message_type = "std_msgs/msg/Float64";
+  earlier.data = R"({"data": 1.0})";
+  earlier.captured_at_ns = 1;
+  earlier.capture_id = 41;
+  storage.store_snapshots({earlier});
+
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>("/plc/late_seed", rclcpp::QoS(10));
+
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = false;
+  config.timeout_sec = 5.0;
+  config.fault_specific["LATE_SEED_FAULT"] = {"/plc/late_seed"};
+
+  storage.reachable = false;
+  std::unique_ptr<SnapshotCapture> capture;
+  ASSERT_NO_THROW(capture = std::make_unique<SnapshotCapture>(node_.get(), &storage, config));
+
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 3.0;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  await_publisher(node_, "/plc/late_seed");
+  confirm_fault(&storage, "LATE_SEED_FAULT");
+
+  // Still unreachable: no capture runs with an unseeded counter.
+  capture->capture("LATE_SEED_FAULT");
+  EXPECT_TRUE(storage.get_snapshots("LATE_SEED_FAULT").empty());
+
+  storage.reachable = true;
+  capture->capture("LATE_SEED_FAULT");
+  const auto rows = storage.get_snapshots("LATE_SEED_FAULT");
   ASSERT_FALSE(rows.empty());
   EXPECT_GT(rows.front().capture_id, 41) << "the new capture outranks everything already stored";
 }

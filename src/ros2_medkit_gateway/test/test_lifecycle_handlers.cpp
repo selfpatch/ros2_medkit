@@ -328,6 +328,8 @@ class EntityDetailStatusLinkTest : public ::testing::Test {
     }
   }
 
+  // Shut the default context down before exit(). Its destructor would otherwise call
+  // Context::shutdown() after exit() has destroyed rclcpp's thread_local state for this thread.
   static void TearDownTestSuite() {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
@@ -473,6 +475,8 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
     }
   }
 
+  // Shut the default context down before exit(). Its destructor would otherwise call
+  // Context::shutdown() after exit() has destroyed rclcpp's thread_local state for this thread.
   static void TearDownTestSuite() {
     if (rclcpp::ok()) {
       rclcpp::shutdown();

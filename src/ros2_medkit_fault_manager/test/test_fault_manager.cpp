@@ -55,6 +55,18 @@ using ros2_medkit_msgs::srv::GetFault;
 using ros2_medkit_msgs::srv::ListFaultsForEntity;
 using ros2_medkit_msgs::srv::ReportFault;
 
+namespace {
+
+/// Runs the ready work of @p node once. rclcpp::spin_some(node) is deprecated on Lyrical.
+void spin_some_once(const rclcpp::Node::SharedPtr & node) {
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin_some();
+  executor.remove_node(node);
+}
+
+}  // namespace
+
 /// Default debounce config for tests (matches DebounceConfig defaults: threshold=-1, no healing)
 static DebounceConfig default_config() {
   return DebounceConfig{};
@@ -1092,8 +1104,8 @@ class FaultEventPublishingTest : public ::testing::Test {
   void spin_for(std::chrono::milliseconds duration) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < duration) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
@@ -1104,8 +1116,8 @@ class FaultEventPublishingTest : public ::testing::Test {
                   std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (predicate()) {
         return true;
       }
@@ -1119,8 +1131,8 @@ class FaultEventPublishingTest : public ::testing::Test {
   bool spin_until_future_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }
@@ -2038,8 +2050,8 @@ class FaultAuditIntegrationTest : public ::testing::Test {
   bool spin_until_ready(FutureT & future) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }
@@ -2261,7 +2273,7 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   bool saw_confirmed = false;
   auto start = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
-    rclcpp::spin_some(node);
+    spin_some_once(node);
     for (const auto & rec : audit->read()) {
       if (rec.event.fault_code == "AUTO_CONF_1" &&
           rec.event.transition == ros2_medkit_fault_manager::kTransitionConfirmed) {
@@ -2910,8 +2922,8 @@ class SnapshotReadPathTest : public ::testing::Test {
   bool spin_until_ready(FutureT & future, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
     const auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
-      rclcpp::spin_some(fault_manager_);
-      rclcpp::spin_some(test_node_);
+      spin_some_once(fault_manager_);
+      spin_some_once(test_node_);
       if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         return true;
       }
