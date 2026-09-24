@@ -237,10 +237,10 @@ class FaultHandlers {
    * per-record route may act on, or the error it answers instead.
    *
    * `records` are the candidates `faults::addressable_records` yields: the
-   * records of the code the entity's fault list shows, or the muted ones when
-   * it shows none. A fault code addresses as many records as there are sources
-   * reporting it, so two candidates mean the entity has not named one. The
-   * route answers 409 `x-medkit-ambiguous-fault` with those owners in
+   * records of the code the entity's fault list shows, else the muted ones,
+   * else the cleared or healed ones. A fault code addresses as many records as
+   * there are sources reporting it, so two candidates mean the entity has not
+   * named one. The route answers 409 `x-medkit-ambiguous-fault` with those owners in
    * `parameters.owners` rather than acting on whichever record the store
    * happened to list first: picking one is the failure the per-record identity
    * exists to remove, and the caller cannot tell from the response which one it
@@ -260,9 +260,9 @@ class FaultHandlers {
    *
    * Lists every status with muted records included, narrows them to this
    * code's candidates with `faults::addressable_records` (the records the
-   * entity's list shows, else its muted ones) and hands those to
-   * `select_scoped_fault`. The owner it returns is what the per-record services
-   * are then called with.
+   * entity's list shows, else its muted ones, else its cleared or healed ones)
+   * and hands those to `select_scoped_fault`. The owner it returns is what the
+   * per-record services are then called with.
    */
   tl::expected<faults::ScopedFault, ErrorInfo> resolve_scoped_fault(const EntityInfo & entity_info,
                                                                     const std::string & fault_code);

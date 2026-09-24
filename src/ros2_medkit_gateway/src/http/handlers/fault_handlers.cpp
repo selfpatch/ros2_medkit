@@ -292,10 +292,10 @@ tl::expected<faults::ScopedFault, ErrorInfo> FaultHandlers::resolve_scoped_fault
   // exists whatever its lifecycle state, and the detail and clear routes have
   // always served a cleared or healed one. Muting is the correlation engine
   // hiding a symptom from the entity's list, not a reason the record stops
-  // being addressable. addressable_records resolves over the records that
-  // list shows first and falls back to the muted ones only when it shows none,
-  // so a muted record never turns the record a client read off the list into
-  // an ambiguous address.
+  // being addressable. addressable_records resolves over the records that list
+  // shows first, then the muted ones, then the cleared or healed ones, so
+  // neither a muted record nor one a source cleared turns the record a client
+  // read off the list into an ambiguous address.
   auto result = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
                                        /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);

@@ -1173,8 +1173,9 @@ void RESTServer::setup_routes() {
         .summary(std::string("Get specific fault for ") + et.singular)
         .description("Returns fault details including SOVD status, environment data, and rosbag snapshots.")
         // 409 (x-medkit-ambiguous-fault) when several sources this entity owns
-        // report the code: each is its own record, so the code does not name
-        // one. 503 when the fault store cannot be read - same branch as the
+        // report the code and none of their records ranks above the others:
+        // each is its own record, so the code does not name one. 503 when the
+        // fault store cannot be read - same branch as the
         // list routes, and equally out of the recorder's reach.
         .errors({409, 503})
         .operation_id(std::string("get") + capitalize(et.singular) + "Fault");

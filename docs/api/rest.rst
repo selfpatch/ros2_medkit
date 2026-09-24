@@ -1389,11 +1389,20 @@ Query and manage faults.
    and on the component hosting both as two items with distinct ``source_id``.
 
    A ``fault_code`` in a URL names a record only when it resolves to exactly one
-   record in the entity's scope. The records the entity's fault list shows are the
-   candidates. That list leaves muted records out, so a muted record is a
-   candidate only when the list shows no record of the code at all: a muted
-   symptom stays addressable by its code, and it never makes the record a client
-   read off the list ambiguous. ``GET`` and ``DELETE`` on
+   record in the entity's scope. The candidates come in three tiers, and the
+   first tier holding any record of the code decides:
+
+   1. the records the entity's fault list shows without a ``status`` parameter,
+      which are the ``PREFAILED`` and ``CONFIRMED`` records that are not muted
+   2. the muted records of those statuses, which that list leaves out only
+      because the correlation engine muted them
+   3. the records the list shows only for ``status=cleared``, ``status=healed``
+      or ``status=all``: ``CLEARED``, ``HEALED`` and ``PREPASSED``
+
+   So a muted symptom, or a record its source cleared, stays addressable by its
+   code while nothing ranks above it, and it never makes the record a client read
+   off the list ambiguous. Once one of two sources has cleared its record, the
+   code names the other one. ``GET`` and ``DELETE`` on
    ``/{entity-path}/faults/{fault_code}`` and the recording download
    ``GET /{entity-path}/bulk-data/rosbags/{fault_code}`` all resolve this way.
    One candidate, and the route acts on it with its owner. Several, and it

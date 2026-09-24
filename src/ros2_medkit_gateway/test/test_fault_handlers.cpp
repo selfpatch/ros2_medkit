@@ -747,6 +747,74 @@ TEST(AddressableRecordsTest, MutedRecordsAnswerOnlyWhenNoneIsShown) {
   EXPECT_EQ(records[1].owner, "tank");
 }
 
+namespace {
+
+json record_in(const std::string & status, const std::string & code, const std::string & owner) {
+  json r = record(code, owner);
+  r["status"] = status;
+  return r;
+}
+
+}  // namespace
+
+// The entity's default fault list shows PREFAILED and CONFIRMED records. A
+// record the list only shows under status=cleared or status=healed (CLEARED,
+// HEALED, PREPASSED) yields to one it shows by default, so once one of two
+// sources has cleared its record the code names the other one again instead of
+// answering 409 for good.
+TEST(AddressableRecordsTest, ARecordTheListShowsOutranksOneItShowsOnlyOnRequest) {
+  for (const std::string inactive : {"CLEARED", "HEALED", "PREPASSED"}) {
+    for (const std::string active : {"CONFIRMED", "PREFAILED"}) {
+      const json listing{
+          {"faults",
+           json::array({record_in(inactive, "SHARED_CODE", "tank"), record_in(active, "SHARED_CODE", "pump")})},
+      };
+
+      const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+      ASSERT_EQ(records.size(), 1u) << inactive << " beside " << active;
+      EXPECT_EQ(records[0].owner, "pump") << inactive << " beside " << active;
+    }
+  }
+}
+
+// A muted record is hidden from the list only because a root cause muted it.
+// It still outranks a record the list hides for its status.
+TEST(AddressableRecordsTest, AMutedActiveRecordOutranksAClearedOne) {
+  const json listing{
+      {"faults",
+       json::array({record_in("CONFIRMED", "SHARED_CODE", "tank"), record_in("CLEARED", "SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].owner, "tank");
+}
+
+// Nothing the list shows and nothing muted: the cleared and healed records are
+// the candidates, all of them. One alone is addressable, two make the code
+// ambiguous. A muted record the list would not show anyway (here HEALED) is in
+// that last tier too, because its status hides it from the list whether it is
+// muted or not.
+TEST(AddressableRecordsTest, ClearedAndHealedRecordsAnswerOnlyWhenNothingElseDoes) {
+  const json one{{"faults", json::array({record_in("CLEARED", "SHARED_CODE", "tank")})}};
+  const auto single = ros2_medkit_gateway::faults::addressable_records(one, "SHARED_CODE", {"tank", "pump"});
+  ASSERT_EQ(single.size(), 1u) << "one cleared record alone is still the record the code names";
+  EXPECT_EQ(single[0].owner, "tank");
+
+  const json two{
+      {"faults",
+       json::array({record_in("CLEARED", "SHARED_CODE", "tank"), record_in("HEALED", "SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}}})},
+  };
+  const auto both = ros2_medkit_gateway::faults::addressable_records(two, "SHARED_CODE", {"tank", "pump"});
+  ASSERT_EQ(both.size(), 2u) << "two inactive records name neither";
+  EXPECT_EQ(both[0].owner, "pump");
+  EXPECT_EQ(both[1].owner, "tank");
+}
+
 TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {
   EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(record("C", "app_a")), "app_a");
   EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");

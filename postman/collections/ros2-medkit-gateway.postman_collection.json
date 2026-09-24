@@ -1189,7 +1189,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail whose x-medkit names the record's owner (x-medkit.owner) beside reporting_sources, occurrence_count and severity_label. Answers 409 (x-medkit-ambiguous-fault) when several sources this component owns report the code, with parameters.owners naming them."
+            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail whose x-medkit names the record's owner (x-medkit.owner) beside reporting_sources, occurrence_count and severity_label. Answers 409 (x-medkit-ambiguous-fault) when the code resolves to several records of this component, with parameters.owners naming them. Records the fault list shows rank above muted ones, and muted ones above cleared or healed ones, so one active record is served even while another source's cleared record of the code is kept."
           },
           "response": []
         },
@@ -1210,7 +1210,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Clear one fault record of this component by fault_code (REQ_INTEROP_015). Changes that record's status to CLEARED and answers 204 with no body. Answers 409 (x-medkit-ambiguous-fault) when several sources this component owns report the code.\n\n**With correlation enabled:**\nThe per-entity route always sets skip_correlation_auto_clear, so symptom records correlated to the cleared one stay untouched."
+            "description": "Clear one fault record of this component by fault_code (REQ_INTEROP_015). Changes that record's status to CLEARED and answers 204 with no body. Answers 409 (x-medkit-ambiguous-fault) when the code resolves to several records of this component, ranked the same way as the GET.\n\n**With correlation enabled:**\nThe per-entity route always sets skip_correlation_auto_clear, so symptom records correlated to the cleared one stay untouched."
           },
           "response": []
         },

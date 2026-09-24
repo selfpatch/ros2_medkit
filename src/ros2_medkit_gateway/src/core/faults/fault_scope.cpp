@@ -92,6 +92,16 @@ void collect_function_app_fqns(const ThreadSafeEntityCache & cache, const std::s
   }
 }
 
+/// True when the entity's fault list shows `fault` when no `status` is asked
+/// for. That list reads the fault manager with parse_fault_status_param's
+/// defaults, pending and confirmed, which the transport sends as PREFAILED and
+/// CONFIRMED. CLEARED, HEALED and PREPASSED appear only under status=cleared,
+/// status=healed or status=all.
+bool shown_by_default_list(const nlohmann::json & fault) {
+  const auto status = fault.value("status", std::string{});
+  return status == "PREFAILED" || status == "CONFIRMED";
+}
+
 bool source_matches_scope(const std::string & src, const std::set<std::string> & scope_fqns) {
   for (const auto & fqn : scope_fqns) {
     if (src == fqn) {
@@ -204,9 +214,10 @@ std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_
     }
     // The scope predicate the list routes filter with. It decides which entity
     // a record belongs to, not whether that entity's list shows it: the list
-    // also leaves muted records out, which is why a per-record route resolves
-    // a code through addressable_records (shown records first, muted records
-    // only when none is shown) rather than over this result as it stands.
+    // also leaves muted, cleared and healed records out, which is why a
+    // per-record route resolves a code through addressable_records (the records
+    // the list shows first, then muted ones, then cleared or healed ones)
+    // rather than over this result as it stands.
     if (!fault_in_source_scope(fault, source_fqns)) {
       continue;
     }
@@ -238,16 +249,32 @@ std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, con
     }
   }
 
+  // Three tiers, and the first one holding any record decides. The records the
+  // entity's default fault list shows come first. Then the muted ones, which
+  // that list would show but for the correlation engine. Then everything the
+  // list hides for its status: CLEARED, HEALED and PREPASSED, muted or not.
+  // Without the last split a record one source cleared long ago stayed a
+  // candidate beside the record the list shows, and the code answered 409 for
+  // as long as the cleared record was kept.
   std::vector<ScopedFault> shown;
   std::vector<ScopedFault> muted;
+  std::vector<ScopedFault> inactive;
   for (auto & record : records) {
-    if (muted_owners.count(record.owner) > 0) {
+    if (!shown_by_default_list(record.fault)) {
+      inactive.push_back(std::move(record));
+    } else if (muted_owners.count(record.owner) > 0) {
       muted.push_back(std::move(record));
     } else {
       shown.push_back(std::move(record));
     }
   }
-  return shown.empty() ? muted : shown;
+  if (!shown.empty()) {
+    return shown;
+  }
+  if (!muted.empty()) {
+    return muted;
+  }
+  return inactive;
 }
 
 }  // namespace faults

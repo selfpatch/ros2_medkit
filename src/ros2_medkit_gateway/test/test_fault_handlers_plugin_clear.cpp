@@ -405,6 +405,34 @@ class PluginClearOwnerTest : public ::testing::Test {
     muted_faults_.push_back(make_record(code, owner));
   }
 
+  /// Move the stored record (code, owner) to `status`, muted or not.
+  void set_status(const std::string & code, const std::string & owner, const std::string & status) {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    for (auto * list : {&stored_faults_, &muted_faults_}) {
+      for (auto & fault : *list) {
+        if (fault.fault_code == code && fault.reporting_sources.front() == owner) {
+          fault.status = status;
+        }
+      }
+    }
+  }
+
+  /// The HTTP status a recording download answers: 200 when it serves bytes,
+  /// otherwise the status of the error it returns.
+  int download_status(const std::string & path, const std::string & pattern) {
+    RoutedRequest req(path, pattern, "GET");
+    EXPECT_TRUE(req.matched()) << path;
+    auto result = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(req.raw()));
+    return result.has_value() ? 200 : result.error().http_status;
+  }
+
+  static std::string app_bag_path(const std::string & app, const std::string & id) {
+    return std::string("/api/v1/apps/") + app + "/bulk-data/rosbags/" + id;
+  }
+  static std::string component_bag_path(const std::string & id) {
+    return std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + id;
+  }
+
   /// A recording of the record (code, owner), with real bytes behind it.
   void store_recording(const std::string & id, const std::string & code, const std::string & owner) {
     const auto path = bag_dir_ / (id + ".mcap");
@@ -1026,6 +1054,89 @@ TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsL
     ASSERT_TRUE(served.has_value()) << id << ": " << served.error().message;
     EXPECT_EQ(served->filename.value_or(""), id + ".mcap");
   }
+}
+
+// Two sources report one code and one of them clears its record. The component
+// now lists one record of the code, and its per-code routes act on that record
+// instead of answering 409 for as long as the cleared record is kept.
+// @verifies REQ_INTEROP_013
+TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOne) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  set_status(kCode, kOtherApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  ASSERT_TRUE(wait_for_store());
+
+  // Each route is checked on its own, so one that still answers 409 does not
+  // hide the others.
+  RoutedRequest get_req(component_fault_path(), kComponentFaultPattern, "GET");
+  ASSERT_TRUE(get_req.matched());
+  auto got = handlers_->get_fault(ros2_medkit_gateway::http::TypedRequest(get_req.raw()));
+  EXPECT_TRUE(got.has_value()) << "GET: the active record is the one the code names: " << got.error().message;
+  if (got.has_value()) {
+    EXPECT_EQ(got->content["x-medkit"]["owner"], kHostedApp);
+  }
+
+  RoutedRequest bag_req(component_bag_path(kCode), kComponentBagPattern, "GET");
+  ASSERT_TRUE(bag_req.matched());
+  auto served = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(bag_req.raw()));
+  EXPECT_TRUE(served.has_value()) << "bag URL: the active record's recording is the one the code names: "
+                                  << served.error().message;
+  if (served.has_value()) {
+    EXPECT_EQ(served->filename.value_or(""), "rec_tank.mcap");
+  }
+
+  RoutedRequest del_req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(del_req.matched());
+  auto cleared = handlers_->clear_fault(ros2_medkit_gateway::http::TypedRequest(del_req.raw()));
+  EXPECT_TRUE(cleared.has_value()) << "DELETE: the active record is the one the code clears: "
+                                   << cleared.error().message;
+  const auto clears = cleared_snapshot();
+  ASSERT_EQ(clears.size(), cleared.has_value() ? 1u : 0u);
+  if (cleared.has_value()) {
+    EXPECT_EQ(clears[0].second, kHostedApp) << "the clear must name the active record's owner";
+    EXPECT_EQ(status_of(kCode, kHostedApp), "CLEARED");
+  }
+}
+
+// With every record of the code cleared, none is preferred, so two of them name
+// neither and the route says so rather than picking one.
+// @verifies REQ_INTEROP_013
+TEST_F(PluginClearOwnerTest, TwoClearedRecordsAloneAreAmbiguous) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_record(kCode, kOtherApp);
+  set_status(kCode, kHostedApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  set_status(kCode, kOtherApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  auto result = handlers_->get_fault(ros2_medkit_gateway::http::TypedRequest(req.raw()));
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
+  EXPECT_TRUE(get_requests_snapshot().empty()) << "an ambiguous address must read no record";
+}
+
+// One cleared record and nothing else: the code still names it, and the detail
+// route serves it the way it always served an acknowledged fault.
+// @verifies REQ_INTEROP_013
+TEST_F(PluginClearOwnerTest, OneClearedRecordAloneIsServedOnTheDetailRoute) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  set_status(kCode, kHostedApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  auto result = handlers_->get_fault(ros2_medkit_gateway::http::TypedRequest(req.raw()));
+
+  ASSERT_TRUE(result.has_value()) << "a cleared record alone stays addressable: " << result.error().message;
+  EXPECT_EQ(result->content["x-medkit"]["owner"], kHostedApp);
 }
 
 int main(int argc, char ** argv) {

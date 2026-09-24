@@ -474,10 +474,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
 
     // A compatibility URL carries a fault code, so the entity's own records of
     // that code say which owner to ask the recording for. The same rule as the
-    // fault routes picks them: the records the entity's fault list shows, and
-    // its muted ones only when it shows none. An id that is really a recording
-    // id matches none and the owner stays empty, which is what the recording
-    // path ignores anyway.
+    // fault routes picks them: the records the entity's fault list shows, then
+    // its muted ones, then its cleared or healed ones, the first of those that
+    // holds any. An id that is really a recording id matches none and the owner
+    // stays empty, which is what the recording path ignores anyway.
     //
     // Several candidates means the URL names none of them, and each owner keeps
     // its own recordings. Serving the lowest-sorting owner's bag would hand the
