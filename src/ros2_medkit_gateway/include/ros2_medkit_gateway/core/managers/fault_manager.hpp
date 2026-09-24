@@ -72,7 +72,7 @@ class FaultManager {
                           bool include_muted = false, bool include_clusters = false);
 
   /// Get one fault record with environment data, returned as JSON.
-  /// A record is the pair (fault_code, owner); `source_id` names the owner and
+  /// A record is the pair (fault_code, owner), and `source_id` names the owner and
   /// is sent in the request. Empty is unscoped and the fault manager refuses it
   /// when several records carry the code.
   /// `data` carries `{ "fault": {...}, "environment_data": {...} }`. The

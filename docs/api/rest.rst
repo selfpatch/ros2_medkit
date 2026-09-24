@@ -1380,8 +1380,9 @@ Query and manage faults.
    record's ``reporting_sources``. Two apps reporting one ``fault_code`` are two
    records, each with its own status, occurrence count and timestamps, and each
    cleared on its own. A record is in scope for an entity when its owner is one
-   of the entity's own reporting sources (exact FQN match, or strict path-child;
-   for an external app or an external component, its bare SOVD id).
+   of the entity's own reporting sources (an exact FQN match or a strict
+   path-child, and for an external app or an external component its bare SOVD
+   id).
 
    ``SENSOR_TIMEOUT`` reported by both the lidar app and the temperature sensor
    app therefore appears on each app's own ``/faults`` page as that app's record,

@@ -237,7 +237,7 @@ class PluginClearOwnerTest : public ::testing::Test {
         {"fault_manager.service_timeout_sec", 5.0},
     });
     node_ = std::make_shared<GatewayNode>(options);
-    // The injected cache is the single source of truth for these tests; the
+    // The injected cache is the single source of truth for these tests. The
     // graph-event refresh would reconcile it back to the live ROS graph.
     node_->stop_discovery_refresh_for_testing();
 

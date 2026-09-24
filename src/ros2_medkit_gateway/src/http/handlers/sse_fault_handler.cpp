@@ -761,7 +761,7 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
 
   // entity_type is "apps" on this path because the source resolved to a ROS
   // node FQN, and apps are the leaf reporters in SOVD. Components own records
-  // transitively via their hosted apps; consumers can walk up the hierarchy via
+  // transitively via their hosted apps, and consumers can walk up the hierarchy via
   // /apps/<id> -> belongs_to if they need the owning component. Manifest-only
   // components without a bound node have no FQN match here and fall back to
   // plain discovery - by design.

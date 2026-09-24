@@ -440,10 +440,10 @@ std::optional<nlohmann::json> PluginManager::fetch_entity_data_content(const std
         return result->content;
       }
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s': %s; trying its route",
+      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s': %s. Trying its route.",
                   entity_id.c_str(), e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s'; trying its route",
+      RCLCPP_WARN(rclcpp::get_logger("plugin_manager"), "DataProvider threw for entity '%s'. Trying its route.",
                   entity_id.c_str());
     }
   }

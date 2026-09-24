@@ -977,9 +977,9 @@ bool NodeMap::load(const std::string & yaml_path) {
         if (!inserted) {
           RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
                        "fault_code '%s' is emitted by more than one source (%s on entity '%s' and %s on "
-                       "entity '%s'); fault codes must be unique across all detection entries and "
+                       "entity '%s'). Fault codes must be unique across all detection entries and "
                        "event_alarms in this file because the shared fault-transition tracker is keyed by "
-                       "code alone (a collision flaps raise/clear every cycle) - rename one of them",
+                       "code alone (a collision flaps raise/clear every cycle). Rename one of them.",
                        code.c_str(), it->second.pipeline, it->second.entity_id.c_str(), pipeline, entity_id.c_str());
           return false;
         }

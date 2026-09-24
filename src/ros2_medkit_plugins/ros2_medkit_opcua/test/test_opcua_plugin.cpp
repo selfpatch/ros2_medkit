@@ -1242,7 +1242,7 @@ nodes:
   OpcuaPlugin plugin;
   nlohmann::json config;
   config["node_map_path"] = yaml_path;
-  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";  // nothing listening; the fault sink drives the drain
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";  // nothing listening, the fault sink drives the drain
   config["poll_interval_ms"] = 100;
   plugin.configure(config);
 
