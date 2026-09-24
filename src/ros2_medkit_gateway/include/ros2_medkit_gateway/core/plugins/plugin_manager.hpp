@@ -34,8 +34,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -188,11 +190,27 @@ class PluginManager : public LogProviderRegistry {
   /// Called after IntrospectionProvider::introspect() returns new entities.
   /// Maps entity IDs to the plugin that created them, enabling per-entity
   /// provider routing in handlers.
+  ///
+  /// An ID another plugin owns is transferred to this plugin, so when several
+  /// plugins publish one ID the plugin registered last owns it. The refresh
+  /// registers plugins in load order. Outside hybrid discovery it also adds
+  /// their entities to the cache in that order, and the cache keeps the last
+  /// copy of a duplicated entity, so the owner is the plugin whose copy is
+  /// served. Each refresh transfers such an ID again, so a transfer is logged
+  /// once per ID and pair of plugins, until a refresh ends with the ID
+  /// unowned (see finish_ownership_refresh()).
   void register_entity_ownership(const std::string & plugin_name, const std::vector<std::string> & entity_ids);
 
   /// Clear all entity ownership entries for a given plugin.
   /// Called before re-registering during refresh to remove stale entries.
   void clear_entity_ownership(const std::string & plugin_name);
+
+  /// Close an entity refresh: forget the logged ownership transfers of IDs
+  /// that no plugin owns any more. Called once after every plugin's ownership
+  /// was registered. An ID that several plugins keep publishing stays owned,
+  /// so its transfers stay logged once, and the record holds no more than the
+  /// conflicts over IDs that are currently owned.
+  void finish_ownership_refresh();
 
   /// Get DataProvider for a specific entity (if plugin-owned)
   /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
@@ -306,6 +324,10 @@ class PluginManager : public LogProviderRegistry {
   TransportRegistry * transport_registry_ = nullptr;
   /// Entity ID -> plugin name mapping (populated from IntrospectionProvider results)
   std::unordered_map<std::string, std::string> entity_ownership_;
+  /// Ownership transfers already logged, as (entity ID, plugin, plugin) with
+  /// the two plugin names sorted. finish_ownership_refresh() drops the
+  /// entries of IDs nobody owns.
+  std::set<std::tuple<std::string, std::string, std::string>> reported_ownership_conflicts_;
   bool shutdown_called_ = false;
 };
 
