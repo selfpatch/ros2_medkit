@@ -497,6 +497,45 @@ TEST_F(SSEFaultHandlerTest, CoalescedReplayKeepsTransitionsAndEndsOnCurrentState
   release_stream(res);
 }
 
+TEST_F(SSEFaultHandlerTest, AnotherOwnersEventsDoNotSupersedeARecordsLastUpdate) {
+  // A fault code names as many records as there are sources reporting it. A
+  // newer event of one owner's record says nothing about another owner's record
+  // of the same code, so it must not coalesce that record's last update away:
+  // a lagging client would never learn that record's current state, and the
+  // loss would not even be counted.
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);  // cursor open, never drained while the buffer fills
+
+  auto owned_by = [](FaultEvent event, const std::string & owner) {
+    event.fault.reporting_sources = {owner};
+    return event;
+  };
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 1), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 2), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 3), "/owner_b"));
+  for (int i = 1; i <= 148; ++i) {
+    enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 100 + i), "/owner_b"));
+  }
+
+  EXPECT_GT(handler_->coalesced_events(), 0u) << "owner_b's own superseded updates are the ones to coalesce";
+  EXPECT_EQ(handler_->dropped_events(), 0u);
+
+  auto output = read_stream_once(res, 100);
+  int owner_a_updates = 0;
+  for (auto pos = output.find("event: "); pos != std::string::npos; pos = output.find("event: ", pos + 1)) {
+    auto payload = parse_sse_payload(output.substr(pos));
+    if (payload["event_type"] == "fault_updated" &&
+        payload["fault"]["reporting_sources"] == json::array({"/owner_a"})) {
+      ++owner_a_updates;
+      EXPECT_DOUBLE_EQ(payload["timestamp"].get<double>(), 2.0);
+    }
+  }
+  EXPECT_EQ(owner_a_updates, 1) << "owner_a's last update was coalesced away by owner_b's events of the same code";
+
+  release_stream(res);
+}
+
 TEST_F(SSEFaultHandlerTest, OwedDistinctEventsLostUnderPressureAreCountedAndLogged) {
   // The counter this PR is about: a live client is owed events, the buffer
   // overflows with distinct fault codes (nothing to coalesce), so events are

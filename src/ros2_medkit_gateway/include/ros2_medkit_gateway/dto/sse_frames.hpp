@@ -98,9 +98,9 @@ inline constexpr std::string_view dto_name<TriggerEventFrame> = "TriggerEventFra
 // FaultStreamXMedkit - the `x-medkit` object on a fault-stream frame.
 //
 // Present only when the fault's reporting source resolves to a known entity.
-// It is a hint for addressing the fault's bulk-data, not an ownership claim:
-// a debounced fault can have several co-reporters and this names the
-// lexicographically first.
+// An event describes one record, and a record has exactly one reporting
+// source, its owner, so this names the entity that owner resolves to: the one
+// whose routes address that record and its bulk-data.
 // -----------------------------------------------------------------------------
 struct FaultStreamXMedkit {
   std::string entity_type;

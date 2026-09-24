@@ -149,12 +149,16 @@ std::optional<uint64_t> SSEFaultHandler::delivered_watermark_locked() const {
 }
 
 std::deque<SSEFaultHandler::QueuedEvent>::iterator SSEFaultHandler::find_superseded_locked(bool updates_only) {
-  // Keyed on the peer as well as the code: a fault code is unique on the
-  // gateway that raised it and nowhere else, so two peers reporting the same
-  // code are reporting two faults, and treating one as the newer state of the
-  // other would delete a live fault from a client's view.
+  // Keyed on the record, not the code: a record is (fault_code, owner), so two
+  // sources reporting one code are two faults, and one owner's newer event says
+  // nothing about the other owner's record. Keyed on the peer as well: a fault
+  // is unique on the gateway that raised it and nowhere else, so two peers
+  // reporting the same record are reporting two faults. Treating either as the
+  // newer state of the other would delete a live fault from a client's view.
   auto supersede_key = [](const QueuedEvent & queued) {
-    return queued.peer + '\0' + queued.event.fault.fault_code;
+    const auto & sources = queued.event.fault.reporting_sources;
+    const std::string owner = sources.empty() ? std::string{} : sources.front();
+    return queued.peer + '\0' + queued.event.fault.fault_code + '\0' + owner;
   };
   std::unordered_map<std::string, std::size_t> newest_index;
   for (std::size_t i = 0; i < event_queue_.size(); ++i) {
@@ -215,8 +219,8 @@ SSEFaultHandler::EvictionStats SSEFaultHandler::evict_to_capacity_locked() {
       ++stats.coalesced;
       continue;
     }
-    // Something a live client is owed has to go. Prefer an entry a newer
-    // same-code event supersedes: the current state still reaches the client
+    // Something a live client is owed has to go. Prefer an entry a newer event
+    // of the same record supersedes: the current state still reaches the client
     // even though the transition history does not. Either way it is a real,
     // counted loss.
     auto victim = find_superseded_locked(/*updates_only=*/false);

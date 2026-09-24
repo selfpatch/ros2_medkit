@@ -3909,7 +3909,7 @@ Other extensions beyond SOVD:
 - ``DELETE /faults`` - Clear all faults globally
 - ``GET /faults/stream`` - SSE real-time fault notifications. Each event payload carries an
   optional ``x-medkit`` SOVD payload-extension object with ``entity_type`` and ``entity_id``
-  fields when the gateway can resolve the fault's first reporting source back to an entity,
+  fields when the gateway can resolve the fault record's reporting source (its owner) to an entity,
   so consumers can hit ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly
   without enumerating entities - that address serves the fault's newest recording. To reach an
   older one, list ``/bulk-data/rosbags`` and use the descriptor ``id``. Resolution is snapshotted at event arrival; the entire
