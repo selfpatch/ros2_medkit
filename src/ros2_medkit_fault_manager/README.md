@@ -26,6 +26,13 @@ the first open. The owner of each migrated record is the first entry of that row
 old schema recorded no per-source counter, status or timestamps to split it by, and inventing them
 would put numbers in the store that no report ever produced.
 
+The rebuild is one way. A fault manager from an earlier release opened on a migrated store aborts
+on the first report of a fault code the store does not hold yet
+(`NOT NULL constraint failed: faults.owner`), and on a fault code two sources share it writes one
+source's data into the other source's row. If a rollback may be needed, keep a copy of `faults.db`
+from before the upgrade and restore that copy instead of pointing the earlier release at the
+migrated file.
+
 The recovery reads that column as text rather than requiring it to be valid JSON, because earlier
 builds escaped only the quote, the backslash and `\b \f \n \r \t`, so a `source_id` carrying any
 other control byte was written as text no JSON parser accepts. The mapping is exact:
