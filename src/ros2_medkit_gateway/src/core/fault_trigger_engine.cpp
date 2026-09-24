@@ -186,11 +186,10 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
     return r.fault_code == rule.fault_code;
   });
   if (dup != rules_.end()) {
-    return tl::make_unexpected(
-        std::make_pair(409, "fault_code '" + rule.fault_code + "' is already used by rule '" + dup->id + "' on app '" +
-                                dup->app_id +
-                                "'. The trigger engine keeps one rule per fault code across every app, so "
-                                "that a code names exactly one rule's condition. Pick a distinct fault_code."));
+    return tl::make_unexpected(std::make_pair(
+        409, "fault_code '" + rule.fault_code + "' is already used by rule '" + dup->id + "' on app '" + dup->app_id +
+                 "'. The trigger engine keeps one rule per fault code across every app, so "
+                 "that a code names exactly one rule's condition. Pick a distinct fault_code."));
   }
   rule.id = "ftr_" + std::to_string(next_seq_++);
   rules_.push_back(rule);

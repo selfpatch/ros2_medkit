@@ -267,15 +267,15 @@ FaultHandlers::select_scoped_fault(std::vector<faults::ScopedFault> records, con
     for (const auto & record : records) {
       owners.push_back(record.owner);
     }
-    return tl::make_unexpected(make_error(
-        409, ERR_AMBIGUOUS_FAULT, "Fault code addresses several records in this entity",
-        json{{"details",
-              "Several sources this entity owns report this fault code, and each is its own record. "
-              "parameters.owners names them. Address one through the route of the app that owns it, "
-              "/apps/{app_id}/faults/{fault_code}."},
-             {id_field, entity_id},
-             {"fault_code", fault_code},
-             {"owners", owners}}));
+    return tl::make_unexpected(
+        make_error(409, ERR_AMBIGUOUS_FAULT, "Fault code addresses several records in this entity",
+                   json{{"details",
+                         "Several sources this entity owns report this fault code, and each is its own record. "
+                         "parameters.owners names them. Address one through the route of the app that owns it, "
+                         "/apps/{app_id}/faults/{fault_code}."},
+                        {id_field, entity_id},
+                        {"fault_code", fault_code},
+                        {"owners", owners}}));
   }
   return std::move(records.front());
 }
@@ -998,9 +998,8 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
                                            /*include_cleared=*/true, /*include_healed=*/true,
                                            /*include_muted=*/true, /*include_clusters=*/false);
         if (!held.success) {
-          return tl::make_unexpected(classify_fault_failure(held.failure, held.error_message,
-                                                            "Failed to clear fault", entity_info.id_field,
-                                                            entity_id, fault_code));
+          return tl::make_unexpected(classify_fault_failure(held.failure, held.error_message, "Failed to clear fault",
+                                                            entity_info.id_field, entity_id, fault_code));
         }
         std::string resolved_owner;
         const auto & all = held.data.value("faults", json::array());
@@ -1010,8 +1009,8 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         if (store_holds_code) {
           const auto & cache = ctx_.node()->get_thread_safe_cache();
           auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-          auto scoped = select_scoped_fault(faults::addressable_records(held.data, fault_code, source_fqns),
-                                            fault_code, entity_info.id_field, entity_id);
+          auto scoped = select_scoped_fault(faults::addressable_records(held.data, fault_code, source_fqns), fault_code,
+                                            entity_info.id_field, entity_id);
           if (!scoped) {
             return tl::make_unexpected(scoped.error());
           }

@@ -136,9 +136,8 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
                                                                          const std::string & fault_code) override;
   tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
                                                                           const std::string & fault_code) override;
-  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault_record(const std::string & entity_id,
-                                                                                 const std::string & fault_code,
-                                                                                 const std::string & owner) override;
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+  clear_fault_record(const std::string & entity_id, const std::string & fault_code, const std::string & owner) override;
 
   // Resolve the SOVD severity bucket for an event alarm. An explicit configured
   // override wins; with none configured the raw OPC-UA event Severity (1-1000)

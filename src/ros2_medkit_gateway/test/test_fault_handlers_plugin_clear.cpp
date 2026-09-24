@@ -33,9 +33,9 @@
 #include <gtest/gtest.h>
 
 #include <httplib.h>
-#include <unistd.h>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -266,9 +266,9 @@ class PluginClearOwnerTest : public ::testing::Test {
             }
           }
         });
-    get_srv_ = store_->create_service<GetFault>(
-        base + "get_fault",
-        [this](const std::shared_ptr<GetFault::Request> & req, const std::shared_ptr<GetFault::Response> & res) {
+    get_srv_ =
+        store_->create_service<GetFault>(base + "get_fault", [this](const std::shared_ptr<GetFault::Request> & req,
+                                                                    const std::shared_ptr<GetFault::Response> & res) {
           std::lock_guard<std::mutex> lock(store_mutex_);
           get_requests_.emplace_back(req->fault_code, req->source_id);
           for (const auto * list : {&stored_faults_, &muted_faults_}) {
