@@ -1362,7 +1362,7 @@ TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMig
   EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'CODE_4'"), device);
 }
 
-// R60 end to end: a record whose source cannot be read is still a record. It gets the
+// End to end: a record whose source cannot be read is still a record. It gets the
 // synthetic owner, its evidence is filed under that owner like any other record's, and
 // the store then reaches a resting state. The resting state is the point: while a fault
 // carried an empty owner its child rows could never be assigned to anyone, yet they

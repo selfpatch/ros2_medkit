@@ -28,7 +28,7 @@ ProcessFaultResult CorrelationEngine::process_fault(const FaultId & id, const st
                                                     std::chrono::steady_clock::time_point timestamp) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Rules match on the CODE; every relation formed below is between records of the
+  // Rules match on the CODE, and every relation formed below is between records of the
   // same owner.
   const std::string & fault_code = id.fault_code;
   ProcessFaultResult result;

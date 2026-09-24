@@ -52,7 +52,7 @@ namespace {
 
 /// Every record this suite drives belongs to one owner. These tests are about the
 /// recording state machine and the bag lifecycle, which the record identity does not
-/// change; the cross-owner cases live with the storage and node tests.
+/// change. The cross-owner cases live with the storage and node tests.
 constexpr const char * kOwner = "/reporter";
 
 FaultId rec(const std::string & code) {
@@ -1307,7 +1307,7 @@ TEST_F(RosbagCaptureIntegrationTest, ClearingOneFaultOfABurstKeepsTheSharedBag) 
   capture.stop();
 }
 
-// R11: the bag directory name and the recording id stay keyed by the CODE, so two
+// The bag directory name and the recording id stay keyed by the CODE, so two
 // owners confirming one code inside a burst attach to the one in-flight recording -
 // and each of them still gets its own rosbag_files row, because the download and the
 // acknowledgement are addressed to a record, not to a code.
@@ -1338,7 +1338,7 @@ TEST_F(RosbagCaptureIntegrationTest, TwoOwnersOfOneCodeShareTheBagAndGetARowEach
   EXPECT_EQ(row_b->recording_id, row_a->recording_id);
   EXPECT_EQ(storage_->get_rosbag_files_by_recording(row_a->recording_id).size(), 2u);
 
-  // Acknowledging one owner's record unlinks only that row; the bag survives while
+  // Acknowledging one owner's record unlinks only that row. The bag survives while
   // the other owner still holds it.
   capture.on_fault_cleared(owner_a);
   EXPECT_FALSE(storage_->get_rosbag_file(owner_a).has_value());

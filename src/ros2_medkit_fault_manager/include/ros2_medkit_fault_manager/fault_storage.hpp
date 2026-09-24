@@ -158,7 +158,7 @@ struct SnapshotData {
 /// snapshots, a freeze-frame is keyed by the record identity (one row per
 /// (fault_code, owner) pair) and is RETAINED across clear_fault, so the confirmed-state
 /// record persists after acknowledgement. A row exists only for fault codes with a
-/// configured capture set; a fault code with no capture configured gets no row at all
+/// configured capture set. A fault code with no capture configured gets no row at all
 /// (lookup returns nullopt, never an empty {}).
 struct FreezeFrameData {
   std::string fault_code;
@@ -274,8 +274,8 @@ class FaultStorage {
   /// @return Every record carrying the code, empty when none does
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_faults_by_code(const std::string & fault_code) const = 0;
 
-  /// Clear one fault record (manual acknowledgment). Drops that record's per-topic snapshots;
-  /// the freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
+  /// Clear one fault record (manual acknowledgment). Drops that record's per-topic snapshots.
+  /// The freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
   /// cycle and cannot be reconstructed afterwards. Another owner's record of the same code is
   /// untouched, snapshots included.
   /// @param id The record to clear
@@ -370,7 +370,7 @@ class FaultStorage {
   /// replaces the frame, and another owner's record of the same code keeps its own. The frame
   /// is retained across clear_fault so the confirmed-state record survives acknowledgement.
   /// Storage is bounded by the number of distinct records (one row per record, replaced in
-  /// place); rows are never evicted. Records themselves are never deleted (clear_fault only
+  /// place), and rows are never evicted. Records themselves are never deleted (clear_fault only
   /// flips status), so there is currently no delete hook to tie eviction to.
   /// @param frame The freeze-frame to store, carrying fault_code and owner
   virtual void store_freeze_frame(const FreezeFrameData & frame) = 0;
@@ -395,7 +395,7 @@ class FaultStorage {
   }
 
   /// Get the near-miss series of one fault record, oldest entry first.
-  /// The series survives clear_fault; an unknown or never-near-missed record returns empty.
+  /// The series survives clear_fault. An unknown or never-near-missed record returns empty.
   /// @param id The record to look up
   /// @return The retained near-miss entries in chronological order
   virtual std::vector<NearMissRecord> get_near_misses(const FaultId & id) const = 0;
@@ -449,7 +449,7 @@ class FaultStorage {
   virtual size_t delete_rosbag_recording(const std::string & recording_id) = 0;
 
   /// Delete rosbag rows and the actual file for one fault record. Records from one
-  /// burst can share a recording; the file is unlinked only with the last row
+  /// burst can share a recording, and the file is unlinked only with the last row
   /// that references it.
   /// @param id The record to delete rosbags for
   /// @return true if at least one row was deleted, false if none was found

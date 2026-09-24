@@ -602,11 +602,11 @@ TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
   // Plugin-style bare entity id: not a live node, resolves to no topics.
   ros2_medkit_fault_manager::DebounceConfig debounce;
   storage_->report_fault_event("PLC_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                               "plc fault", "beckhoff_plc_app", rclcpp::Clock().now(), debounce);
+                               "plc fault", "plc_app", rclcpp::Clock().now(), debounce);
 
-  capture.capture({"PLC_FAULT", "beckhoff_plc_app"});
+  capture.capture({"PLC_FAULT", "plc_app"});
 
-  EXPECT_FALSE(storage_->get_freeze_frame({"PLC_FAULT", "beckhoff_plc_app"}).has_value());
+  EXPECT_FALSE(storage_->get_freeze_frame({"PLC_FAULT", "plc_app"}).has_value());
 }
 
 // @verifies REQ_INTEROP_088

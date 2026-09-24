@@ -1036,7 +1036,7 @@ std::set<std::string> RosbagCapture::compute_entity_topics(const FaultId & id) {
 }
 
 void RosbagCapture::resolve_entity_topics(const std::string & fault_code, std::set<std::string> topics) {
-  // By code only for the log line; the caller already resolved the topics from the record.
+  // By code only for the log line. The caller already resolved the topics from the record.
   // The topics arrive resolved, for the same reason widen_capture_filter_for() takes
   // them resolved: computing them reads the fault store and walks the ROS graph, and
   // the caller does that once, before it touches any lock.

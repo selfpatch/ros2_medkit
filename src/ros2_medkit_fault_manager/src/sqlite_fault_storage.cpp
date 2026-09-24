@@ -1909,7 +1909,7 @@ std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const Rosb
   }
 
   if (max_rosbags_per_fault_ == 0) {
-    return {};  // unlimited per record; only the global byte quota bounds this
+    return {};  // unlimited per record, only the global byte quota bounds this
   }
 
   // Keep the newest N recordings of this record. Oldest-first eviction, the same

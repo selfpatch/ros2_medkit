@@ -450,7 +450,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
         fault_code = 'TEST_FAULT_MULTI_SRC'
 
         # Each of 3 sources reports enough times to confirm its OWN record. Under a
-        # shared counter three single reports confirmed one fault between them; now
+        # shared counter three single reports confirmed one fault between them. Now
         # each reporter has to reach its own threshold.
         sources = ['/sensor1', '/sensor2', '/sensor3']
         for source in sources:

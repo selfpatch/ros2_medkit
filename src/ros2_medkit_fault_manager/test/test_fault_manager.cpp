@@ -129,7 +129,7 @@ TEST_F(FaultStorageTest, TwoSourcesReportingOneCodeAreTwoRecords) {
   const rclcpp::Time a_time(1000, 0, RCL_SYSTEM_TIME);
   const rclcpp::Time b_time(2000, 0, RCL_SYSTEM_TIME);
 
-  // A reports twice and reaches its threshold; B reports once and does not.
+  // A reports twice and reaches its threshold. B reports once and does not.
   EXPECT_TRUE(storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                           "from a", "/powertrain/motor1", a_time, config));
   storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "from a",
@@ -1313,7 +1313,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     return future.get()->accepted;
   }
 
-  /// @param source_id owner to scope the call to; empty leaves the call unscoped.
+  /// @param source_id owner to scope the call to. Empty leaves the call unscoped.
   bool call_clear_fault(const std::string & fault_code, const std::string & source_id = "") {
     const auto response = clear_fault_response(fault_code, source_id);
     return response.has_value() && response->success;
@@ -1333,7 +1333,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     return *future.get();
   }
 
-  /// @param source_id owner to scope the call to; empty leaves the call unscoped.
+  /// @param source_id owner to scope the call to. Empty leaves the call unscoped.
   std::optional<GetFault::Response> call_get_fault(const std::string & fault_code, const std::string & source_id = "") {
     auto request = std::make_shared<GetFault::Request>();
     request->fault_code = fault_code;
@@ -1401,7 +1401,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
     return received_events_.size() >= 1;
   }));
 
-  // Verify EVENT_UPDATED was published (severity changed; still one occurrence)
+  // Verify EVENT_UPDATED was published (severity changed, still one occurrence)
   ASSERT_EQ(received_events_.size(), 1u);
   EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_UPDATED);
   EXPECT_EQ(received_events_[0].fault.fault_code, "TEST_FAULT_2");

@@ -113,7 +113,7 @@ class RosbagCapture {
   void on_fault_confirmed(const FaultId & id);
 
   /// Called when a fault record is cleared - deletes its bag record if auto_cleanup.
-  /// A shared bag survives until its last referencing record clears; a record
+  /// A shared bag survives until its last referencing record clears. A record
   /// cleared during its burst's post-roll is dropped from the in-flight
   /// recording state and never gets a row.
   /// @param id The record that was cleared
