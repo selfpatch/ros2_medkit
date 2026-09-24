@@ -286,8 +286,20 @@ class PluginClearOwnerTest : public ::testing::Test {
     clear_srv_ = store_->create_service<ros2_medkit_msgs::srv::ClearFault>(
         base + "clear_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
                                      const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
-          std::lock_guard<std::mutex> lock(cleared_mutex_);
-          cleared_.push_back({req->fault_code, req->source_id});
+          {
+            std::lock_guard<std::mutex> lock(cleared_mutex_);
+            cleared_.push_back({req->fault_code, req->source_id});
+          }
+          // The record the request names moves to CLEARED, so a test can read
+          // the outcome off the store rather than off the request log alone.
+          std::lock_guard<std::mutex> lock(store_mutex_);
+          for (auto * list : {&stored_faults_, &muted_faults_}) {
+            for (auto & fault : *list) {
+              if (fault.fault_code == req->fault_code && fault.reporting_sources.front() == req->source_id) {
+                fault.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
+              }
+            }
+          }
           res->success = true;
           res->message = "cleared";
         });
@@ -444,6 +456,19 @@ class PluginClearOwnerTest : public ::testing::Test {
   std::vector<std::pair<std::string, std::string>> cleared_snapshot() {
     std::lock_guard<std::mutex> lock(cleared_mutex_);
     return cleared_;
+  }
+
+  /// The stored status of the record (code, owner), muted or not.
+  std::string status_of(const std::string & code, const std::string & owner) {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    for (const auto * list : {&stored_faults_, &muted_faults_}) {
+      for (const auto & fault : *list) {
+        if (fault.fault_code == code && fault.reporting_sources.front() == owner) {
+          return fault.status;
+        }
+      }
+    }
+    return "";
   }
 
   std::vector<std::pair<std::string, std::string>> get_requests_snapshot() {
@@ -926,6 +951,34 @@ TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneMakeTheRecordingCodeAmbiguous) 
   EXPECT_EQ(result.error().http_status, 409);
   EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
   EXPECT_TRUE(rosbag_requests_snapshot().empty()) << "no recording is looked up for an ambiguous code";
+}
+
+// The bulk clear walks the entity's fault list, which leaves muted records out,
+// and it always has. It clears what the list shows and leaves a muted record
+// CONFIRMED. That record is not stranded: its own per-code DELETE clears it.
+// @verifies REQ_INTEROP_014
+TEST_F(PluginClearOwnerTest, BulkClearLeavesAMutedRecordToItsPerCodeClear) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest bulk(std::string("/api/v1/components/") + kComponent + "/faults",
+                     R"(/api/v1/components/([^/]+)/faults)");
+  ASSERT_TRUE(bulk.matched());
+  auto bulk_result = handlers_->clear_all_faults(ros2_medkit_gateway::http::TypedRequest(bulk.raw()));
+
+  ASSERT_TRUE(bulk_result.has_value()) << bulk_result.error().message;
+  EXPECT_EQ(status_of(kCode, kHostedApp), "CLEARED") << "the bulk clear must clear the record the list shows";
+  EXPECT_EQ(status_of(kCode, kOtherApp), "CONFIRMED") << "the bulk clear must leave the muted record alone";
+
+  RoutedRequest per_code(std::string("/api/v1/apps/") + kOtherApp + "/faults/" + kCode,
+                         R"(/api/v1/apps/([^/]+)/faults/([^/]+))");
+  ASSERT_TRUE(per_code.matched());
+  auto per_code_result = handlers_->clear_fault(ros2_medkit_gateway::http::TypedRequest(per_code.raw()));
+
+  ASSERT_TRUE(per_code_result.has_value()) << per_code_result.error().message;
+  EXPECT_EQ(status_of(kCode, kOtherApp), "CLEARED") << "the muted record's own per-code DELETE must clear it";
 }
 
 // The recording route's 409 has to send the client somewhere that works. It

@@ -1400,10 +1400,10 @@ Query and manage faults.
    ``parameters.owners`` naming them, rather than acting on whichever record the
    store listed first. Address one of them through the route of the app that
    owns it, ``/apps/{app_id}/faults/{fault_code}``. None, and it answers ``404``.
-   Per-entity ``DELETE /{entity-path}/faults`` clears every in-scope record
-   individually, each with its own owner. A muted record is still addressable on
-   all of these routes: muting hides a symptom from the default listing, it does
-   not make the record unreachable.
+   Per-entity ``DELETE /{entity-path}/faults`` clears the records the entity's
+   fault list shows, each individually with its own owner. Like that list, it
+   leaves muted records alone. A muted record is cleared by its own per-code
+   ``DELETE /{entity-path}/faults/{fault_code}``, which resolves it as above.
 
    Two nearby keys carry the record's owner and they are deliberately not the
    same name. A flat fault item's top-level ``source_id`` is the owner, and the
@@ -1595,7 +1595,9 @@ Query and manage faults.
    Clear all faults for an entity.
 
    Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
-   Without it, clears pending and confirmed faults.
+   Without it, clears pending and confirmed faults. Muted records are not cleared,
+   because the entity's fault list does not show them. Clear one with its per-code
+   ``DELETE``.
 
    - **204:** Faults cleared (or none to clear)
    - **400:** Invalid status parameter

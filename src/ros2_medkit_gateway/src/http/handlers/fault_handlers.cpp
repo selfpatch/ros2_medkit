@@ -1142,6 +1142,9 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     // resolves through `HandlerContext::resolve_entity_source_fqns` so the
     // area BFS, function-hosting-component expansion, and wildcard-app
     // empty-set behavior stay consistent across all four fault routes.
+    // The defaults leave muted records out, as the entity's fault list does.
+    // That is deliberate: this route clears what the list shows, and a muted
+    // record is cleared by its own per-code DELETE, which resolves it.
     auto result = fault_mgr->list_faults("");
     if (!result.success) {
       return tl::make_unexpected(
