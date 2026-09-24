@@ -12,46 +12,60 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The plugin clear path, driven through FaultHandlers with a real GatewayNode.
+// The per-record routes, driven through the handlers with a real GatewayNode:
+// the fault detail and clear (native and plugin provider) and the recording
+// download by fault code.
 //
 // The other fault-handler suites test pure helpers. These need the handler
-// itself, because what they pin is which value the handler hands the provider:
-// a record is (fault_code, owner), the owner is what the gateway resolved in the
-// entity's fault scope, and for a COMPONENT that owner is the hosted APP, not
-// the component in the URL. Handing the entity id down instead addresses a
-// record nobody owns, the fault manager declines it, and the route still
-// answers 2xx with the record untouched.
+// itself, because what they pin is which record the handler resolves and which
+// owner it hands on: a record is (fault_code, owner), the owner is what the
+// gateway resolved in the entity's fault scope, and for a COMPONENT that owner
+// is the hosted APP, not the component in the URL. Handing the entity id down
+// instead addresses a record nobody owns, the fault manager declines it, and
+// the route still answers 2xx with the record untouched.
 //
 // The fault manager is a stub service on a second node, the same shape
-// test_fault_manager.cpp uses; the plugin is a mock FaultProvider added to the
-// node's own PluginManager.
+// test_fault_manager.cpp uses. It answers ListFaults the way the real one
+// does: a muted record is left out unless the listing asks for muted records,
+// and then it is also named in `muted_faults`. The plugin is a mock
+// FaultProvider added to the node's own PluginManager.
 
 #include <gtest/gtest.h>
 
 #include <httplib.h>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <regex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_msgs/msg/muted_fault_info.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_fault.hpp"
+#include "ros2_medkit_msgs/srv/get_rosbag.hpp"
 #include "ros2_medkit_msgs/srv/list_faults.hpp"
+#include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 
 using json = nlohmann::json;
 using namespace std::chrono_literals;
@@ -69,9 +83,13 @@ using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::dto::FaultClearResult;
 using ros2_medkit_gateway::dto::FaultDetailResult;
 using ros2_medkit_gateway::dto::FaultListResult;
+using ros2_medkit_gateway::handlers::BulkDataHandlers;
 using ros2_medkit_gateway::handlers::FaultHandlers;
 using ros2_medkit_gateway::handlers::HandlerContext;
+using ros2_medkit_msgs::srv::GetFault;
+using ros2_medkit_msgs::srv::GetRosbag;
 using ros2_medkit_msgs::srv::ListFaults;
+using ros2_medkit_msgs::srv::ListRosbags;
 
 namespace {
 
@@ -119,11 +137,12 @@ class RecordingFaultPlugin : public GatewayPlugin, public FaultProvider {
 /// The smatch holds iterators into `path`, so both outlive the request.
 class RoutedRequest {
  public:
-  RoutedRequest(std::string path, const std::string & pattern) : path_(std::move(path)) {
+  RoutedRequest(std::string path, const std::string & pattern, const std::string & method = "DELETE")
+    : path_(std::move(path)) {
     std::regex re(pattern);
     matched_ = std::regex_match(path_, raw_.matches, re);
     raw_.path = path_;
-    raw_.method = "DELETE";
+    raw_.method = method;
   }
 
   bool matched() const {
@@ -143,6 +162,14 @@ class RoutedRequest {
 
 class PluginClearOwnerTest : public ::testing::Test {
  protected:
+  /// A recording the stub fault manager holds for one record.
+  struct Recording {
+    std::string id;
+    std::string fault_code;
+    std::string owner;
+    std::string path;
+  };
+
   static void SetUpTestSuite() {
     rclcpp::init(0, nullptr);
   }
@@ -153,6 +180,8 @@ class PluginClearOwnerTest : public ::testing::Test {
   void SetUp() override {
     const int test_id = test_counter_++;
     ns_ = "pco" + std::to_string(test_id);
+    bag_dir_ = std::filesystem::temp_directory_path() / ("pco_bags_" + std::to_string(::getpid()) + "_" + ns_);
+    std::filesystem::create_directories(bag_dir_);
 
     auto options = rclcpp::NodeOptions{}.automatically_declare_parameters_from_overrides(false).parameter_overrides({
         {"server.port", 0},
@@ -165,27 +194,109 @@ class PluginClearOwnerTest : public ::testing::Test {
     node_->stop_discovery_refresh_for_testing();
 
     store_ = std::make_shared<rclcpp::Node>("pco_store_" + std::to_string(test_id));
+    const std::string base = "/" + ns_ + "/fault_manager/";
     list_srv_ = store_->create_service<ListFaults>(
-        "/" + ns_ + "/fault_manager/list_faults",
+        base + "list_faults",
         [this](const std::shared_ptr<ListFaults::Request> & req, const std::shared_ptr<ListFaults::Response> & res) {
+          std::lock_guard<std::mutex> lock(store_mutex_);
           last_include_muted_.store(req->include_muted);
           res->faults = stored_faults_;
-          // A muted record is one the correlation engine hid from the default
-          // listing, so the store only answers with it when it is asked for.
+          res->muted_count = static_cast<uint32_t>(muted_faults_.size());
+          // The real fault manager's contract: a muted record is one the
+          // correlation engine hid from the default listing, so it is served
+          // only to a listing that asks, and then named in muted_faults by its
+          // code and owner.
           if (req->include_muted) {
             for (const auto & muted : muted_faults_) {
               res->faults.push_back(muted);
+              ros2_medkit_msgs::msg::MutedFaultInfo info;
+              info.fault_code = muted.fault_code;
+              info.source_id = muted.reporting_sources.front();
+              info.root_cause_code = "ROOT_CAUSE";
+              info.rule_id = "rule";
+              res->muted_faults.push_back(info);
             }
           }
         });
+    get_srv_ = store_->create_service<GetFault>(
+        base + "get_fault",
+        [this](const std::shared_ptr<GetFault::Request> & req, const std::shared_ptr<GetFault::Response> & res) {
+          std::lock_guard<std::mutex> lock(store_mutex_);
+          get_requests_.emplace_back(req->fault_code, req->source_id);
+          for (const auto * list : {&stored_faults_, &muted_faults_}) {
+            for (const auto & fault : *list) {
+              if (fault.fault_code == req->fault_code && fault.reporting_sources.front() == req->source_id) {
+                res->success = true;
+                res->fault = fault;
+                return;
+              }
+            }
+          }
+          res->success = false;
+          res->error_message = "Fault not found: " + req->fault_code;
+        });
     clear_srv_ = store_->create_service<ros2_medkit_msgs::srv::ClearFault>(
-        "/" + ns_ + "/fault_manager/clear_fault",
-        [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
-               const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
+        base + "clear_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                                     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
           std::lock_guard<std::mutex> lock(cleared_mutex_);
           cleared_.push_back({req->fault_code, req->source_id});
           res->success = true;
           res->message = "cleared";
+        });
+    // The fault manager's lookup order: the recording id first, then the fault
+    // code scoped to the owner the gateway sent. An unscoped code with more than
+    // one owner holding recordings answers nothing.
+    rosbag_srv_ = store_->create_service<GetRosbag>(
+        base + "get_rosbag",
+        [this](const std::shared_ptr<GetRosbag::Request> & req, const std::shared_ptr<GetRosbag::Response> & res) {
+          std::lock_guard<std::mutex> lock(store_mutex_);
+          rosbag_requests_.push_back(req->source_id);
+          const Recording * found = nullptr;
+          for (const auto & rec : recordings_) {
+            if (rec.id == req->recording_id) {
+              found = &rec;
+            }
+          }
+          if (found == nullptr) {
+            std::vector<const Recording *> by_code;
+            for (const auto & rec : recordings_) {
+              if (rec.fault_code == req->fault_code && (req->source_id.empty() || rec.owner == req->source_id)) {
+                by_code.push_back(&rec);
+              }
+            }
+            if (by_code.size() == 1) {
+              found = by_code.front();
+            }
+          }
+          if (found == nullptr) {
+            res->success = false;
+            res->error_message = "No recording for " + req->recording_id;
+            return;
+          }
+          res->success = true;
+          res->file_path = found->path;
+          res->recording_id = found->id;
+          res->fault_codes = {found->fault_code};
+          res->format = "mcap";
+          res->size_bytes = std::filesystem::file_size(found->path);
+        });
+    list_rosbags_srv_ = store_->create_service<ListRosbags>(
+        base + "list_rosbags",
+        [this](const std::shared_ptr<ListRosbags::Request> & req, const std::shared_ptr<ListRosbags::Response> & res) {
+          std::lock_guard<std::mutex> lock(store_mutex_);
+          res->success = true;
+          for (const auto & rec : recordings_) {
+            if (rec.owner != req->entity_fqn) {
+              continue;
+            }
+            res->fault_codes.push_back(rec.fault_code);
+            res->recording_ids.push_back(rec.id);
+            res->file_paths.push_back(rec.path);
+            res->formats.push_back("mcap");
+            res->durations_sec.push_back(1.0);
+            res->sizes_bytes.push_back(std::filesystem::file_size(rec.path));
+            res->created_at_ns.push_back(1'700'000'000'000'000'000);
+          }
         });
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(store_);
@@ -195,6 +306,7 @@ class PluginClearOwnerTest : public ::testing::Test {
 
     ctx_ = std::make_unique<HandlerContext>(node_.get(), cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<FaultHandlers>(*ctx_);
+    bulk_handlers_ = std::make_unique<BulkDataHandlers>(*ctx_);
   }
 
   void TearDown() override {
@@ -204,44 +316,62 @@ class PluginClearOwnerTest : public ::testing::Test {
     }
     executor_.reset();
     store_.reset();
+    bulk_handlers_.reset();
     handlers_.reset();
     ctx_.reset();
     node_.reset();
+    std::error_code ec;
+    std::filesystem::remove_all(bag_dir_, ec);
   }
 
-  /// One stored record, owned by `owner`.
-  void store_record(const std::string & code, const std::string & owner) {
+  static ros2_medkit_msgs::msg::Fault make_record(const std::string & code, const std::string & owner) {
     ros2_medkit_msgs::msg::Fault fault;
     fault.fault_code = code;
     fault.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
     fault.reporting_sources = {owner};
-    stored_faults_.push_back(fault);
+    return fault;
+  }
+
+  /// One stored record, owned by `owner`.
+  void store_record(const std::string & code, const std::string & owner) {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    stored_faults_.push_back(make_record(code, owner));
+  }
+
+  /// One muted record, owned by `owner`. Served only to a listing that asks.
+  void store_muted_record(const std::string & code, const std::string & owner) {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    muted_faults_.push_back(make_record(code, owner));
+  }
+
+  /// A recording of the record (code, owner), with real bytes behind it.
+  void store_recording(const std::string & id, const std::string & code, const std::string & owner) {
+    const auto path = bag_dir_ / (id + ".mcap");
+    {
+      std::ofstream out(path, std::ios::binary);
+      out << "bag of " << owner;
+    }
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    recordings_.push_back(Recording{id, code, owner, path.string()});
   }
 
   /// A component hosting two external apps, all three owned by the plugin, so
   /// the fault routes take the plugin branch on every one of them.
   RecordingFaultPlugin * seed_topology() {
-    App a;
-    a.id = kHostedApp;
-    a.component_id = kComponent;
-    a.external = true;
-    App b;
-    b.id = kOtherApp;
-    b.component_id = kComponent;
-    b.external = true;
-    Component c;
-    c.id = kComponent;
-    c.external = true;
-    auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
-    cache.update_all({}, {c}, {a, b}, {});
-
+    seed_entities();
     auto plugin = std::make_unique<RecordingFaultPlugin>();
     auto * raw = plugin.get();
     auto * pmgr = node_->get_plugin_manager();
     pmgr->add_plugin(std::move(plugin));
     pmgr->register_entity_ownership("recording_fault_plugin", {kComponent, kHostedApp, kOtherApp});
     return raw;
+  }
+
+  /// The same component and apps, owned by NOBODY, so the fault routes take the
+  /// native fault-manager path and resolve through resolve_scoped_fault.
+  void seed_native_topology() {
+    seed_entities();
   }
 
   bool wait_for_store(std::chrono::milliseconds timeout = 5s) {
@@ -256,53 +386,73 @@ class PluginClearOwnerTest : public ::testing::Test {
     return false;
   }
 
-  static inline int test_counter_ = 0;
-  CorsConfig cors_{};
-  AuthConfig auth_{};
-  TlsConfig tls_{};
-  std::string ns_;
-  std::shared_ptr<GatewayNode> node_;
-  std::shared_ptr<rclcpp::Node> store_;
-  rclcpp::Service<ListFaults>::SharedPtr list_srv_;
-  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
-  std::thread spin_;
-  /// One muted record, owned by `owner`. Served only to a listing that asks.
-  void store_muted_record(const std::string & code, const std::string & owner) {
-    ros2_medkit_msgs::msg::Fault fault;
-    fault.fault_code = code;
-    fault.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-    fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
-    fault.reporting_sources = {owner};
-    muted_faults_.push_back(fault);
-  }
-
-  /// The same component and apps, owned by NOBODY, so the fault routes take the
-  /// native fault-manager path and resolve through resolve_scoped_fault.
-  void seed_native_topology() {
-    App a;
-    a.id = kHostedApp;
-    a.component_id = kComponent;
-    a.external = true;
-    Component c;
-    c.id = kComponent;
-    c.external = true;
-    auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
-    cache.update_all({}, {c}, {a}, {});
-  }
-
   std::vector<std::pair<std::string, std::string>> cleared_snapshot() {
     std::lock_guard<std::mutex> lock(cleared_mutex_);
     return cleared_;
   }
 
+  std::vector<std::pair<std::string, std::string>> get_requests_snapshot() {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    return get_requests_;
+  }
+
+  std::vector<std::string> rosbag_requests_snapshot() {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    return rosbag_requests_;
+  }
+
+  static std::string component_fault_path() {
+    return std::string("/api/v1/components/") + kComponent + "/faults/" + kCode;
+  }
+  static constexpr const char * kComponentFaultPattern = R"(/api/v1/components/([^/]+)/faults/([^/]+))";
+  static constexpr const char * kComponentBagPattern = R"(/api/v1/components/([^/]+)/bulk-data/([^/]+)/([^/]+))";
+
+  static inline int test_counter_ = 0;
+  CorsConfig cors_{};
+  AuthConfig auth_{};
+  TlsConfig tls_{};
+  std::string ns_;
+  std::filesystem::path bag_dir_;
+  std::shared_ptr<GatewayNode> node_;
+  std::shared_ptr<rclcpp::Node> store_;
+  rclcpp::Service<ListFaults>::SharedPtr list_srv_;
+  rclcpp::Service<GetFault>::SharedPtr get_srv_;
+  rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_srv_;
+  rclcpp::Service<GetRosbag>::SharedPtr rosbag_srv_;
+  rclcpp::Service<ListRosbags>::SharedPtr list_rosbags_srv_;
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+  std::thread spin_;
+
+  std::mutex store_mutex_;
   std::vector<ros2_medkit_msgs::msg::Fault> stored_faults_;
   std::vector<ros2_medkit_msgs::msg::Fault> muted_faults_;
+  std::vector<Recording> recordings_;
+  std::vector<std::pair<std::string, std::string>> get_requests_;
+  std::vector<std::string> rosbag_requests_;
   std::atomic<bool> last_include_muted_{false};
-  rclcpp::Service<ros2_medkit_msgs::srv::ClearFault>::SharedPtr clear_srv_;
+
   std::mutex cleared_mutex_;
   std::vector<std::pair<std::string, std::string>> cleared_;
   std::unique_ptr<HandlerContext> ctx_;
   std::unique_ptr<FaultHandlers> handlers_;
+  std::unique_ptr<BulkDataHandlers> bulk_handlers_;
+
+ private:
+  void seed_entities() {
+    App a;
+    a.id = kHostedApp;
+    a.component_id = kComponent;
+    a.external = true;
+    App b;
+    b.id = kOtherApp;
+    b.component_id = kComponent;
+    b.external = true;
+    Component c;
+    c.id = kComponent;
+    c.external = true;
+    auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+    cache.update_all({}, {c}, {a, b}, {});
+  }
 };
 
 // A component owns the records its hosted apps reported. The clear the plugin
@@ -439,6 +589,212 @@ TEST_F(PluginClearOwnerTest, ResolutionClearsAnUnmutedRecordWithItsOwner) {
   const auto cleared = cleared_snapshot();
   ASSERT_EQ(cleared.size(), 1u);
   EXPECT_EQ(cleared[0].second, kHostedApp);
+}
+
+// ---------------------------------------------------------------------------
+// Which record a code in the URL names when muted records are in scope.
+//
+// Every per-entity fault list leaves muted records out, so the records it shows
+// are the ones a client can read a code off. A code resolves over those first.
+// Only when the list shows no record of the code does a muted one answer, so a
+// record hidden as a symptom stays reachable without turning a shown record
+// into an ambiguous address. Each route that resolves a code gets its own case,
+// because each reads the fault manager on its own.
+// ---------------------------------------------------------------------------
+
+// The component's list shows tank's record only, because pump's record of the
+// same code is muted. Resolving over both answered 409 naming pump as well, and
+// pointed the client at a list that could never show it pump's record.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, NativeComponentClearTakesTheShownRecordOverAMutedOne) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
+  EXPECT_TRUE(std::holds_alternative<ros2_medkit_gateway::http::NoContent>(*result));
+  const auto cleared = cleared_snapshot();
+  ASSERT_EQ(cleared.size(), 1u) << "exactly the shown record is cleared, and pump's muted record is left alone";
+  EXPECT_EQ(cleared[0].first, kCode);
+  EXPECT_EQ(cleared[0].second, kHostedApp);
+}
+
+// The same scenario on a plugin-owned component: the plugin clear resolves the
+// owner on its own read of the fault manager, so it needs its own case.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, PluginComponentClearTakesTheShownRecordOverAMutedOne) {
+  auto * plugin = seed_topology();
+  store_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
+  ASSERT_EQ(plugin->clears.size(), 1u);
+  EXPECT_EQ(plugin->clears[0].owner, kHostedApp) << "the plugin must be handed the shown record's owner";
+}
+
+// A muted record with no shown record of its code is still the record the code
+// names, and the detail route serves it with its owner.
+// @verifies REQ_INTEROP_013
+TEST_F(PluginClearOwnerTest, AMutedRecordAloneIsServedOnTheDetailRoute) {
+  seed_native_topology();
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->get_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << "a muted record must stay addressable: " << result.error().message;
+  EXPECT_EQ(result->content["x-medkit"]["owner"], kOtherApp);
+  const auto reads = get_requests_snapshot();
+  ASSERT_EQ(reads.size(), 1u);
+  EXPECT_EQ(reads[0].second, kOtherApp) << "the enriched read must be addressed to the muted record's owner";
+}
+
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, AMutedRecordAloneIsClearedOnTheNativeRoute) {
+  seed_native_topology();
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << "a muted record must stay addressable: " << result.error().message;
+  const auto cleared = cleared_snapshot();
+  ASSERT_EQ(cleared.size(), 1u);
+  EXPECT_EQ(cleared[0].second, kOtherApp);
+}
+
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, AMutedRecordAloneReachesThePluginWithItsOwner) {
+  auto * plugin = seed_topology();
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_EQ(plugin->clears.size(), 1u);
+  EXPECT_EQ(plugin->clears[0].owner, kOtherApp) << "the plugin must be handed the muted record's owner";
+}
+
+// A recording URL carrying a fault code resolves that code to a record first.
+// A muted record keeps its recordings, so its code still serves its bytes.
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, AMutedRecordAloneServesItsRecordingByCode) {
+  seed_native_topology();
+  store_muted_record(kCode, kOtherApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + kCode,
+                    kComponentBagPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = bulk_handlers_->download(typed);
+
+  ASSERT_TRUE(result.has_value()) << "a muted record's recording must stay reachable: " << result.error().message;
+  EXPECT_EQ(result->filename.value_or(""), "rec_pump.mcap");
+  const auto asked = rosbag_requests_snapshot();
+  ASSERT_EQ(asked.size(), 1u);
+  EXPECT_EQ(asked[0], kOtherApp) << "the recording must be asked for under the muted record's owner";
+}
+
+// The recording route resolves a code the way the fault routes do: tank's
+// record is the one the component's list shows, so the code names tank's
+// recording and pump's muted record does not make it ambiguous.
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, ARecordingCodeTakesTheShownRecordOverAMutedOne) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + kCode,
+                    kComponentBagPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = bulk_handlers_->download(typed);
+
+  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
+  EXPECT_EQ(result->filename.value_or(""), "rec_tank.mcap");
+  const auto asked = rosbag_requests_snapshot();
+  ASSERT_EQ(asked.size(), 1u);
+  EXPECT_EQ(asked[0], kHostedApp);
+}
+
+// Two muted records and no shown one: the code names neither, the route says so
+// and names both owners, and it points at where each can be addressed.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneAreAmbiguous) {
+  seed_native_topology();
+  store_muted_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
+  const std::string details = result.error().params.value("details", "");
+  EXPECT_NE(details.find("parameters.owners"), std::string::npos) << details;
+  EXPECT_NE(details.find("/apps/{app_id}/faults/{fault_code}"), std::string::npos) << details;
+  EXPECT_TRUE(cleared_snapshot().empty()) << "an ambiguous address must clear nothing";
+}
+
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneMakeTheRecordingCodeAmbiguous) {
+  seed_native_topology();
+  store_muted_record(kCode, kHostedApp);
+  store_muted_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + kCode,
+                    kComponentBagPattern, "GET");
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = bulk_handlers_->download(typed);
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 409);
+  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
+  EXPECT_TRUE(rosbag_requests_snapshot().empty()) << "no recording is looked up for an ambiguous code";
 }
 
 int main(int argc, char ** argv) {

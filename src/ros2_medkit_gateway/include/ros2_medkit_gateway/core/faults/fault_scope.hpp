@@ -79,5 +79,20 @@ std::string record_owner(const nlohmann::json & fault);
 std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
                                                   const std::set<std::string> & source_fqns);
 
+/// The records of `fault_code` inside `source_fqns` that a per-entity route
+/// resolves a code in its URL over.
+///
+/// `listing` is a fault-manager listing read with muted records included: its
+/// `faults` array holds every record, and each `muted_faults` entry names one
+/// the correlation engine hides by its `fault_code` and `source_id`.
+///
+/// The entity's own fault collection never shows a muted record, so the records
+/// it does show come first. When it shows one or more records of the code, those
+/// are the candidates and the muted ones are not. Only when it shows none do the
+/// muted records of the code answer, so a record hidden as a symptom stays
+/// addressable by its code without making a shown record ambiguous.
+std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, const std::string & fault_code,
+                                             const std::set<std::string> & source_fqns);
+
 }  // namespace faults
 }  // namespace ros2_medkit_gateway

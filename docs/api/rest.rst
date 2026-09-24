@@ -1387,12 +1387,19 @@ Query and manage faults.
    app therefore appears on each app's own ``/faults`` page as that app's record,
    and on the component hosting both as two items with distinct ``source_id``.
 
-   A ``fault_code`` in a URL names a record only when the entity owns exactly one
-   record carrying it. When the entity owns several, ``GET`` and ``DELETE`` on
-   ``/{entity-path}/faults/{fault_code}`` answer ``409`` with vendor error code
-   ``x-medkit-ambiguous-fault`` and ``parameters.owners`` listing the owners, rather
-   than acting on whichever record the store listed first. Address one of them
-   through the app that owns it, or read them from the entity's fault list.
+   A ``fault_code`` in a URL names a record only when it resolves to exactly one
+   record in the entity's scope. The records the entity's fault list shows are the
+   candidates. That list leaves muted records out, so a muted record is a
+   candidate only when the list shows no record of the code at all: a muted
+   symptom stays addressable by its code, and it never makes the record a client
+   read off the list ambiguous. ``GET`` and ``DELETE`` on
+   ``/{entity-path}/faults/{fault_code}`` and the recording download
+   ``GET /{entity-path}/bulk-data/rosbags/{fault_code}`` all resolve this way.
+   One candidate, and the route acts on it with its owner. Several, and it
+   answers ``409`` with vendor error code ``x-medkit-ambiguous-fault`` and
+   ``parameters.owners`` naming them, rather than acting on whichever record the
+   store listed first. Address one of them through the route of the app that
+   owns it, ``/apps/{app_id}/faults/{fault_code}``. None, and it answers ``404``.
    Per-entity ``DELETE /{entity-path}/faults`` clears every in-scope record
    individually, each with its own owner. A muted record is still addressable on
    all of these routes: muting hides a symptom from the default listing, it does
@@ -3425,9 +3432,9 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
      - 409
      - The ``fault_code`` in the URL addresses several fault records inside the
        addressed entity, because several of its reporting sources report that
-       code and each is its own record. ``parameters.owners`` lists them.
-       Address one of them through the app that owns it, or read them from the
-       entity's fault list.
+       code and each is its own record. ``parameters.owners`` names them.
+       Address one of them through the route of the app that owns it,
+       ``/apps/{app_id}/faults/{fault_code}``.
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.

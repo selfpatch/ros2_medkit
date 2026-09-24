@@ -202,8 +202,11 @@ std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_
     if (!fault.is_object() || fault.value("fault_code", std::string{}) != fault_code) {
       continue;
     }
-    // The same predicate the list routes filter with, so a record is visible on
-    // the detail route exactly when it is visible on the collection route.
+    // The scope predicate the list routes filter with. It decides which entity
+    // a record belongs to, not whether that entity's list shows it: the list
+    // also leaves muted records out, which is why a per-record route resolves
+    // a code through addressable_records (shown records first, muted records
+    // only when none is shown) rather than over this result as it stands.
     if (!fault_in_source_scope(fault, source_fqns)) {
       continue;
     }
@@ -213,6 +216,38 @@ std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_
     return a.owner < b.owner;
   });
   return records;
+}
+
+std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, const std::string & fault_code,
+                                             const std::set<std::string> & source_fqns) {
+  if (!listing.is_object()) {
+    return {};
+  }
+  auto records = records_of_code_in_scope(listing.value("faults", nlohmann::json::array()), fault_code, source_fqns);
+
+  // Owners whose record of this code is muted. An entry is one muted record,
+  // so the owner has to match as well as the code: muting one owner's record
+  // never hides another owner's record of the same code.
+  std::set<std::string> muted_owners;
+  const auto muted_it = listing.find("muted_faults");
+  if (muted_it != listing.end() && muted_it->is_array()) {
+    for (const auto & entry : *muted_it) {
+      if (entry.is_object() && entry.value("fault_code", std::string{}) == fault_code) {
+        muted_owners.insert(entry.value("source_id", std::string{}));
+      }
+    }
+  }
+
+  std::vector<ScopedFault> shown;
+  std::vector<ScopedFault> muted;
+  for (auto & record : records) {
+    if (muted_owners.count(record.owner) > 0) {
+      muted.push_back(std::move(record));
+    } else {
+      shown.push_back(std::move(record));
+    }
+  }
+  return shown.empty() ? muted : shown;
 }
 
 }  // namespace faults

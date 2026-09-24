@@ -714,6 +714,39 @@ TEST(RecordsOfCodeInScopeTest, SeveralOwnersMakeABareCodeUrlAmbiguous) {
   EXPECT_EQ(single[0].owner, "app_a");
 }
 
+// A muted_faults entry names one record by its code AND its owner. An entry for
+// another owner of the same code, or for the same owner under another code,
+// hides nothing here, so the one record the entity's list shows is the only
+// candidate and the code is not ambiguous.
+TEST(AddressableRecordsTest, AMutedEntryHidesOnlyTheRecordItNames) {
+  const json listing{
+      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
+                                    json{{"fault_code", "OTHER_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 1u) << "only pump's record of this code is muted";
+  EXPECT_EQ(records[0].owner, "tank");
+}
+
+// With no shown record of the code the muted ones are the candidates, every one
+// of them, so two of them still make the code ambiguous rather than picking one.
+TEST(AddressableRecordsTest, MutedRecordsAnswerOnlyWhenNoneIsShown) {
+  const json listing{
+      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
+                                    json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].owner, "pump");
+  EXPECT_EQ(records[1].owner, "tank");
+}
+
 TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {
   EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(record("C", "app_a")), "app_a");
   EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");

@@ -218,20 +218,6 @@ class FaultHandlers {
                                                    const std::vector<EntityFreezeFrameCapture::Frame> & frames);
 
   /**
-   * @brief Turn the records of one code in an entity's scope into the single
-   * record a per-record route may act on, or the error it answers instead.
-   *
-   * A fault code addresses as many records as there are sources reporting it,
-   * so an entity hosting two of them has not named one. The route answers 409
-   * `x-medkit-ambiguous-fault` with both owners in `params` rather than acting
-   * on whichever record the store happened to list first: picking one is the
-   * failure the per-record identity exists to remove, and the caller cannot
-   * tell from the response which one it got. None in scope is the 404 the
-   * routes have always answered.
-   *
-   * Public static for direct unit testing. Called by `resolve_scoped_fault`.
-   */
-  /**
    * @brief Map every reporting source the cache can attribute to the entity
    * that owns it, for the global clear's lock check.
    *
@@ -246,6 +232,23 @@ class FaultHandlers {
    */
   static std::unordered_map<std::string, std::string> build_source_entity_map(const ThreadSafeEntityCache & cache);
 
+  /**
+   * @brief Turn the candidate records of one code into the single record a
+   * per-record route may act on, or the error it answers instead.
+   *
+   * `records` are the candidates `faults::addressable_records` yields: the
+   * records of the code the entity's fault list shows, or the muted ones when
+   * it shows none. A fault code addresses as many records as there are sources
+   * reporting it, so two candidates mean the entity has not named one. The
+   * route answers 409 `x-medkit-ambiguous-fault` with those owners in
+   * `parameters.owners` rather than acting on whichever record the store
+   * happened to list first: picking one is the failure the per-record identity
+   * exists to remove, and the caller cannot tell from the response which one it
+   * got. No candidate is the 404 the routes have always answered.
+   *
+   * Public static for direct unit testing. Called by `resolve_scoped_fault` and
+   * by the plugin clear.
+   */
   static tl::expected<faults::ScopedFault, ErrorInfo> select_scoped_fault(std::vector<faults::ScopedFault> records,
                                                                           const std::string & fault_code,
                                                                           const std::string & id_field,
@@ -255,9 +258,11 @@ class FaultHandlers {
   /**
    * @brief Resolve the one record of `fault_code` that `entity` owns.
    *
-   * Lists every status, keeps the records of this code whose owner is inside
-   * the entity's fault scope, and hands the result to `select_scoped_fault`.
-   * The owner it returns is what the per-record services are then called with.
+   * Lists every status with muted records included, narrows them to this
+   * code's candidates with `faults::addressable_records` (the records the
+   * entity's list shows, else its muted ones) and hands those to
+   * `select_scoped_fault`. The owner it returns is what the per-record services
+   * are then called with.
    */
   tl::expected<faults::ScopedFault, ErrorInfo> resolve_scoped_fault(const EntityInfo & entity_info,
                                                                     const std::string & fault_code);

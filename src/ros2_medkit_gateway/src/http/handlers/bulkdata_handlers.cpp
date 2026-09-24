@@ -459,28 +459,32 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     auto source_filters = get_source_filters(entity);
     std::set<std::string> scope(source_filters.begin(), source_filters.end());
 
-    // Every record this entity owns, in one read, every status. Authorization
-    // asks which RECORDS a code addresses, not whether a code exists: two
-    // sources reporting one code are two records, and an unscoped read of that
-    // code is ambiguous and answers nothing at all. Reading the list once also
-    // replaces one GetFault round trip per attached code.
+    // Every record this entity owns, in one read, every status and muted ones
+    // too. Authorization asks which RECORDS a code addresses, not whether a
+    // code exists: two sources reporting one code are two records, and an
+    // unscoped read of that code is ambiguous and answers nothing at all. A
+    // muted record keeps its recordings, so leaving it out would 404 them.
+    // Reading the list once also replaces one GetFault round trip per attached
+    // code.
     auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
                                        /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);
-    const json all_faults = held.success ? held.data.value("faults", json::array()) : json::array();
+    const json listing = held.success ? held.data : json::object();
+    const json all_faults = listing.value("faults", json::array());
 
     // A compatibility URL carries a fault code, so the entity's own records of
-    // that code say which owner to ask the recording for. An id that is really
-    // a recording id matches none and the owner stays empty, which is what the
-    // recording path ignores anyway.
+    // that code say which owner to ask the recording for. The same rule as the
+    // fault routes picks them: the records the entity's fault list shows, and
+    // its muted ones only when it shows none. An id that is really a recording
+    // id matches none and the owner stays empty, which is what the recording
+    // path ignores anyway.
     //
-    // Several records of that code in this entity's scope means the URL names
-    // none of them, and each owner keeps its own recordings. Serving the
-    // lowest-sorting owner's bag would hand the caller another owner's bytes
-    // under a URL that never said whose they were, so this refuses the same way
-    // the fault routes do. The recording-id form is unaffected: it addresses
-    // the bag directly and needs no owner.
-    auto requested_records = faults::records_of_code_in_scope(all_faults, bulk_data_id, scope);
+    // Several candidates means the URL names none of them, and each owner keeps
+    // its own recordings. Serving the lowest-sorting owner's bag would hand the
+    // caller another owner's bytes under a URL that never said whose they were,
+    // so this refuses the same way the fault routes do. The recording-id form
+    // is unaffected: it addresses the bag directly and needs no owner.
+    auto requested_records = faults::addressable_records(listing, bulk_data_id, scope);
     if (requested_records.size() > 1) {
       std::vector<std::string> owners;
       owners.reserve(requested_records.size());

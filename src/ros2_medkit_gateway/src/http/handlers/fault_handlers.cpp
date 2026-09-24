@@ -270,8 +270,9 @@ FaultHandlers::select_scoped_fault(std::vector<faults::ScopedFault> records, con
     return tl::make_unexpected(make_error(
         409, ERR_AMBIGUOUS_FAULT, "Fault code addresses several records in this entity",
         json{{"details",
-              "Several sources this entity owns report this fault code, and each is its own record. Address one of "
-              "them through the entity that owns it, or read them from this entity's fault list."},
+              "Several sources this entity owns report this fault code, and each is its own record. "
+              "parameters.owners names them. Address one through the route of the app that owns it, "
+              "/apps/{app_id}/faults/{fault_code}."},
              {id_field, entity_id},
              {"fault_code", fault_code},
              {"owners", owners}}));
@@ -287,11 +288,14 @@ tl::expected<faults::ScopedFault, ErrorInfo> FaultHandlers::resolve_scoped_fault
                                           json{{entity_info.id_field, entity_info.id}, {"fault_code", fault_code}}));
   }
 
-  // Every status AND muted records. A record the caller addresses by code
+  // Every status, and muted records too. A record the caller addresses by code
   // exists whatever its lifecycle state, and the detail and clear routes have
   // always served a cleared or healed one. Muting is the correlation engine
-  // hiding a symptom from the default listing, not a reason the record stops
-  // being addressable: leaving it out 404s a record that was reachable before.
+  // hiding a symptom from the entity's list, not a reason the record stops
+  // being addressable. addressable_records resolves over the records that
+  // list shows first and falls back to the muted ones only when it shows none,
+  // so a muted record never turns the record a client read off the list into
+  // an ambiguous address.
   auto result = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
                                        /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);
@@ -302,7 +306,7 @@ tl::expected<faults::ScopedFault, ErrorInfo> FaultHandlers::resolve_scoped_fault
 
   const auto & cache = ctx_.node()->get_thread_safe_cache();
   auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-  auto records = faults::records_of_code_in_scope(result.data.value("faults", json::array()), fault_code, source_fqns);
+  auto records = faults::addressable_records(result.data, fault_code, source_fqns);
   return select_scoped_fault(std::move(records), fault_code, entity_info.id_field, entity_info.id);
 }
 
@@ -994,7 +998,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
             if (store_holds_code) {
               const auto & cache = ctx_.node()->get_thread_safe_cache();
               auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-              auto scoped = select_scoped_fault(faults::records_of_code_in_scope(all, fault_code, source_fqns),
+              auto scoped = select_scoped_fault(faults::addressable_records(held.data, fault_code, source_fqns),
                                                 fault_code, entity_info.id_field, entity_id);
               if (!scoped) {
                 return tl::make_unexpected(scoped.error());
