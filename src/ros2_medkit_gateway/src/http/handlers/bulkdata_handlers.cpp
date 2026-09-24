@@ -555,9 +555,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // other's recording this entity's. GetRosbag names the attached codes but
     // not their owners, so the candidates are the owners of this entity's own
     // records of those codes, and ListRosbags, which answers exactly the rows
-    // one owner holds, says whether the served recording is among them. The
-    // rosbags listing of the entity reads the same rows, so a recording is
-    // downloadable exactly when a listing under one of those owners carries it.
+    // one owner holds, says whether the served recording is among them: a
+    // recording is downloadable exactly when a listing under one of those owners
+    // carries it. The owners are matched with the fault list's scope rule, so
+    // an owner below one of the entity's sources counts too.
     std::set<std::string> candidate_owners;
     for (const auto & code : attached_codes) {
       for (const auto & record : faults::records_of_code_in_scope(all_faults, code, scope)) {

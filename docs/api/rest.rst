@@ -1871,8 +1871,8 @@ schema-free media type entry is the accurate description.
 **Which recordings an entity serves.** A recording belongs to the fault records
 it is attached to, each a (``fault_code``, owner) pair, and a burst attaches
 several. An entity serves a recording when the owner of one of those records is
-in the entity's fault scope, which is exactly when the entity's ``rosbags``
-listing carries it. A fault code the entity also owns a record of is not enough:
+in the entity's fault scope, the scope its fault list uses. A fault code the
+entity also owns a record of is not enough:
 two apps reporting one code each download their own recording and get ``404`` on
 the other's, whether or not either record has been cleared, while the component
 hosting both serves both.
