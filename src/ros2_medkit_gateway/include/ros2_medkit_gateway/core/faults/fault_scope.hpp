@@ -74,8 +74,8 @@ std::string record_owner(const nlohmann::json & fault);
 ///
 /// Returns the records rather than a count or a single pick, because the
 /// consumers disagree about what several of them mean: a per-entity fault route
-/// refuses to act on an ambiguous address, while a rosbag download is
-/// authorized as soon as one attached record is in scope.
+/// refuses to act on an ambiguous address, while a rosbag download asks each of
+/// their owners whether it holds the recording.
 std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
                                                   const std::set<std::string> & source_fqns);
 

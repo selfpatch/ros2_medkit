@@ -680,19 +680,18 @@ TEST(RecordsOfCodeInScopeTest, OtherCodesAreNotCollected) {
   EXPECT_EQ(records[0].owner, "app_a");
 }
 
-// The rosbag download authorizes on the same records, but a code addressing
-// several of them is not an ambiguity there: the question is only whether any
-// record attached to the recording is this entity's, and one that is settles
-// it. Reading the code unscoped instead answered "ambiguous" and the entity was
-// refused a recording it owns.
-TEST(RecordsOfCodeInScopeTest, OneOwnerInScopeIsEnoughToAuthorizeARecording) {
+// The rosbag download reads the same records to find the owners it asks
+// whether they hold the recording, and a code addressing several of them is not
+// an ambiguity there: every owner in scope is asked. Reading the code unscoped
+// instead answered "ambiguous" and the entity was refused a recording it owns.
+TEST(RecordsOfCodeInScopeTest, EveryOwnerInScopeIsARecordingDownloadCandidate) {
   const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b")});
 
   EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a"}).empty()) << "app_a owns a record of this code";
-  EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}).empty())
-      << "a component hosting both owners still owns the recording";
+  EXPECT_EQ(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}).size(), 2u)
+      << "a component hosting both owners asks both of them";
   EXPECT_TRUE(in_scope(faults, "SHARED_CODE", {"unrelated_app"}).empty())
-      << "an entity owning no record of this code must not be authorized";
+      << "an entity owning no record of this code has no owner to ask";
 }
 
 // The rosbag download resolves the SAME way the fault routes do when the URL

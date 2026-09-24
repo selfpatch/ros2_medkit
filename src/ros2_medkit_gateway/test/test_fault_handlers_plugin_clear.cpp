@@ -514,6 +514,7 @@ class PluginClearOwnerTest : public ::testing::Test {
   }
   static constexpr const char * kComponentFaultPattern = R"(/api/v1/components/([^/]+)/faults/([^/]+))";
   static constexpr const char * kComponentBagPattern = R"(/api/v1/components/([^/]+)/bulk-data/([^/]+)/([^/]+))";
+  static constexpr const char * kAppBagPattern = R"(/api/v1/apps/([^/]+)/bulk-data/([^/]+)/([^/]+))";
 
   static inline int test_counter_ = 0;
   CorsConfig cors_{};
@@ -1137,6 +1138,50 @@ TEST_F(PluginClearOwnerTest, OneClearedRecordAloneIsServedOnTheDetailRoute) {
 
   ASSERT_TRUE(result.has_value()) << "a cleared record alone stays addressable: " << result.error().message;
   EXPECT_EQ(result->content["x-medkit"]["owner"], kHostedApp);
+}
+
+// A recording belongs to the (fault code, owner) records it is attached to. Two
+// owners of one code each have their own recording: each app downloads its own
+// by id and gets 404 on the other's, while the component hosting both owns both.
+// The 200s are the positive control for the 404s on the same harness.
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, EachOwnerDownloadsOnlyItsOwnRecordingById) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+
+  EXPECT_EQ(download_status(app_bag_path(kHostedApp, "rec_tank"), kAppBagPattern), 200);
+  EXPECT_EQ(download_status(app_bag_path(kHostedApp, "rec_pump"), kAppBagPattern), 404)
+      << "tank must not download pump's recording of the same code";
+  EXPECT_EQ(download_status(app_bag_path(kOtherApp, "rec_pump"), kAppBagPattern), 200);
+  EXPECT_EQ(download_status(app_bag_path(kOtherApp, "rec_tank"), kAppBagPattern), 404)
+      << "pump must not download tank's recording of the same code";
+  EXPECT_EQ(download_status(component_bag_path("rec_tank"), kComponentBagPattern), 200);
+  EXPECT_EQ(download_status(component_bag_path("rec_pump"), kComponentBagPattern), 200);
+}
+
+// Clearing a record keeps its owner in the entity's scope, but it does not make
+// that owner the owner of another record's recording. tank cleared its record
+// and still gets 404 on pump's recording, while its own recording stays served.
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, AClearedRecordDoesNotOpenAnotherOwnersRecording) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  set_status(kCode, kHostedApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+  ASSERT_TRUE(wait_for_store());
+
+  EXPECT_EQ(download_status(app_bag_path(kHostedApp, "rec_pump"), kAppBagPattern), 404)
+      << "tank's cleared record must not authorize pump's recording";
+  EXPECT_EQ(download_status(app_bag_path(kHostedApp, "rec_tank"), kAppBagPattern), 200)
+      << "a cleared record keeps serving its own recording";
+  EXPECT_EQ(download_status(app_bag_path(kOtherApp, "rec_tank"), kAppBagPattern), 404);
+  EXPECT_EQ(download_status(app_bag_path(kOtherApp, "rec_pump"), kAppBagPattern), 200);
 }
 
 int main(int argc, char ** argv) {

@@ -143,6 +143,31 @@ std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosb
   return {requested_id};
 }
 
+bool rosbag_rows_hold_recording(const nlohmann::json & rows, const nlohmann::json & served) {
+  if (!rows.is_array() || !served.is_object()) {
+    return false;
+  }
+  const std::string served_id = served.value("recording_id", std::string{});
+  const std::string served_path = served.value("file_path", std::string{});
+  for (const auto & row : rows) {
+    if (!row.is_object()) {
+      continue;
+    }
+    const std::string row_id = row.value("recording_id", std::string{});
+    if (!served_id.empty() && !row_id.empty()) {
+      if (row_id == served_id) {
+        return true;
+      }
+      continue;
+    }
+    // One side predates recording ids. The bag path is the recording then.
+    if (!served_path.empty() && row.value("file_path", std::string{}) == served_path) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std::string & requested_id) {
   const std::string resolved = rosbag_data.value("recording_id", "");
   // An absent id means a peer that predates the field; it answers by fault code
@@ -460,12 +485,12 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     std::set<std::string> scope(source_filters.begin(), source_filters.end());
 
     // Every record this entity owns, in one read, every status and muted ones
-    // too. Authorization asks which RECORDS a code addresses, not whether a
-    // code exists: two sources reporting one code are two records, and an
-    // unscoped read of that code is ambiguous and answers nothing at all. A
-    // muted record keeps its recordings, so leaving it out would 404 them.
-    // Reading the list once also replaces one GetFault round trip per attached
-    // code.
+    // too. Both the code resolution and the authorization below ask which
+    // RECORDS a code addresses, not whether a code exists: two sources reporting
+    // one code are two records, and an unscoped read of that code is ambiguous
+    // and answers nothing at all. A muted or cleared record keeps its
+    // recordings, so leaving it out would 404 them. Reading the list once also
+    // replaces one GetFault round trip per attached code.
     auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
                                        /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
                                        /*include_clusters=*/false);
@@ -523,13 +548,30 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
 
     const auto attached_codes = detail::rosbag_attached_fault_codes(rosbag_result.data, bulk_data_id);
 
-    // The bag belongs to this entity when at least one record attached to it is
-    // owned by a source in scope. Several owners of one attached code is not an
-    // ambiguity here: the question is whether any of them is this entity's, and
-    // one that is settles it.
-    const bool authorized = std::any_of(attached_codes.begin(), attached_codes.end(), [&](const std::string & code) {
-      return !faults::records_of_code_in_scope(all_faults, code, scope).empty();
-    });
+    // The bag belongs to this entity when one of the records it is attached to,
+    // a (fault code, owner) pair, has its owner in scope. The code alone does not
+    // say that: two sources reporting one code are two records with their own
+    // recordings, and owning one of them, cleared or not, does not make the
+    // other's recording this entity's. GetRosbag names the attached codes but
+    // not their owners, so the candidates are the owners of this entity's own
+    // records of those codes, and ListRosbags, which answers exactly the rows
+    // one owner holds, says whether the served recording is among them. The
+    // rosbags listing of the entity reads the same rows, so a recording is
+    // downloadable exactly when a listing under one of those owners carries it.
+    std::set<std::string> candidate_owners;
+    for (const auto & code : attached_codes) {
+      for (const auto & record : faults::records_of_code_in_scope(all_faults, code, scope)) {
+        if (!record.owner.empty()) {
+          candidate_owners.insert(record.owner);
+        }
+      }
+    }
+    const bool authorized =
+        std::any_of(candidate_owners.begin(), candidate_owners.end(), [&](const std::string & owner) {
+          auto held_rows = fault_mgr->list_rosbags(owner);
+          return held_rows.success &&
+                 detail::rosbag_rows_hold_recording(held_rows.data.value("rosbags", json::array()), rosbag_result.data);
+        });
     if (!authorized) {
       return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
                                        json{{"entity_id", path_info->entity_id}}));

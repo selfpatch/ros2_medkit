@@ -681,9 +681,11 @@ TEST_F(BulkDataSourceFiltersTest, FunctionWithComponentHostResolvesComponentApps
 // get_fault(code, source) semantics) would let app id "plc" claim the bag of
 // "plc_line1".
 // === Download authorization tests ===
-// A recording is shared by a whole burst, so ownership is the union over its
-// attached faults. The scope matcher itself is unchanged and pinned below; what
-// is new is which codes get fed to it.
+// A recording is shared by a whole burst, so ownership is the union over the
+// records it is attached to, each a (fault code, owner) pair. The scope matcher
+// itself is unchanged and pinned below. The attached codes say which of the
+// entity's records to ask about, and the owner's own rosbag rows say whether it
+// holds the recording.
 
 TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesComeFromTheRecordingNotTheUrl) {
   const nlohmann::json rosbag = {{"file_path", "/var/bags/fault_ROOT_1"},
@@ -711,6 +713,44 @@ TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesFallBackOnAnEmptyOrMalformed
 
   const nlohmann::json not_an_array = {{"fault_codes", "X"}};
   EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(not_an_array, "X"), (std::vector<std::string>{"X"}));
+}
+
+// One owner's ListRosbags rows prove its records are attached to the recording
+// only when a row names that recording. Another recording of the same code is
+// another owner's, or another occurrence, and proves nothing.
+TEST_F(BulkDataSourceFiltersTest, AnOwnersRowsHoldARecordingOnlyWhenARowNamesIt) {
+  const nlohmann::json served = {{"file_path", "/var/bags/rec_pump"}, {"recording_id", "rec_pump"}};
+  const nlohmann::json tank_rows = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_tank"}, {"file_path", "/var/bags/rec_tank"}}});
+  const nlohmann::json pump_rows = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_pump"}, {"file_path", "/var/bags/rec_pump"}}});
+
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(tank_rows, served))
+      << "tank's recording of the same code is not pump's recording";
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(pump_rows, served));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(nlohmann::json::array(), served));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(nlohmann::json::object(), served));
+}
+
+// A peer that predates recording ids names a bag only by its path, on either
+// side. The path then identifies the recording. Two ids that differ never match
+// through their paths.
+TEST_F(BulkDataSourceFiltersTest, ARecordingIsMatchedByItsPathWhenEitherSideHasNoId) {
+  const nlohmann::json row_without_id =
+      nlohmann::json::array({nlohmann::json{{"fault_code", "SHARED"}, {"file_path", "/var/bags/rec_pump"}}});
+  const nlohmann::json served_with_id = {{"file_path", "/var/bags/rec_pump"}, {"recording_id", "rec_pump"}};
+  const nlohmann::json served_without_id = {{"file_path", "/var/bags/rec_pump"}};
+  const nlohmann::json row_with_id = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_pump"}, {"file_path", "/var/bags/rec_pump"}}});
+
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(row_without_id, served_with_id));
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(row_with_id, served_without_id));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(row_without_id, {{"file_path", "/var/bags/rec_tank"}}));
+
+  const nlohmann::json same_path_other_id = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_other"}, {"file_path", "/var/bags/rec_pump"}}});
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(same_path_other_id, served_with_id))
+      << "two recording ids are two recordings";
 }
 
 TEST_F(BulkDataSourceFiltersTest, AFaultCodeUrlIsRecognisedAsTheCompatibilityPath) {

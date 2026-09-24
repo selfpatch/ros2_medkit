@@ -1868,6 +1868,15 @@ and OpenAPI 3.1 has no way to say "bytes" - ``format: binary`` was an OpenAPI
 3.0 idiom that 3.1 dropped when it aligned with JSON Schema 2020-12. A
 schema-free media type entry is the accurate description.
 
+**Which recordings an entity serves.** A recording belongs to the fault records
+it is attached to, each a (``fault_code``, owner) pair, and a burst attaches
+several. An entity serves a recording when the owner of one of those records is
+in the entity's fault scope, which is exactly when the entity's ``rosbags``
+listing carries it. A fault code the entity also owns a record of is not enough:
+two apps reporting one code each download their own recording and get ``404`` on
+the other's, whether or not either record has been cleared, while the component
+hosting both serves both.
+
 **Range requests.** A request carrying a ``Range`` header is answered with
 **206 Partial Content** and a ``Content-Range: bytes <start>-<end>/<total>``
 header instead of ``200``; the body is the requested slice. Several ranges in
@@ -1888,7 +1897,8 @@ declared on the 206 only - the 200 can never carry it.
 
 - **200 OK**: File content
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
-- **404 Not Found**: Entity, category, or bulk-data ID not found
+- **404 Not Found**: Entity, category, or bulk-data ID not found, or a
+  recording none of this entity's records is attached to
 - **409 Conflict**: ``x-medkit-ambiguous-fault``. A ``rosbags`` URL whose last
   segment is a fault code rather than a recording id resolves that code to one
   record the way the per-code fault routes do (see the fault record note under
