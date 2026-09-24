@@ -190,7 +190,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
   /// Shared by the report path and the time-based confirmation timer so a
   /// confirmation produces the same evidence whichever one produced it.
-  /// @param fault_code Code of the fault that reached CONFIRMED
+  /// @param id The record (fault code and owning source) that reached CONFIRMED
   void capture_on_confirm(const FaultId & id);
 
   /// Validate severity value
