@@ -145,6 +145,25 @@ TEST(FaultTriggerEngineTest, CreateWithoutEnumeratorSkipsExistenceCheck) {
   EXPECT_TRUE(engine.create("tank", make_body("whatever", ">", 1.0, "F", "ERROR")));
 }
 
+// A code another app's rule holds is refused, and the refusal states the
+// engine's own rule. The fault manager would keep the two apps' records apart,
+// so a message blaming the fault store sends the operator after the wrong cause.
+TEST(FaultTriggerEngineTest, ADuplicateCodeIsRefusedWithTheEnginesOwnRule) {
+  FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr);
+  auto first = engine.create("app_a", make_body("x", ">", 1.0, "SHARED", "ERROR"));
+  ASSERT_TRUE(first);
+
+  auto second = engine.create("app_b", make_body("y", ">", 1.0, "SHARED", "ERROR"));
+
+  ASSERT_FALSE(second);
+  EXPECT_EQ(second.error().first, 409);
+  const auto & msg = second.error().second;
+  EXPECT_NE(msg.find("rule '" + first->id + "' on app 'app_a'"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("The trigger engine keeps one rule per fault code across every app"), std::string::npos) << msg;
+  EXPECT_EQ(msg.find("fault store"), std::string::npos) << "the refusal is the engine's rule, not the store's: " << msg;
+  EXPECT_TRUE(engine.list("app_b").empty());
+}
+
 TEST(FaultTriggerEngineTest, ListIsScopedPerApp) {
   FaultTriggerEngine engine("", nullptr, nullptr, nullptr, nullptr);
   ASSERT_TRUE(engine.create("app_a", make_body("x", ">", 1.0, "FA", "ERROR")));
