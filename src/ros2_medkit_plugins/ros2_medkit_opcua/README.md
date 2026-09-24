@@ -1008,7 +1008,9 @@ When the value returns below threshold, the plugin calls the fault manager's
 `~/clear_fault` service (`/fault_manager/clear_fault`) for that fault code and
 the entity that reported it, which together address one record. That is the same
 service an operator's `DELETE /api/v1/apps/{app_id}/faults/{fault_code}` ends up
-calling, so a device de-assert is a clear like any other. It drops the fault's value snapshots unless
+calling, so a device de-assert is a clear like any other. That REST route reaches the plugin
+through `FaultProvider::clear_fault_record` with the owner the gateway resolved, so on a
+component route the clear names the hosted app that reported the record. It drops the fault's value snapshots unless
 `snapshots.retain_on_clear` is set, and its rosbag recording unless
 `snapshots.rosbag.auto_cleanup` is off or `snapshots.rosbag.max_bags_per_fault`
 keeps a history.

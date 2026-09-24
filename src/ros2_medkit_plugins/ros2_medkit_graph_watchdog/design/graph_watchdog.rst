@@ -13,7 +13,7 @@ below).
 Structure
 ---------
 - **Plugin shell** (``GraphWatchdogPlugin``): loads via the gateway plugin ABI
-  (v7). In ``set_context`` it casts the context with ``as_ros_plugin_context``,
+  (v8). In ``set_context`` it casts the context with ``as_ros_plugin_context``,
   creates one ``rclcpp::Client<ReportFault>`` on the gateway node, and starts a
   dedicated tick thread. The tick is deliberately NOT a gateway wall timer:
   detectors do blocking parameter/service reads, and the gateway's small

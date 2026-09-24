@@ -553,8 +553,8 @@ class MockFaultPlugin : public GatewayPlugin, public FaultProvider {
                                                                          const std::string & code) override {
     return dto::FaultDetailResult{json{{"code", code}, {"status", "pending"}}};
   }
-  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
-  clear_fault(const std::string & /*entity_id*/, const std::string & code, const std::string & /*owner*/) override {
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
+                                                                          const std::string & code) override {
     return dto::FaultClearResult{json{{"code", code}, {"cleared", true}}};
   }
 };
@@ -649,8 +649,8 @@ class MockErrorPlugin : public GatewayPlugin, public DataProvider, public FaultP
                                                                          const std::string & /*code*/) override {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "unknown fault", 404});
   }
-  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
-  clear_fault(const std::string & /*entity_id*/, const std::string & /*code*/, const std::string & /*owner*/) override {
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
+                                                                          const std::string & /*code*/) override {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "cannot clear", 409});
   }
 };

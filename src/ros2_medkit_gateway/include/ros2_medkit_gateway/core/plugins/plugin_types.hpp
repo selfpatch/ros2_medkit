@@ -40,7 +40,14 @@ namespace ros2_medkit_gateway {
 ///       so a pre-compiled v6 `.so` is rejected. Out-of-tree plugins must be
 ///       recompiled against v7 headers; in-tree plugins that `return
 ///       PLUGIN_API_VERSION` pick up the bump automatically.
-constexpr int PLUGIN_API_VERSION = 7;
+/// - v8: FaultProvider::clear_fault_record(entity_id, fault_code, owner), which
+///       the gateway now calls to clear one fault record. Its default
+///       implementation calls the unchanged two-argument clear_fault(), so
+///       plugin SOURCE written against v7 compiles unchanged against v8
+///       headers (source-compatible). The new virtual changes the
+///       FaultProvider vtable, so a pre-compiled v7 `.so` is rejected by the
+///       strict equality check and must be recompiled against v8 headers.
+constexpr int PLUGIN_API_VERSION = 8;
 
 /// Log severity levels for plugin logging callback
 enum class PluginLogLevel { kInfo, kWarn, kError };

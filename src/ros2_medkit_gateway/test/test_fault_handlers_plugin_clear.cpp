@@ -124,8 +124,15 @@ class RecordingFaultPlugin : public GatewayPlugin, public FaultProvider {
                                                                     const std::string & code) override {
     return FaultDetailResult{json{{"code", code}}};
   }
+  // The gateway clears through clear_fault_record, so a call landing here means
+  // it went back to the code-only clear and dropped the owner it resolved.
+  tl::expected<FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
+                                                                     const std::string & code) override {
+    ADD_FAILURE() << "the gateway cleared '" << code << "' by code alone instead of calling clear_fault_record";
+    return FaultClearResult{json{{"code", code}, {"cleared", true}}};
+  }
   tl::expected<FaultClearResult, FaultProviderErrorInfo>
-  clear_fault(const std::string & entity_id, const std::string & code, const std::string & owner) override {
+  clear_fault_record(const std::string & entity_id, const std::string & code, const std::string & owner) override {
     if (fail_if_called) {
       ADD_FAILURE() << "the provider was asked to clear '" << code << "' with owner '" << owner
                     << "', which the gateway never resolved";
@@ -138,6 +145,40 @@ class RecordingFaultPlugin : public GatewayPlugin, public FaultProvider {
   json listed_items_ = json::array();
   /// Set by a test in which any clear reaching the provider is itself the defect.
   bool fail_if_called = false;
+};
+
+/// A provider written against the two-argument clear contract: it overrides
+/// clear_fault(entity_id, fault_code) and nothing else of the clear. It has to
+/// keep compiling against the current headers and keep receiving the clear.
+class TwoArgumentClearPlugin : public GatewayPlugin, public FaultProvider {
+ public:
+  struct ClearCall {
+    std::string entity_id;
+    std::string fault_code;
+  };
+
+  std::string name() const override {
+    return "two_argument_clear_plugin";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & /*entity_id*/) override {
+    return FaultListResult{json{{"items", json::array()}}};
+  }
+  tl::expected<FaultDetailResult, FaultProviderErrorInfo> get_fault(const std::string & /*entity_id*/,
+                                                                    const std::string & code) override {
+    return FaultDetailResult{json{{"code", code}}};
+  }
+  tl::expected<FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
+                                                                     const std::string & code) override {
+    clears.push_back(ClearCall{entity_id, code});
+    return FaultClearResult{json{{"code", code}, {"cleared", true}}};
+  }
+
+  std::vector<ClearCall> clears;
 };
 
 /// A TypedRequest carrying the two positional captures the fault routes read.
@@ -366,12 +407,19 @@ class PluginClearOwnerTest : public ::testing::Test {
   /// A component hosting two external apps, all three owned by the plugin, so
   /// the fault routes take the plugin branch on every one of them.
   RecordingFaultPlugin * seed_topology() {
+    return seed_plugin_topology<RecordingFaultPlugin>();
+  }
+
+  /// The same topology owned by a plugin of type P.
+  template <typename P>
+  P * seed_plugin_topology() {
     seed_entities();
-    auto plugin = std::make_unique<RecordingFaultPlugin>();
+    auto plugin = std::make_unique<P>();
     auto * raw = plugin.get();
+    const std::string plugin_name = raw->name();
     auto * pmgr = node_->get_plugin_manager();
     pmgr->add_plugin(std::move(plugin));
-    pmgr->register_entity_ownership("recording_fault_plugin", {kComponent, kHostedApp, kOtherApp});
+    pmgr->register_entity_ownership(plugin_name, {kComponent, kHostedApp, kOtherApp});
     return raw;
   }
 
@@ -649,6 +697,29 @@ TEST_F(PluginClearOwnerTest, PluginClearReachesTheProviderWhenTheFaultManagerAns
   ASSERT_TRUE(result.has_value()) << result.error().message;
   ASSERT_EQ(plugin->clears.size(), 1u);
   EXPECT_EQ(plugin->clears[0].owner, kHostedApp);
+}
+
+// A provider that predates the owner-aware clear overrides only the
+// two-argument clear_fault. It must still compile against these headers and
+// still receive the clear the gateway resolved, through the default
+// clear_fault_record, which hands it the entity and the code as before.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, ATwoArgumentClearProviderStillReceivesTheClear) {
+  auto * plugin = seed_plugin_topology<TwoArgumentClearPlugin>();
+  store_record(kCode, kHostedApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_TRUE(std::holds_alternative<FaultClearResult>(*result)) << "the plugin's acknowledgement is the answer";
+  ASSERT_EQ(plugin->clears.size(), 1u) << "the two-argument clear_fault never received the clear";
+  EXPECT_EQ(plugin->clears[0].entity_id, kComponent);
+  EXPECT_EQ(plugin->clears[0].fault_code, kCode);
 }
 
 // ---------------------------------------------------------------------------

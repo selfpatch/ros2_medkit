@@ -148,8 +148,7 @@ class TestDataProviderPlugin : public GatewayPlugin,
   }
 
   tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & /*entity_id*/,
-                                                                          const std::string & fault_code,
-                                                                          const std::string & /*owner*/) override {
+                                                                          const std::string & fault_code) override {
     return dto::FaultClearResult{nlohmann::json{{"code", fault_code}, {"cleared", true}}};
   }
 

@@ -2156,8 +2156,16 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
                                                     "Fault not found: " + fault_code + " on entity " + entity_id, 404});
 }
 
+tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,
+                                                                                     const std::string & fault_code) {
+  // The code-only form of the contract names no owner, so the addressed entity
+  // stands in, which is the source this plugin reports its own faults under.
+  return clear_fault_record(entity_id, fault_code, "");
+}
+
 tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
-OpcuaPlugin::clear_fault(const std::string & entity_id, const std::string & fault_code, const std::string & owner) {
+OpcuaPlugin::clear_fault_record(const std::string & entity_id, const std::string & fault_code,
+                                const std::string & owner) {
   if (!ctx_ || !fault_clients_) {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }

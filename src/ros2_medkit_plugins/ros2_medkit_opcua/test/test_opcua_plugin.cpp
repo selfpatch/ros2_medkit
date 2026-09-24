@@ -1197,7 +1197,7 @@ struct ScopedExecutorSpin {
   ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
 };
 
-// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
+// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault_record(),
 // which buffers a dispatch into pending_reports_ - the SAME vector the poll
 // thread drains in publish_values()/flush_pending_reports(). Before the fix the
 // buffer had no lock, so a push_back that reallocated the vector while another
@@ -1279,7 +1279,11 @@ nodes:
   // A record is (fault_code, owner), so the owner is what has to travel: sending
   // the component id addresses a record no source owns and the fault manager
   // declines it.
-  static_cast<void>(plugin.clear_fault("owner_runtime", "SHARED_CODE", "tank"));
+  // Through the FaultProvider interface, which is how the gateway reaches it: a
+  // plugin that did not override clear_fault_record would land on the default,
+  // which clears by code with the addressed entity and drops the owner.
+  ros2_medkit_gateway::FaultProvider & provider = plugin;
+  static_cast<void>(provider.clear_fault_record("owner_runtime", "SHARED_CODE", "tank"));
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (std::chrono::steady_clock::now() < deadline) {
@@ -1289,7 +1293,7 @@ nodes:
         break;
       }
     }
-    static_cast<void>(plugin.clear_fault("owner_runtime", "SHARED_CODE", "tank"));
+    static_cast<void>(provider.clear_fault_record("owner_runtime", "SHARED_CODE", "tank"));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
@@ -1362,7 +1366,7 @@ nodes:
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (replies_sent.load() == 0 && std::chrono::steady_clock::now() < deadline) {
-    static_cast<void>(plugin.clear_fault("tank", "SHARED_CODE", "tank"));
+    static_cast<void>(plugin.clear_fault_record("tank", "SHARED_CODE", "tank"));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
@@ -1457,7 +1461,7 @@ nodes:
         // The result is deliberately dropped: this test races the shared
         // pending-report buffer, it does not assert on any single clear.
         static_cast<void>(
-            plugin.clear_fault("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f), "tank"));
+            plugin.clear_fault_record("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f), "tank"));
       }
     });
   }

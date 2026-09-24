@@ -1019,7 +1019,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         }
 
         try {
-          auto result = fault_prov->clear_fault(entity_id, fault_code, resolved_owner);
+          auto result = fault_prov->clear_fault_record(entity_id, fault_code, resolved_owner);
           if (!result) {
             return tl::make_unexpected(
                 make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
@@ -1111,7 +1111,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
               if (owner.empty()) {
                 owner = faults::record_owner(fault);
               }
-              auto clear_result = fault_prov->clear_fault(entity_id, code, owner);
+              auto clear_result = fault_prov->clear_fault_record(entity_id, code, owner);
               if (!clear_result) {
                 failed_codes.push_back(code);
               }
