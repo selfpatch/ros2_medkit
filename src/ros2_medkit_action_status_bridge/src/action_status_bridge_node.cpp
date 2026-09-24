@@ -476,11 +476,12 @@ ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for
   // so the fault still fires on time. Reporting the fault on time takes priority
   // over entity attribution when discovery is slow.
   //
-  // The source is NOT re-attributed later: reporting_sources is append-only on the
-  // manager side and the per-entity /faults scope filter is strict-AND, so a
-  // provisional action-name source cannot be swapped for the FQN afterwards.
-  // Correct attribution for the slow-discovery case is a separate concern (it
-  // needs a way to supersede a provisional source).
+  // The source is NOT re-attributed later: the fault manager keeps one record per
+  // (fault code, source), so swapping the provisional action-name source for the
+  // FQN would open a second record under the FQN and leave the provisional one
+  // raised, with no reporter left to send its PASSED. Correct attribution for the
+  // slow-discovery case is a separate concern (it needs a way to supersede a
+  // provisional source).
   const std::string fqn = server_fqn_for_action(action_name);
   const std::string & source_id = fqn.empty() ? action_name : fqn;
   auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), source_id);

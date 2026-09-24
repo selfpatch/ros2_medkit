@@ -123,7 +123,7 @@ and central aggregation.
 **Key features:**
 
 - [x] **Two-level filtering**: FaultReporter (local) + FaultManager (central)
-- [x] **Multi-source aggregation**: Same fault code from multiple sources combined into single entry
+- [x] **Per-source fault records**: Same fault code from multiple sources kept as one record each, addressed by (code, source)
 - [x] **Persistent storage**: Fault state survives restarts
 - [x] **REST API + SSE**: Real-time fault monitoring via HTTP
 - [x] **Backwards compatibility**: Integration with ``diagnostic_updater``

@@ -118,7 +118,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `healing_threshold` | int | `3` | Counter value at which faults are healed |
 | `auto_confirm_after_sec` | double | `0.0` | Auto-confirm PREFAILED faults after timeout (0 = disabled) |
 | `entity_thresholds.config_file` | string | `""` | Path to YAML file with per-entity debounce threshold overrides |
-| `near_miss.max_per_fault` | int | `200` | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
+| `near_miss.max_per_fault` | int | `200` | Near-miss entries retained per fault record, oldest evicted first (0 = unlimited) |
 
 ### Snapshot Parameters
 
@@ -138,7 +138,7 @@ That single-writer property also shapes what each fault of a burst gets. Nothing
 | `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
 | `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
 | `snapshots.config_file` | string | `""` | Path to YAML config for `fault_specific` and `patterns` |
-| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault code. |
+| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault record. |
 | `snapshots.max_per_fault` | int | `10` | Max snapshots retained per fault. |
 | `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer. |
 | `snapshots.capture_queue_depth` | int | `16` | Max pending captures before the full-queue policy applies (>= 1). |

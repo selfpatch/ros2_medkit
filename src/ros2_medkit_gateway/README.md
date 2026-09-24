@@ -1044,7 +1044,7 @@ Real-time fault event stream using Server-Sent Events (SSE). Clients receive ins
 
 **Event Types:**
 - `fault_confirmed` - Fault transitioned to CONFIRMED status
-- `fault_updated` - Fault data changed without a status transition (`last_occurred`, severity, reporting sources). Not `occurrence_count`, which only changes on an occurrence edge
+- `fault_updated` - Fault data changed without a status transition (`last_occurred`, severity). Not the reporting sources, which name the record's one owner and never change, and not `occurrence_count`, which only changes on an occurrence edge
 - `fault_cleared` - Fault ended: cleared via ClearFault service, or auto-healed by PASSED events (check `fault.status` for `CLEARED` vs `HEALED`)
 
 **Example:**
@@ -1189,7 +1189,7 @@ Snapshots are configured via FaultManager parameters:
 | `snapshots.max_message_size` | int | `65536` | Maximum message size in bytes (larger messages skipped) |
 | `snapshots.default_topics` | string[] | `[]` | Topics to capture for all faults |
 | `snapshots.config_file` | string | `""` | Path to YAML config file for `fault_specific` and `patterns` |
-| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault code. |
+| `snapshots.recapture_cooldown_sec` | double | `60.0` | Min seconds between captures for the same fault record. |
 | `snapshots.max_per_fault` | int | `10` | Max snapshots retained per fault. |
 | `snapshots.capture_pool_size` | int | `2` | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer (one fault at a time). |
 | `snapshots.capture_queue_depth` | int | `16` | Max pending captures before the full-queue policy applies (>= 1). |
