@@ -928,6 +928,53 @@ TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneMakeTheRecordingCodeAmbiguous) 
   EXPECT_TRUE(rosbag_requests_snapshot().empty()) << "no recording is looked up for an ambiguous code";
 }
 
+// The recording route's 409 has to send the client somewhere that works. It
+// names the rosbags listing and the fault detail's bulk_data_uri, and following
+// it does work: the listing carries one descriptor per recording, and each
+// descriptor id downloads that owner's bytes.
+// @verifies REQ_INTEROP_072
+TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsListed) {
+  seed_native_topology();
+  store_record(kCode, kHostedApp);
+  store_record(kCode, kOtherApp);
+  store_recording("rec_tank", kCode, kHostedApp);
+  store_recording("rec_pump", kCode, kOtherApp);
+  ASSERT_TRUE(wait_for_store());
+  const std::string rosbags = std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags";
+
+  RoutedRequest by_code(rosbags + "/" + kCode, kComponentBagPattern, "GET");
+  ASSERT_TRUE(by_code.matched());
+  auto refused = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(by_code.raw()));
+  ASSERT_FALSE(refused.has_value());
+  ASSERT_EQ(refused.error().http_status, 409);
+  const std::string details = refused.error().params.value("details", "");
+  EXPECT_NE(details.find("GET .../bulk-data/rosbags"), std::string::npos) << details;
+  EXPECT_NE(details.find("descriptor's id"), std::string::npos) << details;
+  EXPECT_NE(details.find("environment_data.snapshots[].bulk_data_uri"), std::string::npos) << details;
+  EXPECT_EQ(details.find("x-medkit.recording_id"), std::string::npos)
+      << "the fault listing carries no recording id, so the message must not send the client there: " << details;
+
+  // Follow the message: list the category, then download each descriptor id.
+  RoutedRequest listing(rosbags, R"(/api/v1/components/([^/]+)/bulk-data/([^/]+))", "GET");
+  ASSERT_TRUE(listing.matched());
+  auto listed = bulk_handlers_->list_descriptors(ros2_medkit_gateway::http::TypedRequest(listing.raw()));
+  ASSERT_TRUE(listed.has_value()) << listed.error().message;
+  std::vector<std::string> ids;
+  for (const auto & descriptor : listed->items) {
+    ids.push_back(descriptor.id);
+  }
+  std::sort(ids.begin(), ids.end());
+  ASSERT_EQ(ids, (std::vector<std::string>{"rec_pump", "rec_tank"}));
+
+  for (const auto & id : ids) {
+    RoutedRequest by_id(rosbags + "/" + id, kComponentBagPattern, "GET");
+    ASSERT_TRUE(by_id.matched());
+    auto served = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(by_id.raw()));
+    ASSERT_TRUE(served.has_value()) << id << ": " << served.error().message;
+    EXPECT_EQ(served->filename.value_or(""), id + ".mcap");
+  }
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

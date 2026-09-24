@@ -315,6 +315,29 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         listing = self.get_json(f'/apps/{OWNER_A}/faults')
         self.assertIn('source_id', listing['x-medkit'])
 
+    def test_076_every_recording_download_declares_its_409(self):
+        """The download routes answer 409 on an ambiguous code and say so.
+
+        A GET carries no lock marker, so a 409 on these operations is there
+        only because the route declares the ambiguous-fault refusal.
+
+        @verifies REQ_INTEROP_072
+        """
+        spec = self.poll_endpoint_until('/docs', lambda d: d if 'openapi' in d else None)
+
+        downloads = {
+            path: item['get'] for path, item in spec['paths'].items()
+            if path.endswith('/bulk-data/{category_id}/{file_id}') and 'get' in item
+        }
+        # One per entity type that serves bulk data, so the loop below cannot
+        # pass by matching nothing.
+        self.assertEqual(len(downloads), 6, sorted(downloads))
+        for path, operation in sorted(downloads.items()):
+            self.assertIn(
+                '409', operation['responses'],
+                f'GET {path} answers 409 x-medkit-ambiguous-fault and has to declare it',
+            )
+
     def test_077_a_bare_code_bag_url_refuses_to_pick_an_owner(self):
         """A recording URL carrying a bare fault code names no single record.
 

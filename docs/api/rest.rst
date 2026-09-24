@@ -1877,6 +1877,14 @@ declared on the 206 only - the 200 can never carry it.
 - **200 OK**: File content
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found
+- **409 Conflict**: ``x-medkit-ambiguous-fault``. A ``rosbags`` URL whose last
+  segment is a fault code rather than a recording id resolves that code to one
+  record the way the per-code fault routes do (see the fault record note under
+  Faults Endpoints), and several candidate records in the entity's scope name
+  none of them. ``parameters.owners`` names the owners. Address the recording by
+  its own id instead: the ``rosbags`` listing of this entity carries it as each
+  descriptor's ``id``, and a fault detail links it as
+  ``environment_data.snapshots[].bulk_data_uri``.
 - **416 Range Not Satisfiable**: The ``Range`` header could not be parsed. Not
   specific to this endpoint - see :ref:`rest-range-rejection`.
 

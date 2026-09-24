@@ -495,8 +495,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
           make_error(409, ERR_AMBIGUOUS_FAULT, "Fault code addresses several records in this entity",
                      json{{"details",
                            "Several sources this entity owns report this fault code, and each record keeps its own "
-                           "recordings. Address the recording by its own id, which the fault listing publishes as "
-                           "x-medkit.recording_id."},
+                           "recordings. parameters.owners names them. Address the recording by its own id: the "
+                           "rosbags listing of this entity (GET .../bulk-data/rosbags) carries it as each "
+                           "descriptor's id, and a fault detail links it as "
+                           "environment_data.snapshots[].bulk_data_uri."},
                           {"entity_id", path_info->entity_id},
                           {"fault_code", bulk_data_id},
                           {"owners", owners}}));

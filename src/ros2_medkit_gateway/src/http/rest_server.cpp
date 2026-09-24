@@ -1316,6 +1316,11 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
+        // 409 x-medkit-ambiguous-fault: a rosbag URL carrying a fault code
+        // (the form that predates recording ids) resolves that code to one
+        // record the way the fault routes do, and several candidate records
+        // in this entity's scope name none of them.
+        .errors({409})
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
     // Upload: only for apps and components (405 for areas and functions)
@@ -2102,6 +2107,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
+      // 409 x-medkit-ambiguous-fault, as on the four top-level download routes.
+      .errors({409})
       .operation_id("downloadSubareaBulkData");
 
   // === Nested entities - subcomponents bulk-data ===
@@ -2136,6 +2143,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
+      // 409 x-medkit-ambiguous-fault, as on the four top-level download routes.
+      .errors({409})
       .operation_id("downloadSubcomponentBulkData");
 
   // === Global faults ===
