@@ -1721,7 +1721,7 @@ std::optional<FaultId> FaultManagerNode::resolve_target(const std::string & faul
   error.clear();
 
   if (!source_id.empty()) {
-    const FaultId id{fault_code, source_id};
+    FaultId id{fault_code, source_id};
     if (!storage_->contains(id)) {
       error = "Fault not found: " + fault_code + " (source " + source_id + ")";
       return std::nullopt;

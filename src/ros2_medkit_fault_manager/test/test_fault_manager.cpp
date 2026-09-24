@@ -1415,13 +1415,13 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
 TEST_F(FaultEventPublishingTest, ASecondSourceConfirmsItsOwnRecord) {
   ASSERT_TRUE(call_report_fault("TWO_OWNERS", Fault::SEVERITY_WARN, "/test_node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   received_events_.clear();
 
   ASSERT_TRUE(call_report_fault("TWO_OWNERS", Fault::SEVERITY_ERROR, "/test_node2"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   ASSERT_EQ(received_events_.size(), 1u);
@@ -1661,7 +1661,7 @@ TEST_F(FaultEventPublishingTest, ScopedClearClearsOneRecordAndPublishesItsOwner)
 
   ASSERT_TRUE(call_clear_fault("SHARED_CODE", "/owner_a"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   ASSERT_EQ(received_events_.size(), 1u) << "one record was cleared, so one event";
@@ -1709,7 +1709,7 @@ TEST_F(FaultEventPublishingTest, UnscopedClearOfTwoRecordsIsRefusedAndClearsNoth
 TEST_F(FaultEventPublishingTest, UnscopedClearOfOneRecordSucceeds) {
   ASSERT_TRUE(call_report_fault("ONLY_ONE", Fault::SEVERITY_ERROR, "/owner_a"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   EXPECT_TRUE(call_clear_fault("ONLY_ONE"));
