@@ -1032,7 +1032,11 @@ counts even when it keeps plugin source compiling, because it changes the vtable
 plugin was compiled against. Version 8 added ``FaultProvider::clear_fault_record``: its
 default implementation calls the unchanged ``clear_fault``, so v7 plugin source compiles
 against v8 headers as it is, but a plugin binary built for v7 is rejected and has to be
-rebuilt.
+rebuilt. Version 8 also gives ``GatewayPlugin`` a protected ``log_sink()``, a copy of the
+plugin's log sink for work that can outlive the plugin (an asynchronous service reply, for
+example, should log through that copy rather than capture ``this``), and makes
+``set_logger()`` protected so a plugin hosted without the gateway, in a unit test for
+example, can wire a sink of its own.
 
 Build Requirements
 ------------------

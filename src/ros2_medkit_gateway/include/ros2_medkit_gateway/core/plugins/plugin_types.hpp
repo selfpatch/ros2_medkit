@@ -47,6 +47,10 @@ namespace ros2_medkit_gateway {
 ///       headers (source-compatible). The new virtual changes the
 ///       FaultProvider vtable, so a pre-compiled v7 `.so` is rejected by the
 ///       strict equality check and must be recompiled against v8 headers.
+///       GatewayPlugin also gains log_sink(), a copy of the log sink for work
+///       that can outlive the plugin, and set_logger() becomes protected so a
+///       plugin hosted without a PluginManager can wire its own. Both are
+///       non-virtual and change no layout.
 constexpr int PLUGIN_API_VERSION = 8;
 
 /// Log severity levels for plugin logging callback

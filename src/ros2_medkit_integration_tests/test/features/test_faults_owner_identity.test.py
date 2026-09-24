@@ -362,7 +362,7 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         lowest-sorting owner's bytes under that URL would never say whose they
         were, so it answers the same 409 the fault routes do. Rosbag capture is
         off in this launch, so the assertion is on the refusal the resolution
-        makes before any bag is looked up, which is exactly the branch Z6 names.
+        makes before any bag is looked up.
 
         @verifies REQ_INTEROP_072
         """

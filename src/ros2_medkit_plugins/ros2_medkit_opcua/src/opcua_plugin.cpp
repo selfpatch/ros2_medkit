@@ -1303,17 +1303,28 @@ void OpcuaPlugin::send_clear_fault(const std::string & owner, const std::string 
     // caller is concerned, but a refusal has to reach the log: a clear the
     // fault manager declined (no such record for that owner) used to leave no
     // trace at all while the REST route answered as though it had worked.
+    //
+    // The reply callback holds nothing of the plugin. It runs on an executor
+    // thread whenever the reply arrives, which can be while the plugin is
+    // being destroyed, so it logs through a copy of the log sink taken here
+    // and carries the owner and the code by value.
+    auto warn = [sink = log_sink()](const std::string & msg) {
+      if (sink) {
+        sink(PluginLogLevel::kWarn, msg);
+      }
+    };
     fault_clients_->clear->async_send_request(
-        request, [this, owner, fault_code](rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture future) {
+        request, [warn = std::move(warn), owner,
+                  fault_code](rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture future) {
           try {
             auto response = future.get();
             if (!response->success) {
-              log_warn("ClearFault refused for '" + fault_code + "' of source '" + owner + "': " + response->message);
+              warn("ClearFault refused for '" + fault_code + "' of source '" + owner + "': " + response->message);
             }
           } catch (const std::exception & e) {
-            log_warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed: " + e.what());
+            warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed: " + e.what());
           } catch (...) {
-            log_warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed");
+            warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed");
           }
         });
   });
@@ -1701,7 +1712,7 @@ tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(
   // says the link is down.
   nlohmann::json envelope{{"items", std::move(items)}};
   envelope["connected"] = snap.connected;
-  envelope["timestamp"] = static_cast<int64_t>(std::chrono::system_clock::to_time_t(snap.timestamp));
+  envelope["timestamp"] = std::chrono::system_clock::to_time_t(snap.timestamp);
 
   return dto::DataListResult{std::move(envelope)};
 }

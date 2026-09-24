@@ -122,16 +122,29 @@ class GatewayPlugin {
     }
   }
 
+  /// A copy of the log sink, for work that can outlive the call that started it.
+  ///
+  /// An asynchronous reply or a detached task that logs through `log_warn()`
+  /// holds `this`, and the plugin can be destroyed while that work runs.
+  /// Capturing this copy instead keeps the work from touching the plugin. The
+  /// copy is empty while no sink is wired, so check it before calling it.
+  std::function<void(PluginLogLevel, const std::string &)> log_sink() const {
+    return log_fn_;
+  }
+
+  /// Wire the log sink. PluginManager does this for every plugin it loads,
+  /// before configure(). A plugin hosted without a PluginManager, in a unit
+  /// test for example, wires its own through a subclass. The sink is not
+  /// synchronized with the log calls, so wire it while no plugin thread logs.
+  void set_logger(std::function<void(PluginLogLevel, const std::string &)> fn) {
+    log_fn_ = std::move(fn);
+  }
+
  private:
   friend class PluginManager;  // Sets log_fn_ after construction
 
   /// Logging callback set by PluginManager. Routes to rclcpp::get_logger("plugin.<name>").
   std::function<void(PluginLogLevel, const std::string &)> log_fn_;
-
-  /// Called by PluginManager to wire up logging
-  void set_logger(std::function<void(PluginLogLevel, const std::string &)> fn) {
-    log_fn_ = std::move(fn);
-  }
 };
 
 }  // namespace ros2_medkit_gateway

@@ -1197,22 +1197,6 @@ struct ScopedExecutorSpin {
   ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
 };
 
-// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault_record(),
-// which buffers a dispatch into pending_reports_ - the SAME vector the poll
-// thread drains in publish_values()/flush_pending_reports(). Before the fix the
-// buffer had no lock, so a push_back that reallocated the vector while another
-// thread iterated/swapped it corrupted the heap (the crash observed in
-// libros2_medkit_opcua_plugin.so under UI load).
-//
-// The buffer has two locked paths that must BOTH be raced: the push_back/erase
-// in send_or_buffer() and the batch.swap(pending_reports_) drain in
-// flush_pending_reports(). The drain only runs once report->service_is_ready()
-// is true, so the test stands up a real ReportFault/ClearFault server (a stub
-// fault_manager) to open that gate; only then does every clear_fault() both push
-// into the buffer AND swap it out under concurrent pushes from the other worker
-// threads. It must complete without heap corruption and is clean under
-// ThreadSanitizer - the DDS/rclcpp machinery it drives is covered by
-// tsan_suppressions.txt, the same paths the gateway service tests exercise.
 // The plugin raises under the entity it polled, so its clear has to name the
 // same owner: a record is (fault_code, source_id), and a clear carrying no
 // source reaches whichever record the store resolves - on a box running a second
@@ -1308,26 +1292,75 @@ nodes:
       << "the clear must name the record's owner the gateway resolved, not the addressed entity";
 }
 
+// The gateway wires every plugin's log sink through PluginManager, which this
+// suite does not link. This subclass wires one the test owns instead.
+class SinkedOpcuaPlugin : public OpcuaPlugin {
+ public:
+  using GatewayPlugin::set_logger;
+};
+
+// Records the warnings a plugin log sink receives. The state is shared with the
+// sink it hands out, so a sink copied into a callback stays valid on its own.
+class WarningLog {
+ public:
+  std::function<void(PluginLogLevel, const std::string &)> sink() const {
+    return [state = state_](PluginLogLevel level, const std::string & msg) {
+      if (level == PluginLogLevel::kWarn) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->warnings.push_back(msg);
+      }
+    };
+  }
+
+  /// The first warning containing `needle`, or "" when none arrives in time.
+  std::string wait_for(const std::string & needle, std::chrono::milliseconds timeout) const {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+      if (auto found = find(needle); !found.empty()) {
+        return found;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return find(needle);
+  }
+
+  std::string find(const std::string & needle) const {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    for (const auto & warning : state_->warnings) {
+      if (warning.find(needle) != std::string::npos) {
+        return warning;
+      }
+    }
+    return "";
+  }
+
+ private:
+  struct State {
+    std::mutex mutex;
+    std::vector<std::string> warnings;
+  };
+  std::shared_ptr<State> state_ = std::make_shared<State>();
+};
+
 // A clear the fault manager declined used to leave no trace: the dispatch never
 // read its reply, so the REST route answered as though it had worked while the
-// record stayed CONFIRMED. The reply is read now, and a refusal is logged.
+// record stayed CONFIRMED. The reply is read now, and a refusal is logged as a
+// warning that names the code and the owner the clear was addressed to.
 TEST(OpcuaPluginFaultIdentity, ARefusedClearIsReadAndNotSilent) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_refused_clear_plugin");
   auto fault_manager = std::make_shared<rclcpp::Node>("opcua_refused_clear_faultmgr");
 
-  std::atomic<int> replies_sent{0};
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
       "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
                                         std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
         res->accepted = true;
       });
   auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
-      "/fault_manager/clear_fault", [&replies_sent](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request>,
-                                                    std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+      "/fault_manager/clear_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
+                                       std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
         res->success = false;
-        res->message = "Fault not found: SHARED_CODE (source owner_runtime)";
-        replies_sent.fetch_add(1);
+        res->message = "Fault not found: " + req->fault_code + " (source " + req->source_id + ")";
       });
 
   const std::string yaml_path = "/tmp/test_opcua_refused_clear_nodemap.yaml";
@@ -1344,7 +1377,9 @@ nodes:
 )";
   }
 
-  OpcuaPlugin plugin;
+  WarningLog log;
+  SinkedOpcuaPlugin plugin;
+  plugin.set_logger(log.sink());  // before any plugin thread starts
   nlohmann::json config;
   config["node_map_path"] = yaml_path;
   config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
@@ -1364,23 +1399,170 @@ nodes:
   }
   ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
 
+  // Addressed to the component, owned by the app: the warning has to name the
+  // owner the clear carried, which is not the entity in the request.
+  std::string warning;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (replies_sent.load() == 0 && std::chrono::steady_clock::now() < deadline) {
-    static_cast<void>(plugin.clear_fault_record("tank", "SHARED_CODE", "tank"));
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  while (warning.empty() && std::chrono::steady_clock::now() < deadline) {
+    static_cast<void>(plugin.clear_fault_record("refused_runtime", "SHARED_CODE", "tank"));
+    warning = log.wait_for("ClearFault refused", std::chrono::milliseconds(200));
   }
 
-  // Let the reply callback run before the executor and the plugin go away: an
-  // unread future is exactly the defect, so the dispatch has to survive to read
-  // one. A crash or a hang here is the regression, not a wrong value.
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   spinner.stop();
   plugin.shutdown();
   std::remove(yaml_path.c_str());
 
-  EXPECT_GT(replies_sent.load(), 0) << "the refusal never reached the plugin";
+  ASSERT_FALSE(warning.empty()) << "a refused clear left no warning in the plugin's log";
+  EXPECT_NE(warning.find("'SHARED_CODE'"), std::string::npos) << warning;
+  EXPECT_NE(warning.find("source 'tank'"), std::string::npos) << "the warning must name the owner: " << warning;
 }
 
+// The ClearFault reply is handled on an executor thread whenever it arrives,
+// which can be while the plugin is being destroyed, so the reply callback must
+// hold nothing of the plugin. The observable half of that: the callback logs
+// through the sink the plugin had when the clear was sent, and never reads the
+// plugin again when the reply comes back. The stub answers only when told, the
+// plugin's sink is swapped in between, and the first refusal still lands on the
+// first sink. A second clear sent after the swap is the positive control: the
+// second sink does receive a refusal it was wired for, so its silence about the
+// first one is not a sink that hears nothing.
+TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_reply_lifetime_plugin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_reply_lifetime_faultmgr");
+
+  using ClearFault = ros2_medkit_msgs::srv::ClearFault;
+  struct Pending {
+    std::shared_ptr<rmw_request_id_t> header;
+    std::string fault_code;
+  };
+  std::mutex pending_mutex;
+  std::vector<Pending> pending;
+
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
+                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+        res->accepted = true;
+      });
+  // Deferred: the request is held and answered by the test, so the reply
+  // arrives only after the test has changed the plugin's sink.
+  auto clear_srv = fault_manager->create_service<ClearFault>(
+      "/fault_manager/clear_fault",
+      [&pending, &pending_mutex](const std::shared_ptr<rclcpp::Service<ClearFault>> /*service*/,
+                                 const std::shared_ptr<rmw_request_id_t> header,
+                                 const std::shared_ptr<ClearFault::Request> req) {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        pending.push_back(Pending{header, req->fault_code});
+      });
+  auto answer = [&](const std::string & fault_code) {
+    std::lock_guard<std::mutex> lock(pending_mutex);
+    for (auto it = pending.begin(); it != pending.end(); ++it) {
+      if (it->fault_code == fault_code) {
+        ClearFault::Response response;
+        response.success = false;
+        response.message = "Fault not found: " + fault_code;
+        clear_srv->send_response(*it->header, response);
+        pending.erase(it);
+        return true;
+      }
+    }
+    return false;
+  };
+  auto wait_received = [&](const std::string & fault_code) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        for (const auto & p : pending) {
+          if (p.fault_code == fault_code) {
+            return true;
+          }
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+
+  const std::string yaml_path = "/tmp/test_opcua_reply_lifetime_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: lifetime_plc
+component_id: lifetime_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  WarningLog at_dispatch;
+  WarningLog after_swap;
+  SinkedOpcuaPlugin plugin;
+  plugin.set_logger(at_dispatch.sink());  // before any plugin thread starts
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/lifetime_plc", "/lifetime_plc/lifetime_runtime/tank"};
+  plugin.set_context(ctx);
+
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
+  static_cast<void>(plugin.clear_fault_record("tank", "FIRST_CODE", "tank"));
+  ASSERT_TRUE(wait_received("FIRST_CODE")) << "the first clear never reached the stub";
+
+  // Stop the plugin's own threads, then swap the sink while no plugin thread
+  // logs. What is in flight now is only the reply to the first clear.
+  plugin.shutdown();
+  plugin.set_logger(after_swap.sink());
+
+  static_cast<void>(plugin.clear_fault_record("tank", "SECOND_CODE", "tank"));
+  ASSERT_TRUE(wait_received("SECOND_CODE")) << "the second clear never reached the stub";
+
+  ASSERT_TRUE(answer("FIRST_CODE"));
+  ASSERT_TRUE(answer("SECOND_CODE"));
+  const std::string first = at_dispatch.wait_for("'FIRST_CODE'", std::chrono::seconds(10));
+  const std::string second = after_swap.wait_for("'SECOND_CODE'", std::chrono::seconds(10));
+
+  spinner.stop();
+  std::remove(yaml_path.c_str());
+
+  EXPECT_FALSE(first.empty()) << "the first refusal did not reach the sink the plugin had when it sent the clear";
+  EXPECT_TRUE(after_swap.find("'FIRST_CODE'").empty())
+      << "the first reply read the plugin's sink when it arrived, so the callback still holds the plugin";
+  EXPECT_FALSE(second.empty()) << "positive control: the swapped-in sink never received its own refusal";
+  EXPECT_TRUE(at_dispatch.find("'SECOND_CODE'").empty());
+}
+
+// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault_record(),
+// which buffers a dispatch into pending_reports_, the SAME vector the poll
+// thread drains in publish_values()/flush_pending_reports(). Before the fix the
+// buffer had no lock, so a push_back that reallocated the vector while another
+// thread iterated/swapped it corrupted the heap (the crash observed in
+// libros2_medkit_opcua_plugin.so under UI load).
+//
+// The buffer has two locked paths that must BOTH be raced: the push_back/erase
+// in send_or_buffer() and the batch.swap(pending_reports_) drain in
+// flush_pending_reports(). The drain only runs once report->service_is_ready()
+// is true, so the test stands up a real ReportFault/ClearFault server (a stub
+// fault_manager) to open that gate. Only then does every clear both push
+// into the buffer AND swap it out under concurrent pushes from the other worker
+// threads. It must complete without heap corruption and is clean under
+// ThreadSanitizer. The DDS/rclcpp machinery it drives is covered by
+// tsan_suppressions.txt, the same paths the gateway service tests exercise.
 TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_pending_reports_regression");
