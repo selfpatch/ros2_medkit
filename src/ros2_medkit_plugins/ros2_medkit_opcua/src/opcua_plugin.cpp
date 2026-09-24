@@ -2117,11 +2117,10 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
       item["severity"] = f.value("severity", 0);
       item["description"] = f.value("description", "");
       item["status"] = f.value("status", "");
-      // Fault records carry reporting_sources, not source_id. On this
-      // entity-scoped list prefer the requested entity when it is among the
-      // sources - reporting_sources[0] is ordering-dependent and can name a
-      // different co-reporting entity; fall back to the first source only
-      // when the entity itself never reported.
+      // A record carries its owner as source_id, which is also the single
+      // entry of reporting_sources. Only a record read without source_id falls
+      // back to reporting_sources: the requested entity when it is listed
+      // there, else the first entry.
       std::string source_id = f.value("source_id", "");
       if (source_id.empty() && f.contains("reporting_sources") && f["reporting_sources"].is_array()) {
         for (const auto & src : f["reporting_sources"]) {

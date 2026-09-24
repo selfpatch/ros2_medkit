@@ -587,9 +587,10 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsOtherEntityFault) {
 }
 
 TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsMixedSourceFault) {
-  // Cross-entity clear/disclosure stays blocked under the all-sources rule: a
-  // fault co-reported by "process" and another entity is out of scope for
-  // "process" alone.
+  // Cross-entity clear/disclosure stays blocked under the all-sources rule. A
+  // record names one source, but one relayed from a peer or read from an older
+  // store may carry two, and one that names "process" and another entity is
+  // out of scope for "process" alone.
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process", "s7_status"}), {"process"}));
 }
 
