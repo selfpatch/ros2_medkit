@@ -89,6 +89,12 @@ def generate_test_description():
             'discovery.mode': 'hybrid',
             'discovery.manifest_path': manifest_path,
             'discovery.manifest_strict_validation': False,
+            # Locking off, so the per-code DELETE publishes no lock contract and
+            # the only 409 its document can carry is the ambiguous-fault one the
+            # route declares itself. With locking on, the lock marker adds a 409
+            # of its own and the DELETE check in test_07 could never fail.
+            # Nothing else here takes a lock.
+            'locking.enabled': False,
         },
     )
 
@@ -286,12 +292,21 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         )
 
         route = spec['paths']['/apps/{app_id}/faults/{fault_code}']
-        # The GET is the discriminating half: it carries no lock marker, so its
-        # 409 is there only because the route declares the ambiguous-fault one.
-        # The DELETE is lock-guarded, and that marker declares a 409 of its own
-        # for the locked-entity refusal, so its status alone cannot tell the two
-        # causes apart - the document has one response object per status. The
-        # DELETE assertion is a presence check, not a proof of which 409.
+        # The document has one response object per status, so a lock 409 and an
+        # ambiguous-fault 409 on the DELETE cannot be told apart. This gateway
+        # runs with locking off, which drops the lock contract from the document
+        # altogether. Ground that first: with it in place, a 409 on either
+        # method is there only because the route declares the ambiguous-fault
+        # refusal, and both checks below can fail.
+        root = self.get_json('')
+        self.assertIs(
+            root['capabilities']['locking'], False,
+            'this launch must run with locking off, or the DELETE 409 below may be the lock one',
+        )
+        self.assertNotIn(
+            'x-medkit-lock-guarded', route['delete'],
+            'with locking off the DELETE must carry no lock contract',
+        )
         for method in ('get', 'delete'):
             self.assertIn(
                 '409', route[method]['responses'],
