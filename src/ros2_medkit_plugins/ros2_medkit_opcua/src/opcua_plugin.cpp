@@ -1322,20 +1322,25 @@ void OpcuaPlugin::send_clear_fault(const std::string & owner, const std::string 
         sink(PluginLogLevel::kWarn, msg);
       }
     };
-    fault_clients_->clear->async_send_request(
-        request, [warn = std::move(warn), owner,
-                  fault_code](rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture future) {
-          try {
-            auto response = future.get();
-            if (!response->success) {
-              warn("ClearFault refused for '" + fault_code + "' of source '" + owner + "': " + response->message);
-            }
-          } catch (const std::exception & e) {
-            warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed: " + e.what());
-          } catch (...) {
-            warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed");
-          }
-        });
+    using ClearFuture = rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture;
+    // async_send_request only accepts a callback whose parameter is exactly
+    // SharedFuture, by value (rclcpp checks the argument types, and a const
+    // reference is a different type), so the future cannot be taken by
+    // reference here.
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    auto on_reply = [warn = std::move(warn), owner, fault_code](ClearFuture future) {
+      try {
+        const auto & response = future.get();
+        if (!response->success) {
+          warn("ClearFault refused for '" + fault_code + "' of source '" + owner + "': " + response->message);
+        }
+      } catch (const std::exception & e) {
+        warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed: " + e.what());
+      } catch (...) {
+        warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed");
+      }
+    };
+    fault_clients_->clear->async_send_request(request, std::move(on_reply));
   });
 }
 
