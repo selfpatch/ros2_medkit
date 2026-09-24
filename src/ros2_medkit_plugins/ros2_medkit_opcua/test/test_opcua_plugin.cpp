@@ -47,9 +47,24 @@
 
 namespace ros2_medkit_gateway {
 
+// What the route tests hand the stubs below. The provider tests never build a
+// request or a response, so a null impl answers empty and records nothing.
+struct StubRequest {
+  std::vector<std::string> path_params;  // index 0 is the full match
+};
+struct StubResponse {
+  int status = 0;
+  std::string error_code;
+  nlohmann::json body;
+};
+
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-std::string PluginRequest::path_param(size_t) const {
+std::string PluginRequest::path_param(size_t index) const {
+  const auto * req = static_cast<const StubRequest *>(impl_);
+  if (req != nullptr && index < req->path_params.size()) {
+    return req->path_params[index];
+  }
   return {};
 }
 std::string PluginRequest::header(const std::string &) const {
@@ -69,9 +84,21 @@ std::string PluginRequest::query_param(const std::string &) const {
 
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
-void PluginResponse::send_json(const nlohmann::json &) {
+void PluginResponse::send_json(const nlohmann::json & data) {
+  auto * res = static_cast<StubResponse *>(impl_);
+  if (res != nullptr) {
+    res->status = 200;
+    res->body = data;
+  }
 }
-void PluginResponse::send_error(int, const std::string &, const std::string &, const nlohmann::json &) {
+void PluginResponse::send_error(int status, const std::string & error_code, const std::string & message,
+                                const nlohmann::json & /*parameters*/) {
+  auto * res = static_cast<StubResponse *>(impl_);
+  if (res != nullptr) {
+    res->status = status;
+    res->error_code = error_code;
+    res->body = {{"message", message}};
+  }
 }
 
 // -- FakePluginContext --
@@ -637,6 +664,55 @@ TEST_F(OpcuaPluginAlarmsFitnessTest, IntrospectSkipsXPlcDataForAlarmsFallbackEnt
   EXPECT_FALSE(alarms_got_x_plc_data) << "auto_alarms fallback entity has no data points - "
                                          "x-plc-data must not be registered for it";
   EXPECT_TRUE(tank_got_x_plc_data) << "data-bearing entities must keep x-plc-data";
+}
+
+// -- Route tests --
+
+namespace {
+
+// Calls the plugin's GET route under components/ for ``component_id`` and
+// returns what the handler sent.
+StubResponse get_component_status(OpcuaPlugin & plugin, const std::string & component_id) {
+  StubResponse recorded;
+  const auto routes = plugin.get_routes();
+  const auto route = std::find_if(routes.begin(), routes.end(), [](const GatewayPlugin::PluginRoute & r) {
+    return r.method == "GET" && r.pattern.rfind("components/", 0) == 0;
+  });
+  if (route == routes.end()) {
+    ADD_FAILURE() << "the plugin registers no GET route under components/";
+    return recorded;
+  }
+  // The handler reads capture group 1 only.
+  StubRequest request{{"", component_id}};
+  PluginRequest req(&request);
+  PluginResponse res(&recorded);
+  route->handler(req, res);
+  return recorded;
+}
+
+}  // namespace
+
+// The status route describes this plugin's own OPC UA session: its endpoint,
+// its mode and whether it is connected. In a gateway that loads several
+// plugins, other components share the entity tree, and that session says
+// nothing about them. So the route serves the plugin's own component and
+// answers any other one with the 404 the data route gives an entity with no
+// mapped points. The own component is asked on the same plugin first, which
+// shows that this harness does record a served status.
+TEST_F(OpcuaPluginTest, StatusRouteServesOnlyThePluginsOwnComponent) {
+  ctx_.entities["other_device"] = {SovdEntityType::COMPONENT, "other_device", "/other_area",
+                                   "/other_area/other_device"};
+
+  const StubResponse own = get_component_status(plugin_, "test_runtime");
+  ASSERT_EQ(own.status, 200) << own.body.dump();
+  EXPECT_EQ(own.body.value("component_id", ""), "test_runtime");
+  ASSERT_TRUE(own.body.contains("connected")) << "the plugin's own component must report link state";
+  EXPECT_FALSE(own.body["connected"].get<bool>()) << "the fixture endpoint never connects";
+
+  const StubResponse other = get_component_status(plugin_, "other_device");
+  EXPECT_EQ(other.status, 404) << "a component the plugin does not own was answered with " << other.body.dump();
+  EXPECT_EQ(other.error_code, ERR_RESOURCE_NOT_FOUND);
+  EXPECT_FALSE(other.body.contains("endpoint_url")) << "the plugin's session must not be reported under another id";
 }
 
 // -- FaultProvider tests --

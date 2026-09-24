@@ -192,7 +192,7 @@ A write-capable build restores everything above; nothing else differs.
 | GET | `/apps/{id}/x-plc-data` | All OPC-UA values for entity (with units, types, timestamps) |
 | GET | `/apps/{id}/x-plc-data/{name}` | Single data point value |
 | POST | `/apps/{id}/x-plc-operations/set_{name}` | Write value to PLC (`{"value": 75.0}`) - write-capable build only; not registered otherwise |
-| GET | `/components/{id}/x-plc-status` | Connection state, poll stats, active alarms, and `write_capable` - the write surface of the plugin object itself |
+| GET | `/components/{id}/x-plc-status` | Connection state, poll stats, active alarms, and `write_capable` - the write surface of the plugin object itself. Served for the plugin's own component only. Any other component answers 404 `resource-not-found` |
 
 ### Standard SOVD (provided by gateway)
 
@@ -254,6 +254,12 @@ GET /api/v1/components/openplc_runtime/x-plc-status
 build, `true` only in one built with `-DMEDKIT_OPCUA_READ_ONLY=OFF`. An absent
 `x-plc-operations` capability alone does not say this, because a write-capable
 build whose node map marks nothing writable shows the same absence.
+
+The status describes the plugin's own OPC UA session, so it is served only under
+the component the plugin introspects (`openplc_runtime` above). Any other
+component in the gateway, for example one another plugin introspects, answers
+404 `resource-not-found`, the same answer the data route gives an entity with no
+mapped points.
 
 ## Finding Node IDs on your PLC
 

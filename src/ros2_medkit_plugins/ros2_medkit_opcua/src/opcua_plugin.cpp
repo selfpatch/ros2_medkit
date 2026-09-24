@@ -1018,6 +1018,15 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   }
 
   std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+  // Everything below describes this plugin's own OPC UA session, which belongs
+  // to the one component the plugin introspects. Another component in the same
+  // entity tree exists but has no session here, so it gets the same 404 the
+  // data route gives an entity with no mapped points.
+  if (component_id != node_map_.component_id()) {
+    res.send_error(404, ERR_RESOURCE_NOT_FOUND, "No PLC status for component: " + component_id);
+    return;
+  }
+
   auto snap = poller_->snapshot();
 
   nlohmann::json j;
