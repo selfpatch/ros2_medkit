@@ -981,31 +981,41 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         // in this entity's scope before delegating. Records the fault_manager
         // does not hold (plugin-internal, e.g. on-demand UDS DTCs) fall through
         // to the plugin provider unchanged.
+        //
         // The owner the gateway resolved travels to the provider, because that
         // is which record this route addresses. It stays empty only when the
-        // fault manager holds no record of this code at all, which is the
-        // plugin-internal case the provider decides for itself.
+        // fault manager answered and holds no record of this code at all, the
+        // plugin-internal case the provider decides for itself. A fault manager
+        // that cannot be read is not that case: the route cannot tell a record
+        // it holds from one it does not, so it answers 503 as the native path
+        // does and never calls the provider with an owner it did not resolve.
+        auto * fault_mgr = ctx_.node()->get_fault_manager();
+        if (fault_mgr == nullptr) {
+          return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to clear fault",
+                                                json{{entity_info.id_field, entity_id}, {"fault_code", fault_code}}));
+        }
+        auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                           /*include_cleared=*/true, /*include_healed=*/true,
+                                           /*include_muted=*/true, /*include_clusters=*/false);
+        if (!held.success) {
+          return tl::make_unexpected(classify_fault_failure(held.failure, held.error_message,
+                                                            "Failed to clear fault", entity_info.id_field,
+                                                            entity_id, fault_code));
+        }
         std::string resolved_owner;
-        if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
-          auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
-                                             /*include_cleared=*/true, /*include_healed=*/true,
-                                             /*include_muted=*/true, /*include_clusters=*/false);
-          if (held.success) {
-            const auto & all = held.data.value("faults", json::array());
-            const bool store_holds_code = std::any_of(all.begin(), all.end(), [&](const json & fault) {
-              return fault.is_object() && fault.value("fault_code", std::string{}) == fault_code;
-            });
-            if (store_holds_code) {
-              const auto & cache = ctx_.node()->get_thread_safe_cache();
-              auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-              auto scoped = select_scoped_fault(faults::addressable_records(held.data, fault_code, source_fqns),
-                                                fault_code, entity_info.id_field, entity_id);
-              if (!scoped) {
-                return tl::make_unexpected(scoped.error());
-              }
-              resolved_owner = scoped->owner;
-            }
+        const auto & all = held.data.value("faults", json::array());
+        const bool store_holds_code = std::any_of(all.begin(), all.end(), [&](const json & fault) {
+          return fault.is_object() && fault.value("fault_code", std::string{}) == fault_code;
+        });
+        if (store_holds_code) {
+          const auto & cache = ctx_.node()->get_thread_safe_cache();
+          auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+          auto scoped = select_scoped_fault(faults::addressable_records(held.data, fault_code, source_fqns),
+                                            fault_code, entity_info.id_field, entity_id);
+          if (!scoped) {
+            return tl::make_unexpected(scoped.error());
           }
+          resolved_owner = scoped->owner;
         }
 
         try {

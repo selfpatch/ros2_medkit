@@ -1557,16 +1557,25 @@ Query and manage faults.
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
+   - **409:** ``x-medkit-ambiguous-fault``, the code names several records in
+     this entity's scope
    - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
+   - **200:** Fault cleared by the plugin that serves this entity's faults, with
+     the plugin's acknowledgement as the body
    - **204:** Fault cleared
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
-   - **503:** Fault manager unavailable
+   - **409:** ``x-medkit-ambiguous-fault``, the code names several records in
+     this entity's scope, or the entity is locked by another client
+   - **503:** Fault manager unavailable. This holds for an entity whose faults a
+     plugin serves as well: the gateway reads the fault manager to learn which
+     record the code names before it asks the plugin, and when that read fails
+     it does not ask the plugin at all.
 
 .. note::
 

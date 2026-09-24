@@ -53,6 +53,7 @@
 
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
@@ -125,12 +126,18 @@ class RecordingFaultPlugin : public GatewayPlugin, public FaultProvider {
   }
   tl::expected<FaultClearResult, FaultProviderErrorInfo>
   clear_fault(const std::string & entity_id, const std::string & code, const std::string & owner) override {
+    if (fail_if_called) {
+      ADD_FAILURE() << "the provider was asked to clear '" << code << "' with owner '" << owner
+                    << "', which the gateway never resolved";
+    }
     clears.push_back(ClearCall{entity_id, code, owner});
     return FaultClearResult{json{{"code", code}, {"cleared", true}}};
   }
 
   std::vector<ClearCall> clears;
   json listed_items_ = json::array();
+  /// Set by a test in which any clear reaching the provider is itself the defect.
+  bool fail_if_called = false;
 };
 
 /// A TypedRequest carrying the two positional captures the fault routes read.
@@ -589,6 +596,59 @@ TEST_F(PluginClearOwnerTest, ResolutionClearsAnUnmutedRecordWithItsOwner) {
   const auto cleared = cleared_snapshot();
   ASSERT_EQ(cleared.size(), 1u);
   EXPECT_EQ(cleared[0].second, kHostedApp);
+}
+
+// The plugin clear reads the fault manager to learn which record the code
+// names. When that read fails the route cannot tell a record the fault manager
+// holds from a plugin-internal one, so it must not guess: calling the provider
+// with an empty owner answered 2xx while the record stayed untouched.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, PluginClearAnswers503WhenTheFaultManagerCannotBeRead) {
+  auto * plugin = seed_topology();
+  plugin->fail_if_called = true;
+  store_record(kCode, kHostedApp);
+  ASSERT_TRUE(wait_for_store());
+  // Take ListFaults away and wait until the graph agrees it is gone, so the
+  // call below fails on the read and not on a race with the service teardown.
+  list_srv_.reset();
+  auto probe = store_->create_client<ListFaults>("/" + ns_ + "/fault_manager/list_faults");
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (probe->service_is_ready() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  ASSERT_FALSE(probe->service_is_ready()) << "ListFaults is still discoverable";
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_FALSE(result.has_value()) << "a clear the gateway could not resolve must not report success";
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ros2_medkit_gateway::ERR_SERVICE_UNAVAILABLE);
+  EXPECT_TRUE(plugin->clears.empty()) << "the provider was called without a resolved owner";
+}
+
+// The positive control for the case above, on the same fixture and the same
+// stub: with ListFaults answering, the same request reaches the provider with
+// the owner the gateway resolved. So the silence above is the route refusing,
+// not a harness that never reaches the provider.
+// @verifies REQ_INTEROP_015
+TEST_F(PluginClearOwnerTest, PluginClearReachesTheProviderWhenTheFaultManagerAnswers) {
+  auto * plugin = seed_topology();
+  store_record(kCode, kHostedApp);
+  ASSERT_TRUE(wait_for_store());
+
+  RoutedRequest req(component_fault_path(), kComponentFaultPattern);
+  ASSERT_TRUE(req.matched());
+  ros2_medkit_gateway::http::TypedRequest typed(req.raw());
+
+  auto result = handlers_->clear_fault(typed);
+
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_EQ(plugin->clears.size(), 1u);
+  EXPECT_EQ(plugin->clears[0].owner, kHostedApp);
 }
 
 // ---------------------------------------------------------------------------
