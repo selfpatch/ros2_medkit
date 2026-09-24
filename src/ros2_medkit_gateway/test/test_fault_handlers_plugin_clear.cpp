@@ -1049,7 +1049,7 @@ TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsL
   ASSERT_EQ(ids, (std::vector<std::string>{"rec_pump", "rec_tank"}));
 
   for (const auto & id : ids) {
-    RoutedRequest by_id(rosbags + "/" + id, kComponentBagPattern, "GET");
+    RoutedRequest by_id((rosbags + "/").append(id), kComponentBagPattern, "GET");
     ASSERT_TRUE(by_id.matched());
     auto served = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(by_id.raw()));
     ASSERT_TRUE(served.has_value()) << id << ": " << served.error().message;

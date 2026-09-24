@@ -1286,14 +1286,14 @@ TEST(OpcuaPluginFaultIdentity, ClearFaultSendsTheOwningEntityAsSourceId) {
   std::mutex seen_mutex;
   std::vector<std::pair<std::string, std::string>> cleared;  // (fault_code, source_id)
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
-                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
   auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
       "/fault_manager/clear_fault",
-      [&cleared, &seen_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
-                              std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+      [&cleared, &seen_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
         {
           std::lock_guard<std::mutex> lock(seen_mutex);
           cleared.emplace_back(req->fault_code, req->source_id);
@@ -1428,13 +1428,13 @@ TEST(OpcuaPluginFaultIdentity, ARefusedClearIsReadAndNotSilent) {
   auto fault_manager = std::make_shared<rclcpp::Node>("opcua_refused_clear_faultmgr");
 
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
-                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
   auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
-      "/fault_manager/clear_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
-                                       std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+      "/fault_manager/clear_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                                       const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
         res->success = false;
         res->message = "Fault not found: " + req->fault_code + " (source " + req->source_id + ")";
       });
@@ -1516,17 +1516,17 @@ TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
   std::vector<Pending> pending;
 
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
-                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
   // Deferred: the request is held and answered by the test, so the reply
   // arrives only after the test has changed the plugin's sink.
   auto clear_srv = fault_manager->create_service<ClearFault>(
       "/fault_manager/clear_fault",
-      [&pending, &pending_mutex](const std::shared_ptr<rclcpp::Service<ClearFault>> /*service*/,
-                                 const std::shared_ptr<rmw_request_id_t> header,
-                                 const std::shared_ptr<ClearFault::Request> req) {
+      [&pending, &pending_mutex](const std::shared_ptr<rclcpp::Service<ClearFault>> & /*service*/,
+                                 const std::shared_ptr<rmw_request_id_t> & header,
+                                 const std::shared_ptr<ClearFault::Request> & req) {
         std::lock_guard<std::mutex> lock(pending_mutex);
         pending.push_back(Pending{header, req->fault_code});
       });
