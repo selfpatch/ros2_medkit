@@ -1136,7 +1136,7 @@ TEST(FaultManagerNodeParameterTest, NearMissRetentionDefaultsToBounded) {
 
   drive_near_misses(node->get_storage_for_test(), 205);
 
-  // The documented default is 200 per fault code, and it must be in force without configuration.
+  // The documented default is 200 per fault record, and it must be in force without configuration.
   EXPECT_EQ(node->get_storage().get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 200u);
 }
 

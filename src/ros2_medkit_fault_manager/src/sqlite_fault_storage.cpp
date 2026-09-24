@@ -394,8 +394,8 @@ void SqliteFaultStorage::initialize_schema() {
   // Create near_misses table: append-only series of FAILED reports that moved the debounce
   // counter without confirming the fault. One row per qualifying report, never updated in
   // place, and NOT removed on clear_fault - acknowledging a fault cycle must not erase how
-  // often that code approached confirmation. Bounded per fault code by the caller-supplied
-  // limit, evicting the oldest rows first.
+  // often that record approached confirmation. Bounded per record (fault_code, source_id) by
+  // the caller-supplied limit, evicting the oldest rows first.
   const char * create_near_misses_table_sql = R"(
     CREATE TABLE IF NOT EXISTS near_misses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1715,8 +1715,8 @@ size_t SqliteFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   }
 
   // Apply the bound to what is already in the database. Without this, a database that grew under
-  // a larger bound (or none) stays over the new bound until each fault code happens to record
-  // another near miss - and a code that never does keeps its rows for good.
+  // a larger bound (or none) stays over the new bound until each record happens to log
+  // another near miss - and a record that never does keeps its rows for good.
   SqliteStatement trim_stmt(db_,
                             "DELETE FROM near_misses WHERE id IN ("
                             "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "

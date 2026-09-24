@@ -88,9 +88,9 @@ struct RosbagConfig {
   /// (reliable/transient-local where offered) instead of forcing best-effort
   bool qos_match{true};
 
-  /// Recordings retained per fault code (0 = unlimited, bounded only by
-  /// max_total_storage_mb). Keep-newest: past the cap the fault's OLDEST recording
-  /// loses its row, and the bag goes once no fault references it. 1 reproduces the
+  /// Recordings retained per fault record (0 = unlimited, bounded only by
+  /// max_total_storage_mb). Keep-newest: past the cap the record's OLDEST recording
+  /// loses its row, and the bag goes once no record references it. 1 reproduces the
   /// pre-#620 behaviour, where a re-confirm replaced the previous recording.
   size_t max_bags_per_fault{1};
 

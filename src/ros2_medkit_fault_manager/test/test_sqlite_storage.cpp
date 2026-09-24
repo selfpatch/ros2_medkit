@@ -2896,7 +2896,7 @@ TEST_F(SqliteFaultStorageTest, ApplyingSmallerBoundTrimsExistingSeries) {
   EXPECT_EQ(series[0].debounce_counter, -4);
   EXPECT_EQ(series[1].debounce_counter, -5);
   EXPECT_EQ(storage_->get_near_misses({"MOTOR_OVERHEAT", "/powertrain/motor"}).size(), 2u)
-      << "the bound is applied per fault code";
+      << "the bound is applied per record";
 }
 
 TEST_F(SqliteFaultStorageTest, ApplyingUnlimitedBoundKeepsExistingSeries) {
@@ -2945,7 +2945,7 @@ TEST_F(SqliteFaultStorageTest, ApplyingBoundReportsHowManyEntriesItDropped) {
                                  "temperature rising", "/powertrain/motor", nth_report_time(i), config);
   }
 
-  // Two codes, five entries each, bound of 2: three dropped per code.
+  // Two records, five entries each, bound of 2: three dropped per record.
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(2), 6u);
   // Applying the same bound again has nothing left to drop.
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(2), 0u);

@@ -266,7 +266,7 @@ class RosbagCapture {
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
   /// Both finalisation paths end here, so a bag that cannot be looked up never
-  /// survives on disk: retrieval is keyed by fault code and the quota enumerates
+  /// survives on disk: retrieval goes through the rows and the quota enumerates
   /// rows, so a directory with no row is unreachable, uncounted, and can never be
   /// evicted to make room.
   ///

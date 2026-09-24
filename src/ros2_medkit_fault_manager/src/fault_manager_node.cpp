@@ -1306,7 +1306,7 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
     }
     config.rosbag.max_buffer_mb = static_cast<size_t>(max_buffer);
 
-    // Recordings kept per fault code. 1 is the pre-#620 behaviour exactly - a new
+    // Recordings kept per fault record. 1 is the pre-#620 behaviour exactly - a new
     // recording replaces the old one - so the mechanism ships switched off and any
     // regression report is about the plumbing rather than the policy. Note this is a
     // FAIRNESS knob more than a depth knob: max_total_storage_mb is the real disk

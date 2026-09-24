@@ -2112,8 +2112,8 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryFaultClearedDuringItsOwnWindowDisca
 }
 
 TEST_F(RosbagCaptureIntegrationTest, MetadataStoreFailureDiscardsTheBagInsteadOfOrphaningIt) {
-  // If the row cannot be written, nothing can ever reach the bag: retrieval is
-  // keyed by fault code and quota accounting enumerates rows, so a kept directory
+  // If the row cannot be written, nothing can ever reach the bag: retrieval goes
+  // through the rows and quota accounting enumerates rows, so a kept directory
   // would occupy disk that nothing can find and nothing can evict.
   RosbagMetadataFailingStorage failing_storage;
   auto rosbag_config = create_rosbag_config();
@@ -2138,7 +2138,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
   // The mirror image of the test above, and the case its double cannot reach. The
   // sweep runs AFTER store_rosbag_files() has committed, so a failure there says
   // nothing about this recording. Discarding the bag then strands the rows just
-  // written: unreadable for good, because retrieval is keyed by fault code, and
+  // written: unreadable for good, because retrieval goes through the rows, and
   // still charged against max_total_storage_mb, which sums rows - the very pressure
   // that made the sweep run.
   RosbagQuotaSweepFailingStorage sweep_failing_storage;
@@ -2173,7 +2173,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingStoreLeavesNoBagOnTheImmediatePath)
   // rather than in the post-roll finalise, and only the finalise was ever covered
   // for a failing store. Nothing catches it here: in production the capture pool
   // logs the exception and moves on, leaving a directory no row names - unreachable,
-  // because retrieval is keyed by fault code, and uncounted, because the quota
+  // because retrieval goes through the rows, and uncounted, because the quota
   // enumerates rows, so it is never evicted either and accumulates per failure.
   RosbagMetadataFailingStorage failing_storage;
   auto rosbag_config = create_rosbag_config();
