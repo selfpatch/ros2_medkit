@@ -1313,15 +1313,12 @@ class TestNodeDeathRestartLoopOccurrences(unittest.TestCase):
     occurrence"), which is why this scenario acknowledges explicitly between cycles instead
     of waiting for an organic heal.
 
-    Deliberately does NOT assert the "more than one recording" half of this row. The
-    per-fault rosbag store enforces `fault_code` as UNIQUE (`sqlite_fault_storage.cpp`'s
-    `store_rosbag_file_locked`: "INSERT OR REPLACE INTO rosbag_files ... (fault_code is
-    UNIQUE)" - the SAME fault_code can hold at most one recording ROW, structurally, and a
-    re-confirm deletes the previous bag file from disk). No config key in the fault manager
-    lifts this cap today: recording more than one rosbag per fault_code needs the storage
-    schema itself to change. Asserting a recording count here would either assert something
-    trivially true for the wrong reason (no captures happen at all without a detector) or
-    something structurally impossible to ever pass - neither is written.
+    Deliberately does NOT assert the "more than one recording" half of this row. How many
+    recordings one record keeps is governed by the fault manager's own retention
+    configuration, not by anything this scenario drives, so asserting a count here would
+    assert the retention default rather than the detector. What this scenario is about is
+    the occurrence count, which is what the acknowledge-between-cycles sequence above
+    establishes.
     """
 
     def test_repeated_kills_reach_matching_occurrence_count(self, target_node):

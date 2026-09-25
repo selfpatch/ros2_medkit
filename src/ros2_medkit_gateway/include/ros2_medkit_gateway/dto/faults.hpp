@@ -43,7 +43,7 @@ namespace dto {
 // Wire keys (exact, from fault_msg_conversions.cpp):
 //   fault_code, severity, description, first_occurred, last_occurred,
 //   last_passed (absent = never passed), occurrence_count, status,
-//   reporting_sources, severity_label
+//   reporting_sources, source_id, severity_label
 // =============================================================================
 struct FaultListItem {
   std::string fault_code;
@@ -55,6 +55,10 @@ struct FaultListItem {
   std::optional<int64_t> occurrence_count;
   std::string status;
   std::optional<std::vector<std::string>> reporting_sources;
+  /// The reporting source that owns this record. Together with `fault_code` it
+  /// addresses the record on the per-record routes, and it is the single entry
+  /// of `reporting_sources`.
+  std::optional<std::string> source_id;
   std::optional<std::string> severity_label;  // enum: INFO|WARN|ERROR|CRITICAL|UNKNOWN
 };
 
@@ -64,7 +68,7 @@ inline constexpr auto dto_fields<FaultListItem> = std::make_tuple(
     field("description", &FaultListItem::description), field("first_occurred", &FaultListItem::first_occurred),
     field("last_occurred", &FaultListItem::last_occurred), field("last_passed", &FaultListItem::last_passed),
     field("occurrence_count", &FaultListItem::occurrence_count), field("status", &FaultListItem::status),
-    field("reporting_sources", &FaultListItem::reporting_sources),
+    field("reporting_sources", &FaultListItem::reporting_sources), field("source_id", &FaultListItem::source_id),
     field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues));
 
 template <>
@@ -242,11 +246,20 @@ inline constexpr std::string_view dto_name<FaultListAggXMedkit> = "FaultListAggX
 // FaultXMedkit - x-medkit vendor extension inside FaultDetail
 //
 // Wire keys (from build_sovd_fault_response):
-//   occurrence_count, reporting_sources, severity_label, status_raw
+//   occurrence_count, reporting_sources, owner, severity_label, status_raw
+//
+// The key is `owner`, not `source_id`, deliberately. A fault LIST's x-medkit
+// already carries `source_id` meaning the addressed entity's namespace path
+// (FaultListXMedkit below), so reusing that name here for the record's
+// reporting source would give one key two meanings inside one API.
 // =============================================================================
 struct FaultXMedkit {
   std::optional<int64_t> occurrence_count;
   std::optional<std::vector<std::string>> reporting_sources;
+  /// The reporting source that owns this record. It is what the per-record
+  /// routes take as their `source_id` request field, and the single entry of
+  /// `reporting_sources`.
+  std::optional<std::string> owner;
   std::optional<std::string> severity_label;
   std::optional<std::string> status_raw;
 };
@@ -254,7 +267,7 @@ struct FaultXMedkit {
 template <>
 inline constexpr auto dto_fields<FaultXMedkit> =
     std::make_tuple(field("occurrence_count", &FaultXMedkit::occurrence_count),
-                    field("reporting_sources", &FaultXMedkit::reporting_sources),
+                    field("reporting_sources", &FaultXMedkit::reporting_sources), field("owner", &FaultXMedkit::owner),
                     field("severity_label", &FaultXMedkit::severity_label),
                     field("status_raw", &FaultXMedkit::status_raw));
 
@@ -513,11 +526,10 @@ struct SchemaWriter<FaultClearResult> {
         {"additionalProperties", true},
         {"x-medkit-opaque", true},
         {"description",
-         "Acknowledgement of a clear, shaped by whoever owns the entity. The ROS 2 path answers "
-         "`{\"code\": <fault_code>, \"cleared\": true}`; a plugin answers with its backend's own "
-         "acknowledgement - UDS clear response codes, vendor warnings, residual fault state - and the "
-         "gateway emits it verbatim. Treat the 2xx status, not a body field, as the signal that the clear "
-         "succeeded."}};
+         "Acknowledgement of a clear, shaped by whoever owns the entity. The ROS 2 path answers 204 with "
+         "no body at all. A plugin answers with its backend's own acknowledgement (UDS clear response "
+         "codes, vendor warnings, residual fault state) and the gateway emits it verbatim. Treat the 2xx "
+         "status, not a body field, as the signal that the clear succeeded."}};
   }
 };
 

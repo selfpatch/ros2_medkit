@@ -255,13 +255,19 @@ When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a
 root-cause fault also clears every symptom that the correlation engine
 attributes to it via ``auto_clear_with_root`` rules; the cleared
 symptom codes are returned in ``auto_cleared_codes``. When ``true``,
-only the requested ``fault_code`` is cleared and ``auto_cleared_codes``
-is empty. The gateway's per-entity ``DELETE
+only the requested record is cleared and ``auto_cleared_codes`` is
+empty. The gateway's per-entity ``DELETE
 /{entity-path}/faults/{fault_code}`` route sets this to ``true`` so
 that an operator with access to one entity cannot cascade-clear
-correlated symptoms reported by apps in other entities. The global
-``DELETE /api/v1/faults/{fault_code}`` route leaves it ``false`` so
-cluster-wide clearing still works.
+correlated symptoms reported by apps in other entities, and its
+per-entity ``DELETE /{entity-path}/faults`` does the same for every
+record it clears. The global ``DELETE /api/v1/faults`` route leaves it
+``false`` so cluster-wide clearing still works. There is no
+``DELETE /api/v1/faults/{fault_code}`` route: a bare fault code is not
+an address, because it names as many records as there are sources
+reporting it. A client that wants the cascade for one record calls
+``ClearFault`` directly with that record's ``fault_code`` and
+``source_id``.
 
 .. note::
 

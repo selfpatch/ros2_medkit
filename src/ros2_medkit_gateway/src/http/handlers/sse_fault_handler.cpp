@@ -149,12 +149,16 @@ std::optional<uint64_t> SSEFaultHandler::delivered_watermark_locked() const {
 }
 
 std::deque<SSEFaultHandler::QueuedEvent>::iterator SSEFaultHandler::find_superseded_locked(bool updates_only) {
-  // Keyed on the peer as well as the code: a fault code is unique on the
-  // gateway that raised it and nowhere else, so two peers reporting the same
-  // code are reporting two faults, and treating one as the newer state of the
-  // other would delete a live fault from a client's view.
+  // Keyed on the record, not the code: a record is (fault_code, owner), so two
+  // sources reporting one code are two faults, and one owner's newer event says
+  // nothing about the other owner's record. Keyed on the peer as well: a fault
+  // is unique on the gateway that raised it and nowhere else, so two peers
+  // reporting the same record are reporting two faults. Treating either as the
+  // newer state of the other would delete a live fault from a client's view.
   auto supersede_key = [](const QueuedEvent & queued) {
-    return queued.peer + '\0' + queued.event.fault.fault_code;
+    const auto & sources = queued.event.fault.reporting_sources;
+    const std::string owner = sources.empty() ? std::string{} : sources.front();
+    return queued.peer + '\0' + queued.event.fault.fault_code + '\0' + owner;
   };
   std::unordered_map<std::string, std::size_t> newest_index;
   for (std::size_t i = 0; i < event_queue_.size(); ++i) {
@@ -215,8 +219,8 @@ SSEFaultHandler::EvictionStats SSEFaultHandler::evict_to_capacity_locked() {
       ++stats.coalesced;
       continue;
     }
-    // Something a live client is owed has to go. Prefer an entry a newer
-    // same-code event supersedes: the current state still reaches the client
+    // Something a live client is owed has to go. Prefer an entry a newer event
+    // of the same record supersedes: the current state still reaches the client
     // even though the transition history does not. Either way it is a real,
     // counted loss.
     auto victim = find_superseded_locked(/*updates_only=*/false);
@@ -695,10 +699,9 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
   if (fault.reporting_sources.empty()) {
     return std::nullopt;
   }
-  // reporting_sources is a set; debounced faults can carry several co-reporters
-  // (e.g. node_a and node_b raising the same fault_code). .front() picks the
-  // lexicographically-first FQN, not a defined owner - any co-reporter's
-  // rosbag is fetchable, so this remains a valid hint, just not authoritative.
+  // A record is (fault_code, reporting source), and that source is its owner,
+  // so reporting_sources has one entry and this is it. The hint addresses the
+  // record the event is about, not one co-reporter of several.
   const auto & raw_fqn = fault.reporting_sources.front();
   if (raw_fqn.empty()) {
     return std::nullopt;
@@ -737,6 +740,21 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
     }
   }
 
+  // A protocol bridge raises its link faults under the COMPONENT's own bare id,
+  // which is not a ROS FQN and matches no app, so those events carried no
+  // entity hint at all and a stream consumer could not address the record. An
+  // external app's bare id needs nothing extra: it has no slash, so the
+  // last-segment fallback above already looks it up as an app id.
+  //
+  // Only an external component claims its bare id as a reporting source, the
+  // same rule the fault scope applies. Naming a runtime host component would
+  // point the consumer at an entity whose own fault routes drop the record.
+  if (entity_id.empty()) {
+    if (auto component = cache.get_component(raw_fqn); component && component->external.value_or(false)) {
+      return EntityContext{"components", raw_fqn};
+    }
+  }
+
   if (entity_id.empty()) {
     RCLCPP_DEBUG(HandlerContext::logger(),
                  "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
@@ -745,12 +763,12 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
     return std::nullopt;
   }
 
-  // entity_type is hardcoded "apps" because apps are the leaf reporters in
-  // SOVD - reporting_sources always carries ROS node FQNs which map to apps.
-  // Components own faults transitively via their hosted apps; consumers can
-  // walk up the hierarchy via /apps/<id> -> belongs_to if they need the
-  // owning component. Manifest-only components without a bound node have no
-  // FQN match here and fall back to plain discovery - by design.
+  // entity_type is "apps" on this path because the source resolved to a ROS
+  // node FQN, and apps are the leaf reporters in SOVD. Components own records
+  // transitively via their hosted apps, and consumers can walk up the hierarchy via
+  // /apps/<id> -> belongs_to if they need the owning component. Manifest-only
+  // components without a bound node have no FQN match here and fall back to
+  // plain discovery - by design.
   return EntityContext{"apps", std::move(entity_id)};
 }
 

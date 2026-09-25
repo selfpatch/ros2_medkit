@@ -92,7 +92,13 @@ edge-triggered callbacks:
 
 - **Active -> fault reported** via ``/fault_manager/report_fault`` with the configured
   severity and message
-- **Cleared -> fault cleared** via ``/fault_manager/clear_fault`` by fault code
+- **Cleared -> fault cleared** via ``/fault_manager/clear_fault`` by fault code and the
+  entity the plugin reported it under, which together name one record
+
+A REST ``DELETE /{entity}/faults/{code}`` on an entity this plugin owns reaches
+``FaultProvider::clear_fault_record`` with the owner the gateway resolved, and the clear
+names that owner. For a component route it is one of the component's hosted apps, not the
+component itself. The two-argument ``clear_fault`` falls back to the addressed entity.
 
 The plugin keeps per-fault state only long enough to detect edges; the fault manager owns
 persistence and fault lifecycle.

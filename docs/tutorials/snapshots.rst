@@ -310,7 +310,8 @@ Snapshots are included inline in the fault response as ``environment_data``:
      },
      "x-medkit": {
        "occurrence_count": 3,
-       "reporting_sources": ["/powertrain/motor_controller"]
+       "reporting_sources": ["/powertrain/motor_controller"],
+       "owner": "/powertrain/motor_controller"
      }
    }
 

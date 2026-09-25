@@ -976,7 +976,15 @@ curl -X DELETE http://localhost:8080/api/v1/components/temp_sensor/configuration
 
 ### Faults Endpoints
 
-Faults represent errors or warnings reported by system components. The gateway provides access to faults stored in `ros2_medkit_fault_manager`.
+Faults represent errors or warnings reported by system components. The gateway provides access to fault records stored in `ros2_medkit_fault_manager`.
+
+One record is the pair (`fault_code`, reporting source). The source is the `source_id` the reporter used, it owns the record, and every fault item carries it as a top-level `source_id` beside the one-element `reporting_sources`. Two sources reporting one `fault_code` are two records, each with its own status, occurrence count and timestamps, and each cleared on its own.
+
+A per-entity route resolves a `fault_code` in the addressed entity's scope. The candidates come in three tiers, and the first tier holding any record of the code decides: the records the entity's fault list shows without a `status` parameter (`PREFAILED` and `CONFIRMED`, not muted), then the muted records of those statuses, then the records the list shows only for `status=cleared` or `status=healed` (`CLEARED`, `HEALED`, `PREPASSED`). So a muted or cleared record stays addressable by its code while nothing ranks above it, and once one of two sources has cleared its record the code names the other one. The per-code fault routes and the recording download by fault code all resolve this way. Exactly one candidate, and the route acts on it with its owner. Several, and it answers `409` with vendor error code `x-medkit-ambiguous-fault` and `parameters.owners` naming them, rather than acting on an arbitrary one. Address one of them through the route of the app that owns it, `/apps/{app_id}/faults/{fault_code}`. None, and it answers `404`. `DELETE /api/v1/{entity-path}/faults` clears the records the entity's fault list shows, each individually with its own owner. Like that list, it leaves muted records alone, and a muted record is cleared by its own per-code `DELETE`.
+
+A recording belongs to the fault records it is attached to, each a (`fault_code`, owner) pair. `GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}` serves it when the owner of one of those records is in the entity's fault scope, the scope its fault list uses. Owning a record of the same code is not enough: two apps reporting one code each download only their own recording, cleared or not, and the component hosting both serves both.
+
+The detail response names the owner as `x-medkit.owner`. A fault list's `x-medkit.source_id` is a different thing, the addressed entity's own namespace path, so the two are never the same key.
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
@@ -1038,8 +1046,8 @@ Real-time fault event stream using Server-Sent Events (SSE). Clients receive ins
 - **Real-time notifications**: Events pushed instantly when fault state changes
 - **Automatic reconnection**: Supports `Last-Event-ID` header for seamless reconnection
 - **Keepalive**: Sends `:keepalive` comment every 30 seconds to prevent timeouts
-- **Event buffer**: Buffers up to 100 recent events for reconnecting clients. Under overflow the buffer evicts entries every live client has already received, then `fault_updated` entries superseded by a newer event for the same fault code - a lagging client still converges on the current state of every fault and loses no status transition. Anything beyond that (a superseded transition, or an event with no newer sibling) is genuinely lost for lagging clients: those losses are counted and logged as drops, and an affected client should refetch `GET /api/v1/faults` to resynchronize
-- **Entity context (SOVD payload extension)**: When the gateway can resolve the fault's first reporting source back to an entity, the payload carries an `x-medkit` object with `entity_type` and `entity_id` fields so consumers can hit `/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}` directly without enumerating entities. That address serves the fault's newest recording; to reach an older one, list `/bulk-data/rosbags` and use the descriptor `id` (the recording id)
+- **Event buffer**: Buffers up to 100 recent events for reconnecting clients. Under overflow the buffer evicts entries every live client has already received, then `fault_updated` entries superseded by a newer event for the same fault record (the same code and owner) - a lagging client still converges on the current state of every fault and loses no status transition. Anything beyond that (a superseded transition, or an event with no newer sibling) is genuinely lost for lagging clients: those losses are counted and logged as drops, and an affected client should refetch `GET /api/v1/faults` to resynchronize
+- **Entity context (SOVD payload extension)**: When the gateway can resolve the fault record's reporting source (its owner) to an entity, the payload carries an `x-medkit` object with `entity_type` and `entity_id` fields so consumers can hit `/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}` directly without enumerating entities. That address serves the fault's newest recording; to reach an older one, list `/bulk-data/rosbags` and use the descriptor `id` (the recording id)
 - **Correlation payload**: when a root-cause event auto-clears correlated symptom faults, the payload carries their codes in `auto_cleared_codes` (omitted when empty); those symptoms get no event of their own
 
 **Event Types:**
@@ -1083,7 +1091,7 @@ This replays any buffered events with ID > 5, then continues streaming new event
 
 #### GET /api/v1/components/{component_id}/faults
 
-List all faults for a specific component.
+List every fault record the component owns, through the apps it hosts plus, for an external component, its own id.
 
 **Query Parameters:**
 - `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)

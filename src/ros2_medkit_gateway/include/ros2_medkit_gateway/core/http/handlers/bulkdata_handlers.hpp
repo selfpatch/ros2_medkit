@@ -169,24 +169,41 @@ std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityC
 std::string rosbag_recording_id(const std::string & file_path);
 
 /**
- * @brief Fault codes a rosbag download is authorized against.
+ * @brief Fault codes of the records a rosbag recording is attached to.
  *
- * A recording is shared by every fault of a burst, so ownership is the union
- * over those faults rather than a single code: the entity that owns any one of
- * them may download the bag. That grants nothing new - before recordings had
- * their own identity, each of those faults already addressed its own copy of
- * the same bytes - it only renames the door.
+ * A recording is shared by every fault of a burst, so it belongs to several
+ * records, each a (fault code, owner) pair. These are the codes of those
+ * records. The download authorizes on the pairs, not on the codes: the codes
+ * only say which of the entity's records to ask about, and
+ * ``rosbag_rows_hold_recording`` says whether one of those records' owners
+ * really holds the recording. A code alone would let an entity owning any
+ * record of the code download another owner's recording of it.
  *
  * When the wire carries no ``fault_codes`` the response came from a peer that
- * predates the field, where the addressed id *was* the fault code; authorizing
- * against the requested id then reproduces the previous check exactly.
+ * predates the field, where the addressed id *was* the fault code, so the
+ * requested id stands in for it.
  *
  * @param rosbag_data Rosbag response from the fault manager
  * @param requested_id The ``{file_id}`` path segment the client asked for
- * @return Non-empty list of fault codes to test against the entity's scope
+ * @return Non-empty list of fault codes whose in-scope records to check
  */
 std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
                                                      const std::string & requested_id);
+
+/**
+ * @brief Does one owner's rosbag listing hold the recording that was served?
+ *
+ * ListRosbags answers the rows whose record is owned by exactly the source it
+ * was asked for, one row per (fault code, recording) link. A row naming the
+ * served recording therefore proves that a record of that owner is attached to
+ * it. A row names it by the same recording id, or, when either side predates
+ * recording ids, by the same bag path.
+ *
+ * @param rows The ``rosbags`` array of one owner's ListRosbags answer
+ * @param served Rosbag response from the fault manager for the download
+ * @return True when a row names the served recording
+ */
+bool rosbag_rows_hold_recording(const nlohmann::json & rows, const nlohmann::json & served);
 
 /**
  * @brief Did the fault manager read the URL segment as a FAULT CODE rather than a
@@ -220,13 +237,24 @@ bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std
  * Order follows first appearance, which is the order the fault manager listed
  * the rows in.
  *
- * @param rows Rosbag rows as returned by the fault manager
- * @param faults_by_code Faults keyed by code, for timestamp enrichment
+ * @param rows Rosbag rows as returned by the fault manager, each stamped with
+ *        the ``owner`` it was listed under
+ * @param faults_by_record Fault records keyed by ``record_map_key``, for
+ *        timestamp enrichment
  * @return One descriptor per distinct recording
  */
 std::vector<dto::BulkDataDescriptor>
 fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
-                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_code);
+                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_record);
+
+/**
+ * @brief Key one fault record for the descriptor date lookup.
+ *
+ * A record is the pair (reporting source, fault code), and the two owners of
+ * one code have their own ``first_occurred``. Keying the lookup on the code
+ * alone let whichever record was listed last date the other's recordings.
+ */
+std::string record_map_key(const std::string & owner, const std::string & fault_code);
 
 }  // namespace detail
 

@@ -55,8 +55,11 @@ This glossary defines key terms used throughout ros2_medkit documentation.
       can be polled for status or cancelled.
 
    Fault
-      An error condition reported by a ROS 2 node to the fault manager.
-      Faults have a code, severity, message, and timestamp.
+      An error condition reported to the fault manager. One fault record is the
+      pair (fault code, reporting source), the source being the ``source_id``
+      the reporter used. Two sources reporting one code are two records, each
+      with its own severity, message, timestamps and status, and each cleared on
+      its own.
 
       See: :doc:`design/ros2_medkit_fault_reporter/index`
 

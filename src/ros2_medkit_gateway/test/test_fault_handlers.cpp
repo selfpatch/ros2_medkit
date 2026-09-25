@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
@@ -381,11 +382,16 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponsePrimaryValueExtraction) {
   }
 }
 
+// A record is (fault_code, owner), so the detail names exactly one reporting
+// source and repeats it as x-medkit.owner, which is the value the per-record
+// routes address the record by. This test used to pin one record
+// carrying three sources. Three sources reporting one code are three records
+// now, and each detail response describes one of them.
 // @verifies REQ_INTEROP_013
-TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources) {
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
   ros2_medkit_msgs::msg::Fault fault;
-  fault.fault_code = "MULTI_SOURCE_FAULT";
-  fault.reporting_sources = {"/perception/lidar", "/perception/camera", "/control/motor"};
+  fault.fault_code = "SHARED_CODE";
+  fault.reporting_sources = {"/perception/lidar"};
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
@@ -393,10 +399,36 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseMultipleSources) {
       to_json(FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test"));
 
   auto sources = response["x-medkit"]["reporting_sources"];
-  ASSERT_EQ(sources.size(), 3);
+  ASSERT_EQ(sources.size(), 1);
   EXPECT_EQ(sources[0], "/perception/lidar");
-  EXPECT_EQ(sources[1], "/perception/camera");
-  EXPECT_EQ(sources[2], "/control/motor");
+  ASSERT_TRUE(response["x-medkit"].contains("owner"));
+  EXPECT_EQ(response["x-medkit"]["owner"], "/perception/lidar");
+  // Named `owner`, never `source_id`: a fault LIST's x-medkit.source_id is the
+  // addressed entity's namespace path, so one key with two meanings inside one
+  // API is the thing this avoids.
+  EXPECT_FALSE(response["x-medkit"].contains("source_id"))
+      << "the detail must not reuse the list's source_id key for the record owner";
+}
+
+// The other owner of the same code is a different record, and its detail says
+// so: same code, different source_id.
+// @verifies REQ_INTEROP_013
+TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeparatesOwnersOfOneCode) {
+  ros2_medkit_msgs::msg::Fault first;
+  first.fault_code = "SHARED_CODE";
+  first.reporting_sources = {"/perception/lidar"};
+  ros2_medkit_msgs::msg::Fault second;
+  second.fault_code = "SHARED_CODE";
+  second.reporting_sources = {"/control/motor"};
+
+  ros2_medkit_msgs::msg::EnvironmentData env_data;
+
+  auto a = to_json(FaultHandlers::build_sovd_fault_response(fault_json(first), env_json(env_data), "/apps/lidar"));
+  auto b = to_json(FaultHandlers::build_sovd_fault_response(fault_json(second), env_json(env_data), "/apps/motor"));
+
+  EXPECT_EQ(a["item"]["code"], b["item"]["code"]);
+  EXPECT_EQ(a["x-medkit"]["owner"], "/perception/lidar");
+  EXPECT_EQ(b["x-medkit"]["owner"], "/control/motor");
 }
 
 // @verifies REQ_INTEROP_013
@@ -555,9 +587,10 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsOtherEntityFault) {
 }
 
 TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsMixedSourceFault) {
-  // Cross-entity clear/disclosure stays blocked under the all-sources rule: a
-  // fault co-reported by "process" and another entity is out of scope for
-  // "process" alone.
+  // Cross-entity clear/disclosure stays blocked under the all-sources rule. A
+  // record names one source, but one relayed from a peer or read from an older
+  // store may carry two, and one that names "process" and another entity is
+  // out of scope for "process" alone.
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process", "s7_status"}), {"process"}));
 }
 
@@ -572,6 +605,222 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {
 // This pins the shape build_sovd_fault_response produces for the PLC case:
 // reporting_sources=[bare id] + a freeze-frame snapshot under a plugin entity
 // path.
+// =============================================================================
+// select_scoped_fault - which record a per-record route acts on
+//
+// A fault code is half of a record's identity. These pin what the per-entity
+// GET and DELETE do when the entity's own scope holds none, one, or several
+// records of the code the URL named.
+// =============================================================================
+namespace {
+
+json record(const std::string & code, const std::string & owner) {
+  return json{{"fault_code", code}, {"status", "CONFIRMED"}, {"reporting_sources", json::array({owner})}};
+}
+
+std::vector<ros2_medkit_gateway::faults::ScopedFault> in_scope(const json & faults, const std::string & code,
+                                                               const std::set<std::string> & scope) {
+  return ros2_medkit_gateway::faults::records_of_code_in_scope(faults, code, scope);
+}
+
+}  // namespace
+
+// @verifies REQ_INTEROP_013
+TEST(SelectScopedFaultTest, OneRecordInScopeIsTheRecordAndNamesItsOwner) {
+  const json faults =
+      json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b"), record("OTHER_CODE", "app_a")});
+
+  auto picked =
+      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
+
+  ASSERT_TRUE(picked.has_value()) << picked.error().message;
+  EXPECT_EQ(picked->owner, "app_a");
+  EXPECT_EQ(picked->fault["fault_code"], "SHARED_CODE");
+}
+
+// @verifies REQ_INTEROP_013
+TEST(SelectScopedFaultTest, NoRecordInScopeIs404) {
+  const json faults = json::array({record("SHARED_CODE", "app_b")});
+
+  auto picked =
+      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
+
+  ASSERT_FALSE(picked.has_value());
+  EXPECT_EQ(picked.error().http_status, 404);
+  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
+}
+
+// Two of this component's own apps report the code, so the URL names two
+// records. Acting on either would clear or disclose a record the caller did
+// not ask for and could not tell apart in the response.
+// @verifies REQ_INTEROP_015
+TEST(SelectScopedFaultTest, SeveralRecordsInScopeIs409NamingEveryOwner) {
+  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
+
+  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}), "SHARED_CODE",
+                                                   "component_id", "host");
+
+  ASSERT_FALSE(picked.has_value());
+  EXPECT_EQ(picked.error().http_status, 409);
+  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_AMBIGUOUS_FAULT);
+  ASSERT_TRUE(picked.error().params.contains("owners"));
+  // Ordered by owner, so the answer does not depend on the store's listing order.
+  EXPECT_EQ(picked.error().params["owners"], json::array({"app_a", "app_b"}));
+  EXPECT_EQ(picked.error().params["fault_code"], "SHARED_CODE");
+  EXPECT_EQ(picked.error().params["component_id"], "host");
+}
+
+// The records of ONE code only: a second code the entity also owns is a
+// different resource and must not make its sibling ambiguous.
+TEST(RecordsOfCodeInScopeTest, OtherCodesAreNotCollected) {
+  const json faults = json::array({record("SHARED_CODE", "app_a"), record("OTHER_CODE", "app_b")});
+
+  const auto records = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
+
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].owner, "app_a");
+}
+
+// The rosbag download reads the same records to find the owners it asks
+// whether they hold the recording, and a code addressing several of them is not
+// an ambiguity there: every owner in scope is asked. Reading the code unscoped
+// instead answered "ambiguous" and the entity was refused a recording it owns.
+TEST(RecordsOfCodeInScopeTest, EveryOwnerInScopeIsARecordingDownloadCandidate) {
+  const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b")});
+
+  EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a"}).empty()) << "app_a owns a record of this code";
+  EXPECT_EQ(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}).size(), 2u)
+      << "a component hosting both owners asks both of them";
+  EXPECT_TRUE(in_scope(faults, "SHARED_CODE", {"unrelated_app"}).empty())
+      << "an entity owning no record of this code has no owner to ask";
+}
+
+// The rosbag download resolves the SAME way the fault routes do when the URL
+// carries a bare fault code: exactly one record in scope names a recording, and
+// several name none of them. Serving the lowest-sorting owner's bag would hand a
+// caller another owner's bytes under a URL that never said whose they were. The
+// recording-id form addresses the bag directly and is unaffected.
+TEST(RecordsOfCodeInScopeTest, SeveralOwnersMakeABareCodeUrlAmbiguous) {
+  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
+
+  const auto both = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
+  ASSERT_EQ(both.size(), 2u) << "a component hosting both owners resolves two records";
+  EXPECT_EQ(both[0].owner, "app_a");
+  EXPECT_EQ(both[1].owner, "app_b");
+
+  // One owner in scope is still one record, so that URL keeps working.
+  const auto single = in_scope(faults, "SHARED_CODE", {"app_a"});
+  ASSERT_EQ(single.size(), 1u);
+  EXPECT_EQ(single[0].owner, "app_a");
+}
+
+// A muted_faults entry names one record by its code AND its owner. An entry for
+// another owner of the same code, or for the same owner under another code,
+// hides nothing here, so the one record the entity's list shows is the only
+// candidate and the code is not ambiguous.
+TEST(AddressableRecordsTest, AMutedEntryHidesOnlyTheRecordItNames) {
+  const json listing{
+      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
+                                    json{{"fault_code", "OTHER_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 1u) << "only pump's record of this code is muted";
+  EXPECT_EQ(records[0].owner, "tank");
+}
+
+// With no shown record of the code the muted ones are the candidates, every one
+// of them, so two of them still make the code ambiguous rather than picking one.
+TEST(AddressableRecordsTest, MutedRecordsAnswerOnlyWhenNoneIsShown) {
+  const json listing{
+      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
+                                    json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].owner, "pump");
+  EXPECT_EQ(records[1].owner, "tank");
+}
+
+namespace {
+
+json record_in(const std::string & status, const std::string & code, const std::string & owner) {
+  json r = record(code, owner);
+  r["status"] = status;
+  return r;
+}
+
+}  // namespace
+
+// The entity's default fault list shows PREFAILED and CONFIRMED records. A
+// record the list only shows under status=cleared or status=healed (CLEARED,
+// HEALED, PREPASSED) yields to one it shows by default, so once one of two
+// sources has cleared its record the code names the other one again instead of
+// answering 409 for good.
+TEST(AddressableRecordsTest, ARecordTheListShowsOutranksOneItShowsOnlyOnRequest) {
+  for (const std::string inactive : {"CLEARED", "HEALED", "PREPASSED"}) {
+    for (const std::string active : {"CONFIRMED", "PREFAILED"}) {
+      const json listing{
+          {"faults",
+           json::array({record_in(inactive, "SHARED_CODE", "tank"), record_in(active, "SHARED_CODE", "pump")})},
+      };
+
+      const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+      ASSERT_EQ(records.size(), 1u) << inactive << " beside " << active;
+      EXPECT_EQ(records[0].owner, "pump") << inactive << " beside " << active;
+    }
+  }
+}
+
+// A muted record is hidden from the list only because a root cause muted it.
+// It still outranks a record the list hides for its status.
+TEST(AddressableRecordsTest, AMutedActiveRecordOutranksAClearedOne) {
+  const json listing{
+      {"faults",
+       json::array({record_in("CONFIRMED", "SHARED_CODE", "tank"), record_in("CLEARED", "SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
+  };
+
+  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
+
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].owner, "tank");
+}
+
+// Nothing the list shows and nothing muted: the cleared and healed records are
+// the candidates, all of them. One alone is addressable, two make the code
+// ambiguous. A muted record the list would not show anyway (here HEALED) is in
+// that last tier too, because its status hides it from the list whether it is
+// muted or not.
+TEST(AddressableRecordsTest, ClearedAndHealedRecordsAnswerOnlyWhenNothingElseDoes) {
+  const json one{{"faults", json::array({record_in("CLEARED", "SHARED_CODE", "tank")})}};
+  const auto single = ros2_medkit_gateway::faults::addressable_records(one, "SHARED_CODE", {"tank", "pump"});
+  ASSERT_EQ(single.size(), 1u) << "one cleared record alone is still the record the code names";
+  EXPECT_EQ(single[0].owner, "tank");
+
+  const json two{
+      {"faults",
+       json::array({record_in("CLEARED", "SHARED_CODE", "tank"), record_in("HEALED", "SHARED_CODE", "pump")})},
+      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}}})},
+  };
+  const auto both = ros2_medkit_gateway::faults::addressable_records(two, "SHARED_CODE", {"tank", "pump"});
+  ASSERT_EQ(both.size(), 2u) << "two inactive records name neither";
+  EXPECT_EQ(both[0].owner, "pump");
+  EXPECT_EQ(both[1].owner, "tank");
+}
+
+TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(record("C", "app_a")), "app_a");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"reporting_sources", json::array()}}), "");
+}
+
 TEST_F(FaultHandlersTest, BuildSovdFaultResponseExternalEntityFreezeFrame) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "PLC_LEVEL_HIGH";
@@ -616,8 +865,8 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   fault.description = "Brake pressure below threshold";
   fault.occurrence_count = 3;
   fault.status = "active";
-  fault.reporting_sources = {"brake_ecu", "abs_node"};
-  fault.last_passed.sec = 1200;  // absent-when-zero covered separately below
+  fault.reporting_sources = {"brake_ecu"};  // a record carries its one owner
+  fault.last_passed.sec = 1200;             // absent-when-zero covered separately below
 
   const json wire = conversions::fault_to_json(fault);
 
@@ -626,6 +875,34 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   ASSERT_TRUE(parsed.has_value()) << "fault_to_json output does not conform to FaultListItem";
   // ... and round-trip back to identical wire (no field added or dropped).
   EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire);
+}
+
+TEST(FaultListItemSchema, FlatItemNamesTheOwningSource) {
+  // The flat list item addresses its own record: source_id is the owner, and it
+  // is the single entry of reporting_sources. A client filtering or clearing
+  // from a list never has to reach into the array to find out whose record it
+  // is holding.
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "SHARED_CODE";
+  fault.status = "CONFIRMED";
+  fault.reporting_sources = {"app_a"};
+
+  const json wire = conversions::fault_to_json(fault);
+
+  ASSERT_TRUE(wire.contains("source_id")) << "flat fault item must name the record owner";
+  EXPECT_EQ(wire["source_id"], "app_a");
+  ASSERT_EQ(wire["reporting_sources"].size(), 1u);
+  EXPECT_EQ(wire["reporting_sources"][0], "app_a");
+}
+
+TEST(FaultListItemSchema, FlatItemOmitsSourceIdWithoutAnOwner) {
+  // A record always has an owner, but the conversion is fed straight from the
+  // wire and must not invent one: no reporting source, no source_id key.
+  ros2_medkit_msgs::msg::Fault fault;
+  fault.fault_code = "ORPHANED";
+  fault.status = "CONFIRMED";
+
+  EXPECT_FALSE(conversions::fault_to_json(fault).contains("source_id"));
 }
 
 TEST(FaultListItemSchema, LastPassedOmittedWhenNeverPassed) {

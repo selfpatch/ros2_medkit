@@ -685,13 +685,14 @@ bool OpcuaPoller::should_clear_after_refresh(SovdAlarmStatus last_status, const 
 }
 
 // True when ANOTHER tracked condition instance carries the same fault_code and
-// is currently Confirmed. Siemens A&C mints a fresh ConditionId (GUID) for
-// every activation of the same Program_Alarm, so a stale instance's heal /
-// reconcile-clear races the new instance's raise; because fault_manager keys
-// by fault_code alone, letting the stale clear through would wipe the fault
-// the live instance just asserted (seen on a real 1505SP: CONFIRMED then
-// HEALED 170 us apart, alarm ends invisible). Caller must hold
-// conditions_mutex_.
+// is currently Confirmed. A server may mint a fresh ConditionId (GUID) for
+// every activation of the same alarm, so a stale instance's heal or
+// reconcile-clear races the new instance's raise. Both instances report under
+// the entity that owns the code (the node map keeps every code on one entity),
+// so they address one fault record, and letting the stale clear through would
+// clear the record the live instance just raised (seen on a real controller:
+// CONFIRMED then HEALED 170 us apart, the alarm ending invisible). Caller must
+// hold conditions_mutex_.
 bool OpcuaPoller::same_code_active_elsewhere_locked(const std::string & fault_code,
                                                     const std::string & condition_id_str) const {
   for (const auto & [cid, runtime] : conditions_) {

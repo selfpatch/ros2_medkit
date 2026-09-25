@@ -89,6 +89,31 @@ class FaultProvider {
   /// @param fault_code Fault code to clear
   virtual tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
                                                                                   const std::string & fault_code) = 0;
+
+  /// Clear one fault record, named by its code and the source that owns it.
+  ///
+  /// This is what the gateway calls for `DELETE /{entity}/faults/{code}` and
+  /// for each item of `DELETE /{entity}/faults`. A fault record is the pair
+  /// (fault_code, owner), so the code alone does not name one when several
+  /// sources report it.
+  ///
+  /// The default implementation calls `clear_fault(entity_id, fault_code)` and
+  /// drops the owner, so a provider written against the two-argument contract
+  /// compiles unchanged and keeps clearing by code. A provider that can scope
+  /// its clear to one record overrides this method.
+  ///
+  /// @param entity_id SOVD entity ID the request addressed
+  /// @param fault_code Fault code to clear
+  /// @param owner Reporting source that owns the record, as the gateway resolved
+  ///        it in the entity's fault scope. It is NOT the entity id: a component
+  ///        owns the records its hosted apps reported, so the owner is the app.
+  ///        Empty only when the fault manager holds no record of this code (a
+  ///        record the provider's own backend keeps, so the provider decides).
+  virtual tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+  clear_fault_record(const std::string & entity_id, const std::string & fault_code, const std::string & owner) {
+    static_cast<void>(owner);
+    return clear_fault(entity_id, fault_code);
+  }
 };
 
 }  // namespace ros2_medkit_gateway

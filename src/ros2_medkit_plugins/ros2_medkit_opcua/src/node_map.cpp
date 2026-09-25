@@ -947,24 +947,24 @@ bool NodeMap::load(const std::string & yaml_path) {
       }
     }
 
-    // Global fault-code uniqueness validation. fault_manager keys and clears
-    // faults by ``fault_code`` ALONE (clear_fault(fault_code) /
-    // get_fault(fault_code)); the poller shares one ``FaultTransitionTracker``
-    // that is likewise keyed by code alone. So a fault_code is a global
-    // identifier and must be unique across EVERY source that can emit it,
-    // regardless of entity_id:
+    // Global fault-code uniqueness validation. The reason is THIS PLUGIN's own
+    // ``FaultTransitionTracker``, which the poller shares across every node-map
+    // entry and which is keyed by ``fault_code`` alone: two entries emitting
+    // one code would alternately raise and clear it every cycle, because the
+    // tracker cannot tell their edges apart. So a fault_code must be unique
+    // across EVERY source this file declares, regardless of entity_id:
     //
     //   * every polled detection fault (threshold + each status_bits bit +
     //     each fault_enum code + the enum catch-all), and
     //   * every native ``event_alarms`` subscription (issue #386).
     //
-    // Two sources sharing a code - even a polled code on entity_a and an
-    // event_alarms code on entity_b - would collide at fault_manager: one
-    // source's clear wipes the other's fault, or the two flap raise/clear
-    // every cycle. The (entity_id, fault_code) pair the earlier check keyed on
-    // is NOT sufficient, because the fault manager never sees entity_id in its
-    // key. Reject the whole file at load with an actionable error so the intent
-    // - one code, one source - is enforced before anything runs.
+    // The fault manager is not the reason: it keys a record by
+    // (fault_code, source_id), and this plugin reports and clears under the
+    // owning entity_id, so two entries sharing a code are two records there and
+    // neither clear touches the other. The shared tracker is what a collision
+    // breaks, and it breaks before either report is sent. Reject the whole file
+    // at load with an actionable error so the intent - one code, one source -
+    // is enforced before anything runs.
     {
       namespace fd = ros2_medkit::fault_detection;
       struct EmittedFault {
@@ -977,9 +977,9 @@ bool NodeMap::load(const std::string & yaml_path) {
         if (!inserted) {
           RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
                        "fault_code '%s' is emitted by more than one source (%s on entity '%s' and %s on "
-                       "entity '%s'); fault codes must be globally unique across all detection entries and "
-                       "event_alarms because the shared fault manager is keyed by code alone (a collision "
-                       "clears the other source's fault or flaps raise/clear) - rename one of them",
+                       "entity '%s'). Fault codes must be unique across all detection entries and "
+                       "event_alarms in this file because the shared fault-transition tracker is keyed by "
+                       "code alone (a collision flaps raise/clear every cycle). Rename one of them.",
                        code.c_str(), it->second.pipeline, it->second.entity_id.c_str(), pipeline, entity_id.c_str());
           return false;
         }

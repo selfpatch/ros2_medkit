@@ -1171,9 +1171,9 @@ TEST_F(NodeDeathIntegrationTest, UngatedClearStaysSuppressedWhileAnUnrelatedNode
 // Why it is not simply fixed here: the guard exists because a fresh instance cannot tell "the
 // node came back" from "I never saw that node". Answering that needs the KEYS the outstanding
 // record names, and they are not reachable. /fault_manager/list_faults would tell this detector
-// that a GRAPH_NODE_DISAPPEARED record is outstanding and that it is among its reporting
-// sources, but not which nodes it names: fault_manager aggregates one record per fault_code,
-// and this detector merges every dead key into that one record's description, capped at
+// that a GRAPH_NODE_DISAPPEARED record is outstanding and that this plugin owns it, but not
+// which nodes it names: this detector raises one aggregated fault under one owner and merges
+// every dead key into that record's description, capped at
 // AggregatedFault::kMaxDescriptionChars with the remainder collapsed into a count. Acting on
 // the record's mere existence would clear it for a node that is still dead and simply never
 // re-observed, which is the ungated heal the sibling tests above forbid.

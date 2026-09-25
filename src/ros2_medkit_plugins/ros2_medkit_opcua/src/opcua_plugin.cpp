@@ -1018,6 +1018,15 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   }
 
   std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+  // Everything below describes this plugin's own OPC UA session, which belongs
+  // to the one component the plugin introspects. Another component in the same
+  // entity tree exists but has no session here, so it gets the same 404 the
+  // data route gives an entity with no mapped points.
+  if (component_id != node_map_.component_id()) {
+    res.send_error(404, ERR_RESOURCE_NOT_FOUND, "No PLC status for component: " + component_id);
+    return;
+  }
+
   auto snap = poller_->snapshot();
 
   nlohmann::json j;
@@ -1062,7 +1071,7 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
     send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
     log_info("Alarm cleared: " + signal.fault_code + " on " + entity_id);
-    send_clear_fault(signal.fault_code);
+    send_clear_fault(entity_id, signal.fault_code);
   }
 }
 
@@ -1240,8 +1249,8 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       log_info("AlarmCondition HEALED (latched, awaiting ack/confirm): " + delivery.fault_code);
       break;
     case AlarmAction::ClearFault:
-      log_info("AlarmCondition CLEARED: " + delivery.fault_code);
-      send_clear_fault(delivery.fault_code);
+      log_info("AlarmCondition CLEARED: " + delivery.fault_code + " on " + delivery.entity_id);
+      send_clear_fault(delivery.entity_id, delivery.fault_code);
       break;
     case AlarmAction::NoOp:
       break;
@@ -1281,17 +1290,57 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
   });
 }
 
-void OpcuaPlugin::send_clear_fault(const std::string & fault_code) {
+void OpcuaPlugin::send_clear_fault(const std::string & owner, const std::string & fault_code) {
   if (!fault_clients_->clear) {
     log_warn("ClearFault service client not available");
     return;
   }
 
+  // The record is (fault_code, source_id), and `owner` is that source. On the
+  // polled and event paths it is the entity this plugin reported under. On the
+  // REST path it is the owner the gateway resolved, which for a component route
+  // is one of the component's hosted apps and NOT the component itself.
+  // Clearing by code alone would instead reach whichever source the store
+  // resolved, which on a box running two plugin instances is another device's
+  // still-active fault.
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
+  request->source_id = owner;
 
-  send_or_buffer([this, request]() {
-    fault_clients_->clear->async_send_request(request);
+  send_or_buffer([this, request, owner, fault_code]() {
+    // Read the reply. The dispatch is still fire-and-forget as far as the
+    // caller is concerned, but a refusal has to reach the log: a clear the
+    // fault manager declined (no such record for that owner) used to leave no
+    // trace at all while the REST route answered as though it had worked.
+    //
+    // The reply callback holds nothing of the plugin. It runs on an executor
+    // thread whenever the reply arrives, which can be while the plugin is
+    // being destroyed, so it logs through a copy of the log sink taken here
+    // and carries the owner and the code by value.
+    auto warn = [sink = log_sink()](const std::string & msg) {
+      if (sink) {
+        sink(PluginLogLevel::kWarn, msg);
+      }
+    };
+    using ClearFuture = rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture;
+    // async_send_request only accepts a callback whose parameter is exactly
+    // SharedFuture, by value (rclcpp checks the argument types, and a const
+    // reference is a different type), so the future cannot be taken by
+    // reference here.
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    auto on_reply = [warn = std::move(warn), owner, fault_code](ClearFuture future) {
+      try {
+        const auto & response = future.get();
+        if (!response->success) {
+          warn("ClearFault refused for '" + fault_code + "' of source '" + owner + "': " + response->message);
+        }
+      } catch (const std::exception & e) {
+        warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed: " + e.what());
+      } catch (...) {
+        warn("ClearFault reply for '" + fault_code + "' of source '" + owner + "' failed");
+      }
+    };
+    fault_clients_->clear->async_send_request(request, std::move(on_reply));
   });
 }
 
@@ -1670,7 +1719,16 @@ tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(
     items.push_back(std::move(item));
   }
 
-  return dto::DataListResult{nlohmann::json{{"items", std::move(items)}}};
+  // Link state travels with the values, the same envelope the plugin's own data
+  // route serves. Without it a reader cannot tell a live value from the frozen
+  // last-known one the poller keeps across an outage: the fault-trigger engine
+  // holds a rule's state on a down link, and it can only do that if the content
+  // says the link is down.
+  nlohmann::json envelope{{"items", std::move(items)}};
+  envelope["connected"] = snap.connected;
+  envelope["timestamp"] = std::chrono::system_clock::to_time_t(snap.timestamp);
+
+  return dto::DataListResult{std::move(envelope)};
 }
 
 tl::expected<dto::DataValue, DataProviderErrorInfo> OpcuaPlugin::read_data(const std::string & entity_id,
@@ -2059,11 +2117,10 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
       item["severity"] = f.value("severity", 0);
       item["description"] = f.value("description", "");
       item["status"] = f.value("status", "");
-      // Fault records carry reporting_sources, not source_id. On this
-      // entity-scoped list prefer the requested entity when it is among the
-      // sources - reporting_sources[0] is ordering-dependent and can name a
-      // different co-reporting entity; fall back to the first source only
-      // when the entity itself never reported.
+      // A record carries its owner as source_id, which is also the single
+      // entry of reporting_sources. Only a record read without source_id falls
+      // back to reporting_sources: the requested entity when it is listed
+      // there, else the first entry.
       std::string source_id = f.value("source_id", "");
       if (source_id.empty() && f.contains("reporting_sources") && f["reporting_sources"].is_array()) {
         for (const auto & src : f["reporting_sources"]) {
@@ -2100,8 +2157,16 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
-  // list_entity_faults returns a bare JSON array of fault objects scoped to
-  // this entity (see PluginContext contract).
+  // The entity match is the LIST, not a comparison here. list_entity_faults
+  // returns a bare JSON array already scoped to this entity (see PluginContext
+  // contract): the fault manager's records filtered by the entity's resolved
+  // source set, plus the peers' answers for this same entity. So an item of
+  // this code in that array is a record this entity owns, and another entity's
+  // record of the same code never reaches this loop.
+  //
+  // Comparing the item's source_id to entity_id instead would be wrong, not
+  // merely redundant: a COMPONENT owns the records its hosted apps reported,
+  // whose owner is the app id, and the comparison would 404 them.
   auto faults = ctx_->list_entity_faults(entity_id);
   if (faults.is_array()) {
     for (const auto & f : faults) {
@@ -2111,17 +2176,31 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
     }
   }
 
-  return tl::make_unexpected(
-      FaultProviderErrorInfo{FaultProviderError::FaultNotFound, "Fault not found: " + fault_code, 404});
+  return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::FaultNotFound,
+                                                    "Fault not found: " + fault_code + " on entity " + entity_id, 404});
 }
 
 tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_fault(const std::string & entity_id,
                                                                                      const std::string & fault_code) {
+  // The code-only form of the contract names no owner, so the addressed entity
+  // stands in, which is the source this plugin reports its own faults under.
+  return clear_fault_record(entity_id, fault_code, "");
+}
+
+tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+OpcuaPlugin::clear_fault_record(const std::string & entity_id, const std::string & fault_code,
+                                const std::string & owner) {
   if (!ctx_ || !fault_clients_) {
     return tl::make_unexpected(FaultProviderErrorInfo{FaultProviderError::Internal, "plugin not initialized", 503});
   }
 
-  send_clear_fault(fault_code);
+  // The gateway resolved which record this route addresses, so its owner is
+  // what the clear names. The entity in the URL is not it: a component owns the
+  // records its hosted apps reported, and sending the component id addresses a
+  // record no source owns, which the fault manager declines. Only when the
+  // gateway resolved nothing (a record it does not hold) does the addressed
+  // entity stand in, which is what this plugin's own polled clears use.
+  send_clear_fault(owner.empty() ? entity_id : owner, fault_code);
   return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }

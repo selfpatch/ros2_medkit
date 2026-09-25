@@ -1080,7 +1080,7 @@
                 "stream"
               ]
             },
-            "description": "Server-Sent Events (SSE) stream for real-time fault notifications.\n\nEvents:\n- fault_confirmed: Fault transitioned to CONFIRMED status\n- fault_cleared: Fault ended (manually cleared, or auto-healed; check fault.status for CLEARED vs HEALED)\n- fault_updated: Fault data changed (occurrence_count, sources)\n\nSSE Format:\n```\nevent: fault_confirmed\ndata: {\"event_type\":\"fault_confirmed\",\"fault\":{...},\"timestamp\":1234567890.123}\n```\n\nNote: Postman has limited SSE support. For testing, use:\n- Browser: `new EventSource('http://localhost:8080/api/v1/faults/stream')`\n- curl: `curl -N {{base_url}}/faults/stream`\n\nFeatures:\n- Keepalive every 30 seconds\n- Reconnection support via Last-Event-ID header\n- Multiple simultaneous clients supported"
+            "description": "Server-Sent Events (SSE) stream for real-time fault notifications.\n\nEvents:\n- fault_confirmed: Fault transitioned to CONFIRMED status\n- fault_cleared: Fault ended (manually cleared, or auto-healed, check fault.status for CLEARED vs HEALED)\n- fault_updated: Record data changed (last_occurred, severity)\n\nSSE Format:\n```\nevent: fault_confirmed\ndata: {\"event_type\":\"fault_confirmed\",\"fault\":{...},\"timestamp\":1234567890.123}\n```\n\nNote: Postman has limited SSE support. For testing, use:\n- Browser: `new EventSource('http://localhost:8080/api/v1/faults/stream')`\n- curl: `curl -N {{base_url}}/faults/stream`\n\nFeatures:\n- Keepalive every 30 seconds\n- Reconnection support via Last-Event-ID header\n- Multiple simultaneous clients supported"
           },
           "response": []
         },
@@ -1142,7 +1142,7 @@
                 "faults"
               ]
             },
-            "description": "List all faults for a component (REQ_INTEROP_012). Returns component_id, source_id (namespace), faults array, and count. By default returns PREFAILED and CONFIRMED faults."
+            "description": "List every fault record the component owns (REQ_INTEROP_012). A record is the pair (fault_code, reporting source), so two sources reporting one code are two items with distinct source_id. Returns component_id, faults array, and count. By default returns PREFAILED and CONFIRMED records."
           },
           "response": []
         },
@@ -1189,7 +1189,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Get a specific fault by fault_code (REQ_INTEROP_013). Returns component_id and fault object with fault_code, severity, severity_label, description, status, timestamps, and reporting_sources."
+            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail whose x-medkit names the record's owner (x-medkit.owner) beside reporting_sources, occurrence_count and severity_label. Answers 409 (x-medkit-ambiguous-fault) when the code resolves to several records of this component, with parameters.owners naming them. Records the fault list shows rank above muted ones, and muted ones above cleared or healed ones, so one active record is served even while another source's cleared record of the code is kept."
           },
           "response": []
         },
@@ -1210,7 +1210,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Clear a fault by fault_code (REQ_INTEROP_015). Changes fault status to CLEARED. Returns success status with component_id and fault_code.\n\n**With correlation enabled:**\nIf the cleared fault is a root cause with `auto_clear_with_root=true`, the response includes `auto_cleared_codes[]` listing all symptom faults that were automatically cleared."
+            "description": "Clear one fault record of this component by fault_code (REQ_INTEROP_015). Changes that record's status to CLEARED and answers 204 with no body. Answers 409 (x-medkit-ambiguous-fault) when the code resolves to several records of this component, ranked the same way as the GET.\n\n**With correlation enabled:**\nThe per-entity route always sets skip_correlation_auto_clear, so symptom records correlated to the cleared one stay untouched."
           },
           "response": []
         },

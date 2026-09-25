@@ -1,0 +1,53 @@
+# SOVD System Manifest: two owners of one fault code
+# ==================================================
+# Hybrid-mode manifest with TWO external apps hosted by one component. Both
+# report the same fault_code to the fault_manager under their own entity ids,
+# which makes two records of that code inside one component's fault scope.
+#
+# That shape is what the per-record identity has to answer for: each app's own
+# route addresses its own record, the component's list shows both, and the
+# component's per-code detail route has no single record to name and says so
+# rather than picking one.
+#
+# Both apps are external: they report under their bare entity ids rather than a
+# ROS FQN, which is also how a non-ROS asset bridged in by a protocol plugin
+# reports.
+#
+# Used by: test/features/test_faults_owner_identity.test.py
+
+manifest_version: "1.0"
+
+metadata:
+  name: "fault-owner-identity"
+  version: "1.0.0"
+  description: "Two external apps under one component sharing a fault code"
+
+config:
+  unmanifested_nodes: warn
+  inherit_runtime_resources: true
+
+areas:
+  - id: shared-code-cell
+    name: "Shared Code Cell"
+    namespace: /shared_code_cell
+    description: "Cell hosting two assets that report the same fault code"
+
+components:
+  - id: shared-code-hub
+    name: "Shared Code Hub"
+    type: "controller"
+    area: shared-code-cell
+    description: "Hosts both reporting assets, so both records land in one scope"
+
+apps:
+  - id: owner-a
+    name: "Owner A"
+    external: true
+    is_located_on: shared-code-hub
+    description: "Reports SHARED_CODE under its own entity id"
+
+  - id: owner-b
+    name: "Owner B"
+    external: true
+    is_located_on: shared-code-hub
+    description: "Reports the same SHARED_CODE under its own entity id"

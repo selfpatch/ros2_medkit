@@ -123,8 +123,9 @@ class EntityFreezeFrameCapture {
   EntityFreezeFrameCapture(EntityFreezeFrameCapture &&) = delete;
   EntityFreezeFrameCapture & operator=(EntityFreezeFrameCapture &&) = delete;
 
-  /// Frames captured for a fault code (empty when none). Thread-safe.
-  std::vector<Frame> frames_for(const std::string & fault_code) const;
+  /// Frames captured for one fault record, addressed by its code and the
+  /// reporting source that owns it (empty when none). Thread-safe.
+  std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const;
 
   /// Build the compact {resource_id: value} dict from a DataProvider::list_data
   /// response. Items without a "value" field map to null; a response without an
@@ -208,10 +209,12 @@ class EntityFreezeFrameCapture {
   /// Guards frames_, insertion_order_ and fallback_logged_: capture thread
   /// writes, HTTP handler threads read.
   mutable std::mutex mutex_;
-  /// Keyed by fault_code only: cross-entity isolation relies on the
-  /// fault_manager keeping reporting_sources append-only for a code and on
-  /// get_fault gating by source scope. A per-source clear upstream would need
-  /// per-entity eviction here too.
+  /// Keyed by the record the frames belong to, `(fault_code, owner)`. A fault
+  /// code alone is not a record: two sources reporting one code confirm
+  /// independently, and under a code-only key the second confirmation
+  /// overwrote the first source's frames and served them on its detail page.
+  /// The key is rendered as `fault_code + '\0' + owner`, which no id can
+  /// contain, so the two halves cannot run together.
   std::unordered_map<std::string, std::vector<Frame>> frames_;
   std::deque<std::string> insertion_order_;          ///< eviction order (FIFO)
   std::unordered_set<std::string> fallback_logged_;  ///< fault codes already warned about (bounded)

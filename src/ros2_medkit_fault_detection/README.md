@@ -34,7 +34,10 @@ std::vector<fd::FaultSignal> transitions = tracker.apply(signals);  // raises + 
 `evaluate` reports the full set of faults a rule governs (each flagged active
 or inactive). `FaultTransitionTracker` keeps the last-known state per
 `fault_code` and emits only the raise/clear edges, which a plugin forwards to
-the fault manager as report/clear.
+the fault manager as report/clear under the entity that owns the point. The
+code-only key is the tracker's own: a fault manager record is identified by
+`fault_code` and its reporting source, so one tracker per set of points sharing
+a code, or unique codes within one tracker.
 
 ## Placement and packaging
 

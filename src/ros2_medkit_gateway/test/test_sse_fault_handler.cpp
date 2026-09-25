@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
@@ -496,6 +497,45 @@ TEST_F(SSEFaultHandlerTest, CoalescedReplayKeepsTransitionsAndEndsOnCurrentState
   release_stream(res);
 }
 
+TEST_F(SSEFaultHandlerTest, AnotherOwnersEventsDoNotSupersedeARecordsLastUpdate) {
+  // A fault code names as many records as there are sources reporting it. A
+  // newer event of one owner's record says nothing about another owner's record
+  // of the same code, so it must not coalesce that record's last update away:
+  // a lagging client would never learn that record's current state, and the
+  // loss would not even be counted.
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);  // cursor open, never drained while the buffer fills
+
+  auto owned_by = [](FaultEvent event, const std::string & owner) {
+    event.fault.reporting_sources = {owner};
+    return event;
+  };
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 1), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 2), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 3), "/owner_b"));
+  for (int i = 1; i <= 148; ++i) {
+    enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 100 + i), "/owner_b"));
+  }
+
+  EXPECT_GT(handler_->coalesced_events(), 0u) << "owner_b's own superseded updates are the ones to coalesce";
+  EXPECT_EQ(handler_->dropped_events(), 0u);
+
+  auto output = read_stream_once(res, 100);
+  int owner_a_updates = 0;
+  for (auto pos = output.find("event: "); pos != std::string::npos; pos = output.find("event: ", pos + 1)) {
+    auto payload = parse_sse_payload(output.substr(pos));
+    if (payload["event_type"] == "fault_updated" &&
+        payload["fault"]["reporting_sources"] == json::array({"/owner_a"})) {
+      ++owner_a_updates;
+      EXPECT_DOUBLE_EQ(payload["timestamp"].get<double>(), 2.0);
+    }
+  }
+  EXPECT_EQ(owner_a_updates, 1) << "owner_a's last update was coalesced away by owner_b's events of the same code";
+
+  release_stream(res);
+}
+
 TEST_F(SSEFaultHandlerTest, OwedDistinctEventsLostUnderPressureAreCountedAndLogged) {
   // The counter this PR is about: a live client is owed events, the buffer
   // overflows with distinct fault codes (nothing to coalesce), so events are
@@ -812,6 +852,91 @@ TEST_F(SSEFaultHandlerTest, StreamResolvesRuntimeCollisionRenamedApp) {
 
   ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
   EXPECT_EQ(payload["x-medkit"]["entity_id"], "bridge_diagnostic_bridge");
+
+  release_stream(res);
+}
+
+// An external app owns its record under its bare SOVD id, which is not a ROS
+// node FQN. An entity id carries no slash, so the last-segment fallback looks
+// it up as an app id unchanged - this pins that, since the bare-id case is
+// what the record model puts on the stream and nothing else covers it.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalAppId) {
+  App app;
+  app.id = "plc_process";
+  app.name = "process";
+  app.source = "plugin";
+  app.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "PROCESS_LEVEL_HIGH", 72);
+  event.fault.reporting_sources = {"plc_process"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "plc_process");
+
+  release_stream(res);
+}
+
+// A protocol bridge raises its link faults under the component's own id. The
+// hint must name the component, because that is the entity whose fault routes
+// serve the record.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalComponentId) {
+  ros2_medkit_gateway::Component component;
+  component.id = "line_controller";
+  component.name = "Line Controller";
+  component.source = "plugin";
+  component.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "DEVICE_COMMS_LOST", 73);
+  event.fault.reporting_sources = {"line_controller"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "components");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "line_controller");
+
+  release_stream(res);
+}
+
+// Only an external component claims its bare id as a reporting source. A
+// runtime host component never does, and naming it would point the consumer at
+// an entity whose own fault routes drop the record.
+TEST_F(SSEFaultHandlerTest, StreamDoesNotNameANonExternalComponent) {
+  ros2_medkit_gateway::Component component;
+  component.id = "runtime_host";
+  component.name = "runtime host";
+  component.source = "heuristic";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "HOST_FAULT", 74);
+  event.fault.reporting_sources = {"runtime_host"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  EXPECT_FALSE(payload.contains("x-medkit")) << payload.dump();
 
   release_stream(res);
 }

@@ -999,9 +999,11 @@ nodes:
 TEST_F(NodeMapTest, RejectsCodeAcrossPipelinesDifferentEntities) {
   // Global-by-code uniqueness (issue #481): a polled detection code on
   // entity_a and an event_alarms code on entity_b share the SAME fault_code.
-  // fault_manager keys and clears by code alone, so the two collide even
-  // though the entities differ; the (entity_id, fault_code) pair the earlier
-  // guard keyed on let this through. The loader must reject the whole file.
+  // The poller's shared fault-transition tracker keys by code alone, so the
+  // two collide there even though the entities differ (the fault manager
+  // would keep them as two records). The (entity_id, fault_code) pair the
+  // earlier guard keyed on let this through. The loader must reject the whole
+  // file.
   std::string path = "/tmp/test_node_map_cross_entity_pipeline.yaml";
   std::ofstream f(path);
   f << R"(

@@ -13,7 +13,7 @@ below).
 Structure
 ---------
 - **Plugin shell** (``GraphWatchdogPlugin``): loads via the gateway plugin ABI
-  (v7). In ``set_context`` it casts the context with ``as_ros_plugin_context``,
+  (v8). In ``set_context`` it casts the context with ``as_ros_plugin_context``,
   creates one ``rclcpp::Client<ReportFault>`` on the gateway node, and starts a
   dedicated tick thread. The tick is deliberately NOT a gateway wall timer:
   detectors do blocking parameter/service reads, and the gateway's small
@@ -194,9 +194,9 @@ reported by a live endpoint, which always carries the resolved profile) never ra
 **Aggregation via the shared helper.** ``qos_mismatch`` was the first detector to use the
 ``AggregatedFault`` helper (``aggregated_fault.hpp``); ``orphan`` and ``param_drift`` go
 through the same one, so no detector reimplements the level-triggered raise/clear
-pattern. The rationale: the fault_manager identifies a fault by
-``fault_code`` alone, so one ``GRAPH_QOS_MISMATCH`` per mismatched topic would collide
-into a single record under the shared code. The detector keeps one ``AggregatedFault``
+pattern. The rationale: a mismatch is a property of the graph, not of one topic, and
+the mismatched set changes every tick, so a fault per topic would raise and clear
+under the operator rather than describe a condition. The detector keeps one ``AggregatedFault``
 instance for the whole graph and, each tick, hands it every currently-mismatched
 topic's description (keyed by topic name so a repeat mismatch on the same topic
 overwrites rather than duplicates); an empty map on a clean tick clears
@@ -682,7 +682,7 @@ log wants to know WHICH of the two is happening.
 **Three independent faults, not one shared record.** ``GRAPH_NODE_INACTIVE``,
 ``GRAPH_NODE_UNREADABLE`` and ``GRAPH_NODE_NOT_MANAGED`` are each raised through the
 shared ``AggregatedFault`` helper every ``GRAPH_*`` detector uses (one graph-level
-record per code, since the fault_manager identifies a fault by ``fault_code`` alone),
+record per code, because the condition is graph-level and its affected set moves),
 but as three SEPARATE, fixed-severity class members - ``GRAPH_NODE_INACTIVE`` always
 ``SEVERITY_ERROR``, the other two always ``SEVERITY_WARN`` - the same shape
 ``orphan_detector`` and ``param_drift_detector`` use, rather than one record whose
@@ -730,7 +730,7 @@ independently.** The description used to list affected nodes in fqn order
 interesting but not once the cap is full: a fleet sharing
 ``require_active: ["controller_server"]`` across a dozen robots fills the 480-char cap
 from the alphabetically-earliest ones, and a THIRTEENTH robot going inactive afterward
-would be silently invisible forever - one shared ``fault_code``, one record, no way to
+would be silently invisible forever - one aggregated fault, one description, no way to
 tell the operator which of thirteen actually broke. The tracker reports which fqns
 entered EACH fault's content on THIS tick - ``newly_affected``, ``newly_unreadable``,
 ``newly_not_managed`` - and each list orders only its OWN fault's

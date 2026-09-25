@@ -111,13 +111,26 @@ TEST_F(BulkDataHandlersTest, RecordingIdToleratesTrailingSlashAndEmptyPath) {
 
 namespace {
 
-json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024) {
-  return json{{"fault_code", fault_code}, {"recording_id", recording_id}, {"file_path", "/var/bags/" + recording_id},
-              {"format", "mcap"},         {"duration_sec", 5.0},          {"size_bytes", size_bytes}};
+/// The listing stamps each row with the reporting source it was listed under,
+/// which is the owner of the record the recording belongs to.
+json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024,
+                const std::string & owner = "app_a") {
+  return json{{"fault_code", fault_code},
+              {"recording_id", recording_id},
+              {"file_path", "/var/bags/" + recording_id},
+              {"format", "mcap"},
+              {"duration_sec", 5.0},
+              {"size_bytes", size_bytes},
+              {"owner", owner}};
 }
 
 json fault_at(double first_occurred) {
   return json{{"first_occurred", first_occurred}};
+}
+
+/// Key one record for the date lookup the same way the handler does.
+std::string record_key(const std::string & owner, const std::string & fault_code) {
+  return handlers::detail::record_map_key(owner, fault_code);
 }
 
 /// A row carrying the recording's own timestamp, which is what the fault manager
@@ -179,8 +192,8 @@ TEST_F(BulkDataHandlersTest, ARecordingIsDatedByTheEarliestFaultOfItsBurst) {
   // Downstream faults confirm after the root cause, and the recording covers
   // the whole burst, so the earliest is the honest creation date.
   const std::vector<json> rows{rosbag_row("DOWNSTREAM", "fault_ROOT_9"), rosbag_row("ROOT", "fault_ROOT_9")};
-  const std::unordered_map<std::string, json> faults{{"DOWNSTREAM", fault_at(1700000900.0)},
-                                                     {"ROOT", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "DOWNSTREAM"), fault_at(1700000900.0)},
+                                                     {record_key("app_a", "ROOT"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 1u);
@@ -193,13 +206,30 @@ TEST_F(BulkDataHandlersTest, EachRecordingOfOneFaultIsDatedByItsOwnCapture) {
   // is exactly what tells the occurrences apart.
   const std::vector<json> rows{rosbag_row_made_at("FLAP", "fault_FLAP_2", int64_t{1700000900} * 1'000'000'000),
                                rosbag_row_made_at("FLAP", "fault_FLAP_1", int64_t{1700000000} * 1'000'000'000)};
-  const std::unordered_map<std::string, json> faults{{"FLAP", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "FLAP"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 2u);
   EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000900} * 1'000'000'000));
   EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
   EXPECT_NE(descriptors[0].creation_date, descriptors[1].creation_date);
+}
+
+// Two sources reporting one code are two records with their own first_occurred.
+// Keying the date lookup on the code alone let whichever record was listed last
+// date the other owner's recordings.
+TEST_F(BulkDataHandlersTest, ARecordingIsDatedByItsOwnOwnersRecord) {
+  const std::vector<json> rows{rosbag_row("SHARED_CODE", "rec_a", 1024, "app_a"),
+                               rosbag_row("SHARED_CODE", "rec_b", 1024, "app_b")};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "SHARED_CODE"), fault_at(1700000000.0)},
+                                                     {record_key("app_b", "SHARED_CODE"), fault_at(1700009999.0)}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
+
+  ASSERT_EQ(descriptors.size(), 2u);
+  EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
+  EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700009999} * 1'000'000'000))
+      << "app_b's recording was dated from app_a's record of the same code";
 }
 
 TEST_F(BulkDataHandlersTest, AnAcknowledgedFaultsRecordingsKeepTheirRealDate) {
@@ -651,9 +681,11 @@ TEST_F(BulkDataSourceFiltersTest, FunctionWithComponentHostResolvesComponentApps
 // get_fault(code, source) semantics) would let app id "plc" claim the bag of
 // "plc_line1".
 // === Download authorization tests ===
-// A recording is shared by a whole burst, so ownership is the union over its
-// attached faults. The scope matcher itself is unchanged and pinned below; what
-// is new is which codes get fed to it.
+// A recording is shared by a whole burst, so ownership is the union over the
+// records it is attached to, each a (fault code, owner) pair. The scope matcher
+// itself is unchanged and pinned below. The attached codes say which of the
+// entity's records to ask about, and the owner's own rosbag rows say whether it
+// holds the recording.
 
 TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesComeFromTheRecordingNotTheUrl) {
   const nlohmann::json rosbag = {{"file_path", "/var/bags/fault_ROOT_1"},
@@ -681,6 +713,44 @@ TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesFallBackOnAnEmptyOrMalformed
 
   const nlohmann::json not_an_array = {{"fault_codes", "X"}};
   EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(not_an_array, "X"), (std::vector<std::string>{"X"}));
+}
+
+// One owner's ListRosbags rows prove its records are attached to the recording
+// only when a row names that recording. Another recording of the same code is
+// another owner's, or another occurrence, and proves nothing.
+TEST_F(BulkDataSourceFiltersTest, AnOwnersRowsHoldARecordingOnlyWhenARowNamesIt) {
+  const nlohmann::json served = {{"file_path", "/var/bags/rec_pump"}, {"recording_id", "rec_pump"}};
+  const nlohmann::json tank_rows = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_tank"}, {"file_path", "/var/bags/rec_tank"}}});
+  const nlohmann::json pump_rows = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_pump"}, {"file_path", "/var/bags/rec_pump"}}});
+
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(tank_rows, served))
+      << "tank's recording of the same code is not pump's recording";
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(pump_rows, served));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(nlohmann::json::array(), served));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(nlohmann::json::object(), served));
+}
+
+// A peer that predates recording ids names a bag only by its path, on either
+// side. The path then identifies the recording. Two ids that differ never match
+// through their paths.
+TEST_F(BulkDataSourceFiltersTest, ARecordingIsMatchedByItsPathWhenEitherSideHasNoId) {
+  const nlohmann::json row_without_id =
+      nlohmann::json::array({nlohmann::json{{"fault_code", "SHARED"}, {"file_path", "/var/bags/rec_pump"}}});
+  const nlohmann::json served_with_id = {{"file_path", "/var/bags/rec_pump"}, {"recording_id", "rec_pump"}};
+  const nlohmann::json served_without_id = {{"file_path", "/var/bags/rec_pump"}};
+  const nlohmann::json row_with_id = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_pump"}, {"file_path", "/var/bags/rec_pump"}}});
+
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(row_without_id, served_with_id));
+  EXPECT_TRUE(handlers::detail::rosbag_rows_hold_recording(row_with_id, served_without_id));
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(row_without_id, {{"file_path", "/var/bags/rec_tank"}}));
+
+  const nlohmann::json same_path_other_id = nlohmann::json::array(
+      {nlohmann::json{{"fault_code", "SHARED"}, {"recording_id", "rec_other"}, {"file_path", "/var/bags/rec_pump"}}});
+  EXPECT_FALSE(handlers::detail::rosbag_rows_hold_recording(same_path_other_id, served_with_id))
+      << "two recording ids are two recordings";
 }
 
 TEST_F(BulkDataSourceFiltersTest, AFaultCodeUrlIsRecognisedAsTheCompatibilityPath) {

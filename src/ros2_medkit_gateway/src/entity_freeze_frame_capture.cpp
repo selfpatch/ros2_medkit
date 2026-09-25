@@ -97,10 +97,20 @@ EntityFreezeFrameCapture::~EntityFreezeFrameCapture() {
   subscription_slot_.reset();
 }
 
-std::vector<EntityFreezeFrameCapture::Frame>
-EntityFreezeFrameCapture::frames_for(const std::string & fault_code) const {
+namespace {
+
+/// The storage key for one record. '\0' cannot appear in a fault code or in a
+/// reporting source, so no pair of ids can collide with another pair.
+std::string record_key(const std::string & fault_code, const std::string & owner) {
+  return fault_code + '\0' + owner;
+}
+
+}  // namespace
+
+std::vector<EntityFreezeFrameCapture::Frame> EntityFreezeFrameCapture::frames_for(const std::string & fault_code,
+                                                                                  const std::string & owner) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto it = frames_.find(fault_code);
+  auto it = frames_.find(record_key(fault_code, owner));
   return it != frames_.end() ? it->second : std::vector<Frame>{};
 }
 
@@ -314,16 +324,21 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     RCLCPP_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw");
     return;
   }
-  // Codes with a confirm already queued belong to the drain loop: capturing
-  // them here too would read the plugin twice for one confirm.
-  std::unordered_set<std::string> queued_codes;
+  // Records with a confirm already queued belong to the drain loop: capturing
+  // them here too would read the plugin twice for one confirm. The key is the
+  // record and not the code, because another source's record of the same code
+  // has its own confirm and its own frame, and skipping it on the code alone
+  // would leave that record with no frame at all.
+  std::unordered_set<std::string> queued_records;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (stop_) {
       return;
     }
     for (const auto & queued : queue_) {
-      queued_codes.insert(queued->fault.fault_code);
+      for (const auto & source : queued->fault.reporting_sources) {
+        queued_records.insert(record_key(queued->fault.fault_code, source));
+      }
     }
   }
   size_t framed = 0;
@@ -335,8 +350,14 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
       continue;
     }
-    if (queued_codes.count(fault.fault_code) != 0) {
-      continue;
+    std::vector<std::string> pending_sources;
+    for (const auto & source : fault.reporting_sources) {
+      if (queued_records.count(record_key(fault.fault_code, source)) == 0) {
+        pending_sources.push_back(source);
+      }
+    }
+    if (pending_sources.empty()) {
+      continue;  // every record of this code is already on the drain loop
     }
     if (framed >= max_faults_) {
       ++over_cap;  // storing more would FIFO-evict this catch-up's own frames
@@ -345,7 +366,7 @@ void EntityFreezeFrameCapture::capture_standing_faults() {
     ros2_medkit_msgs::msg::FaultEvent event;
     event.event_type = ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED;
     event.fault.fault_code = fault.fault_code;
-    event.fault.reporting_sources = fault.reporting_sources;
+    event.fault.reporting_sources = std::move(pending_sources);
     if (capture_for_event(event, /*startup_catchup=*/true)) {
       ++framed;
     }
@@ -386,6 +407,10 @@ bool EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::Fa
                                                  bool startup_catchup) {
   const std::string & fault_code = event.fault.fault_code;
 
+  // The event describes one record, so its reporting_sources names one owner.
+  // The loop is kept because a record read back from an older store, or relayed
+  // from a peer that predates the per-record identity, can still carry several,
+  // and every one of them is framed under the key it owns.
   std::vector<Frame> frames;
   for (const auto & source : event.fault.reporting_sources) {
     DataProvider * provider = resolver_ ? resolver_(source) : nullptr;
@@ -427,15 +452,23 @@ bool EntityFreezeFrameCapture::capture_for_event(const ros2_medkit_msgs::msg::Fa
     }
   }
 
+  // One entry per record, under the record's owner. An event describes one
+  // record, so `frames` holds one frame and its entity_id IS that owner. A
+  // record read back from an older store or relayed from a peer can still carry
+  // several sources, and each of those is stored under the source that reported
+  // it rather than merged, because frames_for asks for one owner at a time.
   std::lock_guard<std::mutex> lock(mutex_);
-  if (frames_.find(fault_code) == frames_.end()) {
-    insertion_order_.push_back(fault_code);
-    while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
-      frames_.erase(insertion_order_.front());
-      insertion_order_.pop_front();
+  for (auto & frame : frames) {
+    const auto key = record_key(fault_code, frame.entity_id);
+    if (frames_.find(key) == frames_.end()) {
+      insertion_order_.push_back(key);
+      while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
+        frames_.erase(insertion_order_.front());
+        insertion_order_.pop_front();
+      }
     }
+    frames_[key] = std::vector<Frame>{frame};
   }
-  frames_[fault_code] = std::move(frames);
 
   RCLCPP_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s'", fault_code.c_str());
   return true;

@@ -1172,9 +1172,12 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Get specific fault for ") + et.singular)
         .description("Returns fault details including SOVD status, environment data, and rosbag snapshots.")
-        // 503 when the fault store cannot be read - same branch as the list
-        // routes, and equally out of the recorder's reach.
-        .errors({503})
+        // 409 (x-medkit-ambiguous-fault) when several sources this entity owns
+        // report the code and none of their records ranks above the others:
+        // each is its own record, so the code does not name one. 503 when the
+        // fault store cannot be read - same branch as the
+        // list routes, and equally out of the recorder's reach.
+        .errors({409, 503})
         .operation_id(std::string("get") + capitalize(et.singular) + "Fault");
 
     reg.del_alternates<http::NoContent, dto::FaultClearResult>(
@@ -1189,9 +1192,13 @@ void RESTServer::setup_routes() {
         .description(std::string("Clears a specific fault for this ") + et.singular + ".")
         // FaultHandlers::clear_fault -> validate_lock_access("faults").
         .lock_guarded()
-        // 503 when the fault store cannot be read - clear_fault reads the fault
-        // before clearing it, so it answers the same status the read does.
-        .errors({503})
+        // 409 twice over, from two unrelated causes: lock_guarded() declares the
+        // locked-entity refusal, and x-medkit-ambiguous-fault answers a code
+        // that addresses several of this entity's records. Read `vendor_code`
+        // to tell them apart. 503 when the fault store cannot be read -
+        // clear_fault reads the record before clearing it, so it answers the
+        // same status the read does.
+        .errors({409, 503})
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
     reg.del<http::NoContent>(entity_path + "/faults",
@@ -1310,6 +1317,11 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
+        // 409 x-medkit-ambiguous-fault: a rosbag URL carrying a fault code
+        // (the form that predates recording ids) resolves that code to one
+        // record the way the fault routes do, and several candidate records
+        // in this entity's scope name none of them.
+        .errors({409})
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
     // Upload: only for apps and components (405 for areas and functions)
@@ -2096,6 +2108,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
+      // 409 x-medkit-ambiguous-fault, as on the four top-level download routes.
+      .errors({409})
       .operation_id("downloadSubareaBulkData");
 
   // === Nested entities - subcomponents bulk-data ===
@@ -2130,6 +2144,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
+      // 409 x-medkit-ambiguous-fault, as on the four top-level download routes.
+      .errors({409})
       .operation_id("downloadSubcomponentBulkData");
 
   // === Global faults ===

@@ -166,6 +166,12 @@ constexpr const char * ERR_SCRIPT_NOT_RUNNING = "x-medkit-script-not-running";
 constexpr const char * ERR_SCRIPT_CONCURRENCY_LIMIT = "x-medkit-concurrency-limit";
 constexpr const char * ERR_SCRIPT_FILE_TOO_LARGE = "x-medkit-script-too-large";
 
+/// A fault code addresses several records in the entity's scope, so the request
+/// names no single record. Answered as 409 with the code and the owners in
+/// `params`, because picking one arbitrarily is the failure the per-record
+/// identity exists to remove.
+constexpr const char * ERR_AMBIGUOUS_FAULT = "x-medkit-ambiguous-fault";
+
 /// Plugin provider returned an error (used for DataProvider/OperationProvider/FaultProvider errors)
 constexpr const char * ERR_PLUGIN_ERROR = "x-medkit-plugin-error";
 

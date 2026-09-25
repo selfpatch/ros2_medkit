@@ -62,10 +62,12 @@ Transition tracking and global uniqueness
 the evaluator. It returns only the signals whose active state changed since the
 last call, which a plugin forwards to the fault manager as report / clear.
 
-The tracker is keyed by ``fault_code`` alone, matching the fault manager, which
-also keys and clears faults by code alone. A single tracker may therefore be
-shared across many points only if every ``fault_code`` is globally unique; two
-points emitting the same code would alternately raise and clear it each cycle.
-Consumers that share one tracker (for example the OPC UA poller across all
-node-map entries and event alarms) must enforce that uniqueness at
-config-load time and reject a colliding configuration before anything runs.
+The tracker is keyed by ``fault_code`` alone. That is a property of the tracker,
+not of the fault manager, which identifies a record by ``fault_code`` and the
+reporting source that owns it. A single tracker may therefore be shared across
+many points only if every ``fault_code`` is unique within it. Two points emitting
+the same code would alternately raise and clear it each cycle, inside the tracker
+and before any report is sent. Consumers that share one tracker (for example the
+OPC UA poller across all node-map entries and event alarms) must enforce that
+uniqueness at config-load time and reject a colliding configuration before
+anything runs.

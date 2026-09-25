@@ -242,21 +242,12 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       // (the retry budget is sized against it in gateway_node), and a
       // genuinely topic-less point surfaces through the retry-expiry warning.
       auto * pmgr = ctx_.node()->get_plugin_manager();
+      // Provider first, vendor route as the fallback - the shared resolution
+      // the fault-trigger engine's own enumeration uses, so "exists" here and
+      // "the fetcher could read it" there cannot drift apart.
       std::optional<nlohmann::json> content;
       if (pmgr != nullptr) {
-        if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_id)) {
-          try {
-            if (auto result = data_prov->list_data(entity_id)) {
-              content = result->content;
-            }
-          } catch (...) {
-            // Enumeration is advisory here - a throwing provider must not
-            // break trigger creation, it just skips the strict check.
-          }
-        }
-        if (!content) {
-          content = pmgr->fetch_entity_data_via_route(entity_id);
-        }
+        content = pmgr->fetch_entity_data_content(entity_id);
       }
       // Same liveness guard as the fault-trigger enumeration in gateway_node:
       // a bridge with a dead PLC link answers 200 with connected=false and an

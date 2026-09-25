@@ -26,7 +26,14 @@ Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed pr
 - **OperationProvider** - per-entity operation backend (list operations, execute). Uses
   the same per-entity routing model as DataProvider.
 - **FaultProvider** - per-entity fault backend (list faults, get fault details, clear
-  faults). Uses the same per-entity routing model as DataProvider.
+  faults). Uses the same per-entity routing model as DataProvider. A fault record is
+  the pair (``fault_code``, owning reporting source), and the gateway clears one record
+  at a time through ``clear_fault_record(entity_id, fault_code, owner)``, where
+  ``owner`` is the source the gateway resolved in the entity's fault scope (for a
+  component, one of its hosted apps). Its default implementation calls
+  ``clear_fault(entity_id, fault_code)``, so a provider that overrides only the
+  two-argument clear keeps compiling and keeps receiving clears by code. Override
+  ``clear_fault_record`` to clear exactly the record the owner names.
 
 A single plugin can implement multiple provider interfaces. For example, a "systemd" plugin
 could provide both introspection (discover systemd units) and updates (manage service restarts).
@@ -1019,8 +1026,17 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **5**. It is incremented when the ``PluginContext`` vtable changes
-or breaking changes are made to ``GatewayPlugin`` or provider interfaces.
+The current API version is **8**. It is incremented when the ``PluginContext`` vtable changes
+or breaking changes are made to ``GatewayPlugin`` or provider interfaces. A new virtual method
+counts even when it keeps plugin source compiling, because it changes the vtable a pre-built
+plugin was compiled against. Version 8 added ``FaultProvider::clear_fault_record``: its
+default implementation calls the unchanged ``clear_fault``, so v7 plugin source compiles
+against v8 headers as it is, but a plugin binary built for v7 is rejected and has to be
+rebuilt. Version 8 also gives ``GatewayPlugin`` a protected ``log_sink()``, a copy of the
+plugin's log sink for work that can outlive the plugin (an asynchronous service reply, for
+example, should log through that copy rather than capture ``this``), and makes
+``set_logger()`` protected so a plugin hosted without the gateway, in a unit test for
+example, can wire a sink of its own.
 
 Build Requirements
 ------------------

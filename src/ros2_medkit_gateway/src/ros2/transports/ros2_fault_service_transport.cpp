@@ -256,10 +256,14 @@ FaultResult Ros2FaultServiceTransport::list_faults(const std::string & source_id
   if (include_muted && !response->muted_faults.empty()) {
     json muted_array = json::array();
     for (const auto & muted : response->muted_faults) {
+      // source_id is what makes the entry addressable: a muted record is one
+      // record, and its code alone names as many as there are sources
+      // reporting it.
       muted_array.push_back({{"fault_code", muted.fault_code},
                              {"root_cause_code", muted.root_cause_code},
                              {"rule_id", muted.rule_id},
-                             {"delay_ms", muted.delay_ms}});
+                             {"delay_ms", muted.delay_ms},
+                             {"source_id", muted.source_id}});
     }
     result.data["muted_faults"] = muted_array;
   }
@@ -294,6 +298,11 @@ FaultWithEnvJsonResult Ros2FaultServiceTransport::get_fault_with_env(const std::
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
   request->fault_code = fault_code;
+  // The record is (fault_code, source_id), so the owner goes in the request and
+  // the fault manager resolves the record. Filtering the answer here instead
+  // would mean asking for an arbitrary record and then hoping it is the one the
+  // caller meant.
+  request->source_id = source_id;
 
   auto response = invoke_fault_service<ros2_medkit_msgs::srv::GetFault>(
       get_fault_client_, request, executor_, executor_mutex_, std::chrono::duration<double>(service_timeout_sec_),
@@ -308,22 +317,6 @@ FaultWithEnvJsonResult Ros2FaultServiceTransport::get_fault_with_env(const std::
     result.success = false;
     result.error_message = response->error_message;
     return result;
-  }
-
-  // Verify source_id if provided (prefix match against any reporting source).
-  if (!source_id.empty()) {
-    bool matches = false;
-    for (const auto & src : response->fault.reporting_sources) {
-      if (src.rfind(source_id, 0) == 0) {
-        matches = true;
-        break;
-      }
-    }
-    if (!matches) {
-      result.success = false;
-      result.error_message = "Fault not found for source: " + source_id;
-      return result;
-    }
   }
 
   result.success = true;
@@ -348,11 +341,13 @@ FaultResult Ros2FaultServiceTransport::get_fault(const std::string & fault_code,
   return result;
 }
 
-FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear) {
+FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_code, const std::string & source_id,
+                                                   bool skip_correlation_auto_clear) {
   FaultResult result;
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>();
   request->fault_code = fault_code;
+  request->source_id = source_id;
   request->skip_correlation_auto_clear = skip_correlation_auto_clear;
 
   auto response = invoke_fault_service<ros2_medkit_msgs::srv::ClearFault>(
@@ -377,11 +372,13 @@ FaultResult Ros2FaultServiceTransport::clear_fault(const std::string & fault_cod
   return result;
 }
 
-FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_code, const std::string & topic) {
+FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_code, const std::string & source_id,
+                                                     const std::string & topic) {
   FaultResult result;
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetSnapshots::Request>();
   request->fault_code = fault_code;
+  request->source_id = source_id;
   request->topic = topic;
 
   auto response = invoke_fault_service<ros2_medkit_msgs::srv::GetSnapshots>(
@@ -412,16 +409,18 @@ FaultResult Ros2FaultServiceTransport::get_snapshots(const std::string & fault_c
   return result;
 }
 
-FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & fault_code) {
+FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & id, const std::string & source_id) {
   FaultResult result;
 
   // The parameter is the bulk-data id, which is a recording id. It is sent in BOTH
   // fields: the fault manager prefers recording_id and falls back to fault_code,
   // which is what keeps a pre-#620 URL (and every existing .test.py that calls this
-  // service with a fault code) working unchanged.
+  // service with a fault code) working unchanged. source_id scopes that fallback
+  // to one record. The recording_id path ignores it.
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetRosbag::Request>();
-  request->recording_id = fault_code;
-  request->fault_code = fault_code;
+  request->recording_id = id;
+  request->fault_code = id;
+  request->source_id = source_id;
 
   auto response = invoke_fault_service<ros2_medkit_msgs::srv::GetRosbag>(
       get_rosbag_client_, request, executor_, executor_mutex_, std::chrono::duration<double>(service_timeout_sec_),
