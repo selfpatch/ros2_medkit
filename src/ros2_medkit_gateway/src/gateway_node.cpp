@@ -2461,6 +2461,7 @@ void GatewayNode::refresh_cache() {
         plugin_mgr_->clear_entity_ownership(name);
         plugin_mgr_->register_entity_ownership(name, entity_ids);
       }
+      plugin_mgr_->finish_ownership_refresh();
     }
 
     // Filter ROS 2 internal nodes (underscore prefix convention).

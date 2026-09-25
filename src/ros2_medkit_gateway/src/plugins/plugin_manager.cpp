@@ -17,6 +17,7 @@
 #include <dlfcn.h>
 #include <httplib.h>
 
+#include <algorithm>
 #include <rclcpp/rclcpp.hpp>
 #include <regex>
 #include <unordered_set>
@@ -614,10 +615,29 @@ void PluginManager::register_entity_ownership(const std::string & plugin_name,
   for (const auto & eid : entity_ids) {
     auto it = entity_ownership_.find(eid);
     if (it != entity_ownership_.end() && it->second != plugin_name) {
-      RCLCPP_WARN(logger(), "Entity '%s' ownership transferred from plugin '%s' to '%s'", eid.c_str(),
-                  it->second.c_str(), plugin_name.c_str());
+      // Plugins that all publish this ID pass it along on every refresh, so
+      // log each pair of them once.
+      const auto & [first, second] = std::minmax(it->second, plugin_name);
+      if (reported_ownership_conflicts_.emplace(eid, first, second).second) {
+        RCLCPP_WARN(logger(),
+                    "Entity '%s' ownership transferred from plugin '%s' to '%s'. When several plugins publish an "
+                    "entity, the one registered last in a refresh owns it. Not logged again for these two plugins "
+                    "while the entity has an owner",
+                    eid.c_str(), it->second.c_str(), plugin_name.c_str());
+      }
     }
     entity_ownership_[eid] = plugin_name;
+  }
+}
+
+void PluginManager::finish_ownership_refresh() {
+  std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
+  for (auto it = reported_ownership_conflicts_.begin(); it != reported_ownership_conflicts_.end();) {
+    if (entity_ownership_.count(std::get<0>(*it)) == 0) {
+      it = reported_ownership_conflicts_.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 

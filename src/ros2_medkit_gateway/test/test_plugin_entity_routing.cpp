@@ -14,9 +14,18 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "log_capture.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
+#include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
@@ -477,6 +486,248 @@ TEST(PluginEntityRouting, ClearEntityOwnership) {
   EXPECT_FALSE(mgr.get_entity_owner("ent2").has_value());
   // plugin_b's entity should be unaffected
   EXPECT_EQ(*mgr.get_entity_owner("ent3"), "plugin_b");
+}
+
+// =============================================================================
+// Entity Published By Several Plugins
+// =============================================================================
+
+namespace {
+
+using ros2_medkit_gateway::test::LogCapture;
+
+/// Publishes a configurable set of areas through introspect() and serves data
+/// for every entity it owns, so a test can see which plugin a request for a
+/// shared id reaches.
+class MockAreaPublisher : public GatewayPlugin, public IntrospectionProvider, public DataProvider {
+ public:
+  explicit MockAreaPublisher(std::string name, std::vector<std::string> ids = {})
+    : name_(std::move(name)), area_ids(std::move(ids)) {
+  }
+  std::string name() const override {
+    return name_;
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+
+  IntrospectionResult introspect(const IntrospectionInput & /*input*/) override {
+    IntrospectionResult result;
+    for (const auto & id : area_ids) {
+      Area area;
+      area.id = id;
+      area.name = id;
+      result.new_entities.areas.push_back(std::move(area));
+    }
+    return result;
+  }
+
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & /*entity_id*/) override {
+    return dto::DataListResult{json{{"items", json::array()}}};
+  }
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & /*resource*/) override {
+    return dto::DataValue{json{{"plugin", name_}}};
+  }
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
+    return dto::DataWriteResult{json{{"status", "ok"}}};
+  }
+
+  std::string name_;
+  std::vector<std::string> area_ids;
+};
+
+/// Runs one entity refresh the way the gateway's cache refresh does: every
+/// introspecting plugin, in load order, is introspected and then has its
+/// ownership cleared and registered again with the ids it returned, and the
+/// refresh is closed with finish_ownership_refresh(). Returns the owner of
+/// `watched_id` as a request would see it after each plugin's step.
+std::vector<std::optional<std::string>> refresh_entities(PluginManager & mgr, const std::string & watched_id) {
+  std::vector<std::optional<std::string>> owners_seen;
+  for (const auto & [name, provider] : mgr.get_named_introspection_providers()) {
+    const auto result = provider->introspect(IntrospectionInput{});
+    std::vector<std::string> ids;
+    ids.reserve(result.new_entities.areas.size());
+    for (const auto & area : result.new_entities.areas) {
+      ids.push_back(area.id);
+    }
+    mgr.clear_entity_ownership(name);
+    mgr.register_entity_ownership(name, ids);
+    owners_seen.push_back(mgr.get_entity_owner(watched_id));
+  }
+  mgr.finish_ownership_refresh();
+  return owners_seen;
+}
+
+MockAreaPublisher * add_publisher(PluginManager & mgr, const std::string & name,
+                                  std::vector<std::string> ids = {"shared_area"}) {
+  auto plugin = std::make_unique<MockAreaPublisher>(name, std::move(ids));
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  return raw;
+}
+
+}  // namespace
+
+// Two plugins publish one area id, as with a parent area several plugins
+// default to. The plugin loaded last owns it after every refresh, requests
+// reach its providers, and the conflict is logged once, not per refresh.
+TEST(PluginEntityRouting, SharedEntityOwnedByLastPublisherAcrossRefreshes) {
+  PluginManager mgr;
+  add_publisher(mgr, "plugin_a");
+  auto * last = add_publisher(mgr, "plugin_b");
+
+  const LogCapture log;
+  for (int refresh = 1; refresh <= 5; ++refresh) {
+    refresh_entities(mgr, "shared_area");
+    EXPECT_EQ(mgr.get_entity_owner("shared_area"), std::optional<std::string>("plugin_b")) << "refresh " << refresh;
+  }
+  EXPECT_EQ(mgr.get_data_provider_for_entity("shared_area"), static_cast<DataProvider *>(last));
+
+  const auto conflict_lines = log.matching("'shared_area'");
+  ASSERT_EQ(conflict_lines.size(), 1u) << "the conflict must be logged once, not on every refresh";
+  EXPECT_NE(conflict_lines[0].find("'plugin_a'"), std::string::npos) << conflict_lines[0];
+  EXPECT_NE(conflict_lines[0].find("'plugin_b'"), std::string::npos) << conflict_lines[0];
+}
+
+// Four plugins publish one area id. Ownership passes from plugin to plugin
+// inside every refresh, and each pair of plugins it passes between is logged
+// once. After that, refreshes log nothing.
+TEST(PluginEntityRouting, SharedEntityAmongFourPublishersStopsLogging) {
+  PluginManager mgr;
+  for (const char * name : {"plugin_a", "plugin_b", "plugin_c", "plugin_d"}) {
+    add_publisher(mgr, name);
+  }
+
+  const LogCapture log;
+  refresh_entities(mgr, "shared_area");
+  refresh_entities(mgr, "shared_area");
+  const auto first_two = log.matching("'shared_area'");
+  for (int refresh = 3; refresh <= 6; ++refresh) {
+    refresh_entities(mgr, "shared_area");
+    EXPECT_EQ(mgr.get_entity_owner("shared_area"), std::optional<std::string>("plugin_d")) << "refresh " << refresh;
+  }
+  EXPECT_EQ(log.matching("'shared_area'").size(), first_two.size()) << "no new line once every pair was reported";
+
+  // Pairs in the order ownership moves: a-b, b-c, c-d in the first refresh,
+  // d-a in the second.
+  ASSERT_EQ(first_two.size(), 4u);
+  EXPECT_EQ(std::set<std::string>(first_two.begin(), first_two.end()).size(), 4u);
+}
+
+enum class StoppingPublisher { kLoadedLater, kLoadedEarlier };
+
+class SharedEntityHandover : public ::testing::TestWithParam<StoppingPublisher> {};
+
+// One of two publishers of an id stops publishing it: the owner, which is the
+// one loaded later, or the one loaded earlier. Either way the remaining
+// publisher owns the id at the end of that same refresh, and no step of the
+// refresh leaves the id without an owner.
+TEST_P(SharedEntityHandover, RemainingPublisherOwnsItInTheSameRefresh) {
+  PluginManager mgr;
+  auto * early = add_publisher(mgr, "plugin_a", {});
+  auto * late = add_publisher(mgr, "plugin_b");
+
+  // The plugin loaded later owns the id first, then the earlier one starts
+  // publishing it too.
+  refresh_entities(mgr, "shared_area");
+  early->area_ids = {"shared_area"};
+  refresh_entities(mgr, "shared_area");
+  ASSERT_EQ(mgr.get_entity_owner("shared_area"), std::optional<std::string>("plugin_b"));
+
+  const bool later_stops = GetParam() == StoppingPublisher::kLoadedLater;
+  MockAreaPublisher * stopping = later_stops ? late : early;
+  MockAreaPublisher * remaining = later_stops ? early : late;
+
+  const LogCapture log;
+  stopping->area_ids.clear();
+  const auto owners_seen = refresh_entities(mgr, "shared_area");
+  for (size_t step = 0; step < owners_seen.size(); ++step) {
+    EXPECT_TRUE(owners_seen[step].has_value()) << "step " << step << " left the id without an owner";
+  }
+  EXPECT_EQ(mgr.get_entity_owner("shared_area"), std::optional<std::string>(remaining->name()));
+  EXPECT_EQ(mgr.get_data_provider_for_entity("shared_area"), static_cast<DataProvider *>(remaining));
+
+  refresh_entities(mgr, "shared_area");
+  EXPECT_EQ(mgr.get_entity_owner("shared_area"), std::optional<std::string>(remaining->name()));
+  EXPECT_TRUE(log.matching("'shared_area'").empty()) << "the conflict of these two plugins was already logged";
+}
+
+INSTANTIATE_TEST_SUITE_P(PluginEntityRouting, SharedEntityHandover,
+                         ::testing::Values(StoppingPublisher::kLoadedLater, StoppingPublisher::kLoadedEarlier),
+                         [](const ::testing::TestParamInfo<StoppingPublisher> & param_info) {
+                           return param_info.param == StoppingPublisher::kLoadedLater
+                                      ? std::string("OwnerLoadedLaterStops")
+                                      : std::string("PluginLoadedEarlierStops");
+                         });
+
+// A reported conflict is remembered while some plugin owns the id, so a
+// steady conflict is not logged again. Once no plugin owns the id at the end
+// of a refresh it is forgotten, which keeps the record set bounded by the
+// owned ids, and the conflict is logged again if it comes back.
+TEST(PluginEntityRouting, SharedEntityConflictForgottenOnceTheIdIsUnowned) {
+  PluginManager mgr;
+  auto * first = add_publisher(mgr, "plugin_a");
+  auto * second = add_publisher(mgr, "plugin_b");
+
+  const LogCapture log;
+  const auto conflicts = [&log]() {
+    return log.matching("'shared_area'").size();
+  };
+  for (int refresh = 1; refresh <= 3; ++refresh) {
+    refresh_entities(mgr, "shared_area");
+  }
+  EXPECT_EQ(conflicts(), 1u);
+
+  // One publisher pauses and resumes. Some plugin owns the id throughout.
+  first->area_ids.clear();
+  refresh_entities(mgr, "shared_area");
+  first->area_ids = {"shared_area"};
+  refresh_entities(mgr, "shared_area");
+  refresh_entities(mgr, "shared_area");
+  EXPECT_EQ(conflicts(), 1u) << "the id stayed owned, so the conflict is still the one already reported";
+
+  first->area_ids.clear();
+  second->area_ids.clear();
+  refresh_entities(mgr, "shared_area");
+  ASSERT_FALSE(mgr.get_entity_owner("shared_area").has_value());
+
+  first->area_ids = {"shared_area"};
+  second->area_ids = {"shared_area"};
+  refresh_entities(mgr, "shared_area");
+  refresh_entities(mgr, "shared_area");
+  EXPECT_EQ(conflicts(), 2u) << "the conflict was forgotten with the id and is reported once more";
+}
+
+// Positive control: a single plugin keeps what it publishes, releases what it
+// stops publishing and logs nothing about ownership. The second plugin at the
+// end shows that this capture does see an ownership conflict.
+TEST(PluginEntityRouting, SinglePublisherOwnershipUnchanged) {
+  PluginManager mgr;
+  auto * solo = add_publisher(mgr, "plugin_a", {"area_1", "area_2"});
+
+  const LogCapture log;
+  for (int refresh = 1; refresh <= 3; ++refresh) {
+    refresh_entities(mgr, "area_1");
+    EXPECT_EQ(mgr.get_entity_owner("area_1"), std::optional<std::string>("plugin_a")) << "refresh " << refresh;
+    EXPECT_EQ(mgr.get_entity_owner("area_2"), std::optional<std::string>("plugin_a")) << "refresh " << refresh;
+  }
+
+  solo->area_ids = {"area_1", "area_3"};
+  refresh_entities(mgr, "area_1");
+  EXPECT_EQ(mgr.get_entity_owner("area_1"), std::optional<std::string>("plugin_a"));
+  EXPECT_FALSE(mgr.get_entity_owner("area_2").has_value());
+  EXPECT_EQ(mgr.get_entity_owner("area_3"), std::optional<std::string>("plugin_a"));
+  EXPECT_EQ(mgr.get_data_provider_for_entity("area_3"), static_cast<DataProvider *>(solo));
+  EXPECT_TRUE(log.matching("plugin_manager: ").empty());
+
+  add_publisher(mgr, "plugin_b", {"area_1"});
+  refresh_entities(mgr, "area_1");
+  EXPECT_EQ(mgr.get_entity_owner("area_1"), std::optional<std::string>("plugin_b"));
+  EXPECT_EQ(log.matching("plugin_manager: ").size(), 1u);
+  EXPECT_EQ(log.matching("'area_1'").size(), 1u);
 }
 
 // =============================================================================

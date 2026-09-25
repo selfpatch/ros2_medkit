@@ -24,6 +24,9 @@
 //   3. assert the new app is visible via the ManifestManager
 //   4. remove the fragment + notify again
 //   5. assert the app is gone
+// It also checks which plugin owns, and which plugin's copy the cache serves
+// for, an area id that two plugins publish, over the same notify-driven
+// refresh passes.
 
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
@@ -38,10 +41,15 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <utility>
 
+#include "log_capture.hpp"
 #include "ros2_medkit_gateway/core/plugins/entity_change_scope.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/discovery/manifest/manifest_manager.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -130,9 +138,16 @@ class NotifyIntegrationTest : public ::testing::Test {
     manifest_path = work_dir / "manifest.yaml";
     std::ofstream(manifest_path) << kBaseManifest;
 
-    // Start the GatewayNode with the base manifest + fragments_dir wired up.
-    // discovery.mode=hybrid to exercise the manifest-load path. runtime
-    // discovery is disabled so the only source of apps is manifest + fragments.
+    // discovery.mode=hybrid to exercise the manifest-load path.
+    start_node("hybrid");
+  }
+
+  /// (Re)start the GatewayNode with the base manifest + fragments_dir wired up
+  /// in the given discovery mode.
+  void start_node(const std::string & discovery_mode) {
+    node.reset();
+    // Runtime discovery is disabled so the only source of apps is manifest +
+    // fragments.
     // Reserve a free loopback port per test instance - GatewayNode starts its
     // REST server unconditionally, so we cannot share :8080 with parallel
     // gtest suites. `server.enabled` is not a real parameter; override
@@ -142,7 +157,7 @@ class NotifyIntegrationTest : public ::testing::Test {
     ASSERT_GT(server_port, 0);
     rclcpp::NodeOptions opts;
     opts.parameter_overrides({
-        {"discovery.mode", "hybrid"},
+        {"discovery.mode", discovery_mode},
         {"discovery.manifest_path", manifest_path.string()},
         {"discovery.manifest.enabled", true},
         {"discovery.manifest_strict_validation", false},
@@ -181,6 +196,35 @@ class NotifyIntegrationTest : public ::testing::Test {
     }
     return false;
   }
+};
+
+/// Plugin whose introspect() publishes the area `shared_area`, described as
+/// coming from this plugin, while `publishing` is set.
+class SharedAreaPublisher : public ros2_medkit_gateway::GatewayPlugin,
+                            public ros2_medkit_gateway::IntrospectionProvider {
+ public:
+  SharedAreaPublisher(std::string name, bool publish) : name_(std::move(name)), publishing(publish) {
+  }
+  std::string name() const override {
+    return name_;
+  }
+  void configure(const nlohmann::json & /*config*/) override {
+  }
+  ros2_medkit_gateway::IntrospectionResult
+  introspect(const ros2_medkit_gateway::IntrospectionInput & /*input*/) override {
+    ros2_medkit_gateway::IntrospectionResult result;
+    if (publishing) {
+      ros2_medkit_gateway::Area area;
+      area.id = "shared_area";
+      area.name = "Shared area";
+      area.description = "published by " + name_;
+      result.new_entities.areas.push_back(std::move(area));
+    }
+    return result;
+  }
+
+  std::string name_;
+  bool publishing;
 };
 
 }  // namespace
@@ -314,4 +358,78 @@ TEST_F(NotifyIntegrationTest, NotifyWithoutAnyFragmentIsANoOp) {
     return c.id == "ecu-primary";
   });
   EXPECT_NE(it, comps.end()) << "base manifest entity lost after notify";
+}
+
+TEST_F(NotifyIntegrationTest, SharedPluginAreaServedAndOwnedByTheSamePlugin) {
+  // Outside hybrid mode the refresh adds every plugin's copy of the area to
+  // the entity cache. Requests must go to the plugin whose copy the cache
+  // serves, through every change of who publishes it.
+  start_node("manifest_only");
+  ASSERT_NE(node, nullptr);
+  node->stop_discovery_refresh_for_testing();
+  auto * pm = node->get_plugin_manager();
+  ASSERT_NE(pm, nullptr);
+  auto first = std::make_unique<SharedAreaPublisher>("plugin_a", false);
+  auto * first_raw = first.get();
+  pm->add_plugin(std::move(first));
+  auto second = std::make_unique<SharedAreaPublisher>("plugin_b", true);
+  auto * second_raw = second.get();
+  pm->add_plugin(std::move(second));
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
+  const auto refresh_and_expect = [&](const std::string & plugin, const std::string & when) {
+    ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::full_refresh());
+    EXPECT_EQ(pm->get_entity_owner("shared_area"), std::optional<std::string>(plugin)) << when;
+    auto area = node->get_thread_safe_cache().get_area("shared_area");
+    ASSERT_TRUE(area.has_value()) << when;
+    EXPECT_EQ(area->description, "published by " + plugin) << when;
+  };
+
+  refresh_and_expect("plugin_b", "only plugin_b publishes");
+  first_raw->publishing = true;
+  for (int pass = 1; pass <= 3; ++pass) {
+    refresh_and_expect("plugin_b", "both publish, pass " + std::to_string(pass));
+  }
+  second_raw->publishing = false;
+  refresh_and_expect("plugin_a", "the refresh in which plugin_b stops");
+  second_raw->publishing = true;
+  refresh_and_expect("plugin_b", "plugin_b publishes again");
+  refresh_and_expect("plugin_b", "plugin_b publishes again, next pass");
+}
+
+TEST_F(NotifyIntegrationTest, SharedPluginAreaConflictLoggedOnceWhileOwned) {
+  // Two plugins publish one area id on every refresh pass. The conflict is
+  // logged once, and once more only after a pass in which no plugin owned
+  // the id.
+  node->stop_discovery_refresh_for_testing();
+  auto * pm = node->get_plugin_manager();
+  ASSERT_NE(pm, nullptr);
+  auto first = std::make_unique<SharedAreaPublisher>("plugin_a", true);
+  auto * first_raw = first.get();
+  pm->add_plugin(std::move(first));
+  auto second = std::make_unique<SharedAreaPublisher>("plugin_b", true);
+  auto * second_raw = second.get();
+  pm->add_plugin(std::move(second));
+  auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node.get(), node->get_fault_manager(), nullptr);
+  const auto refresh = [&ctx]() {
+    ctx->notify_entities_changed(ros2_medkit_gateway::EntityChangeScope::full_refresh());
+  };
+
+  const ros2_medkit_gateway::test::LogCapture log;
+  for (int pass = 1; pass <= 3; ++pass) {
+    refresh();
+  }
+  EXPECT_EQ(pm->get_entity_owner("shared_area"), std::optional<std::string>("plugin_b"));
+  EXPECT_EQ(log.matching("'shared_area'").size(), 1u) << "the conflict must be logged once, not on every pass";
+
+  first_raw->publishing = false;
+  second_raw->publishing = false;
+  refresh();
+  ASSERT_FALSE(pm->get_entity_owner("shared_area").has_value());
+
+  first_raw->publishing = true;
+  second_raw->publishing = true;
+  refresh();
+  refresh();
+  EXPECT_EQ(log.matching("'shared_area'").size(), 2u)
+      << "the refresh forgets the conflict of an id nobody owns, so it is reported once more";
 }
