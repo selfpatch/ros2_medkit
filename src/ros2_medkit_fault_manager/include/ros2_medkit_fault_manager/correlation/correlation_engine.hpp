@@ -20,10 +20,12 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ros2_medkit_fault_manager/correlation/pattern_matcher.hpp"
 #include "ros2_medkit_fault_manager/correlation/types.hpp"
+#include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 namespace ros2_medkit_fault_manager {
 namespace correlation {
@@ -56,13 +58,20 @@ struct ProcessFaultResult {
 
 /// Result of clearing a fault
 struct ProcessClearResult {
-  /// List of symptom fault codes that should be auto-cleared
-  std::vector<std::string> auto_cleared_codes;
+  /// The symptom RECORDS that should be auto-cleared. Records, not codes: a root
+  /// cause of one owner must never auto-clear another owner's record of the same
+  /// symptom code.
+  std::vector<FaultId> auto_cleared_symptoms;
 };
 
-/// Information about a muted fault (for ListFaults response)
+/// Information about a muted record (for ListFaults response).
+/// Carries both halves of the record identity: two owners muted on one code are two
+/// entries of that code, told apart by owner.
 struct MutedFaultData {
   std::string fault_code;
+  /// Reporting source that owns the muted record. Filled from the map key, so it
+  /// cannot drift from the record this entry describes.
+  std::string owner;
   std::string root_cause_code;
   std::string rule_id;
   uint32_t delay_ms{0};
@@ -95,18 +104,24 @@ class CorrelationEngine {
   /// @param config Correlation configuration (must be enabled and valid)
   explicit CorrelationEngine(const CorrelationConfig & config);
 
-  /// Process an incoming fault
-  /// @param fault_code The fault code
+  /// Process an incoming fault record
+  ///
+  /// Rules match on the fault CODE - a rule says which codes are root causes and which
+  /// are symptoms, and says nothing about who reports them. Every RELATION the engine
+  /// then forms (root to symptom, muting, cluster membership, auto-clear cascade) is
+  /// between records of the SAME owner, so a root cause of owner X never mutes or
+  /// auto-clears a symptom of owner Y.
+  /// @param id The fault record
   /// @param severity The fault severity (for representative selection)
   /// @param timestamp When the fault occurred
   /// @return Processing result indicating whether to mute, correlations, etc.
-  ProcessFaultResult process_fault(const std::string & fault_code, const std::string & severity,
+  ProcessFaultResult process_fault(const FaultId & id, const std::string & severity,
                                    std::chrono::steady_clock::time_point timestamp = std::chrono::steady_clock::now());
 
-  /// Process a fault being cleared
-  /// @param fault_code The fault code being cleared
-  /// @return Result with list of symptoms to auto-clear
-  ProcessClearResult process_clear(const std::string & fault_code);
+  /// Process a fault record being cleared
+  /// @param id The record being cleared
+  /// @return Result with the symptom records to auto-clear, all of the same owner
+  ProcessClearResult process_clear(const FaultId & id);
 
   /// Get all currently muted faults
   /// @return List of muted fault data
@@ -115,10 +130,10 @@ class CorrelationEngine {
   /// Get count of muted faults
   uint32_t get_muted_count() const;
 
-  /// Whether a fault code is currently muted as a symptom.
-  /// @param fault_code Code to test
-  /// @return True while the code is suppressed by a root cause
-  bool is_muted(const std::string & fault_code) const;
+  /// Whether a fault record is currently muted as a symptom.
+  /// @param id Record to test
+  /// @return True while the record is suppressed by a root cause of the same owner
+  bool is_muted(const FaultId & id) const;
 
   /// Get all active clusters
   /// @return List of cluster data
@@ -132,18 +147,18 @@ class CorrelationEngine {
   void cleanup_expired();
 
  private:
-  /// Check if fault matches a root cause pattern in any hierarchical rule
+  /// Check if the record's CODE matches a root cause pattern in any hierarchical rule
   /// @return Rule ID if matched, empty optional otherwise
   std::optional<std::string> try_as_root_cause(const std::string & fault_code);
 
-  /// Check if fault is a symptom of any pending root cause
+  /// Check if the record is a symptom of a pending root cause OF THE SAME OWNER
   /// @return ProcessFaultResult with correlation info if matched
-  std::optional<ProcessFaultResult> try_as_symptom(const std::string & fault_code,
-                                                   std::chrono::steady_clock::time_point timestamp);
+  std::optional<ProcessFaultResult> try_as_symptom(const FaultId & id, std::chrono::steady_clock::time_point timestamp);
 
-  /// Check if fault matches an auto-cluster rule
+  /// Check if the record's code matches an auto-cluster rule. A cluster holds records
+  /// of one owner, so the pending-cluster key carries the owner alongside the rule id.
   /// @return ProcessFaultResult with cluster info if matched
-  std::optional<ProcessFaultResult> try_auto_cluster(const std::string & fault_code, const std::string & severity,
+  std::optional<ProcessFaultResult> try_auto_cluster(const FaultId & id, const std::string & severity,
                                                      std::chrono::steady_clock::time_point timestamp);
 
   /// Generate unique cluster ID
@@ -154,35 +169,37 @@ class CorrelationEngine {
 
   /// Active root causes waiting for symptoms
   struct PendingRootCause {
-    std::string fault_code;
+    FaultId fault_id;
     std::string rule_id;
     std::chrono::steady_clock::time_point timestamp;
     uint32_t window_ms;
   };
   std::vector<PendingRootCause> pending_root_causes_;
 
-  /// Mapping from root cause to its symptoms
-  std::map<std::string, std::vector<std::string>> root_to_symptoms_;
+  /// Mapping from a root cause RECORD to its symptom RECORDS, all of the same owner
+  std::map<FaultId, std::vector<FaultId>> root_to_symptoms_;
 
-  /// Muted faults (fault_code -> data)
-  std::map<std::string, MutedFaultData> muted_faults_;
+  /// Muted records (record -> data)
+  std::map<FaultId, MutedFaultData> muted_faults_;
 
   /// Active clusters (cluster_id -> data)
   std::map<std::string, ClusterData> active_clusters_;
 
-  /// Mapping from fault code to cluster ID (for faults in clusters)
-  std::map<std::string, std::string> fault_to_cluster_;
+  /// Mapping from a record to its cluster ID (for records in clusters)
+  std::map<FaultId, std::string> fault_to_cluster_;
 
   /// Pending cluster with steady_clock timestamp for window tracking
   struct PendingCluster {
     ClusterData data;
+    std::string owner;  ///< Every member record of this cluster has this owner
     std::chrono::steady_clock::time_point steady_first_at;
     std::map<std::string, std::string> fault_severities;  ///< fault_code -> severity
   };
 
-  /// Pending clusters being formed (rule_id -> cluster data)
+  /// Pending clusters being formed ((rule_id, owner) -> cluster data). Keyed by owner
+  /// too, so one rule forms one cluster per owner and membership never crosses owners.
   /// Once min_count is reached, moved to active_clusters_
-  std::map<std::string, PendingCluster> pending_clusters_;
+  std::map<std::pair<std::string, std::string>, PendingCluster> pending_clusters_;
 
   /// Counter for cluster ID generation
   uint64_t cluster_counter_{0};

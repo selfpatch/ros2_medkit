@@ -132,8 +132,9 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   /// Get (creating on first use) the FaultReporter for an action. The reporter's
   /// source_id is fixed when first created: the resolved server FQN if discovery
   /// has settled, otherwise the action name as a fallback so the fault still fires
-  /// on time. It is never re-attributed afterwards (reporting_sources is
-  /// append-only and the per-entity scope filter is strict-AND).
+  /// on time. It is never re-attributed afterwards: the fault manager keeps one
+  /// record per (fault code, source), so a swapped source would open a second
+  /// record and leave the provisional one raised with nothing left to heal it.
   ros2_medkit_fault_reporter::FaultReporter * reporter_for(const std::string & action_name);
 
   /// Resolve the action server's node FQN from its status-topic publisher, for

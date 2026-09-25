@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# MutedFaultInfo.msg - Information about a muted (correlated) fault.
+# MutedFaultInfo.msg - Information about a muted (correlated) fault record.
 #
-# When fault correlation is enabled, symptom faults are muted (not published
+# When fault correlation is enabled, symptom records are muted (not published
 # as events) but still stored. This message provides information about
-# muted faults when queried with include_muted=true.
+# muted records when queried with include_muted=true.
+#
+# One entry per muted RECORD. A root cause mutes the symptoms of its own
+# reporting source only, so two sources muted on one fault_code produce two
+# entries carrying that code, told apart by source_id.
 
 # The fault code of the muted symptom
 string fault_code
@@ -29,3 +33,8 @@ string rule_id
 
 # Time delay from root cause to this symptom [ms]
 uint32 delay_ms
+
+# Reporting source that owns the muted record (the source_id used in ReportFault).
+# Together with fault_code it identifies the one record this entry describes, and
+# it is the value the single-record services take to address it.
+string source_id

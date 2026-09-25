@@ -100,22 +100,24 @@ class RosbagCapture {
   /// Check if ring buffer is currently running
   bool is_running() const;
 
-  /// Called when a fault enters PREFAILED state (for lazy_start mode)
-  /// @param fault_code The fault code that entered PREFAILED
-  void on_fault_prefailed(const std::string & fault_code);
+  /// Called when a fault record enters PREFAILED state (for lazy_start mode)
+  /// @param id The record that entered PREFAILED
+  void on_fault_prefailed(const FaultId & id);
 
-  /// Called when a fault is confirmed - flushes buffer to bag file. A fault that
-  /// confirms while the previous fault's post-roll is still running is attached
-  /// to that recording (same burst, same window) rather than losing its bag.
-  /// @param fault_code The fault code that was confirmed
-  void on_fault_confirmed(const std::string & fault_code);
+  /// Called when a fault record is confirmed - flushes buffer to bag file. A record
+  /// that confirms while the previous one's post-roll is still running is attached
+  /// to that recording (same burst, same window) rather than losing its bag. Two
+  /// owners confirming one code in a burst attach to the one in-flight recording,
+  /// and each gets its own rosbag_files row.
+  /// @param id The record that was confirmed
+  void on_fault_confirmed(const FaultId & id);
 
-  /// Called when a fault is cleared - deletes its bag record if auto_cleanup.
-  /// A shared bag survives until its last referencing fault clears; a fault
+  /// Called when a fault record is cleared - deletes its bag record if auto_cleanup.
+  /// A shared bag survives until its last referencing record clears. A record
   /// cleared during its burst's post-roll is dropped from the in-flight
-  /// recording state and never gets a record.
-  /// @param fault_code The fault code that was cleared
-  void on_fault_cleared(const std::string & fault_code);
+  /// recording state and never gets a row.
+  /// @param id The record that was cleared
+  void on_fault_cleared(const FaultId & id);
 
   /// Get current configuration
   const RosbagConfig & config() const {
@@ -216,10 +218,10 @@ class RosbagCapture {
   /// (falls back to SensorDataQoS when no publisher is known or qos_match is off)
   rclcpp::QoS resolve_topic_qos(const std::string & topic) const;
 
-  /// Compute the entity topic set for a fault (the faulting source node's
+  /// Compute the entity topic set for a fault record (its owning source node's
   /// pub/sub topics + /tf, intersected with the subscribed set). Empty set =
   /// scope unresolved. Never throws; failures degrade to an empty set.
-  std::set<std::string> compute_entity_topics(const std::string & fault_code);
+  std::set<std::string> compute_entity_topics(const FaultId & id);
 
   /// In "entity" mode, compute the set of topics to write for a confirmed fault
   /// (the faulting source node's pub/sub topics + /tf). Empty set = write all.
@@ -228,7 +230,7 @@ class RosbagCapture {
   /// In "entity" mode, union an attached fault's entity topics into the active
   /// capture filter so its data reaches the shared bag from the attach onwards
   /// (empty resolution widens to all topics). Caller holds post_fault_timer_mutex_.
-  void widen_capture_filter_for(const std::string & fault_code, const std::set<std::string> & topics);
+  void widen_capture_filter_for(const FaultId & id, const std::set<std::string> & topics);
 
   /// Whether a topic should be written to the bag given the active entity filter
   bool should_capture_topic(const std::string & topic) const;
@@ -264,7 +266,7 @@ class RosbagCapture {
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
   /// Both finalisation paths end here, so a bag that cannot be looked up never
-  /// survives on disk: retrieval is keyed by fault code and the quota enumerates
+  /// survives on disk: retrieval goes through the rows and the quota enumerates
   /// rows, so a directory with no row is unreachable, uncounted, and can never be
   /// evicted to make room.
   ///
@@ -330,9 +332,9 @@ class RosbagCapture {
   /// Cheap, and checked before the entity scope is resolved: a level-triggered
   /// reporter re-confirming the same fault would otherwise pay for a fault-store read
   /// and a full graph enumeration on every repeat, none of which it can use.
-  bool is_current_recording_primary(const std::string & fault_code) const;
+  bool is_current_recording_primary(const FaultId & id) const;
 
-  bool attach_to_active_recording(const std::string & fault_code, const std::set<std::string> & entity_topics);
+  bool attach_to_active_recording(const FaultId & id, const std::set<std::string> & entity_topics);
 
   /// Try to subscribe to a single topic
   /// @param topic The topic to subscribe to
@@ -383,16 +385,17 @@ class RosbagCapture {
   /// Running state
   std::atomic<bool> running_{false};
 
-  /// Upper bound on how many extra faults one recording is registered for.
+  /// Upper bound on how many extra records one recording is registered for.
   static constexpr size_t kMaxAttachedFaults = 32;
 
   /// Post-fault recording state
-  std::string current_fault_code_;
+  FaultId current_fault_id_;
   std::string current_bag_path_;
-  /// Faults confirmed while the post-roll was already running. They share the
+  /// Records confirmed while the post-roll was already running. They share the
   /// recording window (one root cause, one burst), so each gets a metadata row
-  /// pointing at the same bag when it finalises.
-  std::set<std::string> attached_fault_codes_;
+  /// pointing at the same bag when it finalises. Two owners of one code are two
+  /// entries here and two rows on finalise.
+  std::set<FaultId> attached_fault_ids_;
   /// Protects post_fault_timer_, the recording_post_fault_ transitions and the
   /// state above against concurrent access from on_fault_confirmed() (capture-pool
   /// thread) and post_fault_timer_callback() / stop() (executor thread). The

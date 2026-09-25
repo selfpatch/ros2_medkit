@@ -16,16 +16,23 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdarg>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -75,7 +82,7 @@ TEST_F(SqliteFaultStorageTest, ReportNewFaultEvent) {
 
   EXPECT_TRUE(is_new);
   EXPECT_EQ(storage_->size(), 1u);
-  EXPECT_TRUE(storage_->contains("MOTOR_OVERHEAT"));
+  EXPECT_TRUE(storage_->contains({"MOTOR_OVERHEAT", "/powertrain/motor"}));
 }
 
 TEST_F(SqliteFaultStorageTest, PassedEventForNonExistentFaultIgnored) {
@@ -99,18 +106,70 @@ TEST_F(SqliteFaultStorageTest, ReportExistingFaultEventUpdates) {
 
   bool is_new =
       storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                   "Second report", "/powertrain/motor2", timestamp2, default_config());
+                                   "Second report", "/powertrain/motor1", timestamp2, default_config());
 
   EXPECT_FALSE(is_new);
   EXPECT_EQ(storage_->size(), 1u);
 
-  auto fault = storage_->get_fault("MOTOR_OVERHEAT");
+  auto fault = storage_->get_fault({"MOTOR_OVERHEAT", "/powertrain/motor1"});
   ASSERT_TRUE(fault.has_value());
   // Still the same continuous occurrence (not CLEARED in between): occurrence_count
-  // does not bump on every report, only severity/sources/description update.
+  // does not bump on every report, only severity/description update.
   EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->severity, Fault::SEVERITY_ERROR);  // Updated to higher severity
-  EXPECT_EQ(fault->reporting_sources.size(), 2u);
+  ASSERT_EQ(fault->reporting_sources.size(), 1u);
+  EXPECT_EQ(fault->reporting_sources.front(), "/powertrain/motor1");
+}
+
+// SQLite twin of the in-memory identity test: the composite index has to keep the two
+// records apart in the table the way the map does in memory.
+TEST_F(SqliteFaultStorageTest, TwoSourcesReportingOneCodeAreTwoRecords) {
+  DebounceConfig config;
+  config.confirmation_threshold = -2;
+
+  const rclcpp::Time a_time(1000, 0, RCL_SYSTEM_TIME);
+  const rclcpp::Time b_time(2000, 0, RCL_SYSTEM_TIME);
+
+  EXPECT_TRUE(storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
+                                           "from a", "/powertrain/motor1", a_time, config));
+  storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "from a",
+                               "/powertrain/motor1", a_time, config);
+  EXPECT_TRUE(storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                           "from b", "/powertrain/motor2", b_time, config));
+
+  EXPECT_EQ(storage_->size(), 2u);
+
+  auto a = storage_->get_fault({"MOTOR_OVERHEAT", "/powertrain/motor1"});
+  auto b = storage_->get_fault({"MOTOR_OVERHEAT", "/powertrain/motor2"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  EXPECT_EQ(a->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(b->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(a->severity, Fault::SEVERITY_WARN) << "B's ERROR must not escalate A's record";
+  EXPECT_EQ(b->severity, Fault::SEVERITY_ERROR);
+  EXPECT_EQ(a->description, "from a");
+  EXPECT_EQ(b->description, "from b");
+  EXPECT_EQ(rclcpp::Time(a->first_occurred).nanoseconds(), a_time.nanoseconds());
+  EXPECT_EQ(rclcpp::Time(b->first_occurred).nanoseconds(), b_time.nanoseconds());
+}
+
+TEST_F(SqliteFaultStorageTest, GetFaultsByCodeReturnsEveryOwnerAndGetFaultExactlyOne) {
+  rclcpp::Clock clock;
+  storage_->report_fault_event("SHARED", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "a", "/owner_b",
+                               clock.now(), default_config());
+  storage_->report_fault_event("SHARED", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "a", "/owner_a",
+                               clock.now(), default_config());
+
+  const auto shared = storage_->get_faults_by_code("SHARED");
+  ASSERT_EQ(shared.size(), 2u);
+  ASSERT_EQ(shared[0].reporting_sources.size(), 1u);
+  ASSERT_EQ(shared[1].reporting_sources.size(), 1u);
+  EXPECT_EQ(shared[0].reporting_sources.front(), "/owner_a") << "ordered by owner, like the in-memory backend";
+  EXPECT_EQ(shared[1].reporting_sources.front(), "/owner_b");
+
+  EXPECT_TRUE(storage_->get_faults_by_code("NEVER_REPORTED").empty());
+  ASSERT_TRUE(storage_->get_fault({"SHARED", "/owner_a"}).has_value());
+  EXPECT_FALSE(storage_->get_fault({"SHARED", "/nobody"}).has_value());
 }
 
 TEST_F(SqliteFaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCount) {
@@ -123,7 +182,7 @@ TEST_F(SqliteFaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCo
                                  "level = 95 > 80", "/tank", clock.now(), default_config());
   }
 
-  auto fault = storage_->get_fault("TANK_OVERFILL");
+  auto fault = storage_->get_fault({"TANK_OVERFILL", "/tank"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
@@ -185,16 +244,16 @@ TEST_F(SqliteFaultStorageTest, ClearFault) {
   storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
                                "/node1", timestamp, default_config());
 
-  bool cleared = storage_->clear_fault("MOTOR_OVERHEAT");
+  bool cleared = storage_->clear_fault({"MOTOR_OVERHEAT", "/node1"});
   EXPECT_TRUE(cleared);
 
-  auto fault = storage_->get_fault("MOTOR_OVERHEAT");
+  auto fault = storage_->get_fault({"MOTOR_OVERHEAT", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);
 }
 
 TEST_F(SqliteFaultStorageTest, ClearNonExistentFault) {
-  bool cleared = storage_->clear_fault("NON_EXISTENT");
+  bool cleared = storage_->clear_fault({"NON_EXISTENT", "/node1"});
   EXPECT_FALSE(cleared);
 }
 
@@ -210,7 +269,7 @@ TEST_F(SqliteFaultStorageTest, PassedEventDoesNotAdvanceLastOccurred) {
   storage_->report_fault_event("FAULT_LO", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", passed_at,
                                default_config());
 
-  auto fault = storage_->get_fault("FAULT_LO");
+  auto fault = storage_->get_fault({"FAULT_LO", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // healing disabled: latched, by design
   EXPECT_EQ(rclcpp::Time(fault->last_occurred).nanoseconds(), failed_at.nanoseconds());
@@ -238,7 +297,7 @@ TEST_F(SqliteFaultStorageTest, ReopenRepairsLastOccurredInflatedByOldPassedBug) 
 
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
-  auto fault = storage_->get_fault("FAULT_MIG");
+  auto fault = storage_->get_fault({"FAULT_MIG", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(rclcpp::Time(fault->last_occurred).nanoseconds(), failed_at.nanoseconds());
 }
@@ -249,7 +308,7 @@ TEST_F(SqliteFaultStorageTest, GetClearedFaults) {
 
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                timestamp, default_config());
-  storage_->clear_fault("FAULT_1");
+  storage_->clear_fault({"FAULT_1", "/node1"});
 
   // Query cleared faults
   auto faults = storage_->list_faults(false, 0, {Fault::STATUS_CLEARED});
@@ -282,7 +341,7 @@ TEST_F(SqliteFaultStorageTest, PersistenceAcrossRestarts) {
                                "Persistent fault 1", "/node1", timestamp, default_config());
   storage_->report_fault_event("FAULT_2", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "Persistent fault 2", "/node2", timestamp, default_config());
-  storage_->clear_fault("FAULT_2");
+  storage_->clear_fault({"FAULT_2", "/node2"});
 
   // Verify initial state
   EXPECT_EQ(storage_->size(), 2u);
@@ -295,16 +354,16 @@ TEST_F(SqliteFaultStorageTest, PersistenceAcrossRestarts) {
 
   // Verify faults persisted
   EXPECT_EQ(storage_->size(), 2u);
-  EXPECT_TRUE(storage_->contains("FAULT_1"));
-  EXPECT_TRUE(storage_->contains("FAULT_2"));
+  EXPECT_TRUE(storage_->contains({"FAULT_1", "/node1"}));
+  EXPECT_TRUE(storage_->contains({"FAULT_2", "/node2"}));
 
-  auto fault1 = storage_->get_fault("FAULT_1");
+  auto fault1 = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault1.has_value());
   EXPECT_EQ(fault1->severity, Fault::SEVERITY_ERROR);
   EXPECT_EQ(fault1->status, Fault::STATUS_CONFIRMED);  // Immediately confirmed with threshold=-1
   EXPECT_EQ(fault1->description, "Persistent fault 1");
 
-  auto fault2 = storage_->get_fault("FAULT_2");
+  auto fault2 = storage_->get_fault({"FAULT_2", "/node2"});
   ASSERT_TRUE(fault2.has_value());
   EXPECT_EQ(fault2->status, Fault::STATUS_CLEARED);
 }
@@ -318,7 +377,7 @@ TEST_F(SqliteFaultStorageTest, TimestampPrecision) {
   storage_->report_fault_event("FAULT_TS", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Timestamp test",
                                "/node1", timestamp, default_config());
 
-  auto fault = storage_->get_fault("FAULT_TS");
+  auto fault = storage_->get_fault({"FAULT_TS", "/node1"});
   ASSERT_TRUE(fault.has_value());
 
   // Convert builtin_interfaces::msg::Time back to rclcpp::Time for comparison
@@ -340,7 +399,7 @@ TEST(SqliteInMemoryTest, InMemoryDatabase) {
                              "/test", timestamp, default_config());
 
   EXPECT_EQ(storage.size(), 1u);
-  EXPECT_TRUE(storage.contains("MEM_FAULT"));
+  EXPECT_TRUE(storage.contains({"MEM_FAULT", "/test"}));
 }
 
 // Test reporting sources JSON handling
@@ -348,23 +407,26 @@ TEST_F(SqliteFaultStorageTest, ReportingSourcesJsonHandling) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  // Add multiple sources for the same fault
-  storage_->report_fault_event("MULTI_SRC", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Multi-source",
-                               "/node/path/with/slashes", timestamp, default_config());
-  storage_->report_fault_event("MULTI_SRC", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Multi-source",
-                               "/another/node", timestamp, default_config());
-  storage_->report_fault_event("MULTI_SRC", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Multi-source",
-                               "/special\"chars", timestamp, default_config());
+  // Three awkward source ids, each owning its own record of the same code. Owners are
+  // an identity column now, so an embedded quote has to survive the round trip through
+  // the key rather than through a JSON array.
+  const std::vector<std::string> owners = {"/node/path/with/slashes", "/another/node", "/special\"chars"};
+  for (const auto & owner : owners) {
+    storage_->report_fault_event("MULTI_SRC", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Multi-source",
+                                 owner, timestamp, default_config());
+  }
 
-  auto fault = storage_->get_fault("MULTI_SRC");
-  ASSERT_TRUE(fault.has_value());
-  EXPECT_EQ(fault->reporting_sources.size(), 3u);
+  EXPECT_EQ(storage_->size(), owners.size());
 
-  // Verify all sources are present (order may vary due to set)
-  std::set<std::string> sources(fault->reporting_sources.begin(), fault->reporting_sources.end());
-  EXPECT_TRUE(sources.count("/node/path/with/slashes") > 0);
-  EXPECT_TRUE(sources.count("/another/node") > 0);
-  EXPECT_TRUE(sources.count("/special\"chars") > 0);
+  std::set<std::string> seen;
+  for (const auto & owner : owners) {
+    auto fault = storage_->get_fault({"MULTI_SRC", owner});
+    ASSERT_TRUE(fault.has_value()) << owner;
+    ASSERT_EQ(fault->reporting_sources.size(), 1u);
+    EXPECT_EQ(fault->reporting_sources.front(), owner);
+    seen.insert(fault->reporting_sources.front());
+  }
+  EXPECT_EQ(seen.size(), owners.size());
 }
 
 // Test database path accessor
@@ -405,12 +467,13 @@ TEST_F(SqliteFaultStorageTest, FaultStaysPrefailedAboveThreshold) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), config);
+  // Both reports from one source: the counter belongs to that source's record.
+  for (int i = 0; i < 2; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+  }
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->occurrence_count, 1u);  // Still debouncing towards confirmation, same occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);
@@ -424,14 +487,12 @@ TEST_F(SqliteFaultStorageTest, FaultConfirmsAtThreshold) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
-                               clock.now(), config);
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+  }
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->occurrence_count, 1u);  // Debounce build-up is still one occurrence
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
@@ -447,7 +508,7 @@ TEST_F(SqliteFaultStorageTest, ImmediateConfirmationWithThresholdZero) {
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
@@ -460,7 +521,7 @@ TEST_F(SqliteFaultStorageTest, CriticalSeverityBypassesDebounce) {
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "Critical test",
                                "/node1", clock.now(), default_config());
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
@@ -475,30 +536,31 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultCanBeReactivated) {
                                              "Initial", "/node1", first_ts, default_config());
   EXPECT_TRUE(is_new);
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(fault->occurrence_count, 1u);
   EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), first_ts.nanoseconds());
 
-  // Clear the fault
-  storage_->clear_fault("FAULT_1");
-  fault = storage_->get_fault("FAULT_1");
+  // Clear the record
+  storage_->clear_fault({"FAULT_1", "/node1"});
+  fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);
 
-  // Report again after a gap - should reactivate as a new cycle
+  // The same owner reports again after a gap - reactivates its own record
   rclcpp::Time second_ts(first_ts.nanoseconds() + 1'000'000'000LL);  // +1s
   is_new = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                        "Reactivated", "/node2", second_ts, default_config());
+                                        "Reactivated", "/node1", second_ts, default_config());
   EXPECT_TRUE(is_new);  // Should return true like a new fault
 
-  fault = storage_->get_fault("FAULT_1");
+  fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Should be reconfirmed
   EXPECT_EQ(fault->occurrence_count, 2u);             // Should increment
-  EXPECT_EQ(fault->reporting_sources.size(), 2u);     // Both sources
-  EXPECT_EQ(fault->description, "Reactivated");       // Updated description
+  ASSERT_EQ(fault->reporting_sources.size(), 1u);
+  EXPECT_EQ(fault->reporting_sources.front(), "/node1");
+  EXPECT_EQ(fault->description, "Reactivated");  // Updated description
   // #25: first_occurred must reflect the new cycle, not the outage that already cleared.
   EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), second_ts.nanoseconds());
 }
@@ -511,14 +573,14 @@ TEST_F(SqliteFaultStorageTest, PassedEventForClearedFaultIgnored) {
                                clock.now(), default_config());
 
   // Clear the fault
-  storage_->clear_fault("FAULT_1");
+  storage_->clear_fault({"FAULT_1", "/node1"});
 
   // PASSED event should be ignored for CLEARED fault
   bool result = storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
                                              clock.now(), default_config());
   EXPECT_FALSE(result);
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CLEARED);  // Should stay cleared
 }
@@ -531,36 +593,34 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  // Report 3 times to confirm
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
-                               clock.now(), config);
+  // One source reports 3 times to confirm its own record
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+  }
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 
-  // Clear the fault
-  storage_->clear_fault("FAULT_1");
+  // Clear the record
+  storage_->clear_fault({"FAULT_1", "/node1"});
 
   // Reactivate - should start in PREFAILED with counter=-1
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node4",
+  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
 
-  fault = storage_->get_fault("FAULT_1");
+  fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Not yet confirmed, needs 2 more FAILED
 
   // Report 2 more times to re-confirm
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node5",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node6",
-                               clock.now(), config);
+  for (int i = 0; i < 2; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+  }
 
-  fault = storage_->get_fault("FAULT_1");
+  fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Now confirmed
 }
@@ -568,20 +628,18 @@ TEST_F(SqliteFaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
 TEST_F(SqliteFaultStorageTest, ConfirmationPersistsAfterReopen) {
   rclcpp::Clock clock;
 
-  // Report 3 times to confirm
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), default_config());
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), default_config());
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
-                               clock.now(), default_config());
+  // One source reports 3 times to confirm its own record
+  for (int i = 0; i < 3; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), default_config());
+  }
 
   // Close and reopen storage
   storage_.reset();
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
   // Verify status persisted
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
@@ -593,18 +651,18 @@ TEST_F(SqliteFaultStorageTest, PassedEventIncrementsCounter) {
   DebounceConfig config;
   config.confirmation_threshold = -3;
 
-  // Report 2 FAILED events (counter -2, PREFAILED)
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now(), config);
-  storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
-                               clock.now(), config);
+  // Report 2 FAILED events from one source (its counter -2, PREFAILED)
+  for (int i = 0; i < 2; ++i) {
+    storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                 clock.now(), config);
+  }
 
   // Report 3 PASSED events (counter -2 -> +1)
   for (int i = 0; i < 3; ++i) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
   }
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_PREPASSED);  // Counter > 0, never confirmed so not latched
 }
@@ -622,13 +680,13 @@ TEST_F(SqliteFaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
 
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
-  ASSERT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+  ASSERT_EQ(storage_->get_fault({"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 
   // Long heal heartbeat: counter clamps at healing_threshold instead of running off.
   for (int i = 0; i < 100; ++i) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
   }
-  auto healed = storage_->get_fault("FAULT_1");
+  auto healed = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(healed.has_value());
   EXPECT_EQ(healed->status, Fault::STATUS_HEALED);
 
@@ -637,11 +695,12 @@ TEST_F(SqliteFaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
   for (int i = 0; i < 3; ++i) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                  clock.now(), config);
-    EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+    EXPECT_EQ(storage_->get_fault({"FAULT_1", "/node1"})->status, Fault::STATUS_HEALED)
+        << "latch broke after " << (i + 1);
   }
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
-  auto reconfirmed = storage_->get_fault("FAULT_1");
+  auto reconfirmed = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(reconfirmed.has_value());
   EXPECT_EQ(reconfirmed->status, Fault::STATUS_CONFIRMED);
 }
@@ -657,18 +716,19 @@ TEST_F(SqliteFaultStorageTest, ConfirmedFaultSurvivesHealHeartbeat) {
 
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
-  ASSERT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+  ASSERT_EQ(storage_->get_fault({"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 
   for (int i = 0; i < 20; ++i) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
-    EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED) << "un-confirmed after " << (i + 1);
+    EXPECT_EQ(storage_->get_fault({"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED)
+        << "un-confirmed after " << (i + 1);
   }
 
   // The counter is now positive (clamped at +3). One FAILED must keep it CONFIRMED, not flip it to
   // PREPASSED via the `counter > 0` branch - that was the asymmetric-latch bug.
   storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
                                clock.now(), config);
-  EXPECT_EQ(storage_->get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_->get_fault({"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 }
 
 // Latch must hold in BOTH directions and identically on both backends (regression for the
@@ -683,16 +743,16 @@ TEST_F(SqliteFaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
   // CRITICAL confirms immediately at counter -1.
   storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "crit", "/n",
                                clock.now(), config);
-  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  ASSERT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   // PASSED events raise the counter into positive territory; latch keeps it CONFIRMED.
   for (int i = 0; i < 3; ++i) {
     storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
   }
-  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  ASSERT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   // One normal FAILED: counter still positive, must NOT become PREPASSED.
   storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
                                config);
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
 }
 
 // A HEALED fault with a negative counter stays HEALED on PASSED (opposite direction of the bug above).
@@ -708,16 +768,16 @@ TEST_F(SqliteFaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
   for (int i = 0; i < 4; ++i) {  // counter -1 -> +3 -> HEALED
     storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
   }
-  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+  ASSERT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_HEALED);
   // FAILED events drive the counter negative while HEALED is latched (not yet at confirmation -3).
   for (int i = 0; i < 5; ++i) {  // +3 -> -2
     storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
                                  config);
-    ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
+    ASSERT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
   }
   // One PASSED: counter goes -2 -> -1, still negative; must stay HEALED, not flip to PREFAILED.
   storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_HEALED);
 }
 
 // A database written by an older build can hold a runaway counter. It must be clamped back on first
@@ -745,7 +805,7 @@ TEST_F(SqliteFaultStorageTest, RunawayCounterFromOldDbRecovers) {
     storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", clock.now(),
                                  config);
   }
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
 }
 
 TEST_F(SqliteFaultStorageTest, ReclassifyHealedAsCleared) {
@@ -759,12 +819,12 @@ TEST_F(SqliteFaultStorageTest, ReclassifyHealedAsCleared) {
   for (int i = 0; i < 4; ++i) {
     storage_->report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
   }
-  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+  ASSERT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_HEALED);
 
   const auto reclassified = storage_->reclassify_healed_as_cleared();
   ASSERT_EQ(reclassified.size(), 1u);
-  EXPECT_EQ(reclassified[0], "F");
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CLEARED);
+  EXPECT_EQ(reclassified[0], (ros2_medkit_fault_manager::FaultId{"F", "/n"}));
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CLEARED);
   EXPECT_TRUE(storage_->reclassify_healed_as_cleared().empty());
 }
 
@@ -784,7 +844,7 @@ TEST_F(SqliteFaultStorageTest, HealingWhenEnabled) {
     storage_->report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
   }
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_HEALED);
 }
@@ -809,9 +869,9 @@ TEST_F(SqliteFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
   auto confirmed = storage_->check_time_based_confirmation(after_timeout);
   ASSERT_EQ(confirmed.size(), 1u);
-  EXPECT_EQ(confirmed[0], "FAULT_1");
+  EXPECT_EQ(confirmed[0], (ros2_medkit_fault_manager::FaultId{"FAULT_1", "/node1"}));
 
-  auto fault = storage_->get_fault("FAULT_1");
+  auto fault = storage_->get_fault({"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
@@ -842,7 +902,7 @@ TEST_F(SqliteFaultStorageTest, ConfirmedAtRecordedOnImmediateConfirmation) {
   // Default config confirms on the first FAILED event.
   storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t,
                                default_config());
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), t.nanoseconds());
 
   // A later FAILED on an already-confirmed fault must NOT move the timestamp.
@@ -859,12 +919,12 @@ TEST_F(SqliteFaultStorageTest, ConfirmedAtRecordedOnDebouncedConfirmation) {
 
   auto t1 = clock.now();
   storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t1, config);
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_PREFAILED);
   EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), 0) << "not confirmed yet: no confirmation timestamp";
 
   auto t2 = rclcpp::Time(t1.nanoseconds() + static_cast<int64_t>(1e9));
   storage_->report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t2, config);
-  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_->get_fault({"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(read_confirmed_at(temp_db_path_, "F"), t2.nanoseconds());
 }
 
@@ -905,7 +965,7 @@ TEST_F(SqliteFaultStorageTest, ConfirmedAtColumnMigratedIntoOldDatabase) {
     sqlite3_close(raw);
   }
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
-  EXPECT_TRUE(storage_->contains("OLD"));
+  EXPECT_TRUE(storage_->contains({"OLD", "/n"})) << "the owner is backfilled from the legacy first source";
   EXPECT_EQ(read_confirmed_at(temp_db_path_, "OLD"), 0) << "pre-migration rows carry no confirmation time";
 
   rclcpp::Clock clock;
@@ -913,6 +973,159 @@ TEST_F(SqliteFaultStorageTest, ConfirmedAtColumnMigratedIntoOldDatabase) {
   storage_->report_fault_event("NEW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n", t,
                                default_config());
   EXPECT_EQ(read_confirmed_at(temp_db_path_, "NEW"), t.nanoseconds());
+}
+
+namespace {
+
+/// Whether @p table carries an index over exactly @p columns, whatever its name.
+bool has_index_over(const std::filesystem::path & db_path, const std::string & table,
+                    const std::vector<std::string> & columns, bool * unique_out = nullptr) {
+  sqlite3 * raw = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.string().c_str(), &raw), SQLITE_OK);
+
+  std::vector<std::pair<std::string, bool>> indexes;
+  {
+    sqlite3_stmt * stmt = nullptr;
+    const std::string sql = "PRAGMA index_list(" + table + ")";
+    EXPECT_EQ(sqlite3_prepare_v2(raw, sql.c_str(), -1, &stmt, nullptr), SQLITE_OK);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      const auto * name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+      indexes.emplace_back(name != nullptr ? name : "", sqlite3_column_int(stmt, 2) != 0);
+    }
+    sqlite3_finalize(stmt);
+  }
+
+  bool found = false;
+  for (const auto & [name, unique] : indexes) {
+    std::vector<std::string> cols;
+    sqlite3_stmt * stmt = nullptr;
+    const std::string sql = "PRAGMA index_info(" + name + ")";
+    EXPECT_EQ(sqlite3_prepare_v2(raw, sql.c_str(), -1, &stmt, nullptr), SQLITE_OK);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      const auto * col = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
+      cols.emplace_back(col != nullptr ? col : "");
+    }
+    sqlite3_finalize(stmt);
+    if (cols == columns) {
+      found = true;
+      if (unique_out != nullptr) {
+        *unique_out = unique;
+      }
+      break;
+    }
+  }
+  sqlite3_close(raw);
+  return found;
+}
+
+/// One scalar out of a legacy-schema database, read outside the storage class.
+std::string read_text(const std::filesystem::path & db_path, const std::string & sql) {
+  sqlite3 * raw = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.string().c_str(), &raw), SQLITE_OK);
+  sqlite3_stmt * stmt = nullptr;
+  EXPECT_EQ(sqlite3_prepare_v2(raw, sql.c_str(), -1, &stmt, nullptr), SQLITE_OK);
+  std::string value;
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    const auto * text = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+    value = text != nullptr ? text : "";
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(raw);
+  return value;
+}
+
+}  // namespace
+
+// The identity of a faults row changed, and SQLite cannot change a PRIMARY KEY in
+// place while CREATE TABLE IF NOT EXISTS silently skips an existing table. A database
+// written by an earlier release therefore has to be rebuilt on open, and its child
+// rows have to learn which record they belong to.
+TEST_F(SqliteFaultStorageTest, LegacyDatabaseGainsTheOwnerColumnOnOpen) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(
+                  raw,
+                  "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+                  "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                  "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                  "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                  "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                  "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                  "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);"
+                  // Two sources on one legacy row: the old schema held no per-source counter,
+                  // status or timestamps, so there is nothing to split it by and it folds onto
+                  // its FIRST source.
+                  "INSERT INTO faults VALUES ('SHARED', 2, 'shared', 1, 1, 1, 'CONFIRMED', "
+                  "'[\"/owner_a\",\"/owner_b\"]', -1, 1, 0, 0);"
+                  "INSERT INTO faults VALUES ('SOLO', 1, 'solo', 2, 2, 1, 'CONFIRMED', '[\"/owner_c\"]', -1, 2, 0, 0);"
+                  "CREATE TABLE freeze_frames (fault_code TEXT PRIMARY KEY, data TEXT NOT NULL, "
+                  "captured_at_ns INTEGER NOT NULL);"
+                  "INSERT INTO freeze_frames VALUES ('SHARED', '{\"/t\":1}', 7);"
+                  "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                  "topic TEXT NOT NULL, message_type TEXT NOT NULL, data TEXT NOT NULL, "
+                  "captured_at_ns INTEGER NOT NULL);"
+                  "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                  "VALUES ('SHARED', '/t', 'std_msgs/msg/Float64', '{}', 9);"
+                  "CREATE TABLE rosbag_files (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                  "fault_code TEXT NOT NULL UNIQUE, file_path TEXT NOT NULL, format TEXT NOT NULL, "
+                  "duration_sec REAL NOT NULL, size_bytes INTEGER NOT NULL, created_at_ns INTEGER NOT NULL);"
+                  "INSERT INTO rosbag_files (fault_code, file_path, format, duration_sec, size_bytes, created_at_ns) "
+                  "VALUES ('SHARED', '/bags/fault_SHARED_1', 'mcap', 5.0, 1024, 11);",
+                  nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  // The record identity is an index over (fault_code, owner), and it is unique.
+  bool unique = false;
+  ASSERT_TRUE(has_index_over(temp_db_path_, "faults", {"fault_code", "owner"}, &unique));
+  EXPECT_TRUE(unique);
+  ASSERT_TRUE(has_index_over(temp_db_path_, "freeze_frames", {"fault_code", "owner"}, &unique));
+  EXPECT_TRUE(unique);
+  // The rosbag unique index widened with the identity. Without the DROP INDEX in the
+  // migration, CREATE INDEX IF NOT EXISTS would leave the old two-column shape here.
+  ASSERT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "owner", "file_path"}, &unique));
+  EXPECT_TRUE(unique);
+
+  // owner is backfilled with the FIRST legacy reporting source, and reporting_sources
+  // is rewritten to match so the column and the identity cannot disagree.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'SHARED'"), "/owner_a");
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT reporting_sources FROM faults WHERE fault_code = 'SHARED'"),
+            "[\"/owner_a\"]");
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'SOLO'"), "/owner_c");
+
+  const ros2_medkit_fault_manager::FaultId shared{"SHARED", "/owner_a"};
+  auto migrated = storage_->get_fault(shared);
+  ASSERT_TRUE(migrated.has_value());
+  EXPECT_EQ(migrated->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(migrated->reporting_sources, std::vector<std::string>{"/owner_a"});
+  EXPECT_FALSE(storage_->get_fault({"SHARED", "/owner_b"}).has_value()) << "the second source had no state to migrate";
+  EXPECT_TRUE(storage_->get_fault({"SOLO", "/owner_c"}).has_value());
+
+  // The child rows learned which record they belong to.
+  ASSERT_TRUE(storage_->get_freeze_frame(shared).has_value());
+  EXPECT_EQ(storage_->get_freeze_frame(shared)->captured_at_ns, 7);
+  ASSERT_EQ(storage_->get_snapshots(shared).size(), 1u);
+  EXPECT_EQ(storage_->get_snapshots(shared).front().owner, "/owner_a");
+  ASSERT_TRUE(storage_->get_rosbag_file(shared).has_value());
+  EXPECT_EQ(storage_->get_rosbag_file(shared)->owner, "/owner_a");
+
+  // Re-opening a migrated database changes nothing: every probe is per table, so the
+  // second open neither re-ALTERs a column that is there nor rebuilds a table again.
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  EXPECT_EQ(storage_->size(), 2u);
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'SHARED'"), "/owner_a");
+  ASSERT_TRUE(storage_->get_freeze_frame(shared).has_value());
+  EXPECT_EQ(storage_->get_snapshots(shared).size(), 1u);
+  ASSERT_TRUE(storage_->get_rosbag_file(shared).has_value());
+  EXPECT_TRUE(has_index_over(temp_db_path_, "faults", {"fault_code", "owner"}));
 }
 
 // --- #620: many recordings per fault -----------------------------------------
@@ -939,10 +1152,15 @@ bool has_unique_constraint_index(const std::filesystem::path & db_path, const st
   return found;
 }
 
+/// Rows in this file belong to one owner unless a test says otherwise: they exercise
+/// retention and ordering, which the record identity does not change.
+constexpr const char * kRowOwner = "/test_node";
+
 RosbagFileInfo make_rosbag(const std::string & code, const std::string & path, int64_t created_ns,
                            size_t bytes = 1024) {
   RosbagFileInfo info;
   info.fault_code = code;
+  info.owner = kRowOwner;
   info.file_path = path;
   info.format = "mcap";
   info.duration_sec = 6.0;
@@ -995,6 +1213,447 @@ TEST_F(SqliteFaultStorageTest, LegacyUniqueConstraintIsRebuiltAwayAndRecordingId
   EXPECT_EQ(all[1].recording_id, "fault_B_200");
 }
 
+namespace {
+
+/// One control byte, kept out of the string literals that use it: written inline,
+/// "\x01" followed by a hex digit would be read as one wider escape.
+constexpr char kCtrl = '\x01';
+
+/// Run one statement on a raw handle, binding @p text as the single parameter. Legacy
+/// fixtures carry bytes that cannot survive being pasted into a SQL literal, so the
+/// values that matter go in through a binding.
+void exec_bound(sqlite3 * raw, const char * sql, const std::string & text) {
+  sqlite3_stmt * stmt = nullptr;
+  ASSERT_EQ(sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr), SQLITE_OK) << sqlite3_errmsg(raw);
+  ASSERT_EQ(sqlite3_bind_text(stmt, 1, text.c_str(), static_cast<int>(text.size()), SQLITE_TRANSIENT), SQLITE_OK);
+  ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE) << sqlite3_errmsg(raw);
+  sqlite3_finalize(stmt);
+}
+
+/// Captures rcutils log output while alive and restores the console handler on every
+/// exit path, so a live capture never swallows the output of later cases in this
+/// binary. Same shape as the one the rosbag suite uses: the handler is a plain C
+/// function pointer with no user-data slot, so the live capture is reached through a
+/// file-static, atomic because the handler is process-global.
+class LogCapture {
+ public:
+  LogCapture() {
+    active().store(this);
+    rcutils_logging_set_output_handler(&LogCapture::handler);
+  }
+  ~LogCapture() {
+    rcutils_logging_set_output_handler(rcutils_logging_console_output_handler);
+    active().store(nullptr);
+  }
+  LogCapture(const LogCapture &) = delete;
+  LogCapture & operator=(const LogCapture &) = delete;
+  LogCapture(LogCapture &&) = delete;
+  LogCapture & operator=(LogCapture &&) = delete;
+
+  int count(const std::string & needle) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return static_cast<int>(std::count_if(lines_.begin(), lines_.end(), [&needle](const std::string & line) {
+      return line.find(needle) != std::string::npos;
+    }));
+  }
+
+ private:
+  static std::atomic<LogCapture *> & active() {
+    static std::atomic<LogCapture *> current{nullptr};
+    return current;
+  }
+
+  static void handler(const rcutils_log_location_t * /*location*/, int /*severity*/, const char * /*name*/,
+                      rcutils_time_point_value_t /*timestamp*/, const char * format, va_list * args) {
+    char buf[1024];
+    va_list copy;
+    va_copy(copy, *args);
+    // The format string arrives through the handler signature, so there is no literal
+    // to write here. Scoped to the single call, as in the rosbag suite.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    vsnprintf(buf, sizeof(buf), format, copy);
+#pragma GCC diagnostic pop
+    va_end(copy);
+    LogCapture * capture = active().load();
+    if (capture == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lk(capture->mutex_);
+    capture->lines_.emplace_back(buf);
+  }
+
+  mutable std::mutex mutex_;
+  std::vector<std::string> lines_;
+};
+
+/// The legacy faults table exactly as the previous releases created it.
+constexpr const char * kLegacyFaultsDdl =
+    "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+    "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+    "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+    "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+    "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+    "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+    "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);";
+
+}  // namespace
+
+// A migration that refuses a row refuses the database. The rebuild runs inside one
+// transaction, so a row it cannot read rolls the whole thing back, and because the
+// migration is re-attempted on every open the node then fails to start for as long as
+// that row exists. The column it reads was written by a serializer that escaped only
+// the quote, the backslash and \b \f \n \r \t, so any other control byte in a
+// source_id produced text no JSON parser accepts. Recovery therefore reads the text
+// itself instead of requiring it to be valid JSON, and a row from which nothing can be
+// read is migrated with an empty owner rather than taking the database down.
+TEST_F(SqliteFaultStorageTest, LegacyReportingSourcesThatAreNotValidJsonStillMigrate) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+
+  // The five shapes, with the owner each must produce.
+  const std::string ctrl_pair = std::string("a") + kCtrl + "b";
+  const std::string device = std::string("/dev/ttyUSB0") + kCtrl + "reader";
+  const std::string kLegacy = ros2_medkit_fault_manager::kLegacyOwner;
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"", kLegacy},                               // nothing recorded
+      {"sensor_a", "sensor_a"},                    // bare word, never an array
+      {"[]", kLegacy},                             // array with no source
+      {"[\"" + ctrl_pair + "\"]", ctrl_pair},      // control byte inside the array
+      {"[\"" + device + "\"]", device},            // the reported real-world case
+      {"\xEF\xBB\xBF[\"/bom_source\"]", kLegacy},  // array behind a byte-order mark
+      {"{\"source\": \"/wrapped\"}", kLegacy},     // an object, not the array this reads
+  };
+
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+    for (size_t i = 0; i < cases.size(); ++i) {
+      const std::string insert = "INSERT INTO faults VALUES ('CODE_" + std::to_string(i) +
+                                 "', 2, 'legacy', 1, 1, 1, 'CONFIRMED', ?, -1, 1, 0, 0);";
+      exec_bound(raw, insert.c_str(), cases[i].first);
+    }
+    sqlite3_close(raw);
+  }
+
+  // Opening must succeed. On the json_extract path this throws and the process exits.
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const std::string code = "CODE_" + std::to_string(i);
+    EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = '" + code + "'"), cases[i].second)
+        << "owner recovered from " << cases[i].first;
+    EXPECT_TRUE(storage_->contains({code, cases[i].second})) << code << " must be reachable by its migrated owner";
+  }
+  // No migrated record is left unaddressable. The empty owner belongs to child rows
+  // alone, and a fault carrying it could not be named by any source_id.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM faults WHERE owner = ''"), "0");
+  EXPECT_EQ(storage_->size(), cases.size());
+
+  // Whatever came in, what goes back out is valid JSON, so the next release's reader
+  // is not handed the same problem.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT MIN(json_valid(reporting_sources)) FROM faults"), "1");
+
+  // Idempotent: a second open neither rebuilds nor re-derives.
+  storage_.reset();
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+  EXPECT_EQ(storage_->size(), cases.size());
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'CODE_4'"), device);
+}
+
+// End to end: a record whose source cannot be read is still a record. It gets the
+// synthetic owner, its evidence is filed under that owner like any other record's, and
+// the store then reaches a resting state. The resting state is the point: while a fault
+// carried an empty owner its child rows could never be assigned to anyone, yet they
+// still looked like pending work, so every single open re-entered the migration write
+// transaction and logged a warning that nothing would ever resolve.
+TEST_F(SqliteFaultStorageTest, AnUnreadableSourceYieldsALegacyRecordAndThenSettles) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "INSERT INTO faults VALUES ('ORPHANED', 2, 'legacy', 1, 1, 1, 'CONFIRMED', "
+                           "'', -1, 1, 0, 0);"
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "topic TEXT NOT NULL, message_type TEXT NOT NULL, data TEXT NOT NULL, "
+                           "captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('ORPHANED', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  const std::string legacy = ros2_medkit_fault_manager::kLegacyOwner;
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM faults WHERE fault_code = 'ORPHANED'"), legacy);
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT reporting_sources FROM faults WHERE fault_code = 'ORPHANED'"),
+            "[\"" + legacy + "\"]")
+      << "the column and the owner must agree, so a raw reader sees the same name";
+  EXPECT_TRUE(storage_->contains({"ORPHANED", legacy})) << "the record must be addressable by source_id";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'ORPHANED'"), legacy);
+  ASSERT_EQ(storage_->get_snapshots({"ORPHANED", legacy}).size(), 1u);
+
+  // A tripwire that fires on any write to the child table, armed only now, so it sees
+  // the SECOND open and nothing the first one did.
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE tripwire (note TEXT);"
+                           "CREATE TRIGGER tripwire_snapshots AFTER UPDATE ON snapshots "
+                           "BEGIN INSERT INTO tripwire VALUES ('backfill ran'); END;",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK)
+        << sqlite3_errmsg(raw);
+    sqlite3_close(raw);
+  }
+
+  storage_.reset();
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM tripwire"), "0")
+      << "a settled store must not rewrite child rows on every open";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'ORPHANED'"), legacy);
+}
+
+// A rebuild that was interrupted, or a manual recovery with an external tool, can leave
+// the scratch table behind. CREATE TABLE (no IF NOT EXISTS, deliberately, so a real
+// collision is never silently reused) then fails on every open and the schema stays
+// legacy forever. Dropping the scratch table first inside the same transaction is what
+// makes the migration able to finish the job it started.
+TEST_F(SqliteFaultStorageTest, LeftoverScratchTablesDoNotBlockTheMigration) {
+  for (const char * leftover : {"faults_new", "freeze_frames_new"}) {
+    storage_.reset();
+    std::filesystem::remove(temp_db_path_);
+    {
+      sqlite3 * raw = nullptr;
+      ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+      ASSERT_EQ(sqlite3_exec(raw, kLegacyFaultsDdl, nullptr, nullptr, nullptr), SQLITE_OK);
+      ASSERT_EQ(sqlite3_exec(raw,
+                             "INSERT INTO faults VALUES ('LEFTOVER', 2, 'legacy', 1, 1, 1, 'CONFIRMED', "
+                             "'[\"/owner_a\"]', -1, 1, 0, 0);"
+                             "CREATE TABLE freeze_frames (fault_code TEXT PRIMARY KEY, data TEXT NOT NULL, "
+                             "captured_at_ns INTEGER NOT NULL);"
+                             "INSERT INTO freeze_frames VALUES ('LEFTOVER', '{\"/t\":1}', 7);",
+                             nullptr, nullptr, nullptr),
+                SQLITE_OK);
+      // The debris: a scratch table with a shape that does not even match the real one,
+      // so reusing it instead of dropping it could not go unnoticed either.
+      const std::string debris = std::string("CREATE TABLE ") + leftover + " (junk TEXT);";
+      ASSERT_EQ(sqlite3_exec(raw, debris.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+      sqlite3_close(raw);
+    }
+
+    // The drop is announced, because throwing away a table an operator may have been
+    // in the middle of recovering by hand has to be visible in the log.
+    std::unique_ptr<LogCapture> log = std::make_unique<LogCapture>();
+    ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()))
+        << "leftover " << leftover << " must not block the rebuild";
+    const int named = log->count(std::string("scratch table '") + leftover + "'");
+    log.reset();
+    EXPECT_EQ(named, 1) << "the dropped table must be named in the log: " << leftover;
+
+    const ros2_medkit_fault_manager::FaultId id{"LEFTOVER", "/owner_a"};
+    EXPECT_TRUE(storage_->contains(id)) << "with leftover " << leftover;
+    EXPECT_TRUE(has_index_over(temp_db_path_, "faults", {"fault_code", "owner"}));
+    ASSERT_TRUE(storage_->get_freeze_frame(id).has_value()) << "with leftover " << leftover;
+    EXPECT_EQ(storage_->get_freeze_frame(id)->captured_at_ns, 7);
+  }
+}
+
+// Evidence is never assigned to an owner the database cannot prove. A code carrying two
+// owners has no single answer, so the child rows keep the empty owner they came with,
+// and neither owner is handed the other's snapshots.
+TEST_F(SqliteFaultStorageTest, ChildRowsOfASharedCodeAreNotGivenAnArbitraryOwner) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    // faults already on the new schema with TWO owners of one code, snapshots still
+    // legacy. Reachable by an open that was interrupted, and by a database an operator
+    // repaired by hand.
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT NOT NULL, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL);"
+                           "INSERT INTO faults VALUES ('SHARED', 2, 'a', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0, '/owner_a');"
+                           "INSERT INTO faults VALUES ('SHARED', 2, 'b', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_b\"]', -1, 1, 0, 0, '/owner_b');"
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "topic TEXT NOT NULL, message_type TEXT NOT NULL, data TEXT NOT NULL, "
+                           "captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('SHARED', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'SHARED'"), "")
+      << "an ambiguous code must leave the row unassigned, not pick a winner";
+  EXPECT_TRUE(storage_->get_snapshots({"SHARED", "/owner_a"}).empty()) << "A must not be handed unproven evidence";
+  EXPECT_TRUE(storage_->get_snapshots({"SHARED", "/owner_b"}).empty()) << "and neither must B";
+  // The row is kept, not deleted: it is still an operator's evidence.
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT COUNT(*) FROM snapshots"), "1");
+}
+
+// The mirror case: a child table that already carries the column but whose rows were
+// never filled, with exactly one owner to attribute them to. The backfill is not tied
+// to the ALTER that adds the column, so the next open heals them.
+TEST_F(SqliteFaultStorageTest, OwnerlessChildRowsAreHealedOnTheNextOpen) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT NOT NULL, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0, owner TEXT NOT NULL);"
+                           "INSERT INTO faults VALUES ('SOLO', 2, 'a', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0, '/owner_a');"
+                           // snapshots is AHEAD of the old migration: the column is there,
+                           // the value never arrived.
+                           "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, fault_code TEXT NOT NULL, "
+                           "owner TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL, message_type TEXT NOT NULL, "
+                           "data TEXT NOT NULL, captured_at_ns INTEGER NOT NULL);"
+                           "INSERT INTO snapshots (fault_code, owner, topic, message_type, data, captured_at_ns) "
+                           "VALUES ('SOLO', '', '/t', 'std_msgs/msg/Float64', '{}', 9);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  ASSERT_NO_THROW(storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string()));
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM snapshots WHERE fault_code = 'SOLO'"), "/owner_a");
+  ASSERT_EQ(storage_->get_snapshots({"SOLO", "/owner_a"}).size(), 1u) << "the owner must now see its own evidence";
+  EXPECT_EQ(storage_->get_snapshots({"SOLO", "/owner_a"}).front().owner, "/owner_a");
+}
+
+// New rows must never reproduce the problem the migration had to recover from: a
+// source_id carrying a control byte round-trips, and what lands in the column is JSON
+// every reader can parse.
+TEST_F(SqliteFaultStorageTest, AControlByteInASourceIdStoresAsValidJson) {
+  const std::string source = std::string("/dev/ttyUSB0") + kCtrl + "reader";
+  rclcpp::Clock clock;
+  storage_->report_fault_event("CTRL_BYTE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "d", source,
+                               clock.now(), default_config());
+
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT json_valid(reporting_sources) FROM faults WHERE fault_code='CTRL_BYTE'"),
+            "1")
+      << "a raw control byte inside a JSON string is what made the legacy column unreadable";
+  EXPECT_EQ(read_text(temp_db_path_,
+                      "SELECT json_extract(reporting_sources, '$[0]') FROM faults "
+                      "WHERE fault_code='CTRL_BYTE'"),
+            source)
+      << "the escape must be reversible, not lossy";
+
+  auto stored = storage_->get_fault({"CTRL_BYTE", source});
+  ASSERT_TRUE(stored.has_value()) << "the record is keyed by the byte-exact source";
+  ASSERT_EQ(stored->reporting_sources.size(), 1u);
+  EXPECT_EQ(stored->reporting_sources.front(), source);
+}
+
+// The rosbag indexes that carry fault_code have to widen with the record identity, and
+// widening them is the one step no rebuild does for free. LegacyDatabaseGainsTheOwner-
+// ColumnOnOpen cannot show it: its fixture still carries a column UNIQUE on fault_code,
+// so the earlier rosbag migration rebuilds the table, takes every index with it, and
+// the widened shape appears whether or not the owner migration drops anything. The
+// shape that does exercise the drops is the PREVIOUS release, where rosbag_files is
+// already rebuilt and already carries the named indexes and only owner is missing.
+// CREATE INDEX IF NOT EXISTS is a no-op on a name that exists, so without the drops
+// the two-column indexes survive and the upsert has no unique constraint to target.
+TEST_F(SqliteFaultStorageTest, PreviousReleaseRosbagIndexesWidenWithTheRecordIdentity) {
+  storage_.reset();
+  std::filesystem::remove(temp_db_path_);
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE faults (fault_code TEXT PRIMARY KEY, severity INTEGER NOT NULL, "
+                           "description TEXT NOT NULL, first_occurred_ns INTEGER NOT NULL, "
+                           "last_occurred_ns INTEGER NOT NULL, occurrence_count INTEGER NOT NULL, "
+                           "status TEXT NOT NULL, reporting_sources TEXT NOT NULL, "
+                           "debounce_counter INTEGER NOT NULL DEFAULT 0, "
+                           "last_failed_ns INTEGER NOT NULL DEFAULT 0, last_passed_ns INTEGER NOT NULL DEFAULT 0, "
+                           "confirmed_at_ns INTEGER NOT NULL DEFAULT 0);"
+                           "INSERT INTO faults VALUES ('BURST', 3, 'burst', 1, 1, 1, 'CONFIRMED', "
+                           "'[\"/owner_a\"]', -1, 1, 0, 0);"
+                           // rosbag_files as the previous release left it: no column UNIQUE, a
+                           // recording_id column, and the named indexes over fault_code alone.
+                           "CREATE TABLE rosbag_files (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                           "fault_code TEXT NOT NULL, recording_id TEXT NOT NULL DEFAULT '', "
+                           "file_path TEXT NOT NULL, format TEXT NOT NULL, duration_sec REAL NOT NULL, "
+                           "size_bytes INTEGER NOT NULL, created_at_ns INTEGER NOT NULL);"
+                           "CREATE INDEX idx_rosbag_files_fault_code ON rosbag_files(fault_code);"
+                           "CREATE INDEX idx_rosbag_files_created_at ON rosbag_files(created_at_ns);"
+                           "CREATE INDEX idx_rosbag_files_fault_created ON rosbag_files(fault_code, created_at_ns, id);"
+                           "CREATE INDEX idx_rosbag_files_recording ON rosbag_files(recording_id);"
+                           "CREATE INDEX idx_rosbag_files_path ON rosbag_files(file_path);"
+                           "CREATE UNIQUE INDEX idx_rosbag_files_fault_path ON rosbag_files(fault_code, file_path);"
+                           "INSERT INTO rosbag_files (fault_code, recording_id, file_path, format, duration_sec, "
+                           "size_bytes, created_at_ns) "
+                           "VALUES ('BURST', 'fault_BURST_1', '/bags/fault_BURST_1', 'mcap', 6.0, 512, 11);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  ASSERT_FALSE(has_unique_constraint_index(temp_db_path_, "rosbag_files"))
+      << "fixture must start already rebuilt, or the rebuild would widen the indexes for free";
+  ASSERT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "file_path"}))
+      << "fixture must start on the previous release's two-column unique index";
+
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  bool unique = false;
+  ASSERT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "owner", "file_path"}, &unique));
+  EXPECT_TRUE(unique);
+  EXPECT_FALSE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "file_path"}))
+      << "the narrow unique index must be gone, not left beside the wide one";
+  EXPECT_TRUE(has_index_over(temp_db_path_, "rosbag_files", {"fault_code", "owner", "created_at_ns", "id"}))
+      << "the per-record read order index widened too";
+  EXPECT_EQ(read_text(temp_db_path_, "SELECT owner FROM rosbag_files WHERE fault_code = 'BURST'"), "/owner_a");
+
+  // What the widened index buys: two owners of one code link the same bag. Under the
+  // previous release's index the second store would collide, and the upsert cannot
+  // even be prepared without a unique constraint over (fault_code, owner, file_path).
+  RosbagFileInfo link;
+  link.fault_code = "BURST";
+  link.file_path = "/bags/fault_BURST_1";
+  link.format = "mcap";
+  link.duration_sec = 6.0;
+  link.size_bytes = 512;
+  link.created_at_ns = 11;
+  link.owner = "/owner_a";
+  storage_->store_rosbag_file(link);
+  link.owner = "/owner_b";
+  storage_->store_rosbag_file(link);
+
+  const auto rows = storage_->get_rosbag_files_by_recording("fault_BURST_1");
+  ASSERT_EQ(rows.size(), 2u) << "one link per record, both pointing at the one bag";
+  EXPECT_EQ(rows[0].owner, "/owner_a");
+  EXPECT_EQ(rows[1].owner, "/owner_b");
+}
+
 TEST_F(SqliteFaultStorageTest, ReopeningAMigratedDatabaseIsANoOp) {
   // The migration runs on every open, so it has to be idempotent - a second and
   // third open must not rebuild again, lose rows or re-backfill.
@@ -1016,13 +1675,13 @@ TEST_F(SqliteFaultStorageTest, OneFaultKeepsSeveralRecordingsWhenTheCapAllows) {
   storage_->store_rosbag_file(make_rosbag("FLAP", "/bags/fault_FLAP_100", 100));
   storage_->store_rosbag_file(make_rosbag("FLAP", "/bags/fault_FLAP_200", 200));
 
-  const auto rows = storage_->get_rosbag_files("FLAP");
+  const auto rows = storage_->get_rosbag_files({"FLAP", kRowOwner});
   ASSERT_EQ(rows.size(), 2u) << "the second recording must not replace the first";
   EXPECT_EQ(rows[0].recording_id, "fault_FLAP_200") << "newest first";
   EXPECT_EQ(rows[1].recording_id, "fault_FLAP_100");
 
   // get_rosbag_file is "the newest", deterministically.
-  const auto newest = storage_->get_rosbag_file("FLAP");
+  const auto newest = storage_->get_rosbag_file({"FLAP", kRowOwner});
   ASSERT_TRUE(newest.has_value());
   EXPECT_EQ(newest->recording_id, "fault_FLAP_200");
 }
@@ -1038,7 +1697,7 @@ TEST_F(SqliteFaultStorageTest, CapKeepsTheNewestAndUnlinksTheEvictedBag) {
   storage_->store_rosbag_file(make_rosbag("CAP", dir_a.string(), 100));
   storage_->store_rosbag_file(make_rosbag("CAP", dir_b.string(), 200));
 
-  const auto rows = storage_->get_rosbag_files("CAP");
+  const auto rows = storage_->get_rosbag_files({"CAP", kRowOwner});
   ASSERT_EQ(rows.size(), 1u) << "cap 1 is the historical behaviour: one recording per fault";
   EXPECT_EQ(rows[0].file_path, dir_b.string());
   EXPECT_FALSE(std::filesystem::exists(dir_a)) << "the evicted bag must be unlinked";
@@ -1060,7 +1719,7 @@ TEST_F(SqliteFaultStorageTest, EvictingOneFaultsLinkKeepsABagASiblingStillRefere
   storage_->store_rosbag_file(make_rosbag("A", later.string(), 200));
 
   EXPECT_TRUE(std::filesystem::exists(shared)) << "B still references it";
-  const auto b_rows = storage_->get_rosbag_files("B");
+  const auto b_rows = storage_->get_rosbag_files({"B", kRowOwner});
   ASSERT_EQ(b_rows.size(), 1u);
   EXPECT_EQ(b_rows[0].file_path, shared.string());
 }
@@ -1083,8 +1742,8 @@ TEST_F(SqliteFaultStorageTest, DeleteRecordingRemovesEveryLinkAndTheBag) {
   storage_->store_rosbag_files({make_rosbag("A", dir.string(), 100), make_rosbag("B", dir.string(), 100)});
 
   EXPECT_EQ(storage_->delete_rosbag_recording("fault_A_100"), 2u);
-  EXPECT_TRUE(storage_->get_rosbag_files("A").empty());
-  EXPECT_TRUE(storage_->get_rosbag_files("B").empty());
+  EXPECT_TRUE(storage_->get_rosbag_files({"A", kRowOwner}).empty());
+  EXPECT_TRUE(storage_->get_rosbag_files({"B", kRowOwner}).empty());
   EXPECT_FALSE(std::filesystem::exists(dir));
 }
 
@@ -1093,8 +1752,8 @@ TEST_F(SqliteFaultStorageTest, DeletingAFaultDropsAllItsRecordings) {
   storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_100", 100));
   storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_200", 200));
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("A"));
-  EXPECT_TRUE(storage_->get_rosbag_files("A").empty()) << "auto_cleanup drops the fault's whole history";
+  EXPECT_TRUE(storage_->delete_rosbag_file({"A", kRowOwner}));
+  EXPECT_TRUE(storage_->get_rosbag_files({"A", kRowOwner}).empty()) << "auto_cleanup drops the fault's whole history";
 }
 
 TEST_F(SqliteFaultStorageTest, SharedRecordingStillCountsOnceTowardsStorageWithSeveralRecordings) {
@@ -1119,6 +1778,7 @@ TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
   // Store a snapshot
   SnapshotData snapshot;
   snapshot.fault_code = "MOTOR_OVERHEAT";
+  snapshot.owner = "/motor_node";
   snapshot.topic = "/motor/temperature";
   snapshot.message_type = "sensor_msgs/msg/Temperature";
   snapshot.data = R"({"temperature": 85.5, "variance": 0.1})";
@@ -1127,7 +1787,7 @@ TEST_F(SqliteFaultStorageTest, StoreAndRetrieveSnapshot) {
   storage_->store_snapshot(snapshot);
 
   // Retrieve snapshots
-  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  auto snapshots = storage_->get_snapshots({"MOTOR_OVERHEAT", "/motor_node"});
   ASSERT_EQ(snapshots.size(), 1u);
 
   EXPECT_EQ(snapshots[0].fault_code, "MOTOR_OVERHEAT");
@@ -1148,6 +1808,7 @@ TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
   // Store multiple snapshots for the same fault
   SnapshotData snapshot1;
   snapshot1.fault_code = "MOTOR_OVERHEAT";
+  snapshot1.owner = "/motor_node";
   snapshot1.topic = "/motor/temperature";
   snapshot1.message_type = "sensor_msgs/msg/Temperature";
   snapshot1.data = R"({"temperature": 85.5})";
@@ -1155,6 +1816,7 @@ TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
 
   SnapshotData snapshot2;
   snapshot2.fault_code = "MOTOR_OVERHEAT";
+  snapshot2.owner = "/motor_node";
   snapshot2.topic = "/motor/rpm";
   snapshot2.message_type = "std_msgs/msg/Float64";
   snapshot2.data = R"({"data": 5500.0})";
@@ -1163,7 +1825,7 @@ TEST_F(SqliteFaultStorageTest, MultipleSnapshotsForSameFault) {
   storage_->store_snapshot(snapshot1);
   storage_->store_snapshot(snapshot2);
 
-  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  auto snapshots = storage_->get_snapshots({"MOTOR_OVERHEAT", "/motor_node"});
   EXPECT_EQ(snapshots.size(), 2u);
 }
 
@@ -1177,6 +1839,7 @@ TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
 
   SnapshotData snapshot1;
   snapshot1.fault_code = "MOTOR_OVERHEAT";
+  snapshot1.owner = "/motor_node";
   snapshot1.topic = "/motor/temperature";
   snapshot1.message_type = "sensor_msgs/msg/Temperature";
   snapshot1.data = R"({"temperature": 85.5})";
@@ -1184,6 +1847,7 @@ TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
 
   SnapshotData snapshot2;
   snapshot2.fault_code = "MOTOR_OVERHEAT";
+  snapshot2.owner = "/motor_node";
   snapshot2.topic = "/motor/rpm";
   snapshot2.message_type = "std_msgs/msg/Float64";
   snapshot2.data = R"({"data": 5500.0})";
@@ -1193,14 +1857,14 @@ TEST_F(SqliteFaultStorageTest, FilterSnapshotsByTopic) {
   storage_->store_snapshot(snapshot2);
 
   // Filter by topic
-  auto filtered = storage_->get_snapshots("MOTOR_OVERHEAT", "/motor/temperature");
+  auto filtered = storage_->get_snapshots({"MOTOR_OVERHEAT", "/motor_node"}, "/motor/temperature");
   ASSERT_EQ(filtered.size(), 1u);
   EXPECT_EQ(filtered[0].topic, "/motor/temperature");
 }
 
 // @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, NoSnapshotsForUnknownFault) {
-  auto snapshots = storage_->get_snapshots("UNKNOWN_FAULT");
+  auto snapshots = storage_->get_snapshots({"UNKNOWN_FAULT", "/motor_node"});
   EXPECT_TRUE(snapshots.empty());
 }
 
@@ -1216,6 +1880,7 @@ TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
   // Store snapshots for this fault
   SnapshotData snapshot1;
   snapshot1.fault_code = "SNAPSHOT_CLEAR_TEST";
+  snapshot1.owner = "/test_node";
   snapshot1.topic = "/test/topic1";
   snapshot1.message_type = "std_msgs/msg/String";
   snapshot1.data = R"({"data": "test1"})";
@@ -1224,6 +1889,7 @@ TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
 
   SnapshotData snapshot2;
   snapshot2.fault_code = "SNAPSHOT_CLEAR_TEST";
+  snapshot2.owner = "/test_node";
   snapshot2.topic = "/test/topic2";
   snapshot2.message_type = "std_msgs/msg/String";
   snapshot2.data = R"({"data": "test2"})";
@@ -1231,15 +1897,15 @@ TEST_F(SqliteFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
   storage_->store_snapshot(snapshot2);
 
   // Verify snapshots exist
-  auto snapshots_before = storage_->get_snapshots("SNAPSHOT_CLEAR_TEST");
+  auto snapshots_before = storage_->get_snapshots({"SNAPSHOT_CLEAR_TEST", "/test_node"});
   ASSERT_EQ(snapshots_before.size(), 2u);
 
   // Clear the fault
-  bool cleared = storage_->clear_fault("SNAPSHOT_CLEAR_TEST");
+  bool cleared = storage_->clear_fault({"SNAPSHOT_CLEAR_TEST", "/test_node"});
   EXPECT_TRUE(cleared);
 
   // Verify snapshots are deleted
-  auto snapshots_after = storage_->get_snapshots("SNAPSHOT_CLEAR_TEST");
+  auto snapshots_after = storage_->get_snapshots({"SNAPSHOT_CLEAR_TEST", "/test_node"});
   EXPECT_TRUE(snapshots_after.empty());
 }
 
@@ -1255,6 +1921,7 @@ TEST_F(SqliteFaultStorageTest, ClearFaultKeepsSnapshotsWhenEvidenceIsRetained) {
 
   SnapshotData row;
   row.fault_code = "KEEP";
+  row.owner = "/n";
   row.topic = "/t";
   row.message_type = "std_msgs/msg/Float64";
   row.data = R"({"data": 1.0})";
@@ -1262,12 +1929,12 @@ TEST_F(SqliteFaultStorageTest, ClearFaultKeepsSnapshotsWhenEvidenceIsRetained) {
   row.capture_id = 1;
   storage_->store_snapshots({row});
 
-  ASSERT_TRUE(storage_->clear_fault("KEEP"));
+  ASSERT_TRUE(storage_->clear_fault({"KEEP", "/n"}));
 
   // Recordings survive an acknowledgement once a history is configured, so the
   // readings captured beside them have to as well - otherwise the fault is left
   // holding bags whose values are gone, which is worse than losing both.
-  EXPECT_EQ(storage_->get_snapshots("KEEP").size(), 1u);
+  EXPECT_EQ(storage_->get_snapshots({"KEEP", "/n"}).size(), 1u);
 }
 
 TEST_F(SqliteFaultStorageTest, StoreAndRetrieveFreezeFrame) {
@@ -1279,11 +1946,12 @@ TEST_F(SqliteFaultStorageTest, StoreAndRetrieveFreezeFrame) {
 
   FreezeFrameData frame;
   frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.owner = "/plc_node";
   frame.data = R"({"/plc/pressure":{"data":8.4},"/plc/valve":{"data":true}})";
   frame.captured_at_ns = clock.now().nanoseconds();
   storage_->store_freeze_frame(frame);
 
-  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  auto retrieved = storage_->get_freeze_frame({"PLC_PRESSURE_HIGH", "/plc_node"});
   ASSERT_TRUE(retrieved.has_value());
   EXPECT_EQ(retrieved->fault_code, "PLC_PRESSURE_HIGH");
   EXPECT_EQ(retrieved->data, frame.data);
@@ -1292,7 +1960,7 @@ TEST_F(SqliteFaultStorageTest, StoreAndRetrieveFreezeFrame) {
 
 // @verifies REQ_INTEROP_088
 TEST_F(SqliteFaultStorageTest, NoFreezeFrameForUnknownFault) {
-  auto retrieved = storage_->get_freeze_frame("NEVER_CAPTURED");
+  auto retrieved = storage_->get_freeze_frame({"NEVER_CAPTURED", "/plc_node"});
   EXPECT_FALSE(retrieved.has_value());
 }
 
@@ -1303,17 +1971,19 @@ TEST_F(SqliteFaultStorageTest, FreezeFrameReplacedOnRecapture) {
 
   FreezeFrameData first;
   first.fault_code = "PLC_PRESSURE_HIGH";
+  first.owner = "/plc_node";
   first.data = R"({"/plc/pressure":{"data":8.4}})";
   first.captured_at_ns = 1000;
   storage_->store_freeze_frame(first);
 
   FreezeFrameData second;
   second.fault_code = "PLC_PRESSURE_HIGH";
+  second.owner = "/plc_node";
   second.data = R"({"/plc/pressure":{"data":9.9}})";
   second.captured_at_ns = 2000;
   storage_->store_freeze_frame(second);
 
-  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  auto retrieved = storage_->get_freeze_frame({"PLC_PRESSURE_HIGH", "/plc_node"});
   ASSERT_TRUE(retrieved.has_value());
   EXPECT_EQ(retrieved->data, second.data);
   EXPECT_EQ(retrieved->captured_at_ns, 2000);
@@ -1331,6 +2001,7 @@ TEST_F(SqliteFaultStorageTest, FreezeFrameSurvivesClearFault) {
   // A per-topic snapshot (removed on clear) plus a freeze-frame (retained on clear).
   SnapshotData snapshot;
   snapshot.fault_code = "PLC_PRESSURE_HIGH";
+  snapshot.owner = "/plc_node";
   snapshot.topic = "/plc/pressure";
   snapshot.message_type = "std_msgs/msg/Float64";
   snapshot.data = R"({"data":8.4})";
@@ -1339,15 +2010,16 @@ TEST_F(SqliteFaultStorageTest, FreezeFrameSurvivesClearFault) {
 
   FreezeFrameData frame;
   frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.owner = "/plc_node";
   frame.data = R"({"/plc/pressure":{"data":8.4}})";
   frame.captured_at_ns = clock.now().nanoseconds();
   storage_->store_freeze_frame(frame);
 
-  ASSERT_TRUE(storage_->clear_fault("PLC_PRESSURE_HIGH"));
+  ASSERT_TRUE(storage_->clear_fault({"PLC_PRESSURE_HIGH", "/plc_node"}));
 
   // Snapshots are wiped on clear, the freeze-frame is retained and still retrievable.
-  EXPECT_TRUE(storage_->get_snapshots("PLC_PRESSURE_HIGH").empty());
-  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  EXPECT_TRUE(storage_->get_snapshots({"PLC_PRESSURE_HIGH", "/plc_node"}).empty());
+  auto retrieved = storage_->get_freeze_frame({"PLC_PRESSURE_HIGH", "/plc_node"});
   ASSERT_TRUE(retrieved.has_value());
   EXPECT_EQ(retrieved->data, frame.data);
 }
@@ -1358,6 +2030,7 @@ TEST_F(SqliteFaultStorageTest, FreezeFramePersistsAcrossReopen) {
 
   FreezeFrameData frame;
   frame.fault_code = "PLC_PRESSURE_HIGH";
+  frame.owner = "/plc_node";
   frame.data = R"({"/plc/pressure":{"data":8.4}})";
   frame.captured_at_ns = 4242;
   storage_->store_freeze_frame(frame);
@@ -1366,7 +2039,7 @@ TEST_F(SqliteFaultStorageTest, FreezeFramePersistsAcrossReopen) {
   storage_.reset();
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
-  auto retrieved = storage_->get_freeze_frame("PLC_PRESSURE_HIGH");
+  auto retrieved = storage_->get_freeze_frame({"PLC_PRESSURE_HIGH", "/plc_node"});
   ASSERT_TRUE(retrieved.has_value());
   EXPECT_EQ(retrieved->data, frame.data);
   EXPECT_EQ(retrieved->captured_at_ns, 4242);
@@ -1390,6 +2063,7 @@ TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
   // Store rosbags for both faults
   RosbagFileInfo info1;
   info1.fault_code = "ENTITY_FAULT_1";
+  info1.owner = "/powertrain/motor";
   info1.file_path = "/tmp/entity1.mcap";
   info1.format = "mcap";
   info1.duration_sec = 5.0;
@@ -1399,6 +2073,7 @@ TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
 
   RosbagFileInfo info2;
   info2.fault_code = "ENTITY_FAULT_2";
+  info2.owner = "/chassis/brake";
   info2.file_path = "/tmp/entity2.mcap";
   info2.format = "mcap";
   info2.duration_sec = 3.0;
@@ -1435,6 +2110,7 @@ TEST_F(SqliteFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
 
   RosbagFileInfo info;
   info.fault_code = "DELETE_FAILS";
+  info.owner = kRowOwner;
   info.file_path = bag_dir.string();
   info.format = "mcap";
   info.duration_sec = 1.0;
@@ -1453,9 +2129,10 @@ TEST_F(SqliteFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
             SQLITE_OK);
   sqlite3_close(raw);
 
-  EXPECT_THROW(storage_->delete_rosbag_file("DELETE_FAILS"), std::runtime_error);
+  EXPECT_THROW(storage_->delete_rosbag_file({"DELETE_FAILS", kRowOwner}), std::runtime_error);
 
-  EXPECT_TRUE(storage_->get_rosbag_file("DELETE_FAILS").has_value()) << "the DELETE failed, so its row must remain";
+  EXPECT_TRUE(storage_->get_rosbag_file({"DELETE_FAILS", kRowOwner}).has_value())
+      << "the DELETE failed, so its row must remain";
   EXPECT_TRUE(std::filesystem::exists(bag_dir))
       << "the bag was unlinked before its row was deleted, so the surviving row now points at nothing";
 
@@ -1469,6 +2146,7 @@ TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesReturnsSortedByCreatedAt) {
 
   RosbagFileInfo info1;
   info1.fault_code = "FAULT_A";
+  info1.owner = kRowOwner;
   info1.file_path = "/tmp/a.mcap";
   info1.format = "mcap";
   info1.duration_sec = 1.0;
@@ -1478,6 +2156,7 @@ TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesReturnsSortedByCreatedAt) {
 
   RosbagFileInfo info2;
   info2.fault_code = "FAULT_B";
+  info2.owner = kRowOwner;
   info2.file_path = "/tmp/b.mcap";
   info2.format = "mcap";
   info2.duration_sec = 2.0;
@@ -1505,6 +2184,7 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagSurvivesUntilTheLastFaultIsDeleted) {
 
   RosbagFileInfo info;
   info.fault_code = "ROOT_CAUSE";
+  info.owner = kRowOwner;
   info.file_path = bag_path;
   info.format = "mcap";
   info.duration_sec = 5.0;
@@ -1513,13 +2193,14 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagSurvivesUntilTheLastFaultIsDeleted) {
   storage_->store_rosbag_file(info);
 
   info.fault_code = "CORRELATED";
+  info.owner = kRowOwner;
   storage_->store_rosbag_file(info);
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("CORRELATED"));
+  EXPECT_TRUE(storage_->delete_rosbag_file({"CORRELATED", kRowOwner}));
   EXPECT_TRUE(std::filesystem::exists(bag_path));
-  EXPECT_TRUE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
+  EXPECT_TRUE(storage_->get_rosbag_file({"ROOT_CAUSE", kRowOwner}).has_value());
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("ROOT_CAUSE"));
+  EXPECT_TRUE(storage_->delete_rosbag_file({"ROOT_CAUSE", kRowOwner}));
   EXPECT_FALSE(std::filesystem::exists(bag_path));
 }
 
@@ -1533,6 +2214,7 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagCountsOnceTowardsStorageTotal) {
   auto store = [this](const char * code, const char * path, size_t bytes) {
     RosbagFileInfo info;
     info.fault_code = code;
+    info.owner = kRowOwner;
     info.file_path = path;
     info.format = "mcap";
     info.duration_sec = 5.0;
@@ -1561,6 +2243,7 @@ TEST_F(SqliteFaultStorageTest, RestoreWithNewPathUnlinksTheOldExclusiveBag) {
 
   RosbagFileInfo info;
   info.fault_code = "X";
+  info.owner = kRowOwner;
   info.file_path = old_path;
   info.format = "mcap";
   info.duration_sec = 5.0;
@@ -1572,7 +2255,7 @@ TEST_F(SqliteFaultStorageTest, RestoreWithNewPathUnlinksTheOldExclusiveBag) {
   storage_->store_rosbag_file(info);
 
   EXPECT_FALSE(std::filesystem::exists(old_path)) << "nobody references the old bag, it must be unlinked";
-  auto row = storage_->get_rosbag_file("X");
+  auto row = storage_->get_rosbag_file({"X", kRowOwner});
   ASSERT_TRUE(row.has_value());
   EXPECT_EQ(row->file_path, old_path + "_new");
 }
@@ -1590,16 +2273,19 @@ TEST_F(SqliteFaultStorageTest, RestoreWithNewPathKeepsTheBagASiblingStillReferen
   info.size_bytes = 100;
   info.created_at_ns = 1000;
   info.fault_code = "X";
+  info.owner = kRowOwner;
   storage_->store_rosbag_file(info);
   info.fault_code = "Y";
+  info.owner = kRowOwner;
   storage_->store_rosbag_file(info);
 
   info.fault_code = "X";
+  info.owner = kRowOwner;
   info.file_path = shared_path + "_new";
   storage_->store_rosbag_file(info);
 
   EXPECT_TRUE(std::filesystem::exists(shared_path)) << "the sibling fault still owns the shared bag";
-  auto sibling = storage_->get_rosbag_file("Y");
+  auto sibling = storage_->get_rosbag_file({"Y", kRowOwner});
   ASSERT_TRUE(sibling.has_value());
   EXPECT_EQ(sibling->file_path, shared_path);
 
@@ -1622,12 +2308,13 @@ TEST_F(SqliteFaultStorageTest, BulkStoreRegistersEveryFaultOfTheBurst) {
   std::vector<RosbagFileInfo> rows;
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
     info.fault_code = code;
+    info.owner = kRowOwner;
     rows.push_back(info);
   }
   storage_->store_rosbag_files(rows);
 
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
-    auto row = storage_->get_rosbag_file(code);
+    auto row = storage_->get_rosbag_file({code, kRowOwner});
     ASSERT_TRUE(row.has_value()) << code;
     EXPECT_EQ(row->file_path, "/tmp/burst_bag");
   }
@@ -1649,18 +2336,21 @@ TEST_F(SqliteFaultStorageTest, BulkDeleteRemovesTheBurstAndUnlinksTheBagOnce) {
   std::vector<RosbagFileInfo> rows;
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
     info.fault_code = code;
+    info.owner = kRowOwner;
     rows.push_back(info);
   }
   storage_->store_rosbag_files(rows);
 
   // A partial delete leaves the bag on disk for the remaining fault.
-  EXPECT_EQ(storage_->delete_rosbag_files({"CORRELATED_A", "CORRELATED_B", "NEVER_STORED"}), 2u);
+  EXPECT_EQ(storage_->delete_rosbag_files(
+                {{"CORRELATED_A", kRowOwner}, {"CORRELATED_B", kRowOwner}, {"NEVER_STORED", kRowOwner}}),
+            2u);
   EXPECT_TRUE(std::filesystem::exists(bag_path));
-  EXPECT_TRUE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
-  EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_A").has_value());
+  EXPECT_TRUE(storage_->get_rosbag_file({"ROOT_CAUSE", kRowOwner}).has_value());
+  EXPECT_FALSE(storage_->get_rosbag_file({"CORRELATED_A", kRowOwner}).has_value());
 
   // The last reference going away unlinks the directory.
-  EXPECT_EQ(storage_->delete_rosbag_files({"ROOT_CAUSE"}), 1u);
+  EXPECT_EQ(storage_->delete_rosbag_files({{"ROOT_CAUSE", kRowOwner}}), 1u);
   EXPECT_FALSE(std::filesystem::exists(bag_path));
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 0u);
 }
@@ -1684,6 +2374,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotCapKeepsTheNewestCaptureWholeAndDropsTheO
     for (const char * topic : {"/motor/temp", "/motor/rpm"}) {
       SnapshotData row;
       row.fault_code = "MOTOR_OVERHEAT";
+      row.owner = "/motor_node";
       row.topic = topic;
       row.message_type = "std_msgs/msg/Float64";
       row.data = R"({"data": 1.0})";
@@ -1698,7 +2389,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotCapKeepsTheNewestCaptureWholeAndDropsTheO
   storage_->store_snapshots(capture(2, 2000));
   storage_->store_snapshots(capture(3, 3000));
 
-  auto snapshots = storage_->get_snapshots("MOTOR_OVERHEAT");
+  auto snapshots = storage_->get_snapshots({"MOTOR_OVERHEAT", "/motor_node"});
 
   // The third capture is stored WHOLE and the first goes whole. The old rule
   // counted rows and rejected the new one once full, so capture 3 landed with one
@@ -1732,6 +2423,7 @@ TEST_F(SqliteFaultStorageTest, ACaptureLargerThanTheCapIsKeptWholeRatherThanTorn
   for (int i = 0; i < 4; ++i) {
     SnapshotData row;
     row.fault_code = "WIDE";
+    row.owner = "/n";
     row.topic = "/t" + std::to_string(i);
     row.message_type = "std_msgs/msg/Float64";
     row.data = "{}";
@@ -1744,7 +2436,7 @@ TEST_F(SqliteFaultStorageTest, ACaptureLargerThanTheCapIsKeptWholeRatherThanTorn
   // The cap is smaller than this fault's topic count. Trimming to it would mean
   // storing the reading with holes, which is the failure being fixed; the capture
   // stays whole and the operator can see the cap is too small.
-  EXPECT_EQ(storage_->get_snapshots("WIDE").size(), 4u);
+  EXPECT_EQ(storage_->get_snapshots({"WIDE", "/n"}).size(), 4u);
 }
 
 TEST_F(SqliteFaultStorageTest, SnapshotLimitZeroMeansUnlimited) {
@@ -1760,6 +2452,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotLimitZeroMeansUnlimited) {
   for (int i = 0; i < 20; ++i) {
     SnapshotData snap;
     snap.fault_code = "FAULT_A";
+    snap.owner = "/node";
     snap.topic = "/topic";
     snap.message_type = "std_msgs/msg/String";
     snap.data = "{}";
@@ -1767,7 +2460,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotLimitZeroMeansUnlimited) {
     storage_->store_snapshot(snap);
   }
 
-  auto snapshots = storage_->get_snapshots("FAULT_A");
+  auto snapshots = storage_->get_snapshots({"FAULT_A", "/node"});
   EXPECT_EQ(snapshots.size(), 20u) << "Unlimited mode should store all snapshots";
 }
 
@@ -1784,6 +2477,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotLimitPerFaultNotGlobal) {
 
   SnapshotData snap_a;
   snap_a.fault_code = "FAULT_A";
+  snap_a.owner = "/node";
   snap_a.topic = "/topic";
   snap_a.message_type = "std_msgs/msg/String";
   snap_a.data = "{}";
@@ -1791,13 +2485,14 @@ TEST_F(SqliteFaultStorageTest, SnapshotLimitPerFaultNotGlobal) {
 
   SnapshotData snap_b = snap_a;
   snap_b.fault_code = "FAULT_B";
+  snap_b.owner = "/node";
 
   storage_->store_snapshot(snap_a);
   storage_->store_snapshot(snap_b);
 
   // Both faults should have 1 snapshot each (limit is per-fault)
-  EXPECT_EQ(storage_->get_snapshots("FAULT_A").size(), 1u);
-  EXPECT_EQ(storage_->get_snapshots("FAULT_B").size(), 1u);
+  EXPECT_EQ(storage_->get_snapshots({"FAULT_A", "/node"}).size(), 1u);
+  EXPECT_EQ(storage_->get_snapshots({"FAULT_B", "/node"}).size(), 1u);
 }
 
 // --- Near-miss series ---
@@ -1828,11 +2523,11 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesIsAppendedNotOverwritten) {
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
 
-  auto fault = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto fault = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(fault.has_value());
   ASSERT_NE(fault->status, Fault::STATUS_CONFIRMED) << "test setup: these reports must not confirm";
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u) << "each near miss must append an entry, not overwrite the last";
   EXPECT_EQ(series[0].debounce_counter, -1);
   EXPECT_EQ(series[1].debounce_counter, -2);
@@ -1853,12 +2548,12 @@ TEST_F(SqliteFaultStorageTest, ConfirmingReportIsNotANearMiss) {
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
 
-  auto fault = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto fault = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(fault.has_value());
   ASSERT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 
   // The fourth report is the fault happening, not nearly happening.
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 3u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 3u);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeriesSurvivesClearFault) {
@@ -1868,11 +2563,11 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesSurvivesClearFault) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
-  ASSERT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 3u);
+  ASSERT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 3u);
 
-  ASSERT_TRUE(storage_->clear_fault("PUMP_PRESSURE_LOW"));
+  ASSERT_TRUE(storage_->clear_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}));
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u) << "acknowledging the fault destroyed the near-miss record";
   EXPECT_EQ(series[0].debounce_counter, -1);
   EXPECT_EQ(series[2].debounce_counter, -3);
@@ -1885,13 +2580,13 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesContinuesAcrossReactivation) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
-  ASSERT_TRUE(storage_->clear_fault("PUMP_PRESSURE_LOW"));
+  ASSERT_TRUE(storage_->clear_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}));
 
   // A new outage cycle starts: the reactivating report resets the counter to -1 without confirming.
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping again", "/hydraulics/pump", nth_report_time(10), config);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 4u) << "the series must span fault cycles, one entry per occurrence";
   EXPECT_EQ(series[3].debounce_counter, -1);
   EXPECT_EQ(series[3].occurred_at_ns, nth_report_time(10).nanoseconds());
@@ -1904,12 +2599,12 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesSurvivesReopen) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
-  ASSERT_TRUE(storage_->clear_fault("PUMP_PRESSURE_LOW"));
+  ASSERT_TRUE(storage_->clear_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}));
 
   storage_.reset();
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u) << "the series must outlive the process, not just the fault cycle";
   EXPECT_EQ(series[0].debounce_counter, -1);
   EXPECT_EQ(series[2].debounce_counter, -3);
@@ -1922,13 +2617,13 @@ TEST_F(SqliteFaultStorageTest, PassedReportIsNotANearMiss) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
-  ASSERT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 2u);
+  ASSERT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
 
   // A PASSED report moves the counter in the healing direction: the fault receding, not nearing.
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
                                "/hydraulics/pump", nth_report_time(2), config);
 
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 2u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
 }
 
 TEST_F(SqliteFaultStorageTest, CriticalImmediateConfirmIsNotANearMiss) {
@@ -1938,10 +2633,10 @@ TEST_F(SqliteFaultStorageTest, CriticalImmediateConfirmIsNotANearMiss) {
   storage_->report_fault_event("BATTERY_THERMAL_RUNAWAY", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL,
                                "cell over temperature", "/power/bms", nth_report_time(0), config);
 
-  auto fault = storage_->get_fault("BATTERY_THERMAL_RUNAWAY");
+  auto fault = storage_->get_fault({"BATTERY_THERMAL_RUNAWAY", "/power/bms"});
   ASSERT_TRUE(fault.has_value());
   ASSERT_EQ(fault->status, Fault::STATUS_CONFIRMED);
-  EXPECT_TRUE(storage_->get_near_misses("BATTERY_THERMAL_RUNAWAY").empty());
+  EXPECT_TRUE(storage_->get_near_misses({"BATTERY_THERMAL_RUNAWAY", "/power/bms"}).empty());
 }
 
 TEST_F(SqliteFaultStorageTest, ImmediateConfirmThresholdRecordsNoNearMiss) {
@@ -1952,10 +2647,10 @@ TEST_F(SqliteFaultStorageTest, ImmediateConfirmThresholdRecordsNoNearMiss) {
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
                                "pressure lost", "/hydraulics/pump", nth_report_time(0), config);
 
-  auto fault = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto fault = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(fault.has_value());
   ASSERT_EQ(fault->status, Fault::STATUS_CONFIRMED);
-  EXPECT_TRUE(storage_->get_near_misses("PUMP_PRESSURE_LOW").empty());
+  EXPECT_TRUE(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).empty());
 }
 
 TEST_F(SqliteFaultStorageTest, FailedReportUnderHealedLatchIsNearMiss) {
@@ -1965,13 +2660,13 @@ TEST_F(SqliteFaultStorageTest, FailedReportUnderHealedLatchIsNearMiss) {
 
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(0), config);
-  ASSERT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 1u);
+  ASSERT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 1u);
 
   for (int i = 1; i <= 2; ++i) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
                                  "/hydraulics/pump", nth_report_time(i), config);
   }
-  auto healed = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto healed = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
 
@@ -1979,7 +2674,7 @@ TEST_F(SqliteFaultStorageTest, FailedReportUnderHealedLatchIsNearMiss) {
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(3), config);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u);
   EXPECT_EQ(series[1].debounce_counter, 0);
 }
@@ -1994,7 +2689,7 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesBoundedKeepingNewest) {
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u);
   // Oldest-first eviction: a series frozen at boot would say nothing about a trend.
   EXPECT_EQ(series[0].debounce_counter, -3);
@@ -2012,7 +2707,7 @@ TEST_F(SqliteFaultStorageTest, NearMissBoundOfOneKeepsLatestOnly) {
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 1u);
   EXPECT_EQ(series[0].debounce_counter, -4);
 }
@@ -2029,8 +2724,8 @@ TEST_F(SqliteFaultStorageTest, NearMissBoundIsPerFaultCode) {
                                  "temperature rising", "/powertrain/motor", nth_report_time(i), config);
   }
 
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 2u);
-  EXPECT_EQ(storage_->get_near_misses("MOTOR_OVERHEAT").size(), 2u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
+  EXPECT_EQ(storage_->get_near_misses({"MOTOR_OVERHEAT", "/powertrain/motor"}).size(), 2u);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissBoundZeroIsUnlimited) {
@@ -2043,7 +2738,7 @@ TEST_F(SqliteFaultStorageTest, NearMissBoundZeroIsUnlimited) {
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
 
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 150u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 150u);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissTableCreatedOnDatabaseFromOlderBuild) {
@@ -2062,11 +2757,11 @@ TEST_F(SqliteFaultStorageTest, NearMissTableCreatedOnDatabaseFromOlderBuild) {
   }
 
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
-  EXPECT_TRUE(storage_->get_near_misses("PUMP_PRESSURE_LOW").empty());
+  EXPECT_TRUE(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).empty());
 
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(1), config);
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 1u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 1u);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeriesSurvivesHealedReclassification) {
@@ -2082,14 +2777,14 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesSurvivesHealedReclassification) {
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
                                  "/hydraulics/pump", nth_report_time(i), config);
   }
-  auto healed = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto healed = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
-  ASSERT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 1u);
+  ASSERT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 1u);
 
   ASSERT_EQ(storage_->reclassify_healed_as_cleared().size(), 1u);
 
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 1u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 1u);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeriesUsesArrivalOrderNotTimestamps) {
@@ -2107,7 +2802,7 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesUsesArrivalOrderNotTimestamps) {
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(0), config);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u);
   EXPECT_EQ(series[0].occurred_at_ns, nth_report_time(11).nanoseconds());
   EXPECT_EQ(series[1].occurred_at_ns, nth_report_time(0).nanoseconds())
@@ -2116,8 +2811,8 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesUsesArrivalOrderNotTimestamps) {
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissEntriesDescribeTheirOwnReport) {
-  // Each entry must describe the report that produced it, not the fault's current state, or a
-  // series spanning a threshold change or a new reporting source reads as if nothing changed.
+  // Each entry must describe the report that produced it, not the record's current state, or a
+  // series spanning a threshold change reads as if nothing changed.
   DebounceConfig first = four_strike_config();
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(0), first);
@@ -2125,16 +2820,35 @@ TEST_F(SqliteFaultStorageTest, NearMissEntriesDescribeTheirOwnReport) {
   DebounceConfig second = four_strike_config();
   second.confirmation_threshold = -8;
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                               "pressure dipping", "/hydraulics/backup_pump", nth_report_time(1), second);
+                               "pressure dipping", "/hydraulics/pump", nth_report_time(1), second);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u);
   EXPECT_EQ(series[0].confirmation_threshold, -4);
   EXPECT_EQ(series[0].severity, Fault::SEVERITY_WARN);
   EXPECT_EQ(series[0].source_id, "/hydraulics/pump");
   EXPECT_EQ(series[1].confirmation_threshold, -8);
   EXPECT_EQ(series[1].severity, Fault::SEVERITY_ERROR);
-  EXPECT_EQ(series[1].source_id, "/hydraulics/backup_pump");
+  EXPECT_EQ(series[1].source_id, "/hydraulics/pump");
+}
+
+// The series is per RECORD: another source reporting the same code keeps its own,
+// so a plot of one reporter's approaches to confirmation is not diluted by another's.
+TEST_F(SqliteFaultStorageTest, NearMissSeriesIsPerRecord) {
+  const auto config = four_strike_config();
+  storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "dip",
+                               "/hydraulics/pump", nth_report_time(0), config);
+  storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "dip",
+                               "/hydraulics/backup_pump", nth_report_time(1), config);
+
+  const auto pump = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
+  const auto backup = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/backup_pump"});
+  ASSERT_EQ(pump.size(), 1u);
+  ASSERT_EQ(backup.size(), 1u);
+  EXPECT_EQ(pump.front().source_id, "/hydraulics/pump");
+  EXPECT_EQ(pump.front().severity, Fault::SEVERITY_WARN);
+  EXPECT_EQ(backup.front().source_id, "/hydraulics/backup_pump");
+  EXPECT_EQ(backup.front().severity, Fault::SEVERITY_ERROR);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeriesContinuesAfterReopen) {
@@ -2151,7 +2865,7 @@ TEST_F(SqliteFaultStorageTest, NearMissSeriesContinuesAfterReopen) {
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(2), config);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u) << "a restart must extend the series, not restart or reorder it";
   EXPECT_EQ(series[0].debounce_counter, -1);
   EXPECT_EQ(series[1].debounce_counter, -2);
@@ -2173,15 +2887,16 @@ TEST_F(SqliteFaultStorageTest, ApplyingSmallerBoundTrimsExistingSeries) {
     storage_->report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "temperature rising", "/powertrain/motor", nth_report_time(i), config);
   }
-  ASSERT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 5u);
+  ASSERT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 5u);
 
   storage_->set_max_near_misses_per_fault(2);
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u) << "applying the bound left the stored series over it";
   EXPECT_EQ(series[0].debounce_counter, -4);
   EXPECT_EQ(series[1].debounce_counter, -5);
-  EXPECT_EQ(storage_->get_near_misses("MOTOR_OVERHEAT").size(), 2u) << "the bound is applied per fault code";
+  EXPECT_EQ(storage_->get_near_misses({"MOTOR_OVERHEAT", "/powertrain/motor"}).size(), 2u)
+      << "the bound is applied per record";
 }
 
 TEST_F(SqliteFaultStorageTest, ApplyingUnlimitedBoundKeepsExistingSeries) {
@@ -2196,7 +2911,7 @@ TEST_F(SqliteFaultStorageTest, ApplyingUnlimitedBoundKeepsExistingSeries) {
 
   storage_->set_max_near_misses_per_fault(0);
 
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 4u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 4u);
 }
 
 TEST_F(SqliteFaultStorageTest, UnlimitedBoundSpeltAsSizeMaxKeepsTheSeries) {
@@ -2211,11 +2926,11 @@ TEST_F(SqliteFaultStorageTest, UnlimitedBoundSpeltAsSizeMaxKeepsTheSeries) {
   }
 
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(std::numeric_limits<size_t>::max()), 0u);
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 3u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 3u);
 
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(3), config);
-  EXPECT_EQ(storage_->get_near_misses("PUMP_PRESSURE_LOW").size(), 4u);
+  EXPECT_EQ(storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 4u);
 }
 
 TEST_F(SqliteFaultStorageTest, ApplyingBoundReportsHowManyEntriesItDropped) {
@@ -2230,7 +2945,7 @@ TEST_F(SqliteFaultStorageTest, ApplyingBoundReportsHowManyEntriesItDropped) {
                                  "temperature rising", "/powertrain/motor", nth_report_time(i), config);
   }
 
-  // Two codes, five entries each, bound of 2: three dropped per code.
+  // Two records, five entries each, bound of 2: three dropped per record.
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(2), 6u);
   // Applying the same bound again has nothing left to drop.
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(2), 0u);
@@ -2242,7 +2957,7 @@ TEST_F(SqliteFaultStorageTest, PassedReportOnUnknownFaultWritesNothing) {
   EXPECT_FALSE(storage_->report_fault_event("NEVER_REPORTED", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN,
                                             "", "/test_node", nth_report_time(0), default_config()));
   EXPECT_EQ(storage_->size(), 0u);
-  EXPECT_TRUE(storage_->get_near_misses("NEVER_REPORTED").empty());
+  EXPECT_TRUE(storage_->get_near_misses({"NEVER_REPORTED", "/test_node"}).empty());
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) {
@@ -2260,7 +2975,7 @@ TEST_F(SqliteFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) 
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
                                  "/hydraulics/pump", nth_report_time(i), config);
   }
-  auto healed = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto healed = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
 
@@ -2271,11 +2986,11 @@ TEST_F(SqliteFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) 
     storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                  "pressure dipping", "/hydraulics/pump", nth_report_time(i), config);
   }
-  auto confirmed = storage_->get_fault("PUMP_PRESSURE_LOW");
+  auto confirmed = storage_->get_fault({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(confirmed.has_value());
   ASSERT_EQ(confirmed->status, Fault::STATUS_CONFIRMED) << "test setup: the ramp must end in a real fault";
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_FALSE(series.empty());
   EXPECT_EQ(series[0].resulting_status, Fault::STATUS_PREFAILED) << "the first report was a genuine approach";
 
@@ -2297,7 +3012,7 @@ TEST_F(SqliteFaultStorageTest, NearMissResultingStatusSurvivesReopen) {
   storage_.reset();
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 1u);
   EXPECT_EQ(series[0].resulting_status, Fault::STATUS_PREFAILED);
 }
@@ -2319,19 +3034,19 @@ TEST_F(SqliteFaultStorageTest, NearMissResultingStatusColumnAddedToOlderTable) {
 
   storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
 
-  auto series = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto series = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 1u) << "the migration must keep the rows it already had";
   EXPECT_TRUE(series[0].resulting_status.empty()) << "an unrecorded latch state reads as empty, not as a status";
 
   storage_->report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
                                "pressure dipping", "/hydraulics/pump", nth_report_time(1), config);
-  auto extended = storage_->get_near_misses("PUMP_PRESSURE_LOW");
+  auto extended = storage_->get_near_misses({"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(extended.size(), 2u);
   EXPECT_EQ(extended[1].resulting_status, Fault::STATUS_PREFAILED);
 }
 
 TEST_F(SqliteFaultStorageTest, NearMissSeriesEmptyForUnknownFault) {
-  EXPECT_TRUE(storage_->get_near_misses("NEVER_REPORTED").empty());
+  EXPECT_TRUE(storage_->get_near_misses({"NEVER_REPORTED", "/hydraulics/pump"}).empty());
 }
 
 // --- Snapshot retention through the startup reclassification ---
@@ -2345,6 +3060,7 @@ static void store_snapshots_for(ros2_medkit_fault_manager::FaultStorage & storag
   for (int i = 0; i < count; ++i) {
     ros2_medkit_fault_manager::SnapshotData snapshot;
     snapshot.fault_code = fault_code;
+    snapshot.owner = "/test_node";
     snapshot.topic = "/test/topic" + std::to_string(i);
     snapshot.message_type = "std_msgs/msg/String";
     snapshot.data = R"({"data": "value"})";
@@ -2373,14 +3089,14 @@ TEST_F(SqliteFaultStorageTest, SnapshotsRetainedThroughHealedReclassification) {
   storage_->set_retain_snapshots_on_clear(true);
   drive_to_healed(*storage_, "SNAPSHOT_RETAIN_TEST");
 
-  auto healed = storage_->get_fault("SNAPSHOT_RETAIN_TEST");
+  auto healed = storage_->get_fault({"SNAPSHOT_RETAIN_TEST", "/test_node"});
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
-  ASSERT_EQ(storage_->get_snapshots("SNAPSHOT_RETAIN_TEST").size(), 2u);
+  ASSERT_EQ(storage_->get_snapshots({"SNAPSHOT_RETAIN_TEST", "/test_node"}).size(), 2u);
 
   ASSERT_EQ(storage_->reclassify_healed_as_cleared().size(), 1u);
 
-  EXPECT_EQ(storage_->get_snapshots("SNAPSHOT_RETAIN_TEST").size(), 2u)
+  EXPECT_EQ(storage_->get_snapshots({"SNAPSHOT_RETAIN_TEST", "/test_node"}).size(), 2u)
       << "the restart reclassification deleted snapshots the configuration asked to keep";
 }
 
@@ -2388,7 +3104,7 @@ TEST_F(SqliteFaultStorageTest, SnapshotsDroppedByHealedReclassificationByDefault
   drive_to_healed(*storage_, "SNAPSHOT_DROP_TEST");
   ASSERT_EQ(storage_->reclassify_healed_as_cleared().size(), 1u);
 
-  EXPECT_TRUE(storage_->get_snapshots("SNAPSHOT_DROP_TEST").empty());
+  EXPECT_TRUE(storage_->get_snapshots({"SNAPSHOT_DROP_TEST", "/test_node"}).empty());
 }
 
 int main(int argc, char ** argv) {

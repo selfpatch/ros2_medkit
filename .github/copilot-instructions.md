@@ -13,7 +13,7 @@ Multi-package colcon workspace under `src/`:
 | Package | Purpose |
 |---------|---------|
 | `ros2_medkit_gateway` | HTTP gateway - REST server, discovery, entity management, handlers, plugin framework |
-| `ros2_medkit_fault_manager` | Fault aggregation with SQLite, AUTOSAR DEM-style debounce, rosbag/snapshot capture |
+| `ros2_medkit_fault_manager` | Fault records per (code, reporting source) in SQLite, AUTOSAR DEM-style debounce, rosbag/snapshot capture |
 | `ros2_medkit_fault_reporter` | Client library for nodes to report faults |
 | `ros2_medkit_diagnostic_bridge` | Bridges `/diagnostics` topic to fault manager |
 | `ros2_medkit_serialization` | Runtime JSON <-> ROS 2 message serialization via dynmsg |

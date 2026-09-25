@@ -15,7 +15,12 @@ Messages
 Fault.msg
 ~~~~~~~~~
 
-Core fault data model representing an aggregated fault condition.
+Core fault data model representing one fault record.
+
+A record is identified by the pair (``fault_code``, owning reporting source). The owner is
+the ``source_id`` a ``ReportFault`` call carried. Two sources reporting one ``fault_code``
+are two records, each with its own status, debounce counter, ``occurrence_count``, severity
+and timestamps, and each cleared on its own.
 
 .. code-block:: text
 
@@ -49,7 +54,8 @@ Core fault data model representing an aggregated fault condition.
    # Current fault status (PREFAILED, PREPASSED, CONFIRMED, HEALED, CLEARED)
    string status
 
-   # List of source identifiers that have reported this fault
+   # The reporting source that owns this record, as a one-element list. Together
+   # with fault_code it identifies the record.
    string[] reporting_sources
 
 **Severity Constants:**
@@ -146,7 +152,10 @@ prefix (for example ``/robot1/fault_manager/events``).
 MutedFaultInfo.msg
 ~~~~~~~~~~~~~~~~~~
 
-Information about correlated (muted) symptom faults.
+Information about a correlated (muted) symptom record. One entry per muted RECORD:
+a root cause mutes the symptoms of its own reporting source only, so two sources
+muted on one ``fault_code`` produce two entries carrying that code, told apart by
+``source_id``.
 
 .. code-block:: text
 
@@ -154,6 +163,7 @@ Information about correlated (muted) symptom faults.
    string root_cause_code  # Root cause that triggered muting
    string rule_id          # Correlation rule ID that matched
    uint32 delay_ms         # Time delay from root cause [ms]
+   string source_id        # Reporting source that owns the muted record
 
 ClusterInfo.msg
 ~~~~~~~~~~~~~~~
@@ -189,7 +199,8 @@ Report a fault event to the FaultManager.
    uint8 event_type    # EVENT_FAILED (0) or EVENT_PASSED (1)
    uint8 severity      # Fault.SEVERITY_* constant (for FAILED events)
    string description  # Human-readable description
-   string source_id    # Fully qualified node name (e.g., "/powertrain/temp_sensor")
+   string source_id    # Fully qualified node name (e.g., "/powertrain/temp_sensor").
+                       # Owns the record: (fault_code, source_id) is the record identity.
 
 **Response:**
 
@@ -215,7 +226,7 @@ Report a fault event to the FaultManager.
 ClearFault.srv
 ~~~~~~~~~~~~~~
 
-Clear/acknowledge a fault.
+Clear/acknowledge one fault record.
 
 **Request:**
 
@@ -223,14 +234,22 @@ Clear/acknowledge a fault.
 
    string fault_code                # Fault code to clear
    bool   skip_correlation_auto_clear  # Opt out of correlation cascade clear
+   string source_id                 # Reporting source that owns the record
 
 **Response:**
 
 .. code-block:: text
 
-   bool success            # True if fault was found and cleared
+   bool success            # True if the record was found and cleared
    string message          # Status message or error description
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
+
+``source_id`` names the owner of the record to clear. Leaving it empty is unscoped: the
+call applies only when exactly one record carries the ``fault_code``, and fails otherwise
+with ``success=false`` and a ``message`` beginning ``ambiguous:`` that lists the owners.
+An ambiguous call clears nothing. ``GetFault``, ``GetSnapshots`` and ``GetRosbag`` carry
+the same field and resolve the same way. On ``GetRosbag`` it scopes the ``fault_code``
+lookup only, and the ``recording_id`` path ignores it.
 
 When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a
 root-cause fault also clears every symptom that the correlation engine
@@ -246,11 +265,12 @@ cluster-wide clearing still works.
 
 .. note::
 
-   Added in ``ros2_medkit_msgs`` post-0.4.0. Adding a request field
-   changes the service type hash, so out-of-tree callers that invoke
-   ``/fault_manager/clear_fault`` directly via ``ros2 service call`` or
-   a generated client must rebuild against the new ``ros2_medkit_msgs``
-   release to keep talking to ``fault_manager``.
+   ``skip_correlation_auto_clear`` was added in ``ros2_medkit_msgs`` post-0.4.0,
+   and ``source_id`` after it (the same field was added to ``GetFault``,
+   ``GetSnapshots`` and ``GetRosbag``). Adding a request field changes the
+   service type hash, so out-of-tree callers that invoke those services directly
+   via ``ros2 service call`` or a generated client must rebuild against the new
+   ``ros2_medkit_msgs`` release to keep talking to ``fault_manager``.
 
 ListFaults.srv
 ~~~~~~~~~~~~~~

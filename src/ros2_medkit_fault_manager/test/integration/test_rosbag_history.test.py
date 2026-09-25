@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-End-to-end tests for keeping several recordings per fault code (Issue #620).
+End-to-end tests for keeping several recordings per fault record (Issue #620).
 
 The other rosbag suites all run at the shipped default of one recording per
 fault, which is what every release before this one could store. This one raises
@@ -73,7 +73,7 @@ PUBLISHER_SCRIPT_PATH = None
 
 
 def generate_test_description():
-    """Launch a fault_manager keeping several recordings per fault code."""
+    """Launch a fault_manager keeping several recordings per fault record."""
     publisher_script = """
 import rclpy
 from rclpy.node import Node
@@ -190,7 +190,7 @@ if __name__ == '__main__':
 
 
 class TestRosbagHistory(unittest.TestCase):
-    """Several recordings per fault code, addressed by recording id."""
+    """Several recordings per fault record, addressed by recording id."""
 
     @classmethod
     def setUpClass(cls):

@@ -94,11 +94,9 @@ ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   msg.occurrence_count = occurrence_count;
   msg.status = status;
 
-  // Convert set to vector
-  msg.reporting_sources.reserve(reporting_sources.size());
-  for (const auto & source : reporting_sources) {
-    msg.reporting_sources.push_back(source);
-  }
+  // The owner, as a one-element list: the field names the source that owns the record,
+  // and the services that act on a single record take that value back as their source_id.
+  msg.reporting_sources.assign(1, owner);
 
   return msg;
 }
@@ -126,15 +124,19 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
-  auto it = faults_.find(fault_code);
+  const FaultId id{fault_code, source_id};
+
+  auto it = faults_.find(id);
   if (it == faults_.end()) {
-    // New fault - only create entry for FAILED events
+    // New record - only create one for FAILED events. A source that has never reported
+    // this code owns no record yet, so a PASSED from it has nothing to heal.
     if (!is_failed) {
-      return false;  // PASSED event for non-existent fault is ignored
+      return false;  // PASSED event for non-existent record is ignored
     }
 
     FaultState state;
     state.fault_code = fault_code;
+    state.owner = source_id;
     state.severity = severity;
     state.description = description;
     state.first_occurred = timestamp;
@@ -142,7 +144,6 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     state.last_failed_time = timestamp;
     state.occurrence_count = 1;
     state.debounce_counter = -1;  // First FAILED event
-    state.reporting_sources.insert(source_id);
 
     // CRITICAL severity bypasses debounce and confirms immediately
     if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
@@ -156,11 +157,11 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       record_near_miss(state, config, severity, source_id, timestamp);
     }
 
-    faults_.emplace(fault_code, std::move(state));
+    faults_.emplace(id, std::move(state));
     return true;
   }
 
-  // Existing fault - update
+  // Existing record - update
   auto & state = it->second;
 
   // CLEARED faults can be reactivated by FAILED events
@@ -175,7 +176,6 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     state.first_occurred = timestamp;
     state.last_failed_time = timestamp;
     state.last_occurred = timestamp;
-    state.reporting_sources.insert(source_id);
     if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
       ++state.occurrence_count;
     }
@@ -198,10 +198,11 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   }
 
   // Bring a counter left outside this config's band back into range before applying the report.
-  // Per-entity threshold overrides mean two sources of the same fault code can be evaluated
-  // against different bands, so a stored value clamped to one source's ceiling can sit above
-  // another's. The SQLite backend clamps on read for the same reason, and the two backends have to
-  // agree on the counter they record and on the status it produces.
+  // A record's counter belongs to one source, but that source's resolved band can change under
+  // it: an entity-threshold file reloaded with different values, or a global config that moved
+  // between runs, leaves a stored value clamped to the old ceiling sitting above the new one.
+  // The SQLite backend clamps on read for the same reason, and the two backends have to agree on
+  // the counter they record and on the status it produces.
   state.debounce_counter = clamp_debounce_counter(state.debounce_counter, config);
 
   if (is_failed) {
@@ -220,10 +221,8 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     // run the counter off to INT32_MIN and delay later healing).
     state.debounce_counter = clamp_debounce_counter(state.debounce_counter - 1, config);
 
-    // Add source if not already present
-    state.reporting_sources.insert(source_id);
-
-    // Update severity if higher
+    // Update severity if higher. Per record: a CRITICAL from one owner does not escalate
+    // another owner's record of the same code.
     if (severity > state.severity) {
       state.severity = severity;
     }
@@ -285,7 +284,7 @@ InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
   std::vector<ros2_medkit_msgs::msg::Fault> result;
   result.reserve(faults_.size());
 
-  for (const auto & [code, state] : faults_) {
+  for (const auto & [id, state] : faults_) {
     // Filter by status
     if (status_filter.find(state.status) == status_filter.end()) {
       continue;
@@ -302,10 +301,10 @@ InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
   return result;
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  auto it = faults_.find(fault_code);
+  auto it = faults_.find(id);
   if (it == faults_.end()) {
     return std::nullopt;
   }
@@ -313,21 +312,39 @@ std::optional<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_fault(cons
   return it->second.to_msg();
 }
 
-bool InMemoryFaultStorage::clear_fault(const std::string & fault_code) {
+std::vector<ros2_medkit_msgs::msg::Fault>
+InMemoryFaultStorage::get_faults_by_code(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  auto it = faults_.find(fault_code);
+  // FaultId orders by code first, so the records of one code are one contiguous range
+  // and this is a range scan. Owner order inside it is the map's, which is what makes
+  // an ambiguity message list the owners the same way every time.
+  std::vector<ros2_medkit_msgs::msg::Fault> result;
+  for (auto it = faults_.lower_bound(FaultId{fault_code, ""}); it != faults_.end(); ++it) {
+    if (it->first.fault_code != fault_code) {
+      break;
+    }
+    result.push_back(it->second.to_msg());
+  }
+  return result;
+}
+
+bool InMemoryFaultStorage::clear_fault(const FaultId & id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  auto it = faults_.find(id);
   if (it == faults_.end()) {
     return false;
   }
 
-  // Acknowledging a fault drops its value snapshots, unless a history was asked
+  // Acknowledging a record drops its value snapshots, unless a history was asked
   // for: with recordings retained past a clear, deleting the readings that go with
-  // them leaves a fault holding bags whose matching values are gone.
+  // them leaves a record holding bags whose matching values are gone. Scoped to the
+  // record, so another owner's readings for the same code stay where they are.
   if (!retain_snapshots_on_clear_) {
     snapshots_.erase(std::remove_if(snapshots_.begin(), snapshots_.end(),
-                                    [&fault_code](const SnapshotData & s) {
-                                      return s.fault_code == fault_code;
+                                    [&id](const SnapshotData & s) {
+                                      return s.fault_code == id.fault_code && s.owner == id.owner;
                                     }),
                      snapshots_.end());
   }
@@ -341,27 +358,27 @@ size_t InMemoryFaultStorage::size() const {
   return faults_.size();
 }
 
-bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
+bool InMemoryFaultStorage::contains(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return faults_.find(fault_code) != faults_.end();
+  return faults_.find(id) != faults_.end();
 }
 
-std::vector<std::string> InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<FaultId> InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  std::vector<std::string> confirmed;
+  std::vector<FaultId> confirmed;
   if (config_.auto_confirm_after_sec <= 0.0) {
     return confirmed;  // Time-based confirmation disabled
   }
 
   const double threshold_ns = config_.auto_confirm_after_sec * 1e9;
 
-  for (auto & [code, state] : faults_) {
+  for (auto & [id, state] : faults_) {
     if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) {
       const int64_t age_ns = (current_time - state.last_failed_time).nanoseconds();
       if (static_cast<double>(age_ns) >= threshold_ns) {
         state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
-        confirmed.push_back(code);
+        confirmed.push_back(id);
       }
     }
   }
@@ -394,7 +411,7 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
   }
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const std::string fault_code = snapshots.front().fault_code;
+  const FaultId id{snapshots.front().fault_code, snapshots.front().owner};
 
   // Built beside the live vector and swapped in, the shape store_rosbag_files
   // uses: a capture is all-or-nothing, so a throw partway must not leave half of
@@ -403,15 +420,15 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
   updated.insert(updated.end(), snapshots.begin(), snapshots.end());
 
   if (max_snapshots_per_fault_ > 0) {
-    // Evict whole capture sets, oldest first, until this fault fits.
+    // Evict whole capture sets, oldest first, until this record fits.
     //
     // The old rule counted rows and rejected the NEW row once full, so a capture
     // that straddled the cap was stored in part: some topics present, the rest
     // silently absent, indistinguishable from "that topic was not publishing".
     // Keep-newest also stops this cap from opposing the rosbag one.
-    const auto rows_for_fault = [&updated, &fault_code]() {
-      return static_cast<size_t>(std::count_if(updated.begin(), updated.end(), [&fault_code](const SnapshotData & s) {
-        return s.fault_code == fault_code;
+    const auto rows_for_fault = [&updated, &id]() {
+      return static_cast<size_t>(std::count_if(updated.begin(), updated.end(), [&id](const SnapshotData & s) {
+        return s.fault_code == id.fault_code && s.owner == id.owner;
       }));
     };
 
@@ -422,7 +439,7 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
     int64_t newest = 0;
     bool have_newest = false;
     for (const auto & s : updated) {
-      if (s.fault_code == fault_code && (!have_newest || s.capture_id > newest)) {
+      if (s.fault_code == id.fault_code && s.owner == id.owner && (!have_newest || s.capture_id > newest)) {
         newest = s.capture_id;
         have_newest = true;
       }
@@ -432,7 +449,8 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
       bool found = false;
       int64_t oldest = 0;
       for (const auto & s : updated) {
-        if (s.fault_code == fault_code && s.capture_id != newest && (!found || s.capture_id < oldest)) {
+        if (s.fault_code == id.fault_code && s.owner == id.owner && s.capture_id != newest &&
+            (!found || s.capture_id < oldest)) {
           oldest = s.capture_id;
           found = true;
         }
@@ -441,8 +459,9 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
         break;  // only the newest capture is left and it is over the cap on its own
       }
       updated.erase(std::remove_if(updated.begin(), updated.end(),
-                                   [&fault_code, oldest](const SnapshotData & s) {
-                                     return s.fault_code == fault_code && s.capture_id == oldest;
+                                   [&id, oldest](const SnapshotData & s) {
+                                     return s.fault_code == id.fault_code && s.owner == id.owner &&
+                                            s.capture_id == oldest;
                                    }),
                     updated.end());
     }
@@ -451,13 +470,13 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
   snapshots_.swap(updated);
 }
 
-std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const std::string & fault_code,
+std::vector<SnapshotData> InMemoryFaultStorage::get_snapshots(const FaultId & id,
                                                               const std::string & topic_filter) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
   for (const auto & snapshot : snapshots_) {
-    if (snapshot.fault_code == fault_code) {
+    if (snapshot.fault_code == id.fault_code && snapshot.owner == id.owner) {
       if (topic_filter.empty() || snapshot.topic == topic_filter) {
         result.push_back(snapshot);
       }
@@ -484,12 +503,12 @@ int64_t InMemoryFaultStorage::get_max_capture_id() const {
 
 void InMemoryFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  freeze_frames_[frame.fault_code] = frame;
+  freeze_frames_[FaultId{frame.fault_code, frame.owner}] = frame;
 }
 
-std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto it = freeze_frames_.find(fault_code);
+  auto it = freeze_frames_.find(id);
   if (it == freeze_frames_.end()) {
     return std::nullopt;
   }
@@ -498,7 +517,7 @@ std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std:
 
 void InMemoryFaultStorage::record_near_miss(const FaultState & state, const DebounceConfig & config, uint8_t severity,
                                             const std::string & source_id, const rclcpp::Time & timestamp) {
-  auto & series = near_misses_[state.fault_code];
+  auto & series = near_misses_[FaultId{state.fault_code, state.owner}];
 
   NearMissRecord record;
   record.fault_code = state.fault_code;
@@ -530,8 +549,8 @@ size_t InMemoryFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   // stay over the new one until the next near miss for that code happens to arrive.
   using DiffType = std::vector<NearMissRecord>::difference_type;
   size_t evicted = 0;
-  for (auto & [code, series] : near_misses_) {
-    (void)code;
+  for (auto & [id, series] : near_misses_) {
+    (void)id;
     if (series.size() > max_count) {
       const size_t excess = series.size() - max_count;
       series.erase(series.begin(), series.begin() + static_cast<DiffType>(excess));
@@ -541,9 +560,9 @@ size_t InMemoryFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   return evicted;
 }
 
-std::vector<NearMissRecord> InMemoryFaultStorage::get_near_misses(const std::string & fault_code) const {
+std::vector<NearMissRecord> InMemoryFaultStorage::get_near_misses(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto it = near_misses_.find(fault_code);
+  auto it = near_misses_.find(id);
   if (it == near_misses_.end()) {
     return {};
   }
@@ -583,11 +602,11 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
       row.recording_id = rosbag_recording_id(row.file_path);
     }
 
-    // Upsert on the (fault, recording) LINK - the same grain as the SQLite unique
+    // Upsert on the (record, recording) LINK - the same grain as the SQLite unique
     // index. Re-storing the same link refreshes it; a link to a different recording
     // appends, which is the feature.
     auto it = std::find_if(updated.begin(), updated.end(), [&row](const RosbagRow & r) {
-      return r.info.fault_code == row.fault_code && r.info.file_path == row.file_path;
+      return r.info.fault_code == row.fault_code && r.info.owner == row.owner && r.info.file_path == row.file_path;
     });
     if (it != updated.end()) {
       it->info = row;
@@ -599,12 +618,12 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
       continue;
     }
 
-    // Keep the newest N recordings of this fault, oldest evicted first - the same
+    // Keep the newest N recordings of this record, oldest evicted first - the same
     // direction as evict_bags_over_quota, so the two eviction owners never need a
     // tiebreak. At N = 1 this is the pre-#620 behaviour exactly.
     std::vector<size_t> mine;
     for (size_t i = 0; i < updated.size(); ++i) {
-      if (updated[i].info.fault_code == row.fault_code) {
+      if (updated[i].info.fault_code == row.fault_code && updated[i].info.owner == row.owner) {
         mine.push_back(i);
       }
     }
@@ -630,7 +649,7 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
   // Unlinked only once every row is in, the way the SQLite backend unlinks after its
   // COMMIT: a throw above must leave the old rows pointing at bags that still exist.
   // Referencing is decided on the finished batch, not on the state before it - two
-  // faults of one burst can share the bag being evicted, and checking row by row
+  // records of one burst can share the bag being evicted, and checking row by row
   // beforehand would find it still held by a sibling that a later iteration then
   // evicts, leaking the directory.
   for (const auto & path : evicted) {
@@ -643,13 +662,13 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
   }
 }
 
-std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Newest, matching the SQLite backend's ORDER BY created_at_ns DESC, id DESC.
   const RosbagRow * best = nullptr;
   for (const auto & row : rosbag_files_) {
-    if (row.info.fault_code != fault_code) {
+    if (row.info.fault_code != id.fault_code || row.info.owner != id.owner) {
       continue;
     }
     if (best == nullptr || std::tie(best->info.created_at_ns, best->seq) < std::tie(row.info.created_at_ns, row.seq)) {
@@ -662,12 +681,12 @@ std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::s
   return best->info;
 }
 
-std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files(const std::string & fault_code) const {
+std::vector<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_files(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<const RosbagRow *> mine;
   for (const auto & row : rosbag_files_) {
-    if (row.info.fault_code == fault_code) {
+    if (row.info.fault_code == id.fault_code && row.info.owner == id.owner) {
       mine.push_back(&row);
     }
   }
@@ -694,20 +713,20 @@ InMemoryFaultStorage::get_rosbag_files_by_recording(const std::string & recordin
     }
   }
   std::sort(result.begin(), result.end(), [](const RosbagFileInfo & a, const RosbagFileInfo & b) {
-    return a.fault_code < b.fault_code;
+    return std::tie(a.fault_code, a.owner) < std::tie(b.fault_code, b.owner);
   });
   return result;
 }
 
-bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+bool InMemoryFaultStorage::delete_rosbag_file(const FaultId & id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // ALL recordings of this fault. Used by auto_cleanup on clear, where dropping the
-  // fault's whole black-box history is the intent.
+  // ALL recordings of this record. Used by auto_cleanup on clear, where dropping the
+  // record's whole black-box history is the intent.
   std::set<std::string> touched;
   const size_t before = rosbag_files_.size();
   for (auto it = rosbag_files_.begin(); it != rosbag_files_.end();) {
-    if (it->info.fault_code == fault_code) {
+    if (it->info.fault_code == id.fault_code && it->info.owner == id.owner) {
       touched.insert(it->info.file_path);
       it = rosbag_files_.erase(it);
     } else {
@@ -720,7 +739,7 @@ bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
 
   for (const auto & path : touched) {
     if (path_referenced(path)) {
-      continue;  // a sibling fault of the burst still holds it
+      continue;  // a sibling record of the burst still holds it
     }
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
@@ -768,7 +787,7 @@ bool InMemoryFaultStorage::path_referenced(const std::string & file_path) const 
 size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Sum per bag, not per fault: one recording can back a burst of correlated
+  // Sum per bag, not per record: one recording can back a burst of correlated
   // faults, and double-counting it would evict bags that still fit the quota.
   // Rows sharing a path can disagree on size while a recording is being
   // finalised, so take the largest - matching the SQLite backend's MAX() and
@@ -814,13 +833,13 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const 
 
   std::vector<const RosbagRow *> rows;
   for (const auto & row : rosbag_files_) {
-    // Check if any of the fault's reporting sources contain this entity
-    auto fault_it = faults_.find(row.info.fault_code);
-    if (fault_it == faults_.end()) {
+    // The row already carries its record's owner, so the entity match is on the row.
+    // The faults_ lookup stays as the existence check it always was: a row whose
+    // record is gone is not served.
+    if (faults_.find(FaultId{row.info.fault_code, row.info.owner}) == faults_.end()) {
       continue;
     }
-    const auto & fault_state = fault_it->second;
-    if (fault_state.reporting_sources.find(entity_fqn) != fault_state.reporting_sources.end()) {
+    if (row.info.owner == entity_fqn) {
       rows.push_back(&row);
     }
   }
@@ -843,20 +862,20 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults()
   std::vector<ros2_medkit_msgs::msg::Fault> result;
   result.reserve(faults_.size());
 
-  for (const auto & [code, state] : faults_) {
+  for (const auto & [id, state] : faults_) {
     result.push_back(state.to_msg());
   }
 
   return result;
 }
 
-std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared() {
+std::vector<FaultId> InMemoryFaultStorage::reclassify_healed_as_cleared() {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<std::string> reclassified;
-  for (auto & [code, state] : faults_) {
+  std::vector<FaultId> reclassified;
+  for (auto & [id, state] : faults_) {
     if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
-      reclassified.push_back(code);
+      reclassified.push_back(id);
     }
   }
 
@@ -864,10 +883,10 @@ std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared() {
   // them here, and a backend that kept them would answer a snapshot query differently for the
   // same sequence of calls. The near-miss series is retained, as it is on clear_fault.
   if (!retain_snapshots_on_clear_ && !reclassified.empty()) {
-    const std::set<std::string> affected(reclassified.begin(), reclassified.end());
+    const std::set<FaultId> affected(reclassified.begin(), reclassified.end());
     snapshots_.erase(std::remove_if(snapshots_.begin(), snapshots_.end(),
                                     [&affected](const SnapshotData & s) {
-                                      return affected.count(s.fault_code) > 0;
+                                      return affected.count(FaultId{s.fault_code, s.owner}) > 0;
                                     }),
                      snapshots_.end());
   }

@@ -162,25 +162,26 @@ class TestFaultReporterIntegration(unittest.TestCase):
         fault_codes = [f.fault_code for f in faults_response.faults]
         self.assertIn('REPORTER_TEST_001', fault_codes)
 
-    def test_03_multiple_reports_aggregate(self):
-        """Test that multiple reports of same fault aggregate."""
-        # First report - use CRITICAL to bypass debounce
+    def test_03_two_sources_of_one_code_keep_one_record_each(self):
+        """Two sources reporting one code get a record each, counted and escalated apart."""
+        # The default confirmation threshold confirms on the first FAILED
+        # report, so every record below is CONFIRMED after its first report.
         self._report_fault(
             fault_code='REPORTER_TEST_002',
-            severity=Fault.SEVERITY_CRITICAL,
+            severity=Fault.SEVERITY_ERROR,
             description='First occurrence',
             source_id='/node_a'
         )
 
-        # Second report from different source
+        # Second report, from a different source
         self._report_fault(
             fault_code='REPORTER_TEST_002',
-            severity=Fault.SEVERITY_CRITICAL,
+            severity=Fault.SEVERITY_WARN,
             description='Second occurrence',
             source_id='/node_b'
         )
 
-        # Third report
+        # Third report, /node_a again and more severe
         self._report_fault(
             fault_code='REPORTER_TEST_002',
             severity=Fault.SEVERITY_CRITICAL,
@@ -188,20 +189,24 @@ class TestFaultReporterIntegration(unittest.TestCase):
             source_id='/node_a'
         )
 
-        # Verify aggregation
         faults_response = self._list_faults(statuses=['CONFIRMED'])
-        fault = next(
-            (f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_002'),
-            None
-        )
+        records = [f for f in faults_response.faults if f.fault_code == 'REPORTER_TEST_002']
 
-        self.assertIsNotNone(fault)
-        # Edge-counting: re-reports of a still-active fault do not bump the
-        # count; severity escalation and source aggregation still apply.
-        self.assertEqual(fault.occurrence_count, 1)
-        self.assertEqual(fault.severity, Fault.SEVERITY_CRITICAL)
-        self.assertIn('/node_a', fault.reporting_sources)
-        self.assertIn('/node_b', fault.reporting_sources)
+        # One record per reporting source, each naming only its own owner.
+        self.assertEqual(
+            sorted(list(f.reporting_sources) for f in records),
+            [['/node_a'], ['/node_b']],
+        )
+        by_owner = {f.reporting_sources[0]: f for f in records}
+
+        # Edge counting per record: the third report re-reports /node_a's
+        # still-active record, so neither count moves past the first edge.
+        self.assertEqual(by_owner['/node_a'].occurrence_count, 1)
+        self.assertEqual(by_owner['/node_b'].occurrence_count, 1)
+        # Severity escalates inside /node_a's record only. The CRITICAL report
+        # from /node_a leaves /node_b's record at the severity /node_b sent.
+        self.assertEqual(by_owner['/node_a'].severity, Fault.SEVERITY_CRITICAL)
+        self.assertEqual(by_owner['/node_b'].severity, Fault.SEVERITY_WARN)
 
     def test_04_source_id_tracked(self):
         """Test that source_id is correctly tracked."""

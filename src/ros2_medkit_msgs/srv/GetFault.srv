@@ -15,13 +15,19 @@
 # GetFault.srv - Get single fault by code with environment data.
 #
 # Unlike ListFaults.srv (plural) which returns a list of faults for filtering,
-# this service returns a single fault with full environment data including
+# this service returns a single fault record with full environment data including
 # snapshots and extended data records for SOVD-compliant fault responses.
+# A record is identified by (fault_code, source_id).
 
 # Request fields
 
 # Fault code to retrieve (e.g., "MOTOR_OVERHEAT")
 string fault_code
+
+# Reporting source that owns the fault record (the source_id used in ReportFault).
+# Together with fault_code it identifies one record. Empty: the call applies only
+# when exactly one record carries fault_code, otherwise it fails as ambiguous.
+string source_id
 ---
 # Response fields
 

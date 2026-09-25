@@ -17,9 +17,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
-#include <unordered_map>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
@@ -119,6 +121,16 @@ class FaultManagerNode : public rclcpp::Node {
   /// @return true if entity_id matches any source
   static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
 
+  /// Resolve the record a service request addresses.
+  ///
+  /// With a non-empty source_id the answer is that one record. With an empty one the
+  /// call is unscoped: it applies only when exactly one record carries the code, and
+  /// with several it fails, because picking one would clear or serve an arbitrary
+  /// owner's record. @p error is filled on failure and is empty on success, with a
+  /// message beginning "ambiguous:" listing the owners in the several-records case.
+  std::optional<FaultId> resolve_target(const std::string & fault_code, const std::string & source_id,
+                                        std::string & error) const;
+
  private:
   /// Create storage backend based on configuration
   std::unique_ptr<FaultStorage> create_storage();
@@ -178,8 +190,8 @@ class FaultManagerNode : public rclcpp::Node {
   /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
   /// Shared by the report path and the time-based confirmation timer so a
   /// confirmation produces the same evidence whichever one produced it.
-  /// @param fault_code Code of the fault that reached CONFIRMED
-  void capture_on_confirm(const std::string & fault_code);
+  /// @param id The record (fault code and owning source) that reached CONFIRMED
+  void capture_on_confirm(const FaultId & id);
 
   /// Validate severity value
   static bool is_valid_severity(uint8_t severity);
@@ -262,7 +274,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Per-fault cooldown tracking for snapshot recapture
   std::mutex last_capture_mutex_;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_capture_times_;
+  std::map<FaultId, std::chrono::steady_clock::time_point> last_capture_times_;
 };
 
 }  // namespace ros2_medkit_fault_manager

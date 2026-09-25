@@ -118,11 +118,11 @@ Configure snapshot capture via fault manager parameters:
      - Use background subscriptions (caches latest message)
    * - ``snapshots.recapture_cooldown_sec``
      - ``60.0``
-     - Minimum seconds between snapshot captures for the same fault code.
+     - Minimum seconds between snapshot captures for the same fault record.
        Prevents snapshot storms when a fault is reported repeatedly. Set to 0 to disable.
    * - ``snapshots.max_per_fault``
      - ``10``
-     - Maximum number of snapshot rows stored per fault code. One confirmation
+     - Maximum number of snapshot rows stored per fault record. One confirmation
        writes one row per configured topic, and those rows are evicted together:
        past the limit the OLDEST capture set is dropped whole. A capture larger
        than the cap is kept anyway rather than torn, since half a freeze frame
@@ -565,7 +565,7 @@ Rosbag Configuration Options
        burst's bag at a time.
    * - ``snapshots.rosbag.max_bags_per_fault``
      - ``1``
-     - Recordings kept per fault code; ``0`` means unlimited. Past the cap the
+     - Recordings kept per fault record (``0`` means unlimited). Past the cap the
        fault's oldest recording is dropped, and a bag is deleted only once no
        fault still references it (a burst shares one recording). ``1`` is the
        historical behaviour - each re-confirmation replaces the previous bag;

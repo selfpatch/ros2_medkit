@@ -32,6 +32,7 @@
 
 using ros2_medkit_fault_manager::CaptureThreadPool;
 using ros2_medkit_fault_manager::EnqueueResult;
+using ros2_medkit_fault_manager::FaultId;
 using ros2_medkit_fault_manager::QueueFullPolicy;
 
 namespace {
@@ -40,13 +41,21 @@ rclcpp::Logger test_logger() {
   return rclcpp::get_logger("test_capture_thread_pool");
 }
 
+// The pool queues fault RECORDS. These tests are about queue mechanics, so every
+// job here belongs to one owner and the code alone tells the jobs apart.
+constexpr const char * kOwner = "/reporter";
+
+FaultId job(const std::string & code) {
+  return FaultId{code, kOwner};
+}
+
 // Capture_fn that records every invocation and blocks each job until released,
 // so tests can deterministically hold workers busy and inspect concurrency.
 class GatedCallback {
  public:
-  std::function<void(const std::string &)> fn() {
-    return [this](const std::string & code) {
-      run(code);
+  std::function<void(const FaultId &)> fn() {
+    return [this](const FaultId & id) {
+      run(id.fault_code);
     };
   }
 
@@ -130,7 +139,7 @@ TEST_F(CaptureThreadPoolTest, BoundsAndReachesPoolSize) {
   GatedCallback gc;
   CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), gc.fn());
   for (int i = 0; i < 6; ++i) {
-    pool.enqueue("j" + std::to_string(i));
+    pool.enqueue(job("j" + std::to_string(i)));
   }
   gc.wait_until_active(2);         // prove 2 ran concurrently
   EXPECT_EQ(gc.max_active(), 2u);  // never more than pool_size
@@ -142,8 +151,8 @@ TEST_F(CaptureThreadPoolTest, BoundsAndReachesPoolSize) {
 TEST_F(CaptureThreadPoolTest, PoolSizeOneSerializes) {
   GatedCallback gc;
   CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), gc.fn());
-  pool.enqueue("a");
-  pool.enqueue("b");
+  pool.enqueue(job("a"));
+  pool.enqueue(job("b"));
   gc.wait_until_active(1);
   EXPECT_EQ(gc.max_active(), 1u);
   gc.release();
@@ -157,13 +166,13 @@ TEST_F(CaptureThreadPoolTest, PoolSizeOneSerializes) {
 TEST_F(CaptureThreadPoolTest, ZeroSizesClampToOne) {
   GatedCallback gc;
   CaptureThreadPool pool(0, 0, QueueFullPolicy::kDropOldest, test_logger(), gc.fn());
-  EXPECT_EQ(pool.enqueue("a").result, EnqueueResult::kAccepted);
-  gc.wait_until_active(1);                                        // a worker exists (pool_size clamped to 1)
-  EXPECT_EQ(pool.enqueue("b").result, EnqueueResult::kAccepted);  // queue_depth clamped to 1
-  auto outcome = pool.enqueue("c");                               // full -> evict oldest, no UB
+  EXPECT_EQ(pool.enqueue(job("a")).result, EnqueueResult::kAccepted);
+  gc.wait_until_active(1);                                             // a worker exists (pool_size clamped to 1)
+  EXPECT_EQ(pool.enqueue(job("b")).result, EnqueueResult::kAccepted);  // queue_depth clamped to 1
+  auto outcome = pool.enqueue(job("c"));                               // full -> evict oldest, no UB
   EXPECT_EQ(outcome.result, EnqueueResult::kEvictedOldest);
-  ASSERT_TRUE(outcome.evicted_code.has_value());
-  EXPECT_EQ(*outcome.evicted_code, "b");
+  ASSERT_TRUE(outcome.evicted_id.has_value());
+  EXPECT_EQ(outcome.evicted_id->fault_code, "b");
   gc.release();
   pool.shutdown();
 }
@@ -171,14 +180,14 @@ TEST_F(CaptureThreadPoolTest, ZeroSizesClampToOne) {
 TEST_F(CaptureThreadPoolTest, RejectNewestDropsExcessExactly) {
   GatedCallback gc;
   CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), gc.fn());
-  pool.enqueue("blk0");
-  pool.enqueue("blk1");
+  pool.enqueue(job("blk0"));
+  pool.enqueue(job("blk1"));
   gc.wait_until_active(2);       // both workers busy; queue empties
   for (int i = 0; i < 8; ++i) {  // fill pending queue (queue_depth)
-    EXPECT_EQ(pool.enqueue("f" + std::to_string(i)).result, EnqueueResult::kAccepted);
+    EXPECT_EQ(pool.enqueue(job("f" + std::to_string(i))).result, EnqueueResult::kAccepted);
   }
   for (int i = 0; i < 5; ++i) {  // overflow
-    EXPECT_EQ(pool.enqueue("x" + std::to_string(i)).result, EnqueueResult::kDroppedNewest);
+    EXPECT_EQ(pool.enqueue(job("x" + std::to_string(i))).result, EnqueueResult::kDroppedNewest);
   }
   EXPECT_EQ(pool.dropped_captures(), 5u);
   gc.release();
@@ -191,17 +200,17 @@ TEST_F(CaptureThreadPoolTest, RejectNewestDropsExcessExactly) {
 TEST_F(CaptureThreadPoolTest, DropOldestEvictsOldestPending) {
   GatedCallback gc;
   CaptureThreadPool pool(2, 8, QueueFullPolicy::kDropOldest, test_logger(), gc.fn());
-  pool.enqueue("blk0");
-  pool.enqueue("blk1");
+  pool.enqueue(job("blk0"));
+  pool.enqueue(job("blk1"));
   gc.wait_until_active(2);
   for (int i = 0; i < 8; ++i) {
-    EXPECT_EQ(pool.enqueue("f" + std::to_string(i)).result, EnqueueResult::kAccepted);
+    EXPECT_EQ(pool.enqueue(job("f" + std::to_string(i))).result, EnqueueResult::kAccepted);
   }
   for (int i = 0; i < 5; ++i) {  // each overflow evicts current oldest f0..f4
-    auto outcome = pool.enqueue("x" + std::to_string(i));
+    auto outcome = pool.enqueue(job("x" + std::to_string(i)));
     EXPECT_EQ(outcome.result, EnqueueResult::kEvictedOldest);
-    ASSERT_TRUE(outcome.evicted_code.has_value());
-    EXPECT_EQ(*outcome.evicted_code, "f" + std::to_string(i));
+    ASSERT_TRUE(outcome.evicted_id.has_value());
+    EXPECT_EQ(outcome.evicted_id->fault_code, "f" + std::to_string(i));
   }
   EXPECT_EQ(pool.dropped_captures(), 5u);
   gc.release();
@@ -219,10 +228,10 @@ TEST_F(CaptureThreadPoolTest, DropOldestEvictsOldestPending) {
 TEST_F(CaptureThreadPoolTest, FifoOrder) {
   GatedCallback gc;
   CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), gc.fn());
-  pool.enqueue("A");
+  pool.enqueue(job("A"));
   gc.wait_until_active(1);
-  pool.enqueue("B");
-  pool.enqueue("C");
+  pool.enqueue(job("B"));
+  pool.enqueue(job("C"));
   gc.release();
   gc.wait_until_started(3);  // A, B, C must all run before shutdown discards queue
   pool.shutdown();
@@ -234,8 +243,8 @@ TEST_F(CaptureThreadPoolTest, CallbackThrowKeepsWorkerAlive) {
   std::mutex m;
   std::condition_variable cv;
   int ran = 0;
-  auto fn = [&](const std::string & code) {
-    if (code == "boom") {
+  auto fn = [&](const FaultId & id) {
+    if (id.fault_code == "boom") {
       throw std::runtime_error("boom");
     }
     {
@@ -245,9 +254,9 @@ TEST_F(CaptureThreadPoolTest, CallbackThrowKeepsWorkerAlive) {
     cv.notify_all();
   };
   CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), fn);
-  pool.enqueue("boom");
-  pool.enqueue("ok1");
-  pool.enqueue("ok2");
+  pool.enqueue(job("boom"));
+  pool.enqueue(job("ok1"));
+  pool.enqueue(job("ok2"));
   {
     std::unique_lock<std::mutex> lock(m);
     cv.wait(lock, [&] {
@@ -259,9 +268,9 @@ TEST_F(CaptureThreadPoolTest, CallbackThrowKeepsWorkerAlive) {
 }
 
 TEST_F(CaptureThreadPoolTest, EnqueueAfterShutdownRejected) {
-  CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), [](const std::string &) {});
+  CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), [](const FaultId &) {});
   pool.shutdown();
-  auto outcome = pool.enqueue("x");
+  auto outcome = pool.enqueue(job("x"));
   EXPECT_EQ(outcome.result, EnqueueResult::kRejectedShuttingDown);
   EXPECT_EQ(pool.dropped_captures(), 0u);
 }
@@ -269,9 +278,9 @@ TEST_F(CaptureThreadPoolTest, EnqueueAfterShutdownRejected) {
 TEST_F(CaptureThreadPoolTest, ShutdownDiscardsPendingCompletesInFlight) {
   GatedCallback gc;
   CaptureThreadPool pool(1, 8, QueueFullPolicy::kRejectNewest, test_logger(), gc.fn());
-  EXPECT_EQ(pool.enqueue("inflight").result, EnqueueResult::kAccepted);
+  EXPECT_EQ(pool.enqueue(job("inflight")).result, EnqueueResult::kAccepted);
   gc.wait_until_active(1);
-  EXPECT_EQ(pool.enqueue("pending").result, EnqueueResult::kAccepted);
+  EXPECT_EQ(pool.enqueue(job("pending")).result, EnqueueResult::kAccepted);
   EXPECT_EQ(pool.pending_size(), 1u);
 
   std::thread shut([&] {
@@ -289,7 +298,7 @@ TEST_F(CaptureThreadPoolTest, ShutdownDiscardsPendingCompletesInFlight) {
 }
 
 TEST_F(CaptureThreadPoolTest, ShutdownIsIdempotent) {
-  CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), [](const std::string &) {});
+  CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), [](const FaultId &) {});
   pool.shutdown();
   pool.shutdown();  // must not throw, hang, or double-join
   SUCCEED();
@@ -303,14 +312,14 @@ TEST_F(CaptureThreadPoolTest, ShutdownIsIdempotent) {
 TEST_F(CaptureThreadPoolTest, ConcurrentEnqueueDuringShutdownIsClean) {
   std::atomic<int> ran{0};
   std::atomic<int> accepted{0};
-  CaptureThreadPool pool(4, 64, QueueFullPolicy::kRejectNewest, test_logger(), [&ran](const std::string &) {
+  CaptureThreadPool pool(4, 64, QueueFullPolicy::kRejectNewest, test_logger(), [&ran](const FaultId &) {
     ran.fetch_add(1, std::memory_order_relaxed);
   });
 
   std::atomic<bool> saw_shutdown{false};
   std::thread producer([&] {
     for (int i = 0; i < 100000; ++i) {
-      const EnqueueResult r = pool.enqueue("j" + std::to_string(i)).result;
+      const EnqueueResult r = pool.enqueue(job("j" + std::to_string(i))).result;
       if (r == EnqueueResult::kAccepted) {
         accepted.fetch_add(1, std::memory_order_relaxed);
       } else if (r == EnqueueResult::kRejectedShuttingDown) {
@@ -327,7 +336,7 @@ TEST_F(CaptureThreadPoolTest, ConcurrentEnqueueDuringShutdownIsClean) {
   // The producer must have crossed the shutdown transition (else the race was not
   // exercised), and every post-shutdown enqueue must reject cleanly.
   EXPECT_TRUE(saw_shutdown.load());
-  EXPECT_EQ(pool.enqueue("after").result, EnqueueResult::kRejectedShuttingDown);
+  EXPECT_EQ(pool.enqueue(job("after")).result, EnqueueResult::kRejectedShuttingDown);
   // shutdown() discards pending work, so some accepted jobs may not run - but no
   // job may run that was never accepted.
   EXPECT_LE(ran.load(), accepted.load());
@@ -339,7 +348,7 @@ TEST_F(CaptureThreadPoolTest, ReleasesCaptureFnAfterShutdown) {
   auto sentinel = std::make_shared<int>(42);
   {
     std::weak_ptr<int> weak = sentinel;
-    CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), [held = sentinel](const std::string &) {
+    CaptureThreadPool pool(2, 8, QueueFullPolicy::kRejectNewest, test_logger(), [held = sentinel](const FaultId &) {
       (void)held;
     });
     sentinel.reset();  // pool's capture_fn now holds the only strong ref

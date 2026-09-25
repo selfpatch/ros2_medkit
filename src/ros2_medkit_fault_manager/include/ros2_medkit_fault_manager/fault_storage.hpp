@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
@@ -87,16 +88,42 @@ bool is_near_miss(bool is_failed_event, const std::string & resulting_status);
 /// defaults (-1 / 3). Returns true if the config was already valid.
 bool sanitize_debounce_config(DebounceConfig & config);
 
-/// Internal fault state stored in memory
+/// Identity of one fault record: a fault code plus the reporting source that owns it.
+///
+/// The owner is the source_id the ReportFault call carried. Two sources reporting one
+/// fault_code are two records, and every piece of per-fault state (status, debounce
+/// counter, occurrence count, timestamps, severity, freeze frame, snapshots, near
+/// misses, rosbag links) belongs to one record. A clear or a heal driven by one owner
+/// never touches another owner's record of the same code.
+///
+/// An aggregate on purpose: FaultId{code, owner} is the only way to build one, so no
+/// call site can silently pass a bare code where a record identity is required.
+struct FaultId {
+  std::string fault_code;
+  std::string owner;
+
+  bool operator==(const FaultId & other) const {
+    return fault_code == other.fault_code && owner == other.owner;
+  }
+
+  /// Ordered by code first, so the records of one code are contiguous in a map and
+  /// get_faults_by_code is a range scan rather than a full sweep.
+  bool operator<(const FaultId & other) const {
+    return std::tie(fault_code, owner) < std::tie(other.fault_code, other.owner);
+  }
+};
+
+/// Internal fault state of one record, stored in memory
 struct FaultState {
   std::string fault_code;
+  /// Reporting source that owns this record. Half of the record identity.
+  std::string owner;
   uint8_t severity{0};
   std::string description;
   rclcpp::Time first_occurred;
   rclcpp::Time last_occurred;
   uint32_t occurrence_count{0};  ///< Count of genuine occurrences (new fault + each re-raise after CLEARED)
   std::string status;
-  std::set<std::string> reporting_sources;
 
   // Debounce state (internal, not exposed in Fault.msg)
   int32_t debounce_counter{0};      ///< FAILED decrements (-1), PASSED increments (+1)
@@ -116,6 +143,7 @@ using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 /// one moment and only mean anything together.
 struct SnapshotData {
   std::string fault_code;
+  std::string owner;  ///< Reporting source that owns the record this reading belongs to
   std::string topic;
   std::string message_type;
   std::string data;  ///< JSON-encoded message data
@@ -127,13 +155,15 @@ struct SnapshotData {
 
 /// Compact freeze-frame captured when a fault confirms: a single JSON object mapping
 /// each captured topic to its latest value at confirmation time. Unlike per-topic
-/// snapshots, a freeze-frame is keyed by fault_code (one row per code) and is RETAINED
-/// across clear_fault, so the confirmed-state record persists after acknowledgement.
-/// A row exists only for fault codes with a configured capture set; a fault code with
-/// no capture configured gets no row at all (lookup returns nullopt, never an empty {}).
+/// snapshots, a freeze-frame is keyed by the record identity (one row per
+/// (fault_code, owner) pair) and is RETAINED across clear_fault, so the confirmed-state
+/// record persists after acknowledgement. A row exists only for fault codes with a
+/// configured capture set. A fault code with no capture configured gets no row at all
+/// (lookup returns nullopt, never an empty {}).
 struct FreezeFrameData {
   std::string fault_code;
-  std::string data;  ///< Compact JSON object: {"<topic>": <value>, ...}
+  std::string owner;  ///< Reporting source that owns the record this frame belongs to
+  std::string data;   ///< Compact JSON object: {"<topic>": <value>, ...}
   int64_t captured_at_ns{0};
 };
 
@@ -147,7 +177,7 @@ struct FreezeFrameData {
 /// off the wire with its own copy of this rule; keep the two in step.
 std::string rosbag_recording_id(const std::string & file_path);
 
-/// One entry of the near-miss series for a fault code.
+/// One entry of the near-miss series of one fault record.
 ///
 /// A near miss is a FAILED report that moved the debounce counter WITHOUT the fault
 /// ending up CONFIRMED - the fault nearly happened. PASSED reports move the counter
@@ -157,21 +187,21 @@ std::string rosbag_recording_id(const std::string & file_path);
 ///
 /// The series is append-only: one entry per qualifying report, never updated in place,
 /// and RETAINED across clear_fault, because acknowledging a fault cycle must not erase
-/// the record of how often that code approached confirmation. It is bounded per fault
-/// code (see set_max_near_misses_per_fault) and evicts the OLDEST entries first, so a
+/// the record of how often that record approached confirmation. It is bounded per
+/// record (see set_max_near_misses_per_fault) and evicts the OLDEST entries first, so a
 /// long-running appliance keeps the recent series rather than freezing it at boot.
 struct NearMissRecord {
   std::string fault_code;
   int64_t occurred_at_ns{0};    ///< Timestamp of the report that moved the counter
   int32_t debounce_counter{0};  ///< Counter value AFTER this report
 
-  /// Confirmation threshold the report was evaluated against. With per-entity overrides this is
-  /// the threshold of the REPORTING SOURCE, while the counter is shared by every source of the
-  /// code, so it is not by itself the distance to confirmation for the fault as a whole.
+  /// Confirmation threshold the report was evaluated against. The counter it belongs to is
+  /// this record's own, so with per-entity overrides both are the reporting source's and the
+  /// value is the distance to confirmation for the record.
   int32_t confirmation_threshold{0};
 
   uint8_t severity{0};    ///< Severity carried by the report
-  std::string source_id;  ///< Reporting source
+  std::string source_id;  ///< Reporting source, which is the record's owner
 
   /// Fault status after the report was applied. Never CONFIRMED - that is what makes the report a
   /// near miss. It separates a counter climbing from a resting state (PREFAILED) from one walking
@@ -187,6 +217,7 @@ struct NearMissRecord {
 /// only when its last row goes.
 struct RosbagFileInfo {
   std::string fault_code;
+  std::string owner;         ///< Reporting source that owns the record holding this link
   std::string recording_id;  ///< Basename of file_path; shared by every row of a burst
   std::string file_path;
   std::string format;        ///< "sqlite3" or "mcap"
@@ -211,11 +242,12 @@ class FaultStorage {
   /// @param event_type EVENT_FAILED (0) or EVENT_PASSED (1)
   /// @param severity Fault severity level (only used for FAILED events)
   /// @param description Human-readable description (only used for FAILED events)
-  /// @param source_id Reporting source identifier
+  /// @param source_id Reporting source identifier. Together with fault_code it names the
+  ///        record this event applies to, and it creates that record when none exists.
   /// @param timestamp Current time for tracking
   /// @param config Debounce configuration to apply for this event (resolved per-entity by the node)
-  /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
-  ///         false if existing active fault was updated
+  /// @return true if this is a new occurrence (new record or reactivated CLEARED record),
+  ///         false if an existing active record was updated
   virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                   const std::string & description, const std::string & source_id,
                                   const rclcpp::Time & timestamp, const DebounceConfig & config) = 0;
@@ -228,34 +260,44 @@ class FaultStorage {
   virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
                                                                 const std::vector<std::string> & statuses) const = 0;
 
-  /// Get a single fault by fault_code
-  /// @param fault_code The fault code to look up
+  /// Get a single fault record
+  /// @param id The record to look up
   /// @return The fault if found, nullopt otherwise
-  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
+  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const FaultId & id) const = 0;
 
-  /// Clear a fault by fault_code (manual acknowledgment). Drops the fault's per-topic snapshots;
-  /// the freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
-  /// cycle and cannot be reconstructed afterwards.
-  /// @param fault_code The fault code to clear
-  /// @return true if fault was found and cleared, false if not found
-  virtual bool clear_fault(const std::string & fault_code) = 0;
+  /// Every record carrying @p fault_code, one per owning reporting source.
+  ///
+  /// The resolution step behind an unscoped service call: with exactly one record the
+  /// call applies to it, with several it is ambiguous and the owners are the answer.
+  /// Returns them ordered by owner, so an ambiguity message is stable.
+  /// @param fault_code The fault code to look up
+  /// @return Every record carrying the code, empty when none does
+  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_faults_by_code(const std::string & fault_code) const = 0;
 
-  /// Get total number of stored faults
+  /// Clear one fault record (manual acknowledgment). Drops that record's per-topic snapshots.
+  /// The freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
+  /// cycle and cannot be reconstructed afterwards. Another owner's record of the same code is
+  /// untouched, snapshots included.
+  /// @param id The record to clear
+  /// @return true if the record was found and cleared, false if not found
+  virtual bool clear_fault(const FaultId & id) = 0;
+
+  /// Get total number of stored fault records
   virtual size_t size() const = 0;
 
-  /// Check if a fault exists
-  virtual bool contains(const std::string & fault_code) const = 0;
+  /// Check if a fault record exists
+  virtual bool contains(const FaultId & id) const = 0;
 
-  /// Check and confirm PREFAILED faults that have been pending too long (time-based confirmation)
+  /// Check and confirm PREFAILED records that have been pending too long (time-based confirmation)
   /// @param current_time Current timestamp for age calculation
-  /// @return Fault codes that were confirmed by this call (so the caller can audit each).
-  virtual std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
+  /// @return The records that were confirmed by this call (so the caller can audit each).
+  virtual std::vector<FaultId> check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
 
-  /// Set maximum snapshots per fault code (0 = unlimited)
+  /// Set maximum snapshots per fault record (0 = unlimited)
   virtual void set_max_snapshots_per_fault(size_t /*max_count*/) {
   }
 
-  /// Cap on RECORDINGS retained per fault code (0 = unlimited).
+  /// Cap on RECORDINGS retained per fault record (0 = unlimited).
   ///
   /// Enforced inside store_rosbag_file(s), atomically with the insert: past the cap
   /// the fault's OLDEST recordings lose their row, and a bag whose last referencing
@@ -303,16 +345,15 @@ class FaultStorage {
   /// @param snapshot The snapshot data to store
   virtual void store_snapshot(const SnapshotData & snapshot) = 0;
 
-  /// Get snapshots for a fault, NEWEST capture set first.
+  /// Get snapshots of one fault record, NEWEST capture set first.
   ///
   /// Ordered by capture_id descending, then captured_at_ns descending, in every
   /// backend. Readers fold rows into a per-topic map, so insertion order would let
   /// an older capture's values win on one backend and not the other.
-  /// @param fault_code The fault code to get snapshots for
+  /// @param id The record to get snapshots for
   /// @param topic_filter Optional topic filter (empty = all topics)
-  /// @return Vector of snapshots for the fault
-  virtual std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                                  const std::string & topic_filter = "") const = 0;
+  /// @return Vector of snapshots of the record
+  virtual std::vector<SnapshotData> get_snapshots(const FaultId & id, const std::string & topic_filter = "") const = 0;
 
   /// Highest capture_id any stored snapshot holds, across every fault (0 when none).
   ///
@@ -324,22 +365,23 @@ class FaultStorage {
     return 0;
   }
 
-  /// Store the compact freeze-frame captured for a fault (JSON dict of topic values).
-  /// Keyed by fault_code: a later capture for the same code replaces the frame. The frame
+  /// Store the compact freeze-frame captured for a fault record (JSON dict of topic values).
+  /// Keyed by the record identity carried on @p frame: a later capture for the same record
+  /// replaces the frame, and another owner's record of the same code keeps its own. The frame
   /// is retained across clear_fault so the confirmed-state record survives acknowledgement.
-  /// Storage is bounded by the number of distinct fault codes (one row per code, replaced
-  /// in place); rows are never evicted. Faults themselves are never deleted (clear_fault
-  /// only flips status), so there is currently no delete hook to tie eviction to.
-  /// @param frame The freeze-frame to store
+  /// Storage is bounded by the number of distinct records (one row per record, replaced in
+  /// place), and rows are never evicted. Records themselves are never deleted (clear_fault only
+  /// flips status), so there is currently no delete hook to tie eviction to.
+  /// @param frame The freeze-frame to store, carrying fault_code and owner
   virtual void store_freeze_frame(const FreezeFrameData & frame) = 0;
 
-  /// Get the freeze-frame captured for a fault, if any.
-  /// @param fault_code The fault code to look up
-  /// @return The freeze-frame if one was captured, nullopt otherwise (including fault
-  ///         codes with no capture configured, which never get a row)
-  virtual std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const = 0;
+  /// Get the freeze-frame captured for a fault record, if any.
+  /// @param id The record to look up
+  /// @return The freeze-frame if one was captured, nullopt otherwise (including records
+  ///         with no capture configured, which never get a row)
+  virtual std::optional<FreezeFrameData> get_freeze_frame(const FaultId & id) const = 0;
 
-  /// Set the maximum number of near-miss entries retained per fault code.
+  /// Set the maximum number of near-miss entries retained per fault record.
   ///
   /// Entries beyond the bound are evicted oldest-first, including entries already stored when the
   /// bound is applied. 0 means unlimited, and so does any bound larger than the storage backend
@@ -352,17 +394,18 @@ class FaultStorage {
     return 0;
   }
 
-  /// Get the near-miss series for a fault code, oldest entry first.
-  /// The series survives clear_fault; an unknown or never-near-missed code returns empty.
-  /// @param fault_code The fault code to look up
+  /// Get the near-miss series of one fault record, oldest entry first.
+  /// The series survives clear_fault. An unknown or never-near-missed record returns empty.
+  /// @param id The record to look up
   /// @return The retained near-miss entries in chronological order
-  virtual std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const = 0;
+  virtual std::vector<NearMissRecord> get_near_misses(const FaultId & id) const = 0;
 
-  /// Store rosbag file metadata for a fault
-  /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
+  /// Store rosbag file metadata for a fault record
+  /// @param info The rosbag file info to store, carrying fault_code and owner (replaces any
+  ///        existing link between that record and the same file_path)
   virtual void store_rosbag_file(const RosbagFileInfo & info) = 0;
 
-  /// Store one row per fault of a burst that shares a recording.
+  /// Store one row per record of a burst that shares a recording.
   ///
   /// Implementations MUST be all-or-nothing. The caller treats a throw as "no row
   /// was written" and discards the recording, so a batch that stored some rows and
@@ -381,20 +424,20 @@ class FaultStorage {
     }
   }
 
-  /// The MOST RECENT recording of a fault, or nullopt.
+  /// The MOST RECENT recording of a fault record, or nullopt.
   ///
-  /// A fault can hold several recordings, so "the" recording is a choice: newest
+  /// A record can hold several recordings, so "the" recording is a choice: newest
   /// wins, because a black box is evidence about the machine you are about to
   /// inspect. Implementations must order deterministically - an unordered pick
   /// serves an arbitrary recording, which no test catches reliably.
-  /// @param fault_code The fault code to get rosbag for
+  /// @param id The record to get rosbag for
   /// @return Rosbag file info if exists, nullopt otherwise
-  virtual std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const = 0;
+  virtual std::optional<RosbagFileInfo> get_rosbag_file(const FaultId & id) const = 0;
 
-  /// Every recording of a fault, newest first.
-  virtual std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const = 0;
+  /// Every recording of a fault record, newest first.
+  virtual std::vector<RosbagFileInfo> get_rosbag_files(const FaultId & id) const = 0;
 
-  /// Every row of one recording - one per fault the recording covers. Backs the
+  /// Every row of one recording - one per record the recording covers. Backs the
   /// bulk-data download and the entity authorization scope check, both of which
   /// start from a recording id and need the faults behind it.
   virtual std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const = 0;
@@ -405,23 +448,23 @@ class FaultStorage {
   /// @return number of rows removed
   virtual size_t delete_rosbag_recording(const std::string & recording_id) = 0;
 
-  /// Delete rosbag file record and the actual file for a fault. Faults from one
-  /// burst can share a recording; the file is unlinked only with the last record
+  /// Delete rosbag rows and the actual file for one fault record. Records from one
+  /// burst can share a recording, and the file is unlinked only with the last row
   /// that references it.
-  /// @param fault_code The fault code to delete rosbag for
-  /// @return true if record was deleted, false if not found
-  virtual bool delete_rosbag_file(const std::string & fault_code) = 0;
+  /// @param id The record to delete rosbags for
+  /// @return true if at least one row was deleted, false if none was found
+  virtual bool delete_rosbag_file(const FaultId & id) = 0;
 
-  /// Delete the records of several faults (typically the whole burst behind one
+  /// Delete the rows of several records (typically the whole burst behind one
   /// recording). Backends with real transactions (SQLite) remove the rows
   /// atomically and unlink the file only after the commit, so a crash mid-delete
   /// never leaves a row pointing at a removed bag. Default: plain loop.
-  /// @param fault_codes The fault codes to delete rosbag records for
-  /// @return Number of records actually deleted
-  virtual size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) {
+  /// @param ids The records to delete rosbag rows for
+  /// @return Number of records for which rows were actually deleted
+  virtual size_t delete_rosbag_files(const std::vector<FaultId> & ids) {
     size_t deleted = 0;
-    for (const auto & code : fault_codes) {
-      if (delete_rosbag_file(code)) {
+    for (const auto & id : ids) {
+      if (delete_rosbag_file(id)) {
         ++deleted;
       }
     }
@@ -437,20 +480,22 @@ class FaultStorage {
   /// @return Vector of rosbag file info
   virtual std::vector<RosbagFileInfo> get_all_rosbag_files() const = 0;
 
-  /// Get rosbags for all faults associated with an entity
+  /// Get rosbags of every record owned by an entity
   /// @param entity_fqn The entity's fully qualified name to filter by
-  /// @return Vector of rosbag file info for faults reported by this entity
+  /// @return Vector of rosbag file info for records this entity owns
   virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
-  /// Get all stored faults regardless of status (for filtering)
-  /// @return Vector of all faults in storage
+  /// Get all stored fault records regardless of status (for filtering)
+  /// @return Vector of all records in storage
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
 
-  /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
-  /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
-  /// the latch. Default is a no-op (in-memory storage starts empty).
-  /// @return fault codes of the reclassified faults, so the caller can audit each transition
-  virtual std::vector<std::string> reclassify_healed_as_cleared() {
+  /// One-time startup cleanup: reclassify HEALED records as CLEARED. Called when healing is
+  /// disabled, so a HEALED row left by a previous (healing-enabled) run does not behave
+  /// inconsistently under the latch. Default is a no-op (in-memory storage starts empty).
+  /// @return the reclassified records, so the caller can audit each transition. Identities,
+  ///         not codes: one code can hold a HEALED record for one owner and an untouched
+  ///         CONFIRMED one for another, and auditing by code would claim both moved.
+  virtual std::vector<FaultId> reclassify_healed_as_cleared() {
     return {};
   }
 
@@ -477,15 +522,17 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
                                                         const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const FaultId & id) const override;
 
-  bool clear_fault(const std::string & fault_code) override;
+  std::vector<ros2_medkit_msgs::msg::Fault> get_faults_by_code(const std::string & fault_code) const override;
+
+  bool clear_fault(const FaultId & id) override;
 
   size_t size() const override;
 
-  bool contains(const std::string & fault_code) const override;
+  bool contains(const FaultId & id) const override;
 
-  std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
+  std::vector<FaultId> check_time_based_confirmation(const rclcpp::Time & current_time) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
   void set_retain_snapshots_on_clear(bool retain) override;
@@ -493,32 +540,31 @@ class InMemoryFaultStorage : public FaultStorage {
 
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
-  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") const override;
+  std::vector<SnapshotData> get_snapshots(const FaultId & id, const std::string & topic_filter = "") const override;
   int64_t get_max_capture_id() const override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+  std::optional<FreezeFrameData> get_freeze_frame(const FaultId & id) const override;
 
   void set_max_rosbags_per_fault(size_t max_count) override;
 
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
+  std::vector<NearMissRecord> get_near_misses(const FaultId & id) const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   /// All-or-nothing, as the base class requires: the batch is built beside the live
   /// map and swapped in, so a throw leaves the store exactly as it was.
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const FaultId & id) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const FaultId & id) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
-  bool delete_rosbag_file(const std::string & fault_code) override;
+  bool delete_rosbag_file(const FaultId & id) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared() override;
+  std::vector<FaultId> reclassify_healed_as_cleared() override;
 
  private:
   /// Update fault status based on debounce counter and given config
@@ -537,12 +583,12 @@ class InMemoryFaultStorage : public FaultStorage {
   bool path_referenced(const std::string & file_path) const;
 
   mutable std::mutex mutex_;
-  std::map<std::string, FaultState> faults_;
+  std::map<FaultId, FaultState> faults_;
   std::vector<SnapshotData> snapshots_;
-  std::map<std::string, FreezeFrameData> freeze_frames_;  ///< fault_code -> freeze-frame (retained across clear)
+  std::map<FaultId, FreezeFrameData> freeze_frames_;  ///< record -> freeze-frame (retained across clear)
   /// One entry per LINK, mirroring the flat SQLite table rather than a map keyed by
-  /// fault code - a fault holds several recordings now, and a recording several
-  /// faults.
+  /// the record - a record holds several recordings now, and a recording several
+  /// records.
   ///
   /// `seq` is the in-memory twin of SQLite's autoincrement id and is load-bearing,
   /// not decoration: a burst stamps ONE created_at_ns across every row it writes, so
@@ -559,7 +605,7 @@ class InMemoryFaultStorage : public FaultStorage {
   /// A backend constructed directly (tests, embedders) therefore behaves exactly as
   /// it always did until someone opts into a history. 0 = unlimited.
   size_t max_rosbags_per_fault_{1};
-  std::map<std::string, std::vector<NearMissRecord>> near_misses_;  ///< fault_code -> series (retained across clear)
+  std::map<FaultId, std::vector<NearMissRecord>> near_misses_;  ///< record -> series (retained across clear)
   DebounceConfig config_;
   size_t max_snapshots_per_fault_{0};  ///< 0 = unlimited
   bool retain_snapshots_on_clear_{false};
