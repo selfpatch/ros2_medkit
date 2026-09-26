@@ -47,10 +47,10 @@ namespace ros2_medkit_gateway {
 
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-std::string PluginRequest::path_param(size_t) const {
+std::string PluginRequest::path_param(size_t /*unused*/) const {
   return {};
 }
-std::string PluginRequest::header(const std::string &) const {
+std::string PluginRequest::header(const std::string & /*unused*/) const {
   return {};
 }
 const std::string & PluginRequest::path() const {
@@ -61,15 +61,16 @@ const std::string & PluginRequest::body() const {
   static const std::string empty;
   return empty;
 }
-std::string PluginRequest::query_param(const std::string &) const {
+std::string PluginRequest::query_param(const std::string & /*unused*/) const {
   return {};
 }
 
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
-void PluginResponse::send_json(const nlohmann::json &) {
+void PluginResponse::send_json(const nlohmann::json & /*unused*/) {
 }
-void PluginResponse::send_error(int, const std::string &, const std::string &, const nlohmann::json &) {
+void PluginResponse::send_error(int /*unused*/, const std::string & /*unused*/, const std::string & /*unused*/,
+                                const nlohmann::json & /*unused*/) {
 }
 
 // -- FakePluginContext --
@@ -1129,6 +1130,8 @@ struct ScopedRclcpp {
   }
   ScopedRclcpp(const ScopedRclcpp &) = delete;
   ScopedRclcpp & operator=(const ScopedRclcpp &) = delete;
+  ScopedRclcpp(ScopedRclcpp &&) = delete;
+  ScopedRclcpp & operator=(ScopedRclcpp &&) = delete;
 };
 
 // RAII: owns the executor and its spin thread so cleanup cannot be skipped by an
@@ -1160,6 +1163,8 @@ struct ScopedExecutorSpin {
   }
   ScopedExecutorSpin(const ScopedExecutorSpin &) = delete;
   ScopedExecutorSpin & operator=(const ScopedExecutorSpin &) = delete;
+  ScopedExecutorSpin(ScopedExecutorSpin &&) = delete;
+  ScopedExecutorSpin & operator=(ScopedExecutorSpin &&) = delete;
 };
 
 // The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
@@ -1190,14 +1195,14 @@ TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
   auto fault_manager = std::make_shared<rclcpp::Node>("opcua_pending_reports_faultmgr");
   std::atomic<int> cleared_received{0};
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
-                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & /*req*/,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
   auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
       "/fault_manager/clear_fault",
-      [&cleared_received](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request>,
-                          std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+      [&cleared_received](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & /*req*/,
+                          const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
         cleared_received.fetch_add(1, std::memory_order_relaxed);
         res->success = true;
       });
@@ -1248,6 +1253,7 @@ nodes:
 
   std::atomic<bool> stop{false};
   std::vector<std::thread> threads;
+  threads.reserve(6);
   for (int t = 0; t < 6; ++t) {
     threads.emplace_back([&plugin, &stop, t] {
       int i = 0;

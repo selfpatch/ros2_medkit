@@ -526,7 +526,8 @@ namespace {
 /// view of its own, and the publication loop takes the FIRST emitting detector that has one -
 /// which would make these tests depend on static-init order ACROSS translation units.
 std::pair<std::vector<std::optional<std::set<std::string>>>, std::vector<std::optional<std::set<std::string>>>>
-run_until_observed(rclcpp::Node::SharedPtr gateway_node, const nlohmann::json & detectors_config, std::size_t sweeps) {
+run_until_observed(const rclcpp::Node::SharedPtr & gateway_node, const nlohmann::json & detectors_config,
+                   std::size_t sweeps) {
   reset_view_logs();
   g_owner_ticks.store(0);
 
