@@ -140,6 +140,10 @@ class EntityFreezeFrameCaptureTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
     // The capture creates its fault-events subscription on this executor's
     // dedicated _sub node, off the main node (issue #375).
     sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_);

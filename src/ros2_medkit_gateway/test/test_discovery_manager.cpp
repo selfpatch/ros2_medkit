@@ -50,6 +50,10 @@ class DiscoveryManagerTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
     sub_exec_ = std::make_shared<Ros2SubscriptionExecutor>(node_);
     serializer_ = std::make_shared<ros2_medkit_serialization::JsonSerializer>();
     topic_provider_ = std::make_unique<Ros2TopicDataProvider>(sub_exec_, serializer_);

@@ -597,6 +597,10 @@ class ParamDriftIntegrationTest : public ::testing::Test {
     spin_ = std::thread([this]() {
       exec_.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!exec_.is_spinning()) {
+      std::this_thread::yield();
+    }
     ASSERT_TRUE(client_->wait_for_service(5s));
   }
   void TearDown() override {
@@ -902,6 +906,10 @@ TEST_F(ParamDriftIntegrationTest, AnUnresponsiveNodeDoesNotStallTheReader) {
   std::thread unresp_spin([&unresp_exec] {
     unresp_exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!unresp_exec.is_spinning()) {
+    std::this_thread::yield();
+  }
   // Declared BEFORE the detector so it is destroyed AFTER it: the wedged handler owns the fake
   // node's only executor thread, so nothing can join that thread until `stop` is set, and the
   // detector's own teardown must happen while the node is still refusing to answer.
@@ -3182,6 +3190,10 @@ TEST_F(ParamDriftIntegrationTest, AReadThatOverrunsThePerReadBoundIsAbandoned) {
   std::thread slow_spin([&slow_exec] {
     slow_exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!slow_exec.is_spinning()) {
+    std::this_thread::yield();
+  }
   const auto slow_guard = on_scope_exit([&slow_exec, &slow_spin] {
     slow_exec.cancel();
     if (slow_spin.joinable()) {

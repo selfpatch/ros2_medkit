@@ -1883,6 +1883,10 @@ class SnapshotCooldownTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() {
       executor_.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_.is_spinning()) {
+      std::this_thread::yield();
+    }
 
     ASSERT_TRUE(report_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(clear_client_->wait_for_service(std::chrono::seconds(5)));

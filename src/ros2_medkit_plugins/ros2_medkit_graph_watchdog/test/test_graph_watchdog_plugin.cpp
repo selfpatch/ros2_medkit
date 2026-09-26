@@ -497,6 +497,10 @@ TEST_F(GraphWatchdogPluginTest, LifecycleRunsTickAndShutsDownCleanly) {
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   plugin.configure(nlohmann::json{{"tick_interval_ms", 50}});
   plugin.set_context(ctx);
@@ -533,6 +537,10 @@ run_until_observed(rclcpp::Node::SharedPtr gateway_node, const nlohmann::json & 
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   nlohmann::json config{{"tick_interval_ms", 50}, {"detectors", detectors_config}};
   config["detectors"]["node_death"] = {{"mode", "off"}};
@@ -703,6 +711,10 @@ TEST_F(GraphWatchdogPluginTest, FansOutTicksSkipsOffModeAndIsolatesThrowingDetec
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   plugin.configure(nlohmann::json{{"tick_interval_ms", 50}, {"detectors", {{"offd", {{"mode", "off"}}}}}});
   plugin.set_context(ctx);
@@ -747,6 +759,10 @@ TEST_F(GraphWatchdogPluginTest, ExposesWatchdogStatusRoute) {
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   plugin.configure(nlohmann::json{{"tick_interval_ms", 50}, {"warmup_cycles", 2}});
   plugin.set_context(ctx);
@@ -792,6 +808,10 @@ TEST_F(GraphWatchdogPluginTest, WatchdogStatusRouteReportsEntityLifecycleAndArme
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   // warmup_cycles=1 with a fast tick: "/watched_app" (constant across every snapshot)
   // should be armed well within the poll window below.
@@ -851,6 +871,10 @@ TEST_F(GraphWatchdogPluginTest, MalformedNodeDeathPruneGraceUsesThePluginScopeFa
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   // tick_interval_ms MUST be 3000: node_death's own wall-clock floor
   // (min_node_death_miss_grace) bumps a fast-tick miss_grace up regardless of what is
@@ -966,6 +990,10 @@ TEST_F(GraphWatchdogPluginTest, FaultClientDeliversRequestsAndDrainsItsOwnRespon
   std::thread sink_spin([&sink_exec] {
     sink_exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!sink_exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   ros2_medkit_graph_watchdog::GraphWatchdogPlugin plugin;
   FakeContextWithApp ctx(gateway_node_.get());  // "/watched_app", the id RaisingDetector reports on
@@ -1014,6 +1042,10 @@ TEST_F(GraphWatchdogPluginTest, TickThreadDeliversRealTransitionEventsToTheGate)
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   auto pub = gateway_node_->create_publisher<lifecycle_msgs::msg::TransitionEvent>(
       "/managed_app/transition_event", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
@@ -1071,6 +1103,10 @@ TEST_F(GraphWatchdogPluginTest, StatusHandlerRaceFreeAgainstConcurrentTicks) {
   std::thread spin([&exec] {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   plugin.configure(nlohmann::json{{"tick_interval_ms", 5}, {"warmup_cycles", 1}});
   plugin.set_context(ctx);
