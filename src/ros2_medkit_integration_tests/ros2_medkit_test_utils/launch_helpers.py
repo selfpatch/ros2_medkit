@@ -102,7 +102,8 @@ LIDAR_FAULTY_PARAMS = {
 
 def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
                         extra_params=None, coverage=True, extra_env=None,
-                        respawn=False, respawn_delay=1.0):
+                        respawn=False, respawn_delay=1.0, namespace=None,
+                        remappings=None):
     """Create a ``gateway_node`` launch action with standard config.
 
     Parameters
@@ -132,6 +133,11 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         and the DDS participant are released before the replacement binds
         them, which also gives a test a window in which the port is provably
         down - the only way to tell "restarted" from "never died".
+    namespace : str or None
+        ROS namespace for the gateway. ``None`` leaves it unset, which also
+        keeps launch_ros writing the parameters under ``/**``.
+    remappings : list of (str, str) or None
+        Remap rules. launch_ros passes them to the whole process.
 
     Returns
     -------
@@ -147,6 +153,12 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
     if extra_env:
         env.update(extra_env)
 
+    optional = {}
+    if namespace is not None:
+        optional['namespace'] = namespace
+    if remappings is not None:
+        optional['remappings'] = remappings
+
     return launch_ros.actions.Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
@@ -156,6 +168,7 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         additional_env=env,
         respawn=respawn,
         respawn_delay=respawn_delay,
+        **optional,
         # Default SIGINT->SIGTERM escalation is 5s and SIGTERM->SIGKILL is 5s.
         # Under TSan/ASan/coverage the gateway shutdown sequence (mdns stop,
         # REST server stop, transport teardown, plugin shutdown, plus flushing
@@ -182,6 +195,7 @@ def create_fault_manager_node(
     extra_params=None,
     coverage=True,
     extra_env=None,
+    namespace=None,
 ):
     """Create a ``fault_manager_node`` with test-friendly defaults.
 
@@ -210,6 +224,8 @@ def create_fault_manager_node(
     extra_env : dict or None
         Additional environment variables merged into ``additional_env`` on
         top of the coverage env (e.g. ``ROS_DOMAIN_ID`` for a peer).
+    namespace : str or None
+        ROS namespace for the fault manager. ``None`` leaves it unset.
 
     Returns
     -------
@@ -240,6 +256,10 @@ def create_fault_manager_node(
     if extra_env:
         env.update(extra_env)
 
+    optional = {}
+    if namespace is not None:
+        optional['namespace'] = namespace
+
     return launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
@@ -247,6 +267,7 @@ def create_fault_manager_node(
         output='screen',
         additional_env=env,
         parameters=[params],
+        **optional,
         # Same rationale as create_gateway_node: under coverage the node must
         # flush gcov data at shutdown, which can exceed the 5s launch default
         # and get the process SIGKILLed to -9. Widen both windows.

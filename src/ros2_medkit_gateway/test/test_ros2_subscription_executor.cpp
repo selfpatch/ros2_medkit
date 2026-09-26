@@ -156,7 +156,8 @@ TEST_F(Ros2SubscriptionExecutorTest, QueueFullReturnsBackpressure) {
 TEST_F(Ros2SubscriptionExecutorTest, NodeAccessibleWithSuffixedName) {
   auto * n = sub_exec_->node();
   ASSERT_NE(n, nullptr);
-  EXPECT_EQ(std::string(n->get_name()), std::string("test_gateway_node_sub"));
+  // Hidden helper node: leading underscore, then the gateway node name and the suffix.
+  EXPECT_EQ(std::string(n->get_name()), std::string("_test_gateway_node_sub"));
 }
 
 TEST_F(Ros2SubscriptionExecutorTest, StatsTrackCompletedTasks) {

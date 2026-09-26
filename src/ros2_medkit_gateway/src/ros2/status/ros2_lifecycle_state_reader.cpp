@@ -19,11 +19,13 @@
 
 #include <lifecycle_msgs/srv/get_state.hpp>
 
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
+
 namespace ros2_medkit_gateway {
 
 Ros2LifecycleStateReader::Ros2LifecycleStateReader(rclcpp::Node * host, std::chrono::duration<double> timeout)
   : timeout_(timeout) {
-  client_node_ = std::make_shared<rclcpp::Node>(std::string(host->get_name()) + "_lifecycle_state_reader");
+  client_node_ = ros2_common::make_helper_node(*host, "_lifecycle_state_reader");
   // Joins the graph listener while the context is valid. A first join after
   // rclcpp::shutdown() half-registers the node and ~NodeGraph aborts.
   static_cast<void>(client_node_->get_graph_event());
