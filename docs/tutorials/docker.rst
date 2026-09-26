@@ -67,10 +67,28 @@ Test the gateway:
 Custom Configuration
 --------------------
 
-The default configuration listens on ``0.0.0.0:8080``. CORS is enabled for the
-default web UI origins (``http://localhost:3000`` and ``http://localhost:5173``)
-so the web UI works out of the box; add your own UI origin(s) as needed (see
-`CORS for Web UI`_ below). To use a custom configuration, mount a params file:
+The image's default command runs the gateway alone with
+``/etc/ros2_medkit/params.yaml``, which listens on ``0.0.0.0:8080``. CORS is
+enabled for the default web UI origins (``http://localhost:3000`` and
+``http://localhost:5173``) so the web UI works out of the box; add your own UI
+origin(s) as needed (see `CORS for Web UI`_ below).
+
+.. note::
+
+   A launch file run in the container binds ``127.0.0.1`` unless told
+   otherwise. Without ``--network host`` that is the container's own loopback,
+   and the published port answers with ``Connection reset by peer`` or an empty
+   reply. Pass ``server_host:=0.0.0.0``:
+
+   .. code-block:: bash
+
+      docker run -p 127.0.0.1:8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+        ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+
+   ``127.0.0.1:8080:8080`` publishes the port on the host's loopback only, which
+   keeps the API (no authentication by default) off the LAN.
+
+To use a custom configuration, mount a params file:
 
 .. code-block:: bash
 
@@ -226,6 +244,11 @@ writes. Add your own UI origin(s):
          allowed_origins:
            - "http://localhost:3000"
            - "https://my-dashboard.example.com"
+
+The origin must match what the browser sends exactly: ``http://127.0.0.1:3000``
+is not ``http://localhost:3000``. When the container runs a launch file, pass
+the origins as ``cors_allowed_origins:=http://localhost:3000,http://127.0.0.1:3000``;
+the argument replaces the defaults.
 
 Health Checks
 -------------

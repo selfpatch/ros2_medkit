@@ -48,6 +48,11 @@ launch arguments:
    * - ``server_port``
      - ``8080``
      - Gateway REST API port.
+   * - ``cors_allowed_origins``
+     - ``http://localhost:3000,http://localhost:5173``
+     - Comma-separated browser origins allowed to call the gateway. Each must
+       match exactly (``http://127.0.0.1:3000`` is not ``http://localhost:3000``).
+       A value replaces the defaults; empty disables CORS.
    * - ``enable_fault_manager``
      - ``true``
      - Start the fault_manager node.
@@ -61,6 +66,14 @@ launch arguments:
      - ``false``
      - Start the diagnostic_bridge (``/diagnostics`` -> faults). Opt-in, for
        legacy ``diagnostic_updater`` publishers.
+
+.. note::
+
+   In a container without ``--network host``, ``127.0.0.1`` is the container's
+   own loopback: the published port answers with ``Connection reset by peer``
+   or an empty reply. Run ``bringup.launch.py server_host:=0.0.0.0`` and publish
+   the port as ``-p 127.0.0.1:8080:8080`` to keep the API (no authentication by
+   default) off the LAN.
 
 Verify
 ------

@@ -49,6 +49,10 @@ class Ros2LifecycleStateReaderTest : public ::testing::Test {
     spin_ = std::thread([this]() {
       exec_.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!exec_.is_spinning()) {
+      std::this_thread::yield();
+    }
     reader_ = std::make_unique<Ros2LifecycleStateReader>(service_node_.get(), std::chrono::seconds(3));
   }
 

@@ -73,8 +73,8 @@ class GatewayNode : public rclcpp::Node {
   ~GatewayNode() override;
 
   /// Count application (peer) nodes from (name, namespace) pairs: excludes hidden
-  /// nodes and the gateway's own nodes (whose FQN starts with @p self_fqn). Static
-  /// and public so the startup-summary counting logic is unit-testable.
+  /// nodes (the gateway's helper nodes are hidden) and the node at @p self_fqn.
+  /// Static and public so the startup-summary counting logic is unit-testable.
   static size_t count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
                                  const std::string & self_fqn);
 
