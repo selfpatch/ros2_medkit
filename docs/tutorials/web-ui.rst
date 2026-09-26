@@ -105,8 +105,11 @@ Connecting to ros2_medkit
 
 .. tip::
 
-   If the gateway runs on a different host, ensure CORS is configured.
-   See :doc:`/config/server` for CORS settings.
+   The web UI is a different origin than the gateway, so the gateway must allow
+   it via CORS. The launch files and the Docker image allow
+   ``http://localhost:3000`` and ``http://localhost:5173``, matched exactly:
+   ``http://127.0.0.1:3000`` is rejected. See :doc:`/config/server` for CORS
+   settings, or pass ``cors_allowed_origins:=`` to the launch file.
 
 Using the Interface
 -------------------
@@ -182,21 +185,24 @@ Run both gateway and web UI together:
 .. code-block:: yaml
 
    # docker-compose.yml
-   version: '3.8'
    services:
      gateway:
-       image: ros:jazzy
-       command: >
-         bash -c "source /opt/ros/jazzy/setup.bash &&
-                  ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0"
-       ports:
-         - "8080:8080"
+       image: ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+       command: ros2 launch ros2_medkit_gateway bringup.launch.py
        network_mode: host
+       ipc: host
 
      web_ui:
        image: ghcr.io/selfpatch/ros2_medkit_web_ui:latest
        ports:
-         - "80:80"
+         - "3000:80"
+
+The gateway shares the host network, so it joins the robot's DDS graph and its
+default bind ``127.0.0.1:8080`` is the host's loopback. Open
+``http://localhost:3000``: that origin is allowed by default, while
+``http://127.0.0.1:3000`` is not. On a bridge network instead, run
+``bringup.launch.py server_host:=0.0.0.0`` and publish ``8080`` (see
+:doc:`/troubleshooting`).
 
 Docker Image Tags
 -----------------
