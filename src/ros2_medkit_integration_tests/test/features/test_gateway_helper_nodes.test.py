@@ -24,6 +24,7 @@ The namespaced, remapped and sim-time launch is covered by
 ``test_gateway_helper_nodes_namespaced.test.py``.
 """
 
+import time
 import unittest
 
 import launch_testing
@@ -38,6 +39,7 @@ from ros2_medkit_test_utils.ros_graph import (
     duplicate_fqns,
     leaf_name,
     ros2_param_list,
+    topic_publishers,
     wait_for_graph,
 )
 
@@ -106,6 +108,21 @@ class TestGatewayHelperNodes(GatewayTestCase):
         for fqn in own:
             params = [s for s in advertised_services(self._probe, fqn) if 'parameter' in s]
             self.assertEqual(params, [], f'{fqn} advertises {params}')
+
+    def test_helper_nodes_publish_no_rosout(self):
+        # Context shutdown finalises every /rosout publisher on the thread that
+        # shuts down. For a helper that thread races the helper's own teardown.
+        fqns = self._settled_graph()
+        own = {f for f in fqns if GATEWAY_NAME in leaf_name(f) and f != GATEWAY_FQN}
+        self.assertTrue(own, f'no helper node of the gateway found in {sorted(fqns)}')
+        publishers = set()
+        deadline = time.monotonic() + 15.0
+        while GATEWAY_FQN not in publishers and time.monotonic() < deadline:
+            publishers = topic_publishers(self._probe, '/rosout')
+            time.sleep(0.2)
+        self.assertIn(GATEWAY_FQN, publishers, f'/rosout publishers: {sorted(publishers)}')
+        self.assertEqual(
+            sorted(own & publishers), [], f'helper nodes publish on /rosout: {sorted(publishers)}')
 
     def test_ros2_param_list_lists_each_parameter_once(self):
         self._settled_graph()

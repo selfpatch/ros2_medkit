@@ -71,6 +71,14 @@ def advertised_services(node, fqn):
     return {service for service, _ in node.get_service_names_and_types_by_node(*_split_fqn(fqn))}
 
 
+def topic_publishers(node, topic):
+    """Return the FQN of every node that publishes on *topic*."""
+    return {
+        join_fqn(info.node_namespace, info.node_name)
+        for info in node.get_publishers_info_by_topic(topic)
+    }
+
+
 def get_bool_parameter(node, fqn, name, *, timeout=10.0):
     """Read a bool parameter from the node at *fqn*; None when unreadable."""
     client = node.create_client(GetParameters, fqn + '/get_parameters')

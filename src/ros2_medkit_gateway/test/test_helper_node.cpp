@@ -12,15 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <rcl_interfaces/msg/log.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <unistd.h>
 
@@ -61,6 +66,23 @@ class ProcessContext {
   std::vector<std::string> args_;
   std::shared_ptr<rclcpp::Context> context_;
 };
+
+/// Names of the nodes that publish on /rosout, once @p expected is among them.
+std::vector<std::string> rosout_publishers(rclcpp::Node & observer, const std::string & expected) {
+  std::vector<std::string> names;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    names.clear();
+    for (const auto & info : observer.get_publishers_info_by_topic("/rosout")) {
+      names.push_back(info.node_name());
+    }
+    if (std::find(names.begin(), names.end(), expected) != names.end()) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return names;
+}
 
 }  // namespace
 
@@ -115,4 +137,52 @@ TEST(HelperNode, ServesNoParameters) {
 
   EXPECT_FALSE(helper->get_node_options().start_parameter_services());
   EXPECT_FALSE(helper->get_node_options().start_parameter_event_publisher());
+}
+
+TEST(HelperNode, PublishesNoRosout) {
+  ProcessContext process({});
+  auto host = std::make_shared<rclcpp::Node>("gateway", process.options());
+
+  auto helper = make_helper_node(*host, "_sub");
+
+  const auto names = rosout_publishers(*host, "gateway");
+  ASSERT_EQ(std::count(names.begin(), names.end(), "gateway"), 1) << "the host's /rosout is not in the graph";
+  EXPECT_EQ(std::count(names.begin(), names.end(), "_gateway_sub"), 0) << "the helper publishes on /rosout";
+}
+
+// Context shutdown finalises every /rosout publisher on the shutting-down thread.
+// Under TSan this test reports a race if the helper has one while another thread
+// creates and destroys entities on the helper. One round catches it about half
+// the time, so the test runs several.
+TEST(HelperNode, ContextShutdownLeavesHelperEntitiesAlone) {
+  constexpr int kRounds = 10;
+  for (int round = 0; round < kRounds; ++round) {
+    auto process = std::make_unique<ProcessContext>(std::vector<std::string>{});
+    auto host = std::make_shared<rclcpp::Node>("gateway", process->options());
+    auto helper = make_helper_node(*host, "_sub");
+
+    std::atomic<bool> churning{true};
+    std::atomic<int> cycles{0};
+    std::thread churn([&] {
+      while (churning.load()) {
+        try {
+          // Same type as /rosout, so both threads use one type cache entry.
+          auto sub = helper->create_subscription<rcl_interfaces::msg::Log>("churn", 10,
+                                                                           [](const rcl_interfaces::msg::Log &) {});
+        } catch (const std::exception &) {
+          return;  // The context is shut down.
+        }
+        ++cycles;
+      }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (cycles.load() < 3 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    process.reset();
+    churning = false;
+    churn.join();
+    ASSERT_GE(cycles.load(), 3) << "round " << round;
+  }
 }

@@ -886,7 +886,7 @@ if(BUILD_TESTING)
   # Helper nodes keep their own name under a process-wide __node remap
   medkit_add_gtest(test_helper_node test/test_helper_node.cpp)
   target_link_libraries(test_helper_node gateway_ros2)
-  medkit_target_dependencies(test_helper_node rclcpp)
+  medkit_target_dependencies(test_helper_node rclcpp rcl_interfaces)
 
   # Private client nodes torn down after a first graph wait that follows rclcpp::shutdown()
   medkit_add_gtest(test_graph_listener_join test/test_graph_listener_join.cpp)

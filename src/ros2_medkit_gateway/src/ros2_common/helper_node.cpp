@@ -29,6 +29,7 @@ std::shared_ptr<rclcpp::Node> make_helper_node(rclcpp::Node & host, const std::s
   options.parameter_overrides({rclcpp::Parameter("use_sim_time", use_sim_time)});
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
+  options.enable_rosout(false);
   return std::make_shared<rclcpp::Node>(name, host.get_namespace(), options);
 }
 

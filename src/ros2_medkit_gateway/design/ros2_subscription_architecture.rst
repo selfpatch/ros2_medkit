@@ -77,6 +77,9 @@ Owns:
   main ``MultiThreadedExecutor`` never sees this node; creation, destruction
   and callback dispatch of every subscription on it run on the single worker
   thread, preserving the single-writer invariant against rcl's hash-map.
+  The node has no ``/rosout`` publisher: context shutdown finalises every
+  ``/rosout`` publisher on the thread that shuts down, which would be a second
+  writer to the node's type cache.
 - A bounded task queue guarded by ``queue_mtx_`` + ``queue_cv_``.
 - One ``aux`` thread driving the watchdog and graph-event polling ticks on
   their own cadence. The aux thread only touches atomics and the

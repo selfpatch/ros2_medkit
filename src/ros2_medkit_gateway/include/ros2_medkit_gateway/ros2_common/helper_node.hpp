@@ -33,6 +33,10 @@ namespace ros2_medkit_gateway::ros2_common {
  *
  * The helper has no parameter services and no parameter event publisher. A helper
  * spun only during its own requests would leave those services unanswered.
+ *
+ * The helper has no /rosout publisher. Context shutdown finalises every /rosout
+ * publisher on the shutting-down thread, which would race the helper's owner
+ * creating or destroying entities on the helper. Log through the host's logger.
  */
 std::shared_ptr<rclcpp::Node> make_helper_node(rclcpp::Node & host, const std::string & suffix);
 
