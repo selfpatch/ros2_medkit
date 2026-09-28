@@ -2562,7 +2562,8 @@ std::string OpcuaPlugin::write_persisted_binding(const std::string & path, const
   const std::filesystem::path parent = target.parent_path();
   if (!parent.empty()) {
     std::filesystem::create_directories(parent, ec);
-    if (ec && !std::filesystem::is_directory(parent)) {
+    std::error_code dir_ec;
+    if (ec && !std::filesystem::is_directory(parent, dir_ec)) {
       return "cannot create " + parent.string() + ": " + ec.message();
     }
     ec.clear();
