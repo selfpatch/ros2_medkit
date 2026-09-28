@@ -73,6 +73,34 @@ For network access, set host to 0.0.0.0:
 
    ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
 
+**"Connection reset by peer" or "Empty reply from server" from a container**
+
+.. code-block:: text
+
+   curl: (56) Recv failure: Connection reset by peer
+   curl: (52) Empty reply from server
+
+The gateway runs in a container on a bridge network with a published port
+(``-p 8080:8080``), ``curl`` inside the container works, and ``curl`` on the host
+fails. The gateway listens on the container's loopback: ``bringup.launch.py`` and
+``gateway.launch.py`` default to ``server_host:=127.0.0.1``. The startup log shows
+the bind address:
+
+.. code-block:: text
+
+   Configuration: REST API at 127.0.0.1:8080, backstop refresh interval: 30000ms
+
+Bind all interfaces inside the container:
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+
+Publish the port as ``-p 127.0.0.1:8080:8080`` to keep the API off the LAN;
+authentication is off by default. With ``--network host`` the default bind is
+enough, because the container shares the host's loopback. The Docker image's
+default command already binds ``0.0.0.0``.
+
 **Topic data returns empty or timeout**
 
 Possible causes:
@@ -163,9 +191,19 @@ For development, try ``network_mode: host``.
 
 **Web UI can't connect to gateway in container**
 
-1. Gateway must listen on ``0.0.0.0``, not ``127.0.0.1``
-2. CORS must allow the UI origin
-3. Port must be exposed in docker-compose
+1. Gateway must listen on ``0.0.0.0``, not ``127.0.0.1``. The image's default
+   command does; a launch file needs the argument:
+
+   .. code-block:: bash
+
+      ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+
+2. CORS must allow the UI origin exactly as the browser sends it (scheme, host
+   and port): ``http://127.0.0.1:3000`` is not ``http://localhost:3000``. The
+   defaults are ``http://localhost:3000`` and ``http://localhost:5173``. Pass
+   ``cors_allowed_origins:=<origin>,<origin>`` to the launch file for others; it
+   replaces the defaults, so list every origin you need.
+3. Port must be published (``-p 8080:8080`` or ``ports`` in docker-compose)
 
 Fault Manager Issues
 --------------------

@@ -57,6 +57,10 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
     sub_exec_ = std::make_unique<Ros2SubscriptionExecutor>(node_);
   }
 
@@ -83,7 +87,7 @@ class Ros2SubscriptionSlotTest : public ::testing::Test {
 TEST_F(Ros2SubscriptionSlotTest, CreateTypedSucceedsAndCallbackFires) {
   std::atomic<int> received{0};
   auto slot = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_typed", rclcpp::QoS(10), [&received](std::shared_ptr<const std_msgs::msg::Int32> msg) {
+      *sub_exec_, "/slot_typed", rclcpp::QoS(10), [&received](const std::shared_ptr<const std_msgs::msg::Int32> & msg) {
         received.store(msg->data);
       });
   ASSERT_TRUE(slot.has_value()) << slot.error();
@@ -103,11 +107,11 @@ TEST_F(Ros2SubscriptionSlotTest, CreateTypedSucceedsAndCallbackFires) {
 
 TEST_F(Ros2SubscriptionSlotTest, CreateGenericSucceedsAndCallbackFires) {
   std::atomic<int> received{0};
-  auto slot =
-      Ros2SubscriptionSlot::create_generic(*sub_exec_, "/slot_generic", "std_msgs/msg/String", rclcpp::QoS(10),
-                                           [&received](std::shared_ptr<const rclcpp::SerializedMessage> /*msg*/) {
-                                             received.fetch_add(1);
-                                           });
+  auto slot = Ros2SubscriptionSlot::create_generic(
+      *sub_exec_, "/slot_generic", "std_msgs/msg/String", rclcpp::QoS(10),
+      [&received](const std::shared_ptr<const rclcpp::SerializedMessage> & /*msg*/) {
+        received.fetch_add(1);
+      });
   ASSERT_TRUE(slot.has_value()) << slot.error();
   EXPECT_EQ((*slot)->type_name(), "std_msgs/msg/String");
 
@@ -124,7 +128,7 @@ TEST_F(Ros2SubscriptionSlotTest, CreateGenericSucceedsAndCallbackFires) {
 
 TEST_F(Ros2SubscriptionSlotTest, DestructorRemovesSubscriberFromGraph) {
   auto slot = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_removed", rclcpp::QoS(10), [](std::shared_ptr<const std_msgs::msg::Int32>) {});
+      *sub_exec_, "/slot_removed", rclcpp::QoS(10), [](const std::shared_ptr<const std_msgs::msg::Int32> &) {});
   ASSERT_TRUE(slot.has_value());
 
   // Verify graph has 1 subscriber for our topic.
@@ -145,7 +149,7 @@ TEST_F(Ros2SubscriptionSlotTest, DestructorRemovesSubscriberFromGraph) {
 
 TEST_F(Ros2SubscriptionSlotTest, DestructorOnShuttingDownExecutorDoesNotCrash) {
   auto slot = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_shutdown", rclcpp::QoS(10), [](std::shared_ptr<const std_msgs::msg::Int32>) {});
+      *sub_exec_, "/slot_shutdown", rclcpp::QoS(10), [](const std::shared_ptr<const std_msgs::msg::Int32> &) {});
   ASSERT_TRUE(slot.has_value());
 
   // Order matters: tear down executor first (so slot sees is_shutting_down()).
@@ -160,11 +164,11 @@ TEST_F(Ros2SubscriptionSlotTest, MultipleSlotsOnSameTopicBothReceive) {
   std::atomic<int> b{0};
 
   auto s1 = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_shared", rclcpp::QoS(10), [&a](std::shared_ptr<const std_msgs::msg::Int32> msg) {
+      *sub_exec_, "/slot_shared", rclcpp::QoS(10), [&a](const std::shared_ptr<const std_msgs::msg::Int32> & msg) {
         a.store(msg->data);
       });
   auto s2 = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_shared", rclcpp::QoS(10), [&b](std::shared_ptr<const std_msgs::msg::Int32> msg) {
+      *sub_exec_, "/slot_shared", rclcpp::QoS(10), [&b](const std::shared_ptr<const std_msgs::msg::Int32> & msg) {
         b.store(msg->data);
       });
   ASSERT_TRUE(s1.has_value());
@@ -199,7 +203,8 @@ TEST_F(Ros2SubscriptionSlotTest, DestructorSafeWhenDestroyTaskDrainsAfterSlotFre
   // the executor while the slot's destroy task is still queued. If the task
   // still captured `this`, TSan (or ASan) would flag UAF during queue drain.
   auto slot_local = Ros2SubscriptionSlot::create_typed<std_msgs::msg::Int32>(
-      *sub_exec_, "/slot_drain_after_dtor", rclcpp::QoS(10), [](std::shared_ptr<const std_msgs::msg::Int32>) {});
+      *sub_exec_, "/slot_drain_after_dtor", rclcpp::QoS(10),
+      [](const std::shared_ptr<const std_msgs::msg::Int32> &) {});
   ASSERT_TRUE(slot_local.has_value());
 
   // Serialize the worker behind a gate so the destroy task we post next

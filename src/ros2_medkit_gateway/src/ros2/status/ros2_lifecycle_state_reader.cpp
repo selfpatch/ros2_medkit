@@ -19,11 +19,13 @@
 
 #include <lifecycle_msgs/srv/get_state.hpp>
 
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
+
 namespace ros2_medkit_gateway {
 
 Ros2LifecycleStateReader::Ros2LifecycleStateReader(rclcpp::Node * host, std::chrono::duration<double> timeout)
-  : timeout_(timeout) {
-  client_node_ = std::make_shared<rclcpp::Node>(std::string(host->get_name()) + "_lifecycle_state_reader");
+  : timeout_(timeout), logger_(host->get_logger()) {
+  client_node_ = ros2_common::make_helper_node(*host, "_lifecycle_state_reader");
   // Joins the graph listener while the context is valid. A first join after
   // rclcpp::shutdown() half-registers the node and ~NodeGraph aborts.
   static_cast<void>(client_node_->get_graph_event());
@@ -66,8 +68,7 @@ std::optional<std::string> Ros2LifecycleStateReader::get_state(const std::string
     try {
       client = client_node_->create_client<lifecycle_msgs::srv::GetState>(get_state_service_path);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(client_node_->get_logger(), "GetState client creation failed for '%s': %s",
-                  get_state_service_path.c_str(), e.what());
+      RCLCPP_WARN(logger_, "GetState client creation failed for '%s': %s", get_state_service_path.c_str(), e.what());
       return std::nullopt;
     }
   }

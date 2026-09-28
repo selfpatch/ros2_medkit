@@ -23,6 +23,8 @@
 
 #include <rclcpp/logging.hpp>
 
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
+
 namespace ros2_medkit_gateway::ros2_common {
 
 namespace {
@@ -41,11 +43,7 @@ Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp:
     throw std::invalid_argument{"Ros2SubscriptionExecutor: gateway_node is null"};
   }
 
-  const std::string suffixed_name = std::string{gateway_node->get_name()} + cfg_.subscription_node_name_suffix;
-  rclcpp::NodeOptions opts;
-  opts.start_parameter_services(false);
-  opts.start_parameter_event_publisher(false);
-  subscription_node_ = std::make_shared<rclcpp::Node>(suffixed_name, gateway_node->get_namespace(), opts);
+  subscription_node_ = make_helper_node(*gateway_node, cfg_.subscription_node_name_suffix);
 
   // Own executor owns the subscription node so subscription create/destroy
   // and callback dispatch all run on the same worker thread (this executor is

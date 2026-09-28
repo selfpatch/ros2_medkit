@@ -168,6 +168,10 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
 
     // Give time for discovery
     std::this_thread::sleep_for(100ms);

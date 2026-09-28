@@ -86,6 +86,10 @@ class FaultManagerTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
   }
 
   void stop_spinning() {
@@ -192,6 +196,10 @@ TEST_F(FaultManagerTest, GetSnapshotsDrivesPrivateClientWithoutSpinningHostNode)
   std::thread service_thread([&service_executor]() {
     service_executor.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!service_executor.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   // node_ is deliberately never spun by this test.
   FaultManager fault_manager(std::make_shared<ros2_medkit_gateway::ros2::Ros2FaultServiceTransport>(node_.get()));

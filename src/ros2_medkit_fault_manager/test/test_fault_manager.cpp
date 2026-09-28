@@ -1060,7 +1060,7 @@ class FaultEventPublishingTest : public ::testing::Test {
     std::string events_topic = ns + "/fault_manager/events";
     auto qos = rclcpp::QoS(100).reliable().durability_volatile();
     event_subscription_ =
-        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::SharedPtr msg) {
+        test_node_->create_subscription<FaultEvent>(events_topic, qos, [this](const FaultEvent::ConstSharedPtr & msg) {
           received_events_.push_back(*msg);
         });
 
@@ -1206,7 +1206,7 @@ TEST_F(FaultEventPublishingTest, NewFaultPublishesConfirmedEvent) {
 
   // Wait for event to arrive (polling, robust under CPU contention)
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CONFIRMED was published
@@ -1221,7 +1221,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report a new fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_WARN, "/test_node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1230,7 +1230,7 @@ TEST_F(FaultEventPublishingTest, UpdateExistingFaultPublishesUpdatedEvent) {
   // Report same fault again - should trigger EVENT_UPDATED
   ASSERT_TRUE(call_report_fault("TEST_FAULT_2", Fault::SEVERITY_ERROR, "/test_node2"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_UPDATED was published (severity/sources changed; still one occurrence)
@@ -1244,7 +1244,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("TEST_FAULT_3", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Clear received events
@@ -1253,7 +1253,7 @@ TEST_F(FaultEventPublishingTest, ClearFaultPublishesClearedEvent) {
   // Clear the fault
   ASSERT_TRUE(call_clear_fault("TEST_FAULT_3"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Verify EVENT_CLEARED was published
@@ -1280,7 +1280,7 @@ class HealingFaultEventPublishingTest : public FaultEventPublishingTest {
 TEST_F(HealingFaultEventPublishingTest, HealPublishesClearedEventSoStreamConsumersSeeTheEnd) {
   ASSERT_TRUE(call_report_fault("HEAL_ME", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   received_events_.clear();
 
@@ -1323,7 +1323,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 
   ASSERT_TRUE(call_report_fault("TEST_FAULT_4", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto after = fault_manager_->now();
@@ -1339,7 +1339,7 @@ TEST_F(FaultEventPublishingTest, EventContainsCorrectTimestamp) {
 TEST_F(FaultEventPublishingTest, EventContainsFullFaultData) {
   ASSERT_TRUE(call_report_fault("FULL_DATA_TEST", Fault::SEVERITY_CRITICAL, "/sensor/temperature"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   ASSERT_EQ(received_events_.size(), 1u);
@@ -1362,7 +1362,7 @@ TEST_F(FaultEventPublishingTest, TimestampUsesWallClockNotSimTime) {
 
   ASSERT_TRUE(call_report_fault("WALL_CLOCK_TEST", Fault::SEVERITY_WARN, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto wall_after = std::chrono::system_clock::now();
@@ -1390,7 +1390,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExpectedFault) {
   // Report a fault first
   ASSERT_TRUE(call_report_fault("GET_FAULT_TEST", Fault::SEVERITY_ERROR, "/test_node"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Get fault via service
@@ -1414,7 +1414,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsEnvironmentData) {
   // Report a fault
   ASSERT_TRUE(call_report_fault("ENV_DATA_TEST", Fault::SEVERITY_WARN, "/sensor/temp"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   auto response = call_get_fault("ENV_DATA_TEST");
@@ -1434,7 +1434,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReturnsExtendedDataRecords) {
   // Report fault twice to have first and last occurrence timestamps differ
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node1"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
   ASSERT_TRUE(call_report_fault("EDR_TEST", Fault::SEVERITY_ERROR, "/node2"));
   ASSERT_TRUE(spin_until([this]() {
@@ -1482,7 +1482,7 @@ TEST_F(FaultEventPublishingTest, ListFaultsForEntityEmptyResult) {
   // Report faults from a different entity
   ASSERT_TRUE(call_report_fault("SOME_FAULT", Fault::SEVERITY_ERROR, "/some/other_entity"));
   ASSERT_TRUE(spin_until([this]() {
-    return received_events_.size() >= 1;
+    return !received_events_.empty();
   }));
 
   // Query faults for non-existent entity
@@ -1883,6 +1883,10 @@ class SnapshotCooldownTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() {
       executor_.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_.is_spinning()) {
+      std::this_thread::yield();
+    }
 
     ASSERT_TRUE(report_client_->wait_for_service(std::chrono::seconds(5)));
     ASSERT_TRUE(clear_client_->wait_for_service(std::chrono::seconds(5)));

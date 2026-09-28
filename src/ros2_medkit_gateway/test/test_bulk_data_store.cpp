@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 
 namespace ros2_medkit_gateway {
@@ -177,7 +178,9 @@ TEST_F(BulkDataStoreTest, GetFilePath) {
 
   // Verify content
   std::ifstream ifs(*path, std::ios::binary);
-  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  std::ostringstream content_buffer;
+  content_buffer << ifs.rdbuf();
+  const std::string content = content_buffer.str();
   EXPECT_EQ(content, "hello world");
 }
 
@@ -367,7 +370,9 @@ TEST_F(BulkDataStoreTest, StoreLargeFile) {
   ASSERT_TRUE(path.has_value());
   std::ifstream f(*path, std::ios::binary);
   ASSERT_TRUE(f.good());
-  std::string read_back((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  std::ostringstream read_back_buffer;
+  read_back_buffer << f.rdbuf();
+  const std::string read_back = read_back_buffer.str();
   EXPECT_EQ(read_back, payload);
 }
 

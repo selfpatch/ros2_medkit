@@ -22,6 +22,7 @@
 
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
 #include "ros2_medkit_msgs/msg/environment_data.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 
@@ -101,7 +102,7 @@ Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node
   // processes these clients, so the client's pending-request cleanup cannot
   // race against the calling thread destroying the response shared_ptr - both
   // happen inline on the caller's thread inside spin_until_future_complete().
-  client_node_ = std::make_shared<rclcpp::Node>(std::string(node_->get_name()) + "_fault_clients");
+  client_node_ = ros2_common::make_helper_node(*node_, "_fault_clients");
   // Joins the graph listener while the context is valid. A first join after
   // rclcpp::shutdown() half-registers the node and ~NodeGraph aborts.
   static_cast<void>(client_node_->get_graph_event());

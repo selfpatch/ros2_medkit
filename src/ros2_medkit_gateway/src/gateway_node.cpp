@@ -1601,17 +1601,15 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
   size_t count = 0;
   for (const auto & [name, ns] : nodes_and_namespaces) {
     if (!name.empty() && name.front() == '_') {
-      continue;  // hidden node (name part starts with '_')
+      continue;  // hidden node, including the gateway's own helper nodes
     }
     std::string fqn = ns;
     if (ns != "/") {
       fqn += "/";
     }
     fqn += name;
-    // Exclude the gateway's own nodes by exact FQN: the main node and its known
-    // internal helpers. A plain prefix match would also drop a genuine peer whose
-    // name starts with the gateway name (e.g. "<fqn>_monitor" or "<fqn>2").
-    if (fqn == self_fqn || fqn == self_fqn + "_sub" || fqn == self_fqn + "_fault_clients") {
+    // Exact match: a peer named "<fqn>_monitor" or "<fqn>2" is still a peer.
+    if (fqn == self_fqn) {
       continue;
     }
     ++count;

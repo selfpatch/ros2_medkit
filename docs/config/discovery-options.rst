@@ -81,7 +81,9 @@ Internal Node Filtering
 When ``filter_internal_nodes`` is true (the default), ROS 2 nodes whose names
 start with an underscore (``_``) are excluded from the entity tree. This
 filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
-``_param_client_node``, and similar system nodes that should not appear as
+``_param_client_node``, the gateway's own helper nodes
+(``_<gateway name>_fault_clients``, ``_<gateway name>_lifecycle_state_reader``,
+``_<gateway name>_sub``), and similar system nodes that should not appear as
 SOVD entities. The filter applies to both locally discovered Apps and
 peer-discovered Apps (after stripping the peer prefix).
 

@@ -229,9 +229,9 @@ Server Capabilities
               "/powertrain/engine/rpm_sensor",
               "/ros2_medkit_gateway",
               "/_param_client_node",
-              "/ros2_medkit_gateway_fault_clients",
-              "/ros2_medkit_gateway_lifecycle_state_reader",
-              "/ros2_medkit_gateway_sub"
+              "/_ros2_medkit_gateway_fault_clients",
+              "/_ros2_medkit_gateway_lifecycle_state_reader",
+              "/_ros2_medkit_gateway_sub"
             ],
             "peer_names": []
           }

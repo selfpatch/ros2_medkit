@@ -19,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -172,7 +173,9 @@ TEST_F(DefaultScriptProviderTest, UploadToFilesystem) {
 
   // Verify script content
   std::ifstream script_file(script_dir / "script.py");
-  std::string file_content((std::istreambuf_iterator<char>(script_file)), std::istreambuf_iterator<char>());
+  std::ostringstream file_content_buffer;
+  file_content_buffer << script_file.rdbuf();
+  const std::string file_content = file_content_buffer.str();
   EXPECT_EQ(file_content, content);
 
   // Verify metadata

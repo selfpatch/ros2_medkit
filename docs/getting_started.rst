@@ -46,8 +46,8 @@ You should see:
 
 .. code-block:: text
 
-   [gateway_node]: REST server starting on http://127.0.0.1:8080
-   [gateway_node]: REST server started successfully
+   [ros2_medkit_gateway]: Configuration: REST API at 127.0.0.1:8080, backstop refresh interval: 30000ms
+   [ros2_medkit_gateway]: ROS 2 Medkit Gateway ready on HTTP://127.0.0.1:8080
 
 **Terminal 2 - Start demo nodes:**
 

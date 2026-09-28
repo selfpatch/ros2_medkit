@@ -1570,6 +1570,7 @@ ros2 launch ros2_medkit_gateway gateway.launch.py \
 | `server_host`         | `127.0.0.1`                           | Host to bind the REST server (`127.0.0.1` or `0.0.0.0`). Launch-arg only.                           |
 | `server_port`         | `8080`                                | Port for the REST API. Launch-arg only.                                                              |
 | `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval in ms (graph events drive the primary refresh). Launch-arg only.    |
+| `cors_allowed_origins` | `http://localhost:3000,http://localhost:5173` | Comma-separated browser origins, matched exactly (`http://127.0.0.1:3000` is not `http://localhost:3000`). A value replaces the defaults; empty disables CORS. With a custom `config_file` and this argument unset, CORS comes from the config files only. |
 
 ### Authentication Configuration Examples
 

@@ -99,6 +99,13 @@ sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-
 ros2 launch ros2_medkit_gateway bringup.launch.py
 ```
 
+> [!IMPORTANT]
+> `bringup.launch.py` binds the REST API to `127.0.0.1`. Inside a container without
+> `--network host` that is the container's own loopback, and the host gets
+> `Connection reset by peer` or an empty reply on the published port. Pass `server_host:=0.0.0.0`
+> and publish the port. Publishing it as `-p 127.0.0.1:8080:8080` keeps the API, which has no
+> authentication by default, off the LAN.
+
 > [!TIP]
 > That is the whole setup. It auto-discovers every node, topic, service and action and starts
 > emitting structured faults over REST - no instrumentation, no changes to your stack. Prefer
@@ -157,8 +164,11 @@ docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
 ```
 
 The browser calls the gateway from a different origin, so the gateway must allow that origin via
-CORS (the prebuilt gateway Docker image enables it; for a native bringup set
-`cors.allowed_origins`). See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html).
+CORS. The Docker image and `bringup.launch.py` allow `http://localhost:3000` and
+`http://localhost:5173`. The origin must match exactly: `http://127.0.0.1:3000` is not
+`http://localhost:3000`. To allow other origins, pass the full list, for example
+`cors_allowed_origins:=http://localhost:3000,http://127.0.0.1:3000` (it replaces the defaults).
+See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html).
 
 </details>
 
