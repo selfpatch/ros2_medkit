@@ -849,12 +849,16 @@ it is among the last eight refused, and holds the outage. There is no expiry -
 an identity that moved silently
 is the thing this exists to catch.
 
-Three cases have no binding, and in each the next adoption is unconstrained:
+An operator-configured `endpoint_url` runs no discovery and neither reads nor
+writes the binding file. Its binding lives in memory for the life of the
+process: after a drop, a server at the configured address that answers with a
+different `ApplicationUri` is refused until the plugin restarts, and the next
+process binds to whichever server answers there first.
+
+Two cases have no binding, and in each the next adoption is unconstrained:
 
 1. Nothing has ever been connected and no binding file was found.
-2. An operator-configured `endpoint_url`, which runs no discovery at all and
-   neither reads nor writes the binding file.
-3. A server that publishes **no `ApplicationUri`**: there is nothing to bind to,
+2. A server that publishes **no `ApplicationUri`**: there is nothing to bind to,
    so after a drop a re-scan accepts whichever server answers. This is logged at
    WARN when such a server is adopted, and nothing is written to the file. Such
    a server is adoptable only while no binding is held; with a binding it is
