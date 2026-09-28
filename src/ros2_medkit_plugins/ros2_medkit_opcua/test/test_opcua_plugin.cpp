@@ -1068,6 +1068,21 @@ TEST(PersistedBinding, AParentThatCannotHoldTheFileIsReportedAndNotThrown) {
   EXPECT_EQ(OpcuaPlugin::read_persisted_binding(path), "");
 }
 
+TEST(PersistedBinding, AParentThatCannotBeLookedUpIsReportedAndNotThrown) {
+  ScopedBindingDir tmp;
+  // Two links naming each other: every lookup through them fails with ELOOP, for
+  // root too. status() reports that as an error, where ENOTDIR reads as absent.
+  const std::string loop_a = tmp.file("loop_a");
+  const std::string loop_b = tmp.file("loop_b");
+  std::filesystem::create_symlink(loop_b, loop_a);
+  std::filesystem::create_symlink(loop_a, loop_b);
+  const std::string path = loop_a + "/nested/binding";
+
+  std::string failure;
+  ASSERT_NO_THROW(failure = OpcuaPlugin::write_persisted_binding(path, "urn:siemens:s7-1500:line-a"));
+  EXPECT_NE(failure, "") << "a parent that cannot be looked up was reported as a successful write";
+}
+
 TEST(PersistedBinding, ASymlinkedPathKeepsItsTarget) {
   ScopedBindingDir tmp;
   const std::string uri = "urn:siemens:s7-1500:line-a";
