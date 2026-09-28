@@ -139,10 +139,13 @@ spellings are recognised, so the rule holds either way.
    for those two nodes, so the name cannot say whose they are, and each gateway
    will filter the other's. They carry nothing to diagnose in either process,
    and the alternative is that a namespaced gateway lists and counts its own
-   plumbing. Give each gateway its own node name (``-r __node:=gateway_a``, as
-   :doc:`../tutorials/multi-instance` does) when several run on one ROS graph
-   and you want each one's nodes distinguishable. The subscription node is not
-   affected: it always follows its gateway's namespace.
+   plumbing. The subscription node is not affected: it always follows its
+   gateway's namespace. Give each gateway its own node name when several run on one
+   ROS graph and you want each one's nodes distinguishable. Use the remap that
+   names the gateway node (``-r ros2_medkit_gateway:__node:=gateway_a``): the
+   helper nodes then take ``gateway_a`` as the base of their own names. A
+   process-wide ``-r __node:=gateway_a`` renames the helper nodes too, so all
+   four are named ``gateway_a``.
 
 A manifest- or plugin-declared App bound to one of these nodes is not served,
 and the gateway logs a warning naming it: bind the App to the node you meant,
