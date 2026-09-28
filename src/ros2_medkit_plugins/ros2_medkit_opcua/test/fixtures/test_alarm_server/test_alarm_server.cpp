@@ -82,6 +82,9 @@ std::map<std::string, Condition> g_conditions;
 std::mutex g_commands_mutex;
 std::deque<std::string> g_commands;
 std::atomic<bool> g_running{true};
+// The DI serial the ``nameplate`` command publishes. Server thread only.
+std::string g_nameplate_serial;
+bool g_nameplate_published = true;
 
 void stop_handler(int) {
   g_running = false;
@@ -522,13 +525,15 @@ UA_StatusCode configure_secure(UA_ServerConfig * config, UA_UInt16 port, const s
 
 // INV2: pin explicit ServerStatus/BuildInfo so the identity integration test can
 // assert known nameplate values instead of open62541's build-time defaults.
-void set_build_info(UA_ServerConfig * config) {
+// Without names the device reads as unnamed and the client falls back to an
+// endpoint-derived id.
+void set_build_info(UA_ServerConfig * config, bool with_names) {
   auto set = [](UA_String * dst, const char * value) {
     UA_String_clear(dst);
     *dst = UA_STRING_ALLOC(value);
   };
-  set(&config->buildInfo.manufacturerName, "SelfPatch Test Manufacturer");
-  set(&config->buildInfo.productName, "SelfPatch Test PLC");
+  set(&config->buildInfo.manufacturerName, with_names ? "SelfPatch Test Manufacturer" : "");
+  set(&config->buildInfo.productName, with_names ? "SelfPatch Test PLC" : "");
   set(&config->buildInfo.softwareVersion, "1.2.3");
   set(&config->buildInfo.buildNumber, "build-4567");
 }
@@ -677,6 +682,19 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
       }
       return;
     }
+    // ``nameplate`` adds the DI device a ``--no-nameplate`` start held back, like
+    // a PLC whose address space fills in after its server is up. The DI device
+    // names the component ahead of BuildInfo, so BuildInfo stays empty.
+    if (cmd == "nameplate") {
+      if (g_nameplate_published) {
+        std::cout << "ERR nameplate_present" << std::endl;
+        return;
+      }
+      add_di_nameplate(server, g_nameplate_serial);
+      g_nameplate_published = true;
+      std::cout << "OK nameplate" << std::endl;
+      return;
+    }
     auto it = g_conditions.find(name);
     if (cmd != "quit" && it == g_conditions.end()) {
       std::cout << "ERR unknown_condition:" << name << std::endl;
@@ -768,6 +786,9 @@ int main(int argc, char ** argv) {
       port = static_cast<UA_UInt16>(std::atoi(argv[++i]));
     } else if (std::strcmp(argv[i], "--serial") == 0 && i + 1 < argc) {
       di_serial = argv[++i];
+    } else if (std::strcmp(argv[i], "--no-nameplate") == 0) {
+      // Starts with empty BuildInfo names and no DI device; ``nameplate`` adds the device.
+      g_nameplate_published = false;
     } else if (std::strcmp(argv[i], "--max-refs-per-node") == 0 && i + 1 < argc) {
       // Caps references per Browse result so every larger browse pages via
       // BrowseNext continuation points (regression fixture for the client's
@@ -818,7 +839,7 @@ int main(int argc, char ** argv) {
       config->applicationDescription.applicationUri = UA_STRING_ALLOC(app_uri.c_str());
     }
   }
-  set_build_info(config);
+  set_build_info(config, g_nameplate_published);
 
   UA_UInt16 ns = UA_Server_addNamespace(server, NS_URI);
   if (add_variable(server, ns) != UA_STATUSCODE_GOOD) {
@@ -826,7 +847,10 @@ int main(int argc, char ** argv) {
   }
 
   // INV2: standard device-info nameplate for the identity integration test.
-  add_di_nameplate(server, di_serial);
+  g_nameplate_serial = di_serial;
+  if (g_nameplate_published) {
+    add_di_nameplate(server, di_serial);
+  }
 
   Condition op, oh, sl;
   if (add_condition(server, "Overpressure", ns, op) != UA_STATUSCODE_GOOD ||

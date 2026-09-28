@@ -1694,6 +1694,74 @@ TEST_F(OpcuaIdentityE2ETest, AFaultRaisedUnderTheStandInHealsAfterTheDeviceNames
   EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty());
 }
 
+// The restart heal when the device names itself late. The previous process
+// raised PLC_COMMS_LOST under the nameplate id. This one connects while the
+// device is still unnamed, so at connect the row belongs to an id it does not
+// carry and is left standing. When a later poll read names the device, the id
+// becomes the row's owner and the decision has to be taken again.
+TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderTheNameplateHealsWhenTheDeviceNamesItselfLate) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_late_nameplate");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_late_nameplate_faultmgr");
+
+  const std::string nameplate_id = device_derived_component_id(endpoint_);
+  ASSERT_FALSE(nameplate_id.empty());
+  ASSERT_TRUE(restart_server({"--no-nameplate"}));
+  const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint_).id;
+  ASSERT_EQ(device_derived_component_id(endpoint_), stand_in) << "the fixture still names itself";
+
+  FaultStoreStub store(fault_manager);
+  store.seed(kCommsLostFaultCode, {nameplate_id});
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = endpoint_;  // config-less: no node map, so the device names the component
+  // Slow enough that the poll-path identity reads span several seconds.
+  config["poll_interval_ms"] = 1000;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+
+  const auto probe_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (plugin.comms_lost_probe_count_for_test() == 0 && std::chrono::steady_clock::now() < probe_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  ASSERT_GT(plugin.comms_lost_probe_count_for_test(), 0u) << "the store was never asked who holds the row";
+  // The answer is applied on the next poll cycle.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  ASSERT_EQ(store.sources_of(kCommsLostFaultCode), std::vector<std::string>{nameplate_id})
+      << "the row was cleared while this process still served the stand-in";
+
+  ASSERT_TRUE(server_.send("nameplate"));
+  const auto named_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (device_derived_component_id(endpoint_) != nameplate_id && std::chrono::steady_clock::now() < named_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  ASSERT_EQ(device_derived_component_id(endpoint_), nameplate_id) << "the fixture never named itself";
+
+  const auto heal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (!store.sources_of(kCommsLostFaultCode).empty() && std::chrono::steady_clock::now() < heal_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  spin.stop();
+  plugin.shutdown();
+
+  const auto codes = store.cleared_codes();
+  EXPECT_GE(std::count(codes.begin(), codes.end(), std::string(kCommsLostFaultCode)), 1)
+      << "the row the nameplate id holds was not healed after the device named itself";
+  EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty());
+}
+
 // The binding, driven end to end against live fixtures.
 //
 // The sweep is substituted (which is what the injected discovery I/O is for) so

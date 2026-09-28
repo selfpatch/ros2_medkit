@@ -2066,6 +2066,9 @@ void OpcuaPlugin::maybe_rederive_component_identity(int extra_reads) {
   }
   log_info("Component identity re-derived from the adopted device at " + live_endpoint + ": id='" + rederived->id +
            "', name='" + rederived->name + "' (was '" + previous_id + "')");
+  // The PLC_COMMS_LOST gate compares against the component id, so a standing
+  // row may belong to this bridge now.
+  owe_comms_lost_decision();
 }
 
 void OpcuaPlugin::remember_placeholder_id(const std::string & id) {
