@@ -116,13 +116,29 @@ def signal_group(pgid, sig):
     return True
 
 
+def group_running(pgid):
+    """
+    Return True while a process of group <pgid> runs.
+
+    A zombie does not count: PID 1 of a CI job container does not reap orphans.
+    """
+    for stat in Path('/proc').glob('[0-9]*/stat'):
+        try:
+            # After the command name: state, parent pid, process group.
+            fields = stat.read_text().rsplit(')', 1)[1].split()
+            if int(fields[2]) == pgid and fields[0] not in ('Z', 'X'):
+                return True
+        except (OSError, IndexError, ValueError):
+            continue
+    return False
+
+
 def terminate(proc):
     """
     SIGTERM the process group of <proc> and wait until all of it has exited.
 
-    A node killed during its shutdown leaves its DDS shared-memory ports locked, and a
-    later participant on the same domain can block on them. SIGKILL comes only after a
-    scaled grace period.
+    A node killed during its shutdown leaves its Fast DDS files in /dev/shm. SIGKILL
+    comes only after a scaled grace period.
     """
     if proc.poll() is not None:
         return
@@ -138,8 +154,9 @@ def terminate(proc):
     end = time.monotonic() + 15 * SCALE
     # ros2 run exits before the node it started, so wait for the group.
     while time.monotonic() < end:
-        proc.poll()  # reap the leader, or its zombie keeps the group alive
-        if not signal_group(pgid, 0):
+        proc.poll()
+        if not group_running(pgid):
+            proc.wait()
             return
         time.sleep(0.1)
     signal_group(pgid, signal.SIGKILL)
