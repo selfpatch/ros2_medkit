@@ -1302,7 +1302,7 @@ std::string read_string_attribute(UA_Client * client, const UA_NodeId & node_id)
 // Strip leading/trailing ASCII whitespace. Used for vendor identity fields
 // exposed in a fixed-width, space-padded form (Siemens pads the MLFB
 // OrderNumber to 20 chars) so the stored value is the bare order code.
-std::string trim_ascii_ws(std::string s) {
+std::string trim_ascii_ws(const std::string & s) {
   const char * ws = " \t\r\n";
   const auto begin = s.find_first_not_of(ws);
   if (begin == std::string::npos) {
