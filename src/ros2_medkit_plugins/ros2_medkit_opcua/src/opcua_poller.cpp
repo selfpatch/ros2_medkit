@@ -1208,7 +1208,7 @@ OpcuaPoller::adopt_rediscovered_endpoint(const std::string & current,
   if (!rediscover) {
     return std::nullopt;
   }
-  const std::optional<std::string> found = rediscover();
+  std::optional<std::string> found = rediscover();
   if (!found || found->empty() || *found == current) {
     return std::nullopt;
   }

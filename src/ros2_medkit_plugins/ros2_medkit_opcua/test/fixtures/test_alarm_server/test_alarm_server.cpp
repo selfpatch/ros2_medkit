@@ -69,7 +69,7 @@ void log_state(const Condition & c) {
   std::cout << "STATE " << c.name << " active=" << (c.active ? "true" : "false")
             << " acked=" << (c.acked ? "true" : "false") << " confirmed=" << (c.confirmed ? "true" : "false")
             << " enabled=" << (c.enabled ? "true" : "false") << " shelved=" << (c.shelved ? "true" : "false")
-            << " retain=" << (c.retain ? "true" : "false") << std::endl;
+            << " retain=" << (c.retain ? "true" : "false") << '\n';
 }
 
 std::map<std::string, Condition> g_conditions;
@@ -86,7 +86,7 @@ std::atomic<bool> g_running{true};
 std::string g_nameplate_serial;
 bool g_nameplate_published = true;
 
-void stop_handler(int) {
+void stop_handler(int /*signum*/) {
   g_running = false;
 }
 
@@ -428,11 +428,11 @@ UA_StatusCode logging_activate_session(UA_Server * server, UA_AccessControl * ac
     mode = static_cast<int>(endpoint->securityMode);
   }
   std::cout << "SECURE_SESSION securityPolicyUri=" << policy_uri << " securityMode=" << mode
-            << " (1=None,2=Sign,3=SignAndEncrypt)" << std::endl;
+            << " (1=None,2=Sign,3=SignAndEncrypt)" << '\n';
   UA_StatusCode rc = g_orig_activate_session ? g_orig_activate_session(server, ac, endpoint, channel_cert, session_id,
                                                                        user_token, session_ctx)
                                              : UA_STATUSCODE_BADINTERNALERROR;
-  std::cout << "SECURE_SESSION activate rc=" << UA_StatusCode_name(rc) << std::endl;
+  std::cout << "SECURE_SESSION activate rc=" << UA_StatusCode_name(rc) << '\n';
   return rc;
 }
 
@@ -640,7 +640,7 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     iss >> cmd >> name;
     if (cmd == "quit") {
       g_running = false;
-      std::cout << "OK quit" << std::endl;
+      std::cout << "OK quit" << '\n';
       // Only the server loop stops here. What ends the reader is EOF, which
       // the writer produces by closing its end of the pipe - close(2) on this
       // process's own descriptor does not release a reader already parked in
@@ -654,7 +654,7 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     if (cmd == "set") {
       long val = 0;
       if (!(iss >> val)) {
-        std::cout << "ERR set_missing_value:" << name << std::endl;
+        std::cout << "ERR set_missing_value:" << name << '\n';
         return;
       }
       UA_Int32 v32 = static_cast<UA_Int32>(val);
@@ -664,9 +664,9 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
       UA_StatusCode rc = UA_Server_writeValue(server, target, var);
       UA_NodeId_clear(&target);
       if (rc == UA_STATUSCODE_GOOD) {
-        std::cout << "OK " << name << "=" << val << std::endl;
+        std::cout << "OK " << name << "=" << val << '\n';
       } else {
-        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
       }
       return;
     }
@@ -676,9 +676,9 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     if (cmd == "sysevent") {
       UA_StatusCode rc = handle_sysevent(server);
       if (rc == UA_STATUSCODE_GOOD) {
-        std::cout << "OK sysevent" << std::endl;
+        std::cout << "OK sysevent" << '\n';
       } else {
-        std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << std::endl;
+        std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << '\n';
       }
       return;
     }
@@ -687,17 +687,17 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     // names the component ahead of BuildInfo, so BuildInfo stays empty.
     if (cmd == "nameplate") {
       if (g_nameplate_published) {
-        std::cout << "ERR nameplate_present\n" << std::flush;
+        std::cout << "ERR nameplate_present\n";
         return;
       }
       add_di_nameplate(server, g_nameplate_serial);
       g_nameplate_published = true;
-      std::cout << "OK nameplate\n" << std::flush;
+      std::cout << "OK nameplate\n";
       return;
     }
     auto it = g_conditions.find(name);
     if (cmd != "quit" && it == g_conditions.end()) {
-      std::cout << "ERR unknown_condition:" << name << std::endl;
+      std::cout << "ERR unknown_condition:" << name << '\n';
       return;
     }
     Condition & cref = it->second;
@@ -756,14 +756,14 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
         cref.enabled = true;
       }
     } else {
-      std::cout << "ERR unknown_cmd:" << cmd << std::endl;
+      std::cout << "ERR unknown_cmd:" << cmd << '\n';
       return;
     }
     if (rc == UA_STATUSCODE_GOOD) {
-      std::cout << "OK " << name << std::endl;
+      std::cout << "OK " << name << '\n';
       log_state(cref);
     } else {
-      std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+      std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
     }
   }
 }
@@ -771,6 +771,8 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
 }  // namespace
 
 int main(int argc, char ** argv) {
+  // Tests read each line from a pipe as it is written.
+  std::cout << std::unitbuf;
   signal(SIGINT, stop_handler);
   signal(SIGTERM, stop_handler);
 
@@ -881,7 +883,7 @@ int main(int argc, char ** argv) {
     config->maxReferencesPerNode = max_refs_per_node;
   }
 
-  std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;
+  std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << '\n';
   std::thread reader(stdin_reader_loop);
 
   // The server is driven by hand so that queued commands execute between
@@ -893,7 +895,7 @@ int main(int argc, char ** argv) {
   // happen.
   UA_StatusCode rc = UA_Server_run_startup(server);
   if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n' << std::flush;
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n';
   }
   while (rc == UA_STATUSCODE_GOOD && g_running) {
     // The return is how long the server may idle until its next scheduled
@@ -919,7 +921,7 @@ int main(int argc, char ** argv) {
   if (rc == UA_STATUSCODE_GOOD) {
     rc = UA_Server_run_shutdown(server);
     if (rc != UA_STATUSCODE_GOOD) {
-      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n' << std::flush;
+      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n';
     }
   }
   g_running = false;
