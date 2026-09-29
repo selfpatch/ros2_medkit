@@ -677,6 +677,7 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
                node_map_.auto_alarms().source_node_id_str + ", entity " + node_map_.auto_alarms().entity_id + ")");
     }
   }
+  start_endpoint_url_ = client_config_.endpoint_url;
 }
 
 void OpcuaPlugin::set_context(PluginContext & context) {
@@ -1586,6 +1587,15 @@ std::unordered_set<std::string> OpcuaPlugin::reporting_ids_of_this_process() con
   const std::string current = node_map_.component_id();
   if (!current.empty()) {
     ids.insert(current);
+  }
+  // A process that never reached its PLC reported under the stand-in of the
+  // endpoint it started on, or of the one it found and never opened a session
+  // on. This process derives both from the same configuration.
+  for (const std::string & endpoint : {start_endpoint_url_, client_ ? client_->endpoint_url() : std::string{}}) {
+    const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint).id;
+    if (!stand_in.empty()) {
+      ids.insert(stand_in);
+    }
   }
   return ids;
 }
