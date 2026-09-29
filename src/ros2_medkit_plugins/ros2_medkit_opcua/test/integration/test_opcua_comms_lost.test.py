@@ -46,9 +46,25 @@ import urllib.request
 
 COMMS_LOST = 'PLC_COMMS_LOST'
 HELD_BY_OTHERS = f'{COMMS_LOST} is held by sources this bridge did not report under ['
-CLEARING = f"clearing this bridge's {COMMS_LOST}"
 # Discovery identifies OPC-UA only on this port.
 DISCOVERY_PORT = 4840
+
+
+def time_scale():
+    """Return MEDKIT_TEST_TIME_SCALE, the factor the sanitizer jobs apply to wall-clock budgets."""
+    try:
+        scale = float(os.environ.get('MEDKIT_TEST_TIME_SCALE', '1'))
+    except ValueError:
+        return 1.0
+    return scale if scale >= 1.0 else 1.0
+
+
+SCALE = time_scale()
+
+
+def settle(seconds):
+    """Sleep a scaled settle window."""
+    time.sleep(seconds * SCALE)
 
 
 def free_port():
@@ -63,7 +79,7 @@ def find_plugin():
     for prefix in os.environ.get('AMENT_PREFIX_PATH', '').split(os.pathsep):
         if not prefix:
             continue
-        for root, _dirs, files in os.walk(prefix):
+        for root, _, files in os.walk(prefix):
             if 'libros2_medkit_opcua_plugin.so' in files:
                 return os.path.join(root, 'libros2_medkit_opcua_plugin.so')
     return None
@@ -79,8 +95,8 @@ def http_json(url, timeout=2):
 
 
 def wait_log(path, needle, deadline):
-    """Poll a log file until <needle> appears."""
-    end = time.monotonic() + deadline
+    """Poll a log file until <needle> appears, for a scaled deadline."""
+    end = time.monotonic() + deadline * SCALE
     while time.monotonic() < end:
         try:
             if needle in Path(path).read_text(errors='replace'):
@@ -91,35 +107,43 @@ def wait_log(path, needle, deadline):
     return False
 
 
-def terminate(proc):
-    """SIGTERM, then SIGKILL, the process group of <proc>."""
-    if proc is None:
-        return
-    pgid = None
-    if proc.returncode is None:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except ProcessLookupError:
-            pgid = None
-
-    def signal_group(sig):
-        if pgid is not None:
-            try:
-                os.killpg(pgid, sig)
-            except ProcessLookupError:
-                pass
-
-    signal_group(signal.SIGTERM)
+def signal_group(pgid, sig):
+    """Send <sig> to a process group. Return False when the group has no process left."""
     try:
-        proc.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        signal_group(signal.SIGKILL)
-        proc.wait()
-    # ros2 run can exit before the node it started.
-    signal_group(signal.SIGKILL)
-    log = getattr(proc, '_log', None)
-    if log is not None:
-        log.close()
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def terminate(proc):
+    """
+    SIGTERM the process group of <proc> and wait until all of it has exited.
+
+    A node killed during its shutdown leaves its DDS shared-memory ports locked, and a
+    later participant on the same domain can block on them. SIGKILL comes only after a
+    scaled grace period.
+    """
+    if proc.poll() is not None:
+        return
+    # The fixture's stdin reader ends only on EOF.
+    if proc.stdin is not None:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    # start_new_session makes the child the group leader.
+    pgid = proc.pid
+    signal_group(pgid, signal.SIGTERM)
+    end = time.monotonic() + 15 * SCALE
+    # ros2 run exits before the node it started, so wait for the group.
+    while time.monotonic() < end:
+        proc.poll()  # reap the leader, or its zombie keeps the group alive
+        if not signal_group(pgid, 0):
+            return
+        time.sleep(0.1)
+    signal_group(pgid, signal.SIGKILL)
+    proc.wait()
 
 
 class Gateway:
@@ -141,6 +165,7 @@ class Run:
         self.plugin = plugin
         self.env = env
         self.procs = []
+        self.logs = {}
 
     def _start(self, cmd, log_path, env=None, stdin=False):
         log = open(log_path, 'w')
@@ -149,18 +174,19 @@ class Run:
             stdin=subprocess.PIPE if stdin else None, text=True,
             start_new_session=True,
         )
-        proc._log = log
+        self.logs[proc.pid] = log
         self.procs.append(proc)
         return proc
 
     def stop(self, proc):
         terminate(proc)
-        if proc in self.procs:
-            self.procs.remove(proc)
+        self.logs.pop(proc.pid).close()
+        self.procs.remove(proc)
 
     def stop_all(self):
         for proc in reversed(self.procs):
             terminate(proc)
+            self.logs.pop(proc.pid).close()
         self.procs = []
 
     def start_server(self, name, port, *extra):
@@ -173,22 +199,15 @@ class Run:
         return proc
 
     def start_fault_manager(self, name):
-        """Start fault_manager_node with memory storage and wait for its services."""
+        """Start fault_manager_node with memory storage."""
         log = self.workdir / f'{name}_fault_manager.log'
         proc = self._start(['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node',
                             '--ros-args', '-p', 'storage_type:=memory'], log, env=self.env)
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
-            if proc.poll() is not None:
-                break
-            out = subprocess.run(['ros2', 'service', 'list', '--no-daemon'], capture_output=True,
-                                 text=True, env=self.env, timeout=15, check=False)
-            services = out.stdout
-            if '/fault_manager/get_fault' in services and '/fault_manager/clear_fault' in services:
-                return proc
-            time.sleep(0.5)
-        raise AssertionError('fault_manager_node never offered its services:\n'
-                             + log.read_text(errors='replace'))
+        # Logged at the end of the constructor, after the services exist.
+        if not wait_log(log, 'FaultManager node started (', 30) or proc.poll() is not None:
+            raise AssertionError(f'fault_manager_node did not start (rc={proc.poll()}):\n'
+                                 + log.read_text(errors='replace'))
+        return proc
 
     def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None):
         """Start gateway_node with the opcua plugin and wait for HTTP."""
@@ -214,7 +233,7 @@ class Run:
         proc = self._start(['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node',
                             '--ros-args', '--params-file', str(params)], log, env=env)
         gateway = Gateway(proc, port, log)
-        end = time.monotonic() + 30
+        end = time.monotonic() + 30 * SCALE
         while time.monotonic() < end:
             if http_json(f'{gateway.base}/health') is not None:
                 return gateway
@@ -242,8 +261,8 @@ def comms_lost_status(gateway):
 
 
 def wait_status(gateway, wanted, deadline):
-    """Poll until PLC_COMMS_LOST has status <wanted>. Return the last status."""
-    end = time.monotonic() + deadline
+    """Poll a scaled deadline until PLC_COMMS_LOST has status <wanted>. Return the last one."""
+    end = time.monotonic() + deadline * SCALE
     status = None
     while time.monotonic() < end:
         status = comms_lost_status(gateway)
@@ -290,7 +309,7 @@ def scenario_foreign_stand_in(run):
     if not wait_log(after.log, HELD_BY_OTHERS, 60):
         raise AssertionError('the gateway never decided on the standing fault:\n'
                              + tail(after))
-    time.sleep(3)
+    settle(3)
     expect_status(after, 'CONFIRMED', 1, "a fault another endpoint's gateway raised was cleared")
 
 
@@ -304,7 +323,7 @@ def scenario_late_nameplate(run):
         raise AssertionError('the first gateway never connected:\n'
                              + tail(before))
     # No fault stands yet, so the connect decision has nothing to report.
-    time.sleep(3)
+    settle(3)
     if HELD_BY_OTHERS in before.log.read_text(errors='replace'):
         raise AssertionError('a connect with no fault standing reported one '
                              'held by other sources:\n'
@@ -314,8 +333,8 @@ def scenario_late_nameplate(run):
     run.stop(before.proc)
 
     unnamed = run.start_server('late_unnamed', port, '--no-nameplate')
-    # Five identity reads at 1500 ms leave room to name the device after the decision.
-    after = run.start_gateway('late_after', endpoint=endpoint, poll_ms=1500)
+    # Five identity reads at this interval leave room to name the device after the decision.
+    after = run.start_gateway('late_after', endpoint=endpoint, poll_ms=int(1500 * SCALE))
     if not wait_log(after.log, HELD_BY_OTHERS, 60):
         raise AssertionError('the gateway never left the nameplate row standing at connect:\n'
                              + tail(after))
@@ -340,6 +359,8 @@ def start_discovering_gateway(run, name):
         'OPCUA_DISCOVERY_ENABLED': '1',
         'OPCUA_DISCOVERY_SUBNETS': '127.0.0.1/32',
         'OPCUA_DISCOVERY_BINDING_FILE': str(binding),
+        # Rescan every 2 s while disconnected.
+        'OPCUA_DISCOVERY_INTERVAL_S': '2',
     })
     return gateway, binding
 
@@ -359,7 +380,7 @@ def expect_binding_failure_survived(gateway, binding, deadline):
         raise AssertionError('no failed binding write was reported '
                              f'(gateway rc={gateway.proc.poll()}):\n'
                              + tail(gateway))
-    time.sleep(3)
+    settle(3)
     if gateway.proc.poll() is not None or http_json(f'{gateway.base}/health') is None:
         raise AssertionError(f'the gateway did not survive the failed binding write '
                              f'(rc={gateway.proc.poll()}):\n'
@@ -372,7 +393,7 @@ def expect_binding_failure_survived(gateway, binding, deadline):
 def scenario_binding_directory_at_start(run):
     run.start_server('binding_start', DISCOVERY_PORT)
     gateway, binding = start_discovering_gateway(run, 'binding_start')
-    expect_binding_failure_survived(gateway, binding, 90)
+    expect_binding_failure_survived(gateway, binding, 60)
 
 
 def scenario_binding_directory_on_reconnect(run):
@@ -382,7 +403,7 @@ def scenario_binding_directory_on_reconnect(run):
         raise AssertionError('the start-up sweep did not come back empty:\n'
                              + tail(gateway))
     run.start_server('binding_reconnect', DISCOVERY_PORT)
-    expect_binding_failure_survived(gateway, binding, 120)
+    expect_binding_failure_survived(gateway, binding, 60)
 
 
 SCENARIOS = [
@@ -419,14 +440,20 @@ def main():
             continue
         workdir = Path(tempfile.mkdtemp(prefix='opcua_comms_lost_'))
         run = Run(workdir, server_bin, plugin, env)
+        started = time.monotonic()
+        error = None
         try:
             scenario(run)
-            print(f'  OK {name}')
-        except AssertionError as e:
-            failures += 1
-            print(f'FAIL {name}: {e}', file=sys.stderr)
+        except (AssertionError, OSError, subprocess.SubprocessError) as e:
+            error = e
         finally:
             run.stop_all()
+        elapsed = time.monotonic() - started
+        if error is None:
+            print(f'  OK {name} ({elapsed:.0f} s)')
+        else:
+            failures += 1
+            print(f'FAIL {name} ({elapsed:.0f} s): {error}', file=sys.stderr)
     return 1 if failures else 0
 
 
