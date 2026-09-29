@@ -985,8 +985,14 @@ other bridge's link.
 So the plugin asks the fault manager who reported the standing fault, and clears
 it only when **every** reporting source is an id this process could have
 reported under: the component id it serves, the last few `opcua-<host>` stand-ins
-it assigned in this process, and the node-map default a YAML without a
-`component_id` reports under. `ClearFault` carries no source and clears the whole
+it assigned in this process, the stand-ins of the endpoint it started on and of
+the one it is connected to, and the node-map default a YAML without a
+`component_id` reports under. The endpoint stand-ins cover a previous process
+that never reached its PLC: it reported under the stand-in of the configured
+`endpoint_url`, or of the client default `opc.tcp://localhost:4840` when
+discovery had found nothing, and the next process derives the same id from the
+same configuration. A PLC that changed address between the two processes is not
+covered: that row is cleared by an operator. `ClearFault` carries no source and clears the whole
 row, so a fault whose sources include a foreign one is left standing and the
 decision is logged at INFO. A `PLC_COMMS_LOST` that two bridges raised is cleared
 by an operator; the fault manager has no per-source de-assert.

@@ -1762,6 +1762,178 @@ TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderTheNameplateHealsWhenTheDeviceNamesIts
   EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty());
 }
 
+// A process that never reached its PLC raised PLC_COMMS_LOST under the stand-in
+// of the endpoint it started on. The next process starts with the PLC up, is
+// named by the device at once and never assigns that stand-in itself. It
+// derives the same stand-in from the same configuration, so the row is its own.
+TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderThePinnedEndpointsStandInHealsAfterARestart) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_pinned_standin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_pinned_standin_faultmgr");
+
+  const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint_).id;
+  ASSERT_NE(stand_in, device_derived_component_id(endpoint_)) << "the fixture does not name itself";
+
+  FaultStoreStub store(fault_manager);
+  store.seed(kCommsLostFaultCode, {stand_in});
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = endpoint_;  // config-less: no node map, so the device names the component
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!store.sources_of(kCommsLostFaultCode).empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const uint64_t probes = plugin.comms_lost_probe_count_for_test();
+
+  spin.stop();
+  plugin.shutdown();
+
+  EXPECT_GT(probes, 0u) << "the store was never asked who holds the row";
+  const auto codes = store.cleared_codes();
+  EXPECT_GE(std::count(codes.begin(), codes.end(), std::string(kCommsLostFaultCode)), 1)
+      << "the row the previous process raised under '" << stand_in << "' was not healed";
+  EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty());
+}
+
+// The negative control for the test above: a stand-in no configuration of this
+// process produces belongs to another bridge, and its row is left standing.
+TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderAnotherEndpointsStandInIsLeftStanding) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_foreign_standin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_foreign_standin_faultmgr");
+
+  const std::string foreign = derive_component_identity(OpcuaClient::DeviceInfo{}, "opc.tcp://10.0.0.99:4840").id;
+
+  FaultStoreStub store(fault_manager);
+  store.seed(kCommsLostFaultCode, {foreign});
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = endpoint_;
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (plugin.comms_lost_probe_count_for_test() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  const uint64_t probes = plugin.comms_lost_probe_count_for_test();
+  // The positive control above clears well inside this window.
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  spin.stop();
+  plugin.shutdown();
+
+  EXPECT_GT(probes, 0u) << "the store was never asked who holds the row";
+  const auto codes = store.cleared_codes();
+  EXPECT_EQ(std::count(codes.begin(), codes.end(), std::string(kCommsLostFaultCode)), 0)
+      << "a row held under '" << foreign << "' was cleared";
+  EXPECT_EQ(store.sources_of(kCommsLostFaultCode), std::vector<std::string>{foreign});
+}
+
+// The config-less shape of the same restart. A gateway that started before its
+// PLC found nothing, stayed on the client's default endpoint and raised
+// PLC_COMMS_LOST under that endpoint's stand-in. The next process finds the PLC
+// by discovery and is named by it, and the row is still its own.
+TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderTheDefaultEndpointsStandInHealsAfterARestart) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_default_standin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_default_standin_faultmgr");
+
+  server_.stop();
+  constexpr int kOpcuaPort = 4840;
+  AlarmServer fixture;
+  ASSERT_TRUE(fixture.start(fixture_binary(), kOpcuaPort))
+      << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
+  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
+  const std::string live_uri = live_application_uri("opc.tcp://127.0.0.1:4840");
+  ASSERT_FALSE(live_uri.empty());
+
+  const std::string stand_in =
+      derive_component_identity(OpcuaClient::DeviceInfo{}, OpcuaClientConfig{}.endpoint_url).id;
+  ASSERT_EQ(stand_in, "opcua-localhost");
+
+  FaultStoreStub store(fault_manager);
+  store.seed(kCommsLostFaultCode, {stand_in});
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  const auto scan = [](const std::string & ip, uint16_t port, int) {
+    return port == kOpcuaPort && ip == "127.0.0.1";
+  };
+  const auto identify = [&live_uri](const std::string & url, int) {
+    IdentifyResult result;
+    result.ok = true;
+    result.advertised_url = url;
+    result.application_uri = live_uri;
+    result.application_name = "Test PLC";
+    result.application_type = 0;  // Server
+    result.anonymous_none_available = true;
+    return result;
+  };
+
+  OpcuaPlugin plugin;
+  plugin.set_discovery_io_for_test(scan, identify);
+  nlohmann::json config;
+  config["poll_interval_ms"] = 100;
+  config["discovery"] = nlohmann::json{{"enabled", true},
+                                       {"subnets", nlohmann::json::array({"127.0.0.1/32"})},
+                                       {"ports", nlohmann::json::array({kOpcuaPort})},
+                                       {"binding_file", ""}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+  const std::string endpoint = plugin.endpoint_url_for_test();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!store.sources_of(kCommsLostFaultCode).empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  spin.stop();
+  plugin.shutdown();
+  fixture.stop();
+
+  ASSERT_EQ(endpoint, "opc.tcp://127.0.0.1:4840") << "discovery never adopted the fixture, so this proves nothing";
+  const auto codes = store.cleared_codes();
+  EXPECT_GE(std::count(codes.begin(), codes.end(), std::string(kCommsLostFaultCode)), 1)
+      << "the row the previous process raised under '" << stand_in << "' was not healed";
+  EXPECT_TRUE(store.sources_of(kCommsLostFaultCode).empty());
+}
+
 // The binding, driven end to end against live fixtures.
 //
 // The sweep is substituted (which is what the injected discovery I/O is for) so

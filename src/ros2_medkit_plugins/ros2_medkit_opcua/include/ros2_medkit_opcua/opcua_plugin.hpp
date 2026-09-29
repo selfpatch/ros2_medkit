@@ -792,6 +792,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Discovery only auto-selects an endpoint when this is false, so it never
   // overrides an explicit target or opens a second session on a polled PLC.
   bool endpoint_configured_{false};
+  // The endpoint a process starts on before discovery replaces it: the
+  // configured one, or the client default. Set once in configure().
+  std::string start_endpoint_url_;
   // True when the operator supplied a ``plugins.opcua.auto_alarms`` block.
   // When false AND no node_map_path is set, config-less discovery enables
   // native A&C by itself (default source Server object i=2253) so discovered
