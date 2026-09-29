@@ -687,12 +687,12 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     // names the component ahead of BuildInfo, so BuildInfo stays empty.
     if (cmd == "nameplate") {
       if (g_nameplate_published) {
-        std::cout << "ERR nameplate_present" << std::endl;
+        std::cout << "ERR nameplate_present\n" << std::flush;
         return;
       }
       add_di_nameplate(server, g_nameplate_serial);
       g_nameplate_published = true;
-      std::cout << "OK nameplate" << std::endl;
+      std::cout << "OK nameplate\n" << std::flush;
       return;
     }
     auto it = g_conditions.find(name);
@@ -893,7 +893,7 @@ int main(int argc, char ** argv) {
   // happen.
   UA_StatusCode rc = UA_Server_run_startup(server);
   if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << std::endl;
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n' << std::flush;
   }
   while (rc == UA_STATUSCODE_GOOD && g_running) {
     // The return is how long the server may idle until its next scheduled
@@ -919,7 +919,7 @@ int main(int argc, char ** argv) {
   if (rc == UA_STATUSCODE_GOOD) {
     rc = UA_Server_run_shutdown(server);
     if (rc != UA_STATUSCODE_GOOD) {
-      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << std::endl;
+      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n' << std::flush;
     }
   }
   g_running = false;

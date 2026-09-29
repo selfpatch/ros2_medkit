@@ -2594,14 +2594,14 @@ TEST(OpcuaPluginScopedClear, SovdDeleteSkipsTheCorrelationCascade) {
   std::mutex received_mutex;
   std::vector<ros2_medkit_msgs::srv::ClearFault::Request> received;
   auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request>,
-                                        std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> res) {
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
   auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
       "/fault_manager/clear_fault",
-      [&received, &received_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> req,
-                                   std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> res) {
+      [&received, &received_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                                   const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
         {
           std::lock_guard<std::mutex> lock(received_mutex);
           received.push_back(*req);
