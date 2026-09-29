@@ -32,6 +32,8 @@
 #include <thread>
 #include <vector>
 
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include "rclcpp/rclcpp.hpp"
@@ -564,6 +566,258 @@ TEST(RosbagHighBandwidthTopicTest, MatchesSensorStreamsButNotLookalikes) {
   EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/keypoints"));
   EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/joint_states"));
   EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/cmd_vel"));
+}
+
+// === Reported size vs stored size ===
+// A recording is stored as a directory and served as a single file. The row keeps the
+// directory total, because that is what the recording costs against the storage quota
+// (see ABoundaryRecordingSplitsAndReportsTheWholeBag, which pins that). What the API
+// reports is the other number: the bytes a download of it transfers.
+
+namespace {
+
+/// A bag directory carrying a real ``metadata.yaml``, written by the same library
+/// rosbag2 writes it with, so the parse under test is the parse that runs in
+/// production.
+class ServedBytesBag {
+ public:
+  explicit ServedBytesBag(const std::string & label) {
+    dir_ = std::filesystem::temp_directory_path() /
+           ("served_bytes_" + std::to_string(::getpid()) + "_" + label + "_" + std::to_string(counter_++));
+    std::filesystem::create_directories(dir_);
+  }
+
+  ~ServedBytesBag() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+  ServedBytesBag(const ServedBytesBag &) = delete;
+  ServedBytesBag & operator=(const ServedBytesBag &) = delete;
+
+  /// Write a storage file of @p bytes and return its name, relative to the bag.
+  std::string add_storage_file(const std::string & name, size_t bytes) {
+    std::ofstream out(dir_ / name, std::ios::binary);
+    out << std::string(bytes, 'x');
+    return name;
+  }
+
+  void write_metadata(const std::vector<std::string> & relative_file_paths) {
+    rosbag2_storage::BagMetadata metadata;
+    metadata.storage_identifier = "sqlite3";
+    metadata.relative_file_paths = relative_file_paths;
+    metadata.duration = std::chrono::nanoseconds(0);
+    metadata.starting_time = std::chrono::time_point<std::chrono::high_resolution_clock>(std::chrono::nanoseconds(0));
+    metadata.message_count = 0;
+    rosbag2_storage::MetadataIo().write_metadata(dir_.string(), metadata);
+  }
+
+  /// What the row stores: every regular file under the directory.
+  size_t directory_total() const {
+    size_t total = 0;
+    for (const auto & entry : std::filesystem::recursive_directory_iterator(dir_)) {
+      if (entry.is_regular_file()) {
+        total += entry.file_size();
+      }
+    }
+    return total;
+  }
+
+  size_t file_size_of(const std::string & name) const {
+    return std::filesystem::file_size(dir_ / name);
+  }
+
+  const std::filesystem::path & dir() const {
+    return dir_;
+  }
+  std::string path() const {
+    return dir_.string();
+  }
+
+ private:
+  std::filesystem::path dir_;
+  static int counter_;
+};
+
+int ServedBytesBag::counter_ = 0;
+
+}  // namespace
+
+TEST(RosbagServedBytesTest, ReportsTheStorageFileNotTheDirectoryTotal) {
+  ServedBytesBag bag("single");
+  const std::string db3 = bag.add_storage_file("recording_0.db3", 4096);
+  bag.write_metadata({db3});
+
+  const size_t served = bag.file_size_of(db3);
+  const size_t stored_total = bag.directory_total();
+  // Not vacuous: metadata.yaml is on disk too, so the two numbers really differ.
+  ASSERT_GT(stored_total, served) << "metadata.yaml did not land, so there is nothing to tell apart";
+
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), served)
+      << "the reported size must be what a download transfers";
+  EXPECT_NE(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+      << "metadata.yaml is not served, so it must not be counted";
+}
+
+TEST(RosbagServedBytesTest, AnUnreadableMetadataFallsBackToTheStoredTotalNotToZero) {
+  // Positive control on the same harness: with the metadata intact this bag does
+  // answer with its storage file, so a fallback below is the damaged metadata and
+  // not a helper that never resolves anything.
+  ServedBytesBag bag("damaged");
+  const std::string db3 = bag.add_storage_file("recording_0.db3", 2048);
+  bag.write_metadata({db3});
+  const size_t stored_total = bag.directory_total();
+  ASSERT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), bag.file_size_of(db3))
+      << "control: an intact bag resolves its storage file";
+
+  // Now break only the metadata, leaving the storage file untouched.
+  {
+    std::ofstream out(bag.dir() / "metadata.yaml", std::ios::binary | std::ios::trunc);
+    out << "rosbag2_bagfile_information: [this is not a mapping\n";
+  }
+  const size_t stored_total_after = bag.directory_total();
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total_after), stored_total_after)
+      << "an unparseable metadata.yaml falls back to the stored total";
+  EXPECT_NE(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total_after), 0u)
+      << "and never to zero, which would describe the recording as empty";
+}
+
+TEST(RosbagServedBytesTest, AMissingMetadataFallsBackToTheStoredTotal) {
+  // A bag written before metadata was kept, or one whose metadata was lost.
+  ServedBytesBag bag("nometa");
+  bag.add_storage_file("recording_0.db3", 1024);
+  const size_t stored_total = bag.directory_total();
+
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+}
+
+TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("ghost");
+  bag.add_storage_file("recording_0.db3", 1024);
+  bag.write_metadata({"recording_1.db3"});  // names a segment that was never written
+  const size_t stored_total = bag.directory_total();
+
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+}
+
+namespace {
+
+/// A name the size helper follows only when it lands on a storage file inside the
+/// bag directory. Every case below is checked twice on one bag: first with an
+/// in-bag name, which must answer with that file, and then with @p
+/// unfollowable_name, which must answer with the stored total. The control is what
+/// separates the rule from a metadata document rosbag2 wrote but cannot read back -
+/// both would fall back, for entirely different reasons.
+void expect_unfollowable_name_falls_back(ServedBytesBag & bag, const std::string & unfollowable_name,
+                                         const std::string & in_bag_name) {
+  bag.write_metadata({in_bag_name});
+  ASSERT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), bag.directory_total()),
+            bag.file_size_of(in_bag_name))
+      << "the in-bag control name was not followed, so this bag says nothing about " << unfollowable_name;
+
+  bag.write_metadata({unfollowable_name});
+  const size_t stored_total = bag.directory_total();
+  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+      << "a name pointing outside the bag was measured as the recording: " << unfollowable_name;
+}
+
+}  // namespace
+
+// A name in metadata.yaml decides which file on the host this helper measures and
+// reports as the recording's size, so it is followed only when it lands on a
+// storage file that is a direct child of the bag directory. Path concatenation
+// enforces none of that: an absolute name replaces the bag directory and a `..`
+// name climbs out of it.
+TEST(RosbagServedBytesTest, ANameThatClimbsOutOfTheBagFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("escape");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  const std::string outside_name = "served_bytes_outside_" + std::to_string(::getpid()) + ".db3";
+  const auto outside = bag.dir().parent_path() / outside_name;
+  {
+    std::ofstream out(outside, std::ios::binary);
+    out << std::string(8192, 'o');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(outside)) << "the file the name points at was not created";
+
+  expect_unfollowable_name_falls_back(bag, "../" + outside_name, in_bag);
+
+  std::error_code ec;
+  std::filesystem::remove(outside, ec);
+}
+
+TEST(RosbagServedBytesTest, AnAbsoluteNameFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("absolute");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  ServedBytesBag elsewhere("absolute_target");
+  elsewhere.add_storage_file("recording_0.db3", 8192);
+  const std::string absolute_name = (elsewhere.dir() / "recording_0.db3").string();
+  ASSERT_TRUE(std::filesystem::is_regular_file(absolute_name));
+  expect_unfollowable_name_falls_back(bag, absolute_name, in_bag);
+
+  // A host file that is not a recording at all, which is what an absolute name
+  // reaches for when this is an attack and not a stale bag.
+  expect_unfollowable_name_falls_back(bag, "/etc/hostname", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameInASubdirectoryFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("nested");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  std::filesystem::create_directories(bag.dir() / "sub");
+  {
+    std::ofstream out(bag.dir() / "sub" / "segment.db3", std::ios::binary);
+    out << std::string(8192, 's');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "sub" / "segment.db3"));
+  expect_unfollowable_name_falls_back(bag, "sub/segment.db3", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameWithoutAStorageExtensionFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("text");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_0.txt", 8192);
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "recording_0.txt"));
+  expect_unfollowable_name_falls_back(bag, "recording_0.txt", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
+  // A leftover segment or a copy sitting beside the recording must not change
+  // which file is measured. The metadata names one file and that is the file.
+  //
+  // This is also the fault manager's half of a cross-package agreement: the
+  // gateway sizes the same directory shape through its own resolver, and its
+  // TheMetadataNamesTheStorageFileRatherThanDirectoryOrder pins the same rule:
+  // the size follows the file the metadata names, whichever file the directory
+  // yields first. Directory order decided the gateway's answer until it read
+  // this field too, and the two sides reported different sizes for one recording.
+  ServedBytesBag bag("stray");
+  const std::string named = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_1.db3", 65536);
+  bag.write_metadata({named});
+  const size_t stored_total = bag.directory_total();
+
+  const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
+  EXPECT_EQ(reported, bag.file_size_of(named));
+  EXPECT_EQ(reported, 4096u) << "the rule the gateway's listing follows for this shape: the file the bag names";
+  EXPECT_NE(reported, bag.file_size_of("recording_1.db3")) << "the stray file is not the recording";
+  EXPECT_NE(reported, stored_total);
+}
+
+TEST(RosbagServedBytesTest, ASplitRecordingFallsBackToTheStoredTotal) {
+  // Past max_bag_size_mb rosbag2 splits a recording across several storage files.
+  // The download hands over one of them, so no single file is "the" transfer and the
+  // recording's own total is the only number that describes it honestly.
+  ServedBytesBag bag("split");
+  const std::string first = bag.add_storage_file("recording_0.db3", 4096);
+  const std::string second = bag.add_storage_file("recording_1.db3", 2048);
+  bag.write_metadata({first, second});
+  const size_t stored_total = bag.directory_total();
+
+  const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
+  EXPECT_EQ(reported, stored_total);
+  EXPECT_NE(reported, bag.file_size_of(first)) << "picking a segment would advertise a partial recording as whole";
 }
 
 // Fault lifecycle tests

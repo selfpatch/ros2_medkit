@@ -219,6 +219,51 @@ class TestBulkDataApi(GatewayTestCase):
         data = response.json()
         self.assertIn('error_code', data)
 
+    def test_bulk_data_descriptor_size_is_the_download_length(self):
+        """The descriptor's size is the number of bytes the download sends.
+
+        A client sizes a buffer or a progress bar from the listing, so the
+        listing has to promise what the transfer delivers. Nothing else here
+        connects the two: the structure test above only checks that a size
+        field exists, and a wrong number passes that.
+
+        The test recording is far below snapshots.rosbag.max_bag_size_mb, so it
+        is held in one storage file. That is the case where the descriptor size
+        and the download length are defined to be equal; a split recording is
+        reported at its total and is deliberately larger than its download.
+
+        @verifies REQ_INTEROP_073
+        """
+        data = self.poll_endpoint_until(
+            '/apps/lidar_sensor/bulk-data/rosbags',
+            lambda d: d if d.get('items') else None,
+            timeout=10.0,
+            interval=1.0,
+        )
+        self.assertGreater(
+            len(data['items']), 0, 'Expected at least one rosbag descriptor',
+        )
+        descriptor = data['items'][0]
+
+        response = requests.get(
+            f'{self.BASE_URL}/apps/lidar_sensor/bulk-data/rosbags/'
+            f'{descriptor["id"]}',
+            timeout=30,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        body = response.content
+        self.assertGreater(len(body), 0, 'Download served an empty body')
+        self.assertEqual(
+            descriptor['size'], len(body),
+            f'Listing promised {descriptor["size"]} bytes and the download '
+            f'sent {len(body)}',
+        )
+        self.assertEqual(
+            int(response.headers['Content-Length']), len(body),
+            'Content-Length disagrees with the body it described',
+        )
+
     def test_bulk_data_download_not_found(self):
         """Bulk-data download returns 404 for invalid UUID.
 
