@@ -1608,6 +1608,10 @@ void OpcuaPlugin::owe_comms_lost_decision() {
 }
 
 void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources) {
+  if (!found) {
+    // No row, so nothing to clear and nothing standing to report.
+    return;
+  }
   const std::unordered_set<std::string> my_ids = reporting_ids_of_this_process();
   if (!link_state_clear_permitted(found, reporting_sources, my_ids)) {
     std::string sources;
