@@ -16,6 +16,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -2389,6 +2391,463 @@ TEST_F(SqliteFaultStorageTest, SnapshotsDroppedByHealedReclassificationByDefault
   ASSERT_EQ(storage_->reclassify_healed_as_cleared().size(), 1u);
 
   EXPECT_TRUE(storage_->get_snapshots("SNAPSHOT_DROP_TEST").empty());
+}
+
+// ============================================================================
+// Planned-stop declaration (survives a restart)
+// ============================================================================
+
+TEST_F(SqliteFaultStorageTest, PlannedStopDefaultsToInactive) {
+  const auto state = storage_->get_planned_stop();
+  EXPECT_FALSE(state.active);
+  EXPECT_TRUE(state.reason.empty());
+  EXPECT_TRUE(state.declared_by.empty());
+  EXPECT_EQ(0, state.since_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, PlannedStopRoundTripsThroughAReopen) {
+  ros2_medkit_fault_manager::PlannedStopState declared;
+  declared.active = true;
+  declared.reason = "line 3 quarterly maintenance";
+  declared.declared_by = "shift_lead";
+  declared.since_ns = 1757000000000000000;
+  storage_->set_planned_stop(declared);
+
+  // Reopening the same file is what a restart of the fault manager does.
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto reopened = storage_->get_planned_stop();
+  EXPECT_TRUE(reopened.active);
+  EXPECT_EQ("line 3 quarterly maintenance", reopened.reason);
+  EXPECT_EQ("shift_lead", reopened.declared_by);
+  EXPECT_EQ(1757000000000000000, reopened.since_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, PlannedStopKeepsOneRowAcrossRepeatedWrites) {
+  ros2_medkit_fault_manager::PlannedStopState first;
+  first.active = true;
+  first.reason = "first";
+  first.declared_by = "a";
+  first.since_ns = 111;
+  storage_->set_planned_stop(first);
+
+  ros2_medkit_fault_manager::PlannedStopState second;
+  second.active = true;
+  second.reason = "second";
+  second.declared_by = "b";
+  second.since_ns = 222;
+  storage_->set_planned_stop(second);
+
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto state = storage_->get_planned_stop();
+  EXPECT_EQ("second", state.reason);
+  EXPECT_EQ("b", state.declared_by);
+  EXPECT_EQ(222, state.since_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, WithdrawnPlannedStopIsWhatAReopenSees) {
+  ros2_medkit_fault_manager::PlannedStopState declared;
+  declared.active = true;
+  declared.reason = "maintenance";
+  declared.declared_by = "shift_lead";
+  declared.since_ns = 999;
+  storage_->set_planned_stop(declared);
+  storage_->set_planned_stop(ros2_medkit_fault_manager::PlannedStopState{});
+
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto state = storage_->get_planned_stop();
+  EXPECT_FALSE(state.active);
+  EXPECT_TRUE(state.reason.empty());
+  EXPECT_TRUE(state.declared_by.empty());
+  EXPECT_EQ(0, state.since_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, AWithdrawnDeclarationKeepsItsReasonAndItsEndTime) {
+  ros2_medkit_fault_manager::PlannedStopState declared;
+  declared.active = true;
+  declared.reason = "line 3 quarterly maintenance";
+  declared.declared_by = "shift_lead";
+  declared.since_ns = 1757000000000000000;
+  storage_->set_planned_stop(declared);
+
+  // What a withdrawal writes: the declaration survives it, stamped with its end.
+  auto withdrawn = declared;
+  withdrawn.active = false;
+  withdrawn.ended_at_ns = 1757000009000000000;
+  storage_->set_planned_stop(withdrawn);
+
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto state = storage_->get_planned_stop();
+  EXPECT_FALSE(state.active);
+  EXPECT_EQ("line 3 quarterly maintenance", state.reason);
+  EXPECT_EQ("shift_lead", state.declared_by);
+  EXPECT_EQ(1757000000000000000, state.since_ns);
+  EXPECT_EQ(1757000009000000000, state.ended_at_ns);
+}
+
+TEST_F(SqliteFaultStorageTest, ADatabaseWrittenBeforeTheEndTimeExistedStillOpens) {
+  // A row written by a build that had no ended_at_ns column reads as one that was
+  // never withdrawn, which is what a missing end time means.
+  storage_.reset();
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, "DROP TABLE IF EXISTS planned_stop", nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "CREATE TABLE planned_stop (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL,"
+                           " reason TEXT NOT NULL, declared_by TEXT NOT NULL, since_ns INTEGER NOT NULL);"
+                           "INSERT INTO planned_stop (id, active, reason, declared_by, since_ns)"
+                           " VALUES (1, 1, 'legacy stop', 'shift_lead', 42);",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto state = storage_->get_planned_stop();
+  EXPECT_TRUE(state.active);
+  EXPECT_EQ("legacy stop", state.reason);
+  EXPECT_EQ(42, state.since_ns);
+  EXPECT_EQ(0, state.ended_at_ns);
+}
+
+// ============================================================================
+// Planned-stop ownership: one persisted flag per fault
+// ============================================================================
+
+namespace {
+
+/// Drive a fault to CONFIRMED with the immediate-confirmation default, letting a declared
+/// planned stop take the cycle. A report is the only thing that makes a fault the stop's, so
+/// it is also how a test sets one up.
+void raise(ros2_medkit_fault_manager::FaultStorage & storage, const std::string & code,
+           bool planned_stop_active = false) {
+  rclcpp::Clock clock;
+  storage.report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "owned test", "/src",
+                             clock.now(), default_config(), planned_stop_active);
+}
+
+}  // namespace
+
+TEST_F(SqliteFaultStorageTest, PlannedStopOwnershipRoundTripsThroughAReopen) {
+  raise(*storage_, "NOT_OWNED");
+  EXPECT_TRUE(storage_->get_planned_stop_owned().empty());
+
+  raise(*storage_, "OWNED_ONE", /*planned_stop_active=*/true);
+  raise(*storage_, "OWNED_TWO", /*planned_stop_active=*/true);
+
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  auto owned = storage_->get_planned_stop_owned();
+  std::sort(owned.begin(), owned.end());
+  ASSERT_EQ(2u, owned.size());
+  EXPECT_EQ("OWNED_ONE", owned[0]);
+  EXPECT_EQ("OWNED_TWO", owned[1]);
+}
+
+TEST_F(SqliteFaultStorageTest, AcknowledgingAFaultEndsTheStopsOwnershipOfIt) {
+  raise(*storage_, "OWNED_CLEARED", /*planned_stop_active=*/true);
+  ASSERT_EQ(1u, storage_->get_planned_stop_owned().size());
+
+  ASSERT_TRUE(storage_->clear_fault("OWNED_CLEARED"));
+
+  EXPECT_TRUE(storage_->get_planned_stop_owned().empty())
+      << "an acknowledged fault is over, so the stop has nothing left to own";
+}
+
+TEST_F(SqliteFaultStorageTest, ClearingOwnershipDropsEveryFlagAndReportsHowMany) {
+  raise(*storage_, "OWNED_A", /*planned_stop_active=*/true);
+  raise(*storage_, "OWNED_B", /*planned_stop_active=*/true);
+
+  EXPECT_EQ(2u, storage_->clear_planned_stop_owned());
+  EXPECT_TRUE(storage_->get_planned_stop_owned().empty());
+  EXPECT_EQ(0u, storage_->clear_planned_stop_owned());
+}
+
+TEST_F(SqliteFaultStorageTest, ClearingNamedOwnershipLeavesEveryOtherFlagAlone) {
+  for (const auto * code : {"OWNED_CAPTURED_A", "OWNED_CAPTURED_B", "OWNED_LATER"}) {
+    raise(*storage_, code, /*planned_stop_active=*/true);
+  }
+
+  // A release finishes what it captured. Anything that became owned after that
+  // capture belongs to a different declaration and must survive.
+  EXPECT_EQ(2u, storage_->clear_planned_stop_owned({"OWNED_CAPTURED_A", "OWNED_CAPTURED_B"}));
+
+  auto owned = storage_->get_planned_stop_owned();
+  ASSERT_EQ(1u, owned.size());
+  EXPECT_EQ("OWNED_LATER", owned[0]);
+
+  // Idempotent, and a code that is not owned is not an error.
+  EXPECT_EQ(0u, storage_->clear_planned_stop_owned({"OWNED_CAPTURED_A", "NEVER_OWNED"}));
+  EXPECT_EQ(1u, storage_->get_planned_stop_owned().size());
+  EXPECT_EQ(0u, storage_->clear_planned_stop_owned({}));
+  EXPECT_EQ(1u, storage_->get_planned_stop_owned().size());
+}
+
+TEST(InMemoryFaultStorageTest, ClearingNamedOwnershipLeavesEveryOtherFlagAlone) {
+  ros2_medkit_fault_manager::InMemoryFaultStorage storage;
+  raise(storage, "OWNED_CAPTURED", /*planned_stop_active=*/true);
+  raise(storage, "OWNED_LATER", /*planned_stop_active=*/true);
+
+  EXPECT_EQ(1u, storage.clear_planned_stop_owned({"OWNED_CAPTURED"}));
+
+  auto owned = storage.get_planned_stop_owned();
+  ASSERT_EQ(1u, owned.size());
+  EXPECT_EQ("OWNED_LATER", owned[0]);
+}
+
+TEST_F(SqliteFaultStorageTest, ADatabaseWrittenBeforeOwnershipExistedStillOpens) {
+  raise(*storage_, "LEGACY_FAULT");
+  storage_.reset();
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.string().c_str(), &raw), SQLITE_OK);
+    // What a database from before the column looks like.
+    ASSERT_EQ(sqlite3_exec(raw, "ALTER TABLE faults DROP COLUMN planned_stop_owned", nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  EXPECT_TRUE(storage_->get_planned_stop_owned().empty());
+  EXPECT_TRUE(storage_->contains("LEGACY_FAULT"));
+
+  // The re-added column takes writes: acknowledge the migrated fault and raise it again
+  // inside a stop, which is a cycle starting, and the flag lands on the migrated row.
+  ASSERT_TRUE(storage_->clear_fault("LEGACY_FAULT"));
+  raise(*storage_, "LEGACY_FAULT", /*planned_stop_active=*/true);
+  EXPECT_EQ(1u, storage_->get_planned_stop_owned().size());
+}
+
+TEST(InMemoryFaultStorageTest, PlannedStopOwnershipIsTrackedPerFault) {
+  ros2_medkit_fault_manager::InMemoryFaultStorage storage;
+  raise(storage, "OWNED_ONE", /*planned_stop_active=*/true);
+  raise(storage, "NOT_OWNED");
+
+  auto owned = storage.get_planned_stop_owned();
+  ASSERT_EQ(1u, owned.size());
+  EXPECT_EQ("OWNED_ONE", owned[0]);
+
+  ASSERT_TRUE(storage.clear_fault("OWNED_ONE"));
+  EXPECT_TRUE(storage.get_planned_stop_owned().empty());
+
+  raise(storage, "NOT_OWNED", /*planned_stop_active=*/true);
+  EXPECT_TRUE(storage.get_planned_stop_owned().empty())
+      << "a report that repeats a standing condition is the same cycle, so the stop cannot take it";
+}
+
+TEST_F(SqliteFaultStorageTest, PlannedStopCarriesAKilobyteReason) {
+  const std::string long_reason(1024, 'r');
+  ros2_medkit_fault_manager::PlannedStopState declared;
+  declared.active = true;
+  declared.reason = long_reason;
+  declared.since_ns = 7;
+  storage_->set_planned_stop(declared);
+
+  storage_.reset();
+  storage_ = std::make_unique<SqliteFaultStorage>(temp_db_path_.string());
+
+  const auto state = storage_->get_planned_stop();
+  EXPECT_TRUE(state.active);
+  EXPECT_EQ(long_reason, state.reason);
+  EXPECT_TRUE(state.declared_by.empty());
+}
+
+TEST(InMemoryFaultStorageTest, PlannedStopRoundTripsInMemory) {
+  ros2_medkit_fault_manager::InMemoryFaultStorage storage;
+
+  EXPECT_FALSE(storage.get_planned_stop().active);
+
+  ros2_medkit_fault_manager::PlannedStopState declared;
+  declared.active = true;
+  declared.reason = "cell 7 changeover";
+  declared.declared_by = "maintenance";
+  declared.since_ns = 42;
+  storage.set_planned_stop(declared);
+
+  const auto state = storage.get_planned_stop();
+  EXPECT_TRUE(state.active);
+  EXPECT_EQ("cell 7 changeover", state.reason);
+  EXPECT_EQ("maintenance", state.declared_by);
+  EXPECT_EQ(42, state.since_ns);
+
+  storage.set_planned_stop(ros2_medkit_fault_manager::PlannedStopState{});
+  EXPECT_FALSE(storage.get_planned_stop().active);
+  EXPECT_TRUE(storage.get_planned_stop().reason.empty());
+}
+
+namespace {
+
+/// Where a planned stop takes ownership of a fault cycle, driven against one backend.
+/// Both backends have to answer identically: which faults a switch-off releases must
+/// not depend on the storage a deployment picked.
+void expect_planned_stop_cycle_boundary(ros2_medkit_fault_manager::FaultStorage & storage) {
+  rclcpp::Clock clock;
+  DebounceConfig config = default_config();
+  config.healing_enabled = true;
+  config.healing_threshold = 0;
+
+  auto owned_codes = [&storage]() {
+    auto codes = storage.get_planned_stop_owned();
+    std::sort(codes.begin(), codes.end());
+    return codes;
+  };
+  const std::vector<std::string> inside_only{"PS_INSIDE"};
+  const std::vector<std::string> both{"PS_INSIDE", "PS_OUTSIDE"};
+
+  // A fault raised inside a stop is owned by the report that created it. Read back
+  // straight after that one call: nothing else has run, so nothing else could have
+  // written the flag.
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/true);
+  EXPECT_EQ(inside_only, owned_codes()) << "the report did not carry the stop's ownership";
+
+  // With no stop in force nothing is owned.
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  EXPECT_EQ(inside_only, owned_codes());
+
+  // A repeat report of a condition that was already up is the same cycle, so a stop
+  // declared after it started does not take it.
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/true);
+  EXPECT_EQ(inside_only, owned_codes()) << "a standing fault was taken by a stop declared after it";
+
+  // Nor does a later report hand an owned cycle back.
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  EXPECT_EQ(inside_only, owned_codes()) << "a repeat report dropped the stop ownership";
+
+  // Acknowledging ends the cycle the stop owned; raising the fault again starts one
+  // the stop owns afresh.
+  ASSERT_TRUE(storage.clear_fault("PS_INSIDE"));
+  EXPECT_TRUE(owned_codes().empty());
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/true);
+  EXPECT_EQ(inside_only, owned_codes()) << "a fault raised again inside the stop was not owned";
+
+  // A PASSED report starts nothing, whatever the switch says.
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/true);
+  EXPECT_EQ(inside_only, owned_codes()) << "a PASSED report took ownership of a cycle";
+  auto healed = storage.get_fault("PS_OUTSIDE");
+  ASSERT_TRUE(healed.has_value());
+  ASSERT_EQ(Fault::STATUS_HEALED, healed->status);
+
+  // The heal published the fault's end, so failing again is fresh news and a new
+  // cycle for the stop to own.
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/true);
+  EXPECT_EQ(both, owned_codes()) << "a fault that failed again after healing was not owned";
+
+  // Ownership belongs to the cycle, so the same boundary with NO stop in force takes
+  // the flag down: the next cycle is nobody's, and a flag left standing would name a
+  // cycle the declaration never saw.
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  auto healed_inside = storage.get_fault("PS_INSIDE");
+  ASSERT_TRUE(healed_inside.has_value());
+  ASSERT_EQ(Fault::STATUS_HEALED, healed_inside->status);
+  EXPECT_EQ(both, owned_codes()) << "a PASSED report dropped the ownership of a cycle it did not end";
+
+  storage.report_fault_event("PS_INSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "inside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  const std::vector<std::string> outside_only{"PS_OUTSIDE"};
+  EXPECT_EQ(outside_only, owned_codes()) << "a cycle that started with no stop in force kept the old flag";
+
+  // And a fault raised again after being acknowledged, still with no stop in force.
+  ASSERT_TRUE(storage.clear_fault("PS_OUTSIDE"));
+  storage.report_fault_event("PS_OUTSIDE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "outside", "/src",
+                             clock.now(), config, /*planned_stop_active=*/false);
+  EXPECT_TRUE(owned_codes().empty()) << "a reactivation with no stop in force was owned by one";
+}
+
+}  // namespace
+
+TEST_F(SqliteFaultStorageTest, TheReportCarriesThePlannedStopsOwnership) {
+  expect_planned_stop_cycle_boundary(*storage_);
+}
+
+TEST(InMemoryFaultStorageTest, TheReportCarriesThePlannedStopsOwnership) {
+  ros2_medkit_fault_manager::InMemoryFaultStorage storage;
+  expect_planned_stop_cycle_boundary(storage);
+}
+
+namespace {
+
+/// Run one statement on a second connection to the same database file. Used to install
+/// and remove a trigger, which is a schema change every connection to the file honours,
+/// including the one the store is holding.
+void exec_on_a_second_connection(const std::string & db_path, const char * sql) {
+  sqlite3 * raw = nullptr;
+  ASSERT_EQ(sqlite3_open(db_path.c_str(), &raw), SQLITE_OK);
+  char * error = nullptr;
+  const int rc = sqlite3_exec(raw, sql, nullptr, nullptr, &error);
+  const std::string message = error != nullptr ? error : "";
+  sqlite3_free(error);
+  sqlite3_close(raw);
+  ASSERT_EQ(rc, SQLITE_OK) << message;
+}
+
+constexpr const char * kRefuseOwnershipWrites =
+    "CREATE TRIGGER deny_ownership BEFORE UPDATE OF planned_stop_owned ON faults "
+    "BEGIN SELECT RAISE(ABORT, 'ownership write refused'); END;";
+
+}  // namespace
+
+// The whole point of carrying ownership with the report is that the two cannot come
+// apart. A store that keeps the fault row when the ownership write fails leaves a
+// confirmed fault inside a stop that nothing owns: no switch-off releases it, no
+// startup recognises it, and its later reports announce updates mid-stop. Driven on
+// SQLite because that is the backend the crash window is about, and through a trigger
+// because that makes the ownership statement fail where it really runs, inside the
+// report's transaction.
+TEST_F(SqliteFaultStorageTest, AnOwnershipWriteThatFailsTakesTheReportDownWithIt) {
+  rclcpp::Clock clock;
+  ASSERT_NO_FATAL_FAILURE(exec_on_a_second_connection(storage_->db_path(), kRefuseOwnershipWrites));
+
+  EXPECT_THROW(storage_->report_fault_event("PS_ATOMIC", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                            "atomic test", "/src", clock.now(), default_config(),
+                                            /*planned_stop_active=*/true),
+               std::runtime_error);
+
+  storage_.reset();
+  ASSERT_NO_FATAL_FAILURE(exec_on_a_second_connection(temp_db_path_.string(), "DROP TRIGGER deny_ownership"));
+
+  // Reopened, because the question is what survived the commit, not what one
+  // connection happens to be holding.
+  SqliteFaultStorage reopened(temp_db_path_.string());
+  EXPECT_FALSE(reopened.contains("PS_ATOMIC")) << "the fault row committed without the ownership that belongs to it";
+  EXPECT_TRUE(reopened.get_planned_stop_owned().empty());
+}
+
+// A report with no stop in force writes no ownership at all, so the same refusal
+// cannot touch it: the negative control that keeps the test above about the
+// ownership statement rather than about the trigger.
+TEST_F(SqliteFaultStorageTest, TheSameRefusalDoesNotTouchAReportOutsideAStop) {
+  rclcpp::Clock clock;
+  ASSERT_NO_FATAL_FAILURE(exec_on_a_second_connection(storage_->db_path(), kRefuseOwnershipWrites));
+
+  EXPECT_NO_THROW(storage_->report_fault_event("PS_NO_STOP", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+                                               "atomic test", "/src", clock.now(), default_config(),
+                                               /*planned_stop_active=*/false));
+
+  storage_.reset();
+  ASSERT_NO_FATAL_FAILURE(exec_on_a_second_connection(temp_db_path_.string(), "DROP TRIGGER deny_ownership"));
+
+  SqliteFaultStorage reopened(temp_db_path_.string());
+  EXPECT_TRUE(reopened.contains("PS_NO_STOP"));
+  EXPECT_TRUE(reopened.get_planned_stop_owned().empty());
 }
 
 int main(int argc, char ** argv) {

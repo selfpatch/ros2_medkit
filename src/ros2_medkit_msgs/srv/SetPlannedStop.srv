@@ -1,0 +1,89 @@
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SetPlannedStop.srv - Declare, or withdraw, a planned stop on the FaultManager.
+#
+# While a planned stop is on, it OWNS every fault cycle that STARTS - a new fault, one
+# raised again after being cleared, or one that failed again after healing. An owned
+# fault is reported, debounced, confirmed, captured and audited exactly as it would be
+# otherwise, and is MARKED as muted rather than dropped: absent from the default
+# ListFaults response, counted in `muted_count`, and listed under `muted_faults` when
+# `include_muted` is set. A cycle that started BEFORE the stop is untouched: it stays in
+# the fault list, because its confirmation has already been announced, and reporters
+# re-send FAILED for as long as the condition holds.
+#
+# A muted fault is published exactly as a rule-muted symptom is: its EVENT_CONFIRMED and
+# EVENT_UPDATED are withheld, whichever kind of report produced them, while an
+# EVENT_CLEARED - the fault healing, or being acknowledged - is published as usual.
+# Withdrawing the stop does two things that do not cover the same faults. It UNMUTES
+# every fault it owns whose `muted_faults` entry is the stop's own, so a fault a
+# hierarchical rule has since claimed stays muted and everything else leaves
+# `muted_count`. It ANNOUNCES the subset of those that is CONFIRMED and that no live
+# cluster is hiding, one EVENT_CONFIRMED each, because that confirmation was never
+# announced.
+#
+# A hierarchical rule muting an owned fault OVERLAYS the stop rather than taking the
+# fault from it: while the rule holds the fault the withdrawal leaves it alone, and when
+# its root cause is acknowledged the fault is the stop's again.
+#
+# An auto-cluster rule hides without an overlay - it suppresses a non-representative
+# member's events on each report and writes no `muted_faults` entry - and the withdrawal
+# honours that too: a member an ACTIVE `show_as_single` cluster still hides is unmuted
+# and NOT announced, with no entry left in the stop's place. Afterwards the burst matches
+# one that never met a planned stop in `muted_faults`, in the counts, in the cluster
+# listing and in the audit log, but NOT in the event stream: a confirmation that fell
+# inside the stop and behind a cluster is never announced. The member announced is the
+# representative, when the stop owned its cycle. `min_count` decides whether a cluster
+# forms, not how long it hides: a formed cluster holds the members it formed with for as
+# long as its `window_ms` covers their reports, until the last is acknowledged, while a
+# fault that joins it below the threshold is not one of them and is announced like any
+# fault of its own. A report that arrives after the window starts a new burst, so that
+# fault is no longer folded into the old line and the switch-off announces it like any
+# owned fault - the same thing the cluster does with no stop in force, where that late
+# report publishes an update. Cluster membership is not persisted, so a stop that spanned
+# a restart releases every fault the store says it owns and announces the CONFIRMED ones
+# among them.
+#
+# With `storage_type: sqlite` the declaration survives a restart of the fault manager,
+# and so does its ownership of the cycles that started inside it; the in-memory backend
+# keeps neither past the process.
+#
+# Both transitions are recorded in the fault audit log when `audit_log.enabled` is set
+# (it is off by default).
+
+# Request fields
+
+# True declares a planned stop, false withdraws it.
+bool active
+
+# Why the plant is stopped ("line 3 quarterly maintenance"). Recorded in the audit log
+# with the transition, and served back by GetPlannedStop - including after the stop has
+# been withdrawn, so the reason outlives it.
+string reason
+
+# Who declared the transition. Recorded in the audit log as the transition's source.
+string declared_by
+---
+# Response fields
+
+# True when the request was applied. A request that asks for the state the switch is
+# already in succeeds and changes nothing (no audit record is written for it).
+bool success
+
+# Status message or error description.
+string message
+
+# The state of the switch BEFORE this request, so a caller can tell "I turned it on"
+# from "it was already on".
+bool was_active
