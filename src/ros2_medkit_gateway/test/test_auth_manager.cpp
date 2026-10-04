@@ -914,9 +914,12 @@ TEST(AuthManagerRevocationTest, AGatewayWithAnotherSecretRefusesTheToken) {
 // Both expiries are three seconds - config validation requires refresh >=
 // access, so this is the tightest legal pair - and the check lands at about
 // t+4: past the refresh token's expiry, inside the access token's.
+// Token times are whole seconds, so t starts just after a second boundary.
 // @verifies REQ_INTEROP_086
 TEST(AuthManagerRevocationTest, ARevokedRecordOutlivesTheTokensItWithdraws) {
   auto manager = make_manager(3, 3);
+  std::this_thread::sleep_until(std::chrono::ceil<std::chrono::seconds>(std::chrono::system_clock::now()) +
+                                std::chrono::milliseconds(20));
   auto issued = manager.authenticate("svc", "svc_secret");
   ASSERT_TRUE(issued.has_value());
   ASSERT_TRUE(issued->refresh_token.has_value());
