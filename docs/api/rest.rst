@@ -3331,9 +3331,6 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - Error Code
      - HTTP Status
      - Description
-   * - ``entity-not-found``
-     - 404
-     - The requested entity does not exist
    * - ``resource-not-found``
      - 404
      - The requested resource (topic, service, parameter) does not exist
