@@ -620,10 +620,20 @@ def reclaim_shared_memory(timeout=60):
     tool = shutil.which('fastdds')
     if tool is None:
         return None
+    command = [tool, 'shm', 'clean']
     try:
-        completed = subprocess.run(
-            [tool, 'shm', 'clean'], capture_output=True, text=True, timeout=timeout, check=False)
-    except (OSError, subprocess.SubprocessError):
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=timeout, check=False)
+        except OSError as error:
+            # Humble's launcher is a shell script with no "#!" line.
+            if error.errno != errno.ENOEXEC:
+                raise
+            completed = subprocess.run(
+                ['sh'] + command, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f'[medkit-domain] could not run {tool} shm clean: {error}',
+              file=sys.stderr, flush=True)
         return None
     found = re.findall(r'(\d+) zombie (ports|segments) cleaned', completed.stdout)
     counts = {kind: int(n) for n, kind in found}
