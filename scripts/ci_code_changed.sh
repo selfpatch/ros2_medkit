@@ -8,8 +8,6 @@
 # Runs in a checkout of the pull request merge commit, fetched with depth 2. Its
 # first parent is the base branch tip, so the diff is what the merge adds.
 set -euo pipefail
-echo "::error::probe: classifier fails on purpose" >&2
-exit 1
 
 if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
   echo "code=true"
@@ -25,7 +23,7 @@ fi
 # --no-renames lists both sides of a rename, so moving a source file under docs/
 # still counts as a code change.
 changed=$(git diff --no-renames --name-only 'HEAD^1' HEAD)
-code_files=$(grep -vE '^(docs|\.github|scripts)/|\.(md|rst)$' <<<"${changed}" || true)
+code_files=$(grep -vE '^docs/|\.(md|rst)$' <<<"${changed}" || true)
 
 if [[ -z "${changed}" || -n "${code_files}" ]]; then
   echo "code=true"
