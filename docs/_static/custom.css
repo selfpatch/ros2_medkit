@@ -1,4 +1,585 @@
-/* Fix DataTables display in Sphinx RTD Theme */
+/*
+ * ros2_medkit docs in the selfpatch.ai look, on top of sphinx_rtd_theme.
+ *
+ * Same layout and navigation as the stock theme; only the surface changes:
+ * Oxanium for headings, Inter for reading, IBM Plex Mono for code, a graphite
+ * sidebar, forest links, chalk panels, hairline tables. No shadows, no
+ * uppercase labels. Fonts are self-hosted under _static/fonts (SIL OFL).
+ */
+
+@font-face {
+    font-family: Inter;
+    font-weight: 100 900;
+    font-display: swap;
+    src: url("fonts/inter-latin.woff2") format("woff2");
+}
+@font-face {
+    font-family: Oxanium;
+    font-weight: 200 800;
+    font-display: swap;
+    src: url("fonts/oxanium-latin.woff2") format("woff2");
+}
+@font-face {
+    font-family: "IBM Plex Mono";
+    font-weight: 400;
+    font-display: swap;
+    src: url("fonts/plex-mono-latin-400.woff2") format("woff2");
+}
+
+:root {
+    --sp-ink: #121413;
+    --sp-body: #363a37;
+    --sp-muted: #5d645e;
+    --sp-accent: #2f6b3f;
+    --sp-acid: #c8ff3e;
+    --sp-chalk: #eeeeea;
+    --sp-chalk-soft: #f6f6f3;
+    --sp-line: rgb(18 20 19 / 0.1);
+    --sp-line-strong: rgb(18 20 19 / 0.22);
+    --sp-graphite: #121413;
+    --sp-side-raised: #1d201e;
+    --sp-side-text: #c9cdc4;
+    --sp-side-muted: #8b948b;
+    --sp-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --sp-display: Oxanium, var(--sp-sans);
+    --sp-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* -- Ground and type ------------------------------------------------------ */
+
+body,
+.wy-body-for-nav,
+.wy-nav-content-wrap,
+.wy-nav-content {
+    background: #ffffff;
+}
+
+body,
+.rst-content,
+.wy-menu-vertical,
+.wy-side-nav-search input[type="text"],
+.btn,
+input,
+select,
+textarea {
+    font-family: var(--sp-sans);
+}
+
+.rst-content {
+    color: var(--sp-body);
+    font-size: 16px;
+    line-height: 1.65;
+}
+
+.rst-content p,
+.rst-content li {
+    line-height: 1.65;
+}
+
+h1, h2, h3, h4, h5, h6,
+.rst-content .toctree-wrapper > p.caption,
+legend {
+    font-family: var(--sp-display);
+    font-weight: 700;
+    color: var(--sp-ink);
+    letter-spacing: -0.03em;
+}
+
+.rst-content h1 { font-size: 2.4rem; line-height: 1.1; letter-spacing: -0.04em; margin-bottom: 1.25rem; }
+.rst-content h2 { font-size: 1.75rem; line-height: 1.15; letter-spacing: -0.04em; margin-top: 2.25rem; }
+.rst-content h3 { font-size: 1.3rem; line-height: 1.2; margin-top: 1.75rem; }
+.rst-content h4 { font-size: 1.1rem; }
+
+.rst-content hr,
+.wy-nav-content hr {
+    border-top: 1px solid var(--sp-line);
+}
+
+/* -- Links ----------------------------------------------------------------- */
+
+a,
+a:visited,
+.rst-content a,
+.rst-content a:visited {
+    color: var(--sp-accent);
+}
+
+a:hover,
+.rst-content a:hover {
+    color: var(--sp-ink);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+/* -- Sidebar: the graphite act ---------------------------------------------- */
+
+.wy-nav-side,
+.wy-side-scroll {
+    background: var(--sp-graphite);
+}
+
+.wy-side-nav-search {
+    background: var(--sp-graphite);
+    padding: 22px 18px 18px;
+    border-bottom: 1px solid rgb(255 255 255 / 0.08);
+    text-align: left;
+}
+
+/* Wordmark above the project name, no house icon. a.icon matches the
+   theme's own selector, which would otherwise keep this a block. */
+.wy-side-nav-search > a,
+.wy-side-nav-search > a.icon {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-start;
+    gap: 14px;
+    color: #f4f5f1;
+    font-family: var(--sp-display);
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    margin: 0;
+    padding: 0;
+}
+
+.wy-side-nav-search > a:hover,
+.wy-side-nav-search > a.icon:hover {
+    background: transparent;
+    text-decoration: none;
+    color: #ffffff;
+}
+
+.wy-side-nav-search > a.icon-home::before {
+    display: none;
+}
+
+.wy-side-nav-search > a img.logo,
+.wy-side-nav-search .wy-dropdown > a img.logo {
+    height: 20px;
+    width: auto;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+}
+
+.wy-side-nav-search > div.version,
+.wy-side-nav-search > div.switch-menus {
+    color: var(--sp-side-muted);
+    text-align: left;
+}
+
+.wy-side-nav-search input[type="text"] {
+    background: var(--sp-side-raised);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 8px;
+    box-shadow: none;
+    color: #f4f5f1;
+    font-size: 14px;
+    padding: 8px 12px;
+    margin-top: 16px;
+}
+
+.wy-side-nav-search input[type="text"]::placeholder {
+    color: var(--sp-side-muted);
+}
+
+.wy-side-nav-search input[type="text"]:focus {
+    border-color: rgb(255 255 255 / 0.3);
+    outline: none;
+}
+
+/* Section labels: sentence case, muted, never uppercase */
+.wy-menu-vertical p.caption,
+.wy-menu-vertical header {
+    color: var(--sp-side-muted);
+    font-family: var(--sp-sans);
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-top: 18px;
+    padding: 0 1.25em;
+    line-height: 32px;
+}
+
+.wy-menu-vertical .caption-text {
+    color: inherit;
+    text-transform: none;
+}
+
+.wy-menu-vertical a,
+.wy-menu-vertical li.current a,
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l2.current li.toctree-l3 > a,
+.wy-menu-vertical li.toctree-l3.current > a,
+.wy-menu-vertical li.toctree-l3.current li.toctree-l4 > a {
+    color: var(--sp-side-text);
+    background: transparent;
+    border: 0;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.wy-menu-vertical a {
+    padding-top: 0.45em;
+    padding-bottom: 0.45em;
+}
+
+.wy-menu-vertical a:hover,
+.wy-menu-vertical li.current a:hover,
+.wy-menu-vertical li.toctree-l2.current > a:hover,
+.wy-menu-vertical li.toctree-l3.current > a:hover {
+    background: var(--sp-side-raised);
+    color: #ffffff;
+}
+
+.wy-menu-vertical li.current,
+.wy-menu-vertical li.toctree-l2.current,
+.wy-menu-vertical li.toctree-l3.current,
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l3.current > a {
+    background: transparent;
+}
+
+/* The open section sits on a slightly raised panel; the page you are on is acid */
+.wy-menu-vertical li.toctree-l1.current {
+    background: var(--sp-side-raised);
+}
+
+.wy-menu-vertical li.toctree-l1.current > a {
+    color: #ffffff;
+    font-weight: 600;
+    border: 0;
+}
+
+.wy-menu-vertical li.current > a.current,
+.wy-menu-vertical a.current,
+.wy-menu-vertical li.on a {
+    color: var(--sp-acid);
+    background: transparent;
+}
+
+.wy-menu-vertical li button.toctree-expand,
+.wy-menu-vertical li.current > a button.toctree-expand,
+.wy-menu-vertical li.on a button.toctree-expand {
+    color: var(--sp-side-muted);
+}
+
+.wy-menu-vertical li.current > a:hover button.toctree-expand,
+.wy-menu-vertical a:hover button.toctree-expand {
+    color: #ffffff;
+}
+
+/* Mobile top bar */
+.wy-nav-top {
+    background: var(--sp-graphite);
+    font-family: var(--sp-display);
+    font-weight: 700;
+}
+
+.wy-nav-top a,
+.wy-nav-top a:visited {
+    color: #f4f5f1;
+}
+
+/* -- Breadcrumbs, buttons, footer ----------------------------------------- */
+
+.wy-breadcrumbs,
+.wy-breadcrumbs li a,
+.wy-breadcrumbs-aside a {
+    color: var(--sp-muted);
+    font-size: 14px;
+}
+
+.wy-breadcrumbs li a:hover,
+.wy-breadcrumbs-aside a:hover {
+    color: var(--sp-ink);
+}
+
+.btn,
+.btn-neutral,
+.btn-neutral:visited {
+    background: #ffffff !important;
+    color: var(--sp-ink) !important;
+    border: 1px solid var(--sp-line-strong);
+    border-radius: 8px;
+    box-shadow: none;
+    font-weight: 500;
+    font-size: 14px;
+    padding: 9px 16px;
+}
+
+.btn:hover,
+.btn-neutral:hover {
+    border-color: var(--sp-ink);
+    background: #ffffff !important;
+    color: var(--sp-ink) !important;
+}
+
+footer,
+footer p,
+footer span.commit code,
+.rst-content footer {
+    color: var(--sp-muted);
+    font-size: 14px;
+}
+
+/* -- Code ------------------------------------------------------------------- */
+
+.rst-content pre,
+.rst-content code,
+.rst-content tt,
+.rst-content kbd,
+.rst-content samp,
+code,
+pre {
+    font-family: var(--sp-mono);
+}
+
+.rst-content div[class^="highlight"],
+.rst-content pre.literal-block {
+    background: var(--sp-chalk-soft);
+    border: 1px solid var(--sp-line);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.rst-content div[class^="highlight"] div[class^="highlight"],
+.rst-content .highlight {
+    background: transparent;
+    border: 0;
+}
+
+.rst-content div[class^="highlight"] pre,
+.rst-content pre.literal-block {
+    font-size: 13.5px;
+    line-height: 1.6;
+    padding: 14px 18px;
+}
+
+/* Inline code: ink on chalk, not the theme's red on white */
+.rst-content code.literal,
+.rst-content tt.literal,
+.rst-content code,
+.rst-content tt {
+    color: var(--sp-ink);
+    background: var(--sp-chalk);
+    border: 0;
+    border-radius: 5px;
+    padding: 1px 5px;
+    font-size: 0.875em;
+    white-space: normal;
+}
+
+.rst-content a code.literal,
+.rst-content a tt.literal,
+.rst-content code.xref,
+.rst-content tt.xref,
+.rst-content a code.xref {
+    color: var(--sp-accent);
+    font-weight: 400;
+}
+
+.rst-content div[class^="highlight"] pre code,
+.rst-content pre code {
+    background: transparent;
+    padding: 0;
+}
+
+/* -- Admonitions: soft panels, the type in the title ------------------------ */
+
+.rst-content .admonition,
+.rst-content .note,
+.rst-content .seealso,
+.rst-content .tip,
+.rst-content .hint,
+.rst-content .important,
+.rst-content .attention,
+.rst-content .caution,
+.rst-content .warning,
+.rst-content .danger,
+.rst-content .error {
+    background: var(--sp-chalk-soft);
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+}
+
+.rst-content .admonition .admonition-title,
+.rst-content .note .admonition-title,
+.rst-content .seealso .admonition-title,
+.rst-content .tip .admonition-title,
+.rst-content .hint .admonition-title,
+.rst-content .important .admonition-title,
+.rst-content .attention .admonition-title,
+.rst-content .caution .admonition-title,
+.rst-content .warning .admonition-title,
+.rst-content .danger .admonition-title,
+.rst-content .error .admonition-title {
+    background: transparent;
+    color: var(--sp-ink);
+    font-family: var(--sp-sans);
+    font-weight: 600;
+    font-size: 15px;
+    margin: 0 0 6px;
+    padding: 0;
+}
+
+.rst-content .admonition .admonition-title::before,
+.rst-content .note .admonition-title::before,
+.rst-content .seealso .admonition-title::before,
+.rst-content .tip .admonition-title::before,
+.rst-content .hint .admonition-title::before,
+.rst-content .important .admonition-title::before {
+    color: var(--sp-accent);
+}
+
+.rst-content .admonition > :last-child {
+    margin-bottom: 0;
+}
+
+.rst-content .tip,
+.rst-content .hint {
+    background: #eef5ec;
+}
+
+.rst-content .important {
+    background: #eef3f0;
+}
+
+.rst-content .attention,
+.rst-content .caution,
+.rst-content .warning {
+    background: #fbf5e6;
+}
+
+.rst-content .attention .admonition-title::before,
+.rst-content .caution .admonition-title::before,
+.rst-content .warning .admonition-title::before {
+    color: #9a6700;
+}
+
+.rst-content .danger,
+.rst-content .error {
+    background: #fcefed;
+}
+
+.rst-content .danger .admonition-title::before,
+.rst-content .error .admonition-title::before {
+    color: #b42318;
+}
+
+/* -- Tables: hairline rows, no zebra --------------------------------------- */
+
+.rst-content table.docutils,
+.wy-table-bordered-all,
+.rst-content table.field-list {
+    border: 0;
+}
+
+.rst-content table.docutils td,
+.rst-content table.docutils th,
+html.writer-html5 .rst-content table.docutils td,
+html.writer-html5 .rst-content table.docutils th,
+.wy-table-bordered-all td,
+.wy-table-bordered-all th {
+    border: 0;
+    border-bottom: 1px solid var(--sp-line);
+    background: transparent;
+    font-size: 15px;
+    padding: 10px 14px;
+}
+
+.rst-content table.docutils thead th,
+html.writer-html5 .rst-content table.docutils thead th,
+.wy-table thead th {
+    border-bottom: 1px solid var(--sp-line-strong);
+    color: var(--sp-ink);
+    font-weight: 600;
+    text-align: left;
+}
+
+.rst-content table.docutils:not(.field-list) tr:nth-child(2n-1) td,
+.wy-table-backed,
+.wy-table-odd td,
+.wy-table-striped tr:nth-child(2n-1) td {
+    background: transparent;
+}
+
+.rst-content table.docutils caption {
+    color: var(--sp-muted);
+    font-size: 14px;
+}
+
+/* -- sphinx-design: tabs and buttons in ink and forest, not the default blue */
+
+:root {
+    --sd-color-primary: var(--sp-accent);
+    --sd-color-primary-highlight: var(--sp-ink);
+    --sd-color-primary-text: #ffffff;
+    --sd-color-tabs-label-active: var(--sp-ink);
+    --sd-color-tabs-label-hover: var(--sp-ink);
+    --sd-color-tabs-label-inactive: var(--sp-muted);
+    --sd-color-tabs-underline-active: var(--sp-ink);
+    --sd-color-tabs-underline-hover: var(--sp-line-strong);
+    --sd-color-tabs-underline-inactive: transparent;
+    --sd-color-tabs-underline: var(--sp-line);
+    --sd-color-tabs-overline: var(--sp-line);
+    --sd-color-card-border: transparent;
+    --sd-color-card-border-hover: transparent;
+}
+
+.sd-tab-set > label {
+    font-family: var(--sp-sans);
+    font-weight: 500;
+}
+
+/* -- Cards (sphinx-design): chalk panels, no shadow ------------------------ */
+
+/* Grids line up with the text, code blocks and headings around them */
+.rst-content .sd-container-fluid {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.sd-card {
+    background: var(--sp-chalk);
+    border: 0;
+    border-radius: 16px;
+    box-shadow: none !important;
+}
+
+.sd-card-hover:hover {
+    transform: none;
+    background: #e6e6e1;
+    border-color: transparent;
+}
+
+.sd-card-body {
+    padding: 22px 24px;
+}
+
+.sd-card-title {
+    font-family: var(--sp-display);
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: -0.03em;
+    color: var(--sp-ink);
+}
+
+.sd-card-text {
+    color: var(--sp-body);
+}
+
+.sd-shadow-sm,
+.sd-shadow-md,
+.sd-shadow-lg {
+    box-shadow: none !important;
+}
+
+/* -- DataTables (sphinx-needs): fit the page and match the tables above ---- */
+
 .dataTables_wrapper {
     width: 100%;
     overflow-x: auto;
@@ -33,50 +614,36 @@ table.dataTable td {
     max-width: 100%;
 }
 
-/* Inspiration from Furo / Sphinx-Needs modern styling */
 :root {
-    --sn-color-need-border: #e0e0e0;
-    --sn-color-need-row-border: #f5f5f5;
-    --sn-color-need-bg: #fafafa;
-    --sn-color-need-bg-head: #f0f0f0;
-    --sn-color-datatable-label: #666;
-    --sn-color-datatable-btn-border: #ccc;
+    --sn-color-need-border: var(--sp-line-strong);
+    --sn-color-need-row-border: var(--sp-line);
+    --sn-color-need-bg: var(--sp-chalk-soft);
+    --sn-color-need-bg-head: var(--sp-chalk);
+    --sn-color-datatable-label: var(--sp-muted);
+    --sn-color-datatable-btn-border: var(--sp-line-strong);
 }
 
-/* Apply these variables to the DataTable if Sphinx-Needs uses them,
-   or manually apply them to match the look */
-
 table.dataTable thead th {
-    background-color: #f0f0f0; /* Fallback */
-    background-color: var(--sn-color-need-bg-head);
-    border-bottom: 2px solid #e0e0e0;
-    border-bottom: 2px solid var(--sn-color-need-border);
-    color: #333;
-    font-weight: bold;
+    background-color: transparent;
+    border-bottom: 1px solid var(--sp-line-strong);
+    color: var(--sp-ink);
+    font-weight: 600;
     padding: 10px !important;
 }
 
 table.dataTable tbody td {
-    border-bottom: 1px solid #f5f5f5;
-    border-bottom: 1px solid var(--sn-color-need-row-border);
+    border-bottom: 1px solid var(--sp-line);
     padding: 8px !important;
 }
 
 table.dataTable.no-footer {
-    border-bottom: 1px solid #e0e0e0;
-    border-bottom: 1px solid var(--sn-color-need-border);
+    border-bottom: 1px solid var(--sp-line-strong);
 }
 
-/* Improve search/filter inputs in DataTables */
-.dataTables_filter input {
-    border: 1px solid #ccc;
-    border-radius: 4px;
+/* Search/filter inputs in DataTables */
+.dataTables_filter input,
+.dataTables_length select {
+    border: 1px solid var(--sp-line-strong);
+    border-radius: 8px;
     padding: 4px 8px;
 }
-
-.dataTables_length select {
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 4px;
-}
-

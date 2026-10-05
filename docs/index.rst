@@ -17,6 +17,7 @@ Quick Links
 -----------
 
 .. grid:: 2
+   :gutter: 4
 
    .. grid-item-card:: 🚀 Getting Started
       :link: getting_started
