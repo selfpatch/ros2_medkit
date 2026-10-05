@@ -125,7 +125,11 @@ import contextlib
 import errno
 import os
 import random
+import re
+import shutil
 import socket
+import subprocess
+import sys
 import time
 
 import domain_coordinator
@@ -604,6 +608,40 @@ def hold_domains(count=1, domains=None, wait_timeout=None, announce=None):
         yield acquired
     finally:
         _release(managers)
+
+
+def reclaim_shared_memory(timeout=60):
+    """Remove Fast DDS shared memory that no live process holds.
+
+    A participant killed by a signal never frees its segments. ``fastdds shm clean``
+    removes a segment only when no process holds its lock file.
+    Returns ``(ports, segments)`` removed, or None when the tool is missing or fails.
+    """
+    tool = shutil.which('fastdds')
+    if tool is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [tool, 'shm', 'clean'], capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.findall(r'(\d+) zombie (ports|segments) cleaned', completed.stdout)
+    counts = {kind: int(n) for n, kind in found}
+    return counts.get('ports', 0), counts.get('segments', 0)
+
+
+def report_reclaimed_shared_memory(reclaimed):
+    """Print one line to stderr when the cleanup after a test removed anything.
+
+    Not stdout: a wrapped command's own output ends there, and callers parse it.
+    """
+    if reclaimed and any(reclaimed):
+        print(
+            f'[medkit-domain] reclaimed shared memory left by killed participants: '
+            f'{reclaimed[1]} segment(s), {reclaimed[0]} port(s)',
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def apply_to_environ(domains, env=None):

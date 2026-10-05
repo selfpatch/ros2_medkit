@@ -112,7 +112,11 @@ def main(argv=None):
                 + (f', {medkit_domain.SECONDARY_ENV}={domains[1:]}' if len(domains) > 1 else ''),
                 flush=True,
             )
-            return ament_cmake_test.main(argv)
+            try:
+                return ament_cmake_test.main(argv)
+            finally:
+                # A participant killed by the test leaves its shared memory behind.
+                medkit_domain.report_reclaimed_shared_memory(medkit_domain.reclaim_shared_memory())
     except medkit_domain.DomainAllocationError as error:
         print(f'[medkit-domain] {error}', file=sys.stderr, flush=True)
         return 1

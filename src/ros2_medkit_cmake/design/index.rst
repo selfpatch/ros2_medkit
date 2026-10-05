@@ -191,6 +191,25 @@ would collapse a whole run onto one domain the moment a developer or a colcon ex
 exported one. The same reasoning rules out ``colcon-ros-domain-id-coordinator``, which
 allocates one domain per package task and pre-sets ``ROS_DOMAIN_ID``.
 
+Shared Memory Is Reclaimed Before the Domain Is Released
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A Fast DDS participant killed by a signal never frees its shared-memory segments and ports.
+Tests kill participants on purpose (peer failure, recovery), and ``/dev/shm`` is 64 MB in a
+default container, so the leftovers accumulate until an unrelated test fails for lack of
+space.
+
+Both wrappers therefore run ``fastdds shm clean`` when the test command returns, before the
+domain is released, and print one line when it removed anything. The tool removes a file only
+when no process holds its lock, so segments of tests still running elsewhere stay. It runs for
+every test, whatever RMW the test used, and is skipped when ``fastdds`` is not installed. It never
+changes the test's exit code.
+
+The check is a non-blocking ``flock``. A participant that is creating a segment at that
+moment has a short window before it takes its lock; that window is accepted, because the
+alternative, sweeping only when no ROS process runs on the machine, never sweeps on a shared
+development box. ``scripts/sweep_shm.sh`` keeps that stricter rule for a manual sweep.
+
 The Constraint Is Checked, Not Documented
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

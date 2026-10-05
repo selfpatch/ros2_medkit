@@ -118,7 +118,11 @@ def main(argv=None):
                 + (f' secondary={domains[1:]}' if len(domains) > 1 else ''),
                 flush=True,
             )
-            return run_child(args.command)
+            try:
+                return run_child(args.command)
+            finally:
+                # A participant killed by the test leaves its shared memory behind.
+                medkit_domain.report_reclaimed_shared_memory(medkit_domain.reclaim_shared_memory())
     except medkit_domain.DomainAllocationError as error:
         print(f'[medkit-domain] {error}', file=sys.stderr, flush=True)
         return 1
