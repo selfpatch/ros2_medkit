@@ -86,8 +86,9 @@ GitHub Copilot code review is used in addition to human review.
 
 Every pull request that changes more than documentation runs the following, and
 a failure in any of them blocks review. A pull request that changes only files
-under `docs/`, or `.md` and `.rst` files, skips Build & Test, Quality, clang-tidy
-and Sanitizers:
+under `docs/`, or `.md` and `.rst` files, skips Build & Test, clang-tidy and
+Sanitizers. It still runs Quality, because some of its linter tests read the
+documentation:
 
 - **Build & Test:** build + unit/integration tests on Ubuntu Noble / ROS 2 Jazzy, Ubuntu Jammy / ROS 2 Humble, and Ubuntu Resolute / ROS 2 Lyrical. `ros2_medkit_opcua` is excluded here and covered by its own workflow instead
 - **Quality:** `clang-format` and the other ament linters, the static coverage-scope check, which fails if a package compiles production C++ without opting into coverage instrumentation, and two source gates (`check_no_naked_subscriptions.sh`, `check_handlers_typed_query.sh`). Jazzy only

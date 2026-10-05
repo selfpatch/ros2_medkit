@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   # code=false only on a pull request that changes documentation alone. The
-  # lint and sanitizer jobs skip then, and quality-ok still reports.
+  # clang-tidy and sanitizer jobs skip then, and quality-ok still reports.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -31,9 +31,9 @@ jobs:
         id: classify
         run: ./scripts/ci_code_changed.sh >> "$GITHUB_OUTPUT"
 
+  # Runs on docs-only changes too: some linter-labelled tests read docs/api and
+  # the gateway design docs.
   format-lint:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base
