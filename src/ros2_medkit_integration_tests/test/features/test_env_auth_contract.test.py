@@ -46,6 +46,7 @@ C4  MEDKIT_AUTH_DISABLED=1 on top of the same secret, against a file with
 """
 
 import os
+import re
 import select
 import shutil
 import signal
@@ -380,6 +381,14 @@ class TestAuthDisabledWinsOverEverything(GatewayTestCase):
             f'a runtime set of aggregation.peer_auth_header was not refused: {output}')
 
 
+def _param_value(node, name):
+    """Return the value `ros2 param get` prints, without DDS diagnostics on the same streams."""
+    rc, output = _ros2_param('get', node, name)
+    match = re.search(r'value is: (.*)', output)
+    assert rc == 0 and match, output
+    return match.group(1).strip()
+
+
 def _ros2_param(*args):
     """Run `ros2 param ...` against this test's domain and return (rc, output).
 
@@ -525,7 +534,7 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
         beside it, which would otherwise be a way to have half a refused
         request take effect.
         """
-        before = _ros2_param('get', '/gateway_env_closed', 'refresh_interval_ms')[1]
+        before = _param_value('/gateway_env_closed', 'refresh_interval_ms')
 
         script = (
             'import rclpy\n'
@@ -559,11 +568,11 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
         self.assertIn('SUCCESSFUL False', output, f'the batch was accepted: {output[-600:]}')
         self.assertIn('read at start', output, f'the batch gave no reason: {output[-600:]}')
 
-        after = _ros2_param('get', '/gateway_env_closed', 'refresh_interval_ms')[1]
+        after = _param_value('/gateway_env_closed', 'refresh_interval_ms')
         self.assertEqual(
             before, after,
             'the harmless half of a refused atomic batch was applied')
-        self.assertNotIn('6100', after, after)
+        self.assertNotEqual('6100', after, after)
 
     def test_05_a_non_auth_parameter_is_untouched_by_the_guard(self):
         """The guard names `auth.` and must not close the rest of the surface."""
