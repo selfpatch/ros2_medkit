@@ -84,8 +84,10 @@ GitHub Copilot code review is used in addition to human review.
 
 ### Continuous Integration [2.iv]
 
-Every pull request runs the following, and a failure in any of them blocks
-review:
+Every pull request that changes more than documentation runs the following, and
+a failure in any of them blocks review. A pull request that changes only files
+under `docs/`, or `.md` and `.rst` files, skips Build & Test, Quality, clang-tidy
+and Sanitizers:
 
 - **Build & Test:** build + unit/integration tests on Ubuntu Noble / ROS 2 Jazzy, Ubuntu Jammy / ROS 2 Humble, and Ubuntu Resolute / ROS 2 Lyrical. `ros2_medkit_opcua` is excluded here and covered by its own workflow instead
 - **Quality:** `clang-format` and the other ament linters, the static coverage-scope check, which fails if a package compiles production C++ without opting into coverage instrumentation, and two source gates (`check_no_naked_subscriptions.sh`, `check_handlers_typed_query.sh`). Jazzy only
@@ -99,9 +101,9 @@ Reported on pushes to `main`, not run on pull requests:
 - **Coverage:** Debug build with coverage instrumentation. Reports are archived as artifacts and uploaded to [Codecov](https://codecov.io/gh/selfpatch/ros2_medkit)
 
 Merging additionally requires one approving review. Branch rules enforce the
-review requirement and a linear history; the checks above are not configured as
-required status checks, so passing them is a review expectation rather than a
-mechanical block.
+review requirement, a linear history, and two required status checks: `ci-ok`
+and `quality-ok`. They fail when a Build & Test, Quality or Sanitizers job
+failed or was cancelled. clang-tidy, Documentation and OPC-UA are not required.
 
 CI configuration: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/quality.yml`](.github/workflows/quality.yml)
 
