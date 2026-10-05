@@ -1,4 +1,8 @@
-# ros2_medkit
+<!-- The logo, header and diagram live in the selfpatch/.github repository (profile/design/ros2_medkit.html), so this repository carries no image binaries. Change them there, and keep each image's alt text here in step with its words. -->
+
+<a href="https://selfpatch.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/logo-dark.png"><img src="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/logo-light.png" alt="selfpatch.ai" height="30"></picture></a>
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/header-dark.png"><img src="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/header-light.png" alt="ros2_medkit: see what broke on any ROS 2 robot, from one REST API." width="100%"></picture>
 
 [![CI](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml/badge.svg)](https://github.com/selfpatch/ros2_medkit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/selfpatch/ros2_medkit/branch/main/graph/badge.svg)](https://codecov.io/gh/selfpatch/ros2_medkit)
@@ -7,132 +11,57 @@
 [![ROS 2 Jazzy | Humble | Lyrical](https://img.shields.io/badge/ROS%202-Jazzy%20%7C%20Humble%20%7C%20Lyrical-blue)](https://docs.ros.org/en/jazzy/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?logo=discord&logoColor=white)](https://discord.gg/6CXPMApAyq)
 
-<p align="center">
-  <img src="docs/_static/images/medkit_hero.gif" alt="A Nav2 NavigateToPose goal aborts: stock ROS 2 diagnostics leave you a log line lost in the noise, while ros2_medkit turns it into one structured fault over REST" width="100%">
-</p>
+ros2_medkit gives your ROS 2 robot a diagnostics REST API. It finds every node, topic, service and
+action by itself, and turns failures - error logs, failed actions, `/diagnostics` - into clear
+faults: what broke, where, how bad, with a snapshot and a rosbag of the moment it happened.
+No changes to your code.
 
-<p align="center">
-  <b>A structured diagnostic model for ROS 2 robots, over REST.</b><br>
-  Drop it next to the stack you already run - no code changes - and a failure that ROS 2
-  diagnostics leaves as a log line becomes one structured fault: a fault code on a SOVD entity
-  tree, with lifecycle, history, and the state captured at the moment it happened.
-</p>
+<a name="run-it-in-5-minutes"></a>
 
-## Drop it into the stack you already run
+## Quick start
 
-### Nav2: a navigation goal that quietly aborts
+1. Get [Docker](https://docs.docker.com/get-started/get-docker/), if you don't have it yet.
 
-You run Nav2. A `NavigateToPose` goal aborts - the planner gives up, the robot is wedged in a
-corner - and the only trace is a line buried in a log you would have to SSH in to read.
+2. While your robot is running, start ros2_medkit on its computer:
 
-Start ros2_medkit next to it (no changes to Nav2). The aborted goal becomes a fault:
+   ```bash
+   docker run --rm --network host --ipc host \
+     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+     -e RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}" \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+     ros2 launch ros2_medkit_gateway bringup.launch.py
+   ```
 
-```bash
-curl http://localhost:8080/api/v1/apps/bt_navigator/faults
-# → ACTION_NAVIGATE_TO_POSE_ABORTED  severity=ERROR  source=/bt_navigator  status=CONFIRMED
-#   + a black-box rosbag of the seconds around the failure
-```
+   On Humble or Lyrical, change `jazzy` to `humble` or `lyrical`.
 
-It works because an aborted action goal is often the *only* failure signal Nav2 emits, and
-ros2_medkit's action bridge turns that into a structured fault on the `bt_navigator` entity -
-no instrumentation, no callbacks added to Nav2.
+3. See what it found:
+
+   ```bash
+   curl localhost:8080/api/v1/apps     # every node on your robot
+   curl localhost:8080/api/v1/faults   # everything that has failed
+   ```
+
+   Or browse the whole API at [localhost:8080/api/v1/docs](http://localhost:8080/api/v1/docs).
 
 > [!TIP]
-> Nothing was added to Nav2. The bridge reads the action status your stack already publishes,
-> so the same trick works for **any** action server - MoveIt, Nav2, or your own nodes.
+> That's it. ros2_medkit is now watching your robot, and every new failure shows up as a fault.
+
+**No robot at hand?** The sensor demo runs on any laptop and lets you break things on purpose
+(it needs `curl` and `jq`):
+
+```bash
+git clone https://github.com/selfpatch/selfpatch_demos.git
+cd selfpatch_demos/demos/sensor_diagnostics
+./run-demo.sh     # web UI on http://localhost:3000
+./inject-nan.sh   # break a sensor, then watch the fault appear
+```
 
 <details>
-<summary><b>↳ Another example: MoveIt - a motion that fails to execute</b></summary>
+<summary>What a fault looks like</summary>
 
 <br>
 
-You run MoveIt. A `MoveGroup` goal aborts - no valid plan, or the controller rejects the
-trajectory. Same story: the same action bridge surfaces the aborted move as a fault on the
-`move_group` entity, with the freeze-frame of what the arm was doing, without touching MoveIt.
-
-```bash
-curl http://localhost:8080/api/v1/apps/move_group/faults
-# → the aborted MoveGroup goal, as a structured fault with its snapshot
-```
-
-</details>
-
-**Two ways to feed it:**
-
-- **Native, for code you own** - report faults directly with the
-  [`FaultReporter`](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_fault_reporter)
-  client. This is the richest path (your own codes, severities and context) and the canonical way
-  for new code; see the
-  [integration tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/integration.html).
-- **Drop-in bridges, for the stack you will not rewrite** - most real robots run huge existing
-  projects nobody is going to retrofit with diagnostics. Point the bridges at what they already
-  emit and you get structured faults (and states) in minutes, zero code changes:
-  [`/diagnostics`](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_diagnostic_bridge),
-  [`/rosout` logs](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_log_bridge),
-  [aborted actions](https://github.com/selfpatch/ros2_medkit/tree/main/src/ros2_medkit_action_status_bridge).
-
-So you get a remote, queryable, time-traveled fault instead of a log line - whether or not you
-touch the node's code.
-
-## Run it in 5 minutes
-
-**One command. No code changes, no config.** Point a container at your already-running robot - it
-ships the gateway, the fault manager and the drop-in bridges, and speaks whatever DDS your stack
-speaks (Fast DDS and CycloneDDS are both baked in):
-
-```bash
-docker run --rm --network host --ipc host \
-  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
-  -e RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}" \
-  ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
-  ros2 launch ros2_medkit_gateway bringup.launch.py
-# → REST API live at http://localhost:8080/api/v1/
-```
-
-Swap `jazzy` for `humble`/`lyrical`; the two `-e` flags forward your shell's `ROS_DOMAIN_ID` and
-`RMW_IMPLEMENTATION` (falling back to domain `0` / Fast DDS if unset) so the container joins the
-same DDS graph as your robot. The packages are heading into the ROS index, so once your distro
-picks them up it is a plain apt install too:
-
-```bash
-sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-
-ros2 launch ros2_medkit_gateway bringup.launch.py
-```
-
-> [!TIP]
-> That is the whole setup. It auto-discovers every node, topic, service and action and starts
-> emitting structured faults over REST - no instrumentation, no changes to your stack. Prefer
-> source or Pixi? See the [installation docs](https://selfpatch.github.io/ros2_medkit/installation.html).
-
-> [!NOTE]
-> The log and action-status bridges are on by default; the `/diagnostics` bridge is opt-in. If your
-> stack publishes `/diagnostics` via `diagnostic_updater`, turn it on with
-> `ros2 launch ros2_medkit_gateway bringup.launch.py enable_diagnostic_bridge:=true`.
-
-**Then just curl the REST API** (no UI, no CORS):
-
-```bash
-# Your whole graph as a SOVD entity tree, instantly:
-curl localhost:8080/api/v1/apps
-
-# The headline - structured faults (code, severity, source node, lifecycle, history):
-curl localhost:8080/api/v1/faults
-
-# Watch faults arrive live (Server-Sent Events):
-curl -N localhost:8080/api/v1/faults/stream
-
-# One fault's full context (freeze-frame snapshots + black-box rosbag reference):
-curl localhost:8080/api/v1/apps/bt_navigator/faults/ACTION_NAVIGATE_TO_POSE_ABORTED
-
-# Download the black-box rosbag captured around that fault:
-curl -O -J localhost:8080/api/v1/apps/bt_navigator/bulk-data/rosbags/ACTION_NAVIGATE_TO_POSE_ABORTED
-```
-
-Full API: **Swagger UI at http://localhost:8080/api/v1/docs** · [Postman collection](postman/) ·
-[API reference](https://selfpatch.github.io/ros2_medkit/).
-
-**What you get the moment you attach** - no instrumentation, no code changes (right after a
-Nav2 `NavigateToPose` goal aborts):
+After a Nav2 goal is aborted:
 
 ```jsonc
 // GET /api/v1/faults
@@ -146,87 +75,124 @@ Nav2 `NavigateToPose` goal aborts):
 }
 ```
 
+Each fault also keeps a snapshot of the moment it happened and a rosbag of the seconds around it:
+
+```bash
+curl localhost:8080/api/v1/apps/bt_navigator/faults/ACTION_NAVIGATE_TO_POSE_ABORTED
+curl -O -J localhost:8080/api/v1/apps/bt_navigator/bulk-data/rosbags/ACTION_NAVIGATE_TO_POSE_ABORTED
+```
+
+</details>
+
 <details>
-<summary><b>Prefer a dashboard? Run the web UI alongside it (optional)</b></summary>
+<summary>Watch faults live, or add the web UI</summary>
 
 <br>
 
 ```bash
+# Faults as they happen
+curl -N localhost:8080/api/v1/faults/stream
+
+# A dashboard in the browser: open http://localhost:3000, click Connect, enter http://localhost:8080
 docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
-# open http://localhost:3000 -> Connect -> http://localhost:8080
 ```
 
-The browser calls the gateway from a different origin, so the gateway must allow that origin via
-CORS (the prebuilt gateway Docker image enables it; for a native bringup set
-`cors.allowed_origins`). See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html).
+See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html) and the
+[Postman collection](postman/).
 
 </details>
 
-For a guided walkthrough, see the
-[Getting Started tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html).
+<details>
+<summary>Install without Docker</summary>
 
-## vs. standard ROS 2 diagnostics
+<br>
 
-`diagnostic_updater` + `/diagnostics` + `diagnostic_aggregator` + `rqt_robot_monitor` report
-current node health to a desktop GUI. ros2_medkit turns that into a queryable, remote,
-time-traveled, actionable fault.
+ros2_medkit is on its way into the official ROS packages. Once it reaches your distro:
 
-> [!NOTE]
-> It **consumes `/diagnostics` too**, so it is additive, not a rip-and-replace. Keep your
-> existing `diagnostic_updater` publishers; medkit reads them and gives you the rest.
+```bash
+sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-
+ros2 launch ros2_medkit_gateway bringup.launch.py
+```
 
-| | 🔴 ROS 2 diagnostics | 🟢 ros2_medkit |
+To build from source or use Pixi, follow the
+[installation guide](https://selfpatch.github.io/ros2_medkit/installation.html).
+
+</details>
+
+<details>
+<summary>Troubleshooting</summary>
+
+<br>
+
+- Robot missing? Run ros2_medkit on the robot's computer, or one on the same network, from a
+  terminal where your ROS 2 setup works.
+- Opening it from another computer? Add `server_host:=0.0.0.0` to the end of the command in
+  step 2, on a network you trust, and use the robot's IP address instead of `localhost`.
+- No faults from `/diagnostics`? Add `enable_diagnostic_bridge:=true` to the end of the command
+  in step 2.
+- Still stuck? See [troubleshooting](https://selfpatch.github.io/ros2_medkit/troubleshooting.html)
+  or ask on [Discord](https://discord.gg/6CXPMApAyq).
+
+</details>
+
+## How it works
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/how-it-works-dark.png"><img src="https://raw.githubusercontent.com/selfpatch/.github/main/profile/assets/ros2_medkit/how-it-works-light.png" alt="How it works. Your robot: error logs, failed actions, /diagnostics, and your own nodes through FaultReporter. ros2_medkit listens to logs, actions and diagnostics, records each fault with its history, a snapshot and a rosbag, and serves it all on one REST API, with every node it found. You read it from a browser, curl, the web UI or an AI assistant." width="100%"></picture>
+
+ros2_medkit listens to what your robot already publishes, so it works without code changes. For
+more control, report faults from your own nodes with the
+[`FaultReporter`](src/ros2_medkit_fault_reporter) client, see the
+[integration tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/integration.html).
+The API follows SOVD (ISO 17978), the diagnostics standard from the automotive world.
+
+## Features
+
+- Finds every node, topic, service and action, with no config
+- Turns error logs, failed actions and `/diagnostics` into faults
+- Confirms each fault, keeps its history and clears it once it's fixed
+- Saves a snapshot and a rosbag of the moment each fault happened
+- Reads any topic as JSON, calls services and actions, and reads and sets parameters
+- Streams faults as they happen
+- Software updates through a plugin, and sign-in with per-user permissions
+- Rosbags open in whatever tool you already use to browse robot data
+
+<a name="vs-standard-ros-2-diagnostics"></a>
+
+## Compared with standard ROS 2 diagnostics
+
+ros2_medkit builds on them. It reads `/diagnostics` too, so keep your `diagnostic_updater` code.
+
+| | Standard ROS 2 diagnostics | ros2_medkit |
 |---|---|---|
-| Access | `/diagnostics` topic + rqt GUI (local desktop) | SOVD REST API (remote; any tool / dashboard / agent) |
-| Instrumentation | required (`diagnostic_updater` in node code) | works without it - drop-in bridges (`/rosout`, action status, `/diagnostics` passthrough) |
-| State | live OK / WARN / ERROR / STALE | fault lifecycle (debounce, confirm, heal) |
-| Moment of failure | none | freeze-frame snapshot + black-box rosbag |
-| History | none (live only) | persisted, queryable |
-| Model | key/value pairs | structured fault codes + SOVD entity model |
-| Scope | ROS only | ROS today; PLC / ECU on one API |
-| Agent access | none | MCP adapter |
+| Where you see it | A desktop app next to the robot | A REST API, from anywhere |
+| Code changes | Each node reports its own health | None needed |
+| What you get | OK, WARN, ERROR or STALE, right now | A fault that is confirmed, tracked and cleared once fixed |
+| When it breaks | Nothing is saved | A snapshot and a rosbag |
+| History | None | Saved, so you can look back |
+| Covers | ROS only | ROS today, PLCs and vehicle controllers through the same API |
+| AI assistants | No | Yes, through MCP |
 
-## "I already have Foxglove. Why do I need this?"
+## Ecosystem
 
-Foxglove, Rerun and PlotJuggler are how you *look* at robot data - plots, 3D, logs, live or
-from a bag - and they're great at it. ros2_medkit does the job they leave undone: it turns a
-failure into a **structured fault**.
+- [ros2_medkit_web_ui](https://github.com/selfpatch/ros2_medkit_web_ui) - see your robot and its faults in the browser
+- [ros2_medkit_mcp](https://github.com/selfpatch/ros2_medkit_mcp) - let an AI assistant look into your robot
+- [ros2_medkit_clients](https://github.com/selfpatch/ros2_medkit_clients) - Python and TypeScript clients
+- [selfpatch_demos](https://github.com/selfpatch/selfpatch_demos) - ready-made demo robots, from a mobile robot to an arm
 
-> Every mature machine industry already draws this line: in a car, an oscilloscope is not a
-> scan tool. UDS / DTC diagnostics sit *above* the signal layer, as structured, queryable
-> state. Robotics just hasn't drawn it yet.
+## Documentation
 
-| Common pushback | Why a structured fault still wins |
-|---|---|
-| *"I'll just set an alert."* | A threshold alert fires on a raw signal and is gone - no entity, no lifecycle, no history, and it means something different on every robot. A fault is confirmed, persisted, entity-attributed state - and, being SOVD, it means the same thing across robots and vendors. **Alerting pages a human; diagnostics gives a machine an answer.** |
-| *"I'll just watch the fleet dashboard."* | Visualization is O(humans) - one operator, one timeline, and nobody scrubs 400 of them. A structured fault is O(1): the same code and lifecycle aggregate across the fleet, so *"which 12 of 400 robots have a confirmed navigation fault right now?"* is a query, not a person. |
-| *"I can already see it fail."* | Observability is read-only by design. A structured fault is the precondition for doing something about it - gating an OTA on robot health, triggering remediation. **You can't safely patch what you haven't first diagnosed as a fault.** |
+- [Documentation](https://selfpatch.github.io/ros2_medkit/) and the [step-by-step tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html)
+- [REST API reference](https://selfpatch.github.io/ros2_medkit/api/rest.html) and the [Postman collection](postman/)
+- [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html)
 
-So it is not a replacement for your observability stack - it is the **diagnosis layer
-underneath it**. medkit flags and persists the fault (readable by dashboards, fleet managers
-and agents, not just people) and captures the black-box rosbag you then open in Foxglove.
+## Contributing
 
-## Beyond faults
-
-Faults are the wedge. Once medkit is in, the same REST surface is a full SOVD diagnostic
-gateway - your whole robot as an entity tree, live data, service and action calls, bulk data,
-software updates and JWT/RBAC auth. The fault gets you in the door;
-[the docs](https://selfpatch.github.io/ros2_medkit/) have the rest.
-
-## Documentation & community
-
-- 📖 [Documentation](https://selfpatch.github.io/ros2_medkit/) · 🗺️ [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html) · 🧩 [Postman collection](postman/)
-- 💬 [Discord](https://discord.gg/6CXPMApAyq) · 🐛 [Issues](https://github.com/selfpatch/ros2_medkit/issues) · 💡 [Discussions](https://github.com/selfpatch/ros2_medkit/discussions)
-- 🤝 Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and [good first issues](https://github.com/selfpatch/ros2_medkit/labels/good%20first%20issue)
-- 🔒 Security: responsible disclosure in [SECURITY.md](SECURITY.md)
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), pick a
+[good first issue](https://github.com/selfpatch/ros2_medkit/labels/good%20first%20issue), or ask on
+[Discord](https://discord.gg/6CXPMApAyq) and in [Discussions](https://github.com/selfpatch/ros2_medkit/discussions).
+Report security issues privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE).
-
----
-
-<p align="center">
-  Made with ❤️ by the <a href="https://github.com/selfpatch">selfpatch</a> community ·
-  <a href="https://discord.gg/6CXPMApAyq">Join us on Discord</a>
-</p>
+Apache License 2.0, see [LICENSE](LICENSE). ros2_medkit is built and maintained by
+[selfpatch.ai](https://selfpatch.ai).
