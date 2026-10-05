@@ -26,6 +26,20 @@ using namespace ros2_medkit_gateway;
 
 namespace {
 
+/// Sleeps until the wall clock reaches `target`, in 10 ms steps.
+/// Token times are wall-clock seconds. sleep_for measures the steady clock,
+/// and the wall clock can step against it.
+void sleep_until_wall(std::chrono::system_clock::time_point target) {
+  while (std::chrono::system_clock::now() < target) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+/// Sleeps until the wall clock has moved on by `duration`.
+void sleep_wall(std::chrono::milliseconds duration) {
+  sleep_until_wall(std::chrono::system_clock::now() + duration);
+}
+
 /// A stand-in for the shipped permission table, and honestly a stand-in.
 ///
 /// The real table is derived from the route registrations and installed by
@@ -575,7 +589,7 @@ TEST(AuthManagerRequirementTest, AccessTokenOutlivesItsExpiredRefreshRecord) {
   // t+4s: past the record's own expiry (t+3), inside the one access-token
   // lifetime it is held for (to t+6). Sweeping here is what cut an access token
   // short.
-  std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+  sleep_wall(std::chrono::milliseconds(4000));
   manager.cleanup_expired_tokens();
   EXPECT_EQ(manager.refresh_token_count(), 1u)
       << "the record was dropped at its own expiry, so any access token minted "
@@ -583,7 +597,7 @@ TEST(AuthManagerRequirementTest, AccessTokenOutlivesItsExpiredRefreshRecord) {
 
   // t+9s: past the grace too. It does not live forever, or a revocation would
   // be honoured out of a map that only ever grows.
-  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  sleep_wall(std::chrono::milliseconds(5000));
   manager.cleanup_expired_tokens();
   EXPECT_EQ(manager.refresh_token_count(), 0u) << "the record outlived even its grace period";
 }
@@ -729,7 +743,7 @@ TEST_F(AuthManagerTest, CleanupExpiredTokens) {
   ASSERT_TRUE(result.has_value());
 
   // Wait for tokens to expire (3s margin for loaded systems)
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  sleep_wall(std::chrono::seconds(3));
 
   // Cleanup should remove expired tokens
   size_t cleaned = manager.cleanup_expired_tokens();
@@ -778,7 +792,7 @@ TEST(AuthManagerTokenLifetimeTest, RepeatedLoginsDoNotGrowTheStoreWithoutBound) 
   // beyond it, the next authorisation must clear them out. Records expire at
   // t+1 and are swept after t+2, so this waits to t+4: far enough clear of the
   // boundary that a late wake-up on a loaded machine cannot land short of it.
-  std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+  sleep_wall(std::chrono::milliseconds(4000));
   ASSERT_TRUE(manager.authenticate("svc", "svc_secret").has_value());
 
   EXPECT_EQ(manager.refresh_token_count(), 1U)
@@ -795,7 +809,7 @@ TEST(AuthManagerTokenLifetimeTest, LongLivedRecordsAreNotSweptEarly) {
   for (int i = 0; i < 4; ++i) {
     ASSERT_TRUE(manager.authenticate("svc", "svc_secret").has_value());
   }
-  std::this_thread::sleep_for(std::chrono::seconds(2));
+  sleep_wall(std::chrono::seconds(2));
   ASSERT_TRUE(manager.authenticate("svc", "svc_secret").has_value());
 
   EXPECT_EQ(manager.refresh_token_count(), 5U) << "records well inside their expiry were discarded";
@@ -918,19 +932,19 @@ TEST(AuthManagerRevocationTest, AGatewayWithAnotherSecretRefusesTheToken) {
 // @verifies REQ_INTEROP_086
 TEST(AuthManagerRevocationTest, ARevokedRecordOutlivesTheTokensItWithdraws) {
   auto manager = make_manager(3, 3);
-  std::this_thread::sleep_until(std::chrono::ceil<std::chrono::seconds>(std::chrono::system_clock::now()) +
-                                std::chrono::milliseconds(20));
+  sleep_until_wall(std::chrono::ceil<std::chrono::seconds>(std::chrono::system_clock::now()) +
+                   std::chrono::milliseconds(20));
   auto issued = manager.authenticate("svc", "svc_secret");
   ASSERT_TRUE(issued.has_value());
   ASSERT_TRUE(issued->refresh_token.has_value());
 
   // Mint a late access token, then withdraw the record it came from.
-  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  sleep_wall(std::chrono::milliseconds(2000));
   auto late = manager.refresh_access_token(issued->refresh_token.value());
   ASSERT_TRUE(late.has_value()) << "the refresh token expired before the late access token was minted";
   ASSERT_TRUE(manager.revoke_refresh_token(issued->refresh_token.value()));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  sleep_wall(std::chrono::milliseconds(2000));
 
   EXPECT_EQ(manager.cleanup_expired_tokens(), 0U) << "the sweep dropped a revoked record past its own expiry";
   EXPECT_EQ(manager.refresh_token_count(), 1U);
@@ -1819,7 +1833,7 @@ TEST(AuthManagerRevocationTest, AForeignRevocationRecordIsSweptWithItsToken) {
   ASSERT_TRUE(peer.revoke_refresh_token(issued->refresh_token.value()));
   EXPECT_EQ(peer.refresh_token_count(), 1U);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+  sleep_wall(std::chrono::milliseconds(4000));
   EXPECT_EQ(peer.cleanup_expired_tokens(), 1U);
   EXPECT_EQ(peer.refresh_token_count(), 0U);
 }
@@ -1887,7 +1901,7 @@ TEST(AuthManagerTokenLifetimeTest, ARefreshOnlyWorkloadBoundsTheStore) {
   EXPECT_EQ(manager.refresh_token_count(), 2U);
 
   // Past both refresh expiries and the access lifetime held beyond them.
-  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  sleep_wall(std::chrono::milliseconds(5000));
 
   // Refreshing is the ONLY call made here. It fails, because the refresh token
   // expired too - and the sweep still has to have run, which is the point.
@@ -2084,7 +2098,7 @@ TEST(AuthManagerRevocationTest, AForeignRevocationHoldsOnlyWhereTheExpiriesAgree
     ASSERT_TRUE(peer.revoke_refresh_token(issued->refresh_token.value()));
     EXPECT_FALSE(peer.validate_token(issued->access_token).valid);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    sleep_wall(std::chrono::milliseconds(2500));
     EXPECT_EQ(peer.cleanup_expired_tokens(), 0U)
         << "the peer swept the record while a token the issuer minted could still have been live";
   }
@@ -2105,13 +2119,13 @@ TEST(AuthManagerRevocationTest, AForeignRevocationHoldsOnlyWhereTheExpiriesAgree
     ASSERT_TRUE(issued->refresh_token.has_value());
     ASSERT_TRUE(peer.revoke_refresh_token(issued->refresh_token.value()));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+    sleep_wall(std::chrono::milliseconds(3500));
     auto late = issuer.refresh_access_token(issued->refresh_token.value());
     ASSERT_TRUE(late.has_value()) << "the issuer refused a refresh inside the refresh token's life: "
                                   << late.error().error_description;
     EXPECT_FALSE(peer.validate_token(late->access_token).valid) << "the revocation must hold while the record is up";
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+    sleep_wall(std::chrono::milliseconds(3500));
     EXPECT_EQ(peer.cleanup_expired_tokens(), 1U) << "the record was sized by something other than the refresh expiry "
                                                     "plus the peer's own access lifetime";
     EXPECT_TRUE(peer.validate_token(late->access_token).valid)
@@ -2138,13 +2152,13 @@ TEST(AuthManagerRevocationTest, AnExpiredRefreshTokenStillRevokesItsAccessTokens
 
   // Exchanged inside the refresh token's life, so the access token it mints
   // has four seconds from here, which is past the refresh expiry.
-  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  sleep_wall(std::chrono::milliseconds(2500));
   auto late = issuer.refresh_access_token(refresh);
   ASSERT_TRUE(late.has_value()) << late.error().error_description;
 
   // Now the refresh token has expired and the access token has not; both are
   // asserted, so the revocation below is measured on exactly that state.
-  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  sleep_wall(std::chrono::milliseconds(2000));
   ASSERT_FALSE(issuer.refresh_access_token(refresh).has_value())
       << "the refresh token is still live, so this pins nothing";
   ASSERT_TRUE(issuer.validate_token(late->access_token).valid)
@@ -2179,7 +2193,7 @@ TEST(AuthManagerRevocationTest, AForeignRecordIsHeldNoLongerThanThisGatewaysRefr
   EXPECT_FALSE(peer.validate_token(issued->access_token).valid);
 
   // Past the peer's refresh lifetime and its access lifetime on top.
-  std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+  sleep_wall(std::chrono::milliseconds(3000));
   EXPECT_EQ(peer.cleanup_expired_tokens(), 1U) << "a foreign record outlived this gateway's own refresh lifetime";
 }
 
