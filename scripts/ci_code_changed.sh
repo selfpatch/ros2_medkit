@@ -8,6 +8,8 @@
 # Runs in a checkout of the pull request merge commit, fetched with depth 2. Its
 # first parent is the base branch tip, so the diff is what the merge adds.
 set -euo pipefail
+echo "::error::probe: classifier fails on purpose" >&2
+exit 1
 
 if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
   echo "code=true"
