@@ -98,7 +98,6 @@ Community
    :caption: Architecture
 
    design/index
-   roadmap
 
 .. toctree::
    :maxdepth: 2
