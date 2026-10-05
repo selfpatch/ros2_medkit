@@ -23,7 +23,7 @@ fi
 # --no-renames lists both sides of a rename, so moving a source file under docs/
 # still counts as a code change.
 changed=$(git diff --no-renames --name-only 'HEAD^1' HEAD)
-code_files=$(grep -vE '^docs/|\.(md|rst)$' <<<"${changed}" || true)
+code_files=$(grep -vE '^(docs|\.github|scripts)/|\.(md|rst)$' <<<"${changed}" || true)
 
 if [[ -z "${changed}" || -n "${code_files}" ]]; then
   echo "code=true"
