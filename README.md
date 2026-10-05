@@ -183,7 +183,6 @@ ros2_medkit builds on them. It reads `/diagnostics` too, so keep your `diagnosti
 
 - [Documentation](https://selfpatch.github.io/ros2_medkit/) and the [step-by-step tutorial](https://selfpatch.github.io/ros2_medkit/getting_started.html)
 - [REST API reference](https://selfpatch.github.io/ros2_medkit/api/rest.html) and the [Postman collection](postman/)
-- [Roadmap](https://selfpatch.github.io/ros2_medkit/roadmap.html)
 
 ## Contributing
 
