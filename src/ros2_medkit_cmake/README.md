@@ -183,6 +183,11 @@ which binds a TCP socket on `32768 + domain`. Because it is an OS-level lock rat
 CTest property, it reaches across the separate `ctest` runs colcon starts per package, which
 is what a `RESOURCE_LOCK` never could.
 
+When the test command returns, and before the domain is released, the wrapper runs
+`fastdds shm clean`. It removes the shared memory of participants that were killed rather
+than shut down, and leaves every file a live process still holds. A line starting with
+`[medkit-domain] reclaimed shared memory` in the test output says it removed something.
+
 A test that needs several domains at once - a multi-gateway test running a second and a third
 gateway - asks for them with `DOMAINS <n>`. The first arrives as `ROS_DOMAIN_ID` and the rest
 as `MEDKIT_SECONDARY_DOMAINS`, which `ros2_medkit_test_utils.constants.get_test_domain_id`

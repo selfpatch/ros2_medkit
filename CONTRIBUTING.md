@@ -94,8 +94,10 @@ rather than shut down. The aggregation suites kill peers on purpose, and nothing
 those segments back: about 0.65 MB each, and a container's `/dev/shm` is 64 MB by default,
 so they accumulate across runs until something unrelated fails for lack of space. The
 reclaiming is `fastdds shm clean`, the vendor's own tool, which removes a segment only when
-no process holds its lock. Run it on its own with `./scripts/sweep_shm.sh`; it refuses
-while ROS processes are alive, and `--force` overrides that.
+no process holds its lock. Every test registered through the `ros2_medkit_cmake` helpers
+also runs it when the test ends, so a run started with plain `ctest` cleans up after itself
+too. Run it on its own with `./scripts/sweep_shm.sh`; it refuses while ROS processes are
+alive, and `--force` overrides that.
 
 #### Pre-commit and Pre-push Hooks
 

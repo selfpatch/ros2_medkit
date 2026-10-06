@@ -19,6 +19,7 @@ the domain is held by a process that lives exactly as long as the command it
 wraps - which no in-process assertion can show.
 """
 
+import fcntl
 import json
 import os
 import signal
@@ -74,6 +75,57 @@ def port_is_free(domain):
     finally:
         sock.close()
     return True
+
+
+SHM_DIR = '/dev/shm'
+
+# Creates a Fast DDS participant that publishes once, records the shared-memory
+# files present at that moment, then dies on SIGKILL without releasing them.
+KILLED_PARTICIPANT = (
+    'import json, os, pathlib, signal, sys\n'
+    'import rclpy\n'
+    'from std_msgs.msg import String\n'
+    'rclpy.init()\n'
+    "node = rclpy.create_node('shm_reclaim_probe')\n"
+    "node.create_publisher(String, 'shm_reclaim_probe', 10).publish(String(data='x'))\n"
+    "pathlib.Path(sys.argv[1]).write_text(json.dumps(sorted(os.listdir('/dev/shm'))))\n"
+    'os.kill(os.getpid(), signal.SIGKILL)\n'
+)
+
+
+def fast_dds_locks(names):
+    """Return the Fast DDS lock files among *names* (2.x and 3.x naming)."""
+    return {
+        name for name in names
+        if name.startswith(('fastrtps_', 'fastdds_')) and name.endswith(('_el', '_sl'))
+    }
+
+
+def killed_participant_env():
+    return dict(os.environ, RMW_IMPLEMENTATION='rmw_fastrtps_cpp')
+
+
+def lock_is_dead(name):
+    """Return True when the lock file exists and no live process holds it."""
+    try:
+        fd = os.open(os.path.join(SHM_DIR, name), os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def assert_killed_participant_left_nothing(before, seen_file):
+    # Other processes on the machine create files too; only a dead lock is a leftover.
+    created = fast_dds_locks(json.loads(seen_file.read_text())) - before
+    assert created, 'the participant created no shared-memory files, so this run proves nothing'
+    left = sorted(name for name in created if lock_is_dead(name))
+    assert not left, f'shared memory of a killed participant outlived its test: {left}'
 
 
 def wait_until(predicate, timeout, interval=0.05):
@@ -506,6 +558,36 @@ def test_ament_runner_reports_the_domain_it_took(tmp_path):
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert 'ROS_DOMAIN_ID' in completed.stdout
+
+
+def test_ament_runner_reclaims_shared_memory_of_a_killed_participant(tmp_path):
+    before = fast_dds_locks(os.listdir(SHM_DIR))
+    seen = tmp_path / 'seen.json'
+    completed = subprocess.run(
+        [
+            sys.executable, '-u', RUNNER, str(tmp_path / 'result.xml'),
+            '--package-name', 'ros2_medkit_cmake',
+            '--command', sys.executable, '-c', KILLED_PARTICIPANT, str(seen),
+        ],
+        capture_output=True,
+        text=True,
+        env=killed_participant_env(),
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode != 0, 'the command was killed, so the runner must report a failure'
+    assert_killed_participant_left_nothing(before, seen)
+    assert 'reclaimed shared memory' in completed.stderr, completed.stderr
+
+
+def test_exec_wrapper_reclaims_shared_memory_of_a_killed_participant(tmp_path):
+    before = fast_dds_locks(os.listdir(SHM_DIR))
+    seen = tmp_path / 'seen.json'
+    result = run_wrapped(
+        [], [sys.executable, '-c', KILLED_PARTICIPANT, str(seen)], env=killed_participant_env())
+    assert result.returncode == 128 + signal.SIGKILL, result.stdout + result.stderr
+    assert_killed_participant_left_nothing(before, seen)
+    assert 'reclaimed shared memory' in result.stderr, result.stderr
 
 
 @pytest.mark.parametrize('count', [1, 2, 3, 4])

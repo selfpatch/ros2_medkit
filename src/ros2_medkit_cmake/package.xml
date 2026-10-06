@@ -19,6 +19,7 @@
   <test_depend>launch_testing_ament_cmake</test_depend>
   <test_depend>python3-pytest</test_depend>
   <test_depend>rclpy</test_depend>
+  <test_depend>rmw_fastrtps_cpp</test_depend>
   <test_depend>std_msgs</test_depend>
 
   <export>
