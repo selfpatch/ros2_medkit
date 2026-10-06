@@ -14,6 +14,25 @@ permissions:
   contents: read
 
 jobs:
+  # code=false only on a pull request that changes documentation alone. The
+  # clang-tidy and sanitizer jobs skip then, and quality-ok still reports.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify the change
+        id: classify
+        run: ./scripts/ci_code_changed.sh >> "$GITHUB_OUTPUT"
+
+  # Runs on docs-only changes too: some linter-labelled tests read docs/api and
+  # the gateway design docs.
   format-lint:
     runs-on: ubuntu-latest
     container:
@@ -89,6 +108,8 @@ jobs:
         run: colcon test-result --verbose
 
   clang-tidy:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base
@@ -206,9 +227,10 @@ jobs:
           source install/setup.bash
           if [ -n "$CHANGED_FILES" ]; then
             # Incremental: specific files
+            read -r -a changed_files <<<"$CHANGED_FILES"
             run-clang-tidy -p build -clang-tidy-binary ctcache-wrapper \
               -header-filter='.*ros2_medkit.*' \
-              $CHANGED_FILES
+              "${changed_files[@]}"
           else
             # Full: analyze all source files under src/ros2_medkit_*/src/
             # Intentionally excludes test/ directories (tested via sanitizer jobs)
@@ -218,6 +240,8 @@ jobs:
           fi
 
   sanitizer-asan:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base
@@ -368,6 +392,8 @@ jobs:
           done
 
   sanitizer-tsan:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base
@@ -455,7 +481,8 @@ jobs:
           # sanitizer's own *SAN_OPTIONS, so this is belt and braces.
           MEDKIT_TEST_SANITIZED: 1
         run: |
-          export TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
+          TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
+          export TSAN_OPTIONS
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           failed=0
@@ -489,6 +516,8 @@ jobs:
   # discovery, so the changes most likely to break it are not in its own tree.
   sanitizer-graph-watchdog:
     name: Sanitizer ${{ matrix.name }} (graph_watchdog)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -597,7 +626,8 @@ jobs:
           MEDKIT_TEST_SANITIZED: 1
         run: |
           if [ "${{ matrix.sanitizer }}" = "tsan" ]; then
-            export TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
+            TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
+            export TSAN_OPTIONS
           else
             # detect_leaks=0: FastDDS allocator leaks on shutdown (not our code)
             # new_delete_type_mismatch=0: ROS 2 DDS scalar/array new/delete mismatch
@@ -614,3 +644,28 @@ jobs:
         run: |
           colcon test-result --test-result-base build/ros2_medkit_graph_watchdog \
             --verbose 2>/dev/null || true
+
+  # The one check branch rules require from this workflow. A matrix job skipped by
+  # its `if` does not report its per-entry checks, so the rules cannot require them.
+  # always(), not !cancelled(): a skipped gate would count as passed. clang-tidy
+  # stays out: it is advisory.
+  quality-ok:
+    if: always()
+    needs: [changes, format-lint, sanitizer-asan, sanitizer-tsan, sanitizer-graph-watchdog]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Required jobs passed, or skipped on a docs-only change
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          allowed='["success"]'
+          if [[ "$CODE" == "false" ]]; then allowed='["success","skipped"]'; fi
+          bad=$(jq -r --argjson ok "$allowed" \
+            'to_entries[] | select(.value.result | IN($ok[]) | not) | .key' <<<"$NEEDS")
+          if [[ -n "$bad" ]]; then
+            echo "::error::required jobs did not pass: ${bad//$'\n'/ }"
+            exit 1
+          fi

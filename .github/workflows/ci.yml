@@ -7,7 +7,26 @@ on:
     branches: [main]
 
 jobs:
+  # code=false only on a pull request that changes documentation alone. The
+  # build and test jobs skip then, and ci-ok still reports.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify the change
+        id: classify
+        run: ./scripts/ci_code_changed.sh >> "$GITHUB_OUTPUT"
+
   build-and-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -154,6 +173,8 @@ jobs:
   # so the changes most likely to break it are outside its own tree.
   graph-watchdog:
     name: graph_watchdog (${{ matrix.ros_distro }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -286,6 +307,8 @@ jobs:
   # builds with the option OFF, its default. 14 is the oldest supported server.
   postgres:
     name: postgres (${{ matrix.ros_distro }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -418,6 +441,8 @@ jobs:
   #
   # The job id stays jazzy-test because notify-demos gates on it by name.
   jazzy-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base
@@ -525,6 +550,30 @@ jobs:
             log/
             build/*/test_results/
 
+  # The one check branch rules require from this workflow. A matrix job skipped by
+  # its `if` does not report its per-entry checks, so the rules cannot require them.
+  # always(), not !cancelled(): a skipped gate would count as passed.
+  ci-ok:
+    if: always()
+    needs: [changes, build-and-test, graph-watchdog, jazzy-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Required jobs passed, or skipped on a docs-only change
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          allowed='["success"]'
+          if [[ "$CODE" == "false" ]]; then allowed='["success","skipped"]'; fi
+          bad=$(jq -r --argjson ok "$allowed" \
+            'to_entries[] | select(.value.result | IN($ok[]) | not) | .key' <<<"$NEEDS")
+          if [[ -n "$bad" ]]; then
+            echo "::error::required jobs did not pass: ${bad//$'\n'/ }"
+            exit 1
+          fi
+
   coverage:
     # Push to main only. This job owned CI's critical path in 79% of PR runs at
     # ~40 min, and what a PR loses by not running it is narrow: its Codecov
@@ -541,7 +590,7 @@ jobs:
     # -UNDEBUG, which puts the asserts back in the two sanitizer jobs. Those run
     # ctest -LE linter per package, a superset of the selection here - they do
     # not skip ros2_medkit_opcua - so the asserts are still exercised against
-    # unit and integration tests on every PR.
+    # unit and integration tests on every PR that changes code.
     #
     # Sharded because this job reached 89m48s against its 90 minute cap - twelve
     # seconds - and its test step grew 166% in a month. It is the only test-bearing
