@@ -29,7 +29,7 @@ fi
 is_docs() {
   case "$1" in
     CMakeLists.txt | */CMakeLists.txt) return 1 ;;
-    *.md | *.rst) return 0 ;;
+    *.md | *.rst | .github/* | scripts/*) return 0 ;;
     docs/conf.py | docs/Doxyfile) return 0 ;;
     docs/*.png | docs/*.jpg | docs/*.jpeg | docs/*.gif | docs/*.svg | docs/*.webp | docs/*.ico) return 0 ;;
     docs/*.css | docs/*.woff | docs/*.woff2 | docs/*.txt) return 0 ;;
