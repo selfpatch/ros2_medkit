@@ -35,6 +35,7 @@
 
   <!-- bringup.launch.py composes the full local stack via IncludeLaunchDescription -->
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros2_medkit_fault_manager</exec_depend>

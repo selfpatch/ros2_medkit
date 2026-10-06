@@ -154,6 +154,21 @@ for peer communication.
        ``false`` (default), auth tokens are **never** sent to peers - this
        prevents token leakage to untrusted or mDNS-discovered peers. Only
        enable when all peers are trusted and share the same JWT configuration.
+
+       Sharing the JWT configuration means the signing secret, the algorithm
+       and the issuer, and also ``auth.token_expiry_seconds`` and
+       ``auth.refresh_token_expiry_seconds``. A peer records a revocation for a
+       token it did not issue and holds it for that token's refresh expiry plus
+       its OWN access expiry, so a peer configured with a shorter access expiry
+       drops the record while the issuer's tokens are still inside theirs, and
+       the revocation lapses there. The refresh expiry matters the same way: a
+       peer keeps a foreign record for at most its own refresh lifetime, so an
+       issuer with a longer one can go on refreshing a token the peer has
+       already forgotten.
+
+       The role a forwarded token grants is the peer's own: each gateway reads
+       ``sub`` against its ``auth.clients`` and applies the role listed there,
+       so the ``role`` claim in the token does not travel.
    * - ``aggregation.peer_auth_header``
      - string
      - ``""``

@@ -11,8 +11,22 @@ Role-Based Access Control (RBAC) in ros2_medkit_gateway.
 Overview
 --------
 
-By default, the gateway runs without authentication for easy development.
-For production deployments, you should enable authentication to:
+By default, the gateway runs without authentication for easy development:
+``config/gateway_params.yaml`` leaves ``auth.enabled`` false and
+``require_auth_for`` at ``"write"``. ``config/gateway_params.secure.yaml`` is
+the profile that turns it on, together with TLS and ``require_auth_for``
+``"all"``:
+
+.. code-block:: bash
+
+   ros2 launch ros2_medkit_gateway gateway.launch.py \
+     config_file:=$(ros2 pkg prefix --share ros2_medkit_gateway)/config/gateway_params.secure.yaml \
+     jwt_secret:=<at least 32 characters> \
+     auth_clients:=<id>:<secret>:admin \
+     cert_file:=<cert.pem> key_file:=<key.pem>
+
+Turn authentication on for any deployment reachable beyond the machine it runs
+on, to:
 
 - Control who can access the API
 - Limit write operations to authorized users
@@ -204,6 +218,55 @@ Response:
    curl -X POST http://localhost:8080/api/v1/auth/revoke \
      -H "Content-Type: application/json" \
      -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}'
+
+What Survives a Restart
+-----------------------
+
+**Access tokens survive.** They are judged on three things: the signature
+verifies under the configured secret, the expiry is in the future, and the
+client named in ``sub`` exists and is enabled here. None of that depends on the
+process that issued the token, so a client keeps working across a gateway
+restart until its token expires on its own.
+
+**Refresh tokens do not.** Exchanging one requires the record the issuing
+gateway wrote when it minted the pair, and those records live in that process's
+memory. After a restart, ``POST /auth/token`` with a refresh token answers
+``invalid_grant`` and the client re-authenticates with its client id and secret.
+
+The refresh records are a **denylist**: a record held and marked revoked refuses
+the access tokens minted from it, and a record the gateway does not hold says
+nothing either way. Two consequences follow, and both are worth knowing:
+
+**A revoked token comes back after a restart**, for at most
+``auth.token_expiry_seconds`` - the longest a live access token can outlast the
+record that withdrew it. While the process runs, a revocation holds for the
+whole life of every token the gateway ITSELF issued.
+
+For a token another gateway issued, the record is held until that token's
+refresh expiry - which the token carries - plus this gateway's own
+``auth.token_expiry_seconds``, the only access lifetime it knows. So gateways
+that share a signing configuration must also share
+``auth.token_expiry_seconds`` and ``auth.refresh_token_expiry_seconds``: where
+a peer's access expiry is shorter than the issuer's, the peer drops the record
+at a point the issuer's tokens can outlive, and the revocation lapses there
+while the token still verifies; and a peer keeps such a record for at most its
+own refresh lifetime, so an issuer's longer refresh expiry lets it go on
+refreshing a token the peer has forgotten. Where a revocation has to survive a
+restart, disable the client instead: ``auth.clients`` is read from
+configuration and the check runs on every request.
+
+**Under** ``aggregation.forward_auth`` **revocation is per gateway.** Peers
+share a JWT configuration, so a token the aggregator minted is accepted by the
+peer, and ``POST /auth/revoke`` on the peer refuses it *there* - the peer writes
+a revoked record for a token it never issued precisely so that works. It does
+not reach the aggregator, which shares no record store with it. A token revoked
+on one gateway stays valid on every other until it expires or the client is
+disabled there too.
+
+The role a token grants is also per gateway: each one reads ``sub`` against its
+own ``auth.clients`` and grants the role listed there, so the ``role`` claim in
+the token does not travel. A client that is ``admin`` on the aggregator and
+``viewer`` on a peer may only read on the peer.
 
 Production Recommendations
 --------------------------
