@@ -84,11 +84,12 @@ GitHub Copilot code review is used in addition to human review.
 
 ### Continuous Integration [2.iv]
 
-Every pull request that changes more than documentation runs the following, and
-a failure in any of them blocks review. A pull request that changes only files
-under `docs/`, or `.md` and `.rst` files, skips Build & Test, clang-tidy and
-Sanitizers. It still runs Quality, because some of its linter tests read the
-documentation:
+Every pull request runs the following, and a failure in any of them blocks
+review. In the CI and Quality workflows, a pull request that changes only
+documentation skips Build & Test, the PostgreSQL job, clang-tidy and Sanitizers.
+It still runs Quality, because some of its linter tests read the documentation.
+`scripts/ci_code_changed.sh` defines documentation: `.md` and `.rst` files, and
+images, stylesheets, fonts, `.txt` files, `conf.py` and `Doxyfile` under `docs/`.
 
 - **Build & Test:** build + unit/integration tests on Ubuntu Noble / ROS 2 Jazzy, Ubuntu Jammy / ROS 2 Humble, and Ubuntu Resolute / ROS 2 Lyrical. `ros2_medkit_opcua` is excluded here and covered by its own workflow instead
 - **Quality:** `clang-format` and the other ament linters, the static coverage-scope check, which fails if a package compiles production C++ without opting into coverage instrumentation, and two source gates (`check_no_naked_subscriptions.sh`, `check_handlers_typed_query.sh`). Jazzy only
@@ -104,7 +105,8 @@ Reported on pushes to `main`, not run on pull requests:
 Merging additionally requires one approving review. Branch rules enforce the
 review requirement, a linear history, and two required status checks: `ci-ok`
 and `quality-ok`. They fail when a Build & Test, Quality or Sanitizers job
-failed or was cancelled. clang-tidy, Documentation and OPC-UA are not required.
+failed or was cancelled. The PostgreSQL job, clang-tidy, Documentation and
+OPC-UA are not required.
 
 CI configuration: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/quality.yml`](.github/workflows/quality.yml)
 
@@ -246,7 +248,7 @@ Security issues can be reported via GitHub Security Advisories on the
 | Version policy | Met | Semver, all packages at 0.7.0 |
 | Stable version (>=1.0.0) | Caveat | Pre-1.0; API versioned, 1.0.0 planned post-pilot |
 | Change requests | Met | All changes via PR |
-| CI | Met | Build + test + coverage on every PR |
+| CI | Met | Build + test on every PR that changes code, coverage on pushes to main |
 | License | Met | Apache-2.0 |
 | Copyright | Met | All source files have headers |
 | Feature tests | Met | 65 tests across unit + integration |

@@ -646,7 +646,7 @@ jobs:
             --verbose 2>/dev/null || true
 
   # The one check branch rules require from this workflow. A matrix job skipped by
-  # its `if` reports under an unexpanded name, so the rules cannot name the jobs.
+  # its `if` does not report its per-entry checks, so the rules cannot require them.
   # always(), not !cancelled(): a skipped gate would count as passed. clang-tidy
   # stays out: it is advisory.
   quality-ok:
