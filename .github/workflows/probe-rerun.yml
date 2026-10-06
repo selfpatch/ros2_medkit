@@ -1,0 +1,41 @@
+name: Probe rerun
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  cells:
+    name: cell (${{ matrix.cell }})
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - name: a always fails, b fails only on the first attempt
+        run: |
+          echo "cell=${{ matrix.cell }} attempt=${{ github.run_attempt }}"
+          if [ "${{ matrix.cell }}" = a ]; then exit 1; fi
+          if [ "${{ github.run_attempt }}" = 1 ]; then exit 1; fi
+
+  probe-ok:
+    if: always()
+    needs: [cells]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Same check as ci-ok, with code=true
+        env:
+          CODE: "true"
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "attempt=${{ github.run_attempt }}"
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          allowed='["success"]'
+          if [[ "$CODE" == "false" ]]; then allowed='["success","skipped"]'; fi
+          bad=$(jq -r --argjson ok "$allowed" \
+            'to_entries[] | select(.value.result | IN($ok[]) | not) | .key' <<<"$NEEDS")
+          if [[ -n "$bad" ]]; then
+            echo "::error::required jobs did not pass: ${bad//$'\n'/ }"
+            exit 1
+          fi
