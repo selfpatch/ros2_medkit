@@ -4,7 +4,10 @@
  * Same layout and navigation as the stock theme; only the surface changes:
  * Oxanium for headings, Inter for reading, IBM Plex Mono for code, a graphite
  * sidebar, forest links, chalk panels, hairline tables. No shadows, no
- * uppercase labels. Fonts are self-hosted under _static/fonts (SIL OFL).
+ * uppercase labels. Fonts are self-hosted under _static/fonts (SIL OFL):
+ * Inter and Oxanium carry no Reserved Font Name, and IBM Plex Mono is
+ * IBM's own unmodified file from @ibm/plex-mono, as its "Plex" reservation
+ * requires.
  */
 
 @font-face {
@@ -23,7 +26,7 @@
     font-family: "IBM Plex Mono";
     font-weight: 400;
     font-display: swap;
-    src: url("fonts/plex-mono-latin-400.woff2") format("woff2");
+    src: url("fonts/IBMPlexMono-Regular.woff2") format("woff2");
 }
 
 :root {
