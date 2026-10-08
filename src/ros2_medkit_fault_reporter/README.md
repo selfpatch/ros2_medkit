@@ -91,6 +91,25 @@ reporter_->report("MOTOR_OVERHEAT",
                   "Motor temperature exceeded safe limit");
 ```
 
+### `report(fault_code, severity, description, evidence)`
+
+Same as above, but also sends key-value evidence with the report, for example the numbers
+that made the reporter decide something is wrong. Filtering works the same way. The fault
+manager keeps the evidence in the fault's freeze frame under `x-medkit-reported` (last value
+per key; at most 32 keys, 128 bytes per key, 512 bytes per value; entries over a limit are
+dropped with a warning). The fault manager must be built from the same `ros2_medkit_msgs`
+(see that package's README).
+
+```cpp
+diagnostic_msgs::msg::KeyValue nis;
+nis.key = "nis";
+nis.value = "0.03";
+reporter_->report("FUSION_DIVERGED",
+                  ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                  "Fusion rejected 37 GNSS fixes",
+                  {nis});
+```
+
 ### `report_passed(fault_code)` (Advanced)
 
 Report that a fault condition has cleared. Use this when FaultManager is configured with debounce filtering and healing enabled.

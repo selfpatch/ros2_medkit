@@ -259,14 +259,12 @@ TEST_F(DiagnosticBridgeTest, MapToFaultCode_NameToCodeOverride_PrecedesKeyValueC
 // STALE severity: the level a node can be by design
 // ---------------------------------------------------------------------------
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_DefaultIsCriticalForEveryName) {
   auto node = make_default_node();
   EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_CRITICAL);
   EXPECT_EQ(node->stale_severity_for("anything else"), Fault::SEVERITY_CRITICAL);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_GlobalParameterAppliesToAll) {
   auto node = make_node_with_params({{"stale_severity", "WARN"}});
   EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "gps").value(), Fault::SEVERITY_WARN);
@@ -275,7 +273,6 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_GlobalParameterAppliesToAll) {
   EXPECT_EQ(node->map_to_severity(DiagStatus::ERROR, "gps").value(), Fault::SEVERITY_ERROR);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideBeatsGlobalDefault) {
   auto node = make_node_with_params({{"stale_severity_overrides.gps", "WARN"}});
   EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "gps").value(), Fault::SEVERITY_WARN);
@@ -283,7 +280,6 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideBeatsGlobalDefault) {
   EXPECT_EQ(node->map_to_severity(DiagStatus::STALE, "lidar").value(), Fault::SEVERITY_CRITICAL);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideMatchesOnPrefix) {
   auto node = make_node_with_params({{"stale_severity_overrides.gps", "WARN"}});
   // Diagnostic names are conventionally "<component>: <check>", so a prefix is how an
@@ -293,7 +289,6 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideMatchesOnPrefix) {
   EXPECT_EQ(node->stale_severity_for("imu: covariance"), Fault::SEVERITY_CRITICAL);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_LongestPrefixWins) {
   auto node = make_node_with_params({
       {"stale_severity_overrides.gps", "WARN"},
@@ -303,7 +298,6 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_LongestPrefixWins) {
   EXPECT_EQ(node->stale_severity_for("gps: fix quality"), Fault::SEVERITY_WARN);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideCombinesWithNonCriticalDefault) {
   auto node = make_node_with_params({
       {"stale_severity", "WARN"},
@@ -314,13 +308,11 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_OverrideCombinesWithNonCriticalDefaul
   EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_UnparseableGlobalFallsBackToCritical) {
   auto node = make_node_with_params({{"stale_severity", "not-a-severity"}});
   EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_CRITICAL);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_UnparseableOverrideIsIgnoredNotDefaulted) {
   auto node = make_node_with_params({
       {"stale_severity", "WARN"},
@@ -331,13 +323,11 @@ TEST_F(DiagnosticBridgeTest, StaleSeverity_UnparseableOverrideIsIgnoredNotDefaul
   EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, StaleSeverity_NamesAreCaseInsensitive) {
   auto node = make_node_with_params({{"stale_severity", "warn"}});
   EXPECT_EQ(node->stale_severity_for("gps"), Fault::SEVERITY_WARN);
 }
 
-// @verifies REQ_INTEROP_109
 TEST_F(DiagnosticBridgeTest, ParseSeverityName_AcceptsTheFourNamesAndNothingElse) {
   EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("INFO").value(), Fault::SEVERITY_INFO);
   EXPECT_EQ(DiagnosticBridgeNode::parse_severity_name("WARN").value(), Fault::SEVERITY_WARN);

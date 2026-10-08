@@ -87,6 +87,13 @@ Report a fault event (FAILED or PASSED) to the FaultManager.
 | `severity` | uint8 | Severity level (0-3, only for FAILED events) |
 | `description` | string | Human-readable description (only for FAILED events) |
 | `source_id` | string | Reporting node FQN (e.g., "/powertrain/engine/temp_sensor") |
+| `evidence` | diagnostic_msgs/KeyValue[] | Key-value data behind the report (FAILED only). Kept in the fault's freeze frame under `x-medkit-reported`, last value per key. Limits per code: 32 keys, 128 bytes per key, 512 bytes per value; entries over a limit are dropped with a warning |
+
+> **Upgrade note:** `evidence` changes the `ReportFault` request type. Update reporters
+> (including `ros2_medkit_fault_reporter` and the diagnostic bridge) and the fault manager
+> together, built from the same `ros2_medkit_msgs`. An old reporter cannot talk to a new
+> fault manager, or the other way round: depending on the ROS distribution and RMW, the
+> service does not connect or the request cannot be read, and the fault is not recorded.
 
 **Response:**
 | Field | Type | Description |

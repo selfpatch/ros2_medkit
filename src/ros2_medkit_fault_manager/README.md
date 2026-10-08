@@ -54,7 +54,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
-- **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
+- **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below). It also holds the evidence sent with FAILED reports, under `x-medkit-reported`
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
 - **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
@@ -76,7 +76,9 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
-Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by fault code. It differs from per-topic snapshots in two ways: snapshots are deleted when the fault is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct fault codes (one row per code, replaced in place) and rows are never evicted.
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by fault code. It differs from per-topic snapshots in two ways: snapshots are deleted when the fault is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A configured capture that samples nothing on its first run records an empty `{}` frame.
+
+The frame also holds **reporter evidence**: the key-value pairs a reporter sends in the `evidence` field of a FAILED `ReportFault`. They are kept under the key `x-medkit-reported`. Topic keys always start with `/`, so the two cannot clash. Evidence is written on every FAILED report that has any, even if the code has no capture config, so such a code can have a frame that holds only evidence. Only the last value of each key is kept. Limits per code: 32 keys, 128 bytes per key, 512 bytes per value, no limit on total size. An entry over a limit is dropped with a warning. Bytes that are not valid UTF-8 are stored as U+FFFD. A capture at confirmation keeps the evidence already in the frame. `~/get_fault` returns a frame with evidence even when per-topic snapshots exist, because the snapshots do not contain the evidence. Freeze-frame storage is bounded by the number of distinct fault codes (one row per code, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
@@ -188,7 +190,8 @@ default, because they belong to the one confirmed occurrence rather than to the 
 
 With `snapshots.retain_on_clear` on, `~/get_fault` keeps serving the freeze-frame alongside the
 retained snapshots, because it records the most recent confirmation while the snapshots may belong
-to earlier ones. `~/get_snapshots` returns one entry per topic and serves the newest capture of
+to earlier ones. Without it, the frame is returned once the snapshots are gone, or at any time if it holds
+evidence. `~/get_snapshots` returns one entry per topic and serves the newest capture of
 that topic, whichever storage backend is in use.
 
 The bound is **per fault code, not per database**. Fault codes are unbounded in cardinality, so a

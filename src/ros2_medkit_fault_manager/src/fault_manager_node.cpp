@@ -882,8 +882,15 @@ void FaultManagerNode::handle_report_fault(
   // FAILED report, not only on the one that confirms: a fault that never confirms still owes
   // its near-miss series an explanation, and a reporter that stops publishing after the first
   // report would otherwise leave nothing behind.
+  //
+  // The fault is already stored at this point. If the connection is lost, only the evidence
+  // is missing, so log it and still publish the event.
   if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED && !request->evidence.empty()) {
-    store_reported_evidence(request->fault_code, request->evidence, event_time);
+    try {
+      store_reported_evidence(request->fault_code, request->evidence, event_time);
+    } catch (const FaultStorage::IgnorableConnectionException & e) {
+      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    }
   }
 
   // Get updated fault state to publish event
@@ -1956,9 +1963,10 @@ void FaultManagerNode::store_reported_evidence(const std::string & fault_code,
     // state is a static at the call site, so the copy costs nothing.
     rclcpp::Clock throttle_clock(*get_clock());
     RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 60000,
-                         "Dropped %zu evidence entry/entries for fault '%s': at most %zu entries are kept per code "
-                         "and a value may not exceed %zu characters. The fault is recorded either way.",
-                         dropped, fault_code.c_str(), kMaxEvidenceEntries, kMaxEvidenceValueChars);
+                         "Dropped %zu evidence entry/entries for fault '%s': at most %zu entries are kept per code, "
+                         "a key may not exceed %zu bytes and a value %zu bytes. The fault is recorded either way.",
+                         dropped, fault_code.c_str(), kMaxEvidenceEntries, kMaxEvidenceKeyBytes,
+                         kMaxEvidenceValueBytes);
   }
 }
 

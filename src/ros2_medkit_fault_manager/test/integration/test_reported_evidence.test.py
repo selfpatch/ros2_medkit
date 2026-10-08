@@ -43,7 +43,7 @@ from ros2_medkit_msgs.srv import GetFault, ReportFault
 
 # The reserved key inside the freeze-frame document. Topic keys are fully
 # qualified ROS names and start with '/', so this cannot collide with one.
-REPORTED_KEY = 'x-reported'
+REPORTED_KEY = 'x-medkit-reported'
 
 FAULT_CODE = 'FUSION_DIVERGED'
 SOURCE_ID = '/sensor_fusion'

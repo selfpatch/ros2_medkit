@@ -24,7 +24,8 @@
 
 using ros2_medkit_fault_manager::has_reported_evidence;
 using ros2_medkit_fault_manager::kMaxEvidenceEntries;
-using ros2_medkit_fault_manager::kMaxEvidenceValueChars;
+using ros2_medkit_fault_manager::kMaxEvidenceKeyBytes;
+using ros2_medkit_fault_manager::kMaxEvidenceValueBytes;
 using ros2_medkit_fault_manager::kReportedEvidenceKey;
 using ros2_medkit_fault_manager::merge_reported_evidence;
 using ros2_medkit_fault_manager::preserve_reported_evidence;
@@ -91,7 +92,7 @@ TEST(MergeReportedEvidence, DropsAnEntryWithNoKey) {
 
 // @verifies REQ_INTEROP_110
 TEST(MergeReportedEvidence, DropsAnOversizedValueWholeRatherThanTruncating) {
-  const std::string too_long(kMaxEvidenceValueChars + 1, 'x');
+  const std::string too_long(kMaxEvidenceValueBytes + 1, 'x');
   size_t dropped = 0;
   auto out = merge_reported_evidence("", Pairs{{"blob", too_long}, {"nis", "0.03"}}, dropped);
 
@@ -105,12 +106,73 @@ TEST(MergeReportedEvidence, DropsAnOversizedValueWholeRatherThanTruncating) {
 
 // @verifies REQ_INTEROP_110
 TEST(MergeReportedEvidence, KeepsAValueExactlyAtTheBound) {
-  const std::string at_bound(kMaxEvidenceValueChars, 'x');
+  const std::string at_bound(kMaxEvidenceValueBytes, 'x');
   size_t dropped = 0;
   auto out = merge_reported_evidence("", Pairs{{"blob", at_bound}}, dropped);
 
   EXPECT_EQ(dropped, 0u);
   EXPECT_EQ(reported_of(out).at("blob"), at_bound);
+}
+
+// @verifies REQ_INTEROP_110
+TEST(MergeReportedEvidence, BoundsValueLengthInBytesNotCharacters) {
+  // 256 two-byte characters = 512 bytes, right at the bound. One more goes over.
+  std::string at_bound;
+  for (size_t i = 0; i < kMaxEvidenceValueBytes / 2; ++i) {
+    at_bound += "\xc2\xb0";
+  }
+  size_t dropped = 0;
+  merge_reported_evidence("", Pairs{{"deg", at_bound}}, dropped);
+  EXPECT_EQ(dropped, 0u);
+
+  merge_reported_evidence("", Pairs{{"deg", at_bound + "\xc2\xb0"}}, dropped);
+  EXPECT_EQ(dropped, 1u);
+}
+
+// @verifies REQ_INTEROP_110
+TEST(MergeReportedEvidence, DropsAnOversizedKeyWithItsValue) {
+  const std::string long_key(kMaxEvidenceKeyBytes + 1, 'k');
+  const std::string key_at_bound(kMaxEvidenceKeyBytes, 'k');
+  size_t dropped = 0;
+  auto out = merge_reported_evidence("", Pairs{{long_key, "1"}, {key_at_bound, "2"}}, dropped);
+
+  EXPECT_EQ(dropped, 1u);
+  auto reported = reported_of(out);
+  EXPECT_FALSE(reported.contains(long_key));
+  EXPECT_EQ(reported.at(key_at_bound), "2");
+}
+
+// @verifies REQ_INTEROP_110
+TEST(MergeReportedEvidence, InvalidUtf8IsReplacedNotThrown) {
+  // A Latin-1 degree sign is not valid UTF-8. The default dump() throws on it.
+  const std::string latin1_degree = "\xb0";
+  const std::string replacement = "\xef\xbf\xbd";  // U+FFFD
+  size_t dropped = 0;
+  std::string out;
+  ASSERT_NO_THROW(out = merge_reported_evidence(
+                      "", Pairs{{"temp", "80" + latin1_degree + "C"}, {latin1_degree + "key", "1"}}, dropped));
+
+  EXPECT_EQ(dropped, 0u);
+  auto reported = reported_of(out);
+  EXPECT_EQ(reported.at("temp"), "80" + replacement + "C");
+  EXPECT_EQ(reported.at(replacement + "key"), "1");
+
+  // The result can be merged and preserved again without errors.
+  ASSERT_NO_THROW(merge_reported_evidence(out, Pairs{{"nis", "0.03"}}, dropped));
+  ASSERT_NO_THROW(preserve_reported_evidence(R"({"/odom":{"x":1}})", out));
+}
+
+// @verifies REQ_INTEROP_110
+TEST(MergeReportedEvidence, AnInvalidUtf8KeyIsUpdatedNotDuplicated) {
+  // The bridge sends the same key every cycle. It must update one entry, not add a new one.
+  size_t dropped = 0;
+  auto first = merge_reported_evidence("", Pairs{{"\xb0key", "1"}}, dropped);
+  auto second = merge_reported_evidence(first, Pairs{{"\xb0key", "2"}}, dropped);
+
+  EXPECT_EQ(dropped, 0u);
+  auto reported = reported_of(second);
+  EXPECT_EQ(reported.size(), 1u);
+  EXPECT_EQ(reported.at("\xef\xbf\xbdkey"), "2");  // U+FFFD, then "key"
 }
 
 // @verifies REQ_INTEROP_110
@@ -212,6 +274,6 @@ TEST(HasReportedEvidence, TrueOnlyForAFrameCarryingEntries) {
   EXPECT_FALSE(has_reported_evidence(""));
   EXPECT_FALSE(has_reported_evidence("{}"));
   EXPECT_FALSE(has_reported_evidence(R"({"/odom":1})"));
-  EXPECT_FALSE(has_reported_evidence(R"({"x-reported":{}})"));
-  EXPECT_FALSE(has_reported_evidence(R"({"x-reported":"not an object"})"));
+  EXPECT_FALSE(has_reported_evidence(R"({"x-medkit-reported":{}})"));
+  EXPECT_FALSE(has_reported_evidence(R"({"x-medkit-reported":"not an object"})"));
 }

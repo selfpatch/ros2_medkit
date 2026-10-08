@@ -59,9 +59,13 @@ string source_id
 # the event on purpose: a separate attach call could fail on its own and leave a fault with
 # no numbers, or numbers with no fault.
 #
-# Bounded by the fault manager (count and total size) - a reporter that publishes at 10 Hz
-# must not be able to grow the fault store without limit. Entries past the bound are dropped
-# and the drop is logged, never silently truncated into a half-record.
+# Bounded by the fault manager - a reporter that publishes at 10 Hz must not be able to grow
+# the fault store without limit. Per fault code it keeps at most 32 distinct keys; a key may
+# be at most 128 bytes and a value at most 512 bytes (bytes, not characters). There is no
+# separate cap on total size. Bytes that are not valid UTF-8 are replaced with U+FFFD before
+# the bounds are applied. An entry with an empty key, an oversized key or value, or a new
+# key past the count bound is dropped whole and the drop is logged, never silently
+# truncated into a half-record.
 diagnostic_msgs/KeyValue[] evidence
 ---
 # Response fields

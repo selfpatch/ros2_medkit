@@ -20,23 +20,42 @@ to the FaultManager as faults.
 STALE is the one level whose severity is a deployment decision rather than a fact. A GPS in
 every tunnel and a dead sensor both publish STALE, and CRITICAL
 [bypasses debounce](../ros2_medkit_fault_manager/README.md), so an expected outage confirms a
-CRITICAL fault on its first sample. Set `stale_severity`, or name the noisy sources with
-`stale_severity_overrides`, and those statuses go through debounce like any other.
+CRITICAL fault on its first sample. Set `stale_severity`, or name the noisy diagnostic names
+with `stale_severity_overrides`, and those statuses go through debounce like any other.
+
+This only helps if the fault manager debounces. With the default `confirmation_threshold: -1`
+the first FAILED report confirms, and the bridge's local filter only waits for 3 reports in
+10 s, so a planned STALE still confirms after about three cycles. Set `confirmation_threshold`
+to `-3` or lower. The threshold is picked by `source_id`, and all statuses from the bridge
+share one (`/diagnostic_bridge`, unless `use_hardware_id_as_source_id` is on), so it applies
+to every diagnostic the bridge forwards.
 
 ## Evidence
 
 A FAILED report carries the status's key-values to the fault manager, which keeps them in the
-fault's freeze frame under the reserved key `x-reported` and serves them back from
-`GET /api/v1/apps/{app}/faults/{code}`:
+fault's freeze frame under the reserved key `x-medkit-reported` and serves them back from
+`GET /api/v1/apps/{app}/faults/{code}` (with the bridge defaults the app is
+`diagnostic_bridge`):
 
 ```jsonc
 {
   "environment_data": {
     "snapshots": [
+      // ...one entry per captured topic, if the code has a capture configured...
       {
         "type": "freeze_frame",
         "name": "freeze_frame",
-        "data": "{\"x-reported\":{\"rejected_fixes\":\"37\",\"nis\":\"0.03\"}}"
+        "data": {
+          "x-medkit-reported": { "rejected_fixes": "37", "nis": "0.03" }
+        },
+        "x-medkit": {
+          "topic": "",
+          "message_type": "",
+          "full_data": {
+            "x-medkit-reported": { "rejected_fixes": "37", "nis": "0.03" }
+          },
+          "captured_at": "2026-10-08T09:15:02.123456789Z"
+        }
       }
     ]
   }
@@ -49,9 +68,11 @@ names sampled by the fault manager, which are always fully qualified and start w
 reader can always tell a value the reporter asserted from one the fault manager sampled.
 
 `keyvalue_codes` still reads the same values to pick a fault code; the two uses are
-independent and either can be used without the other. Evidence is bounded per fault code (32
-entries, 512 characters per value); entries past the bound are dropped with a throttled
-warning rather than truncated, and the fault is recorded either way.
+independent and either can be used without the other. Only the last value of each key is
+kept, and near-miss entries do not store evidence. Limits per fault code: 32 keys, 128 bytes
+per key, 512 bytes per value, no limit on total size. An entry over a limit is dropped with a
+warning, not cut short, and the fault is recorded either way. Bytes that are not valid UTF-8
+are stored as U+FFFD.
 
 ## Quick Start
 

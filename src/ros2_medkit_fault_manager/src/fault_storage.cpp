@@ -39,6 +39,21 @@ nlohmann::json parse_frame_or_empty(const std::string & frame_json) {
   return parsed;
 }
 
+/// Serialize a frame without throwing on invalid UTF-8. The default dump() throws on it,
+/// and the throw would crash the fault manager. Invalid bytes become U+FFFD, same as the
+/// audit log.
+std::string dump_frame(const nlohmann::json & frame) {
+  return frame.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+/// Replace invalid UTF-8 in an incoming key or value before storing it. If this only
+/// happened in dump(), the stored key would not match the raw key of the next report,
+/// and the same key would be added again.
+std::string to_valid_utf8(const std::string & raw) {
+  return nlohmann::json::parse(nlohmann::json(raw).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+      .get<std::string>();
+}
+
 }  // namespace
 
 std::string merge_reported_evidence(const std::string & frame_json,
@@ -52,13 +67,16 @@ std::string merge_reported_evidence(const std::string & frame_json,
     reported = frame[kReportedEvidenceKey];
   }
 
-  for (const auto & [key, value] : evidence) {
+  for (const auto & [raw_key, raw_value] : evidence) {
+    // Check the bounds on the cleaned-up strings, since those are what get stored.
+    const std::string key = to_valid_utf8(raw_key);
+    const std::string value = to_valid_utf8(raw_value);
     // An entry with no key cannot be read back by name, so it is not evidence.
     if (key.empty()) {
       ++dropped;
       continue;
     }
-    if (value.size() > kMaxEvidenceValueChars) {
+    if (key.size() > kMaxEvidenceKeyBytes || value.size() > kMaxEvidenceValueBytes) {
       ++dropped;
       continue;
     }
@@ -73,10 +91,10 @@ std::string merge_reported_evidence(const std::string & frame_json,
   }
 
   if (reported.empty()) {
-    return frame.dump();
+    return dump_frame(frame);
   }
   frame[kReportedEvidenceKey] = std::move(reported);
-  return frame.dump();
+  return dump_frame(frame);
 }
 
 std::string preserve_reported_evidence(const std::string & frame_json, const std::string & previous_json) {
@@ -92,7 +110,7 @@ std::string preserve_reported_evidence(const std::string & frame_json, const std
   if (!frame.contains(kReportedEvidenceKey)) {
     frame[kReportedEvidenceKey] = previous[kReportedEvidenceKey];
   }
-  return frame.dump();
+  return dump_frame(frame);
 }
 
 bool has_reported_evidence(const std::string & frame_json) {

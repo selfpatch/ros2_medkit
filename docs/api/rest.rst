@@ -1514,7 +1514,15 @@ Query and manage faults.
 
    **Snapshot Types:**
 
-   - ``freeze_frame``: Data captured at fault confirmation. Entity frames for
+   - ``freeze_frame``: Data captured at fault confirmation: one entry per
+     captured topic, plus one entry named ``freeze_frame`` whose ``data`` maps
+     each topic to its value. That entry can also hold **reporter evidence**
+     under the key ``x-medkit-reported``: the key-value pairs a reporter sent
+     with its FAILED reports (for example the ``DiagnosticStatus`` values from
+     the diagnostic bridge), as string values, last value per key. Topic keys
+     start with ``/``, so they cannot clash with it. Evidence is written on
+     every FAILED report, so a fault with no capture config can still have a
+     ``freeze_frame`` entry with only evidence in it. Entity frames for
      faults that were already confirmed when the gateway started are captured
      at gateway start instead and carry ``"capture_origin": "startup"`` in
      their ``x-medkit`` block. An entity frame also carries ``source`` in
