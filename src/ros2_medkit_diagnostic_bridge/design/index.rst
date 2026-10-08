@@ -48,12 +48,14 @@ The following diagram shows the data flow and component relationships.
            +name: string
            +message: string
            +hardware_id: string
+           +values: KeyValue[]
        }
    }
 
    package "ros2_medkit_fault_reporter" {
        class FaultReporter {
            +report(fault_code, severity, description)
+           +report(fault_code, severity, description, evidence)
            +report_passed(fault_code)
        }
    }
@@ -62,8 +64,10 @@ The following diagram shows the data flow and component relationships.
 
        class DiagnosticBridgeNode {
            +map_to_fault_code(status): string
-           +map_to_severity(level): optional<uint8>
-           +is_ok_level(level): bool
+           +map_to_severity(level, name): optional<uint8>
+           +stale_severity_for(name): uint8
+           +{static} parse_severity_name(name): optional<uint8>
+           +{static} is_ok_level(level): bool
            --
            -diagnostics_callback(msg)
            -process_diagnostic(status)
@@ -102,9 +106,10 @@ Data Flow
        Reporter -> FM : ReportFault(PASSED)
        note right: Triggers healing
    else level == WARN/ERROR/STALE
-       Bridge -> Reporter : report(fault_code, severity, msg)
-       Reporter -> FM : ReportFault(FAILED)
-       note right: Creates/updates fault
+       Bridge -> Reporter : report(fault_code, severity, msg, values)
+       Reporter -> FM : ReportFault(FAILED, evidence)
+       note right: Creates/updates fault,
+keeps evidence in freeze frame
    end
 
    @enduml
@@ -131,8 +136,9 @@ The bridge maps DiagnosticStatus levels to FaultManager severities:
      - ERROR (2)
      - Error-level fault
    * - STALE (3)
-     - CRITICAL (3)
-     - Stale data treated as critical
+     - ``stale_severity`` (CRITICAL by default), per diagnostic name via
+       ``stale_severity_overrides``
+     - See `Configurable STALE severity`_
 
 Main Components
 ---------------
@@ -148,7 +154,8 @@ Main Components
 
 3. **FaultReporter Integration** - Bridges to FaultManager
    - OK status → ``report_passed()`` for healing
-   - WARN/ERROR/STALE → ``report()`` with mapped severity
+   - WARN/ERROR/STALE → ``report()`` with mapped severity and the status ``values`` as
+     evidence
 
 Configuration
 -------------
@@ -172,6 +179,13 @@ Parameters
    * - ``name_to_code.<name>``
      - (none)
      - Custom mapping from diagnostic name to fault code
+   * - ``stale_severity``
+     - ``CRITICAL``
+     - Severity a STALE status reports at (``INFO``, ``WARN``, ``ERROR``, ``CRITICAL``)
+   * - ``stale_severity_overrides.<name>``
+     - (none)
+     - Severity for STALE statuses whose diagnostic name starts with ``<name>``; longest
+       prefix wins
 
 Example Launch Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -208,8 +222,23 @@ Examples:
 - ``"/robot/arm"`` → ``"ROBOT_ARM"``
 - ``"sensor: status"`` → ``"SENSOR_STATUS"``
 
-STALE as CRITICAL
-~~~~~~~~~~~~~~~~~
+Configurable STALE severity
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-STALE diagnostics are mapped to CRITICAL severity because stale data typically indicates
-a communication failure or node crash, which is a serious system health issue.
+STALE maps to ``stale_severity``, CRITICAL by default, because stale data often means a lost
+connection or a crashed node. But some nodes go STALE on purpose (a GPS in a tunnel, an IMU
+while it settles), and CRITICAL skips debounce in the fault manager. So the severity is
+configurable. ``stale_severity_overrides.<name>`` sets it per diagnostic name, and the longest
+matching prefix wins. That is why ``map_to_severity`` takes the diagnostic name as well as the
+level. An override that cannot be parsed is logged and ignored, and ``stale_severity`` is used.
+
+A non-CRITICAL STALE is only held back if the fault manager's ``confirmation_threshold`` needs
+more than one report. That threshold is picked by ``source_id``, which all statuses from the
+bridge share, so it applies to every diagnostic the bridge forwards.
+
+Evidence
+~~~~~~~~
+
+The status ``values`` are sent as ``ReportFault.evidence`` with every FAILED report. The fault
+manager keeps them in the fault's freeze frame under ``x-medkit-reported``. See
+:doc:`/config/diagnostic-bridge`.

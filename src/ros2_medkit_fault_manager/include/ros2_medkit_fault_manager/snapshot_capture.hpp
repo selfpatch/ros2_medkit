@@ -171,8 +171,9 @@ class SnapshotCapture {
   /// the reporting source node's own published topics instead. A code explicitly
   /// listed in fault_specific or matched by a pattern never falls through - a
   /// present-but-empty topic list is a per-fault opt-out. Only when nothing
-  /// resolves does capture return early: no freeze_frames row is written
-  /// (no empty {} row) and FaultStorage::get_freeze_frame() returns nullopt for it.
+  /// resolves does capture return early without writing a freeze_frames row (no empty
+  /// {} row). The code can still have a row with only evidence, written by a FAILED
+  /// report. A capture that runs keeps the evidence already in the row.
   /// @param fault_code The fault code that was confirmed
   void capture(const std::string & fault_code);
 

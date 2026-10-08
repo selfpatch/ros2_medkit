@@ -37,7 +37,31 @@ The diagnostic bridge:
      - SEVERITY_ERROR (2)
    * - STALE
      - FAILED
-     - SEVERITY_ERROR (2)
+     - ``stale_severity``, SEVERITY_CRITICAL (3) by default
+
+.. warning::
+
+   This table previously documented STALE as SEVERITY_ERROR. The bridge has always sent
+   SEVERITY_CRITICAL, and CRITICAL **bypasses debounce** in the fault manager, so a STALE
+   status confirms a CRITICAL fault on its first sample.
+
+   That matters because STALE is the one level a node can reach by design: a GPS goes STALE
+   in every tunnel, an IMU reports covariance -1 while it settles. Left unconfigured, every
+   such outage is a confirmed CRITICAL fault. Use ``stale_severity`` to set the level, or
+   ``stale_severity_overrides`` to name just the diagnostic names that go STALE on purpose;
+   those statuses then debounce like any other.
+
+.. important::
+
+   A non-CRITICAL STALE is only debounced if the fault manager is set up for it. With the
+   default ``confirmation_threshold: -1``, the first FAILED report confirms the fault. The
+   bridge's local filter only waits for 3 reports within 10 s. So with both defaults, a
+   planned STALE still becomes a confirmed fault after about three cycles. Set
+   ``confirmation_threshold`` to ``-3`` or lower to debounce it.
+
+   This threshold is picked by ``source_id``. All statuses from the bridge share one
+   ``source_id`` (``/diagnostic_bridge``, unless ``use_hardware_id_as_source_id`` is on), so
+   a threshold for the bridge applies to **every** diagnostic it forwards, not only STALE ones.
 
 Parameters
 ----------
@@ -49,6 +73,9 @@ Parameters
        diagnostics_topic: "/diagnostics"   # Topic to subscribe to
        auto_generate_codes: true           # Auto-generate fault codes from names
        keyvalue_codes: ["fault_code"]      # Take the code from these key-value keys
+       stale_severity: "WARN"              # What a STALE status reports at
+       # Per diagnostic name, longest matching prefix wins:
+       "stale_severity_overrides.gps": "WARN"
 
 .. list-table::
    :header-rows: 1
@@ -71,6 +98,61 @@ Parameters
        as its value, so a publisher can name its own code instead of relying on
        a mapping. Checked after ``name_to_code`` and before auto-generation.
        Empty strings in the list are ignored.
+   * - ``stale_severity``
+     - ``CRITICAL``
+     - Severity a STALE status reports at, one of ``INFO``, ``WARN``, ``ERROR``,
+       ``CRITICAL`` (case-insensitive). Applies to STALE only: the other levels are
+       facts about the status, not deployment decisions. A name that does not parse
+       is reported and ``CRITICAL`` is used.
+   * - ``stale_severity_overrides.<name>``
+     - ``-``
+     - Severity for STALE statuses whose name starts with ``<name>``. Diagnostic names
+       are conventionally ``<component>: <check>``, so a component prefix covers every
+       check it publishes. The **longest matching prefix** wins. An override that does
+       not parse is reported and **ignored**, leaving ``stale_severity`` in force -
+       applying ``CRITICAL`` to a typo would restore the immediate-confirm behaviour the
+       operator was configuring their way out of.
+
+Evidence
+--------
+
+A FAILED report carries the ``DiagnosticStatus`` key-values to the fault manager, which keeps
+them in the fault's freeze frame and serves them from
+``GET /api/v1/apps/{app}/faults/{code}``. The fault is reported under the bridge's
+``source_id``, so with the bridge defaults the app is ``diagnostic_bridge``:
+
+.. code-block:: console
+
+   $ curl -s localhost:8080/api/v1/apps/diagnostic_bridge/faults/FUSION_DIVERGED | jq '.environment_data.snapshots[] | select(.type == "freeze_frame" and .name == "freeze_frame") | .data["x-medkit-reported"]'
+   {
+     "rejected_fixes": "37",
+     "nis": "0.03"
+   }
+
+If topics were also captured for the code, the list has one entry per topic before the
+freeze frame. Those entries also have type ``freeze_frame``, so the filter checks the name
+too.
+
+A node that publishes outlier counts and gate statistics has already computed why it is
+unhappy; before this the bridge read those values only to pick a fault code and dropped the
+rest, so the fault record said a node complained but not what it saw.
+
+Evidence is written on **every** FAILED report, not only the one that confirms the fault, so a
+code that never confirms still has evidence. Only the **last** value of each key is kept, and
+near-miss entries do not store evidence. So a code with several near misses shows only the
+numbers from its latest report.
+
+The frame's other keys are topic names sampled by the fault manager, always fully qualified
+and so always starting with ``/``. ``x-medkit-reported`` cannot collide with one, which is what lets
+a reader tell a value the reporter asserted from one the fault manager sampled.
+
+.. note::
+
+   Evidence limits per fault code: at most 32 keys, 128 bytes per key and 512 bytes per value
+   (bytes, not characters). There is no limit on total size. Bytes that are not valid UTF-8
+   are stored as U+FFFD, and the limits are checked after that. An entry over a limit is
+   dropped, not cut short, and a warning is logged. The fault is recorded either way. A key already stored can always be updated, so a steady reporter
+   at the bound can still refresh its own numbers.
 
 Custom Fault Code Mappings
 --------------------------

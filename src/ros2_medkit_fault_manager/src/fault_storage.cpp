@@ -14,12 +14,110 @@
 
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <set>
 #include <tuple>
 
 namespace ros2_medkit_fault_manager {
+
+namespace {
+
+/// Parse a freeze-frame document, tolerating the states a stored frame can legitimately be
+/// in: never written (empty string), or written by a build that produced something this one
+/// cannot read. Either way an object is what the caller needs back.
+nlohmann::json parse_frame_or_empty(const std::string & frame_json) {
+  if (frame_json.empty()) {
+    return nlohmann::json::object();
+  }
+  auto parsed = nlohmann::json::parse(frame_json, nullptr, false);
+  if (parsed.is_discarded() || !parsed.is_object()) {
+    return nlohmann::json::object();
+  }
+  return parsed;
+}
+
+/// Serialize a frame without throwing on invalid UTF-8. The default dump() throws on it,
+/// and the throw would crash the fault manager. Invalid bytes become U+FFFD, same as the
+/// audit log.
+std::string dump_frame(const nlohmann::json & frame) {
+  return frame.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+/// Replace invalid UTF-8 in an incoming key or value before storing it. If this only
+/// happened in dump(), the stored key would not match the raw key of the next report,
+/// and the same key would be added again.
+std::string to_valid_utf8(const std::string & raw) {
+  return nlohmann::json::parse(nlohmann::json(raw).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+      .get<std::string>();
+}
+
+}  // namespace
+
+std::string merge_reported_evidence(const std::string & frame_json,
+                                    const std::vector<std::pair<std::string, std::string>> & evidence,
+                                    size_t & dropped) {
+  dropped = 0;
+  nlohmann::json frame = parse_frame_or_empty(frame_json);
+
+  nlohmann::json reported = nlohmann::json::object();
+  if (frame.contains(kReportedEvidenceKey) && frame[kReportedEvidenceKey].is_object()) {
+    reported = frame[kReportedEvidenceKey];
+  }
+
+  for (const auto & [raw_key, raw_value] : evidence) {
+    // Check the bounds on the cleaned-up strings, since those are what get stored.
+    const std::string key = to_valid_utf8(raw_key);
+    const std::string value = to_valid_utf8(raw_value);
+    // An entry with no key cannot be read back by name, so it is not evidence.
+    if (key.empty()) {
+      ++dropped;
+      continue;
+    }
+    if (key.size() > kMaxEvidenceKeyBytes || value.size() > kMaxEvidenceValueBytes) {
+      ++dropped;
+      continue;
+    }
+    // A key already present is an update from a later report, not a new entry, so it
+    // does not count against the bound - otherwise a steady reporter would stop being
+    // able to refresh its own numbers.
+    if (!reported.contains(key) && reported.size() >= kMaxEvidenceEntries) {
+      ++dropped;
+      continue;
+    }
+    reported[key] = value;
+  }
+
+  if (reported.empty()) {
+    return dump_frame(frame);
+  }
+  frame[kReportedEvidenceKey] = std::move(reported);
+  return dump_frame(frame);
+}
+
+std::string preserve_reported_evidence(const std::string & frame_json, const std::string & previous_json) {
+  nlohmann::json previous = parse_frame_or_empty(previous_json);
+  if (!previous.contains(kReportedEvidenceKey) || !previous[kReportedEvidenceKey].is_object() ||
+      previous[kReportedEvidenceKey].empty()) {
+    return frame_json;
+  }
+
+  nlohmann::json frame = parse_frame_or_empty(frame_json);
+  // A frame that already carries evidence has the newer copy: this runs on the capture
+  // path, which never writes the key itself, so anything there arrived after `previous`.
+  if (!frame.contains(kReportedEvidenceKey)) {
+    frame[kReportedEvidenceKey] = previous[kReportedEvidenceKey];
+  }
+  return dump_frame(frame);
+}
+
+bool has_reported_evidence(const std::string & frame_json) {
+  nlohmann::json frame = parse_frame_or_empty(frame_json);
+  return frame.contains(kReportedEvidenceKey) && frame[kReportedEvidenceKey].is_object() &&
+         !frame[kReportedEvidenceKey].empty();
+}
 
 std::string rosbag_recording_id(const std::string & file_path) {
   std::filesystem::path p(file_path);

@@ -117,6 +117,8 @@ if(BUILD_TESTING)
   # repo convention) so it runs only in the integration phase.
   medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 60
     LABELS "integration")
+  medkit_add_launch_test(test_stale_and_evidence test/test_stale_and_evidence.test.py TIMEOUT 90
+    LABELS "integration")
   ros2_medkit_relax_vendor_warnings()
 endif()
 

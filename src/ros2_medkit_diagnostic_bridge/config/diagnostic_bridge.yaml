@@ -14,6 +14,19 @@ diagnostic_bridge:
     # Maximum number of per-source FaultReporter instances retained by the bridge.
     max_tracked_sources: 512
 
+    # Severity a STALE status reports at. STALE is the one level a node can reach by
+    # design - a GPS in every tunnel, an IMU reporting covariance -1 - and CRITICAL
+    # bypasses debounce, so leaving it CRITICAL confirms a fault on the first sample.
+    # One of INFO, WARN, ERROR, CRITICAL.
+    stale_severity: "CRITICAL"
+
+    # Per-diagnostic STALE severity. Matches on the start of the diagnostic name, so a
+    # component prefix covers every check it publishes. Longest matching prefix wins.
+    # Format: "stale_severity_overrides.<diagnostic name or prefix>": "<SEVERITY>"
+    # Example:
+    # "stale_severity_overrides.gps": "WARN"
+    # "stale_severity_overrides.gps: antenna": "ERROR"
+
     # Custom diagnostic name to fault code mappings
     # Format: "name_to_code.<diagnostic_name>": "<FAULT_CODE>"
     # Example:

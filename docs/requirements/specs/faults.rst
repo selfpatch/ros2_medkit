@@ -48,6 +48,19 @@ Faults
    shall take precedence over global defaults. Unspecified fields shall inherit from global
    configuration. When no entity prefix matches, global defaults shall apply.
 
+.. req:: Reporter-Supplied Fault Evidence
+   :id: REQ_INTEROP_110
+   :status: verified
+   :tags: Faults
+
+   A FAILED fault report shall be able to carry key-value measurements, which the fault
+   manager shall retain in the fault's freeze frame under a reserved key distinct from
+   captured topic values, and serve with the fault's environment data. Evidence shall be
+   retained across reports that carry none, preserved when a confirmation capture rebuilds
+   the frame, and bounded per fault code in entry count and in key and value length
+   (measured in bytes), with entries exceeding a bound dropped whole and reported rather
+   than truncated.
+
 .. req:: Fault Snapshot and Rosbag Capture
    :id: REQ_INTEROP_088
    :status: verified
