@@ -196,7 +196,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// Warn once per fault code when two sources debounce it under different
   /// policies. The counter belongs to the fault code and the entity override to
   /// the source, so the report that arrives decides the transition and the other
-  /// source's policy is silently bypassed (issue #276).
+  /// source's policy is silently bypassed.
   /// @param fault_code The code just reported.
   /// @param source_id The source that reported it.
   /// @param resolved The config that report resolved to.
@@ -233,8 +233,9 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// The first debounce policy seen for a fault code, and who reported it.
   /// Kept only to notice a second source resolving a different policy for the
-  /// same code, and warned about once. One entry per fault code the node has
-  /// seen, so it is bounded by the same thing the fault store is. Written from
+  /// same code, and warned about once. One entry per fault code in the store
+  /// (it is only written once the store has the fault), so it is bounded by the
+  /// same thing the fault store is. Written from
   /// the ReportFault callback, which the node's single-threaded executor
   /// serialises with every other callback that touches node state.
   struct DebouncePolicyWitness {

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <unordered_set>
 
 #include "rcutils/logging_macros.h"
 
@@ -135,22 +136,29 @@ std::vector<EntityDebounceOverride> EntityThresholdResolver::load_from_yaml(cons
     return entries;
   }
 
-  for (const auto & item : root) {
-    EntityDebounceOverride entry;
-    entry.prefix = item.first.as<std::string>();
+  // A bad value (e.g. "three") throws from as<>(). Log it and use no overrides
+  // instead of letting it escape the node constructor.
+  try {
+    for (const auto & item : root) {
+      EntityDebounceOverride entry;
+      entry.prefix = item.first.as<std::string>();
 
-    if (!item.second.IsMap()) {
-      RCUTILS_LOG_WARN_NAMED(kEntityLogName, "Skipping non-map entry for prefix '%s' in %s", entry.prefix.c_str(),
-                             path.c_str());
-      continue;
+      if (!item.second.IsMap()) {
+        RCUTILS_LOG_WARN_NAMED(kEntityLogName, "Skipping non-map entry for prefix '%s' in %s", entry.prefix.c_str(),
+                               path.c_str());
+        continue;
+      }
+
+      auto fields = parse_override_fields(item.second, kEntityLogName, entry.prefix);
+      entry.confirmation_threshold = fields.confirmation_threshold;
+      entry.healing_enabled = fields.healing_enabled;
+      entry.healing_threshold = fields.healing_threshold;
+
+      entries.push_back(std::move(entry));
     }
-
-    auto fields = parse_override_fields(item.second, kEntityLogName, entry.prefix);
-    entry.confirmation_threshold = fields.confirmation_threshold;
-    entry.healing_enabled = fields.healing_enabled;
-    entry.healing_threshold = fields.healing_threshold;
-
-    entries.push_back(std::move(entry));
+  } catch (const YAML::Exception & e) {
+    RCUTILS_LOG_ERROR_NAMED(kEntityLogName, "Failed to parse entity thresholds config %s: %s", path.c_str(), e.what());
+    return {};
   }
 
   RCUTILS_LOG_INFO_NAMED(kEntityLogName, "Loaded %zu entity threshold entries from %s", entries.size(), path.c_str());
@@ -199,22 +207,40 @@ std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yam
     return entries;
   }
 
-  for (const auto & item : root) {
-    FaultCodeDebounceOverride entry;
-    entry.fault_code = item.first.as<std::string>();
+  // Same as the entity loader: a bad value is logged, not thrown.
+  try {
+    std::unordered_set<std::string> seen;
+    for (const auto & item : root) {
+      FaultCodeDebounceOverride entry;
+      entry.fault_code = item.first.as<std::string>();
 
-    if (!item.second.IsMap()) {
-      RCUTILS_LOG_WARN_NAMED(kFaultCodeLogName, "Skipping non-map entry for fault code '%s' in %s",
-                             entry.fault_code.c_str(), path.c_str());
-      continue;
+      if (!item.second.IsMap()) {
+        RCUTILS_LOG_WARN_NAMED(kFaultCodeLogName, "Skipping non-map entry for fault code '%s' in %s",
+                               entry.fault_code.c_str(), path.c_str());
+        continue;
+      }
+
+      // yaml-cpp accepts duplicate keys. The resolver keeps the first entry, so
+      // skip the later ones here and say so.
+      if (!seen.insert(entry.fault_code).second) {
+        RCUTILS_LOG_WARN_NAMED(kFaultCodeLogName,
+                               "Fault code '%s' is listed more than once in %s. Using the first entry and "
+                               "ignoring this one.",
+                               entry.fault_code.c_str(), path.c_str());
+        continue;
+      }
+
+      auto fields = parse_override_fields(item.second, kFaultCodeLogName, entry.fault_code);
+      entry.confirmation_threshold = fields.confirmation_threshold;
+      entry.healing_enabled = fields.healing_enabled;
+      entry.healing_threshold = fields.healing_threshold;
+
+      entries.push_back(std::move(entry));
     }
-
-    auto fields = parse_override_fields(item.second, kFaultCodeLogName, entry.fault_code);
-    entry.confirmation_threshold = fields.confirmation_threshold;
-    entry.healing_enabled = fields.healing_enabled;
-    entry.healing_threshold = fields.healing_threshold;
-
-    entries.push_back(std::move(entry));
+  } catch (const YAML::Exception & e) {
+    RCUTILS_LOG_ERROR_NAMED(kFaultCodeLogName, "Failed to parse fault thresholds config %s: %s", path.c_str(),
+                            e.what());
+    return {};
   }
 
   RCUTILS_LOG_INFO_NAMED(kFaultCodeLogName, "Loaded %zu fault-code threshold entries from %s", entries.size(),

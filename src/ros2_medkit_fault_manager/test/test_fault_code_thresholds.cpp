@@ -16,6 +16,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
@@ -196,7 +198,7 @@ TEST_F(LayeredResolutionTest, FaultCodeOverrideReachesAnUnconfiguredEntity) {
   EXPECT_EQ(result.healing_threshold, 3);  // Global, no entity matched
 }
 
-// This is the cross-entity interference issue #275 describes: the debounce
+// This is the cross-entity interference case: the debounce
 // counter belongs to the fault code while the entity override is picked by the
 // reporting source, so two entities reporting one code debounce it two ways. A
 // fault-code override collapses that to a single policy.
@@ -219,8 +221,7 @@ TEST_F(LayeredResolutionTest, OneCodeResolvesTheSameForEverySource) {
 }
 
 // Without a fault-code override the two sources still disagree - which is
-// exactly what the node warns about (issue #276).
-// @verifies REQ_INTEROP_108
+// exactly what the node warns about.
 TEST_F(LayeredResolutionTest, WithoutACodeOverrideTwoSourcesDisagree) {
   FaultCodeThresholdResolver codes;
   auto from_motor = resolve_layered(entities_, codes, "/powertrain/motor/left", "OVERHEAT", global_);
@@ -232,7 +233,6 @@ TEST_F(LayeredResolutionTest, WithoutACodeOverrideTwoSourcesDisagree) {
 // debounce_policy_equal
 // ---------------------------------------------------------------------------
 
-// @verifies REQ_INTEROP_108
 TEST(DebouncePolicyEqualTest, DiffersOnEachOverridableField) {
   DebounceConfig a;
   a.confirmation_threshold = -2;
@@ -254,7 +254,6 @@ TEST(DebouncePolicyEqualTest, DiffersOnEachOverridableField) {
   EXPECT_FALSE(debounce_policy_equal(a, d));
 }
 
-// @verifies REQ_INTEROP_108
 TEST(DebouncePolicyEqualTest, IgnoresGlobalOnlyFields) {
   DebounceConfig a;
   a.confirmation_threshold = -2;
@@ -331,6 +330,44 @@ TEST_F(FaultCodeYamlLoadTest, MalformedYamlReturnsEmpty) {
 
   auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
   EXPECT_TRUE(entries.empty());
+}
+
+// A value of the wrong type used to throw out of the node constructor.
+// @verifies REQ_INTEROP_107
+TEST_F(FaultCodeYamlLoadTest, BadValueReturnsEmpty) {
+  auto path = tmpdir_ / "bad_value.yaml";
+  {
+    std::ofstream f(path);
+    f << "GOOD.CODE:\n"
+      << "  confirmation_threshold: -2\n"
+      << "BAD.CODE:\n"
+      << "  confirmation_threshold: three\n";
+  }
+
+  std::vector<FaultCodeDebounceOverride> entries;
+  ASSERT_NO_THROW(entries = FaultCodeThresholdResolver::load_from_yaml(path.string()));
+  EXPECT_TRUE(entries.empty());
+}
+
+// yaml-cpp accepts a key twice. The first entry wins, the same as the resolver.
+// @verifies REQ_INTEROP_107
+TEST_F(FaultCodeYamlLoadTest, RepeatedCodeKeepsTheFirstEntry) {
+  auto path = tmpdir_ / "dup.yaml";
+  {
+    std::ofstream f(path);
+    f << "DUP.CODE:\n"
+      << "  confirmation_threshold: -2\n"
+      << "OTHER.CODE:\n"
+      << "  confirmation_threshold: -4\n"
+      << "DUP.CODE:\n"
+      << "  confirmation_threshold: -7\n";
+  }
+
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  ASSERT_EQ(entries.size(), 2u);
+  EXPECT_EQ(entries[0].fault_code, "DUP.CODE");
+  EXPECT_EQ(entries[0].confirmation_threshold.value(), -2);
+  EXPECT_EQ(entries[1].fault_code, "OTHER.CODE");
 }
 
 // @verifies REQ_INTEROP_107
@@ -438,4 +475,29 @@ TEST_F(FaultCodeStorageTest, ACodeWithoutAnOverrideKeepsEntityBehaviour) {
 
   report("LIDAR_BLOCKED", "/sensors/lidar/front");
   EXPECT_EQ(storage_.get_fault("LIDAR_BLOCKED")->status, Fault::STATUS_CONFIRMED);
+}
+
+// The startup pass flips HEALED to CLEARED only for codes whose healing is off.
+// @verifies REQ_INTEROP_107
+TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
+  DebounceConfig healing = global_;
+  healing.healing_enabled = true;
+  healing.healing_threshold = 1;
+  for (const std::string code : {"KEEPS.HEALING", "STOPPED.HEALING"}) {
+    storage_.report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "", "/src",
+                                clock_.now(), healing);
+    for (int i = 0; i < 3 && storage_.get_fault(code)->status != Fault::STATUS_HEALED; ++i) {
+      storage_.report_fault_event(code, ReportFault::Request::EVENT_PASSED, 0, "", "/src", clock_.now(), healing);
+    }
+    ASSERT_EQ(storage_.get_fault(code)->status, Fault::STATUS_HEALED);
+  }
+
+  auto reclassified = storage_.reclassify_healed_as_cleared([](const std::string & code) {
+    return code == "KEEPS.HEALING";
+  });
+
+  ASSERT_EQ(reclassified.size(), 1u);
+  EXPECT_EQ(reclassified[0], "STOPPED.HEALING");
+  EXPECT_EQ(storage_.get_fault("KEEPS.HEALING")->status, Fault::STATUS_HEALED);
+  EXPECT_EQ(storage_.get_fault("STOPPED.HEALING")->status, Fault::STATUS_CLEARED);
 }

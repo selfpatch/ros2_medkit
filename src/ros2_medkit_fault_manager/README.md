@@ -175,9 +175,10 @@ rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
 **reporting source**, while the debounce counter is shared by every source of that fault code. It
-is therefore not by itself the distance to confirmation for the fault as a whole. Giving the code
-an entry in `fault_thresholds.config_file` makes the two agree again: a fault-code override
-resolves the same for every source, so the recorded threshold is the fault's own. The node warns
+is therefore not by itself the distance to confirmation for the fault as a whole. An entry in
+`fault_thresholds.config_file` that sets `confirmation_threshold` makes the two agree again: it
+resolves the same for every source, so the recorded threshold is the fault's own. An entry with
+only healing fields keeps the per-source threshold. The node warns
 once per code when two sources resolve different policies for it.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their

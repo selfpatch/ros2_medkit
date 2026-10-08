@@ -282,32 +282,6 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   }
   storage_->set_debounce_config(global_config_);
 
-  // One-time cleanup: when healing is disabled, a HEALED row left by a previous (healing-enabled) run
-  // would behave inconsistently under the latch, so reclassify it as CLEARED at startup. Each flipped
-  // fault is audited (the audit log is already constructed above); without this the reclassification
-  // would be invisible to the audit log's verify().
-  // Storage that is unreachable at startup skips it until the next start.
-  if (!global_config_.healing_enabled) {
-    try {
-      const auto reclassified = storage_->reclassify_healed_as_cleared();
-      if (!reclassified.empty()) {
-        if (audit_log_) {
-          const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
-          for (const auto & fault_code : reclassified) {
-            auto fault = storage_->get_fault(fault_code);
-            if (fault) {
-              audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
-            }
-          }
-        }
-        RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED",
-                    reclassified.size());
-      }
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Startup HEALED reclassification not done, fault storage unavailable: %s", e.what());
-    }
-  }
-
   // Load per-entity threshold overrides (optional)
   auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds.config_file", "");
   if (!entity_thresholds_file.empty()) {
@@ -388,6 +362,38 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
                     auto_confirm_after_sec_);
       }
     }
+  }
+
+  // One-time cleanup: a HEALED row for a code whose healing is now disabled, left by a previous
+  // (healing-enabled) run, would behave inconsistently under the latch, so reclassify it as CLEARED
+  // at startup. Runs after the override files are loaded, so a code with its own
+  // healing_enabled: true keeps its HEALED status. Entity overrides are not used here: they depend
+  // on the reporting source, and a stored fault belongs to a code.
+  // Each flipped fault is audited (the audit log is already constructed above); without this the
+  // reclassification would be invisible to the audit log's verify().
+  // Storage that is unreachable at startup skips it until the next start.
+  try {
+    const auto reclassified = storage_->reclassify_healed_as_cleared([this](const std::string & fault_code) {
+      if (fault_code_resolver_) {
+        return fault_code_resolver_->resolve(fault_code, global_config_).healing_enabled;
+      }
+      return global_config_.healing_enabled;
+    });
+    if (!reclassified.empty()) {
+      if (audit_log_) {
+        const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
+        for (const auto & fault_code : reclassified) {
+          auto fault = storage_->get_fault(fault_code);
+          if (fault) {
+            audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
+          }
+        }
+      }
+      RCLCPP_INFO(get_logger(), "Healing disabled: reclassified %zu stale HEALED fault(s) as CLEARED",
+                  reclassified.size());
+    }
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    RCLCPP_WARN(get_logger(), "Startup HEALED reclassification not done, fault storage unavailable: %s", e.what());
   }
 
   // Create service servers
@@ -906,7 +912,6 @@ void FaultManagerNode::handle_report_fault(
   // Resolve the debounce config: global, then the entity override matching
   // source_id, then the fault code's own override.
   auto resolved_config = resolve_config(request->source_id, request->fault_code);
-  warn_on_conflicting_debounce_policy(request->fault_code, request->source_id, resolved_config);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
   const rclcpp::Time event_time = get_wall_clock_time();
@@ -930,6 +935,10 @@ void FaultManagerNode::handle_report_fault(
     return;
   }
   if (fault_after) {
+    // Only for codes the store holds: a PASSED for an unknown code writes nothing, so it must
+    // not add an entry here either (the diagnostic bridge sends PASSED for every OK status).
+    warn_on_conflicting_debounce_policy(request->fault_code, request->source_id, resolved_config);
+
     // Process through correlation engine (if enabled)
     // Only process FAILED events with correlation
     bool should_mute = false;
@@ -1977,8 +1986,9 @@ void FaultManagerNode::warn_on_conflicting_debounce_policy(const std::string & f
   RCLCPP_WARN(get_logger(),
               "Fault code '%s' is debounced two ways: '%s' resolves confirmation=%d healing_enabled=%s healing=%d, "
               "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the fault "
-              "code, so whichever source reports decides the transition and the other policy is bypassed. Give the "
-              "code an entry in fault_thresholds.config_file to settle it for every source.",
+              "code, so whichever source reports decides the transition and the other policy is bypassed. Pin "
+              "confirmation_threshold, healing_enabled and healing_threshold for this code in "
+              "fault_thresholds.config_file.",
               fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
               it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold,
               source_id.c_str(), resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false",

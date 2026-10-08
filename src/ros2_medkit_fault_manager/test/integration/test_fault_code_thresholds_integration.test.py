@@ -20,8 +20,8 @@ The node is launched with both layers configured, because the point of the
 fault-code layer is what it does to the entity layer underneath it: the debounce
 counter belongs to the fault code while an entity override is chosen by the
 reporting source, so without this layer two entities reporting one code debounce
-it two ways (issue #275). The last case here covers the warning that says so when
-no fault-code override settles it (issue #276).
+it two ways. The last case here covers the warning that says so when no
+fault-code override settles it.
 """
 
 import os
@@ -173,7 +173,7 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
         """
         Confirm SHARED.JAM on its own fourth event, whoever reported it.
 
-        Alternating the two sources is the case issue #275 is about: under the
+        Alternating the two sources is the problem case: under the
         entity layer alone lidar's -1 would confirm this on the second event,
         bypassing the motor's policy.
         """
@@ -198,7 +198,7 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
         self._report('LIDAR.ONLY', LIDAR)
         self.assertEqual(self._status('LIDAR.ONLY'), Fault.STATUS_CONFIRMED)
 
-    # @verifies REQ_INTEROP_107, REQ_INTEROP_108
+    # @verifies REQ_INTEROP_107
     def test_04_a_half_pinned_code_is_still_reported(self, proc_output,
                                                      fault_manager_node):
         """
@@ -220,7 +220,6 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
             timeout=10.0,
         )
 
-    # @verifies REQ_INTEROP_108
     def test_05_conflicting_policies_are_reported_once(self, proc_output,
                                                        fault_manager_node):
         """
@@ -239,19 +238,16 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
             timeout=10.0,
         )
 
-        # A warning per report would be a warning per fault event on a busy
-        # robot, which is why the node keeps a witness and warns once per code.
+        # Report again. The node must not warn a second time; that is checked
+        # in TestShutdown, once the whole output has been read.
         self._report('CONFLICTING.CODE', LIDAR)
         self._report('CONFLICTING.CODE', MOTOR)
-        text = _output_text(proc_output, fault_manager_node)
-        self.assertEqual(text.count("Fault code 'CONFLICTING.CODE'"), 1)
 
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):
     """Verify fault_manager exits cleanly and stayed quiet where it should."""
 
-    # @verifies REQ_INTEROP_108
     def test_an_overridden_code_never_warns(self, proc_output,
                                             fault_manager_node):
         """
@@ -271,6 +267,24 @@ class TestShutdown(unittest.TestCase):
         self.assertNotIn("Fault code 'SHARED.OVERHEAT'", text)
         self.assertNotIn("Fault code 'MOTOR.ONLY'", text)
         self.assertNotIn("Fault code 'LIDAR.ONLY'", text)
+
+    def test_conflict_is_warned_once_with_both_policies(self, proc_output,
+                                                        fault_manager_node):
+        """
+        Warn once for CONFLICTING.CODE, naming both sources and both policies.
+
+        Counted here, after shutdown: during the run proc_output may not have
+        read the last warning yet, so a count there can pass on two warnings.
+        """
+        text = _output_text(proc_output, fault_manager_node)
+        self.assertEqual(text.count("Fault code 'CONFLICTING.CODE'"), 1)
+        # Lidar reported first, so it is named first. Values come from
+        # test_entity_thresholds.yaml; motor inherits healing_enabled=false.
+        self.assertIn(
+            f"'{LIDAR}' resolves confirmation=-1 healing_enabled=true healing=1, "
+            f"'{MOTOR}' resolves confirmation=-3 healing_enabled=false healing=5",
+            text,
+        )
 
     def test_exit_code(self, proc_info):
         """Check process exit code."""

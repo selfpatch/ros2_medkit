@@ -850,11 +850,11 @@ std::vector<ros2_medkit_msgs::msg::Fault> InMemoryFaultStorage::get_all_faults()
   return result;
 }
 
-std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared() {
+std::vector<std::string> InMemoryFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<std::string> reclassified;
   for (auto & [code, state] : faults_) {
-    if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED) {
+    if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED && !(keep_healed && keep_healed(code))) {
       state.status = ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
       reclassified.push_back(code);
     }

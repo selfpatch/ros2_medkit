@@ -1017,18 +1017,21 @@ bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   return sqlite3_changes(db_) > 0;
 }
 
-std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared() {
+std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Collect the codes that will flip first so the caller can audit each one. The
-  // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
-  // so the returned list matches the rows actually reclassified below.
+  // Collect the codes that will flip first so the caller can audit each one. Codes the
+  // caller keeps HEALED are left out. Everything runs under the same lock, so the
+  // returned list matches the rows actually reclassified below.
   std::vector<std::string> reclassified;
   {
     SqliteStatement select_stmt(db_, "SELECT fault_code FROM faults WHERE status = ?");
     select_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     while (select_stmt.step() == SQLITE_ROW) {
-      reclassified.push_back(select_stmt.column_text(0));
+      std::string code = select_stmt.column_text(0);
+      if (!(keep_healed && keep_healed(code))) {
+        reclassified.push_back(std::move(code));
+      }
     }
   }
 
@@ -1036,24 +1039,34 @@ std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared() {
     return reclassified;
   }
 
-  // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
-  // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
-  // has to reach here too: otherwise the setting holds until the next restart and then the
-  // reclassification deletes exactly what it was set to keep.
-  if (!retain_snapshots_on_clear_) {
-    SqliteStatement del(db_,
-                        "DELETE FROM snapshots WHERE fault_code IN (SELECT fault_code FROM faults WHERE status = ?)");
-    del.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
-    if (del.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
-    }
-  }
+  // One transaction, so a failure part way does not leave some codes flipped.
+  exec_or_throw("BEGIN IMMEDIATE");
+  try {
+    for (const auto & code : reclassified) {
+      // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
+      // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
+      // has to reach here too: otherwise the setting holds until the next restart and then the
+      // reclassification deletes exactly what it was set to keep.
+      if (!retain_snapshots_on_clear_) {
+        SqliteStatement del(db_, "DELETE FROM snapshots WHERE fault_code = ?");
+        del.bind_text(1, code);
+        if (del.step() != SQLITE_DONE) {
+          throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
+        }
+      }
 
-  SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE status = ?");
-  stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
-  stmt.bind_text(2, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
-  if (stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to reclassify HEALED faults: ") + sqlite3_errmsg(db_));
+      SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ? AND status = ?");
+      stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
+      stmt.bind_text(2, code);
+      stmt.bind_text(3, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+      if (stmt.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to reclassify HEALED faults: ") + sqlite3_errmsg(db_));
+      }
+    }
+    exec_or_throw("COMMIT");
+  } catch (...) {
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
   }
   return reclassified;
 }

@@ -84,7 +84,7 @@ class FaultCodeThresholdResolver {
   FaultCodeThresholdResolver() = default;
 
   /// Construct with a list of fault-code overrides. A code repeated in the list
-  /// keeps its first entry; YAML loading cannot produce one, a caller can.
+  /// keeps its first entry. load_from_yaml already drops repeats with a warning.
   explicit FaultCodeThresholdResolver(std::vector<FaultCodeDebounceOverride> entries);
 
   /// Resolve the effective DebounceConfig for a fault code.

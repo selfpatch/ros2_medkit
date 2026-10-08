@@ -93,7 +93,7 @@ class SqliteFaultStorage : public FaultStorage {
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared() override;
+  std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
   /// Get the database path
   const std::string & db_path() const {

@@ -325,7 +325,7 @@ happens to arrive decides the transition:
 .. code-block:: text
 
    motor  (confirmation_threshold=-5) reports OVERHEAT -> counter=-1, PREFAILED
-   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-2, CONFIRMED
+   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-1, CONFIRMED
 
 The motor's policy was bypassed. Per-fault_code thresholds are the layer that removes
 that: they are matched on the code itself, so they resolve the same whoever reports.
@@ -394,7 +394,8 @@ different policies for one code:
    confirmation=-5 healing_enabled=false healing=10, '/sensors/lidar/front' resolves
    confirmation=-1 healing_enabled=true healing=1. The debounce counter belongs to the
    fault code, so whichever source reports decides the transition and the other policy is
-   bypassed. Give the code an entry in fault_thresholds.config_file to settle it.
+   bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for this code
+   in fault_thresholds.config_file.
 
 The warning names both sources and both resolved policies, and is emitted **once per fault
 code** for the life of the node, so a busy reporter does not turn it into a log storm. It
