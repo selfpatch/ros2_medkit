@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -463,11 +464,17 @@ class FaultStorage {
   /// @return Vector of all faults in storage
   virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
 
-  /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
-  /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
-  /// the latch. Default is a no-op (in-memory storage starts empty).
+  /// Predicate for reclassify_healed_as_cleared: true keeps that fault code HEALED.
+  using KeepHealedFn = std::function<bool(const std::string & fault_code)>;
+
+  /// One-time startup cleanup: reclassify HEALED faults as CLEARED, so a HEALED row left by a
+  /// previous (healing-enabled) run does not behave inconsistently under the latch.
+  /// Default is a no-op (in-memory storage starts empty).
+  /// @param keep_healed Codes for which this returns true stay HEALED (their own healing is still
+  ///        enabled). Empty means reclassify every HEALED fault.
   /// @return fault codes of the reclassified faults, so the caller can audit each transition
-  virtual std::vector<std::string> reclassify_healed_as_cleared() {
+  virtual std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) {
+    (void)keep_healed;
     return {};
   }
 
@@ -535,7 +542,7 @@ class InMemoryFaultStorage : public FaultStorage {
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared() override;
+  std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
  private:
   /// Update fault status based on debounce counter and given config

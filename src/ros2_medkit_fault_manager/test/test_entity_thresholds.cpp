@@ -16,10 +16,12 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -215,6 +217,21 @@ TEST_F(YamlLoadTest, MalformedYamlReturnsEmpty) {
   }
 
   auto entries = EntityThresholdResolver::load_from_yaml(path.string());
+  EXPECT_TRUE(entries.empty());
+}
+
+// A value of the wrong type used to throw out of the node constructor.
+// @verifies REQ_INTEROP_095
+TEST_F(YamlLoadTest, BadValueReturnsEmpty) {
+  auto path = tmpdir_ / "bad_value.yaml";
+  {
+    std::ofstream f(path);
+    f << "/sensors:\n"
+      << "  confirmation_threshold: three\n";
+  }
+
+  std::vector<EntityDebounceOverride> entries;
+  ASSERT_NO_THROW(entries = EntityThresholdResolver::load_from_yaml(path.string()));
   EXPECT_TRUE(entries.empty());
 }
 

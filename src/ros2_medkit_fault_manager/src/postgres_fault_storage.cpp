@@ -801,32 +801,33 @@ bool PgFaultStorage::clear_fault(const std::string & fault_code) {
   });
 }
 
-std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared() {
+std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("reclassify_healed_as_cleared", [&](pqxx::work & tx) {
-    // Collect the codes that will flip first so the caller can audit each one. The
-    // SELECT predicate mirrors the UPDATE exactly, and both run in the same
-    // transaction, so the returned list matches the rows actually reclassified below.
+    // Collect the codes that will flip first so the caller can audit each one. Codes the
+    // caller keeps HEALED are left out. Everything runs in the same transaction, so the
+    // returned list matches the rows actually reclassified below.
     auto res =
         execute(tx, "SELECT fault_code FROM faults WHERE status = $1", ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     std::vector<std::string> reclassified;
     for (const auto & r : res) {
-      reclassified.push_back(r["fault_code"].as<std::string>());
+      auto code = r["fault_code"].as<std::string>();
+      if (!(keep_healed && keep_healed(code))) {
+        reclassified.push_back(std::move(code));
+      }
     }
-    if (reclassified.empty()) {
-      return reclassified;
+    for (const auto & code : reclassified) {
+      // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
+      // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
+      // has to reach here too: otherwise the setting holds until the next restart and then the
+      // reclassification deletes exactly what it was set to keep.
+      if (!retain_snapshots_on_clear_) {
+        execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", code);
+      }
+      execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND status = $3",
+              ros2_medkit_msgs::msg::Fault::STATUS_CLEARED, code, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     }
-    // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
-    // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
-    // has to reach here too: otherwise the setting holds until the next restart and then the
-    // reclassification deletes exactly what it was set to keep.
-    if (!retain_snapshots_on_clear_) {
-      execute(tx, "DELETE FROM snapshots WHERE fault_code IN (SELECT fault_code FROM faults WHERE status = $1)",
-              ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
-    }
-    execute(tx, "UPDATE faults SET status = $1 WHERE status = $2", ros2_medkit_msgs::msg::Fault::STATUS_CLEARED,
-            ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
     return reclassified;
   });
 }

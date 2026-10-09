@@ -1477,6 +1477,30 @@ TEST_F(PgFaultStorageTest, ReclassifyHealedAsCleared) {
   EXPECT_TRUE(storage_->reclassify_healed_as_cleared().empty());
 }
 
+TEST_F(PgFaultStorageTest, ReclassifyKeepsCodesTheCallerKeepsHealed) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+
+  for (const std::string code : {"KEEP", "FLIP"}) {
+    storage_->report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
+                                 clock.now(), config);
+    for (int i = 0; i < 4; ++i) {
+      storage_->report_fault_event(code, ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now(), config);
+    }
+    ASSERT_EQ(storage_->get_fault(code)->status, Fault::STATUS_HEALED);
+  }
+
+  const auto reclassified = storage_->reclassify_healed_as_cleared([](const std::string & code) {
+    return code == "KEEP";
+  });
+  ASSERT_EQ(reclassified.size(), 1u);
+  EXPECT_EQ(reclassified[0], "FLIP");
+  EXPECT_EQ(storage_->get_fault("KEEP")->status, Fault::STATUS_HEALED);
+  EXPECT_EQ(storage_->get_fault("FLIP")->status, Fault::STATUS_CLEARED);
+}
+
 TEST_F(PgFaultStorageTest, HealingWhenEnabled) {
   rclcpp::Clock clock;
   DebounceConfig config;
