@@ -513,8 +513,21 @@ void MdnsDiscovery::announce_loop() {
 }
 
 void MdnsDiscovery::browse_loop() {
-  // Open a socket on an ephemeral port for sending queries
-  int sock = mdns_socket_open_ipv4(nullptr);
+  // Query from port 5353 so peers answer by multicast to 5353. From an ephemeral
+  // port the query asks for unicast replies to that port, which a host firewall
+  // allowing only the mdns service (udp/5353) drops. The socket shares 5353 with
+  // our announce socket and with avahi (SO_REUSEADDR/SO_REUSEPORT).
+  struct sockaddr_in saddr {};
+  saddr.sin_family = AF_INET;
+  saddr.sin_addr.s_addr = INADDR_ANY;
+  saddr.sin_port = htons(MDNS_PORT);
+
+  bool on_mdns_port = true;
+  int sock = mdns_socket_open_ipv4(&saddr);
+  if (sock < 0) {
+    on_mdns_port = false;
+    sock = mdns_socket_open_ipv4(nullptr);
+  }
   if (sock < 0) {
     if (config_.on_error) {
       config_.on_error(
@@ -527,7 +540,10 @@ void MdnsDiscovery::browse_loop() {
   discovering_.store(true);
 
   if (config_.on_log) {
-    config_.on_log("browse_loop: socket opened on ephemeral port (fd=" + std::to_string(sock) + ")");
+    config_.on_log(std::string("browse_loop: socket opened on ") +
+                   (on_mdns_port ? "port 5353 (multicast replies)"
+                                 : "an ephemeral port (unicast replies, port 5353 unavailable)") +
+                   " (fd=" + std::to_string(sock) + ")");
   }
 
   BrowseContext ctx;
