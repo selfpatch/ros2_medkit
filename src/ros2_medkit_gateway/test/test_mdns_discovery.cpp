@@ -14,9 +14,20 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/select.h>
+
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#include "mdns.h"
+#pragma GCC diagnostic pop
 
 #include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
 
@@ -390,4 +401,77 @@ TEST(MdnsDiscovery, start_announce_on_ephemeral_port_does_not_crash) {
     // The important thing is we did not crash.
     SUCCEED();
   }
+}
+
+namespace {
+
+struct QueryCapture {
+  std::string service;
+  std::atomic<bool> seen{false};
+  std::atomic<bool> unicast{false};
+};
+
+int capture_query(int /*sock*/, const struct sockaddr * /*from*/, size_t /*addrlen*/, mdns_entry_type_t entry,
+                  uint16_t /*query_id*/, uint16_t rtype, uint16_t rclass, uint32_t /*ttl*/, const void * data,
+                  size_t size, size_t name_offset, size_t /*name_length*/, size_t /*record_offset*/,
+                  size_t /*record_length*/, void * user_data) {
+  auto * capture = static_cast<QueryCapture *>(user_data);
+  if (entry != MDNS_ENTRYTYPE_QUESTION || rtype != MDNS_RECORDTYPE_PTR) {
+    return 0;
+  }
+  std::array<char, 256> name_buf{};
+  size_t offset = name_offset;
+  mdns_string_t name = mdns_string_extract(data, size, &offset, name_buf.data(), name_buf.size());
+  if (std::string(name.str, name.length) != capture->service) {
+    return 0;
+  }
+  capture->unicast.store((rclass & MDNS_UNICAST_RESPONSE) != 0);
+  capture->seen.store(true);
+  return 0;
+}
+
+}  // namespace
+
+// @verifies REQ_INTEROP_003
+TEST(MdnsDiscovery, browse_query_asks_for_multicast_replies) {
+  // A unicast-response query makes peers answer to the browser's source port,
+  // which a host firewall that only allows the mdns service drops. The browse
+  // query must leave the QU bit clear so peers answer on 5353.
+  struct sockaddr_in saddr {};
+  saddr.sin_family = AF_INET;
+  saddr.sin_addr.s_addr = INADDR_ANY;
+  saddr.sin_port = htons(MDNS_PORT);
+  int listener = mdns_socket_open_ipv4(&saddr);
+  if (listener < 0) {
+    GTEST_SKIP() << "cannot bind udp/5353 here";
+  }
+
+  MdnsDiscovery::Config config;
+  config.announce = false;
+  config.discover = true;
+  config.service = "_medkit-qu-test._tcp.local";
+  MdnsDiscovery discovery(config);
+  discovery.start([](const std::string &, const std::string &) {}, [](const std::string &) {});
+
+  QueryCapture capture;
+  capture.service = config.service + ".";
+  std::array<char, 2048> buffer{};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!capture.seen.load() && std::chrono::steady_clock::now() < deadline) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(listener, &readfds);
+    struct timeval tv {};
+    tv.tv_usec = 100 * 1000;
+    if (select(listener + 1, &readfds, nullptr, nullptr, &tv) > 0) {
+      mdns_socket_listen(listener, buffer.data(), buffer.size(), capture_query, &capture);
+    }
+  }
+  discovery.stop();
+  mdns_socket_close(listener);
+
+  if (!capture.seen.load()) {
+    GTEST_SKIP() << "no multicast loopback here, the browse query never arrived";
+  }
+  EXPECT_FALSE(capture.unicast.load());
 }
