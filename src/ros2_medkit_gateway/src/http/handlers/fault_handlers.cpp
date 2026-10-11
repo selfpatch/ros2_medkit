@@ -487,11 +487,15 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     // path used the raw `fan_out_get` here (not the typed `fan_out_collection`)
     // because the per-item shape on the global list includes vendor extensions
     // that JsonReader<FaultListItem> would drop; preserve that behaviour.
-    if (auto * agg = ctx_.aggregation_manager()) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-      const auto & raw_req = req.raw_for_framework();
+    const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
+    // A request carrying X-Medkit-No-Fan-Out comes from an aggregating peer.
+    // Answering it with our own fan-out sends it back, so two gateways that
+    // aggregate each other would bounce it until the peer timeouts.
+    auto * agg = raw_req.has_header("X-Medkit-No-Fan-Out") ? nullptr : ctx_.aggregation_manager();
+    if (agg) {
       auto fan_result = agg->fan_out_get(raw_req.path, raw_req.get_header_value("Authorization"));
       if (fan_result.merged_items.is_array()) {
         for (const auto & item : fan_result.merged_items) {
