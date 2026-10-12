@@ -54,6 +54,7 @@ B_DOMAIN_ID = get_test_domain_id(1)
 
 PEER_TIMEOUT_MS = 2000
 FAULT_CODE = 'LIDAR_RANGE_INVALID'
+NO_FAN_OUT = {'X-Medkit-No-Fan-Out': '1'}
 
 
 def _aggregation_params(peer_port, peer_name):
@@ -127,7 +128,7 @@ class TestMutualPeerFaults(unittest.TestCase):
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             try:
-                r = requests.get(f'{B_URL}/faults', headers={'X-Medkit-No-Fan-Out': '1'}, timeout=5)
+                r = requests.get(f'{B_URL}/faults', headers=NO_FAN_OUT, timeout=5)
                 if r.status_code == 200 and FAULT_CODE in _codes(r):
                     return
             except requests.exceptions.RequestException:
@@ -137,7 +138,7 @@ class TestMutualPeerFaults(unittest.TestCase):
 
     def test_no_fan_out_request_answers_local_faults_only(self):
         """A request from a peer is answered from the local fault manager."""
-        r = requests.get(f'{A_URL}/faults', headers={'X-Medkit-No-Fan-Out': '1'}, timeout=10)
+        r = requests.get(f'{A_URL}/faults', headers=NO_FAN_OUT, timeout=10)
         self.assertEqual(r.status_code, 200)
         self.assertNotIn(FAULT_CODE, _codes(r))
 
@@ -148,7 +149,8 @@ class TestMutualPeerFaults(unittest.TestCase):
         elapsed = time.monotonic() - start
         self.assertEqual(r.status_code, 200)
         self.assertEqual(_codes(r).count(FAULT_CODE), 1, _codes(r))
-        self.assertFalse(r.json().get('x-medkit', {}).get('partial', False), r.json().get('x-medkit'))
+        x_medkit = r.json().get('x-medkit', {})
+        self.assertFalse(x_medkit.get('partial', False), x_medkit)
         self.assertLess(elapsed, PEER_TIMEOUT_MS / 1000.0)
 
 
