@@ -2600,19 +2600,20 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
   auto before = apps.size();
   auto end = std::remove_if(apps.begin(), apps.end(), [&](const App & app) {
     std::string original_id = app.id;
+    const std::string node_fqn = app.effective_fqn();
     auto rt_it = peer_routing_table.find(app.id);
-    if (rt_it != peer_routing_table.end()) {
+    const bool remote = rt_it != peer_routing_table.end();
+    if (remote) {
       // Known remote entity: strip "peer_name__" prefix if present
       const std::string & peer_name = rt_it->second;
       std::string prefix = peer_name + "__";
       if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
         original_id = original_id.substr(prefix.size());
       }
-    } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
+    } else if (is_own_gateway_helper_node(node_fqn, self_fqn)) {
       // A local app bound to one of this gateway's own helper nodes. The
-      // underscore rule below reads the app id, and the id of a declared app
-      // or a namespace-qualified runtime app need not start with '_', so only
-      // the FQN test catches every app on a helper node.
+      // underscore rule below reads a declared app's id, which need not start
+      // with '_', so only the FQN test catches every app on a helper node.
       // The gateway's own node is deliberately not covered: its ROS parameters
       // are served as that App's configurations, so callers reach them at
       // /apps/<gateway>/configurations. Remote entities are skipped too - a
@@ -2627,11 +2628,20 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
       // same predicate decides it here; those are reported to the caller, which
       // owns the logger.
       if (dropped_declared_apps != nullptr && discovery::is_protected_source(app.source)) {
-        dropped_declared_apps->push_back(app.id + " -> " + app.effective_fqn());
+        dropped_declared_apps->push_back(app.id + " -> " + node_fqn);
       }
       return true;
     }
-    // ROS 2 internal nodes use _ prefix convention
+    // ROS 2 internal nodes use the _ prefix convention on the node name. A
+    // runtime app's id loses the '_' when a name collision qualifies it with the
+    // namespace, so a local runtime app is also judged by its node name. A
+    // declared app is judged by its id only.
+    if (!remote && !discovery::is_protected_source(app.source)) {
+      const auto last_slash = node_fqn.rfind('/');
+      if (last_slash != std::string::npos && last_slash + 1 < node_fqn.size() && node_fqn[last_slash + 1] == '_') {
+        return true;
+      }
+    }
     return !original_id.empty() && original_id[0] == '_';
   });
   apps.erase(end, apps.end());

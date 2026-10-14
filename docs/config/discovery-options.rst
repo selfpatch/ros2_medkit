@@ -82,8 +82,10 @@ When ``filter_internal_nodes`` is true (the default), ROS 2 nodes whose names
 start with an underscore (``_``) are excluded from the entity tree. This
 filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
 ``_param_client_node``, and similar system nodes that should not appear as
-SOVD entities. The filter applies to both locally discovered Apps and
-peer-discovered Apps (after stripping the peer prefix).
+SOVD entities. For a locally discovered App the node name decides, also when a
+bare name shared across namespaces gives the App a namespace-qualified id
+(``line_a__ros2cli_daemon``). A declared App is judged by its id. The filter
+also applies to peer-discovered Apps, by id after stripping the peer prefix.
 
 The same switch also excludes the helper nodes the gateway runs inside its own
 process. Three of them exist in every deployment, named after the gateway node
@@ -131,6 +133,20 @@ and a node-local remap fixes its name. A process-wide namespace remap
 process-wide name remap (``-r __node:=gateway_a``, which launch_ros
 ``Node(name=...)`` passes) renames the gateway node only, and the helper nodes
 take the new name as the base of their own (``_gateway_a_sub`` and so on).
+
+Several gateways on one graph: every helper node starts with an underscore, so
+each gateway leaves out all of them, its own and the other gateways', also when
+the gateways share a node name and differ only in namespace. The gateways list
+the same Apps. In ``hybrid`` mode the linking report leaves out only the
+reporting gateway's own helper nodes; another gateway's helper nodes count as
+undeclared, like any other hidden node such as ``_param_client_node``.
+
+Give each gateway its own node name when several run on one ROS graph. With a
+shared name, the App id of a gateway outside the root namespace depends on the
+graph: it is the bare name while no other node has that name, and
+namespace-qualified (``line_a_ros2_medkit_gateway``) while one does. Either
+remap gives the gateway its own name: ``-r __node:=gateway_a``, or
+``-r ros2_medkit_gateway:__node:=gateway_a``.
 
 A manifest- or plugin-declared App bound to one of these nodes is not served,
 and the gateway logs a warning naming it: bind the App to the node you meant,
