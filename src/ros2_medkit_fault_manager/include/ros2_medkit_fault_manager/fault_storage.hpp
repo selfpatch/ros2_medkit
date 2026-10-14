@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -198,6 +199,22 @@ struct RosbagFileInfo {
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
+  /// Thrown by a backend that cannot reach its database server. The node keeps running and answers with an error.
+  class IgnorableConnectionException : public std::exception {
+   protected:
+    std::string message;
+
+   public:
+    explicit IgnorableConnectionException(const std::string & msg = "IgnorableConnectionException") : message(msg) {
+    }
+
+    const char * what() const noexcept override {
+      return message.c_str();
+    }
+
+    virtual ~IgnorableConnectionException() = default;
+  };
+
   virtual ~FaultStorage() = default;
 
   /// Set debounce configuration

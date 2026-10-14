@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,11 +79,17 @@ class TokenBucket {
 
 class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2_medkit_gateway::IntrospectionProvider {
  public:
+  TopicBeaconPlugin() = default;
+  ~TopicBeaconPlugin() noexcept override;
+  TopicBeaconPlugin(const TopicBeaconPlugin &) = delete;
+  TopicBeaconPlugin & operator=(const TopicBeaconPlugin &) = delete;
+  TopicBeaconPlugin(TopicBeaconPlugin &&) = delete;
+  TopicBeaconPlugin & operator=(TopicBeaconPlugin &&) = delete;
+
   std::string name() const override;
   void configure(const nlohmann::json & config) override;
   void set_context(ros2_medkit_gateway::PluginContext & context) override;
   void shutdown() override;
-  ~TopicBeaconPlugin() noexcept override;
   std::vector<ros2_medkit_gateway::GatewayPlugin::PluginRoute> get_routes() override;
   ros2_medkit_gateway::IntrospectionResult introspect(const ros2_medkit_gateway::IntrospectionInput & input) override;
 
@@ -94,7 +102,15 @@ class TopicBeaconPlugin : public ros2_medkit_gateway::GatewayPlugin, public ros2
   }
 
  private:
-  void on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::SharedPtr & msg);
+  void on_beacon(const ros2_medkit_msgs::msg::MedkitDiscoveryHint::ConstSharedPtr & msg);
+
+  /// Longest TTL and expiry in seconds, the same bound as parameter_beacon's durations.
+  static constexpr double kMaxSeconds = 2147483647.0;
+  /// Highest rate limit: one beacon per second for each of the store's default 10000 hints.
+  static constexpr double kMaxMessagesPerSecond = 10000.0;
+  /// max_hints takes 1 to kMaxHints.
+  static constexpr std::int64_t kMaxHints = 2147483647;
+  static constexpr std::size_t kDefaultMaxHints = 10000;
 
   std::string topic_{"/ros2_medkit/discovery"};
   ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};

@@ -28,10 +28,13 @@
 #include <open62541/server_config_default.h>
 #include <open62541/types_generated.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -41,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -65,14 +69,24 @@ void log_state(const Condition & c) {
   std::cout << "STATE " << c.name << " active=" << (c.active ? "true" : "false")
             << " acked=" << (c.acked ? "true" : "false") << " confirmed=" << (c.confirmed ? "true" : "false")
             << " enabled=" << (c.enabled ? "true" : "false") << " shelved=" << (c.shelved ? "true" : "false")
-            << " retain=" << (c.retain ? "true" : "false") << std::endl;
+            << " retain=" << (c.retain ? "true" : "false") << '\n';
 }
 
 std::map<std::string, Condition> g_conditions;
-std::mutex g_mutex;
+// Guards the command queue between the stdin reader and the server thread.
+// Every UA_Server_* call in this process runs on the server thread: this
+// open62541 is built with UA_MULTITHREADING 0, so a second thread touching the
+// address space while the server iterates is an unsynchronised use of a
+// single-threaded library - and the subsystem that breaks first is the one
+// under test, Alarms & Conditions.
+std::mutex g_commands_mutex;
+std::deque<std::string> g_commands;
 std::atomic<bool> g_running{true};
+// The DI serial the ``nameplate`` command publishes. Server thread only.
+std::string g_nameplate_serial;
+bool g_nameplate_published = true;
 
-void stop_handler(int) {
+void stop_handler(int /*signum*/) {
   g_running = false;
 }
 
@@ -414,11 +428,11 @@ UA_StatusCode logging_activate_session(UA_Server * server, UA_AccessControl * ac
     mode = static_cast<int>(endpoint->securityMode);
   }
   std::cout << "SECURE_SESSION securityPolicyUri=" << policy_uri << " securityMode=" << mode
-            << " (1=None,2=Sign,3=SignAndEncrypt)" << std::endl;
+            << " (1=None,2=Sign,3=SignAndEncrypt)" << '\n';
   UA_StatusCode rc = g_orig_activate_session ? g_orig_activate_session(server, ac, endpoint, channel_cert, session_id,
                                                                        user_token, session_ctx)
                                              : UA_STATUSCODE_BADINTERNALERROR;
-  std::cout << "SECURE_SESSION activate rc=" << UA_StatusCode_name(rc) << std::endl;
+  std::cout << "SECURE_SESSION activate rc=" << UA_StatusCode_name(rc) << '\n';
   return rc;
 }
 
@@ -511,13 +525,15 @@ UA_StatusCode configure_secure(UA_ServerConfig * config, UA_UInt16 port, const s
 
 // INV2: pin explicit ServerStatus/BuildInfo so the identity integration test can
 // assert known nameplate values instead of open62541's build-time defaults.
-void set_build_info(UA_ServerConfig * config) {
+// Without names the device reads as unnamed and the client falls back to an
+// endpoint-derived id.
+void set_build_info(UA_ServerConfig * config, bool with_names) {
   auto set = [](UA_String * dst, const char * value) {
     UA_String_clear(dst);
     *dst = UA_STRING_ALLOC(value);
   };
-  set(&config->buildInfo.manufacturerName, "SelfPatch Test Manufacturer");
-  set(&config->buildInfo.productName, "SelfPatch Test PLC");
+  set(&config->buildInfo.manufacturerName, with_names ? "SelfPatch Test Manufacturer" : "");
+  set(&config->buildInfo.productName, with_names ? "SelfPatch Test PLC" : "");
   set(&config->buildInfo.softwareVersion, "1.2.3");
   set(&config->buildInfo.buildNumber, "build-4567");
 }
@@ -605,26 +621,41 @@ void add_di_nameplate(UA_Server * server, const std::string & serial) {
                             UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), va_order, nullptr, nullptr);
 }
 
-void cli_loop(UA_Server * server, UA_UInt16 ns) {
+// Reads command lines and queues them. Deliberately free of UA_Server_* calls:
+// this thread blocks in getline for most of the fixture's life and must not
+// reach into the server while it is iterating.
+void stdin_reader_loop() {
   std::string line;
   while (g_running && std::getline(std::cin, line)) {
+    std::lock_guard<std::mutex> guard(g_commands_mutex);
+    g_commands.push_back(line);
+  }
+}
+
+// Runs one queued command. Called from the server thread only.
+void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line) {
+  {
     std::istringstream iss(line);
     std::string cmd, name;
     iss >> cmd >> name;
     if (cmd == "quit") {
       g_running = false;
-      std::cout << "OK quit" << std::endl;
-      break;
+      std::cout << "OK quit" << '\n';
+      // Only the server loop stops here. What ends the reader is EOF, which
+      // the writer produces by closing its end of the pipe - close(2) on this
+      // process's own descriptor does not release a reader already parked in
+      // read(2). So the join below waits for the caller to let go of stdin,
+      // which AlarmServer::stop() does before it signals the server.
+      return;
     }
-    std::lock_guard<std::mutex> guard(g_mutex);
     // ``set <NodeName> <int>`` writes a polled Int32 variable (StatusWord /
     // FaultCode). Handled before the condition lookup because these nodes are
     // plain variables, not AlarmCondition instances in g_conditions.
     if (cmd == "set") {
       long val = 0;
       if (!(iss >> val)) {
-        std::cout << "ERR set_missing_value:" << name << std::endl;
-        continue;
+        std::cout << "ERR set_missing_value:" << name << '\n';
+        return;
       }
       UA_Int32 v32 = static_cast<UA_Int32>(val);
       UA_Variant var;
@@ -633,11 +664,11 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
       UA_StatusCode rc = UA_Server_writeValue(server, target, var);
       UA_NodeId_clear(&target);
       if (rc == UA_STATUSCODE_GOOD) {
-        std::cout << "OK " << name << "=" << val << std::endl;
+        std::cout << "OK " << name << "=" << val << '\n';
       } else {
-        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
       }
-      continue;
+      return;
     }
     // ``sysevent`` fires a non-condition BaseEventType on the Server object
     // (i=2253); it has no <name> and is not in g_conditions, so handle it
@@ -645,16 +676,29 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
     if (cmd == "sysevent") {
       UA_StatusCode rc = handle_sysevent(server);
       if (rc == UA_STATUSCODE_GOOD) {
-        std::cout << "OK sysevent" << std::endl;
+        std::cout << "OK sysevent" << '\n';
       } else {
-        std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << std::endl;
+        std::cout << "ERR sysevent:" << UA_StatusCode_name(rc) << '\n';
       }
-      continue;
+      return;
+    }
+    // ``nameplate`` adds the DI device a ``--no-nameplate`` start held back, like
+    // a PLC whose address space fills in after its server is up. The DI device
+    // names the component ahead of BuildInfo, so BuildInfo stays empty.
+    if (cmd == "nameplate") {
+      if (g_nameplate_published) {
+        std::cout << "ERR nameplate_present\n";
+        return;
+      }
+      add_di_nameplate(server, g_nameplate_serial);
+      g_nameplate_published = true;
+      std::cout << "OK nameplate\n";
+      return;
     }
     auto it = g_conditions.find(name);
     if (cmd != "quit" && it == g_conditions.end()) {
-      std::cout << "ERR unknown_condition:" << name << std::endl;
-      continue;
+      std::cout << "ERR unknown_condition:" << name << '\n';
+      return;
     }
     Condition & cref = it->second;
     UA_StatusCode rc = UA_STATUSCODE_BADNOTSUPPORTED;
@@ -712,14 +756,14 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
         cref.enabled = true;
       }
     } else {
-      std::cout << "ERR unknown_cmd:" << cmd << std::endl;
-      continue;
+      std::cout << "ERR unknown_cmd:" << cmd << '\n';
+      return;
     }
     if (rc == UA_STATUSCODE_GOOD) {
-      std::cout << "OK " << name << std::endl;
+      std::cout << "OK " << name << '\n';
       log_state(cref);
     } else {
-      std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << std::endl;
+      std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
     }
   }
 }
@@ -727,6 +771,8 @@ void cli_loop(UA_Server * server, UA_UInt16 ns) {
 }  // namespace
 
 int main(int argc, char ** argv) {
+  // Tests read each line from a pipe as it is written.
+  std::cout << std::unitbuf;
   signal(SIGINT, stop_handler);
   signal(SIGTERM, stop_handler);
 
@@ -734,6 +780,7 @@ int main(int argc, char ** argv) {
   bool secure = false;
   std::string cert_path, key_path, trust_path, username = "medkit", password = "secret";
   std::string app_uri = "urn:test:alarms:server";
+  bool app_uri_explicit = false;
   std::string di_serial = "SN-0001-TEST";
   UA_UInt32 max_refs_per_node = 0;  // 0 = server default (unlimited)
   for (int i = 1; i < argc; ++i) {
@@ -741,6 +788,9 @@ int main(int argc, char ** argv) {
       port = static_cast<UA_UInt16>(std::atoi(argv[++i]));
     } else if (std::strcmp(argv[i], "--serial") == 0 && i + 1 < argc) {
       di_serial = argv[++i];
+    } else if (std::strcmp(argv[i], "--no-nameplate") == 0) {
+      // Starts with empty BuildInfo names and no DI device; ``nameplate`` adds the device.
+      g_nameplate_published = false;
     } else if (std::strcmp(argv[i], "--max-refs-per-node") == 0 && i + 1 < argc) {
       // Caps references per Browse result so every larger browse pages via
       // BrowseNext continuation points (regression fixture for the client's
@@ -756,6 +806,7 @@ int main(int argc, char ** argv) {
       trust_path = argv[++i];
     } else if (std::strcmp(argv[i], "--app-uri") == 0 && i + 1 < argc) {
       app_uri = argv[++i];
+      app_uri_explicit = true;
     } else if (std::strcmp(argv[i], "--username") == 0 && i + 1 < argc) {
       username = argv[++i];
     } else if (std::strcmp(argv[i], "--password") == 0 && i + 1 < argc) {
@@ -781,8 +832,16 @@ int main(int argc, char ** argv) {
 #endif
   } else {
     UA_ServerConfig_setMinimal(config, port, nullptr);
+    if (app_uri_explicit) {
+      // The server identity discovery reads and the plugin binds to. ``--app-uri``
+      // gives a second fixture a second identity, so a test that needs two
+      // servers on one host - each on its own port - can stand for two PLCs.
+      // Left at open62541's own default when no test names one.
+      UA_String_clear(&config->applicationDescription.applicationUri);
+      config->applicationDescription.applicationUri = UA_STRING_ALLOC(app_uri.c_str());
+    }
   }
-  set_build_info(config);
+  set_build_info(config, g_nameplate_published);
 
   UA_UInt16 ns = UA_Server_addNamespace(server, NS_URI);
   if (add_variable(server, ns) != UA_STATUSCODE_GOOD) {
@@ -790,7 +849,10 @@ int main(int argc, char ** argv) {
   }
 
   // INV2: standard device-info nameplate for the identity integration test.
-  add_di_nameplate(server, di_serial);
+  g_nameplate_serial = di_serial;
+  if (g_nameplate_published) {
+    add_di_nameplate(server, di_serial);
+  }
 
   Condition op, oh, sl;
   if (add_condition(server, "Overpressure", ns, op) != UA_STATUSCODE_GOOD ||
@@ -821,19 +883,50 @@ int main(int argc, char ** argv) {
     config->maxReferencesPerNode = max_refs_per_node;
   }
 
-  std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << std::endl;
-  std::thread cli(cli_loop, server, ns);
+  std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << '\n';
+  std::thread reader(stdin_reader_loop);
 
-  UA_StatusCode rc = UA_Server_run(server, reinterpret_cast<volatile UA_Boolean *>(&g_running));
-  g_running = false;
-  // The exit code is 1 for every bad status, so print the status itself:
-  // otherwise a server that ends on its own leaves the driving test with a
-  // closed stdin pipe and no reason anywhere.
+  // The server is driven by hand so that queued commands execute between
+  // iterations, on this thread, which UA_Server_run offers no point for.
+  // run_iterate is called
+  // with waitInternal false and the loop paced by a short sleep: blocking
+  // inside the server would hold a command back until the next scheduled
+  // callback, and a command is how a test makes the alarm it is waiting for
+  // happen.
+  UA_StatusCode rc = UA_Server_run_startup(server);
   if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run rc=" << UA_StatusCode_name(rc) << std::endl;
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n';
   }
-  if (cli.joinable()) {
-    cli.join();
+  while (rc == UA_STATUSCODE_GOOD && g_running) {
+    // The return is how long the server may idle until its next scheduled
+    // callback, not a status: open62541 reports no mid-run failure through it,
+    // and UA_Server_run did not either - its own return is run_shutdown's. It
+    // does bound the pause below, which is otherwise kept small so a queued
+    // command is never held back by a server that has nothing to do.
+    const UA_UInt16 idle_ms = UA_Server_run_iterate(server, false);
+    for (;;) {
+      std::string line;
+      {
+        std::lock_guard<std::mutex> guard(g_commands_mutex);
+        if (g_commands.empty()) {
+          break;
+        }
+        line = std::move(g_commands.front());
+        g_commands.pop_front();
+      }
+      execute_command(server, ns, line);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<UA_UInt16>(idle_ms, 1, 2)));
+  }
+  if (rc == UA_STATUSCODE_GOOD) {
+    rc = UA_Server_run_shutdown(server);
+    if (rc != UA_STATUSCODE_GOOD) {
+      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n';
+    }
+  }
+  g_running = false;
+  if (reader.joinable()) {
+    reader.join();
   }
   UA_Server_delete(server);
   return rc == UA_STATUSCODE_GOOD ? 0 : 1;

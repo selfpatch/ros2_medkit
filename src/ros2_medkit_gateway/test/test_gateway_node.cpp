@@ -1048,6 +1048,9 @@ TEST(GatewayStartupSummary, CountPeerNodesExcludesOwnAndHidden) {
 }
 
 TEST(GatewayStartupSummary, CountPeerNodesZeroWhenOnlyOwnNodes) {
+  // The gateway node plus every helper it creates inside its own process. A
+  // gateway alone on the graph must report zero peers, so each of these has to
+  // be recognized as not-a-peer, the lifecycle reader included.
   const std::vector<std::pair<std::string, std::string>> nodes = {
       {"ros2_medkit_gateway", "/"},
       {"_ros2_medkit_gateway_sub", "/"},

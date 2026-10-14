@@ -128,6 +128,9 @@ html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 html_css_files = ['custom.css']
 html_title = f'{project} Documentation'
+# The selfpatch.ai wordmark and app icon; custom.css carries the rest of the look
+html_logo = '_static/selfpatch-wordmark.svg'
+html_favicon = '_static/favicon.svg'
 
 html_theme_options = {
     'prev_next_buttons_location': 'bottom',

@@ -21,6 +21,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
 #include <map>
@@ -93,8 +94,12 @@ class Ros2RuntimeIntrospection : public IntrospectionProvider {
   // ---------------------------------------------------------------------------
 
   /// Discover the live nodes as Apps. Always queries the ROS 2 graph; do not
-  /// call from hot paths.
+  /// call from hot paths. A leftover (see ros2_common::GraphNodeListReader) is
+  /// not an App; the read that starts leaving it out logs it.
   std::vector<App> discover_apps();
+
+  /// The node list through discover_apps()'s reader, without its leftovers. Logs nothing.
+  ros2_common::GraphNodeList read_graph_nodes();
 
   /// Group nodes by namespace into Function entities (no graph query).
   std::vector<Function> discover_functions(const std::vector<App> & apps);
@@ -153,6 +158,11 @@ class Ros2RuntimeIntrospection : public IntrospectionProvider {
 
   std::map<std::string, ComponentTopics> cached_topic_map_;
   bool topic_map_ready_{false};
+
+  /// Nodes this discovery saw running, shared by discover_apps() and read_graph_nodes().
+  ros2_common::GraphNodeListReader graph_node_reader_;
+  /// Logs the leftovers discover_apps() leaves out.
+  ros2_common::LeftoverNodeReporter leftover_node_reporter_;
 };
 
 }  // namespace ros2_medkit_gateway::ros2

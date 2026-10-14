@@ -213,7 +213,8 @@ void DiscoveryManager::build_pipeline() {
 
       // RuntimeLinker only makes sense when runtime is enabled.
       if (config_.runtime_enabled) {
-        pipeline->set_linker(std::make_unique<discovery::RuntimeLinker>(node_), get_manifest_config());
+        pipeline->set_linker(std::make_unique<discovery::RuntimeLinker>(node_, config_.runtime.filter_internal_nodes),
+                             get_manifest_config());
       }
 
       pipeline_ = std::move(pipeline);
@@ -287,6 +288,10 @@ std::vector<App> DiscoveryManager::discover_apps() {
     return cached_result_.apps;
   }
   return runtime_introspection_->discover_apps();
+}
+
+ros2_common::GraphNodeList DiscoveryManager::read_graph_nodes() {
+  return runtime_introspection_->read_graph_nodes();
 }
 
 std::vector<Function> DiscoveryManager::discover_functions() {

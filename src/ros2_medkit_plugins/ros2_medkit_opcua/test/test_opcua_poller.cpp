@@ -21,6 +21,8 @@
 
 #include <gtest/gtest.h>
 
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -148,6 +150,101 @@ TEST(NodeIdsEquivalentTest, UnparseableSpellingsFallBackToRawEquality) {
   // distinct; an identical unparseable string still matches itself.
   EXPECT_FALSE(OpcuaPoller::node_ids_equivalent("not-a-node-id", "also-bad"));
   EXPECT_TRUE(OpcuaPoller::node_ids_equivalent("not-a-node-id", "not-a-node-id"));
+}
+
+TEST(AlarmRoutingTest, TheEventPathsCopyDoesNotFollowARenameItNeverAskedFor) {
+  // on_event runs on the event pump thread; the config-less rename runs on the
+  // poll thread and clears then reassigns auto_alarms.entity_id under a lock the
+  // event path neither holds nor can take. Reading the node map from on_event
+  // is therefore a data race on a std::string, and a ConditionRefresh burst on
+  // the first adopted session lands on exactly that window. The poller keeps its
+  // own copy, and only the thread that renames replaces it.
+  OpcuaClient client;  // never connected: the routing copy is pure bookkeeping
+  NodeMap node_map;
+  node_map.set_component_identity("opcua-127_0_0_1", "opcua-127_0_0_1");
+  node_map.mutable_auto_alarms().enabled = true;
+  ASSERT_TRUE(node_map.finalize_auto_alarms_overlay());
+  const std::string placeholder_entity = node_map.auto_alarms().entity_id;
+  ASSERT_EQ(placeholder_entity, "opcua-127_0_0_1_alarms");
+
+  OpcuaPoller poller(client, node_map);
+  poller.refresh_alarm_routing();
+  const auto subscribed_with = poller.alarm_routing();
+  ASSERT_TRUE(subscribed_with);
+  EXPECT_EQ(subscribed_with->auto_alarms.entity_id, placeholder_entity);
+
+  // The rename the poll thread performs once the adopted device names itself.
+  node_map.mutable_auto_alarms().entity_id.clear();
+  node_map.set_component_identity("siemens_ag_cpu_1505sp_f", "Siemens AG CPU 1505SP F");
+  ASSERT_TRUE(node_map.finalize_auto_alarms_overlay());
+  ASSERT_EQ(node_map.auto_alarms().entity_id, "siemens_ag_cpu_1505sp_f_alarms");
+
+  // The event path still reads what it was handed. Both the snapshot it already
+  // holds and a fresh read of the accessor: the copy is what the poller owns,
+  // not a view onto the map.
+  EXPECT_EQ(subscribed_with->auto_alarms.entity_id, placeholder_entity);
+  EXPECT_EQ(poller.alarm_routing()->auto_alarms.entity_id, placeholder_entity)
+      << "the event path's copy tracked a rename it never asked for - it is reading the node map";
+
+  // ... until the thread that renamed replaces it, which is what
+  // setup_event_subscriptions does at subscribe time.
+  poller.refresh_alarm_routing();
+  EXPECT_EQ(poller.alarm_routing()->auto_alarms.entity_id, "siemens_ag_cpu_1505sp_f_alarms");
+  EXPECT_EQ(subscribed_with->auto_alarms.entity_id, placeholder_entity)
+      << "a refresh rewrote the snapshot a callback was already holding";
+}
+
+TEST(AlarmRoutingTest, ARepinMovesConditionsAlreadyPinnedToTheNewEntity) {
+  // apply_condition_state pins a fault's entity at the first sighting of its
+  // ConditionId, so a config-less rename has to reach the conditions the poller
+  // already holds as well as the routing new ones are derived with. Without the
+  // re-pin, every later report and clear for those ConditionIds is filed under
+  // an entity the rename dropped.
+  OpcuaClient client;
+  NodeMap node_map;
+  OpcuaPoller poller(client, node_map);
+
+  std::mutex deliveries_mutex;
+  std::vector<AlarmEventDelivery> deliveries;
+  poller.set_event_alarm_callback([&deliveries_mutex, &deliveries](const AlarmEventDelivery & delivery) {
+    std::lock_guard<std::mutex> lock(deliveries_mutex);
+    deliveries.push_back(delivery);
+  });
+
+  AlarmEventConfig cfg;
+  cfg.source_node_id_str = "i=2253";
+  cfg.entity_id = "opcua-127_0_0_1_alarms";
+  cfg.fault_code = "PLC_OVERPRESSURE";
+  const opcua::NodeId condition(3, static_cast<uint32_t>(1845));
+
+  AlarmEventInput raise;
+  raise.enabled_state = true;
+  raise.active_state = true;
+  raise.active_state_present = true;
+  poller.apply_condition_state_for_test(cfg, condition, raise, /*severity=*/750, "Overpressure",
+                                        /*event_id=*/nullptr, /*require_confirm_for_clear=*/false);
+  {
+    std::lock_guard<std::mutex> lock(deliveries_mutex);
+    ASSERT_EQ(deliveries.size(), 1u) << "the raise was not delivered, so the pin cannot be observed";
+    EXPECT_EQ(deliveries.front().entity_id, "opcua-127_0_0_1_alarms");
+    deliveries.clear();
+  }
+
+  poller.repin_auto_alarms_entity("opcua-127_0_0_1_alarms", "siemens_ag_cpu_1505sp_f_alarms");
+
+  // The same condition going inactive. Its entity is the renamed one, so the
+  // clear reaches the entity the raise will have been moved to.
+  AlarmEventInput heal = raise;
+  heal.active_state = false;
+  heal.acked_state = true;
+  poller.apply_condition_state_for_test(cfg, condition, heal, /*severity=*/750, "Overpressure",
+                                        /*event_id=*/nullptr, /*require_confirm_for_clear=*/false);
+
+  std::lock_guard<std::mutex> lock(deliveries_mutex);
+  ASSERT_EQ(deliveries.size(), 1u);
+  EXPECT_EQ(deliveries.front().entity_id, "siemens_ag_cpu_1505sp_f_alarms")
+      << "a condition pinned before the rename kept the entity the rename dropped";
+  EXPECT_EQ(deliveries.front().fault_code, "PLC_OVERPRESSURE");
 }
 
 TEST(IsConditionEventTest, NullConditionIdIsRejected) {

@@ -85,6 +85,19 @@ manifest-declared node immortal. A managed lifecycle node that merely deactivate
 so a deactivation is never mistaken for a death either; that is `lifecycle_expectation`'s
 concern, not this one's (see "The boundary with `lifecycle_expectation`" below).
 
+When the ROS graph keeps a leftover of a node after its participant left - an entry with an
+empty enclave and no endpoints - the App leaves the runtime-only snapshot only while the
+gateway remembers the node: a read of the graph saw it running, the late discovery sample that
+left the leftover arrived before the gateway forgot the node, and the node was not among the
+names forgotten once the gateway remembers more than 1024 departed nodes. The gateway forgets
+a node on the first read that finds no entry of it more than 10 s after the first read that
+found none; a late sample that arrives before that read stays hidden, however late. Reads come
+from refreshes, the gateway's start and, in `runtime_only` mode, a request for an App or a
+Function that a refresh removed from the entity cache while the request ran.
+Otherwise the leftover stays in the snapshot as an online App, and this detector does not see
+the node die (see "How long a departed node keeps being listed" in the gateway's
+`docs/config/server.rst`).
+
 Tracking is keyed on the STABLE fqn (`App::effective_fqn()`), never `App::id`: an id is
 recomputed every sweep and only gains a namespace prefix once a same-bare-name collision
 currently exists anywhere in the graph, so a live node's id can change out from under a key

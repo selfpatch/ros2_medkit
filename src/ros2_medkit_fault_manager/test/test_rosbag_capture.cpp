@@ -42,12 +42,21 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
+using ros2_medkit_fault_manager::FaultStorage;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::RosbagCapture;
 using ros2_medkit_fault_manager::RosbagConfig;
 using ros2_medkit_fault_manager::SnapshotConfig;
 
 namespace {
+
+/// Runs the ready work of @p node once. rclcpp::spin_some(node) is deprecated on Lyrical.
+void spin_some_once(const rclcpp::Node::SharedPtr & node) {
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin_some();
+  executor.remove_node(node);
+}
 
 /// Captures rcutils log output while alive and restores the console handler on
 /// every exit path - leaving the process-global handler installed would swallow
@@ -967,6 +976,28 @@ class RosbagFaultLookupCountingStorage : public InMemoryFaultStorage {
   mutable size_t lookups = 0;
 };
 
+/// Storage that cannot read faults, as the PostgreSQL backend does while its server is down.
+class RosbagFaultLookupFailingStorage : public InMemoryFaultStorage {
+ public:
+  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & /*fault_code*/) const override {
+    ++lookups;
+    throw FaultStorage::IgnorableConnectionException("database unreachable");
+  }
+
+  mutable size_t lookups = 0;
+};
+
+/// Storage whose bag cleanup fails, as the PostgreSQL backend does while its server is down.
+class RosbagCleanupFailingStorage : public InMemoryFaultStorage {
+ public:
+  bool delete_rosbag_file(const std::string & /*fault_code*/) override {
+    ++delete_attempts;
+    throw FaultStorage::IgnorableConnectionException("database unreachable");
+  }
+
+  size_t delete_attempts = 0;
+};
+
 /// Storage whose metadata write is slow, standing in for a busy database or a loaded
 /// disk. The finalise reaches it after it has released post_fault_timer_mutex_, so it
 /// widens - deterministically, and without a hook in production code - the window in
@@ -985,7 +1016,7 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
   void spin_for(std::chrono::milliseconds duration) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < duration) {
-      rclcpp::spin_some(node_);
+      spin_some_once(node_);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
@@ -1312,6 +1343,36 @@ TEST_F(RosbagCaptureIntegrationTest, FaultClearedDuringPostRollNeverGetsARow) {
   EXPECT_FALSE(std::filesystem::exists(root->file_path));
 
   capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, PostRollKeepsTheRowWhenTheFaultCannotBeRead) {
+  auto failing = std::make_unique<RosbagFaultLookupFailingStorage>();
+  auto * failing_storage = failing.get();
+  storage_ = std::move(failing);
+  // auto_cleanup with one bag per fault: the finalize asks the store whether the fault was cleared.
+  auto rosbag_config = create_rosbag_config();
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/rosbag_lookup_failure_probe");
+  capture.on_fault_confirmed("UNREADABLE");
+
+  // The post-roll timer runs inside spin_some, so a throw from the finalize ends the test here.
+  ASSERT_TRUE(wait_for_row("UNREADABLE", std::chrono::milliseconds(8000)));
+  EXPECT_GT(failing_storage->lookups, 0u) << "the finalize never asked the store";
+
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, ClearSurvivesAFailingBagCleanup) {
+  RosbagCleanupFailingStorage storage;
+  auto rosbag_config = create_rosbag_config();
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
+
+  EXPECT_NO_THROW(capture.on_fault_cleared("UNREACHABLE"));
+  EXPECT_EQ(storage.delete_attempts, 1u) << "the cleanup never reached the store";
 }
 
 TEST_F(RosbagCaptureIntegrationTest, PrimaryClearedDuringPostRollLeavesTheBagToItsAttachedFault) {

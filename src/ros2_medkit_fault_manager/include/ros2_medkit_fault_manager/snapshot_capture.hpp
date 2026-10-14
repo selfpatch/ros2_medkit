@@ -232,11 +232,18 @@ class SnapshotCapture {
 
   /// Mints one id per capture, shared by every row of that capture.
   ///
-  /// Seeded from storage at construction rather than started at zero: the ids
-  /// outlive the process on a persistent backend, and eviction protects the
-  /// HIGHEST id, so a counter that restarts below what is already stored makes the
-  /// freshly written capture the first one dropped.
+  /// Seeded from the highest id in storage: the ids outlive the process on a
+  /// persistent backend, and eviction protects the HIGHEST id, so a counter that
+  /// restarts below what is already stored makes the freshly written capture the
+  /// first one dropped. Seeded at construction, or on the first capture when the
+  /// store could not answer then; no capture runs unseeded.
   std::atomic<int64_t> capture_seq_{0};
+
+  /// Seed capture_seq_ from storage once. False while the store is unreachable.
+  bool seed_capture_seq();
+
+  std::atomic<bool> capture_seq_seeded_{false};
+  std::mutex capture_seq_seed_mutex_;
 
   /// Compiled regex patterns (cached for performance)
   std::vector<std::pair<std::regex, std::vector<std::string>>> compiled_patterns_;

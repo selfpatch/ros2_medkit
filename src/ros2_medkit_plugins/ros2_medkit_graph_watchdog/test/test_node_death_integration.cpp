@@ -867,7 +867,8 @@ TEST_F(NodeDeathIntegrationTest, X2_TheFloorMakesAConfiguredMissGraceBehaveDiffe
     det_below->tick(ctx_below);
     gate_above.update(snap_above, static_cast<std::uint64_t>(tick));
     det_above->tick(ctx_above);
-    ASSERT_TRUE(flush_reports());
+    // A report is attributed to the tick that sent it only once it has been recorded.
+    ASSERT_TRUE(flush_reports()) << "the fake fault service never answered at tick " << tick;
     if (below_raised_at < 0 && any_failed_desc_contains(kGraphSource, {"floor_below_node"})) {
       below_raised_at = tick;
     }
