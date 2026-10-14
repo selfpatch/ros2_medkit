@@ -1084,7 +1084,7 @@ TEST_F(NodeDeathIntegrationTest, CleanShutdownDepartureIsReclaimedNotReRaisedPas
     gate.update(snapshot_, t);
     det->tick(ctx);
   }
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   // 1, not 0: anchor_app() stays present and armed for the whole run and is never pruned -
   // only "/clean" is ever eligible for reclaim.
   EXPECT_EQ(det->tracked_count_for_test(), 1u)

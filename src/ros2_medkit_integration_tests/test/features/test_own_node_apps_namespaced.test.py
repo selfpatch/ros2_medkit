@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The helper-node filter holds when the gateway alone is moved to a namespace.
+"""The gateway's helper nodes follow it when a remap moves the gateway alone.
 
 ``test_own_node_apps.test.py`` covers a gateway in the root namespace. A remap
 naming the gateway alone, ``-r ros2_medkit_gateway:__ns:=/subsystem_b``, moves
@@ -21,8 +21,9 @@ the gateway node. Each helper node is created in the gateway's namespace under
 a name of its own, which that rule does not match, so all three land next to
 the gateway.
 
-The gateway must still recognise all three. This launch is that invocation,
-with one gateway on the graph so nothing else can supply a node by those names.
+This file checks that the three helpers are on the graph under those names and
+that ``/apps`` lists the gateway and none of them. One gateway is on the graph,
+so nothing else can supply a node by those names.
 """
 
 import time

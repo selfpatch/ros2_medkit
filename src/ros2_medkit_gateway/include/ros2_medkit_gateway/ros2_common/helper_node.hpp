@@ -25,7 +25,8 @@ namespace ros2_medkit_gateway::ros2_common {
  * @brief Create an in-process helper node of @p host, in the host's namespace and context.
  *
  * The helper is named `_<host name><suffix>`. The leading underscore hides it from
- * `ros2 node list` and from discovery. A node-local `__node` remap keeps a
+ * `ros2 node list`, and from discovery while discovery.runtime.filter_internal_nodes
+ * is on (the default). A node-local `__node` remap keeps a
  * process-wide `-r __node:=<name>` (added by launch_ros `Node(name=...)`) from
  * giving the helper the host's name. All other process arguments still apply.
  * `use_sim_time` is copied from the host, because a parameters file keyed by the

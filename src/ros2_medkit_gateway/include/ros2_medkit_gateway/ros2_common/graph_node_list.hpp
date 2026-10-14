@@ -62,11 +62,11 @@ inline std::string graph_node_fqn(const std::string & name, const std::string & 
  *
  * For a gateway at `<ns>/<name>`: true for `<ns>/_<name>_sub`, `<ns>/_<name>_fault_clients` and
  * `<ns>/_<name>_lifecycle_state_reader`, the names make_helper_node gives them, exact matches only.
- * make_helper_node keeps every helper in the gateway's namespace, so there is no other spelling.
  * False for the gateway node itself, which is a diagnosable App.
  *
  * @param node_fqn Fully qualified node name to test ("/ns/node")
- * @param self_fqn The gateway node's own FQN. A value with no node name after a '/' matches nothing
+ * @param self_fqn The gateway node's own FQN. A value with no '/' (an empty one included), or with
+ *        nothing after its last '/', matches nothing
  */
 inline bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn) {
   const auto last_slash = self_fqn.rfind('/');
