@@ -98,7 +98,9 @@ SOURCE_ID = '/powertrain/engine/temp_sensor'
 SERVICE_NAME = '/fault_manager/report_fault'
 FAULT_MANAGER_NODE = 'fault_manager'
 
-TIMEOUT = DISCOVERY_TIMEOUT * get_time_scale()
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale; applying the
+# scale again would square it.
+TIMEOUT = DISCOVERY_TIMEOUT
 KEEPALIVE_SEC = 2
 
 

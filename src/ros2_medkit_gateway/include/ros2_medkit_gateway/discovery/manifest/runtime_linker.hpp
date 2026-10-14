@@ -95,8 +95,16 @@ class RuntimeLinker {
   /**
    * @brief Constructor
    * @param node ROS node for logging (can be nullptr for testing)
+   * @param filter_internal_nodes The effective
+   *        `discovery.runtime.filter_internal_nodes` setting. It decides
+   *        whether this gateway's own in-process helper nodes are left out of
+   *        `orphan_nodes`, because it is the same setting that decides whether
+   *        they are filtered out of the served apps. With it off the helpers
+   *        ARE served as apps, so reporting them as unmanifested is the truth;
+   *        omitting them there would hide from `/health` exactly the nodes the
+   *        operator turned the filter off to see.
    */
-  explicit RuntimeLinker(rclcpp::Node * node = nullptr);
+  explicit RuntimeLinker(rclcpp::Node * node = nullptr, bool filter_internal_nodes = true);
 
   /**
    * @brief Link manifest apps to runtime apps (nodes)
@@ -190,6 +198,8 @@ class RuntimeLinker {
   void log_error(const std::string & msg) const;
 
   rclcpp::Node * node_;
+  /// See the constructor: the helper-node skip below follows the app filter.
+  bool filter_internal_nodes_{true};
   LinkingResult last_result_;
 };
 

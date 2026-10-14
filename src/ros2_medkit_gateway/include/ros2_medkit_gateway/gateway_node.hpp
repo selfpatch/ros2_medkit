@@ -18,6 +18,7 @@
 #include <chrono>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -63,6 +64,7 @@
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/ros2/trigger_topic_subscriber.hpp"
 #include "ros2_medkit_gateway/ros2_common/callback_groups.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
@@ -440,6 +442,9 @@ class GatewayNode : public rclcpp::Node {
   // One-shot WARN when entity_cache capacity is exceeded (grew on first refresh after reserve).
   // Cleared only at construction time; never reset so the WARN fires at most once per run.
   bool warned_cache_grow_{false};
+  /// Declared apps the helper-node rule last warned about, so a static
+  /// misconfiguration is reported when it appears or changes, not every refresh.
+  std::set<std::string> warned_helper_bound_apps_;
 
   // Graph-change-driven discovery refresh.
   //
@@ -497,6 +502,8 @@ class GatewayNode : public rclcpp::Node {
   std::unique_ptr<std::thread> server_thread_;
 };
 
+using ros2_common::is_own_gateway_helper_node;
+
 /**
  * @brief Filter ROS 2 internal nodes from an app list
  *
@@ -505,11 +512,40 @@ class GatewayNode : public rclcpp::Node {
  * before checking for the underscore prefix, using the routing table for precise
  * prefix detection.
  *
+ * Also removes local apps bound to one of the gateway's in-process helper nodes
+ * (is_own_gateway_helper_node), which the underscore rule cannot see. The
+ * gateway's own node is NOT removed - it is a diagnosable App whose ROS
+ * parameters are served as its configurations. The test is on the bound node
+ * FQN, and only for apps with no routing-table entry: a peer's helper nodes are
+ * the peer's business and are left to the peer's own filter.
+ *
  * @param apps App vector to filter in place
  * @param peer_routing_table Maps entity_id -> peer_name for remote entities
+ * @param self_fqn The gateway node's own FQN. Empty disables the helper check
+ * @param dropped_declared_apps Optional sink for "<app id> -> <node fqn>" of
+ *        every app removed by the helper rule whose source is not runtime
+ *        discovery. Removing a declared entity silently would override the
+ *        manifest without saying so, and this function has no logger
  * @return Number of apps removed
  */
 size_t filter_internal_node_apps(std::vector<App> & apps,
-                                 const std::unordered_map<std::string, std::string> & peer_routing_table);
+                                 const std::unordered_map<std::string, std::string> & peer_routing_table,
+                                 const std::string & self_fqn,
+                                 std::vector<std::string> * dropped_declared_apps = nullptr);
+
+/**
+ * @brief Remember which declared apps were dropped, and say whether that changed
+ *
+ * The condition this gates is a static misconfiguration, while the caller runs
+ * on every graph event and on the refresh cadence, so warning per call would
+ * repeat the same line for the life of the process. Returns true only when the
+ * set differs from the remembered one and is not empty; the remembered set is
+ * updated either way, so a condition that clears and returns is reported again.
+ *
+ * @param dropped App ids (with their bound FQNs) dropped by the helper rule
+ * @param remembered In/out: the set the caller last warned about
+ * @return true when the caller should warn
+ */
+bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
 
 }  // namespace ros2_medkit_gateway

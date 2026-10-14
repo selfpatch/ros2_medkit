@@ -111,7 +111,9 @@ SLOW_APP = 'remote_slow_calibration'
 LIDAR_APP = 'remote_lidar'
 PEER_NAMESPACE = '/chassis/sensors'
 
-TIMEOUT = DISCOVERY_TIMEOUT * get_time_scale()
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale; applying the
+# scale again would square it.
+TIMEOUT = DISCOVERY_TIMEOUT
 
 PEER_MANIFEST = f"""\
 manifest_version: "1.0"
@@ -288,7 +290,7 @@ class AggregationTimeBudgetsTest(unittest.TestCase):
         response = requests.post(
             f'{GENEROUS_URL}/apps/{SLOW_APP}/operations/calibrate/executions',
             json={},
-            timeout=(GENEROUS_FORWARD_MS / 1000.0 + 10) * get_time_scale(),
+            timeout=GENEROUS_FORWARD_MS / 1000.0 + 10 * get_time_scale(),
         )
         elapsed = time.monotonic() - started
 
@@ -367,7 +369,7 @@ class AggregationTimeBudgetsTest(unittest.TestCase):
 
         through = requests.get(
             f'{GENEROUS_URL}/apps/{LIDAR_APP}/data/{resource}',
-            timeout=(GENEROUS_FORWARD_MS / 1000.0 + 20) * get_time_scale(),
+            timeout=GENEROUS_FORWARD_MS / 1000.0 + 20 * get_time_scale(),
         )
         self.assertEqual(
             through.status_code, 200,

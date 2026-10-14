@@ -119,8 +119,9 @@ UNDECLARED_FQN = '/powertrain/engine/rpm_sensor'
 # expensive - which is load this file would be adding, not absorbing.
 TIME_SCALE = get_time_scale()
 
-# Was a private 60.0; this is the shared discovery budget, scaled.
-POLL_TIMEOUT_SEC = DISCOVERY_TIMEOUT * TIME_SCALE
+# DISCOVERY_TIMEOUT already carries the sanitizer time scale; applying the
+# scale again would square it.
+POLL_TIMEOUT_SEC = DISCOVERY_TIMEOUT
 POLL_INTERVAL_SEC = 0.5
 # How long a single HTTP call has to come back.
 HTTP_TIMEOUT_SEC = 5.0 * TIME_SCALE

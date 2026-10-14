@@ -426,6 +426,11 @@ class NodeMap {
   const std::string & component_id() const {
     return component_id_;
   }
+
+  /// The component id a NodeMap carries before anything overrides it: neither
+  /// a device nameplate nor an operator's YAML, so a fault reported under it
+  /// belongs to this plugin as much as any later id does.
+  static constexpr const char * kDefaultComponentId = "opcua_device";
   const std::string & component_name() const {
     return component_name_;
   }
@@ -516,7 +521,7 @@ class NodeMap {
   // these from the device's own read identity (set_component_identity); an
   // explicit node-map YAML overrides them from ``component_id`` /
   // ``component_name``. No device-specific product string is ever baked in.
-  std::string component_id_ = "opcua_device";
+  std::string component_id_ = kDefaultComponentId;
   std::string component_name_ = "OPC UA Device";
   AutoBrowseConfig auto_browse_config_;
 };

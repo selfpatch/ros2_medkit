@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <string>
@@ -102,6 +103,13 @@ struct PollerConfig {
   double subscription_interval_ms{500.0};
   std::chrono::milliseconds poll_interval{1000};
   std::chrono::milliseconds reconnect_interval{5000};
+  /// Ceiling for the exponential reconnect backoff (it doubles from
+  /// ``reconnect_interval`` up to this). A plugin whose reconnect arm also
+  /// rescans for a new endpoint lowers this to the rescan cadence: the rescan is
+  /// consulted once per reconnect attempt, so a backoff longer than the cadence
+  /// would silently stretch the documented "re-scan every interval_s" to the
+  /// backoff instead (see OpcuaPlugin::effective_max_reconnect_wait).
+  std::chrono::milliseconds max_reconnect_interval{60000};
   /// Active-condition replay strategy on (re)subscribe (issue #389).
   /// Default Auto: ConditionRefresh with a read-based fallback so hardened
   /// servers that reject the method still recover their active alarms.
@@ -133,7 +141,39 @@ struct PollerConfig {
   /// fire-and-forget report is never dropped-and-forgotten while the sink is
   /// unmatched - it retries on the next poll instead. Empty => assume ready.
   std::function<bool()> report_sink_ready;
+  /// Optional endpoint rediscovery, bound by a plugin running config-less
+  /// network discovery with no endpoint configured. Called from the reconnect
+  /// arm - so only while no session is up - and expected to rate-limit itself.
+  /// Returns a new endpoint URL to reconnect against, nullopt to keep the
+  /// current one. Without it the reconnect loop retries the same endpoint
+  /// forever, which strands a gateway that scanned before its PLC had booted.
+  std::function<std::optional<std::string>()> rediscover_endpoint;
+  /// Optional hook fired once per session, immediately after a connect
+  /// succeeds and BEFORE the link-state edge and before the poller
+  /// (re)subscribes to data changes and alarm events. Bound by the plugin to
+  /// whatever must be settled before the server replays anything - the
+  /// identity check and the config-less component rename, in particular.
+  ///
+  /// Returns false to reject the session: the owner has already dropped it (it
+  /// reached a server the owner is not willing to poll), so the poller treats
+  /// the connect as not having happened - no link-state clear, no subscribe,
+  /// back to the reconnect backoff.
+  ///
+  /// Position matters: ``apply_condition_state`` pins a fault's entity id at
+  /// the FIRST observation of a ConditionId, and the ConditionRefresh burst
+  /// that follows ``setup_event_subscriptions()`` is that first observation for
+  /// every condition the device had standing. Renaming after it would file
+  /// those faults under an entity the rename then drops, orphaning them and
+  /// every later clear. Runs on the poll thread (or, for the first session, on
+  /// the thread that called ``start()``).
+  std::function<bool()> on_connected;
 };
+
+/// Fault code of the component-scoped OPC-UA connection fault the poller raises
+/// on a sustained outage and clears on the next successful connect (issue #496).
+/// Named here so the plugin can clear the same code from its own connect path
+/// without keeping a second copy of the literal.
+inline constexpr const char * kCommsLostFaultCode = "PLC_COMMS_LOST";
 
 /// Manages OPC-UA data collection via subscriptions (preferred) or polling
 class OpcuaPoller {
@@ -237,6 +277,24 @@ class OpcuaPoller {
                                       std::chrono::steady_clock::time_point down_since,
                                       std::chrono::steady_clock::time_point now, std::chrono::milliseconds debounce);
 
+  /// Endpoint the next reconnect attempt should target. Asks
+  /// ``rediscover_endpoint`` (when bound) for a freshly discovered server and
+  /// returns it only when it names a DIFFERENT endpoint than ``current``.
+  /// nullopt means "keep the current one", which is also the answer when no
+  /// callback is bound, when the callback declines, or when it hands back an
+  /// empty string. Pure and static (the callback is injected) so the adoption
+  /// rule is unit-testable without a network.
+  static std::optional<std::string>
+  adopt_rediscovered_endpoint(const std::string & current,
+                              const std::function<std::optional<std::string>()> & rediscover);
+
+  /// Wait before the next reconnect attempt: the current wait doubled, clamped
+  /// to ``max_wait`` (a wait already above the cap comes back down to it). Pure
+  /// and static so the backoff - and the cap that keeps a rescanning reconnect
+  /// loop on its documented cadence - is unit-testable.
+  static std::chrono::milliseconds next_reconnect_wait(std::chrono::milliseconds current,
+                                                       std::chrono::milliseconds max_wait);
+
   /// Zero-config native A&C (``auto_alarms``): the alarm sources that should
   /// actually be subscribed / replayed, i.e. every explicit ``event_alarms``
   /// entry plus (when ``auto_cfg.enabled`` and no explicit entry already
@@ -261,6 +319,61 @@ class OpcuaPoller {
   /// string equality when a spelling is unparseable (distinct raw strings stay
   /// distinct). Pure and static so it is unit-testable without a server.
   static bool node_ids_equivalent(const std::string & a, const std::string & b);
+
+  /// The alarm configuration the event path reads, copied out of the NodeMap.
+  ///
+  /// ``on_event`` runs on ``event_pump_thread_`` while the poll thread may be
+  /// rewriting the node map underneath it: the config-less rename clears and
+  /// reassigns ``auto_alarms.entity_id`` and rebuilds entity_defs under the
+  /// plugin's node-map lock, which the event path does not hold and cannot
+  /// take (it must not block a subscription callback on an HTTP read). A
+  /// ConditionRefresh burst on the first adopted session lands on exactly that
+  /// window. So the poller keeps its own copy and the event path reads nothing
+  /// else.
+  struct AlarmRouting {
+    std::vector<AlarmEventConfig> event_alarms;
+    AutoAlarmsConfig auto_alarms;
+    /// node-id string -> hosting entity id. That entity id is the whole of
+    /// what the event path needs ``NodeMap::find_by_node_id`` for, so the copy
+    /// carries the answer itself.
+    std::unordered_map<std::string, std::string> entity_by_node_id;
+  };
+
+  /// Re-copy the alarm routing from the node map. Called at subscribe time (so
+  /// the copy and the monitored items are taken from one state of the map) and
+  /// callable by the owner after it has renamed anything the routing carries.
+  /// Poll thread / start() thread only - the event path never writes it. Not
+  /// part of the poller's supported surface (see alarm_routing()).
+  void refresh_alarm_routing();
+
+  /// The routing the event path reads. A shared_ptr snapshot, so a refresh
+  /// swaps in a new one and a callback already holding the old one finishes
+  /// against a consistent copy whose strings stay put.
+  ///
+  /// This and ``refresh_alarm_routing`` exist for the owner and its tests; they
+  /// are not part of the poller's supported surface and carry no compatibility
+  /// promise.
+  std::shared_ptr<const AlarmRouting> alarm_routing() const;
+
+  /// Move every tracked condition hosted on ``old_entity_id`` to
+  /// ``new_entity_id``, under the lock ``apply_condition_state`` pins them
+  /// with. A condition's entity is pinned at the first sighting of its
+  /// ConditionId, so the config-less rename has to reach the ones already
+  /// pinned as well as the routing new ones are derived with; every later
+  /// report and clear for those ConditionIds then carries the new entity. A
+  /// condition that changes state between the pin and this call is reported
+  /// once under the old entity. No-op for an empty or unchanged id.
+  void repin_auto_alarms_entity(const std::string & old_entity_id, const std::string & new_entity_id);
+
+  /// ``apply_condition_state`` reached without a server. Drives the pin, the
+  /// state machine and the dispatch exactly as a delivered event does, so the
+  /// pinning rules are testable without an address space. Not part of the
+  /// poller's supported surface (see alarm_routing()).
+  void apply_condition_state_for_test(const AlarmEventConfig & cfg, const opcua::NodeId & condition_id,
+                                      const AlarmEventInput & input, uint16_t severity, const std::string & message,
+                                      const opcua::ByteString * event_id, bool require_confirm_for_clear) {
+    apply_condition_state(cfg, condition_id, input, severity, message, event_id, require_confirm_for_clear);
+  }
 
   /// True only for a real OPC-UA Condition event. Per Part 9 §5.5.2.13 the
   /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
@@ -389,6 +502,12 @@ class OpcuaPoller {
   std::atomic<uint32_t> event_subscription_id_{0};
   std::vector<uint32_t> event_monitored_item_ids_;
 
+  // The event path's own copy of the alarm configuration (see AlarmRouting).
+  // Written only from the poll thread / start() thread, read from the event
+  // pump thread; the mutex is held just long enough to swap the pointer.
+  mutable std::mutex alarm_routing_mutex_;
+  std::shared_ptr<const AlarmRouting> alarm_routing_;
+
   mutable std::shared_mutex conditions_mutex_;
   std::unordered_map<std::string, ConditionRuntime> conditions_;  // ConditionId stringForm -> runtime
 
@@ -430,7 +549,10 @@ class OpcuaPoller {
   // Issue #496: comms-lost debounce state, touched only on the poll thread.
   // ``comms_down_since_`` is set the first poll iteration the connection is
   // observed down and cleared on reconnect; ``comms_lost_raised_`` guards the
-  // one-shot raise / matching clear so the fault is idempotent.
+  // one-shot RAISE only. The clear is deliberately not guarded by it: it is sent
+  // on every successful reconnect, because the fault manager persists faults by
+  // fault_code and a comms-lost fault raised before a restart is standing in the
+  // store with nothing in this process's memory to remember it.
   std::optional<std::chrono::steady_clock::time_point> comms_down_since_;
   bool comms_lost_raised_{false};
 

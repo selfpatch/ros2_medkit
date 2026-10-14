@@ -58,6 +58,11 @@ SNAPSHOT_FAULT_CODE = 'TEST_SNAPSHOT_FAULT'
 
 EVENT_TOPIC = '/fault_manager/events'
 
+
+def _seconds(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 _temp_dirs = []
 
 
@@ -197,7 +202,6 @@ class TestAutoConfirmVisibility(unittest.TestCase):
         for a fault that is now confirmed in the database.
         """
         code = 'PLC_TIMER_CONFIRMED'
-        raised_at = time.monotonic()
         self._report_failed(code)
 
         # The raise alone must not confirm, or the timer is not what is measured.
@@ -211,8 +215,10 @@ class TestAutoConfirmVisibility(unittest.TestCase):
         self.assertIsNotNone(
             event, 'a time-based confirmation published no event, so nothing downstream is told'
         )
+        # Both stamps come from the node's wall clock, the clock the window is measured on.
+        waited = _seconds(event.timestamp) - _seconds(event.fault.last_occurred)
         self.assertGreaterEqual(
-            time.monotonic() - raised_at, AUTO_CONFIRM_SEC,
+            waited, AUTO_CONFIRM_SEC,
             'the confirmation arrived before the configured window had elapsed'
         )
 

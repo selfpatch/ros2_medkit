@@ -480,10 +480,12 @@ How long a departed node keeps being listed
 
 Once a node has actually left the ROS graph, ``GET /apps`` stops listing it within
 roughly one refresh: at most ``discovery.refresh_debounce_ms`` plus the 100 ms graph
-poll, or ``refresh_interval_ms``, whichever comes first. Nothing is retained behind
-that - every refresh rebuilds the entity set from a live read of the graph - so this
-is the whole of the gateway's share, and it is the only part of a departure the
-gateway can be held to.
+poll, or ``refresh_interval_ms``, whichever comes first. Every refresh rebuilds the
+entity set from a live read of the graph, so this is the whole of the gateway's share,
+and it is the only part of a departure the gateway can be held to. What the gateway
+remembers between reads - the names it saw running, described below - decides only
+whether an entry the graph still lists after its participant left is exposed; it never
+keeps listing a node the graph no longer lists.
 
 Before that point nothing here is promised, and the difference is not small:
 
@@ -503,6 +505,83 @@ So a caller waiting for a specific node to disappear should watch for its absenc
 rather than assume a deadline. Anything that measures a departure should establish
 that the process has actually exited first, and only then hold the gateway to the
 figure above.
+
+The graph itself can also keep a node after its process has exited, for as long as the
+gateway runs. The DDS RMWs take a participant's node list from discovery messages on an
+internal topic, read on a listener thread of their own. When that thread takes a message
+only after the participant was removed, the message puts the node back, with an empty
+enclave and none of its endpoints, and nothing removes it again. This page calls such an
+entry a leftover.
+
+An empty enclave on its own does not make a leftover. A node on the far side of a DDS
+router, or a node whose participant was created outside rcl (a micro-ROS agent's, for
+example), also reads an empty enclave, and the router's far side resolves no endpoints
+either. So the gateway leaves an entry out only for a node it has itself seen running.
+Per node name, on every read of the graph:
+
+* an entry with an enclave is listed, and the name counts as seen running;
+* an entry without an enclave is dropped when another entry of the same name has one, so a
+  restarted node is listed once;
+* an entry without an enclave for a name the gateway has seen running is left out when the
+  graph resolves no publisher or subscriber for the node (a service or client is a request
+  and a reply endpoint, so it counts too);
+* an entry without an enclave for a name the gateway has never seen running is listed.
+
+A leftover is left out of ``GET /apps`` and ``GET /apps/{id}``, out of the Functions
+derived from namespaces, and out of the bare-name collision check that would otherwise
+rename a live node sharing its name. The read that starts leaving a node out logs:
+
+.. code-block:: text
+
+   [WARN] [ros2_medkit_gateway]: Node '/ns/name' is not exposed: this gateway saw it running, and the ROS graph still lists it after its participant left, with no endpoints
+
+Later reads that keep leaving it out stay quiet. The warning comes back only after a read
+that did not leave the node out.
+
+Which names the gateway saw running comes from the reads themselves. The names running on
+the previous read are that read's own list, so they cost nothing however many nodes run. A
+name that ran on the previous read and does not run on this one - the graph lists no entry
+of it, or only entries without an enclave - has departed, and the gateway remembers it until
+it runs again or until it is forgotten on a read: the first read that finds no entry of it
+more than 10 seconds after the first read that found none. While an entry of it without an
+enclave is listed, those 10 seconds do not start. They cover the gap between the
+participant's removal and the late message: the time the listener thread takes to process a
+message it already holds, measured under a millisecond on an idle host and up to 0.64 s with
+its process and eight busy threads sharing two cores.
+
+The name is forgotten only on a read. Reads come from graph changes, the refresh backstop
+(``refresh_interval_ms``), the gateway's start and, in ``runtime_only`` mode, a request for an
+App or a Function that a refresh removed from the entity cache while the request ran. A late
+message that arrives before the read that forgets the name stays hidden, however long after
+the 10 seconds it comes: the late message itself changes the graph, and the read that follows
+finds its entry. Only a late message that arrives after that read is listed, like a node the
+gateway never saw running.
+
+The gateway remembers at most 1024 departed names. Past that it forgets first the names the
+graph has listed no entry of for longest, and then the names that departed longest ago; a
+forgotten name whose only entries are leftovers is listed again, without a warning. So once
+1024 leftovers are hidden, a node that departs with no entry of it left is the first name
+forgotten, and a late message for it is listed. Every remembered leftover costs two endpoint
+queries on each read, so the cap also bounds that work.
+
+A node that ran on this host and then appears only behind a DDS router, as an entry without
+an enclave, is hidden like a leftover if it appears before the gateway forgets the name or
+while a leftover of it is still listed.
+
+The startup discovery summary counts peer nodes through the same memory, so in
+``runtime_only`` mode, and in ``hybrid`` mode with the runtime layer enabled, it counts what
+discovery would list at that moment. When discovery does not read the graph itself - in
+``manifest_only`` mode, or in ``hybrid`` mode with ``discovery.runtime.enabled: false`` - the
+summary's read is the first, so no node has been seen running: it counts every entry the
+graph lists, except an entry without an enclave next to an entry of the same name with one.
+
+The ``param_beacon`` plugin reads the graph itself only when discovery gives it no poll
+targets, and then through a memory of its own: a node its reads saw running is not polled
+once only a leftover of it is listed. It logs nothing about it.
+
+A node restarted while a leftover of its previous instance is still listed can show no
+services, and so no operations, because the graph answers per-node queries from whichever
+of the two participants sorts first.
 
 Thread Pools
 ------------

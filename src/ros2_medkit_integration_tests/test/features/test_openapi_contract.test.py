@@ -33,7 +33,7 @@ import launch_testing
 import launch_testing.actions
 import requests
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, DISCOVERY_TIMEOUT
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import (
     create_test_launch,
@@ -148,6 +148,16 @@ class TestOpenApiContract(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 2
     REQUIRED_APPS = {'calibration', 'temp_sensor'}
+    # The app entities appearing is not enough for this file. A node is listed
+    # in the ROS graph before its service endpoints have propagated, so a
+    # discovery sweep can build the App with an empty service list, and the
+    # cache-derived operation items in `/docs` are built from exactly that
+    # list. Until one service is in the cache every operations sub-document
+    # publishes only projections, and the comparison over `operations` in
+    # `test_a_scoped_item_says_what_its_templated_sibling_says` has nothing to
+    # compare. Waiting for the capability the assertion reads is what makes
+    # the file independent of how fast the runner propagates a service.
+    REQUIRED_OPERATIONS = {'/apps/calibration': 'calibrate'}
 
     _spec = None
 
@@ -1241,6 +1251,7 @@ class TestOpenApiContract(GatewayTestCase):
         """
         offenders = []
         covered = {}
+        covered_built = {}
         for entity_type in ('areas', 'components', 'apps', 'functions'):
             items = self.get_json(f'/{entity_type}').get('items', [])
             if not items:
@@ -1249,24 +1260,45 @@ class TestOpenApiContract(GatewayTestCase):
                 # the per-type lists themselves are pinned by the
                 # `EntityCapabilities` unit tests.
                 continue
-            entity_id = items[0]['id']
-            detail = self.get_json(f'/{entity_type}/{entity_id}')
-            subtree = self.get_json(f'/{entity_type}/{entity_id}/docs')
-            advertised = {c['href'] for c in detail.get('capabilities', [])}
-            advertised |= {f'/api/v1{p}'
-                           for p, item in subtree['paths'].items()
-                           if 'get' in item}
             followed = 0
-            for href in sorted(advertised):
-                if '{' in href:
-                    # A templated path names no concrete resource to fetch.
-                    continue
-                resp = requests.get(
-                    f'{self.BASE_URL}{href[len("/api/v1"):]}', timeout=10)
-                followed += 1
-                if resp.status_code == 404:
-                    offenders.append(f'{entity_type}: {href}')
+            built = 0
+            for entity_id in [item['id'] for item in items]:
+                detail = self.get_json(f'/{entity_type}/{entity_id}')
+                subtree = self.get_json(f'/{entity_type}/{entity_id}/docs')
+                advertised = {c['href'] for c in detail.get('capabilities', [])}
+                advertised |= {f'/api/v1{p}'
+                               for p, item in subtree['paths'].items()
+                               if 'get' in item}
+                # `x-sovd-name` marks a path the cache built out of a concrete
+                # resource id, which is the only kind whose href can 404 from an
+                # id that does not resolve. They live in the collection
+                # sub-documents, so the capability list and the entity subtree
+                # alone never reach one.
+                built_hrefs = set()
+                for collection in ('data', 'operations'):
+                    doc = requests.get(
+                        f'{self.BASE_URL}/{entity_type}/{entity_id}/'
+                        f'{collection}/docs', timeout=10)
+                    if doc.status_code != 200:
+                        continue
+                    built_hrefs |= {f'/api/v1{p}'
+                                    for p, item in doc.json().get(
+                                        'paths', {}).items()
+                                    if 'get' in item and 'x-sovd-name' in item}
+                advertised |= built_hrefs
+                for href in sorted(advertised):
+                    if '{' in href:
+                        # A templated path names no concrete resource to fetch.
+                        continue
+                    resp = requests.get(
+                        f'{self.BASE_URL}{href[len("/api/v1"):]}', timeout=10)
+                    followed += 1
+                    if href in built_hrefs:
+                        built += 1
+                    if resp.status_code == 404:
+                        offenders.append(f'{entity_type}: {href}')
             covered[entity_type] = followed
+            covered_built[entity_type] = built
         self.assertEqual(offenders, [], f'advertised but 404: {offenders}')
         # Guard against a vacuous pass: an entity type that advertised nothing,
         # or a listing that came back empty, must not read as green.
@@ -1274,6 +1306,16 @@ class TestOpenApiContract(GatewayTestCase):
             self.assertGreater(
                 covered.get(entity_type, 0), 8,
                 f'{entity_type}: only {covered.get(entity_type, 0)} hrefs followed')
+        # The capability list and the docs subtree are the same shape for every
+        # entity, so following them proves nothing about an id that has to
+        # resolve. A cache-built href is the only kind that can 404 from an id
+        # the cache does not hold, and every entity type that had a listing
+        # aggregates at least one data point or operation in this fixture.
+        for entity_type, built in sorted(covered_built.items()):
+            self.assertGreater(
+                built, 0,
+                f'{entity_type}: no cache-built href was followed, so no '
+                f'advertised resource id was resolved')
 
     def test_the_root_list_and_the_document_agree(self):
         """`GET /api/v1` and `GET /api/v1/docs` describe the same gateway.
@@ -1347,37 +1389,58 @@ class TestOpenApiContract(GatewayTestCase):
         inherited from the projected route they describe, because they *are*
         that route.
 
-        Both scopes are compared, not merely visited. ``project()`` substitutes
-        the ids it was given into the path **keys**, so at collection scope the
-        sibling is still templated (``/data/{data_id}``) while at
-        specific-resource scope it has already become concrete
-        (``/data/temperature``). An earlier version used the collection
-        document only as a source of siblings, which meant every
-        collection-scope item could be published completely un-inherited and
-        this test stayed green.
+        Both scopes are compared. ``project()`` substitutes the ids it was
+        given into the path **keys**, so at collection scope the sibling is
+        still templated (``/data/{data_id}``) while at specific-resource scope
+        it has already become concrete (``/data/temperature``). The collection
+        document is both the source of siblings and a publisher of built
+        items, so its own items are compared here too.
 
         Read from the document alone: the sibling states the contract and the
         built item must match it, so no second source is needed and none is
         trusted.
+
+        Every entity in both listings is swept, and the count is kept per
+        entity type, per collection and per scope: an app whose node exposes no
+        service publishes no built operation item at all, and the two scopes
+        are separate branches of the same producer, so each of those counts is
+        what makes its own branch falsifiable.
+
+        The fixture is pinned on the capabilities this reads.
+        `REQUIRED_OPERATIONS` holds the class wait until calibration's
+        `calibrate` is in the cache; the poll below does the same for
+        temp_sensor's data, which the base class has no equivalent for. A node
+        is listed in the ROS graph before its services and topics have
+        propagated, so without both the counters are whatever the graph had
+        reached at the instant the request went out.
         """
+        self.poll_endpoint_until(
+            '/apps/temp_sensor/data',
+            lambda d: d if d.get('items') else None,
+            timeout=DISCOVERY_TIMEOUT,
+        )
         compared = 0
-        built_items = {'data': 0, 'operations': 0}
+        built_items = {(entity_type, collection, scope): 0
+                       for entity_type in ('apps', 'components')
+                       for collection in ('data', 'operations')
+                       for scope in ('collection', 'resource')}
         offenders = []
         for entity_type in ('apps', 'components'):
             items = self.get_json(f'/{entity_type}').get('items', [])
             if not items:
                 continue
-            entity_id = items[0]['id']
-            for collection in ('data', 'operations'):
+            entity_ids = [item['id'] for item in items]
+            pairs = [(entity_id, collection)
+                     for entity_id in entity_ids
+                     for collection in ('data', 'operations')]
+            for entity_id, collection in pairs:
                 base = f'/{entity_type}/{entity_id}/{collection}'
                 collection_doc = self.get_json(f'{base}/docs')
                 collection_paths = collection_doc.get('paths', {})
                 # The item parameter is read from the served document, the way
-                # `CapabilityGenerator` reads it from the registry. Spelling
-                # `data_id`/`operation_id` here was a second copy of the fact
-                # that fix removed from production: renaming the registry
-                # parameter left production working and this guard green having
-                # compared nothing.
+                # `CapabilityGenerator` reads it from the registry, so the
+                # parameter name lives in one place and a rename there is
+                # followed here.
                 template = self._item_template(collection_paths, base)
                 self.assertIsNotNone(
                     template,
@@ -1389,7 +1452,17 @@ class TestOpenApiContract(GatewayTestCase):
                 for key, path_item in collection_paths.items():
                     if 'x-sovd-name' not in path_item:
                         continue
-                    built_items[collection] += 1
+                    # The key a built item is published under names the item
+                    # the request resolves to.
+                    self.assertTrue(
+                        key.startswith(f'{base}/'),
+                        f'{key}: a built item published outside {base}/')
+                    self.assertEqual(
+                        self._item_half(key[len(base) + 1:]),
+                        self._item_half(path_item['x-sovd-name']),
+                        f'{key}: the built item names '
+                        f'{path_item["x-sovd-name"]}')
+                    built_items[(entity_type, collection, 'collection')] += 1
                     for method, operation in path_item.items():
                         if method not in HTTP_METHODS:
                             continue
@@ -1403,21 +1476,47 @@ class TestOpenApiContract(GatewayTestCase):
                 listing = requests.get(f'{self.BASE_URL}{base}', timeout=10)
                 if listing.status_code != 200:
                     continue
-                for entry in listing.json().get('items', []):
-                    resource_id = entry['id']
+                listed_ids = [entry['id']
+                              for entry in listing.json().get('items', [])]
+                # An operation id that names more than one operation answers
+                # 400 and gets no built item. The listing shows such an id
+                # once per operation it names, which is how it is told apart
+                # here without a second copy of the producer's rule.
+                ambiguous = {resource_id for resource_id in listed_ids
+                             if listed_ids.count(resource_id) > 1}
+                for resource_id in listed_ids:
                     scoped = requests.get(
                         f'{self.BASE_URL}{base}/{resource_id}/docs', timeout=10)
-                    if scoped.status_code != 200:
-                        continue
+                    # Every id the collection listed has a sub-document.
+                    self.assertEqual(
+                        scoped.status_code, 200,
+                        f'{base}/{resource_id}/docs answered '
+                        f'{scoped.status_code}; the collection lists that id')
                     key = f'{base}/{resource_id.lstrip("/")}'
                     path_item = scoped.json().get('paths', {}).get(key, {})
+                    if resource_id in ambiguous:
+                        self.assertNotIn(
+                            'x-sovd-name', path_item,
+                            f'{key}: a built item for an id that names more '
+                            f'than one operation describes a request the '
+                            f'gateway refuses')
+                        continue
                     # `x-sovd-name` is written only by `PathBuilder`, so it is
                     # what tells a *built* item from the projection that sits
-                    # at the same key at this scope. Counting the key alone
-                    # made this test unfalsifiable.
-                    if 'x-sovd-name' not in path_item:
-                        continue
-                    built_items[collection] += 1
+                    # at the same key at this scope. The listing and the
+                    # producer read the same cache, so every id listed here
+                    # carries one.
+                    self.assertIn(
+                        'x-sovd-name', path_item,
+                        f'{key}: the collection lists this id and its scoped '
+                        f'document carries no built item for it')
+                    self.assertEqual(
+                        self._item_half(path_item['x-sovd-name']),
+                        self._item_half(resource_id),
+                        f'{key}: the built item names '
+                        f'{path_item["x-sovd-name"]}, the request named '
+                        f'{resource_id}')
+                    built_items[(entity_type, collection, 'resource')] += 1
                     for method, operation in path_item.items():
                         if method not in HTTP_METHODS:
                             continue
@@ -1429,26 +1528,35 @@ class TestOpenApiContract(GatewayTestCase):
         self.assertEqual(
             offenders, [],
             f'built items contradicting their route: {offenders[:12]}')
-        # A cache-derived item must *exist*, and a comparison must actually have
-        # happened. `compared` counts comparisons performed, not operations
-        # visited: a sibling that is missing is a miss, not a pass, so a guard
-        # that found no sibling can no longer satisfy this by counting the
+        # A cache-derived item must exist, and a comparison must have happened.
+        # `compared` counts comparisons performed: a missing sibling is a miss,
+        # so a guard that found no sibling cannot satisfy this by counting the
         # operations it skipped.
-        # Per collection, not in total. Both are built by the same code down
-        # different branches, so one can vanish entirely while the other keeps
-        # the count above zero - which is what happened when a built verb the
-        # sibling lacked made every *data* item get discarded and this stayed
-        # green on operations alone.
-        for collection, count in sorted(built_items.items()):
+        # Per type, collection and scope. Data and operations are built by the
+        # same code down different branches, and the two scopes are separate
+        # branches again, so any one of them can stop publishing while a merged
+        # count stays above zero.
+        for (entity_type, collection, scope), count in sorted(built_items.items()):
             self.assertGreater(
                 count, 0,
-                f'no {collection} sub-document published a cache-derived item '
-                f'(none carried x-sovd-name); every comparison over '
-                f'{collection} was vacuous')
+                f'no {entity_type} {collection} sub-document published a '
+                f'cache-derived item at {scope} scope (none carried '
+                f'x-sovd-name); every comparison over {entity_type} '
+                f'{collection} at {scope} scope was vacuous')
         self.assertGreater(
             compared, 0,
             'no built operation was compared against a sibling; the guard ran '
             'over nothing')
+
+    @staticmethod
+    def _item_half(item_id):
+        """Return the item half of a possibly member-qualified id, no leading slash.
+
+        A short name more than one member of an entity carries is addressed
+        ``<member>:<item>``; ``x-sovd-name`` carries the item half alone.
+        """
+        _, sep, item = item_id.partition(':')
+        return (item if sep else item_id).lstrip('/')
 
     @staticmethod
     def _item_template(collection_paths, base):
@@ -1470,9 +1578,9 @@ class TestOpenApiContract(GatewayTestCase):
                             operation):
         """Compare one built operation against its templated sibling.
 
-        Returns ``(problems, compared)``. A missing sibling is reported rather
-        than skipped: it used to return no problems, so a lookup that found
-        nothing counted as a pass everywhere it was called.
+        Returns ``(problems, compared)``. A missing sibling is reported as a
+        problem, so a lookup that finds nothing is a miss everywhere this is
+        called.
         """
         sibling = collection_paths.get(template, {}).get(method)
         if sibling is None:
@@ -1483,11 +1591,9 @@ class TestOpenApiContract(GatewayTestCase):
             problems.append(
                 f'{method.upper()} {key}: security '
                 f'{operation.get("security")} != {sibling.get("security")}')
-        # Every status, 2xx included. An earlier version carved 2xx out as
-        # "the payload, meant to differ", which is true of a request body and
-        # false of a response: the gateway envelopes every read - `DataValue`,
-        # `OperationDetail` - so a built 200 was a second, contradictory answer
-        # for one route rather than a more specific one.
+        # Every status, 2xx included: the gateway envelopes every read -
+        # `DataValue`, `OperationDetail` - so a built 200 is a second answer
+        # for one route, and it has to be the same answer.
         built_statuses = set(operation.get('responses', {}))
         sibling_statuses = set(sibling.get('responses', {}))
         if built_statuses != sibling_statuses:

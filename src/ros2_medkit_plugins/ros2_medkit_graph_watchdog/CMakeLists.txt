@@ -761,6 +761,12 @@ if(BUILD_TESTING)
     LABELS "integration;e2e"
     ENV "GATEWAY_TEST_PORT=19400" "WATCHDOG_E2E_SCENARIO=restart_rebaseline" "${_WATCHDOG_E2E_ENV}")
 
+  # 315 s of internal give-up bounds plus the teardown of two processes.
+  medkit_add_launch_test(test_node_death_e2e_ghost_departure
+    test/e2e/test_node_death_e2e.test.py TIMEOUT 420
+    LABELS "integration;e2e"
+    ENV "GATEWAY_TEST_PORT=19620" "WATCHDOG_E2E_SCENARIO=ghost_departure" "${_WATCHDOG_E2E_ENV}")
+
   # === node_death suppression e2e (launch_testing) ===
   #
   # Exercises the node_death detector's suppression framework (allowlist, self-suppression,

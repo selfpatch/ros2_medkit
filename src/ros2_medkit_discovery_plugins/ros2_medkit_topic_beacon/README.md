@@ -14,6 +14,17 @@ to enrich the SOVD entity tree.
 Hints transition through states: **active** (within TTL) -> **stale** (TTL expired,
 data still served with stale marker) -> **expired** (removed from store).
 
+`beacon_ttl_sec` takes 0.1 to 2147483647 s, `beacon_expiry_sec` 1.0 to 2147483647 s and
+`max_messages_per_second` 1 to 10000. A value above its maximum, including `.inf` in a
+parameter file, becomes the maximum; NaN, `-.inf` and a value below the minimum become the
+minimum. Each replacement is logged as a warning. Messages over the rate limit are dropped
+without a log.
+
+`max_hints` takes an integer from 1 to 2147483647. A 64-bit integer outside that range becomes
+the nearer bound. The parameter parser reads an integer that does not fit in 64 bits as a
+double. A double, such as `1.0e12` or `.nan`, is refused and the default 10000 is used. Both
+are logged as warnings.
+
 ## Configuration
 
 ```yaml

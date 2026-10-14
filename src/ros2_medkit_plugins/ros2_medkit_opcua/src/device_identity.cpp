@@ -21,6 +21,9 @@ namespace ros2_medkit_gateway {
 namespace {
 constexpr const char * kOpcuaSource = "opcua";
 
+/// Prefix of the neutral endpoint-derived component id.
+constexpr const char * kEndpointIdPrefix = "opcua-";
+
 /// Lowercase underscore slug: alnum kept, every other run collapsed to a
 /// single '_', leading/trailing '_' trimmed. Yields a URL-safe SOVD id.
 std::string slugify(const std::string & in) {
@@ -127,11 +130,18 @@ ComponentIdentity derive_component_identity(const OpcuaClient::DeviceInfo & info
   // is_valid_entity_id and the whole Component would be silently dropped.
   const std::string host = host_from_endpoint(endpoint_url);
   if (!host.empty()) {
-    const std::string fallback = "opcua-" + slugify(host);
+    const std::string fallback = std::string(kEndpointIdPrefix) + slugify(host);
     return {fallback, fallback};
   }
 
   return {};
+}
+
+bool component_identity_has_nameplate(const OpcuaClient::DeviceInfo & info) {
+  // With no endpoint to fall back on, derive_component_identity returns an id
+  // only when the device named itself, so asking it keeps this answer and that
+  // precedence one piece of logic.
+  return !derive_component_identity(info, /*endpoint_url=*/"").id.empty();
 }
 
 bool opcua_identity_trusted(const OpcuaClientConfig & config) {

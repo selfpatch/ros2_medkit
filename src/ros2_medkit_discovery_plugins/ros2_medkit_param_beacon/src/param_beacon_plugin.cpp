@@ -14,8 +14,16 @@
 
 #include "ros2_medkit_param_beacon/param_beacon_plugin.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,10 +43,8 @@ using ros2_medkit_gateway::PluginContext;
 using ros2_medkit_gateway::SovdEntityType;
 
 ParameterBeaconPlugin::~ParameterBeaconPlugin() noexcept {
-  // On Lyrical (originally observed on Rolling), ~rclcpp::Node can throw
-  // graph_listener::NodeNotFoundError once rclcpp::shutdown() has invalidated
-  // the context. An exception escaping a destructor calls std::terminate(),
-  // so swallow it here.
+  // shutdown() can throw std::system_error when it locks clients_mutex_. An exception leaving this
+  // destructor terminates the process.
   try {
     shutdown();
   } catch (...) {
@@ -57,30 +63,58 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
 
   auto beacon_ttl = config.value("beacon_ttl_sec", 15.0);
   auto beacon_expiry = config.value("beacon_expiry_sec", 300.0);
-  auto max_hints = static_cast<size_t>(std::max(config.value("max_hints", 10000), 1));
 
-  // Clamp to safe minimums
-  if (poll_interval_.count() < 0.1) {
-    log_warn("poll_interval_sec clamped from " + std::to_string(poll_interval_.count()) + " to 0.1");
-    poll_interval_ = std::chrono::duration<double>(0.1);
-  }
-  if (poll_budget_sec_ < 0.1) {
-    log_warn("poll_budget_sec clamped from " + std::to_string(poll_budget_sec_) + " to 0.1");
-    poll_budget_sec_ = 0.1;
-  }
-  if (param_timeout_sec_ < 0.1) {
-    log_warn("param_timeout_sec clamped from " + std::to_string(param_timeout_sec_) + " to 0.1");
-    param_timeout_sec_ = 0.1;
-  }
-  if (beacon_ttl < 0.1) {
-    log_warn("beacon_ttl_sec clamped from " + std::to_string(beacon_ttl) + " to 0.1");
-    beacon_ttl = 0.1;
-  }
-  if (beacon_expiry < 1.0) {
-    log_warn("beacon_expiry_sec clamped from " + std::to_string(beacon_expiry) + " to 1.0");
-    beacon_expiry = 1.0;
-  }
-  // max_hints already clamped to >= 1 via std::max above
+  // max_hints is checked as int64 before it narrows. An integer outside 1 to kMaxHints becomes the nearer
+  // bound. Any other value, a double included, is rejected and the default stays.
+  auto read_max_hints = [this, &config]() -> std::size_t {
+    const auto it = config.find("max_hints");
+    if (it == config.end()) {
+      return kDefaultMaxHints;
+    }
+    if (!it->is_number_integer()) {
+      std::ostringstream message;
+      message << std::setprecision(12) << "max_hints ";
+      if (it->is_number_float()) {
+        message << it->get<double>();
+      } else {
+        message << it->dump();
+      }
+      message << " is not an integer, using " << kDefaultMaxHints;
+      log_warn(message.str());
+      return kDefaultMaxHints;
+    }
+    // Only an unsigned JSON integer can exceed int64; it is above kMaxHints either way.
+    constexpr auto kInt64Max = std::numeric_limits<std::int64_t>::max();
+    const bool beyond_int64 =
+        it->is_number_unsigned() && it->get<std::uint64_t>() > static_cast<std::uint64_t>(kInt64Max);
+    const std::int64_t value = beyond_int64 ? kInt64Max : it->get<std::int64_t>();
+    const std::int64_t clamped = std::clamp<std::int64_t>(value, 1, kMaxHints);
+    if (clamped != value) {
+      log_warn("max_hints clamped from " + it->dump() + " to " + std::to_string(clamped));
+    }
+    return static_cast<std::size_t>(clamped);
+  };
+  const std::size_t max_hints = read_max_hints();
+
+  // A duration above kMaxSeconds, +inf included, becomes kMaxSeconds. NaN and a duration below the
+  // minimum become the minimum.
+  auto clamp_seconds = [this](const char * key, double value, double minimum) {
+    // In-range test negated so NaN fails it. Do not apply clang-tidy's De Morgan rewrite: it lets NaN through.
+    // NOLINTNEXTLINE(readability-simplify-boolean-expr)
+    if (!(std::isfinite(value) && value >= minimum && value <= kMaxSeconds)) {
+      const double clamped = value > kMaxSeconds ? kMaxSeconds : minimum;
+      std::ostringstream message;
+      message << std::setprecision(12) << key << " clamped from " << value << " to " << clamped;
+      log_warn(message.str());
+      return clamped;
+    }
+    return value;
+  };
+  poll_interval_ = std::chrono::duration<double>(clamp_seconds("poll_interval_sec", poll_interval_.count(), 0.1));
+  poll_budget_sec_ = clamp_seconds("poll_budget_sec", poll_budget_sec_, 0.1);
+  param_timeout_sec_ = clamp_seconds("param_timeout_sec", param_timeout_sec_, 0.1);
+  beacon_ttl = clamp_seconds("beacon_ttl_sec", beacon_ttl, 0.1);
+  beacon_expiry = clamp_seconds("beacon_expiry_sec", beacon_expiry, 1.0);
 
   // Config validation
   if (beacon_ttl <= poll_interval_.count()) {
@@ -110,6 +144,7 @@ void ParameterBeaconPlugin::configure(const nlohmann::json & config) {
 
 void ParameterBeaconPlugin::set_context(PluginContext & context) {
   ctx_ = as_ros_plugin_context(context);
+  gateway_fqn_ = ctx_->node()->get_fully_qualified_name();
 
   if (!store_) {
     store_ = std::make_unique<BeaconHintStore>();
@@ -121,12 +156,16 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
   param_node_ = std::make_shared<rclcpp::Node>("_param_beacon_node", options);
+  // Join rclcpp's graph listener now. wait_for_service() would join it on first use, and a join
+  // after rclcpp shuts down fails half-way, so ~NodeGraph later throws and terminates the process.
+  param_node_->get_node_graph_interface()->get_graph_event();
 
   // Set default client factory if not injected (tests inject mock factory)
   if (!client_factory_) {
     auto node = param_node_;
-    client_factory_ = [node](const std::string & target) {
-      return std::make_shared<ros2_medkit_param_beacon::RealParameterClient>(node, target);
+    const std::chrono::duration<double> timeout(param_timeout_sec_);
+    client_factory_ = [node, timeout](const std::string & target) {
+      return std::make_shared<ros2_medkit_param_beacon::RealParameterClient>(node, target, timeout);
     };
   }
 
@@ -158,14 +197,8 @@ void ParameterBeaconPlugin::shutdown() {
     backoff_counts_.clear();
     skip_remaining_.clear();
   }
-  // ~rclcpp::Node can throw graph_listener::NodeNotFoundError on Lyrical
-  // (and Rolling) when the context was already torn down by rclcpp::shutdown(). Swallow
-  // it so the plugin_manager shutdown sequence (and the plugin destructor
-  // that calls back into us) does not abort the process.
-  try {
-    param_node_.reset();
-  } catch (...) {
-  }
+  // With the default client factory, which holds a copy of the node, ~Node runs when client_factory_ is destroyed.
+  param_node_.reset();
 }
 
 std::vector<GatewayPlugin::PluginRoute> ParameterBeaconPlugin::get_routes() {
@@ -256,33 +289,34 @@ void ParameterBeaconPlugin::poll_cycle() {
     // "rcl node's context is invalid" if the poll timer fires between
     // SIGINT handling and the executor stopping; swallow it so the
     // shutdown path isn't aborted by std::terminate.
+    // The reader leaves out the leftovers of nodes it saw running (see GraphNodeListReader).
     std::vector<std::pair<std::string, std::string>> names_and_ns;
     try {
-      names_and_ns = param_node_->get_node_graph_interface()->get_node_names_and_namespaces();
+      names_and_ns = graph_node_reader_.read(*param_node_->get_node_graph_interface()).nodes;
     } catch (const std::runtime_error & ex) {
-      RCLCPP_DEBUG(param_node_->get_logger(), "get_node_names_and_namespaces threw during shutdown: %s", ex.what());
+      RCLCPP_DEBUG(param_node_->get_logger(), "Reading the node list threw during shutdown: %s", ex.what());
       return;
     }
     for (const auto & [name, ns] : names_and_ns) {
-      // Skip internal nodes (leading underscore) and the gateway
-      if (name.empty() || name[0] == '_' || name == "ros2_medkit_gateway") {
+      // Skip hidden nodes (leading underscore), the gateway and its helper nodes: they carry no beacon.
+      if (name.empty() || name[0] == '_') {
         continue;
       }
-      auto fqn = (ns == "/" ? "/" : ns + "/") + name;
-      targets.push_back(fqn);
+      auto fqn = ros2_medkit_gateway::ros2_common::graph_node_fqn(name, ns);
+      if (fqn == gateway_fqn_ || ros2_medkit_gateway::ros2_common::is_own_gateway_helper_node(fqn, gateway_fqn_)) {
+        continue;
+      }
+      targets.push_back(std::move(fqn));
     }
   }
 
+  evict_stale_clients(targets);
   if (targets.empty()) {
     return;
   }
 
-  // Evict stale clients
-  evict_stale_clients();
-
   auto cycle_start = std::chrono::steady_clock::now();
   auto n = targets.size();
-  size_t polled = 0;
 
   for (size_t i = 0; i < n; ++i) {
     // Budget check
@@ -302,7 +336,6 @@ void ParameterBeaconPlugin::poll_cycle() {
     }
 
     poll_node(fqn);
-    ++polled;
   }
 
   start_offset_ = (start_offset_ + 1) % n;
@@ -318,39 +351,30 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
     std::lock_guard<std::mutex> ops_lock(param_ops_mutex_);
 
     if (!client->wait_for_service(std::chrono::duration<double>(param_timeout_sec_))) {
-      // Timeout - apply backoff
-      auto & count = backoff_counts_[fqn];
-      if (count < 100) {
-        ++count;  // cap to prevent overflow
-      }
-      int skip = std::min(1 << std::min(count - 1, 3), 8);
-      skip_remaining_[fqn] = skip;
+      back_off(fqn);
+      return;
+    }
+    auto list_result = client->list_parameters({parameter_prefix_}, 0);
+    std::vector<rclcpp::Parameter> params;
+    if (!list_result.names.empty()) {
+      params = client->get_parameters(list_result.names);
+    }
+
+    // The node answered, so it is not backed off. An answer without values stores no hint.
+    backoff_counts_.erase(fqn);
+    skip_remaining_.erase(fqn);
+
+    auto hint = parse_parameters(fqn, params);
+    if (hint.entity_id.empty()) {
       return;
     }
 
-    // List parameters under prefix
-    auto list_result = client->list_parameters({parameter_prefix_}, 0);
-    if (list_result.names.empty()) {
-      return;  // No beacon parameters declared
-    }
-
-    // Fetch parameter values
-    auto params = client->get_parameters(list_result.names);
-
-    // Convert to BeaconHint
-    auto hint = parse_parameters(fqn, params);
-    if (hint.entity_id.empty()) {
-      return;  // No entity_id parameter - skip
-    }
-
-    // Validate
     auto result = validate_beacon_hint(hint, limits_);
     if (!result.valid) {
       log_warn("Beacon hint rejected for '" + hint.entity_id + "': " + result.reason);
       return;
     }
 
-    // Store
     if (!store_->update(hint)) {
       if (!capacity_warned_) {
         log_warn("BeaconHintStore capacity reached (max_hints=" + std::to_string(store_->size()) +
@@ -358,20 +382,18 @@ void ParameterBeaconPlugin::poll_node(const std::string & fqn) {
         capacity_warned_ = true;
       }
     }
-
-    // Reset backoff on success
-    backoff_counts_.erase(fqn);
-    skip_remaining_.erase(fqn);
-
-  } catch (const std::exception & e) {
-    // Node disappeared or service error - apply backoff
-    auto & count = backoff_counts_[fqn];
-    if (count < 100) {
-      ++count;  // cap to prevent overflow
-    }
-    int skip = std::min(1 << std::min(count - 1, 3), 8);
-    skip_remaining_[fqn] = skip;
+  } catch (const std::exception &) {
+    // No answer in time, or the node disappeared.
+    back_off(fqn);
   }
+}
+
+void ParameterBeaconPlugin::back_off(const std::string & fqn) {
+  auto & count = backoff_counts_[fqn];
+  if (count < 100) {
+    ++count;  // cap to prevent overflow
+  }
+  skip_remaining_[fqn] = std::min(1 << std::min(count - 1, 3), 8);
 }
 
 BeaconHint ParameterBeaconPlugin::parse_parameters(const std::string & /*fqn*/,
@@ -382,7 +404,7 @@ BeaconHint ParameterBeaconPlugin::parse_parameters(const std::string & /*fqn*/,
   std::string metadata_prefix = parameter_prefix_ + ".metadata.";
 
   for (const auto & param : params) {
-    auto param_name = param.get_name();
+    const auto & param_name = param.get_name();
 
     // Strip prefix to get the field name
     if (param_name.rfind(parameter_prefix_ + ".", 0) != 0) {
@@ -444,19 +466,12 @@ ParameterBeaconPlugin::get_or_create_client(const std::string & fqn) {
   return client;
 }
 
-void ParameterBeaconPlugin::evict_stale_clients() {
-  std::shared_lock<std::shared_mutex> nodes_lock(nodes_mutex_);
+void ParameterBeaconPlugin::evict_stale_clients(const std::vector<std::string> & targets) {
+  const std::unordered_set<std::string> current(targets.begin(), targets.end());
   std::lock_guard<std::mutex> clients_lock(clients_mutex_);
 
   for (auto it = clients_.begin(); it != clients_.end();) {
-    bool found = false;
-    for (const auto & target : poll_targets_) {
-      if (target == it->first) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
+    if (current.count(it->first) == 0) {
       backoff_counts_.erase(it->first);
       skip_remaining_.erase(it->first);
       it = clients_.erase(it);
