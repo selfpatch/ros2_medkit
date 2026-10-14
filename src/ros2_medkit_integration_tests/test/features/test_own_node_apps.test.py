@@ -16,12 +16,11 @@
 """What of the gateway's own process shows up in ``/apps``.
 
 The gateway runs four ROS nodes in one process: itself, the subscription
-executor's ``<gateway>_sub``, the fault-service transport's
-``<gateway>_fault_clients`` and the lifecycle reader's
-``<gateway>_lifecycle_state_reader``. None of the three helper names begins
-with ``_``, so the ROS 2 hidden-node convention leaves them in the graph and
-runtime discovery would turn each into an App - the gateway advertising its own
-plumbing as something an operator can diagnose.
+executor's ``_<gateway>_sub``, the fault-service transport's
+``_<gateway>_fault_clients`` and the lifecycle reader's
+``_<gateway>_lifecycle_state_reader``. Runtime discovery reads hidden nodes too,
+so without the filter each helper would become an App - the gateway advertising
+its own plumbing as something an operator can diagnose.
 
 The gateway's own node is the opposite case and stays an App: its ROS
 parameters are what SOVD serves as that App's configurations, so
@@ -31,10 +30,8 @@ graph also have to agree on what is on it, which they cannot do if each hides
 a different node.
 
 This fixture launches the gateway with no ``__node`` remap, the way ``ros2 run``
-and the container images start it. ``launch_ros``' ``name=`` applies
-``-r __node:=<name>`` to the whole process, which renames all four nodes to the
-same string - so under the suite's usual launch the helper names do not exist
-and nothing here could be observed.
+and the container images start it. ``test_gateway_helper_nodes.test.py`` covers
+the ``launch_ros`` ``name=`` launch.
 
 An absence assertion is only worth reading if the thing could have been there.
 The gateway's helper nodes are created at three different points of start-up,
@@ -72,9 +69,9 @@ BASE_URL = f'http://127.0.0.1:{GATEWAY_PORT}{API_BASE_PATH}'
 
 GATEWAY_NODE = 'ros2_medkit_gateway'
 HELPER_NODES = (
-    f'{GATEWAY_NODE}_sub',
-    f'{GATEWAY_NODE}_fault_clients',
-    f'{GATEWAY_NODE}_lifecycle_state_reader',
+    f'_{GATEWAY_NODE}_sub',
+    f'_{GATEWAY_NODE}_fault_clients',
+    f'_{GATEWAY_NODE}_lifecycle_state_reader',
 )
 WITNESS_NODE = 'own_node_apps_refresh_witness'
 

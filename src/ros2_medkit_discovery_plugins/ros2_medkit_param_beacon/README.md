@@ -14,13 +14,12 @@ through standard ROS 2 parameters.
 In `runtime_only` and `manifest_only` discovery the plugin reads its poll targets from the
 ROS 2 graph. In `hybrid` mode the merge pipeline passes it the discovered Apps, but the
 gateway's refresh then calls it again with no Apps, which clears them, so a poll cycle mostly
-reads the graph there too. A graph read skips hidden nodes (a name starting with `_`), the
-gateway's own node and its helper nodes (`<gateway>_sub`, `<gateway>_fault_clients`,
-`<gateway>_lifecycle_state_reader`): they carry no beacon. The plugin remembers what its own
-reads saw: a node that ran on one of its reads is not polled once the graph lists only a
-leftover of it, an entry with an empty enclave and no endpoints, which a node whose
-participant has left can leave behind (see "How long a departed node keeps being listed" in
-the gateway's `docs/config/server.rst`).
+reads the graph there too. A graph read skips hidden nodes (a name starting with `_`, the
+gateway's helper nodes among them) and the gateway's own node: they carry no beacon. The
+plugin remembers what its own reads saw: a node that ran on one of its reads is not polled
+once the graph lists only a leftover of it, an entry with an empty enclave and no endpoints,
+which a node whose participant has left can leave behind (see "How long a departed node keeps
+being listed" in the gateway's `docs/config/server.rst`).
 
 Each node keeps one parameter client across poll cycles. A node that is no longer a target,
 also when no node is, loses its client. A parameter request that gets no answer within

@@ -209,7 +209,7 @@ Server Capabilities
       authenticating reverse proxy or restrict the peer-name field to
       admin-gated callers at the ingress.
 
-   **Example Response.** A hybrid gateway with one declared app, six
+   **Example Response.** A hybrid gateway with one declared app, three
    undeclared ROS nodes and ``unmanifested_nodes: error``, captured from a
    running gateway. The three ``x-medkit-*`` statistics objects are omitted
    here for length; ``peers`` appears only when aggregation is enabled.
@@ -223,15 +223,12 @@ Server Capabilities
         "warnings": [
           {
             "code": "unmanifested_nodes",
-            "message": "6 running ROS node(s) are not declared in the manifest while unmanifested_nodes is set to 'error' (listed in ros_node_fqns). The gateway keeps serving. Declare them in the manifest, or relax the policy to 'warn' or 'ignore'.",
+            "message": "3 running ROS node(s) are not declared in the manifest while unmanifested_nodes is set to 'error' (listed in ros_node_fqns). The gateway keeps serving. Declare them in the manifest, or relax the policy to 'warn' or 'ignore'.",
             "entity_ids": [],
             "ros_node_fqns": [
               "/powertrain/engine/rpm_sensor",
               "/ros2_medkit_gateway",
-              "/_param_client_node",
-              "/_ros2_medkit_gateway_fault_clients",
-              "/_ros2_medkit_gateway_lifecycle_state_reader",
-              "/_ros2_medkit_gateway_sub"
+              "/_param_client_node"
             ],
             "peer_names": []
           }
@@ -250,7 +247,7 @@ Server Capabilities
           },
           "linking": {
             "linked_count": 1,
-            "orphan_count": 6,
+            "orphan_count": 3,
             "binding_conflicts": 0,
             "unmanifested_policy": "error"
           }

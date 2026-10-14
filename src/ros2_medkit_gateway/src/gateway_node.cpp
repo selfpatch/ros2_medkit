@@ -2609,10 +2609,10 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
         original_id = original_id.substr(prefix.size());
       }
     } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
-      // A local app bound to one of this gateway's own helper nodes. Those
-      // names do not start with '_' ("<gateway>_sub",
-      // "<gateway>_fault_clients", ...), so only the FQN test catches them, and
-      // without it the gateway advertises its own plumbing as diagnosable apps.
+      // A local app bound to one of this gateway's own helper nodes. The
+      // underscore rule below reads the app id, and the id of a declared app
+      // or a namespace-qualified runtime app need not start with '_', so only
+      // the FQN test catches every app on a helper node.
       // The gateway's own node is deliberately not covered: its ROS parameters
       // are served as that App's configurations, so callers reach them at
       // /apps/<gateway>/configurations. Remote entities are skipped too - a

@@ -81,14 +81,13 @@ Internal Node Filtering
 When ``filter_internal_nodes`` is true (the default), ROS 2 nodes whose names
 start with an underscore (``_``) are excluded from the entity tree. This
 filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
-``_param_client_node``, the gateway's own helper nodes
-(``_<gateway name>_fault_clients``, ``_<gateway name>_lifecycle_state_reader``,
-``_<gateway name>_sub``), and similar system nodes that should not appear as
+``_param_client_node``, and similar system nodes that should not appear as
 SOVD entities. The filter applies to both locally discovered Apps and
 peer-discovered Apps (after stripping the peer prefix).
 
 The same switch also excludes the helper nodes the gateway runs inside its own
-process. Three of them exist in every deployment, named after the gateway node:
+process. Three of them exist in every deployment, named after the gateway node
+and placed in its namespace:
 
 .. list-table::
    :header-rows: 1
@@ -96,18 +95,19 @@ process. Three of them exist in every deployment, named after the gateway node:
 
    * - Node
      - What it is
-   * - ``<gateway>_sub``
+   * - ``_<gateway>_sub``
      - The subscription executor that serves ``/data`` reads and cyclic
        subscriptions.
-   * - ``<gateway>_fault_clients``
+   * - ``_<gateway>_fault_clients``
      - The service clients that talk to the fault manager.
-   * - ``<gateway>_lifecycle_state_reader``
+   * - ``_<gateway>_lifecycle_state_reader``
      - The client that reads managed nodes' lifecycle state.
 
-None of these names begins with an underscore, so the convention above does not
-cover them, and without this rule the gateway would list its own plumbing as
-diagnosable Apps. They carry no parameters, services or actions of their own, so
-there is nothing on them to diagnose.
+Their names begin with an underscore, so the convention above already keeps
+them out of runtime discovery. The gateway also recognises them by fully
+qualified name, so an App bound to one of them is left out whatever its id.
+They carry no parameters, services or actions of their own, so there is nothing
+on them to diagnose.
 
 While this setting is ``true`` they are also left out of the linking report on
 ``GET /health`` - ``discovery.linking.orphan_count``, and the
@@ -124,38 +124,21 @@ there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
 agree about what is on it, which they cannot do if each hides a different node.
 
-Namespaces: the subscription node is created with the gateway's own namespace,
-while the other two are created from the gateway's node name alone and take the
-process default namespace. A process-wide remap (``-r __ns:=/line_a``) moves all
-four together; a remap naming the gateway alone
-(``-r ros2_medkit_gateway:__ns:=/line_a``) moves the gateway and the
-subscription node and leaves the other two in the default namespace. Both
-spellings are recognised, so the rule holds either way.
-
-.. note::
-
-   A node named ``<gateway>_fault_clients`` or
-   ``<gateway>_lifecycle_state_reader`` in the **root** namespace is treated as
-   plumbing whichever gateway created it. Two gateways that keep the default
-   node name and differ only in namespace produce the same fully qualified name
-   for those two nodes, so the name cannot say whose they are, and each gateway
-   will filter the other's. They carry nothing to diagnose in either process,
-   and the alternative is that a namespaced gateway lists and counts its own
-   plumbing. The subscription node is not affected: it always follows its
-   gateway's namespace. Give each gateway its own node name when several run on one
-   ROS graph and you want each one's nodes distinguishable. Use the remap that
-   names the gateway node (``-r ros2_medkit_gateway:__node:=gateway_a``): the
-   helper nodes then take ``gateway_a`` as the base of their own names. A
-   process-wide ``-r __node:=gateway_a`` renames the helper nodes too, so all
-   four are named ``gateway_a``.
+Names and namespaces: each helper node is created in the gateway's namespace,
+and a node-local remap fixes its name. A process-wide namespace remap
+(``-r __ns:=/line_a``) and a remap naming the gateway alone
+(``-r ros2_medkit_gateway:__ns:=/line_a``) both move all four nodes together. A
+process-wide name remap (``-r __node:=gateway_a``, which launch_ros
+``Node(name=...)`` passes) renames the gateway node only, and the helper nodes
+take the new name as the base of their own (``_gateway_a_sub`` and so on).
 
 A manifest- or plugin-declared App bound to one of these nodes is not served,
 and the gateway logs a warning naming it: bind the App to the node you meant,
 or drop the declaration.
 
 Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
-convention. That re-exposes the three helper nodes as well as the underscore
-ones, and in ``hybrid`` mode the linking report follows: a helper node the
+convention. That re-exposes the underscore nodes, the three helper nodes among
+them, and in ``hybrid`` mode the linking report follows: a helper node the
 gateway serves as an App is also an undeclared one, so it is counted in
 ``discovery.linking.orphan_count`` and, under ``unmanifested_nodes: error``,
 named in the ``ros_node_fqns`` of the ``unmanifested_nodes`` warning. With
@@ -702,8 +685,8 @@ ROS graph. In ``hybrid`` mode the merge pipeline passes it the discovered Apps, 
 gateway's refresh then calls it again with no Apps, which clears them. So a poll cycle mostly
 reads the graph there too; only a cycle that starts between the two calls polls the nodes of
 the online Apps that discovery bound to a node. A graph read skips hidden nodes (a name
-starting with ``_``), the gateway's own node and its helper nodes (``<gateway>_sub``,
-``<gateway>_fault_clients`` and ``<gateway>_lifecycle_state_reader``): they carry no beacon.
+starting with ``_``, the gateway's helper nodes among them) and the gateway's own node: they
+carry no beacon.
 
 A parameter request that gets no answer within ``param_timeout_sec`` - waiting for the
 service, listing parameters or getting their values - is given up and removed from its

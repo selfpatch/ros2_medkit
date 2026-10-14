@@ -513,8 +513,9 @@ using ros2_common::is_own_gateway_helper_node;
  * prefix detection.
  *
  * Also removes local apps bound to one of the gateway's in-process helper nodes
- * (is_own_gateway_helper_node), which the underscore rule cannot see. The
- * gateway's own node is NOT removed - it is a diagnosable App whose ROS
+ * (is_own_gateway_helper_node). The underscore rule reads the app id, and the id
+ * of a declared app or a namespace-qualified runtime app need not start with '_'.
+ * The gateway's own node is NOT removed - it is a diagnosable App whose ROS
  * parameters are served as its configurations. The test is on the bound node
  * FQN, and only for apps with no routing-table entry: a peer's helper nodes are
  * the peer's business and are left to the peer's own filter.
