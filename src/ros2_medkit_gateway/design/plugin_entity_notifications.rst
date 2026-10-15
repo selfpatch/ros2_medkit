@@ -174,9 +174,6 @@ Compatibility
 * A v7 gateway loading a recompiled v6 plugin is fully functional;
   the new lifecycle hooks are off by default until the plugin opts
   in by calling ``notify_entities_changed``.
-* The current version is v8. It accounts for layout changes of the
-  entity models that cross the plugin boundary. ``notify_entities_changed``
-  is unchanged, and the strict-equality rule above still applies.
 
 Related APIs
 ------------

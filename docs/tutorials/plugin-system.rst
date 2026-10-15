@@ -1020,15 +1020,11 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **8**. It is incremented when the ``PluginContext`` vtable changes
+The current API version is **7**. It is incremented when the ``PluginContext`` vtable changes
 or breaking changes are made to ``GatewayPlugin`` or provider interfaces. A change to the layout
 of a type that crosses the plugin boundary, such as the entity models in ``IntrospectionInput`` /
 ``NewEntities``, bumps the version too. A plugin built against the old layout would read those
 types wrongly, so it must be rebuilt even when its source compiles unchanged.
-
-Version 8 is such a bump. It covers the entity model fields added while the version stayed 7:
-the asset identity on Component, the external classification on App and Component, and
-``declared_source`` and ``available`` on the entity models.
 
 Build Requirements
 ------------------

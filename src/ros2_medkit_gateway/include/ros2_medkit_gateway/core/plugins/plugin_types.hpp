@@ -40,17 +40,11 @@ namespace ros2_medkit_gateway {
 ///       so a pre-compiled v6 `.so` is rejected. Out-of-tree plugins must be
 ///       recompiled against v7 headers; in-tree plugins that `return
 ///       PLUGIN_API_VERSION` pick up the bump automatically.
-/// - v8: the entity models that cross the plugin boundary in
-///       IntrospectionInput and NewEntities changed layout while the version
-///       stayed 7: the asset identity on Component, the external
-///       classification on App and Component, and declared_source and
-///       available on the entity models. A v7 `.so` may read them with the
-///       old layout, so it is rejected. Source-compatible.
 ///
 /// The version is bumped when the PluginContext vtable changes, when a
 /// GatewayPlugin or provider interface changes incompatibly, and when a type
 /// that crosses the plugin boundary changes layout.
-constexpr int PLUGIN_API_VERSION = 8;
+constexpr int PLUGIN_API_VERSION = 7;
 
 /// Log severity levels for plugin logging callback
 enum class PluginLogLevel { kInfo, kWarn, kError };
