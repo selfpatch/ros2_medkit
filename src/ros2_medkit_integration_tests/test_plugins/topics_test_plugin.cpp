@@ -39,6 +39,11 @@ using namespace ros2_medkit_gateway;
 
 class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
  public:
+  TopicsTestPlugin() = default;
+  TopicsTestPlugin(const TopicsTestPlugin &) = delete;
+  TopicsTestPlugin & operator=(const TopicsTestPlugin &) = delete;
+  TopicsTestPlugin(TopicsTestPlugin &&) = delete;
+  TopicsTestPlugin & operator=(TopicsTestPlugin &&) = delete;
   ~TopicsTestPlugin() override {
     stop();
   }
