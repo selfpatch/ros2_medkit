@@ -25,7 +25,8 @@ namespaces, so runtime discovery gives the namespaced ones ids such as
 Each gateway must serve the three gateway nodes and none of the nine helper
 nodes, and all three must list the same apps. A visible node in a namespace
 that starts with ``_`` is served even when a name collision gives it an id
-that starts with ``_``.
+that starts with ``_``. Function ``subsystem_a`` hosts only the served apps in
+that namespace.
 """
 
 import time
@@ -72,6 +73,7 @@ WITNESS_NODE = 'same_name_gateways_witness'
 # The witness name also runs here, so its id is qualified to start with '_'.
 OPS_NAMESPACE = '/_ops'
 OPS_WITNESS_APP_ID = f'_ops_{WITNESS_NODE}'
+FUNCTION_ID = 'subsystem_a'
 # Hidden, so it is no app of any gateway.
 PROBE_NODE = '_same_name_gateways_probe'
 
@@ -120,6 +122,7 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         cls.graph_fqns = set()
         cls.apps = {}
         cls.witness_seen = {}
+        cls.functions = {}
 
         for _, port in GATEWAYS:
             cls._wait_for_health(port)
@@ -137,6 +140,8 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         for ns, port in GATEWAYS:
             cls.witness_seen[ns], cls.apps[ns] = cls._apps_until_contains(
                 port, WITNESS_NODE, REFRESH_WITNESS_BUDGET)
+            cls.functions[ns] = cls.session.get(
+                f'{_base_url(port)}/functions/{FUNCTION_ID}', timeout=10)
 
     @classmethod
     def tearDownClass(cls):
@@ -217,6 +222,27 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
                     served, expected,
                     f'gateway {ns} (port {port}) serves {sorted(served - expected)} '
                     f'beyond the expected apps and misses {sorted(expected - served)}')
+
+    def test_a_function_hosts_only_served_apps(self):
+        """Function subsystem_a hosts exactly the served apps in its namespace."""
+        for ns, port in GATEWAYS:
+            with self.subTest(gateway=ns):
+                response = self.functions[ns]
+                self.assertEqual(
+                    response.status_code, 200,
+                    f'gateway {ns} (port {port}): GET /functions/{FUNCTION_ID} '
+                    f'returned {response.status_code}: {response.text}')
+                hosts = set(response.json().get('x-medkit', {}).get('hosts', []))
+                in_namespace = {
+                    app_id for app_id, item in self.apps[ns].items()
+                    if item.get('x-medkit', {}).get('ros2', {}).get('node', '').startswith(
+                        f'/{FUNCTION_ID}/')
+                }
+                self.assertEqual(
+                    hosts, in_namespace,
+                    f'gateway {ns} (port {port}): function {FUNCTION_ID} hosts '
+                    f'{sorted(hosts - in_namespace)} that are not served apps in its '
+                    f'namespace and misses {sorted(in_namespace - hosts)}')
 
     def test_the_gateways_agree(self):
         """All three gateways list the same apps."""

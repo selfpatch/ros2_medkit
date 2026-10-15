@@ -178,7 +178,9 @@ Function Entities from Namespaces
 When ``create_functions_from_namespaces`` is true (the default), each ROS 2
 namespace becomes a Function entity that groups the Apps in that namespace.
 This is the SOVD-correct mapping where Functions represent logical capabilities
-(what the software does) rather than deployment topology.
+(what the software does) rather than deployment topology. An App that
+``filter_internal_nodes`` leaves out is no Function's host, and a Function whose
+hosts were all left out is not served.
 
 Merge Pipeline (Hybrid Mode)
 -----------------------------

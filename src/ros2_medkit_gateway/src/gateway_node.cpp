@@ -2142,6 +2142,26 @@ struct InRefreshPassGuard {
   InRefreshPassGuard(InRefreshPassGuard &&) = delete;
   InRefreshPassGuard & operator=(InRefreshPassGuard &&) = delete;
 };
+
+// Removes the ids in `filtered` from every Function's hosts and drops a
+// Function this leaves without hosts. A Function declared without hosts stays.
+void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered) {
+  std::vector<Function> kept;
+  kept.reserve(functions.size());
+  for (auto & func : functions) {
+    const bool had_hosts = !func.hosts.empty();
+    func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                    [&filtered](const std::string & host) {
+                                      return filtered.count(host) > 0;
+                                    }),
+                     func.hosts.end());
+    if (had_hosts && func.hosts.empty()) {
+      continue;
+    }
+    kept.push_back(std::move(func));
+  }
+  functions = std::move(kept);
+}
 }  // namespace
 
 void GatewayNode::handle_entity_change_notification(const EntityChangeScope & scope) {
@@ -2463,16 +2483,36 @@ void GatewayNode::refresh_cache() {
     }
 
     // Filter ROS 2 internal nodes (underscore prefix convention) and this
-    // gateway's own helper nodes.
+    // gateway's own helper nodes, also out of Function hosts.
     // Controlled by discovery.runtime.filter_internal_nodes parameter (default: true).
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter
     // in runtime_only mode) and any peer apps that slipped through fetch_entities.
     if (filter_internal_nodes_) {
+      std::unordered_set<std::string> ids_before;
+      for (const auto & app : apps) {
+        ids_before.insert(app.id);
+      }
       std::vector<std::string> dropped_declared_apps;
       auto removed =
           filter_internal_node_apps(apps, peer_routing_table, get_fully_qualified_name(), &dropped_declared_apps);
       if (removed > 0) {
         RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix or own helper node)", removed);
+        // Functions were grouped from the unfiltered apps. A host can also be
+        // a Component, so an id that still names a served entity stays.
+        std::unordered_set<std::string> served_ids;
+        for (const auto & app : apps) {
+          served_ids.insert(app.id);
+        }
+        for (const auto & comp : all_components) {
+          served_ids.insert(comp.id);
+        }
+        std::unordered_set<std::string> filtered_ids;
+        for (const auto & id : ids_before) {
+          if (served_ids.count(id) == 0) {
+            filtered_ids.insert(id);
+          }
+        }
+        drop_filtered_function_hosts(functions, filtered_ids);
       }
       // Warn on the set, not on the refresh. The condition is a static
       // misconfiguration - an app declared against a helper node stays declared
