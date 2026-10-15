@@ -126,9 +126,6 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
       }
 
       append_contributor_unique(merged.contributors, peer_source());
-      // A peer contributes to it, so runtime introspection is no longer its
-      // only origin.
-      merged.introspection_only = false;
 
       // Merged functions do NOT go into routing table
     } else {

@@ -237,7 +237,6 @@ std::vector<Function> Ros2RuntimeIntrospection::discover_functions(const std::ve
     func.id = ns_name;
     func.name = ns_name;
     func.source = discovery::kRuntimeFunctionSource;
-    func.introspection_only = true;
     func.hosts = app_ids;
 
     RCLCPP_DEBUG(node_->get_logger(), "Created runtime function '%s' with %zu host apps", ns_name.c_str(),

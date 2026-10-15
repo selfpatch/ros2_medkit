@@ -13,18 +13,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A plugin Function that runtime discovery also derives stays without hosts.
+"""In hybrid mode a Function hosts only Apps and Components the gateway serves.
 
-One gateway in hybrid mode with ``allow_heuristic_functions`` true, so runtime
-discovery derives a Function per namespace. Namespace ``plugin_ns`` holds one
-hidden node only. The in-tree test plugin declares a Function ``plugin_ns``
-that hosts that node's App. The runtime layer contributes the same id first, so
-the merged Function reads source ``runtime``, and the plugin's hosts win the
-hierarchy merge. Its only host is hidden. A plugin contributes it, so it stays,
-with no hosts.
+Two gateways in hybrid mode with ``allow_heuristic_functions`` true, so runtime
+discovery derives a Function per namespace from every node it sees. Both run in
+a namespace of their own, so the root namespace holds only a hidden node.
 
-Namespace ``hidden_only_ns`` holds one hidden node and nothing else declares
-it, so it has no Function. Namespace ``visible_ns`` is the positive control.
+Gateway A, ``unmanifested_nodes: warn`` with ``/blocked_ns`` blacklisted, and
+the in-tree test plugin:
+
+- ``plugin_ns``: one hidden node. The plugin declares a Function with that id
+  hosting the node's App. The runtime layer contributes the id first, so the
+  merged Function reads source ``runtime``. A plugin contributes it, so it
+  stays, with no hosts.
+- ``copied_ns``: one hidden node. The plugin returns an unchanged copy of the
+  runtime layer's Function. That copy is a plugin contribution, so it stays.
+- ``hidden_only_ns``, ``linked_ns`` (its node is bound to a manifest App, served
+  under the manifest id), ``blocked_ns`` (blacklisted) and ``root``: no host is
+  served and only runtime discovery derived the Function, so none is served.
+- ``declared_fn``: a manifest Function whose only host names no entity. It
+  stays, with no hosts.
+- ``visible_ns``: the positive control.
+
+Gateway B, ``unmanifested_nodes: ignore``: ``ignored_ns`` holds one undeclared
+node, which B does not serve, so B serves no Function ``ignored_ns``.
+
+Gateway C runs ``runtime_only`` with the same test plugin, which the gateway
+injects next to runtime discovery's Functions instead of merging them. The
+plugin's ``plugin_ns`` keeps that Function served there too.
 """
 
 import os
@@ -50,19 +66,51 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
-PORT = get_test_port(0)
-BASE_URL = f'http://127.0.0.1:{PORT}{API_BASE_PATH}'
+GATEWAY_A_URL = f'http://127.0.0.1:{get_test_port(0)}{API_BASE_PATH}'
+GATEWAY_B_URL = f'http://127.0.0.1:{get_test_port(1)}{API_BASE_PATH}'
+GATEWAY_C_URL = f'http://127.0.0.1:{get_test_port(2)}{API_BASE_PATH}'
 
 PLUGIN_FUNCTION_ID = 'plugin_ns'
 PLUGIN_FUNCTION_HOST = '_plugin_ns_internal'
+COPIED_FUNCTION_ID = 'copied_ns'
+LINKED_APP_ID = 'linked_app'
+WITNESS = 'hybrid_function_hosts_witness'
+WITNESS_APP_ID = 'witness_app'
 # (namespace, node name). A name that starts with '_' is hidden.
 NODES = (
+    ('/', '_root_internal'),
     ('/plugin_ns', PLUGIN_FUNCTION_HOST),
+    ('/copied_ns', '_copied_internal'),
     ('/hidden_only_ns', '_hidden_only_internal'),
     ('/visible_ns', 'visible_ns_node'),
+    ('/linked_ns', 'linked_node'),
+    ('/blocked_ns', 'blocked_node'),
+    ('/ignored_ns', 'ignored_node'),
 )
-# Created last, so a snapshot that lists it post-dates the nodes above.
-WITNESS = 'hybrid_function_hosts_witness'
+
+# Function id -> its hosts on gateway A, written out. None: not served.
+EXPECTED_A = {
+    PLUGIN_FUNCTION_ID: set(),
+    COPIED_FUNCTION_ID: set(),
+    'declared_fn': set(),
+    'visible_ns': {'visible_ns_node'},
+    'hidden_only_ns': None,
+    'linked_ns': None,
+    'blocked_ns': None,
+    'root': None,
+}
+EXPECTED_B = {
+    'ignored_ns': None,
+}
+EXPECTED_C = {
+    PLUGIN_FUNCTION_ID: set(),
+}
+# Gateway URL -> (App whose online state dates the snapshot, expected Functions)
+GATEWAYS = (
+    (GATEWAY_A_URL, WITNESS_APP_ID, EXPECTED_A),
+    (GATEWAY_B_URL, WITNESS_APP_ID, EXPECTED_B),
+    (GATEWAY_C_URL, WITNESS, EXPECTED_C),
+)
 
 HEALTH_BUDGET = 30.0
 SNAPSHOT_BUDGET = 30.0
@@ -77,38 +125,77 @@ def _plugin_path():
     )
 
 
-def _manifest_yaml():
-    """Declare nothing a namespace Function could merge with."""
-    return """\
+def _manifest_yaml(policy):
+    """Declare the witness, one linked App and a Function hosting nothing."""
+    return f"""\
 manifest_version: "1.0"
 metadata:
-  name: "Hybrid plugin Function hosts"
+  name: "Hybrid Function hosts"
   version: "1.0.0"
 config:
-  unmanifested_nodes: "warn"
+  unmanifested_nodes: "{policy}"
 areas:
   - id: hybrid-fn-area
     name: "Hybrid Function Area"
+apps:
+  - id: {WITNESS_APP_ID}
+    name: "Witness"
+    ros_binding:
+      node_name: {WITNESS}
+      namespace: /witness_ns
+  - id: {LINKED_APP_ID}
+    name: "Linked"
+    ros_binding:
+      node_name: linked_node
+      namespace: /linked_ns
+functions:
+  - id: declared_fn
+    name: "Declared Function"
+    hosted_by:
+      - no_such_app
 """
+
+
+def _write_manifest(policy):
+    fd, path = tempfile.mkstemp(suffix='.yaml', prefix=f'test_hybrid_function_hosts_{policy}_')
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(_manifest_yaml(policy))
+    _MANIFEST_PATHS.append(path)
+    return path
 
 
 @pytest.mark.launch_test
 def generate_test_description():
-    """Launch one hybrid gateway with the test plugin declaring a Function."""
-    fd, manifest_path = tempfile.mkstemp(suffix='.yaml', prefix='test_hybrid_plugin_function_')
-    with os.fdopen(fd, 'w') as handle:
-        handle.write(_manifest_yaml())
-    _MANIFEST_PATHS.append(manifest_path)
-
-    gateway = create_gateway_node(
-        port=PORT,
+    """Launch two hybrid gateways, A with the test plugin, B under ignore."""
+    common = {
+        'server.host': '127.0.0.1',
+        'refresh_interval_ms': 1000,
+        'discovery.mode': 'hybrid',
+        'discovery.manifest_strict_validation': False,
+        'discovery.merge_pipeline.gap_fill.allow_heuristic_functions': True,
+    }
+    gateway_a = create_gateway_node(
+        port=get_test_port(0), name='hybrid_gateway_a', namespace='/hybrid_a',
+        extra_params={
+            **common,
+            'discovery.manifest_path': _write_manifest('warn'),
+            'discovery.merge_pipeline.gap_fill.namespace_blacklist': ['/blocked_ns'],
+            'plugins': ['topics_test'],
+            'plugins.topics_test.path': _plugin_path(),
+            'plugins.topics_test.function_id': PLUGIN_FUNCTION_ID,
+            'plugins.topics_test.function_host': PLUGIN_FUNCTION_HOST,
+            'plugins.topics_test.copy_function_id': COPIED_FUNCTION_ID,
+        },
+    )
+    gateway_b = create_gateway_node(
+        port=get_test_port(1), name='hybrid_gateway_b', namespace='/hybrid_b',
+        extra_params={**common, 'discovery.manifest_path': _write_manifest('ignore')},
+    )
+    gateway_c = create_gateway_node(
+        port=get_test_port(2), name='runtime_gateway_c', namespace='/runtime_c',
         extra_params={
             'server.host': '127.0.0.1',
             'refresh_interval_ms': 1000,
-            'discovery.mode': 'hybrid',
-            'discovery.manifest_path': manifest_path,
-            'discovery.manifest_strict_validation': False,
-            'discovery.merge_pipeline.gap_fill.allow_heuristic_functions': True,
             'plugins': ['topics_test'],
             'plugins.topics_test.path': _plugin_path(),
             'plugins.topics_test.function_id': PLUGIN_FUNCTION_ID,
@@ -116,34 +203,39 @@ def generate_test_description():
         },
     )
     return launch.LaunchDescription([
-        gateway,
+        gateway_a,
+        gateway_b,
+        gateway_c,
         launch_testing.actions.ReadyToTest(),
-    ]), {'gateway_node': gateway}
+    ]), {'gateway_node': gateway_a}
 
 
-def _get(path):
-    return requests.get(f'{BASE_URL}{path}', timeout=10)
+def _get(url):
+    return requests.get(url, timeout=10)
 
 
-class TestHybridPluginFunctionHosts(unittest.TestCase):
+class TestHybridFunctionHosts(unittest.TestCase):
     """Only a Function runtime discovery alone created is removed."""
 
     @classmethod
     def setUpClass(cls):
-        """Start the nodes, then wait for a snapshot that lists the witness."""
+        """Start the nodes, then wait until each gateway linked the witness."""
         cls.context = Context()
         rclpy.init(context=cls.context)
         cls.nodes = []
-        cls._wait_for_health()
+        for url, _, _ in GATEWAYS:
+            cls._wait_for_health(url)
         for namespace, name in NODES:
             cls.nodes.append(Node(name, namespace=namespace, context=cls.context))
-        cls.nodes.append(Node(WITNESS, context=cls.context))
-        cls.apps = cls._apps_until(WITNESS)
-        cls.responses = {
-            path: _get(path)
-            for function_id in (PLUGIN_FUNCTION_ID, 'hidden_only_ns', 'visible_ns')
-            for path in (f'/functions/{function_id}', f'/functions/{function_id}/hosts')
-        }
+        # Created last on the same context, so a snapshot in which the witness
+        # App is online post-dates the nodes above.
+        cls.nodes.append(Node(WITNESS, namespace='/witness_ns', context=cls.context))
+        cls.apps = {url: cls._apps_once_online(url, witness) for url, witness, _ in GATEWAYS}
+        cls.responses = {}
+        for url, _, expected in GATEWAYS:
+            for function_id in expected:
+                for path in (f'/functions/{function_id}', f'/functions/{function_id}/hosts'):
+                    cls.responses[(url, path)] = _get(f'{url}{path}')
 
     @classmethod
     def tearDownClass(cls):
@@ -152,37 +244,45 @@ class TestHybridPluginFunctionHosts(unittest.TestCase):
         rclpy.shutdown(context=cls.context)
 
     @classmethod
-    def _wait_for_health(cls):
+    def _wait_for_health(cls, url):
         deadline = time.monotonic() + HEALTH_BUDGET * get_time_scale()
         last = None
         while time.monotonic() < deadline:
             try:
-                response = _get('/health')
+                response = _get(f'{url}/health')
                 if response.status_code == 200:
                     return
                 last = response.status_code
             except requests.RequestException as exc:
                 last = str(exc)
             time.sleep(0.5)
-        raise AssertionError(f'gateway not ready within {HEALTH_BUDGET}s (last: {last})')
+        raise AssertionError(f'{url} not ready within {HEALTH_BUDGET}s (last: {last})')
 
     @classmethod
-    def _apps_until(cls, app_id):
+    def _apps_once_online(cls, url, app_id):
+        """Poll /apps until *app_id* is listed and bound to its node."""
         deadline = time.monotonic() + SNAPSHOT_BUDGET * get_time_scale()
-        apps = set()
+        items = {}
         while time.monotonic() < deadline:
             try:
-                apps = {item['id'] for item in _get('/apps').json().get('items', [])}
-                if app_id in apps:
-                    return apps
+                items = {item['id']: item for item in _get(f'{url}/apps').json().get('items', [])}
+                if items.get(app_id, {}).get('x-medkit', {}).get('is_online'):
+                    return items
             except requests.RequestException:
                 pass
             time.sleep(0.5)
-        raise AssertionError(f'gateway never listed {app_id}. Listed: {sorted(apps)}')
+        raise AssertionError(f'{url} never listed {app_id} online. Listed: {sorted(items)}')
 
-    def _assert_hosts(self, function_id, expected):
-        detail = self.responses[f'/functions/{function_id}']
-        hosts = self.responses[f'/functions/{function_id}/hosts']
+    def _assert_function(self, url, function_id, expected):
+        detail = self.responses[(url, f'/functions/{function_id}')]
+        hosts = self.responses[(url, f'/functions/{function_id}/hosts')]
+        if expected is None:
+            for response in (detail, hosts):
+                self.assertEqual(response.status_code, 404, response.text)
+                body = response.json()
+                self.assertEqual(body.get('error_code'), 'entity-not-found', body)
+                self.assertIn(function_id, body.get('parameters', {}).values(), body)
+            return None
         self.assertEqual(detail.status_code, 200, detail.text)
         x_medkit = detail.json().get('x-medkit', {})
         self.assertEqual(set(x_medkit.get('hosts', [])), expected, x_medkit)
@@ -191,26 +291,28 @@ class TestHybridPluginFunctionHosts(unittest.TestCase):
                          hosts.text)
         return x_medkit
 
-    def test_a_plugin_function_that_loses_every_host_stays(self):
-        """The runtime layer contributed first, the plugin keeps it served."""
-        x_medkit = self._assert_hosts(PLUGIN_FUNCTION_ID, set())
-        # Precondition: the runtime layer derived the same id, first.
-        self.assertEqual(x_medkit.get('source'), 'runtime', x_medkit)
+    def test_every_function_hosts_only_served_entities(self):
+        """Each Function has exactly the expected hosts, or is not served."""
+        for url, _, expected in GATEWAYS:
+            for function_id, hosts in expected.items():
+                with self.subTest(gateway=url, function=function_id):
+                    self._assert_function(url, function_id, hosts)
 
-    def test_a_runtime_function_with_no_served_host_is_not_served(self):
-        """Nothing but runtime discovery derived hidden_only_ns."""
-        for path in ('/functions/hidden_only_ns', '/functions/hidden_only_ns/hosts'):
-            with self.subTest(path=path):
-                response = self.responses[path]
-                self.assertEqual(response.status_code, 404, response.text)
-                body = response.json()
-                self.assertEqual(body.get('error_code'), 'entity-not-found', body)
-                self.assertIn('hidden_only_ns', body.get('parameters', {}).values(), body)
+    def test_the_runtime_layer_contributed_the_plugin_function_first(self):
+        """Precondition: plugin_ns reads source runtime, so source cannot decide."""
+        detail = self.responses[(GATEWAY_A_URL, f'/functions/{PLUGIN_FUNCTION_ID}')]
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json().get('x-medkit', {}).get('source'), 'runtime', detail.text)
 
-    def test_a_runtime_function_keeps_its_served_hosts(self):
-        """Positive control: runtime discovery derives Functions here."""
-        self._assert_hosts('visible_ns', {'visible_ns_node'})
-        self.assertNotIn(PLUGIN_FUNCTION_HOST, self.apps)
+    def test_the_unserved_hosts_name_nodes_the_gateway_sees(self):
+        """Precondition: each removed host names a node the gateway does not serve."""
+        apps_a = self.apps[GATEWAY_A_URL]
+        self.assertIn(LINKED_APP_ID, apps_a)
+        self.assertTrue(apps_a[LINKED_APP_ID].get('x-medkit', {}).get('is_online'), apps_a)
+        for app_id in ('linked_node', 'blocked_node', PLUGIN_FUNCTION_HOST, '_root_internal'):
+            self.assertNotIn(app_id, apps_a)
+        self.assertIn('visible_ns_node', apps_a)
+        self.assertNotIn('ignored_node', self.apps[GATEWAY_B_URL])
 
 
 @launch_testing.post_shutdown_test()
@@ -224,7 +326,7 @@ class TestShutdown(unittest.TestCase):
                 f'{info.process_name} exited with code {info.returncode}')
 
     def test_manifests_are_cleaned_up(self):
-        """The temp manifest this module wrote does not outlive the run."""
+        """The temp manifests this module wrote do not outlive the run."""
         while _MANIFEST_PATHS:
             try:
                 os.unlink(_MANIFEST_PATHS.pop())

@@ -17,8 +17,8 @@
 
 Two gateways in separate DDS domains. The peer runs with
 ``filter_internal_nodes`` false, so it serves its hidden nodes and lists them
-as Function hosts. The aggregator runs the default and drops a peer's hidden
-Apps.
+as Function hosts. The aggregator does not aggregate a peer App whose id starts
+with ``_``, whatever its own ``filter_internal_nodes`` setting.
 
 Namespace ``line_a``: the peer runs a visible and a hidden node, the
 aggregator one hidden node. Function ``line_a`` is merged from both, so the
@@ -28,6 +28,11 @@ peer's visible App.
 Namespace ``cell_b``: each side runs one hidden node only. The merged Function
 has no host the aggregator serves. A peer contributes it, so it stays, with no
 hosts.
+
+Namespace ``peer_only_ns``: only the peer has it, so the aggregator forwards
+``GET /functions/peer_only_ns`` and the answer is the peer's view, hidden host
+included. ``GET /functions/peer_only_ns/hosts`` is answered by the aggregator
+and lists only the App it serves.
 """
 
 import time
@@ -65,6 +70,8 @@ PEER_NODES = (
     ('/line_a', 'line_a_sensor'),
     ('/line_a', '_line_a_peer_internal'),
     ('/cell_b', '_cell_b_peer_internal'),
+    ('/peer_only_ns', 'peer_only_sensor'),
+    ('/peer_only_ns', '_peer_only_internal'),
 )
 AGGREGATOR_NODES = (
     ('/line_a', '_line_a_local_internal'),
@@ -154,7 +161,7 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
                 _get(f'{AGGREGATOR_URL}/functions/{function_id}'),
                 _get(f'{AGGREGATOR_URL}/functions/{function_id}/hosts'),
             )
-            for function_id in EXPECTED_HOSTS
+            for function_id in (*EXPECTED_HOSTS, 'peer_only_ns')
         }
 
     @classmethod
@@ -226,6 +233,21 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
                 self.assertEqual(
                     {item['id'] for item in hosts.json().get('items', [])}, expected,
                     hosts.text)
+
+    def test_a_forwarded_function_answers_with_the_peer_view(self):
+        """Detail is forwarded to the peer, /hosts is answered here."""
+        detail, hosts = self.functions['peer_only_ns']
+        self.assertEqual(detail.status_code, 200, detail.text)
+        x_medkit = detail.json().get('x-medkit', {})
+        # The peer's own view: its filter is off, so its hidden App is a host,
+        # and no aggregation provenance is attached.
+        self.assertEqual(
+            set(x_medkit.get('hosts', [])), {'peer_only_sensor', '_peer_only_internal'}, x_medkit)
+        self.assertNotIn('contributors', x_medkit)
+        self.assertEqual(hosts.status_code, 200, hosts.text)
+        self.assertEqual(
+            {item['id'] for item in hosts.json().get('items', [])}, {'peer_only_sensor'},
+            hosts.text)
 
 
 @launch_testing.post_shutdown_test()

@@ -2292,6 +2292,9 @@ void GatewayNode::refresh_cache() {
     auto areas = discovery_mgr_->discover_areas();
     auto apps = discovery_mgr_->discover_apps();
     auto functions = discovery_mgr_->discover_functions(apps);
+    // Functions only runtime introspection created. A peer or a plugin that
+    // contributes the same id below removes it.
+    auto introspection_only_ids = discovery_mgr_->introspection_only_function_ids(functions);
 
     // In RUNTIME_ONLY mode: HostInfoProvider component or empty.
     // In HYBRID/MANIFEST_ONLY: pipeline-merged or manifest components.
@@ -2327,6 +2330,14 @@ void GatewayNode::refresh_cache() {
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
       aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
+      for (const auto & func : functions) {
+        for (const auto & contributor : func.contributors) {
+          if (contributor.rfind("peer:", 0) == 0) {
+            introspection_only_ids.erase(func.id);
+            break;
+          }
+        }
+      }
 
       // Track per-entity peer contributors: entity id -> list of peer
       // names that host or contribute to it. Covers both routed leaves
@@ -2426,6 +2437,7 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(func.id);
+            introspection_only_ids.erase(func.id);
             if (func.source.empty()) {
               func.source = "plugin";
             }
@@ -2463,32 +2475,16 @@ void GatewayNode::refresh_cache() {
     }
 
     // Filter ROS 2 internal nodes (underscore prefix convention) and this
-    // gateway's own helper nodes, also out of Function hosts.
+    // gateway's own helper nodes.
     // Controlled by discovery.runtime.filter_internal_nodes parameter (default: true).
     // Covers local heuristic apps (which bypass the merge pipeline orphan filter
     // in runtime_only mode) and any peer apps that slipped through fetch_entities.
     if (filter_internal_nodes_) {
-      std::unordered_set<std::string> ids_before;
-      for (const auto & app : apps) {
-        ids_before.insert(app.id);
-      }
       std::vector<std::string> dropped_declared_apps;
       auto removed =
           filter_internal_node_apps(apps, peer_routing_table, get_fully_qualified_name(), &dropped_declared_apps);
       if (removed > 0) {
         RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix or own helper node)", removed);
-        // Functions were grouped from the unfiltered apps.
-        std::unordered_set<std::string> served_app_ids;
-        for (const auto & app : apps) {
-          served_app_ids.insert(app.id);
-        }
-        std::unordered_set<std::string> filtered_ids;
-        for (const auto & id : ids_before) {
-          if (served_app_ids.count(id) == 0) {
-            filtered_ids.insert(id);
-          }
-        }
-        drop_filtered_function_hosts(functions, filtered_ids, all_components);
       }
       // Warn on the set, not on the refresh. The condition is a static
       // misconfiguration - an app declared against a helper node stays declared
@@ -2506,6 +2502,9 @@ void GatewayNode::refresh_cache() {
         }
       }
     }
+
+    // Every filter and merge has run: a Function hosts only what is served.
+    keep_served_function_hosts(functions, apps, all_components, introspection_only_ids);
 
     // Capture sizes for logging
     const size_t area_count = areas.size();
@@ -2599,24 +2598,27 @@ void GatewayNode::stop_rest_server() {
   }
 }
 
-void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered,
-                                  const std::vector<Component> & components) {
-  // A host can be an App or a Component, so an id a served Component has stays.
-  std::unordered_set<std::string> component_ids;
+void keep_served_function_hosts(std::vector<Function> & functions, const std::vector<App> & apps,
+                                const std::vector<Component> & components,
+                                const std::unordered_set<std::string> & introspection_only_ids) {
+  std::unordered_set<std::string> served_ids;
+  for (const auto & app : apps) {
+    served_ids.insert(app.id);
+  }
   for (const auto & comp : components) {
-    component_ids.insert(comp.id);
+    served_ids.insert(comp.id);
   }
   std::vector<Function> kept;
   kept.reserve(functions.size());
   for (auto & func : functions) {
     func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
-                                    [&](const std::string & host) {
-                                      return filtered.count(host) > 0 && component_ids.count(host) == 0;
+                                    [&served_ids](const std::string & host) {
+                                      return served_ids.count(host) == 0;
                                     }),
                      func.hosts.end());
     // Introspection creates a Function only for a namespace that holds apps.
-    // Anything else that contributed to the Function keeps it served.
-    if (func.introspection_only && func.hosts.empty()) {
+    // A Function anything else contributed to stays without hosts.
+    if (func.hosts.empty() && introspection_only_ids.count(func.id) > 0) {
       continue;
     }
     kept.push_back(std::move(func));

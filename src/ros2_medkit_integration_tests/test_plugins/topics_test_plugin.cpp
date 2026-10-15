@@ -55,6 +55,7 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
   void configure(const nlohmann::json & config) override {
     function_id_ = config.value("function_id", "");
     function_host_ = config.value("function_host", "");
+    copy_function_id_ = config.value("copy_function_id", "");
   }
 
   void set_context(PluginContext & context) override {
@@ -86,7 +87,7 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
     };
   }
 
-  IntrospectionResult introspect(const IntrospectionInput & /*input*/) override {
+  IntrospectionResult introspect(const IntrospectionInput & input) override {
     IntrospectionResult result;
 
     Area area;
@@ -141,6 +142,14 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
       result.new_entities.functions.push_back(std::move(func));
     }
 
+    // Optional: return an unchanged copy of a Function an earlier layer passed
+    // in, as a plugin that only re-reports what it was given does.
+    for (const auto & func : input.functions) {
+      if (!copy_function_id_.empty() && func.id == copy_function_id_) {
+        result.new_entities.functions.push_back(func);
+      }
+    }
+
     return result;
   }
 
@@ -157,6 +166,7 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
 
   std::string function_id_;
   std::string function_host_;
+  std::string copy_function_id_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr publisher_;
   std::thread publish_thread_;
   std::atomic<bool> running_{false};

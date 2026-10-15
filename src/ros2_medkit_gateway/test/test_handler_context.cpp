@@ -32,7 +32,6 @@
 #include <variant>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
@@ -1223,75 +1222,60 @@ TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
 
 namespace {
 
-// A Function as runtime introspection creates it for a namespace.
-Function runtime_function(const std::string & id, const std::string & host) {
+Function function_hosting(const std::string & id, std::vector<std::string> hosts, const std::string & source) {
   Function func;
   func.id = id;
   func.name = id;
-  func.hosts = {host};
-  func.source = discovery::kRuntimeFunctionSource;
-  func.introspection_only = true;
-  return func;
-}
-
-Function declared_function(const std::string & id, const std::string & host, const std::string & source) {
-  Function func;
-  func.id = id;
-  func.name = id;
-  func.hosts = {host};
+  func.hosts = std::move(hosts);
   func.source = source;
   return func;
 }
 
 }  // namespace
 
-TEST(DropFilteredFunctionHostsTest, KeepsAFunctionAnythingElseContributesToWhenItLosesEveryHost) {
-  // "plc_bridge" is an App declared on one of this gateway's own helper nodes
-  // and "_cell_b_local" a hidden runtime node. The filter removes both.
-  const std::unordered_set<std::string> filtered{"plc_bridge", "_cell_b_local"};
+TEST(KeepServedFunctionHostsTest, KeepsOnlyHostsThatNameAServedAppOrComponent) {
+  // "plc_bridge" is an App declared on one of this gateway's own helper nodes,
+  // which the internal-node filter removed. "no_such_app" names nothing.
+  App sensor;
+  sensor.id = "line_a_sensor";
+  Component ecu;
+  ecu.id = "line_a_ecu";
+  std::vector<Function> functions{
+      function_hosting("line_a", {"line_a_sensor", "line_a_ecu", "plc_bridge", "no_such_app"}, "manifest")};
 
-  // A peer that also serves cell_b, with no host left once its own hidden
-  // App is dropped at the source.
-  Function peer_cell_b;
-  peer_cell_b.id = "cell_b";
-  peer_cell_b.name = "cell_b";
-  EntityMerger merger("sub_b");
-  auto functions = merger.merge_functions({runtime_function("cell_b", "_cell_b_local")}, {peer_cell_b});
+  keep_served_function_hosts(functions, {sensor}, {ecu}, {});
+
   ASSERT_EQ(functions.size(), 1u);
-  functions.push_back(declared_function("line_a", "plc_bridge", "manifest"));
-  functions.push_back(declared_function("plc", "plc_bridge", "plugin"));
+  EXPECT_EQ(functions[0].hosts, (std::vector<std::string>{"line_a_sensor", "line_a_ecu"}));
+}
 
-  drop_filtered_function_hosts(functions, filtered, {});
+TEST(KeepServedFunctionHostsTest, DropsAFunctionOnlyIntrospectionCreatedOnceNoHostIsLeft) {
+  // Runtime introspection creates a Function per namespace that holds apps,
+  // so one with no served App left is not served.
+  std::vector<Function> functions{function_hosting("hidden_ns", {"_probe"}, discovery::kRuntimeFunctionSource)};
+
+  keep_served_function_hosts(functions, {}, {}, {"hidden_ns"});
+
+  EXPECT_TRUE(functions.empty());
+}
+
+TEST(KeepServedFunctionHostsTest, KeepsAFunctionAnythingElseContributedToWithoutHosts) {
+  // cell_b carries the runtime source but a peer merged into it, so its id is
+  // not in the introspection-only set. The source string does not decide.
+  std::vector<Function> functions{
+      function_hosting("line_a", {"plc_bridge"}, "manifest"),
+      function_hosting("plc", {"plc_bridge"}, "plugin"),
+      function_hosting("cell_b", {"_cell_b_local"}, discovery::kRuntimeFunctionSource),
+  };
+
+  keep_served_function_hosts(functions, {}, {}, {});
 
   std::set<std::string> kept;
   for (const auto & func : functions) {
     kept.insert(func.id);
     EXPECT_TRUE(func.hosts.empty()) << func.id;
   }
-  EXPECT_EQ(kept, (std::set<std::string>{"cell_b", "line_a", "plc"}));
-}
-
-TEST(DropFilteredFunctionHostsTest, DropsAFunctionOnlyRuntimeIntrospectionCreated) {
-  // Runtime introspection creates a Function per namespace that holds apps,
-  // so one whose apps are all filtered is not served.
-  std::vector<Function> functions{runtime_function("hidden_ns", "_probe")};
-
-  drop_filtered_function_hosts(functions, {"_probe"}, {});
-
-  EXPECT_TRUE(functions.empty());
-}
-
-TEST(DropFilteredFunctionHostsTest, KeepsAHostThatStillNamesAServedComponent) {
-  // The filter removed an App "drive_unit", and a served Component has the
-  // same id. A Function host can be either, so the host stays.
-  Component drive_unit;
-  drive_unit.id = "drive_unit";
-  std::vector<Function> functions{declared_function("drive", "drive_unit", "manifest")};
-
-  drop_filtered_function_hosts(functions, {"drive_unit"}, {drive_unit});
-
-  ASSERT_EQ(functions.size(), 1u);
-  EXPECT_EQ(functions[0].hosts, (std::vector<std::string>{"drive_unit"}));
+  EXPECT_EQ(kept, (std::set<std::string>{"line_a", "plc", "cell_b"}));
 }
 
 // =============================================================================

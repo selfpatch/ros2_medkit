@@ -182,8 +182,9 @@ inline constexpr char kRuntimeAppSource[] = "heuristic";
 
 /// Source runtime introspection gives every Function it creates for a
 /// namespace. It does not prove the origin: a plugin can set it, and a merged
-/// Function keeps its first contributor's source. Function::introspection_only
-/// records whether introspection is the only origin.
+/// Function keeps its first contributor's source. The gateway tracks the ids
+/// only introspection created apart from the Function
+/// (MergeResult::introspection_only_function_ids in hybrid mode).
 inline constexpr char kRuntimeFunctionSource[] = "runtime";
 
 }  // namespace discovery
