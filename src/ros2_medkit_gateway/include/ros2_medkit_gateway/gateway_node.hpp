@@ -554,14 +554,16 @@ bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, st
 /**
  * @brief Remove apps the internal-node filter dropped from Function hosts
  *
- * Removes the ids in `filtered` from every Function's hosts. A Function that
- * runtime introspection created (source discovery::kRuntimeFunctionSource) and
- * that this leaves without hosts is dropped. A Function from any other source
- * stays, with or without hosts.
+ * Removes the ids in `filtered` from every Function's hosts, except an id a
+ * served Component also has. Drops a Function whose only origin is runtime
+ * introspection (Function::introspection_only) once it has no hosts. A
+ * Function anything else contributed to stays, with or without hosts.
  *
  * @param functions Function vector to prune in place
- * @param filtered Ids the filter removed that name no served entity
+ * @param filtered App ids the internal-node filter removed
+ * @param components The Components the gateway serves
  */
-void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered);
+void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered,
+                                  const std::vector<Component> & components);
 
 }  // namespace ros2_medkit_gateway

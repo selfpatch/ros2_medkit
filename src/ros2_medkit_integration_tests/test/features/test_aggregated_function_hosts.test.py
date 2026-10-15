@@ -24,6 +24,10 @@ Namespace ``line_a``: the peer runs a visible and a hidden node, the
 aggregator one hidden node. Function ``line_a`` is merged from both, so the
 aggregator answers it itself, and both Function routes must list exactly the
 peer's visible App.
+
+Namespace ``cell_b``: each side runs one hidden node only. The merged Function
+has no host the aggregator serves. A peer contributes it, so it stays, with no
+hosts.
 """
 
 import time
@@ -60,9 +64,11 @@ PEER_NAME = 'peer_gateway'
 PEER_NODES = (
     ('/line_a', 'line_a_sensor'),
     ('/line_a', '_line_a_peer_internal'),
+    ('/cell_b', '_cell_b_peer_internal'),
 )
 AGGREGATOR_NODES = (
     ('/line_a', '_line_a_local_internal'),
+    ('/cell_b', '_cell_b_local_internal'),
 )
 # Created last on each side, so a snapshot that lists one post-dates the nodes
 # above on that side.
@@ -72,6 +78,7 @@ AGGREGATOR_WITNESS = 'aggregated_hosts_local_witness'
 # Function id -> its hosts on the aggregator, written out.
 EXPECTED_HOSTS = {
     'line_a': {'line_a_sensor'},
+    'cell_b': set(),
 }
 
 HEALTH_BUDGET = 30.0

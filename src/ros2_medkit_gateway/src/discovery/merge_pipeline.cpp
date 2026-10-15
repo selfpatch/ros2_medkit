@@ -461,6 +461,11 @@ std::vector<Entity> MergePipeline::merge_entities(std::vector<std::pair<size_t, 
       size_t source_layer_idx = entries[i].layer_idx;
       report.enriched_count++;
 
+      // Not a field group: whatever the policies say, another layer contributed.
+      if constexpr (std::is_same_v<Entity, Function>) {
+        merged.introspection_only = merged.introspection_only && entries[i].entity.introspection_only;
+      }
+
       for (size_t fg_idx = 0; fg_idx < fg_owner.size(); ++fg_idx) {
         auto fg = ALL_FIELD_GROUPS[fg_idx];
         size_t current_owner = fg_owner[fg_idx];

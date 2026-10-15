@@ -57,6 +57,10 @@ struct Function {
   /// the entity is retained when its peer stops answering. Empty for entities
   /// this gateway discovered itself.
   std::string declared_source;
+  /// True while runtime introspection is this Function's only origin.
+  /// Introspection sets it. A merge with any other contribution (a manifest,
+  /// a plugin, a peer) clears it. Not serialized.
+  bool introspection_only{false};
 
   // === Serialization methods ===
 
@@ -81,7 +85,8 @@ struct Function {
 inline bool operator==(const Function & a, const Function & b) {
   return a.id == b.id && a.name == b.name && a.translation_id == b.translation_id && a.description == b.description &&
          a.tags == b.tags && a.hosts == b.hosts && a.depends_on == b.depends_on && a.source == b.source &&
-         a.contributors == b.contributors && a.declared_source == b.declared_source;
+         a.contributors == b.contributors && a.declared_source == b.declared_source &&
+         a.introspection_only == b.introspection_only;
 }
 inline bool operator!=(const Function & a, const Function & b) {
   return !(a == b);

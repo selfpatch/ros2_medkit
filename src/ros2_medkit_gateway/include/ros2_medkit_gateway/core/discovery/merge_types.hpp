@@ -175,12 +175,15 @@ inline bool is_protected_source(const std::string & source) {
   return source == "manifest" || source == "inventory" || source.rfind("plugin", 0) == 0;
 }
 
-/// Source of an App that runtime introspection discovered from a ROS node.
-/// Introspection is the only place that sets it on an App.
+/// Source runtime introspection gives every App it discovers from a ROS node.
+/// No other producer in the gateway sets it. A plugin layer keeps whatever
+/// source its provider sets, so a provider could also set this one.
 inline constexpr char kRuntimeAppSource[] = "heuristic";
 
-/// Source of a Function that runtime introspection created for a namespace.
-/// Introspection is the only place that sets it on a Function.
+/// Source runtime introspection gives every Function it creates for a
+/// namespace. It does not prove the origin: a plugin can set it, and a merged
+/// Function keeps its first contributor's source. Function::introspection_only
+/// records whether introspection is the only origin.
 inline constexpr char kRuntimeFunctionSource[] = "runtime";
 
 }  // namespace discovery

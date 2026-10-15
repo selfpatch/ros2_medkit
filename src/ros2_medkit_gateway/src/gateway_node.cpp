@@ -2477,22 +2477,18 @@ void GatewayNode::refresh_cache() {
           filter_internal_node_apps(apps, peer_routing_table, get_fully_qualified_name(), &dropped_declared_apps);
       if (removed > 0) {
         RCLCPP_DEBUG(get_logger(), "Filtered %zu internal node apps (_ prefix or own helper node)", removed);
-        // Functions were grouped from the unfiltered apps. A host can also be
-        // a Component, so an id that still names a served entity stays.
-        std::unordered_set<std::string> served_ids;
+        // Functions were grouped from the unfiltered apps.
+        std::unordered_set<std::string> served_app_ids;
         for (const auto & app : apps) {
-          served_ids.insert(app.id);
-        }
-        for (const auto & comp : all_components) {
-          served_ids.insert(comp.id);
+          served_app_ids.insert(app.id);
         }
         std::unordered_set<std::string> filtered_ids;
         for (const auto & id : ids_before) {
-          if (served_ids.count(id) == 0) {
+          if (served_app_ids.count(id) == 0) {
             filtered_ids.insert(id);
           }
         }
-        drop_filtered_function_hosts(functions, filtered_ids);
+        drop_filtered_function_hosts(functions, filtered_ids, all_components);
       }
       // Warn on the set, not on the refresh. The condition is a static
       // misconfiguration - an app declared against a helper node stays declared
@@ -2603,19 +2599,24 @@ void GatewayNode::stop_rest_server() {
   }
 }
 
-void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered) {
+void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered,
+                                  const std::vector<Component> & components) {
+  // A host can be an App or a Component, so an id a served Component has stays.
+  std::unordered_set<std::string> component_ids;
+  for (const auto & comp : components) {
+    component_ids.insert(comp.id);
+  }
   std::vector<Function> kept;
   kept.reserve(functions.size());
   for (auto & func : functions) {
-    const bool had_hosts = !func.hosts.empty();
     func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
-                                    [&filtered](const std::string & host) {
-                                      return filtered.count(host) > 0;
+                                    [&](const std::string & host) {
+                                      return filtered.count(host) > 0 && component_ids.count(host) == 0;
                                     }),
                      func.hosts.end());
     // Introspection creates a Function only for a namespace that holds apps.
-    // Any other source declared the Function, and the declaration stands.
-    if (func.source == discovery::kRuntimeFunctionSource && had_hosts && func.hosts.empty()) {
+    // Anything else that contributed to the Function keeps it served.
+    if (func.introspection_only && func.hosts.empty()) {
       continue;
     }
     kept.push_back(std::move(func));

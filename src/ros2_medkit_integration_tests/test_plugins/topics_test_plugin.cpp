@@ -47,7 +47,9 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
     return "topics_test";
   }
 
-  void configure(const nlohmann::json & /*config*/) override {
+  void configure(const nlohmann::json & config) override {
+    function_id_ = config.value("function_id", "");
+    function_host_ = config.value("function_host", "");
   }
 
   void set_context(PluginContext & context) override {
@@ -121,6 +123,19 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
     unlisted.source = "beacon";
     result.new_entities.apps.push_back(std::move(unlisted));
 
+    // Optional: a Function under an id and with a host the test chooses, such
+    // as an id runtime discovery also derives from a namespace.
+    if (!function_id_.empty()) {
+      Function func;
+      func.id = function_id_;
+      func.name = "Plugin Function";
+      func.source = "plugin";
+      if (!function_host_.empty()) {
+        func.hosts.push_back(function_host_);
+      }
+      result.new_entities.functions.push_back(std::move(func));
+    }
+
     return result;
   }
 
@@ -135,6 +150,8 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
     }
   }
 
+  std::string function_id_;
+  std::string function_host_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr publisher_;
   std::thread publish_thread_;
   std::atomic<bool> running_{false};
