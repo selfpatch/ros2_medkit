@@ -1218,6 +1218,41 @@ TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
   EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway"}));
 }
 
+namespace {
+
+Function function_hosting(const std::string & id, const std::string & host, const std::string & source) {
+  Function func;
+  func.id = id;
+  func.name = id;
+  func.hosts = {host};
+  func.source = source;
+  return func;
+}
+
+}  // namespace
+
+TEST(DropFilteredFunctionHostsTest, KeepsADeclaredFunctionThatLosesItsOnlyHost) {
+  // A declared Function whose only host is filtered, here one a peer merged
+  // into it. The declaration stands, without the host.
+  std::vector<Function> functions{function_hosting("line_a", "sub_b___hidden_driver", "manifest")};
+
+  drop_filtered_function_hosts(functions, {"sub_b___hidden_driver"});
+
+  ASSERT_EQ(functions.size(), 1u);
+  EXPECT_EQ(functions[0].id, "line_a");
+  EXPECT_TRUE(functions[0].hosts.empty());
+}
+
+TEST(DropFilteredFunctionHostsTest, DropsARuntimeFunctionThatLosesItsOnlyHost) {
+  // Runtime introspection creates a Function per namespace that holds apps,
+  // so one whose apps are all filtered is not served.
+  std::vector<Function> functions{function_hosting("hidden_ns", "_probe", "runtime")};
+
+  drop_filtered_function_hosts(functions, {"_probe"});
+
+  EXPECT_TRUE(functions.empty());
+}
+
 // =============================================================================
 // Area fault/log aggregation handler tests (via REST API)
 // =============================================================================

@@ -2142,26 +2142,6 @@ struct InRefreshPassGuard {
   InRefreshPassGuard(InRefreshPassGuard &&) = delete;
   InRefreshPassGuard & operator=(InRefreshPassGuard &&) = delete;
 };
-
-// Removes the ids in `filtered` from every Function's hosts and drops a
-// Function this leaves without hosts. A Function declared without hosts stays.
-void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered) {
-  std::vector<Function> kept;
-  kept.reserve(functions.size());
-  for (auto & func : functions) {
-    const bool had_hosts = !func.hosts.empty();
-    func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
-                                    [&filtered](const std::string & host) {
-                                      return filtered.count(host) > 0;
-                                    }),
-                     func.hosts.end());
-    if (had_hosts && func.hosts.empty()) {
-      continue;
-    }
-    kept.push_back(std::move(func));
-  }
-  functions = std::move(kept);
-}
 }  // namespace
 
 void GatewayNode::handle_entity_change_notification(const EntityChangeScope & scope) {
@@ -2621,6 +2601,26 @@ void GatewayNode::stop_rest_server() {
   if (server_thread_ && server_thread_->joinable()) {
     server_thread_->join();
   }
+}
+
+void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered) {
+  std::vector<Function> kept;
+  kept.reserve(functions.size());
+  for (auto & func : functions) {
+    const bool had_hosts = !func.hosts.empty();
+    func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                    [&filtered](const std::string & host) {
+                                      return filtered.count(host) > 0;
+                                    }),
+                     func.hosts.end());
+    // Introspection creates a Function only for a namespace that holds apps.
+    // Any other source declared the Function, and the declaration stands.
+    if (func.source == discovery::kRuntimeFunctionSource && had_hosts && func.hosts.empty()) {
+      continue;
+    }
+    kept.push_back(std::move(func));
+  }
+  functions = std::move(kept);
 }
 
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered) {

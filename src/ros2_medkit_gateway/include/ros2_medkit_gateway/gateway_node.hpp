@@ -21,6 +21,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -549,5 +550,18 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
  * @return true when the caller should warn
  */
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
+
+/**
+ * @brief Remove apps the internal-node filter dropped from Function hosts
+ *
+ * Removes the ids in `filtered` from every Function's hosts. A Function that
+ * runtime introspection created (source discovery::kRuntimeFunctionSource) and
+ * that this leaves without hosts is dropped. A Function from any other source
+ * stays, with or without hosts.
+ *
+ * @param functions Function vector to prune in place
+ * @param filtered Ids the filter removed that name no served entity
+ */
+void drop_filtered_function_hosts(std::vector<Function> & functions, const std::unordered_set<std::string> & filtered);
 
 }  // namespace ros2_medkit_gateway

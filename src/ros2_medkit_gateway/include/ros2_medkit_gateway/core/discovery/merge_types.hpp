@@ -179,5 +179,9 @@ inline bool is_protected_source(const std::string & source) {
 /// Introspection is the only place that sets it on an App.
 inline constexpr char kRuntimeAppSource[] = "heuristic";
 
+/// Source of a Function that runtime introspection created for a namespace.
+/// Introspection is the only place that sets it on a Function.
+inline constexpr char kRuntimeFunctionSource[] = "runtime";
+
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway
