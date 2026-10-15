@@ -25,9 +25,9 @@ namespaces, so runtime discovery gives the namespaced ones ids such as
 Each gateway must serve the three gateway nodes and none of the nine helper
 nodes, and all three must list the same apps. A visible node in a namespace
 that starts with ``_`` is served even when a name collision gives it an id
-that starts with ``_``. Function ``subsystem_a`` hosts only the served apps in
-that namespace, and a namespace that holds only a hidden node has no Function
-on either Function endpoint.
+that starts with ``_``. Functions ``subsystem_a`` and ``_ops`` host exactly
+the served apps in their namespace, and a namespace that holds only a hidden
+node has no Function on either Function endpoint.
 """
 
 import time
@@ -74,7 +74,11 @@ WITNESS_NODE = 'same_name_gateways_witness'
 # The witness name also runs here, so its id is qualified to start with '_'.
 OPS_NAMESPACE = '/_ops'
 OPS_WITNESS_APP_ID = f'_ops_{WITNESS_NODE}'
-FUNCTION_ID = 'subsystem_a'
+# Function id -> its hosts, written out: the served Apps in that namespace.
+FUNCTION_HOSTS = {
+    'subsystem_a': {f'subsystem_a_{GATEWAY_NAME}'},
+    '_ops': {OPS_WITNESS_APP_ID},
+}
 # Hidden and alone in its namespace, so that namespace gets no served Function.
 HIDDEN_NAMESPACE = '/hidden_ns'
 HIDDEN_NODE = '_hidden_ns_probe'
@@ -138,19 +142,25 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
             return
 
         # Created after the probe saw every helper node, so a snapshot that lists
-        # it was built after that moment. This does not show that each gateway
-        # had discovered the helpers by then.
-        # The hidden node and the /_ops witness are created first on the same
-        # context, so the graph update that announces the root witness already
-        # lists them.
+        # the witnesses was built after that moment. This does not show that
+        # each gateway had discovered the helpers by then.
+        # The wait is for OPS_WITNESS_APP_ID: that id exists only while both
+        # witnesses are on the graph. The hidden node is created first on the
+        # same context, so a graph update that lists both witnesses lists it.
         cls.hidden = Node(HIDDEN_NODE, namespace=HIDDEN_NAMESPACE, context=cls.context)
         cls.ops_witness = Node(WITNESS_NODE, namespace=OPS_NAMESPACE, context=cls.context)
         cls.witness = Node(WITNESS_NODE, context=cls.context)
         for ns, port in GATEWAYS:
             cls.witness_seen[ns], cls.apps[ns] = cls._apps_until_contains(
-                port, WITNESS_NODE, REFRESH_WITNESS_BUDGET)
-            cls.functions[ns] = cls.session.get(
-                f'{_base_url(port)}/functions/{FUNCTION_ID}', timeout=10)
+                port, OPS_WITNESS_APP_ID, REFRESH_WITNESS_BUDGET)
+            cls.functions[ns] = {
+                function_id: (
+                    cls.session.get(f'{_base_url(port)}/functions/{function_id}', timeout=10),
+                    cls.session.get(
+                        f'{_base_url(port)}/functions/{function_id}/hosts', timeout=10),
+                )
+                for function_id in FUNCTION_HOSTS
+            }
             cls.hidden_function[ns] = {
                 path: cls.session.get(f'{_base_url(port)}{path}', timeout=10)
                 for path in (f'/functions/{HIDDEN_FUNCTION_ID}',
@@ -230,8 +240,8 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
             with self.subTest(gateway=ns):
                 self.assertTrue(
                     self.witness_seen.get(ns),
-                    f'gateway {ns} (port {port}) never listed "{WITNESS_NODE}", so no '
-                    f'snapshot is known to post-date the helper nodes. '
+                    f'gateway {ns} (port {port}) never listed "{OPS_WITNESS_APP_ID}", so '
+                    f'no snapshot is known to post-date the helper nodes. '
                     f'Listed: {sorted(self.apps.get(ns, {}))}')
                 served = set(self.apps[ns])
                 self.assertEqual(
@@ -240,28 +250,29 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
                     f'beyond the expected apps and misses {sorted(expected - served)}')
 
     def test_a_function_hosts_only_served_apps(self):
-        """Function subsystem_a hosts exactly the served apps in its namespace."""
+        """Both Function endpoints list exactly the served apps in its namespace."""
         for ns, port in GATEWAYS:
-            with self.subTest(gateway=ns):
-                response = self.functions[ns]
-                self.assertEqual(
-                    response.status_code, 200,
-                    f'gateway {ns} (port {port}): GET /functions/{FUNCTION_ID} '
-                    f'returned {response.status_code}: {response.text}')
-                hosts = set(response.json().get('x-medkit', {}).get('hosts', []))
-                in_namespace = {
-                    app_id for app_id, item in self.apps[ns].items()
-                    if item.get('x-medkit', {}).get('ros2', {}).get('node', '').startswith(
-                        f'/{FUNCTION_ID}/')
-                }
-                self.assertEqual(
-                    hosts, in_namespace,
-                    f'gateway {ns} (port {port}): function {FUNCTION_ID} hosts '
-                    f'{sorted(hosts - in_namespace)} that are not served apps in its '
-                    f'namespace and misses {sorted(in_namespace - hosts)}')
+            for function_id, expected in FUNCTION_HOSTS.items():
+                detail, hosts = self.functions.get(ns, {}).get(function_id, (None, None))
+                with self.subTest(gateway=ns, function=function_id):
+                    self.assertIsNotNone(detail, f'gateway {ns} (port {port}) was not queried')
+                    self.assertEqual(
+                        detail.status_code, 200,
+                        f'gateway {ns} (port {port}): GET /functions/{function_id} '
+                        f'returned {detail.status_code}: {detail.text}')
+                    self.assertEqual(
+                        set(detail.json().get('x-medkit', {}).get('hosts', [])), expected,
+                        f'gateway {ns} (port {port}): x-medkit.hosts of {function_id}')
+                    self.assertEqual(
+                        hosts.status_code, 200,
+                        f'gateway {ns} (port {port}): GET /functions/{function_id}/hosts '
+                        f'returned {hosts.status_code}: {hosts.text}')
+                    self.assertEqual(
+                        {item['id'] for item in hosts.json().get('items', [])}, expected,
+                        f'gateway {ns} (port {port}): /functions/{function_id}/hosts')
 
     def test_a_function_of_hidden_nodes_only_is_not_served(self):
-        """Both Function endpoints answer 404 for a namespace of hidden nodes."""
+        """Both Function endpoints answer 404 entity-not-found for that namespace."""
         for ns, port in GATEWAYS:
             for path, response in self.hidden_function.get(ns, {}).items():
                 with self.subTest(gateway=ns, path=path):
@@ -269,6 +280,10 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
                         response.status_code, 404,
                         f'gateway {ns} (port {port}): GET {path} returned '
                         f'{response.status_code}: {response.text}')
+                    body = response.json()
+                    self.assertEqual(body.get('error_code'), 'entity-not-found', body)
+                    self.assertIn(
+                        HIDDEN_FUNCTION_ID, body.get('parameters', {}).values(), body)
             with self.subTest(gateway=ns):
                 self.assertEqual(len(self.hidden_function.get(ns, {})), 2,
                                  f'gateway {ns} (port {port}) was not queried')
