@@ -20,6 +20,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -992,6 +993,15 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     // A Function's hosts live only in its detail response: the list carries
     // none. A Function built from the list alone is a Function asserted to
     // group nothing, which is a statement the peer never made.
+    // A host stays only if it names an App or a Component read above, so an
+    // App dropped at the source, such as a hidden one, leaves the hosts too.
+    std::unordered_set<std::string> reported_ids;
+    for (const auto & app : entities.apps) {
+      reported_ids.insert(app.id);
+    }
+    for (const auto & comp : entities.components) {
+      reported_ids.insert(comp.id);
+    }
     for (auto & func : func_list) {
       const std::string route = "/functions/" + func.id;
       auto detail =
@@ -1000,6 +1010,11 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
         return tl::unexpected<std::string>(detail.error);
       }
       func = parse_function(detail.body);
+      func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                      [&reported_ids](const std::string & host) {
+                                        return reported_ids.count(host) == 0;
+                                      }),
+                       func.hosts.end());
       func.declared_source = func.source;
       func.source = peer_source;
     }

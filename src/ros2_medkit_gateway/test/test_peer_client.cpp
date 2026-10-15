@@ -432,12 +432,11 @@ TEST(PeerClientHappyPath, fetch_entities_parses_relationship_fields) {
   ASSERT_EQ(result->apps.size(), 1u);
   EXPECT_EQ(result->apps[0].component_id, "perception-ecu");
 
-  // Function: hosts parsed
+  // Function: hosts parsed. "path-planner" names no App or Component the peer
+  // reported, so it is not a host.
   ASSERT_EQ(result->functions.size(), 1u);
   EXPECT_EQ(result->functions[0].id, "autonomous-navigation");
-  ASSERT_EQ(result->functions[0].hosts.size(), 2u);
-  EXPECT_EQ(result->functions[0].hosts[0], "lidar-driver");
-  EXPECT_EQ(result->functions[0].hosts[1], "path-planner");
+  EXPECT_EQ(result->functions[0].hosts, (std::vector<std::string>{"lidar-driver"}));
 
   svr.stop();
   t.join();
