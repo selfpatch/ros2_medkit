@@ -895,6 +895,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_helper_node gateway_ros2)
   medkit_target_dependencies(test_helper_node rclcpp rcl_interfaces)
 
+  # A gateway on a private context, with the default context never initialised
+  medkit_add_gtest(test_gateway_private_context test/test_gateway_private_context.cpp)
+  target_link_libraries(test_gateway_private_context gateway_ros2)
+  medkit_target_dependencies(test_gateway_private_context rclcpp lifecycle_msgs std_msgs ros2_medkit_msgs)
+
   # Private client nodes torn down after a first graph wait that follows rclcpp::shutdown()
   medkit_add_gtest(test_graph_listener_join test/test_graph_listener_join.cpp)
   target_link_libraries(test_graph_listener_join gateway_ros2)

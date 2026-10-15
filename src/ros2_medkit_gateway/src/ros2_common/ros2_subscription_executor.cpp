@@ -50,7 +50,8 @@ Ros2SubscriptionExecutor::Ros2SubscriptionExecutor(const std::shared_ptr<rclcpp:
   // spun via spin_some() from worker_loop). Sharing the node with the gateway's
   // main MultiThreadedExecutor raced on the node's internal rcutils_hash_map
   // under TSan.
-  sub_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  sub_executor_ =
+      std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executor_options_for(*subscription_node_));
   sub_executor_->add_node(subscription_node_);
 
   // Graph event - public rclcpp API, stable across distros.

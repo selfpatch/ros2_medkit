@@ -106,7 +106,8 @@ Ros2FaultServiceTransport::Ros2FaultServiceTransport(rclcpp::Node * node) : node
   // Joins the graph listener while the context is valid. A first join after
   // rclcpp::shutdown() half-registers the node and ~NodeGraph aborts.
   static_cast<void>(client_node_->get_graph_event());
-  executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  executor_ =
+      std::make_shared<rclcpp::executors::SingleThreadedExecutor>(ros2_common::executor_options_for(*client_node_));
   executor_->add_node(client_node_);
 
   report_fault_client_ =

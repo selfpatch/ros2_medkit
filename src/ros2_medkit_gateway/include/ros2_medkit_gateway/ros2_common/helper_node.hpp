@@ -41,4 +41,12 @@ namespace ros2_medkit_gateway::ros2_common {
  */
 std::shared_ptr<rclcpp::Node> make_helper_node(rclcpp::Node & host, const std::string & suffix);
 
+/**
+ * @brief Executor options on @p node's context.
+ *
+ * An executor built without them uses the default context, which a host that runs
+ * the gateway on a private context never initialises.
+ */
+rclcpp::ExecutorOptions executor_options_for(rclcpp::Node & node);
+
 }  // namespace ros2_medkit_gateway::ros2_common
