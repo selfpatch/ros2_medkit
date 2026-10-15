@@ -250,7 +250,12 @@ controls exactly one thing: whether the manifest claims *exclusivity* over the
 hierarchy. ``true`` (the default) means a declared parent-child relationship is
 the whole truth and runtime-discovered members are dropped. ``false`` means the
 manifest stops claiming exclusivity, so runtime-discovered hosts and children
-join the union instead of being discarded.
+join the union instead of being discarded. A Function then still keeps only the
+hosts that name an App or Component the gateway serves (see
+:ref:`the rule for Function hosts <discovery-function-hosts>`), so a runtime
+host joins only when the gateway serves its node under that runtime id, an
+unmanifested node under ``warn`` for example. The runtime id of a node bound to
+a manifest App is not served, so it never joins.
 
 Against that layer pair it changes nothing else. (A discovery plugin is a
 third layer and widens this - see **Mechanism** below.) In particular it does
@@ -275,7 +280,8 @@ mechanism suggests:
 
 - **hierarchy** - the one that shows. Collection fields (``depends_on``, a
   Function's ``hosted_by`` list) become the union of the manifest's and the
-  runtime layer's, rather than the manifest's alone. The scalar hierarchy
+  runtime layer's, rather than the manifest's alone, and a Function's hosts are
+  then reduced to the Apps and Components the gateway serves. The scalar hierarchy
   fields are unchanged: an App's ``is_located_on``, a Component's ``area``,
   ``parent_component_id``, ``fqn`` and ``namespace``, and an Area's
   ``namespace`` and ``parent_area``.
