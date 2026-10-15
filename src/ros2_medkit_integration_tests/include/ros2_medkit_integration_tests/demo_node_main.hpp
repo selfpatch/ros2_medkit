@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <functional>
 #include <memory>
@@ -47,13 +49,16 @@ namespace ros2_medkit_integration_tests {
  *      NOT install its own handlers on top.
  *   3. Construct the node + executor with signals still blocked.
  *   4. Spawn a dedicated sigwait thread that blocks on sigwait() for
- *      SIGINT / SIGTERM and, on arrival, calls executor.cancel() to wake
- *      spin() from a known-good thread context.
- *   5. executor.spin() returns cleanly; the main thread then removes the
- *      node from the executor and resets the shared_ptr while the rcl
- *      context is still valid. Message / publisher destructors therefore
- *      run against a consistent allocator and cannot trip the rosidl
- *      sequence-invariant abort.
+ *      SIGINT / SIGTERM and, on arrival, sets a stop flag and calls
+ *      executor.cancel() to wake the spin loop from a known-good thread
+ *      context.
+ *   5. The main thread spins in bounded steps until the flag is set. A
+ *      signal that arrives while the node is still being built is not lost:
+ *      cancel() before spinning starts does nothing, the flag stays set.
+ *      The main thread then removes the node from the executor and resets
+ *      the shared_ptr while the rcl context is still valid. Message /
+ *      publisher destructors therefore run against a consistent allocator
+ *      and cannot trip the rosidl sequence-invariant abort.
  *   6. rclcpp::shutdown() is called last, AFTER everything is destroyed.
  *
  * Usage:
@@ -91,7 +96,8 @@ inline int run_demo_node(int argc, char ** argv, const std::function<std::shared
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
 
-    std::thread signal_thread([&executor, &mask] {
+    std::atomic<bool> stop_requested{false};
+    std::thread signal_thread([&executor, &mask, &stop_requested] {
       int signum = 0;
       // sigwait blocks until SIGINT / SIGTERM arrives. Every thread inherits
       // the blocked mask from the main thread so the signal is queued until
@@ -104,13 +110,15 @@ inline int run_demo_node(int argc, char ** argv, const std::function<std::shared
         }
         // EINTR can theoretically fire; retry.
       }
+      stop_requested.store(true);
       executor.cancel();
     });
 
-    executor.spin();
+    while (!stop_requested.load()) {
+      executor.spin_once(std::chrono::milliseconds(100));
+    }
 
-    // spin() returned via executor.cancel(); signal_thread has already
-    // consumed the signal and is about to exit.
+    // signal_thread has consumed the signal and is about to exit.
     if (signal_thread.joinable()) {
       signal_thread.join();
     }
