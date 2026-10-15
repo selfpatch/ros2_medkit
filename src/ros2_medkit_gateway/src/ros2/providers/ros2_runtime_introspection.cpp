@@ -18,6 +18,8 @@
 #include <set>
 #include <unordered_map>
 
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
+
 namespace ros2_medkit_gateway::ros2 {
 
 namespace {
@@ -142,7 +144,7 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
       app.id = name;
     }
     app.name = name;
-    app.source = "heuristic";
+    app.source = discovery::kRuntimeAppSource;
     app.is_online = true;
     app.bound_fqn = fqn;
 

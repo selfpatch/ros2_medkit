@@ -82,10 +82,13 @@ When ``filter_internal_nodes`` is true (the default), ROS 2 nodes whose names
 start with an underscore (``_``) are excluded from the entity tree. This
 filters out ROS 2 internal infrastructure nodes such as ``_ros2cli_*``,
 ``_param_client_node``, and similar system nodes that should not appear as
-SOVD entities. For a locally discovered App the node name decides, also when a
-bare name shared across namespaces gives the App a namespace-qualified id
-(``line_a__ros2cli_daemon``). A declared App is judged by its id. The filter
-also applies to peer-discovered Apps, by id after stripping the peer prefix.
+SOVD entities. For an App that runtime discovery found, only the node name
+decides. A bare name shared across namespaces gives the App a
+namespace-qualified id, such as ``line_a__ros2_medkit_gateway_sub`` for a hidden
+node or ``_ops_camera`` for the visible ``/_ops/camera``, and that id does not
+change the outcome. An App declared by a manifest or a plugin is judged by its
+id. The filter also applies to peer-discovered Apps, by id after stripping the
+peer prefix.
 
 The same switch also excludes the helper nodes the gateway runs inside its own
 process. Three of them exist in every deployment, named after the gateway node
@@ -111,6 +114,10 @@ qualified name, so an App bound to one of them is left out whatever its id.
 They carry no parameters, services or actions of their own, so there is nothing
 on them to diagnose.
 
+A manifest- or plugin-declared App bound to one of this gateway's own helper
+nodes is not served, and the gateway logs a warning naming it: bind the App to
+the node you meant, or drop the declaration.
+
 While this setting is ``true`` they are also left out of the linking report on
 ``GET /health`` - ``discovery.linking.orphan_count``, and the
 ``ros_node_fqns`` of the ``unmanifested_nodes`` warning raised under
@@ -119,8 +126,8 @@ declare in a manifest. That report exists only in ``hybrid`` mode, where
 manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
 at all.
 
-**The gateway's own node stays an App.** Its ROS parameters are what the
-gateway serves as that App's configurations, so
+**The gateway's own node stays an App** unless its name starts with ``_``. Its
+ROS parameters are what the gateway serves as that App's configurations, so
 ``/apps/<gateway>/configurations`` is where a client reads and writes them -
 there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
@@ -136,10 +143,13 @@ take the new name as the base of their own (``_gateway_a_sub`` and so on).
 
 Several gateways on one graph: every helper node starts with an underscore, so
 each gateway leaves out all of them, its own and the other gateways', also when
-the gateways share a node name and differ only in namespace. The gateways list
-the same Apps. In ``hybrid`` mode the linking report leaves out only the
-reporting gateway's own helper nodes; another gateway's helper nodes count as
-undeclared, like any other hidden node such as ``_param_client_node``.
+the gateways share a node name and differ only in namespace. With runtime
+discovery and the same configuration, the gateways list the same Apps. A
+declared App bound to another gateway's helper node is judged by its id like
+any other declared App, so it is served, and no warning is logged. In
+``hybrid`` mode the linking report leaves out only the reporting gateway's own
+helper nodes. Another gateway's helper nodes count as undeclared, like any
+other hidden node such as ``_param_client_node``.
 
 Give each gateway its own node name when several run on one ROS graph. With a
 shared name, the App id of a gateway outside the root namespace depends on the
@@ -147,10 +157,6 @@ graph: it is the bare name while no other node has that name, and
 namespace-qualified (``line_a_ros2_medkit_gateway``) while one does. Either
 remap gives the gateway its own name: ``-r __node:=gateway_a``, or
 ``-r ros2_medkit_gateway:__node:=gateway_a``.
-
-A manifest- or plugin-declared App bound to one of these nodes is not served,
-and the gateway logs a warning naming it: bind the App to the node you meant,
-or drop the declaration.
 
 Set to ``false`` if you need to expose all ROS 2 nodes regardless of naming
 convention. That re-exposes the underscore nodes, the three helper nodes among

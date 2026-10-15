@@ -507,12 +507,12 @@ using ros2_common::is_own_gateway_helper_node;
 /**
  * @brief Filter ROS 2 internal nodes from an app list
  *
- * Removes ROS 2 internal nodes, whose name begins with '_'. The rule reads the
- * app id. A local runtime app (a source discovery::is_protected_source does not
- * protect) is also judged by the node name in its FQN, because a name collision
- * gives it a namespace-qualified id without the '_'. For a remote
- * (peer-prefixed) app the peer prefix ("peer_name__") is stripped from the id
- * first, using the routing table for precise prefix detection.
+ * Removes ROS 2 internal nodes, whose name begins with '_'. A runtime app
+ * (source discovery::kRuntimeAppSource) is judged by the node name in its FQN
+ * only, because a name collision prefixes its id with the namespace. Every
+ * other app is judged by its id. For a remote (peer-prefixed) app the peer
+ * prefix ("peer_name__") is stripped from the id first, using the routing
+ * table for precise prefix detection.
  *
  * Also removes local apps bound to one of the gateway's in-process helper nodes
  * (is_own_gateway_helper_node), whatever their id or source. The gateway's own

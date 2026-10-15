@@ -175,5 +175,9 @@ inline bool is_protected_source(const std::string & source) {
   return source == "manifest" || source == "inventory" || source.rfind("plugin", 0) == 0;
 }
 
+/// Source of an App that runtime introspection discovered from a ROS node.
+/// Introspection is the only place that sets it on an App.
+inline constexpr char kRuntimeAppSource[] = "heuristic";
+
 }  // namespace discovery
 }  // namespace ros2_medkit_gateway

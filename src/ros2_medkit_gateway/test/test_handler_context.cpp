@@ -1014,17 +1014,14 @@ TEST(FilterInternalNodeAppsTest, PeerPrefixMatchMustBeExact) {
 
 namespace {
 
-App bound_app(const std::string & id, const std::string & fqn) {
+// Every fixture names its source. Runtime introspection gives the apps it
+// discovers "heuristic". Every other source is a declared or remote app.
+App bound_app(const std::string & id, const std::string & fqn, const std::string & source) {
   App app;
   app.id = id;
   app.name = id;
   app.bound_fqn = fqn;
-  return app;
-}
-
-App declared_app(const std::string & id, const std::string & fqn) {
-  App app = bound_app(id, fqn);
-  app.source = "manifest";
+  app.source = source;
   return app;
 }
 
@@ -1038,17 +1035,21 @@ TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodesButKeepsItsOwnNod
   // configurations.
   const std::string self_fqn = "/ros2_medkit_gateway";
   std::vector<App> apps{
-      bound_app("ros2_medkit_gateway", self_fqn),
-      declared_app("ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub"),
-      declared_app("ros2_medkit_gateway_fault_clients", "/_ros2_medkit_gateway_fault_clients"),
-      declared_app("ros2_medkit_gateway_lifecycle_state_reader", "/_ros2_medkit_gateway_lifecycle_state_reader"),
-      // Positive controls on the same harness: a similarly suffixed FOREIGN
-      // node, a declared app on a node that shares the helpers' "/_<self>"
-      // prefix, and the fault_manager, which is a separate diagnosable
-      // component even when it shares the process.
-      bound_app("other_gateway_sub", "/other_gateway_sub"),
-      declared_app("ros2_medkit_gateway_monitor", "/_ros2_medkit_gateway_monitor"),
-      bound_app("fault_manager", "/fault_manager"),
+      bound_app("ros2_medkit_gateway", self_fqn, "heuristic"),
+      bound_app("ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "manifest"),
+      bound_app("ros2_medkit_gateway_fault_clients", "/_ros2_medkit_gateway_fault_clients", "manifest"),
+      bound_app("ros2_medkit_gateway_lifecycle_state_reader", "/_ros2_medkit_gateway_lifecycle_state_reader",
+                "manifest"),
+      // Positive controls on the same harness: a declared app on a FOREIGN
+      // gateway's helper node, a declared app on a node that shares the
+      // helpers' "/_<self>" prefix, a plugin app with a protocol source on a
+      // node whose name starts with '_', and the fault_manager, which is a
+      // separate diagnosable component even when it shares the process. A
+      // declared app is judged by its id, so none of these is hidden.
+      bound_app("other_gateway_sub", "/_other_gateway_sub", "manifest"),
+      bound_app("ros2_medkit_gateway_monitor", "/_ros2_medkit_gateway_monitor", "manifest"),
+      bound_app("plc_bridge", "/plant/_driver", "opcua"),
+      bound_app("fault_manager", "/fault_manager", "heuristic"),
   };
 
   std::unordered_map<std::string, std::string> routing;
@@ -1060,14 +1061,14 @@ TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodesButKeepsItsOwnNod
     remaining.insert(app.id);
   }
   EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway_sub", "ros2_medkit_gateway_monitor",
-                                              "fault_manager"}));
+                                              "plc_bridge", "fault_manager"}));
 }
 
 TEST(FilterInternalNodeAppsTest, LeavesPeerHelperNodesToThePeer) {
   // A remote entity carrying the same FQN belongs to the peer that reported
   // it, so this gateway must not reach across and filter it.
   const std::string self_fqn = "/ros2_medkit_gateway";
-  std::vector<App> apps{bound_app("sub_b__ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub")};
+  std::vector<App> apps{bound_app("sub_b__ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "peer:sub_b")};
 
   std::unordered_map<std::string, std::string> routing;
   routing["sub_b__ros2_medkit_gateway_sub"] = "sub_b";
@@ -1129,11 +1130,10 @@ TEST(FilterInternalNodeAppsTest, ReportsOnlyDeclaredAppsItDropsAsHelpers) {
   // saying so on every refresh would be noise. A DECLARED one is a manifest or
   // plugin entity being overridden, which the caller has to be able to log.
   const std::string self_fqn = "/ros2_medkit_gateway";
-  App runtime_helper = bound_app("_ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub");
-  runtime_helper.source = "heuristic";
-  App declared_helper = bound_app("plc_bridge", "/_ros2_medkit_gateway_fault_clients");
-  declared_helper.source = "manifest";
-  std::vector<App> apps{runtime_helper, declared_helper};
+  std::vector<App> apps{
+      bound_app("_ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "heuristic"),
+      bound_app("plc_bridge", "/_ros2_medkit_gateway_fault_clients", "manifest"),
+  };
 
   std::unordered_map<std::string, std::string> routing;
   std::vector<std::string> dropped_declared;
@@ -1198,12 +1198,13 @@ TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
   // declared.
   const std::string self_fqn = "/subsystem_b/ros2_medkit_gateway";
   std::vector<App> apps{
-      bound_app("ros2_medkit_gateway", self_fqn),
-      bound_app("subsystem_b__ros2_medkit_gateway_sub", "/subsystem_b/_ros2_medkit_gateway_sub"),
-      bound_app("subsystem_b__ros2_medkit_gateway_fault_clients", "/subsystem_b/_ros2_medkit_gateway_fault_clients"),
+      bound_app("ros2_medkit_gateway", self_fqn, "heuristic"),
+      bound_app("subsystem_b__ros2_medkit_gateway_sub", "/subsystem_b/_ros2_medkit_gateway_sub", "heuristic"),
+      bound_app("subsystem_b__ros2_medkit_gateway_fault_clients", "/subsystem_b/_ros2_medkit_gateway_fault_clients",
+                "heuristic"),
       bound_app("subsystem_b__ros2_medkit_gateway_lifecycle_state_reader",
-                "/subsystem_b/_ros2_medkit_gateway_lifecycle_state_reader"),
-      bound_app("other_gateway", "/subsystem_c/other_gateway"),
+                "/subsystem_b/_ros2_medkit_gateway_lifecycle_state_reader", "heuristic"),
+      bound_app("other_gateway", "/subsystem_c/other_gateway", "heuristic"),
   };
 
   std::unordered_map<std::string, std::string> routing;

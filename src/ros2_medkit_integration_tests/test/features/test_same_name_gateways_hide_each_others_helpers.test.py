@@ -23,7 +23,9 @@ namespaces, so runtime discovery gives the namespaced ones ids such as
 ``subsystem_a__ros2_medkit_gateway_sub``, which do not start with ``_``.
 
 Each gateway must serve the three gateway nodes and none of the nine helper
-nodes, and all three must list the same apps.
+nodes, and all three must list the same apps. A visible node in a namespace
+that starts with ``_`` is served even when a name collision gives it an id
+that starts with ``_``.
 """
 
 import time
@@ -67,6 +69,9 @@ GATEWAY_APP_IDS = {
     f'subsystem_b_{GATEWAY_NAME}',
 }
 WITNESS_NODE = 'same_name_gateways_witness'
+# The witness name also runs here, so its id is qualified to start with '_'.
+OPS_NAMESPACE = '/_ops'
+OPS_WITNESS_APP_ID = f'_ops_{WITNESS_NODE}'
 # Hidden, so it is no app of any gateway.
 PROBE_NODE = '_same_name_gateways_probe'
 
@@ -110,6 +115,7 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         cls.context = Context()
         rclpy.init(context=cls.context)
         cls.probe = Node(PROBE_NODE, context=cls.context)
+        cls.ops_witness = None
         cls.witness = None
         cls.graph_fqns = set()
         cls.apps = {}
@@ -121,8 +127,12 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         if not (GATEWAY_FQNS | HELPER_FQNS) <= cls.graph_fqns:
             return
 
-        # Created after every helper node is on the graph: a snapshot that lists
-        # it was built from a graph that held the helpers.
+        # Created after the probe saw every helper node, so a snapshot that lists
+        # it was built after that moment. This does not show that each gateway
+        # had discovered the helpers by then.
+        # The /_ops witness is created first on the same context, so the graph
+        # update that announces the root witness already lists it.
+        cls.ops_witness = Node(WITNESS_NODE, namespace=OPS_NAMESPACE, context=cls.context)
         cls.witness = Node(WITNESS_NODE, context=cls.context)
         for ns, port in GATEWAYS:
             cls.witness_seen[ns], cls.apps[ns] = cls._apps_until_contains(
@@ -132,6 +142,8 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
     def tearDownClass(cls):
         if cls.witness is not None:
             cls.witness.destroy_node()
+        if cls.ops_witness is not None:
+            cls.ops_witness.destroy_node()
         cls.probe.destroy_node()
         rclpy.shutdown(context=cls.context)
         cls.session.close()
@@ -167,12 +179,12 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
 
     @classmethod
     def _apps_until_contains(cls, port, app_id, budget):
-        """Poll /apps until *app_id* is listed. Returns (seen, last snapshot)."""
+        """Poll /apps until *app_id* is listed. Returns (seen, last items by id)."""
         deadline = time.monotonic() + budget * get_time_scale()
-        apps = set()
+        apps = {}
         while True:
             body = cls.session.get(f'{_base_url(port)}/apps', timeout=10).json()
-            apps = {item['id'] for item in body.get('items', [])}
+            apps = {item['id']: item for item in body.get('items', [])}
             if app_id in apps:
                 return True, apps
             if time.monotonic() >= deadline:
@@ -188,26 +200,27 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
             f'Nodes seen: {sorted(self.graph_fqns)}')
 
     def test_no_gateway_serves_a_helper_node(self):
-        """Each gateway serves the three gateway nodes and no helper node.
+        """Each gateway serves the gateway nodes and the witnesses, no helper node.
 
         @verifies REQ_INTEROP_003
         """
-        expected = GATEWAY_APP_IDS | {WITNESS_NODE}
+        expected = GATEWAY_APP_IDS | {WITNESS_NODE, OPS_WITNESS_APP_ID}
         for ns, port in GATEWAYS:
             with self.subTest(gateway=ns):
                 self.assertTrue(
                     self.witness_seen.get(ns),
                     f'gateway {ns} (port {port}) never listed "{WITNESS_NODE}", so no '
                     f'snapshot is known to post-date the helper nodes. '
-                    f'Listed: {sorted(self.apps.get(ns, set()))}')
+                    f'Listed: {sorted(self.apps.get(ns, {}))}')
+                served = set(self.apps[ns])
                 self.assertEqual(
-                    self.apps[ns], expected,
-                    f'gateway {ns} (port {port}) serves '
-                    f'{sorted(self.apps[ns] - expected)} beyond the gateway nodes')
+                    served, expected,
+                    f'gateway {ns} (port {port}) serves {sorted(served - expected)} '
+                    f'beyond the expected apps and misses {sorted(expected - served)}')
 
     def test_the_gateways_agree(self):
         """All three gateways list the same apps."""
-        lists = {ns: frozenset(self.apps.get(ns, set())) for ns, _ in GATEWAYS}
+        lists = {ns: frozenset(self.apps.get(ns, {})) for ns, _ in GATEWAYS}
         self.assertEqual(
             len(set(lists.values())), 1,
             f'the gateways disagree: {({ns: sorted(apps) for ns, apps in lists.items()})}')

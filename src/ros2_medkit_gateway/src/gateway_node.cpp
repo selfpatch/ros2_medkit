@@ -2621,25 +2621,21 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
       // business.
       //
       // Dropping a runtime-discovered app is the whole point and stays quiet.
-      // Dropping one somebody DECLARED is different: in manifest and hybrid
-      // mode the manifest is the source of truth, so removing an entry from it
-      // without a word is a silent override. The declared sources are the ones
-      // the merge pipeline already protects from orphan suppression, so the
-      // same predicate decides it here; those are reported to the caller, which
-      // owns the logger.
-      if (dropped_declared_apps != nullptr && discovery::is_protected_source(app.source)) {
+      // Any other app was declared by a manifest or a plugin, and dropping it
+      // overrides that declaration. The caller owns the logger and reports it.
+      if (dropped_declared_apps != nullptr && app.source != discovery::kRuntimeAppSource) {
         dropped_declared_apps->push_back(app.id + " -> " + node_fqn);
       }
       return true;
     }
-    // ROS 2 internal nodes use the _ prefix convention on the node name. A
-    // runtime app's id loses the '_' when a name collision qualifies it with the
-    // namespace, so a local runtime app is also judged by its node name. A
-    // declared app is judged by its id only.
-    if (!remote && !discovery::is_protected_source(app.source)) {
+    // ROS 2 internal nodes use the '_' prefix convention on the node name. A
+    // runtime app is judged by its node name only, because a name collision
+    // prefixes its id with the namespace. Every other app, remote ones
+    // included (a peer's apps arrive as "peer:<name>"), is judged by its id.
+    if (app.source == discovery::kRuntimeAppSource) {
       const auto last_slash = node_fqn.rfind('/');
-      if (last_slash != std::string::npos && last_slash + 1 < node_fqn.size() && node_fqn[last_slash + 1] == '_') {
-        return true;
+      if (last_slash != std::string::npos && last_slash + 1 < node_fqn.size()) {
+        return node_fqn[last_slash + 1] == '_';
       }
     }
     return !original_id.empty() && original_id[0] == '_';
