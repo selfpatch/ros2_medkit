@@ -26,7 +26,8 @@ Each gateway must serve the three gateway nodes and none of the nine helper
 nodes, and all three must list the same apps. A visible node in a namespace
 that starts with ``_`` is served even when a name collision gives it an id
 that starts with ``_``. Function ``subsystem_a`` hosts only the served apps in
-that namespace.
+that namespace, and a namespace that holds only a hidden node has no Function
+on either Function endpoint.
 """
 
 import time
@@ -74,6 +75,10 @@ WITNESS_NODE = 'same_name_gateways_witness'
 OPS_NAMESPACE = '/_ops'
 OPS_WITNESS_APP_ID = f'_ops_{WITNESS_NODE}'
 FUNCTION_ID = 'subsystem_a'
+# Hidden and alone in its namespace, so that namespace gets no served Function.
+HIDDEN_NAMESPACE = '/hidden_ns'
+HIDDEN_NODE = '_hidden_ns_probe'
+HIDDEN_FUNCTION_ID = 'hidden_ns'
 # Hidden, so it is no app of any gateway.
 PROBE_NODE = '_same_name_gateways_probe'
 
@@ -117,12 +122,14 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         cls.context = Context()
         rclpy.init(context=cls.context)
         cls.probe = Node(PROBE_NODE, context=cls.context)
+        cls.hidden = None
         cls.ops_witness = None
         cls.witness = None
         cls.graph_fqns = set()
         cls.apps = {}
         cls.witness_seen = {}
         cls.functions = {}
+        cls.hidden_function = {}
 
         for _, port in GATEWAYS:
             cls._wait_for_health(port)
@@ -133,8 +140,10 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
         # Created after the probe saw every helper node, so a snapshot that lists
         # it was built after that moment. This does not show that each gateway
         # had discovered the helpers by then.
-        # The /_ops witness is created first on the same context, so the graph
-        # update that announces the root witness already lists it.
+        # The hidden node and the /_ops witness are created first on the same
+        # context, so the graph update that announces the root witness already
+        # lists them.
+        cls.hidden = Node(HIDDEN_NODE, namespace=HIDDEN_NAMESPACE, context=cls.context)
         cls.ops_witness = Node(WITNESS_NODE, namespace=OPS_NAMESPACE, context=cls.context)
         cls.witness = Node(WITNESS_NODE, context=cls.context)
         for ns, port in GATEWAYS:
@@ -142,6 +151,11 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
                 port, WITNESS_NODE, REFRESH_WITNESS_BUDGET)
             cls.functions[ns] = cls.session.get(
                 f'{_base_url(port)}/functions/{FUNCTION_ID}', timeout=10)
+            cls.hidden_function[ns] = {
+                path: cls.session.get(f'{_base_url(port)}{path}', timeout=10)
+                for path in (f'/functions/{HIDDEN_FUNCTION_ID}',
+                             f'/functions/{HIDDEN_FUNCTION_ID}/hosts')
+            }
 
     @classmethod
     def tearDownClass(cls):
@@ -149,6 +163,8 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
             cls.witness.destroy_node()
         if cls.ops_witness is not None:
             cls.ops_witness.destroy_node()
+        if cls.hidden is not None:
+            cls.hidden.destroy_node()
         cls.probe.destroy_node()
         rclpy.shutdown(context=cls.context)
         cls.session.close()
@@ -243,6 +259,19 @@ class TestSameNameGatewaysHideEachOthersHelpers(unittest.TestCase):
                     f'gateway {ns} (port {port}): function {FUNCTION_ID} hosts '
                     f'{sorted(hosts - in_namespace)} that are not served apps in its '
                     f'namespace and misses {sorted(in_namespace - hosts)}')
+
+    def test_a_function_of_hidden_nodes_only_is_not_served(self):
+        """Both Function endpoints answer 404 for a namespace of hidden nodes."""
+        for ns, port in GATEWAYS:
+            for path, response in self.hidden_function.get(ns, {}).items():
+                with self.subTest(gateway=ns, path=path):
+                    self.assertEqual(
+                        response.status_code, 404,
+                        f'gateway {ns} (port {port}): GET {path} returned '
+                        f'{response.status_code}: {response.text}')
+            with self.subTest(gateway=ns):
+                self.assertEqual(len(self.hidden_function.get(ns, {})), 2,
+                                 f'gateway {ns} (port {port}) was not queried')
 
     def test_the_gateways_agree(self):
         """All three gateways list the same apps."""
