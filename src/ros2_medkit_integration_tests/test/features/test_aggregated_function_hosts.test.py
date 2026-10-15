@@ -15,10 +15,10 @@
 
 """An aggregated Function hosts only Apps the aggregator serves.
 
-Two gateways in separate DDS domains. The peer runs with
+A peer in one DDS domain and two aggregators in another. The peer runs with
 ``filter_internal_nodes`` false, so it serves its hidden nodes and lists them
-as Function hosts. The aggregator does not aggregate a peer App whose id starts
-with ``_``, whatever its own ``filter_internal_nodes`` setting.
+as Function hosts. Neither aggregator aggregates a peer App whose id starts
+with ``_``: one runs the default filter, the other runs with the filter off.
 
 Namespace ``line_a``: the peer runs a visible and a hidden node, the
 aggregator one hidden node. Function ``line_a`` is merged from both, so the
@@ -33,6 +33,11 @@ Namespace ``peer_only_ns``: only the peer has it, so the aggregator forwards
 ``GET /functions/peer_only_ns`` and the answer is the peer's view, hidden host
 included. ``GET /functions/peer_only_ns/hosts`` is answered by the aggregator
 and lists only the App it serves.
+
+Namespace ``dup_ns``: only the peer has it, with one hidden node ``_dup_node``.
+The aggregator side runs a node of the same name in ``local_ns``, which the
+unfiltered aggregator serves as App ``_dup_node``. The peer's host ``_dup_node``
+names the peer's dropped App, so it must not bind to that local App.
 """
 
 import time
@@ -59,8 +64,10 @@ from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
 AGGREGATOR_PORT = get_test_port(0)
 PEER_PORT = get_test_port(1)
+UNFILTERED_PORT = get_test_port(2)
 AGGREGATOR_URL = f'http://127.0.0.1:{AGGREGATOR_PORT}{API_BASE_PATH}'
 PEER_URL = f'http://127.0.0.1:{PEER_PORT}{API_BASE_PATH}'
+UNFILTERED_URL = f'http://127.0.0.1:{UNFILTERED_PORT}{API_BASE_PATH}'
 AGGREGATOR_DOMAIN_ID = get_test_domain_id(0)
 PEER_DOMAIN_ID = get_test_domain_id(1)
 PEER_NAME = 'peer_gateway'
@@ -72,11 +79,15 @@ PEER_NODES = (
     ('/cell_b', '_cell_b_peer_internal'),
     ('/peer_only_ns', 'peer_only_sensor'),
     ('/peer_only_ns', '_peer_only_internal'),
+    ('/dup_ns', '_dup_node'),
 )
 AGGREGATOR_NODES = (
     ('/line_a', '_line_a_local_internal'),
     ('/cell_b', '_cell_b_local_internal'),
+    ('/local_ns', '_dup_node'),
 )
+# Hidden peer Apps no aggregator may list, whatever its own filter setting.
+PEER_HIDDEN_ONLY = {'_line_a_peer_internal', '_cell_b_peer_internal', '_peer_only_internal'}
 # Created last on each side, so a snapshot that lists one post-dates the nodes
 # above on that side.
 PEER_WITNESS = 'aggregated_hosts_peer_witness'
@@ -94,19 +105,23 @@ SNAPSHOT_BUDGET = 40.0
 
 @pytest.mark.launch_test
 def generate_test_description():
-    """Launch an aggregator and a peer that serves its hidden nodes."""
+    """Launch two aggregators and a peer that serves its hidden nodes."""
     common = {'server.host': '127.0.0.1', 'refresh_interval_ms': 1000}
+    aggregation = {
+        'aggregation.enabled': True,
+        'aggregation.timeout_ms': 5000,
+        'aggregation.announce': False,
+        'aggregation.discover': False,
+        'aggregation.peer_urls': [f'http://127.0.0.1:{PEER_PORT}'],
+        'aggregation.peer_names': [PEER_NAME],
+    }
     aggregator = create_gateway_node(
-        port=AGGREGATOR_PORT,
+        port=AGGREGATOR_PORT, extra_params={**common, **aggregation})
+    unfiltered = create_gateway_node(
+        name='unfiltered_aggregator_node',
+        port=UNFILTERED_PORT,
         extra_params={
-            **common,
-            'aggregation.enabled': True,
-            'aggregation.timeout_ms': 5000,
-            'aggregation.announce': False,
-            'aggregation.discover': False,
-            'aggregation.peer_urls': [f'http://127.0.0.1:{PEER_PORT}'],
-            'aggregation.peer_names': [PEER_NAME],
-        },
+            **common, **aggregation, 'discovery.runtime.filter_internal_nodes': False},
     )
     peer = create_gateway_node(
         name='peer_gateway_node',
@@ -117,6 +132,7 @@ def generate_test_description():
     return LaunchDescription([
         SetEnvironmentVariable('ROS_DOMAIN_ID', str(AGGREGATOR_DOMAIN_ID)),
         aggregator,
+        unfiltered,
         peer,
         launch_testing.actions.ReadyToTest(),
     ]), {'gateway_node': aggregator, 'peer_gateway': peer}
@@ -134,7 +150,7 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
         """Start the nodes on both domains, then wait for a dated snapshot."""
         cls.contexts = []
         cls.nodes = []
-        for url in (AGGREGATOR_URL, PEER_URL):
+        for url in (AGGREGATOR_URL, PEER_URL, UNFILTERED_URL):
             cls._wait_for_health(url)
 
         for domain_id, nodes, witness in (
@@ -155,6 +171,9 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
         # a peer fetch made after the peer saw every peer node.
         cls.aggregator_apps = cls._apps_until(
             AGGREGATOR_URL, {AGGREGATOR_WITNESS, PEER_WITNESS})
+        cls.unfiltered_apps = cls._apps_until(
+            UNFILTERED_URL, {AGGREGATOR_WITNESS, PEER_WITNESS, '_dup_node'}, items=True)
+        cls.unfiltered_dup_hosts = _get(f'{UNFILTERED_URL}/functions/dup_ns/hosts')
         cls.peer_line_a = _get(f'{PEER_URL}/functions/line_a')
         cls.functions = {
             function_id: (
@@ -187,16 +206,20 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
         raise AssertionError(f'{url} not ready within {HEALTH_BUDGET}s (last: {last})')
 
     @classmethod
-    def _apps_until(cls, url, awaited):
-        """Poll /apps until every id in *awaited* is listed."""
+    def _apps_until(cls, url, awaited, items=False):
+        """Poll /apps until every id in *awaited* is listed.
+
+        Returns the ids, or the items by id when *items* is true.
+        """
         deadline = time.monotonic() + SNAPSHOT_BUDGET * get_time_scale()
         apps = set()
         while time.monotonic() < deadline:
             try:
                 body = _get(f'{url}/apps').json()
-                apps = {item['id'] for item in body.get('items', [])}
+                by_id = {item['id']: item for item in body.get('items', [])}
+                apps = set(by_id)
                 if awaited <= apps:
-                    return apps
+                    return by_id if items else apps
             except requests.RequestException:
                 pass
             time.sleep(0.5)
@@ -248,6 +271,27 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
         self.assertEqual(
             {item['id'] for item in hosts.json().get('items', [])}, {'peer_only_sensor'},
             hosts.text)
+
+    def test_no_aggregator_lists_a_peer_app_starting_with_underscore(self):
+        """The peer client drops them whatever the aggregator's filter setting."""
+        self.assertFalse(PEER_HIDDEN_ONLY & self.aggregator_apps, sorted(self.aggregator_apps))
+        self.assertFalse(
+            PEER_HIDDEN_ONLY & set(self.unfiltered_apps), sorted(self.unfiltered_apps))
+        # The unfiltered aggregator serves its own hidden nodes, so the filter
+        # is off there. Its _dup_node is the local one, not a renamed peer copy.
+        self.assertIn('_line_a_local_internal', self.unfiltered_apps)
+        dup = self.unfiltered_apps['_dup_node'].get('x-medkit', {})
+        self.assertEqual(dup.get('ros2', {}).get('node'), '/local_ns/_dup_node', dup)
+        self.assertFalse(
+            [app_id for app_id in self.unfiltered_apps if app_id.startswith(f'{PEER_NAME}__')],
+            sorted(self.unfiltered_apps))
+
+    def test_a_dropped_peer_app_is_no_host_on_the_aggregator(self):
+        """The peer's host _dup_node does not bind to the local _dup_node."""
+        response = self.unfiltered_dup_hosts
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [item['id'] for item in response.json().get('items', [])], [], response.text)
 
 
 @launch_testing.post_shutdown_test()

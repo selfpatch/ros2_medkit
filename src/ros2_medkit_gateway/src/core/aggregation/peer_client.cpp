@@ -20,6 +20,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -729,6 +730,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   PeerEntities entities;
   const std::string peer_source = "peer:" + name_;
+  // Ids of the peer Apps dropped below. A peer Function host that names one
+  // is dropped too, so it cannot bind to another entity with the same id.
+  std::unordered_set<std::string> dropped_app_ids;
 
   // A route the peer does not offer is a property of the peer, not of the
   // entity that happened to hit it first, so it is recorded once however many
@@ -916,8 +920,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     // These are noise nodes like _param_client_node that should never appear
     // as SOVD entities.
     entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
-                                       [](const App & app) {
-                                         return !app.id.empty() && app.id[0] == '_';
+                                       [&dropped_app_ids](const App & app) {
+                                         if (!app.id.empty() && app.id[0] == '_') {
+                                           dropped_app_ids.insert(app.id);
+                                           return true;
+                                         }
+                                         return false;
                                        }),
                         entities.apps.end());
 
@@ -1000,6 +1008,11 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
         return tl::unexpected<std::string>(detail.error);
       }
       func = parse_function(detail.body);
+      func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                      [&dropped_app_ids](const std::string & host) {
+                                        return dropped_app_ids.count(host) > 0;
+                                      }),
+                       func.hosts.end());
       func.declared_source = func.source;
       func.source = peer_source;
     }
