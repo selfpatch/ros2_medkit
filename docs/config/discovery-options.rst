@@ -126,10 +126,11 @@ declare in a manifest. That report exists only in ``hybrid`` mode, where
 manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
 at all.
 
-**The gateway's own node stays an App** unless its name starts with ``_``. Its
-ROS parameters are what the gateway serves as that App's configurations, so
-``/apps/<gateway>/configurations`` is where a client reads and writes them -
-there is no other entity carrying, for instance,
+**The gateway's own node stays an App.** If its name starts with ``_``, runtime
+discovery hides it like any other such node, and a declared App bound to it is
+judged by its id. Its ROS parameters are what the gateway serves as that App's
+configurations, so ``/apps/<gateway>/configurations`` is where a client reads
+and writes them - there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
 agree about what is on it, which they cannot do if each hides a different node.
 
