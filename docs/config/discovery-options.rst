@@ -126,9 +126,9 @@ declare in a manifest. That report exists only in ``hybrid`` mode, where
 manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
 at all.
 
-**The gateway's own node stays an App.** If its name starts with ``_``, runtime
-discovery hides it like any other such node, and a declared App bound to it is
-judged by its id. Its ROS parameters are what the gateway serves as that App's
+**The helper rule leaves the gateway's own node an App.** If its name starts
+with ``_``, runtime discovery hides it like any other such node, and a declared
+App bound to it is judged by its id. Its ROS parameters are what the gateway serves as that App's
 configurations, so ``/apps/<gateway>/configurations`` is where a client reads
 and writes them - there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
@@ -178,13 +178,37 @@ Function Entities from Namespaces
 
 When ``create_functions_from_namespaces`` is true (the default), each ROS 2
 namespace becomes a Function entity that groups the Apps in that namespace.
-This is the SOVD-correct mapping where Functions represent logical capabilities
-(what the software does) rather than deployment topology. An App that
-``filter_internal_nodes`` leaves out is no Function's host. A namespace whose
-Apps are all left out has no Function, on ``GET /functions/{id}`` and on
-``GET /functions/{id}/hosts`` alike. Only a Function that runtime discovery
-created is removed this way. One from a manifest, a plugin or a peer stays, also
-when it loses every host.
+The Function takes the first namespace segment as its id, so ``/line_a/cell_2``
+belongs to ``line_a``, and the Apps in the root namespace form the Function
+``root``. This is the SOVD-correct mapping where Functions represent logical
+capabilities (what the software does) rather than deployment topology.
+
+For a Function this gateway answers itself, the hosts name Apps and Components
+it serves:
+
+- An App that ``filter_internal_nodes`` leaves out is no Function's host.
+- A peer's Function keeps only the hosts that name an App or a Component the
+  peer reported. A peer's Apps whose id starts with ``_`` are not aggregated,
+  so they leave its Function hosts too, also when the peer runs with
+  ``filter_internal_nodes: false``.
+
+A Function that only runtime discovery created is not served once it has no
+host left, on ``GET /functions/{id}`` and on ``GET /functions/{id}/hosts``
+alike. A namespace whose Apps are all left out therefore has no Function, the
+root namespace included. A Function that a manifest, a plugin or a peer also
+contributes stays, also when it loses every host.
+
+Two cases keep hosts the gateway does not serve. In ``hybrid`` mode with
+``allow_heuristic_functions: true``, runtime discovery groups runtime App ids,
+and the merge pipeline does not serve some of those Apps: a node linked to a
+manifest App (served under the manifest id), every unmanifested node under
+``unmanifested_nodes: ignore``, and every runtime App under
+``allow_heuristic_apps: false``. Such a host stays listed, and its Function
+stays served. A Function that only a peer contributes is forwarded:
+``GET /functions/{id}`` answers with the peer's view, so the peer's own
+``filter_internal_nodes`` decides which hosts that answer lists.
+``GET /functions/{id}/hosts`` is answered here and lists only Apps this gateway
+serves.
 
 Merge Pipeline (Hybrid Mode)
 -----------------------------
