@@ -178,9 +178,12 @@ They do not expose ``locks`` or ``scripts`` (components and apps only), nor
 advertises in its ``capabilities`` array - is the matrix in
 :ref:`sovd-compliance`.
 
-Requests to ``/functions/{id}/data`` are fan-out queries that collect data from
-all entities listed in the Function's ``hosts`` field. Similarly, Area resource
-collection requests aggregate from all Components contained in that Area.
+A request to ``/functions/{id}/data`` collects data from the hosts this gateway
+serves and fans out to every peer that contributes to the Function (see
+:ref:`per-entity fan-out <aggregation-fan-out>`). Each peer answers with its own
+view, so a peer can return data of an App this gateway does not list as a host.
+Similarly, Area resource collection requests aggregate from all Components
+contained in that Area.
 
 Entity Merge Logic
 ------------------
@@ -267,11 +270,12 @@ classification pass over the full Component set:
 
 - **Functions**: Merge by ID, combining the ``hosts`` lists from both sides.
   If both gateways expose a ``navigation`` Function, the merged entity lists
-  hosts from both gateways. Same ownership semantics as Areas. The merge keeps
-  a peer's hosts as the peer listed them. After the merge and the internal-node
-  filter, the gateway keeps only the hosts that name an App or Component it
-  serves, so a peer App it does not aggregate (an id starting with ``_``)
-  leaves the hosts there.
+  hosts from both gateways. Same ownership semantics as Areas. The peer client
+  removes a host that names a peer App it drops (an id starting with ``_``), so
+  that host cannot bind to another entity with the same id. The merge keeps
+  the other hosts as the peer listed them. After the merge and the
+  internal-node filter, the gateway keeps only the hosts that name an App or
+  Component it serves.
 
 - **Components**: Merge by ID, combining tags and metadata. Components
   represent either a single physical ECU *or* a hierarchical parent that

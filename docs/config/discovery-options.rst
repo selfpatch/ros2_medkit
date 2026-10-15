@@ -88,8 +88,12 @@ namespace-qualified id, such as ``line_a__ros2_medkit_gateway_sub`` for a hidden
 node or ``_ops_camera`` for the visible ``/_ops/camera``, and that id does not
 change the outcome. An App declared by a manifest or a plugin is judged by its
 id. A peer App whose id starts with ``_`` is never aggregated, whatever this
-setting. With the setting on, the other peer Apps are judged by id too, after
-the peer prefix a name collision adds is stripped.
+setting, and a peer Function host that names one is removed with it. With the
+setting on, the other peer Apps are judged by id too, after the peer prefix a
+name collision adds is stripped. A peer that runs with the setting off serves
+its hidden nodes, and gives one whose bare name is shared across namespaces a
+namespace-qualified id such as ``line_a__x``. That id does not start with
+``_``, so it is aggregated.
 
 The same switch also excludes the helper nodes the gateway runs inside its own
 process. Three of them exist in every deployment, named after the gateway node
@@ -134,8 +138,9 @@ there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
 agree about what is on it, which they cannot do if each hides a different node.
 A gateway whose node name starts with ``_`` is the exception: runtime discovery
-hides that node like any other such node, so no App carries those parameters,
-and a declared App bound to it is judged by its id.
+hides that node like any other such node, so no runtime App carries those
+parameters. A declared App bound to it is judged by its id: one whose id does
+not start with ``_`` is served and carries the parameters.
 
 Names and namespaces: each helper node is created in the gateway's namespace,
 and a node-local remap fixes its name. A process-wide namespace remap
