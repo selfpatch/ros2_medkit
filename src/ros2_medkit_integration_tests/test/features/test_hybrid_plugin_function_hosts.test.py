@@ -15,12 +15,13 @@
 
 """In hybrid mode a Function hosts only Apps and Components the gateway serves.
 
-Two gateways in hybrid mode with ``allow_heuristic_functions`` true, so runtime
-discovery derives a Function per namespace from every node it sees. Both run in
-a namespace of their own, so the root namespace holds only a hidden node.
+Four gateways in one DDS domain. Each runs in a namespace of its own, so the
+root namespace holds only a hidden node. The three hybrid gateways run with
+``allow_heuristic_functions`` true, so runtime discovery derives a Function per
+namespace from every node it sees.
 
-Gateway A, ``unmanifested_nodes: warn`` with ``/blocked_ns`` blacklisted, and
-the in-tree test plugin:
+Gateway A, hybrid, ``unmanifested_nodes: warn`` with ``/blocked_ns``
+blacklisted, and the in-tree test plugin:
 
 - ``plugin_ns``: one hidden node. The plugin declares a Function with that id
   hosting the node's App. The runtime layer contributes the id first, so the
@@ -28,19 +29,28 @@ the in-tree test plugin:
   stays, with no hosts.
 - ``copied_ns``: one hidden node. The plugin returns an unchanged copy of the
   runtime layer's Function. That copy is a plugin contribution, so it stays.
+- ``shared_hidden_ns``: one hidden node. The manifest declares a Function with
+  the id runtime discovery also derives, hosted by that node. The manifest
+  contributes it, so it stays, with no hosts.
 - ``hidden_only_ns``, ``linked_ns`` (its node is bound to a manifest App, served
   under the manifest id), ``blocked_ns`` (blacklisted) and ``root``: no host is
   served and only runtime discovery derived the Function, so none is served.
 - ``declared_fn``: a manifest Function whose only host names no entity. It
   stays, with no hosts.
-- ``visible_ns``: the positive control.
+- ``visible_ns`` and ``ignored_ns``: positive controls.
 
-Gateway B, ``unmanifested_nodes: ignore``: ``ignored_ns`` holds one undeclared
-node, which B does not serve, so B serves no Function ``ignored_ns``.
+Gateway B, hybrid, ``unmanifested_nodes: ignore``: ``ignored_ns`` holds one
+undeclared node, which B does not serve, so B serves no Function
+``ignored_ns``.
 
 Gateway C runs ``runtime_only`` with the same test plugin, which the gateway
 injects next to runtime discovery's Functions instead of merging them. The
-plugin's ``plugin_ns`` keeps that Function served there too.
+plugin's ``plugin_ns`` keeps that Function served there too. C serves
+``blocked_node`` and ``linked_node`` under their runtime ids, so ``blocked_ns``
+and ``linked_ns`` list them: the positive controls for A.
+
+Gateway D, hybrid, ``allow_heuristic_apps`` false: it serves no undeclared
+node, so ``visible_ns`` loses its only host and is not served.
 """
 
 import os
@@ -69,10 +79,13 @@ from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 GATEWAY_A_URL = f'http://127.0.0.1:{get_test_port(0)}{API_BASE_PATH}'
 GATEWAY_B_URL = f'http://127.0.0.1:{get_test_port(1)}{API_BASE_PATH}'
 GATEWAY_C_URL = f'http://127.0.0.1:{get_test_port(2)}{API_BASE_PATH}'
+GATEWAY_D_URL = f'http://127.0.0.1:{get_test_port(3)}{API_BASE_PATH}'
 
 PLUGIN_FUNCTION_ID = 'plugin_ns'
 PLUGIN_FUNCTION_HOST = '_plugin_ns_internal'
 COPIED_FUNCTION_ID = 'copied_ns'
+SHARED_FUNCTION_ID = 'shared_hidden_ns'
+SHARED_FUNCTION_HOST = '_shared_hidden_internal'
 LINKED_APP_ID = 'linked_app'
 WITNESS = 'hybrid_function_hosts_witness'
 WITNESS_APP_ID = 'witness_app'
@@ -81,6 +94,7 @@ NODES = (
     ('/', '_root_internal'),
     ('/plugin_ns', PLUGIN_FUNCTION_HOST),
     ('/copied_ns', '_copied_internal'),
+    ('/shared_hidden_ns', SHARED_FUNCTION_HOST),
     ('/hidden_only_ns', '_hidden_only_internal'),
     ('/visible_ns', 'visible_ns_node'),
     ('/linked_ns', 'linked_node'),
@@ -92,8 +106,10 @@ NODES = (
 EXPECTED_A = {
     PLUGIN_FUNCTION_ID: set(),
     COPIED_FUNCTION_ID: set(),
+    SHARED_FUNCTION_ID: set(),
     'declared_fn': set(),
     'visible_ns': {'visible_ns_node'},
+    'ignored_ns': {'ignored_node'},
     'hidden_only_ns': None,
     'linked_ns': None,
     'blocked_ns': None,
@@ -104,12 +120,18 @@ EXPECTED_B = {
 }
 EXPECTED_C = {
     PLUGIN_FUNCTION_ID: set(),
+    'blocked_ns': {'blocked_node'},
+    'linked_ns': {'linked_node'},
+}
+EXPECTED_D = {
+    'visible_ns': None,
 }
 # Gateway URL -> (App whose online state dates the snapshot, expected Functions)
 GATEWAYS = (
     (GATEWAY_A_URL, WITNESS_APP_ID, EXPECTED_A),
     (GATEWAY_B_URL, WITNESS_APP_ID, EXPECTED_B),
     (GATEWAY_C_URL, WITNESS, EXPECTED_C),
+    (GATEWAY_D_URL, WITNESS_APP_ID, EXPECTED_D),
 )
 
 HEALTH_BUDGET = 30.0
@@ -126,7 +148,7 @@ def _plugin_path():
 
 
 def _manifest_yaml(policy):
-    """Declare the witness, one linked App and a Function hosting nothing."""
+    """Declare the witness, one linked App and two Functions with no served host."""
     return f"""\
 manifest_version: "1.0"
 metadata:
@@ -153,6 +175,10 @@ functions:
     name: "Declared Function"
     hosted_by:
       - no_such_app
+  - id: {SHARED_FUNCTION_ID}
+    name: "Shared Hidden Function"
+    hosted_by:
+      - {SHARED_FUNCTION_HOST}
 """
 
 
@@ -166,7 +192,7 @@ def _write_manifest(policy):
 
 @pytest.mark.launch_test
 def generate_test_description():
-    """Launch two hybrid gateways, A with the test plugin, B under ignore."""
+    """Launch hybrid gateways A, B and D and the runtime_only gateway C."""
     common = {
         'server.host': '127.0.0.1',
         'refresh_interval_ms': 1000,
@@ -202,10 +228,19 @@ def generate_test_description():
             'plugins.topics_test.function_host': PLUGIN_FUNCTION_HOST,
         },
     )
+    gateway_d = create_gateway_node(
+        port=get_test_port(3), name='hybrid_gateway_d', namespace='/hybrid_d',
+        extra_params={
+            **common,
+            'discovery.manifest_path': _write_manifest('warn'),
+            'discovery.merge_pipeline.gap_fill.allow_heuristic_apps': False,
+        },
+    )
     return launch.LaunchDescription([
         gateway_a,
         gateway_b,
         gateway_c,
+        gateway_d,
         launch_testing.actions.ReadyToTest(),
     ]), {'gateway_node': gateway_a}
 
@@ -304,15 +339,20 @@ class TestHybridFunctionHosts(unittest.TestCase):
         self.assertEqual(detail.status_code, 200, detail.text)
         self.assertEqual(detail.json().get('x-medkit', {}).get('source'), 'runtime', detail.text)
 
-    def test_the_unserved_hosts_name_nodes_the_gateway_sees(self):
-        """Precondition: each removed host names a node the gateway does not serve."""
+    def test_no_removed_host_is_a_served_app(self):
+        """Precondition: each removed host names no App the gateway serves.
+
+        The positive controls on A and C show that each node is live.
+        """
         apps_a = self.apps[GATEWAY_A_URL]
         self.assertIn(LINKED_APP_ID, apps_a)
         self.assertTrue(apps_a[LINKED_APP_ID].get('x-medkit', {}).get('is_online'), apps_a)
-        for app_id in ('linked_node', 'blocked_node', PLUGIN_FUNCTION_HOST, '_root_internal'):
+        for app_id in ('linked_node', 'blocked_node', PLUGIN_FUNCTION_HOST,
+                       SHARED_FUNCTION_HOST, '_root_internal'):
             self.assertNotIn(app_id, apps_a)
         self.assertIn('visible_ns_node', apps_a)
         self.assertNotIn('ignored_node', self.apps[GATEWAY_B_URL])
+        self.assertNotIn('visible_ns_node', self.apps[GATEWAY_D_URL])
 
 
 @launch_testing.post_shutdown_test()

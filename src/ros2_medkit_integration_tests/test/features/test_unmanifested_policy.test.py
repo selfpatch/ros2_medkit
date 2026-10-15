@@ -799,8 +799,11 @@ class TestManifestOverridePrecedence(GatewayTestCase):
             'the baseline gateway reports the same provenance, so the line '
             'above is a property of the entity, not of this one gateway',
         )
-        self.assertIn(
-            RUNTIME_HOST_ID, ext.get('hosts', []),
+        # The union: every manifest host plus the one served runtime host. The
+        # runtime ids of nodes bound to manifest Apps are not served, so they
+        # are no hosts.
+        self.assertEqual(
+            set(ext.get('hosts', [])), MANIFEST_APPS | {RUNTIME_HOST_ID},
             'allow_manifest_override=false must let the runtime hosts through',
         )
         self.assertNotIn(

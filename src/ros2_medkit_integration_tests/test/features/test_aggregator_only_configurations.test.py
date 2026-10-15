@@ -432,6 +432,30 @@ class AggregatorOnlyConfigurationsTest(unittest.TestCase):
             f'{response.status_code} {response.text}',
         )
 
+    # ------------------------------------------------------------ Function hosts
+
+    def test_a0_the_merged_function_keeps_its_component_host(self):
+        """A host that names a served Component stays a host.
+
+        The primary serves the peer's Component, so the merged Function lists
+        it next to the peer's two Apps.
+        """
+        expected = {PEER_CALIBRATION_APP, PEER_PRESSURE_APP, PEER_COMPONENT}
+        deadline = time.monotonic() + DISCOVERY_TIMEOUT
+        hosts = set()
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(
+                    f'{PRIMARY_URL}/functions/{AGGREGATOR_ONLY_FUNCTION}', timeout=15)
+                if response.status_code == 200:
+                    hosts = set(response.json().get('x-medkit', {}).get('hosts', []))
+                    if hosts == expected:
+                        break
+            except (requests.RequestException, ValueError):
+                pass
+            time.sleep(DISCOVERY_INTERVAL)
+        self.assertEqual(hosts, expected)
+
     # ----------------------------------------------------------------- C1 (list)
 
     def test_a1_an_aggregator_only_entity_lists_its_peer_members_parameters(self):
