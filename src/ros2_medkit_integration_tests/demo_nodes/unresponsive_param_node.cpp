@@ -121,11 +121,11 @@ int main(int argc, char ** argv) {
   // still dies without leaving a stack behind.
   ros2_medkit_integration_tests::install_crash_backtrace();
   // Deliberately NOT ros2_medkit_integration_tests::run_demo_node(): that
-  // helper calls rclcpp::shutdown() only after executor.spin() has already
-  // returned, which works for every other demo node but would deadlock this
-  // one - the list_parameters callback above blocks the executor's worker on
+  // helper calls rclcpp::shutdown() only after its spin_once loop has ended,
+  // which works for every other demo node but would deadlock this one - the
+  // list_parameters callback above blocks the executor's worker on
   // rclcpp::ok(), so shutdown() must be called BEFORE the executor is asked
-  // to stop, not after, or spin() never returns.
+  // to stop, not after, or spinning never ends.
   //
   // Same building block as run_demo_node() otherwise: block SIGINT/SIGTERM
   // up front and consume them on a dedicated sigwait thread (a normal thread
