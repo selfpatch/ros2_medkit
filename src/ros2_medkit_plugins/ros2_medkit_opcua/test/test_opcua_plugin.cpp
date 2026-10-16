@@ -2451,6 +2451,10 @@ struct ScopedExecutorSpin {
     thread = std::thread([this] {
       executor.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor.is_spinning()) {
+      std::this_thread::yield();
+    }
   }
   void stop() {
     executor.cancel();

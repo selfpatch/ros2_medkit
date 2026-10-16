@@ -35,6 +35,17 @@ PORT_WITH_PLUGIN = get_test_port(1)
 
 HTTP_METHODS = {'get', 'post', 'put', 'delete', 'patch', 'head', 'options'}
 
+# x-medkit.phase values while an operation runs on a package, or a DELETE is in
+# flight. prepare, execute and automated start in status pending with phase
+# preparing or executing, and leave both phases when they finish.
+RUNNING_PHASES = {'preparing', 'executing', 'deleting'}
+
+
+def _operation_running(status):
+    """Whether a GET /updates/{id}/status body shows an operation still running."""
+    return (status.get('status') == 'inProgress'
+            or status.get('x-medkit', {}).get('phase') in RUNNING_PHASES)
+
 
 def _get_test_plugin_path():
     """Get path to test_update_backend.so demo plugin."""
@@ -100,7 +111,7 @@ class _UpdatesTestMixin:
         return r
 
     def _cleanup_package(self, pkg_id):
-        """Best-effort cleanup: wait for idle, then delete."""
+        """Best-effort cleanup: wait while an operation runs, then delete."""
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             r = requests.get(
@@ -108,10 +119,7 @@ class _UpdatesTestMixin:
             )
             if r.status_code == 404:
                 break
-            if r.status_code == 200 and r.json().get('status') in (
-                'completed',
-                'failed',
-            ):
+            if r.status_code == 200 and not _operation_running(r.json()):
                 break
             time.sleep(0.2)
         requests.delete(f'{self.BASE_URL}/updates/{pkg_id}', timeout=5)

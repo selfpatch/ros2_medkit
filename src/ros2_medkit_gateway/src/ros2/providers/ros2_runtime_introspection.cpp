@@ -18,6 +18,8 @@
 #include <set>
 #include <unordered_map>
 
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
+
 namespace ros2_medkit_gateway::ros2 {
 
 namespace {
@@ -142,7 +144,7 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
       app.id = name;
     }
     app.name = name;
-    app.source = "heuristic";
+    app.source = discovery::kRuntimeAppSource;
     app.is_online = true;
     app.bound_fqn = fqn;
 
@@ -234,7 +236,7 @@ std::vector<Function> Ros2RuntimeIntrospection::discover_functions(const std::ve
     Function func;
     func.id = ns_name;
     func.name = ns_name;
-    func.source = "runtime";
+    func.source = discovery::kRuntimeFunctionSource;
     func.hosts = app_ids;
 
     RCLCPP_DEBUG(node_->get_logger(), "Created runtime function '%s' with %zu host apps", ns_name.c_str(),

@@ -60,34 +60,23 @@ inline std::string graph_node_fqn(const std::string & name, const std::string & 
 /**
  * @brief Is this FQN one of the gateway's in-process helper nodes?
  *
- * True for `<self>_sub`, `<self>_fault_clients` and `<self>_lifecycle_state_reader`, exact matches
- * only. False for the gateway node itself, which is a diagnosable App. The last two take only the
- * gateway's node name, so they also match as `/<name><suffix>`; two gateways with one name in
- * different namespaces both claim those root-namespace nodes.
+ * For a gateway at `<ns>/<name>`: true for `<ns>/_<name>_sub`, `<ns>/_<name>_fault_clients` and
+ * `<ns>/_<name>_lifecycle_state_reader`, the names make_helper_node gives them, exact matches only.
+ * False for the gateway node itself, which is a diagnosable App.
  *
  * @param node_fqn Fully qualified node name to test ("/ns/node")
- * @param self_fqn The gateway node's own FQN. An empty value matches nothing
+ * @param self_fqn The gateway node's own FQN. A value with no '/' (an empty one included), or with
+ *        nothing after its last '/', matches nothing
  */
 inline bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn) {
-  if (self_fqn.empty() || node_fqn.empty()) {
+  const auto last_slash = self_fqn.rfind('/');
+  if (last_slash == std::string::npos || last_slash + 1 == self_fqn.size()) {
     return false;
   }
-  struct HelperNode {
-    const char * suffix;
-    bool follows_gateway_namespace;
-  };
-  static constexpr std::array<HelperNode, 3> kHelperNodes{{
-      {"_sub", true},
-      {"_fault_clients", false},
-      {"_lifecycle_state_reader", false},
-  }};
-  const auto last_slash = self_fqn.rfind('/');
-  const std::string bare_name = last_slash == std::string::npos ? self_fqn : self_fqn.substr(last_slash + 1);
-  return std::any_of(kHelperNodes.begin(), kHelperNodes.end(), [&](const HelperNode & helper) {
-    if (node_fqn == self_fqn + helper.suffix) {
-      return true;
-    }
-    return !helper.follows_gateway_namespace && !bare_name.empty() && node_fqn == "/" + bare_name + helper.suffix;
+  const std::string helper_prefix = self_fqn.substr(0, last_slash + 1) + "_" + self_fqn.substr(last_slash + 1);
+  static constexpr std::array<const char *, 3> kHelperSuffixes{"_sub", "_fault_clients", "_lifecycle_state_reader"};
+  return std::any_of(kHelperSuffixes.begin(), kHelperSuffixes.end(), [&](const char * suffix) {
+    return node_fqn == helper_prefix + suffix;
   });
 }
 

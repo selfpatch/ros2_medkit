@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <future>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -25,12 +27,21 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 using namespace ros2_medkit_gateway;
 
-// Use a port that nothing listens on for connection-refused tests
-constexpr int DEAD_PORT = 59999;
-static const std::string DEAD_URL = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+// URL of the index-th port that refuses every connection. Each port stays bound and never
+// listens for the life of this test binary.
+static std::string dead_url(size_t index) {
+  static std::mutex mutex;
+  static std::deque<test_support::RefusedPort> ports;
+  std::lock_guard<std::mutex> lock(mutex);
+  while (ports.size() <= index) {
+    ports.emplace_back();
+  }
+  return ports[index].http_url();
+}
 
 // =============================================================================
 // Helper: build AggregationConfig with unreachable static peers
@@ -43,7 +54,7 @@ static AggregationConfig make_config(size_t num_peers) {
 
   for (size_t i = 0; i < num_peers; ++i) {
     AggregationConfig::PeerConfig peer;
-    peer.url = "http://127.0.0.1:" + std::to_string(DEAD_PORT + static_cast<int>(i));
+    peer.url = dead_url(i);
     peer.name = "peer_" + std::to_string(i);
     config.peers.push_back(peer);
   }
@@ -510,10 +521,10 @@ TEST(AggregationManager, get_peer_url_returns_url_for_known_peer) {
   AggregationManager manager(config);
 
   std::string url = manager.get_peer_url("peer_0");
-  EXPECT_EQ(url, "http://127.0.0.1:" + std::to_string(DEAD_PORT));
+  EXPECT_EQ(url, dead_url(0));
 
   std::string url1 = manager.get_peer_url("peer_1");
-  EXPECT_EQ(url1, "http://127.0.0.1:" + std::to_string(DEAD_PORT + 1));
+  EXPECT_EQ(url1, dead_url(1));
 }
 
 TEST(AggregationManager, get_peer_url_returns_empty_for_unknown_peer) {
@@ -710,7 +721,7 @@ TEST(AggregationManager, forward_auth_config_propagated_to_peer_clients) {
   config.forward_auth = false;
 
   AggregationConfig::PeerConfig peer;
-  peer.url = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+  peer.url = dead_url(0);
   peer.name = "test_peer";
   config.peers.push_back(peer);
 

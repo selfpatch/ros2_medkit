@@ -815,8 +815,8 @@ TEST_F(ParamBeaconPluginTest, EmptyTargetListDropsEveryClient) {
 // A graph read skips the gateway's helper nodes.
 TEST_F(ParamBeaconPluginTest, GatewayHelperNodesAreNotPolled) {
   ParameterServiceStub healthy("helper_skip_healthy", true, GetAnswer::kValue);
-  ParameterServiceStub fault_clients("test_param_beacon_node_fault_clients", true, GetAnswer::kValue);
-  ParameterServiceStub state_reader("test_param_beacon_node_lifecycle_state_reader", true, GetAnswer::kValue);
+  ParameterServiceStub fault_clients("_test_param_beacon_node_fault_clients", true, GetAnswer::kValue);
+  ParameterServiceStub state_reader("_test_param_beacon_node_lifecycle_state_reader", true, GetAnswer::kValue);
 
   plugin_ = std::make_unique<ParameterBeaconPlugin>();
   nlohmann::json config;

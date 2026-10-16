@@ -56,6 +56,10 @@ class Ros2SubscriptionExecutorTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
 
     Ros2SubscriptionExecutor::Config cfg;
     cfg.max_queue_depth = 16;
@@ -156,7 +160,8 @@ TEST_F(Ros2SubscriptionExecutorTest, QueueFullReturnsBackpressure) {
 TEST_F(Ros2SubscriptionExecutorTest, NodeAccessibleWithSuffixedName) {
   auto * n = sub_exec_->node();
   ASSERT_NE(n, nullptr);
-  EXPECT_EQ(std::string(n->get_name()), std::string("test_gateway_node_sub"));
+  // Hidden helper node: leading underscore, then the gateway node name and the suffix.
+  EXPECT_EQ(std::string(n->get_name()), std::string("_test_gateway_node_sub"));
 }
 
 TEST_F(Ros2SubscriptionExecutorTest, StatsTrackCompletedTasks) {

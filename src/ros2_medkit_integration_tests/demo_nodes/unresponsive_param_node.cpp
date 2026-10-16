@@ -50,8 +50,8 @@ class UnresponsiveParamNode : public rclcpp::Node {
  public:
   UnresponsiveParamNode() : Node("unresponsive_param_node", rclcpp::NodeOptions().start_parameter_services(false)) {
     list_parameters_service_ = create_service<rcl_interfaces::srv::ListParameters>(
-        "~/list_parameters", [](const std::shared_ptr<rcl_interfaces::srv::ListParameters::Request> /*request*/,
-                                std::shared_ptr<rcl_interfaces::srv::ListParameters::Response> /*response*/) {
+        "~/list_parameters", [](const std::shared_ptr<rcl_interfaces::srv::ListParameters::Request> & /*request*/,
+                                const std::shared_ptr<rcl_interfaces::srv::ListParameters::Response> & /*response*/) {
           // Never actually replies. Loops on rclcpp::ok() (not a fixed
           // sleep) rather than a condition variable tied to node state, so
           // it needs no member access at all: main() flips rclcpp::ok() to
@@ -70,22 +70,23 @@ class UnresponsiveParamNode : public rclcpp::Node {
     // the first round-trip call in the gateway's configuration round trip
     // and it never returns within the gateway's bounded timeout.
     get_parameters_service_ = create_service<rcl_interfaces::srv::GetParameters>(
-        "~/get_parameters", [](const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> /*request*/,
-                               std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> /*response*/) {});
+        "~/get_parameters", [](const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> & /*request*/,
+                               const std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> & /*response*/) {});
     set_parameters_service_ = create_service<rcl_interfaces::srv::SetParameters>(
-        "~/set_parameters", [](const std::shared_ptr<rcl_interfaces::srv::SetParameters::Request> /*request*/,
-                               std::shared_ptr<rcl_interfaces::srv::SetParameters::Response> /*response*/) {});
+        "~/set_parameters", [](const std::shared_ptr<rcl_interfaces::srv::SetParameters::Request> & /*request*/,
+                               const std::shared_ptr<rcl_interfaces::srv::SetParameters::Response> & /*response*/) {});
     describe_parameters_service_ = create_service<rcl_interfaces::srv::DescribeParameters>(
         "~/describe_parameters",
-        [](const std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Request> /*request*/,
-           std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Response> /*response*/) {});
+        [](const std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Request> & /*request*/,
+           const std::shared_ptr<rcl_interfaces::srv::DescribeParameters::Response> & /*response*/) {});
     get_parameter_types_service_ = create_service<rcl_interfaces::srv::GetParameterTypes>(
-        "~/get_parameter_types", [](const std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Request> /*request*/,
-                                    std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Response> /*response*/) {});
+        "~/get_parameter_types",
+        [](const std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Request> & /*request*/,
+           const std::shared_ptr<rcl_interfaces::srv::GetParameterTypes::Response> & /*response*/) {});
     set_parameters_atomically_service_ = create_service<rcl_interfaces::srv::SetParametersAtomically>(
         "~/set_parameters_atomically",
-        [](const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Request> /*request*/,
-           std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> /*response*/) {});
+        [](const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Request> & /*request*/,
+           const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> & /*response*/) {});
 
     RCLCPP_INFO(get_logger(),
                 "UnresponsiveParamNode started: parameter services are registered but "
@@ -121,11 +122,11 @@ int main(int argc, char ** argv) {
   // still dies without leaving a stack behind.
   ros2_medkit_integration_tests::install_crash_backtrace();
   // Deliberately NOT ros2_medkit_integration_tests::run_demo_node(): that
-  // helper calls rclcpp::shutdown() only after executor.spin() has already
-  // returned, which works for every other demo node but would deadlock this
-  // one - the list_parameters callback above blocks the executor's worker on
+  // helper calls rclcpp::shutdown() only after its spin_once loop has ended,
+  // which works for every other demo node but would deadlock this one - the
+  // list_parameters callback above blocks the executor's worker on
   // rclcpp::ok(), so shutdown() must be called BEFORE the executor is asked
-  // to stop, not after, or spin() never returns.
+  // to stop, not after, or spinning never ends.
   //
   // Same building block as run_demo_node() otherwise: block SIGINT/SIGTERM
   // up front and consume them on a dedicated sigwait thread (a normal thread

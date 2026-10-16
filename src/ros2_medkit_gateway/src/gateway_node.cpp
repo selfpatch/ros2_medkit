@@ -1602,17 +1602,15 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
   size_t count = 0;
   for (const auto & [name, ns] : nodes_and_namespaces) {
     if (!name.empty() && name.front() == '_') {
-      continue;  // hidden node (name part starts with '_')
+      continue;  // hidden node, including the gateway's own helper nodes
     }
     std::string fqn = ns;
     if (ns != "/") {
       fqn += "/";
     }
     fqn += name;
-    // The gateway is not a peer of itself, and neither are the helper nodes it
-    // runs in its own process: a gateway alone on the graph has zero peers,
-    // which is what raises the empty-graph warning.
-    if (fqn == self_fqn || is_own_gateway_helper_node(fqn, self_fqn)) {
+    // Exact match: a peer named "<fqn>_monitor" or "<fqn>2" is still a peer.
+    if (fqn == self_fqn) {
       continue;
     }
     ++count;
@@ -2294,6 +2292,9 @@ void GatewayNode::refresh_cache() {
     auto areas = discovery_mgr_->discover_areas();
     auto apps = discovery_mgr_->discover_apps();
     auto functions = discovery_mgr_->discover_functions(apps);
+    // Functions only runtime introspection created. A peer or a plugin that
+    // contributes the same id below removes it.
+    auto introspection_only_ids = discovery_mgr_->introspection_only_function_ids(functions);
 
     // In RUNTIME_ONLY mode: HostInfoProvider component or empty.
     // In HYBRID/MANIFEST_ONLY: pipeline-merged or manifest components.
@@ -2329,6 +2330,14 @@ void GatewayNode::refresh_cache() {
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
       aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
+      for (const auto & func : functions) {
+        for (const auto & contributor : func.contributors) {
+          if (contributor.rfind("peer:", 0) == 0) {
+            introspection_only_ids.erase(func.id);
+            break;
+          }
+        }
+      }
 
       // Track per-entity peer contributors: entity id -> list of peer
       // names that host or contribute to it. Covers both routed leaves
@@ -2428,6 +2437,7 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(func.id);
+            introspection_only_ids.erase(func.id);
             if (func.source.empty()) {
               func.source = "plugin";
             }
@@ -2492,6 +2502,9 @@ void GatewayNode::refresh_cache() {
         }
       }
     }
+
+    // Every filter and merge has run: a Function hosts only what is served.
+    keep_served_function_hosts(functions, apps, all_components, introspection_only_ids);
 
     // Capture sizes for logging
     const size_t area_count = areas.size();
@@ -2585,6 +2598,34 @@ void GatewayNode::stop_rest_server() {
   }
 }
 
+void keep_served_function_hosts(std::vector<Function> & functions, const std::vector<App> & apps,
+                                const std::vector<Component> & components,
+                                const std::unordered_set<std::string> & introspection_only_ids) {
+  std::unordered_set<std::string> served_ids;
+  for (const auto & app : apps) {
+    served_ids.insert(app.id);
+  }
+  for (const auto & comp : components) {
+    served_ids.insert(comp.id);
+  }
+  std::vector<Function> kept;
+  kept.reserve(functions.size());
+  for (auto & func : functions) {
+    func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                    [&served_ids](const std::string & host) {
+                                      return served_ids.count(host) == 0;
+                                    }),
+                     func.hosts.end());
+    // Introspection creates a Function only for a namespace that holds apps.
+    // A Function anything else contributed to stays without hosts.
+    if (func.hosts.empty() && introspection_only_ids.count(func.id) > 0) {
+      continue;
+    }
+    kept.push_back(std::move(func));
+  }
+  functions = std::move(kept);
+}
+
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered) {
   std::set<std::string> current(dropped.begin(), dropped.end());
   if (current == remembered) {
@@ -2602,19 +2643,20 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
   auto before = apps.size();
   auto end = std::remove_if(apps.begin(), apps.end(), [&](const App & app) {
     std::string original_id = app.id;
+    const std::string node_fqn = app.effective_fqn();
     auto rt_it = peer_routing_table.find(app.id);
-    if (rt_it != peer_routing_table.end()) {
+    const bool remote = rt_it != peer_routing_table.end();
+    if (remote) {
       // Known remote entity: strip "peer_name__" prefix if present
       const std::string & peer_name = rt_it->second;
       std::string prefix = peer_name + "__";
       if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
         original_id = original_id.substr(prefix.size());
       }
-    } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
-      // A local app bound to one of this gateway's own helper nodes. Those
-      // names do not start with '_' ("<gateway>_sub",
-      // "<gateway>_fault_clients", ...), so only the FQN test catches them, and
-      // without it the gateway advertises its own plumbing as diagnosable apps.
+    } else if (is_own_gateway_helper_node(node_fqn, self_fqn)) {
+      // A local app bound to one of this gateway's own helper nodes. The
+      // underscore rule below reads a declared app's id, which need not start
+      // with '_', so only the FQN test catches every app on a helper node.
       // The gateway's own node is deliberately not covered: its ROS parameters
       // are served as that App's configurations, so callers reach them at
       // /apps/<gateway>/configurations. Remote entities are skipped too - a
@@ -2622,18 +2664,23 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
       // business.
       //
       // Dropping a runtime-discovered app is the whole point and stays quiet.
-      // Dropping one somebody DECLARED is different: in manifest and hybrid
-      // mode the manifest is the source of truth, so removing an entry from it
-      // without a word is a silent override. The declared sources are the ones
-      // the merge pipeline already protects from orphan suppression, so the
-      // same predicate decides it here; those are reported to the caller, which
-      // owns the logger.
-      if (dropped_declared_apps != nullptr && discovery::is_protected_source(app.source)) {
-        dropped_declared_apps->push_back(app.id + " -> " + app.effective_fqn());
+      // Any other app was declared by a manifest or a plugin, and dropping it
+      // overrides that declaration. The caller owns the logger and reports it.
+      if (dropped_declared_apps != nullptr && app.source != discovery::kRuntimeAppSource) {
+        dropped_declared_apps->push_back(app.id + " -> " + node_fqn);
       }
       return true;
     }
-    // ROS 2 internal nodes use _ prefix convention
+    // ROS 2 internal nodes use the '_' prefix convention on the node name. A
+    // runtime app is judged by its node name only, because a name collision
+    // prefixes its id with the namespace. Every other app, remote ones
+    // included (a peer's apps arrive as "peer:<name>"), is judged by its id.
+    if (app.source == discovery::kRuntimeAppSource) {
+      const auto last_slash = node_fqn.rfind('/');
+      if (last_slash != std::string::npos && last_slash + 1 < node_fqn.size()) {
+        return node_fqn[last_slash + 1] == '_';
+      }
+    }
     return !original_id.empty() && original_id[0] == '_';
   });
   apps.erase(end, apps.end());

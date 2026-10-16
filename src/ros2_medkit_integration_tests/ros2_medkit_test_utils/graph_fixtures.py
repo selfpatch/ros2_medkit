@@ -185,3 +185,10 @@ class LeftoverNode(_FixtureProcess):
     def publish(self):
         """Send the late sample now, after `leave()`, rather than when the delay runs out."""
         self.send('publish')
+
+    def wait_published(self, timeout):
+        """Whether the late sample went out and every matched reader acknowledged it."""
+        match = self.wait_line(
+            r'ghost_node_injector: leftover_published matched_subscriptions=\d+ '
+            r'acked=(true|false)', timeout)
+        return match is not None and match.group(1) == 'true'

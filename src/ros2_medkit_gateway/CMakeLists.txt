@@ -210,6 +210,7 @@ add_library(gateway_ros2 STATIC
   src/plugins/plugin_loader.cpp
   src/plugins/plugin_manager.cpp
   src/ros2_common/callback_groups.cpp
+  src/ros2_common/helper_node.cpp
   src/ros2_common/ros2_subscription_executor.cpp
   src/ros2_common/ros2_subscription_slot.cpp
   src/script_manager.cpp
@@ -888,6 +889,16 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_ros2_lifecycle_state_reader test/test_ros2_lifecycle_state_reader.cpp)
   target_link_libraries(test_ros2_lifecycle_state_reader gateway_ros2)
   medkit_target_dependencies(test_ros2_lifecycle_state_reader rclcpp lifecycle_msgs)
+
+  # Helper nodes keep their own name under a process-wide __node remap
+  medkit_add_gtest(test_helper_node test/test_helper_node.cpp)
+  target_link_libraries(test_helper_node gateway_ros2)
+  medkit_target_dependencies(test_helper_node rclcpp rcl_interfaces)
+
+  # A gateway on a private context, with the default context never initialised
+  medkit_add_gtest(test_gateway_private_context test/test_gateway_private_context.cpp)
+  target_link_libraries(test_gateway_private_context gateway_ros2)
+  medkit_target_dependencies(test_gateway_private_context rclcpp lifecycle_msgs std_msgs ros2_medkit_msgs)
 
   # Private client nodes torn down after a first graph wait that follows rclcpp::shutdown()
   medkit_add_gtest(test_graph_listener_join test/test_graph_listener_join.cpp)

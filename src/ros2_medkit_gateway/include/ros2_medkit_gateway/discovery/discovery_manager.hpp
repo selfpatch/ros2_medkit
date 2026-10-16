@@ -35,6 +35,7 @@
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace ros2_medkit_serialization {
@@ -204,6 +205,17 @@ class DiscoveryManager : public ServiceActionResolver {
    * @return Vector of discovered Function entities
    */
   std::vector<Function> discover_functions(const std::vector<App> & apps);
+
+  /**
+   * @brief Ids of the given Functions that only runtime introspection created
+   *
+   * Takes the same branch as discover_functions(): every Function runtime
+   * discovery returns, none from a manifest, and in hybrid mode the ids only
+   * the runtime layer contributed to the last merge.
+   *
+   * @param functions What discover_functions() returned in this refresh
+   */
+  std::unordered_set<std::string> introspection_only_function_ids(const std::vector<Function> & functions);
 
   // =========================================================================
   // Entity lookup by ID

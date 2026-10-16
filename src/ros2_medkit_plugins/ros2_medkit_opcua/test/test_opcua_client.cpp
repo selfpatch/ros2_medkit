@@ -16,6 +16,10 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
+
 namespace ros2_medkit_gateway {
 
 // These tests verify OpcuaClient behavior without a running OPC-UA server.
@@ -33,7 +37,8 @@ TEST(OpcuaClientTest, DefaultState) {
 TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
   OpcuaClient client;
   OpcuaClientConfig config;
-  config.endpoint_url = "opc.tcp://localhost:49999";  // No server here
+  const test_support::RefusedPort no_server;
+  config.endpoint_url = "opc.tcp://127.0.0.1:" + std::to_string(no_server.port());
   config.connect_timeout = std::chrono::milliseconds(500);
 
   EXPECT_FALSE(client.connect(config));

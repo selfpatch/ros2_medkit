@@ -56,6 +56,8 @@ class Ros2LifecycleStateReader : public LifecycleStateReader {
   std::shared_ptr<rclcpp::Node> client_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::chrono::duration<double> timeout_;
+  /// The host's logger. The helper node has no /rosout publisher.
+  rclcpp::Logger logger_;
   std::mutex mutex_;
 };
 

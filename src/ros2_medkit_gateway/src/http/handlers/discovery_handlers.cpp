@@ -1554,14 +1554,10 @@ http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::Ty
       return tl::unexpected(flatten_validator_error(entity_result.error()));
     }
 
-    // Local entity - look up full object from cache for detail response.
+    // The cache holds the Functions the gateway serves, after the
+    // internal-node filter. The hosts route reads only the cache too.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
-    if (!func_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
-      func_opt = discovery->get_function(function_id);
-    }
-
     if (!func_opt) {
       return tl::unexpected(make_not_found_error("Function", "function_id", function_id));
     }
@@ -1662,14 +1658,11 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_function_
       return tl::unexpected(make_invalid_id_error("function", "function_id", function_id, validation_result.error()));
     }
 
-    // Read from cache (has merged entities from aggregation with combined hosts).
+    // Read from cache only (merged hosts from aggregation, after the
+    // internal-node filter), so this route and GET /functions/{id} agree on
+    // which Functions exist. Discovery still holds Functions the filter dropped.
     const auto & cache = ctx_.node()->get_thread_safe_cache();
     auto func_opt = cache.get_function(function_id);
-    if (!func_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
-      func_opt = discovery->get_function(function_id);
-    }
-
     if (!func_opt) {
       return tl::unexpected(make_not_found_error("Function", "function_id", function_id));
     }

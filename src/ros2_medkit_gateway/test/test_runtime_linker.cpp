@@ -829,9 +829,8 @@ TEST(RuntimeLinkerHelperNodes, TheOrphanSkipFollowsTheAppFilterSetting) {
     rclcpp::init(0, nullptr);
   }
   auto node = std::make_shared<rclcpp::Node>("runtime_linker_helper_gateway");
-  const std::string self_fqn = node->get_fully_qualified_name();
-  // The subscription helper node the gateway creates in its own namespace.
-  const std::string helper_fqn = self_fqn + "_sub";
+  // The subscription helper node make_helper_node creates in the gateway's (root) namespace.
+  const std::string helper_fqn = std::string("/_") + node->get_name() + "_sub";
 
   App helper;
   helper.id = "helper";

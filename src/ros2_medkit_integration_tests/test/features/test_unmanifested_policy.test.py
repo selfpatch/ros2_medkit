@@ -26,9 +26,10 @@ baseline               defaults (inherit on, override allowed)         runtime r
                                                                        inherited, manifest wins
 no-inherit             ``inherit_runtime_resources: false``            no runtime topics or
                                                                        services on the app
-no-override            ``allow_manifest_override: false``              runtime hosts join the
-                                                                       hierarchy union;
-                                                                       provenance unchanged
+no-override            ``allow_manifest_override: false``              served runtime hosts
+                                                                       join the hierarchy
+                                                                       union; provenance
+                                                                       unchanged
 override-pinned        ``allow_manifest_override: false`` PLUS an      the explicit parameter
                        explicit ``layers.manifest.hierarchy``          wins: the manifest keeps
                        parameter                                       hosts exclusive
@@ -109,9 +110,12 @@ MANIFEST_APPS = {TEMP_APP_ID, CALIB_APP_ID, ACTION_APP_ID}
 # and the merge policies decide what the served document says.
 SHARED_FUNCTION_ID = 'powertrain'
 MANIFEST_FUNCTION_NAME = 'Powertrain (declared)'
-# Runtime app id for the temp_sensor node - present in the runtime layer's
-# view of the same Function, absent from the manifest's.
-RUNTIME_HOST_ID = 'temp_sensor'
+# A runtime host only the hierarchy union can add: the late rpm_sensor node is
+# declared nowhere, so a gateway under ``warn`` serves it under this runtime
+# id, and the runtime layer's view of the same Function hosts it. A Function
+# keeps only hosts the gateway serves, so a runtime id whose node is bound to a
+# manifest App (temp_sensor) is never a host and cannot tell the policies apart.
+RUNTIME_HOST_ID = 'rpm_sensor'
 
 # Nodes present from the start; all are declared by the manifest. All three
 # resource kinds enrich_app() copies are represented: a topic, a service and an
@@ -752,6 +756,16 @@ class TestManifestOverridePrecedence(GatewayTestCase):
 
     @staticmethod
     def _merged_function(base_url):
+        """Read the merged Function once the gateway serves the runtime host.
+
+        Apps and Functions are installed together, so a Function read after
+        the App is listed comes from a refresh that saw the late node. Its
+        absence from the hosts is then the policy, not a slower gateway.
+        """
+        _poll(
+            lambda: True if RUNTIME_HOST_ID in _item_ids(base_url, '/apps') else None,
+            what=f'{base_url} to serve {RUNTIME_HOST_ID}',
+        )
         return _poll(
             lambda: _function_extension(base_url) or None,
             what=f'{base_url} to merge the {SHARED_FUNCTION_ID} function',
@@ -785,8 +799,11 @@ class TestManifestOverridePrecedence(GatewayTestCase):
             'the baseline gateway reports the same provenance, so the line '
             'above is a property of the entity, not of this one gateway',
         )
-        self.assertIn(
-            RUNTIME_HOST_ID, ext.get('hosts', []),
+        # The union: every manifest host plus the one served runtime host. The
+        # runtime ids of nodes bound to manifest Apps are not served, so they
+        # are no hosts.
+        self.assertEqual(
+            set(ext.get('hosts', [])), MANIFEST_APPS | {RUNTIME_HOST_ID},
             'allow_manifest_override=false must let the runtime hosts through',
         )
         self.assertNotIn(
