@@ -312,7 +312,7 @@ class TestGraphProviderGreenwave(GatewayTestCase):
                 return edge
         return None
 
-    def _poll_until_primary_active(self, *, timeout=40.0):
+    def _poll_until_primary_active(self, *, timeout=40.0, healthy=False):
         """Poll the function graph until the primary edge reports active.
 
         greenwave_monitor publishes ``/diagnostics`` at only ~1 Hz with the
@@ -328,6 +328,10 @@ class TestGraphProviderGreenwave(GatewayTestCase):
         design. Waiting for a populated frequency_hz skips past that
         transient and gives every caller (metrics-arrival, pending/healthy,
         and provenance assertions alike) a real measured rate to check.
+
+        With ``healthy``, it also waits for ``pipeline_status == 'healthy'``.
+        greenwave's rate is a rolling estimate, and its first non-zero sample
+        can read below the degraded ratio when the publisher stalls.
         """
 
         def _condition(data):
@@ -336,7 +340,8 @@ class TestGraphProviderGreenwave(GatewayTestCase):
                 return None
             edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
             if (edge and edge['metrics'].get('metrics_status') == 'active'
-                    and edge['metrics'].get('frequency_hz') is not None):
+                    and edge['metrics'].get('frequency_hz') is not None
+                    and (not healthy or graph.get('pipeline_status') == 'healthy')):
                 return graph
             return None
 
@@ -349,7 +354,7 @@ class TestGraphProviderGreenwave(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        graph = self._poll_until_primary_active()
+        graph = self._poll_until_primary_active(healthy=True)
         edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
         self.assertIsNotNone(edge, 'temp_sensor -> temp_monitor edge not in graph')
 
@@ -375,7 +380,7 @@ class TestGraphProviderGreenwave(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        graph = self._poll_until_primary_active()
+        graph = self._poll_until_primary_active(healthy=True)
 
         uncovered_edge = self._find_edge(graph, UNCOVERED_SOURCE_ID, UNCOVERED_TARGET_ID)
         self.assertIsNotNone(

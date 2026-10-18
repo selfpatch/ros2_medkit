@@ -459,7 +459,8 @@ class TestGraphLeftoverNodes(unittest.TestCase):
                             f'the live node {fqn} never appeared in GET /apps')
 
         leftover = self._start_leftover(
-            '/leftover_many_ns/leftover_many', announce=MANY_LEFTOVERS - 1)
+            '/leftover_many_ns/leftover_many', delay_sec=PUBLISH_ON_COMMAND_DELAY_SEC,
+            announce=MANY_LEFTOVERS - 1)
         # Announce after GET /apps lists the node, or its own discovery message can replace it.
         self.assertTrue(leftover.announce_nodes(INJECTION_TIMEOUT_SEC), leftover.output())
         fqns = [leftover.fqn] + leftover.announced_fqns()
@@ -472,8 +473,19 @@ class TestGraphLeftoverNodes(unittest.TestCase):
             'the gateway never listed every announced node running, so it did not see them run')
 
         leftover.leave()
+        # This process's graph can show the leftovers before the late sample goes out, so it
+        # does not show that the gateway read the departure. GET /apps does.
+        deadline = time.monotonic() + LISTED_AFTER_OBSERVED_SEC + PROCESS_EXIT_TIMEOUT_SEC
+        while ids & set(self._ids('apps')) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertEqual(
+            ids & set(self._ids('apps')), set(),
+            'the nodes left, but GET /apps kept listing some of them, so the gateway never read '
+            'the graph without them')
+        leftover.publish()
+        self.assertTrue(leftover.wait_published(INJECTION_TIMEOUT_SEC), leftover.output())
         for fqn in fqns:
-            self._wait_left_over(fqn, LEFTOVER_DELAY_SEC + INJECTION_TIMEOUT_SEC)
+            self._wait_left_over(fqn, INJECTION_TIMEOUT_SEC)
         live_ids = {_app_id(fqn) for fqn in live}
 
         def check():

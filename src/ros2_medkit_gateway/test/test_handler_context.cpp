@@ -42,6 +42,7 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 #include "../src/openapi/route_registry.hpp"
 
@@ -436,7 +437,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
     agg_config.enabled = true;
     agg_config.timeout_ms = 200;
     AggregationConfig::PeerConfig peer;
-    peer.url = "http://127.0.0.1:59999";  // Unreachable port
+    peer.url = refused_peer_port_.http_url();
     peer.name = "peer_subsystem";
     agg_config.peers.push_back(peer);
     agg_mgr_ = std::make_unique<AggregationManager>(agg_config);
@@ -455,6 +456,8 @@ class HandlerContextForwardingTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
+  // The peer's port: held for the fixture's lifetime, so a forward to it is refused at once.
+  test_support::RefusedPort refused_peer_port_;
   std::unique_ptr<AggregationManager> agg_mgr_;
 };
 

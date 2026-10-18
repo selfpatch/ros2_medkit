@@ -2072,6 +2072,7 @@ class GroupingAggregationTest(unittest.TestCase):
         A 200 alone would still not say the service RAN, so the response payload
         is read - a service that answered is the only thing that can fill it.
         """
+        self._wait_for_operation(f'functions/{MERGED_FUNCTION}', 'peer_calibration:calibrate')
         response = requests.post(
             f'{PRIMARY_URL}/functions/{MERGED_FUNCTION}/operations/'
             f'{quote("peer_calibration:calibrate", safe="")}/executions',

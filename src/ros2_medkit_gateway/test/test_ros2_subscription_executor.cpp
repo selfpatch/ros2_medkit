@@ -56,6 +56,10 @@ class Ros2SubscriptionExecutorTest : public ::testing::Test {
     spin_thread_ = std::thread([this] {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
 
     Ros2SubscriptionExecutor::Config cfg;
     cfg.max_queue_depth = 16;

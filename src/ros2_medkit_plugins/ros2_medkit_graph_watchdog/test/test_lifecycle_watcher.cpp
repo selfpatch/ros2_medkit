@@ -271,6 +271,10 @@ TEST_F(LifecycleWatcherTest, NodeWideExecutorNeverRunsTheLifecycleCallbacks) {
   std::thread spin([&exec]() {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
 
   // Wait for endpoint matching first: without it, "no callback ran" would prove nothing
   // (the messages would simply never have reached the subscription).
@@ -514,6 +518,10 @@ TEST_F(LifecycleWatcherTest, RebindToALiveNodeDropsTheOldLabelAndSeedsTheNewBind
   std::thread spin([&exec]() {
     exec.spin();
   });
+  // A cancel() that lands before spin() starts is lost, and join() would block.
+  while (!exec.is_spinning()) {
+    std::this_thread::yield();
+  }
   // A fatal assertion below returns straight out of the test body, and a joinable
   // std::thread destroyed that way calls std::terminate - which aborts the whole binary
   // and takes every remaining case in this file with it, hiding the failure that started

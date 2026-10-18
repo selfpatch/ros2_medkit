@@ -93,6 +93,10 @@ class OrphanIntegrationTest : public ::testing::Test {
     spin_ = std::thread([this]() {
       exec_.spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!exec_.is_spinning()) {
+      std::this_thread::yield();
+    }
     ASSERT_TRUE(client_->wait_for_service(5s));
   }
 
