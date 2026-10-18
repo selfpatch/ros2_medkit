@@ -171,6 +171,21 @@ if(BUILD_TESTING)
     ros2_medkit_gateway rclcpp ros2_medkit_msgs lifecycle_msgs)
   target_link_libraries(test_graph_watchdog_plugin nlohmann_json::nlohmann_json)
 
+  # The plugin on a gateway whose context is private, with the default context never initialised
+  medkit_add_gtest(test_graph_watchdog_private_context
+    test/test_graph_watchdog_private_context.cpp
+    src/graph_watchdog_plugin.cpp
+    src/graph_watchdog_plugin_exports.cpp
+    src/detector_registry.cpp
+    src/reliability_gate.cpp
+    src/lifecycle_watcher.cpp
+    src/detectors/node_death_detector.cpp
+    ${LIFECYCLE_STATE_READER_SOURCES})
+  target_include_directories(test_graph_watchdog_private_context PRIVATE include ${GATEWAY_SRC_INCLUDE_DIR})
+  medkit_target_dependencies(test_graph_watchdog_private_context
+    ros2_medkit_gateway rclcpp ros2_medkit_msgs lifecycle_msgs)
+  target_link_libraries(test_graph_watchdog_private_context nlohmann_json::nlohmann_json)
+
   medkit_add_gtest(test_lifecycle_watcher
     test/test_lifecycle_watcher.cpp
     src/lifecycle_watcher.cpp

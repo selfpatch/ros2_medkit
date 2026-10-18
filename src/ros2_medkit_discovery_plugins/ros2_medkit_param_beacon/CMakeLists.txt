@@ -97,6 +97,17 @@ if(BUILD_TESTING)
   target_link_libraries(test_param_beacon_plugin
     nlohmann_json::nlohmann_json
     ros2_medkit_beacon_common::beacon_common_lib)
+  # The plugin on a gateway whose context is private, with the default context never initialised
+  medkit_add_gmock(test_param_beacon_private_context
+    test/test_param_beacon_private_context.cpp
+    src/param_beacon_plugin.cpp)
+  target_include_directories(test_param_beacon_private_context PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  medkit_target_dependencies(test_param_beacon_private_context
+    ros2_medkit_gateway ros2_medkit_beacon_common rclcpp)
+  target_link_libraries(test_param_beacon_private_context
+    nlohmann_json::nlohmann_json
+    ros2_medkit_beacon_common::beacon_common_lib)
   ros2_medkit_relax_vendor_warnings()
 endif()
 

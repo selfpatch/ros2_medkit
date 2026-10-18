@@ -696,7 +696,11 @@ void OpcuaPlugin::set_context(PluginContext & context) {
     // this plugin's threads (see fault_client_group_).
     fault_client_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                                       /*automatically_add_to_executor_with_node=*/false);
-    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    // On the gateway's context: a host that runs the gateway on a private context never
+    // initialises the default one.
+    rclcpp::ExecutorOptions executor_options;
+    executor_options.context = node->get_node_base_interface()->get_context();
+    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executor_options);
     fault_executor_->add_callback_group(fault_client_group_, node->get_node_base_interface());
     fault_clients_->report = create_client_in_group<ros2_medkit_msgs::srv::ReportFault>(
         node, "/fault_manager/report_fault", fault_client_group_);

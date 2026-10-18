@@ -308,6 +308,35 @@ if(BUILD_TESTING)
     OpenSSL::SSL OpenSSL::Crypto
   )
 
+  # The plugin on a gateway whose context is private, with the default context never initialised
+  medkit_add_gtest(test_opcua_private_context
+    test/test_opcua_private_context.cpp
+    src/opcua_plugin.cpp
+    src/opcua_client.cpp
+    src/device_identity.cpp
+    src/node_map.cpp
+    src/opcua_poller.cpp
+    src/network_discovery.cpp
+    src/network_discovery_io.cpp
+    src/address_space_browser.cpp
+  )
+  target_include_directories(test_opcua_private_context PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_opcua_private_context
+    ros2_medkit_msgs
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+    std_msgs
+  )
+  target_link_libraries(test_opcua_private_context
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+    OpenSSL::SSL OpenSSL::Crypto
+  )
+
   medkit_add_gtest(test_node_map
     test/test_node_map.cpp
     src/node_map.cpp

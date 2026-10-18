@@ -35,6 +35,7 @@
 #endif
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
 #include "ros2_medkit_graph_watchdog/aggregated_fault.hpp"  // kGraphWatchdogEntityId
 #include "ros2_medkit_graph_watchdog/detector_config.hpp"
 #include "ros2_medkit_graph_watchdog/detector_config_keys.hpp"  // min_node_death_miss_grace
@@ -287,7 +288,8 @@ void GraphWatchdogPlugin::set_context(ros2_medkit_gateway::PluginContext & conte
     std::lock_guard<std::mutex> node_lock(node_mutex_);
     fault_client_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                                       /*automatically_add_to_executor_with_node=*/false);
-    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(
+        ros2_medkit_gateway::ros2_common::executor_options_for(*node));
     fault_executor_->add_callback_group(fault_client_group_, node->get_node_base_interface());
     fault_client_ = create_client_in_group<ros2_medkit_msgs::srv::ReportFault>(node, "/fault_manager/report_fault",
                                                                                fault_client_group_);

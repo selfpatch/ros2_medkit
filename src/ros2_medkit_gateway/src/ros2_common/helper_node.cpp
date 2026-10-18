@@ -34,4 +34,10 @@ std::shared_ptr<rclcpp::Node> make_helper_node(rclcpp::Node & host, const std::s
   return std::make_shared<rclcpp::Node>(name, host.get_namespace(), options);
 }
 
+rclcpp::ExecutorOptions executor_options_for(rclcpp::Node & node) {
+  rclcpp::ExecutorOptions options;
+  options.context = node.get_node_base_interface()->get_context();
+  return options;
+}
+
 }  // namespace ros2_medkit_gateway::ros2_common

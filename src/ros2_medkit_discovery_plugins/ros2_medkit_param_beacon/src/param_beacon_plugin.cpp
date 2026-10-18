@@ -152,6 +152,9 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
 
   // Create dedicated node for parameter client operations
   rclcpp::NodeOptions options;
+  // The gateway's context: a host that runs the gateway on a private context never
+  // initialises the default one.
+  options.context(ctx_->node()->get_node_base_interface()->get_context());
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
