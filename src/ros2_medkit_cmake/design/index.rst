@@ -200,7 +200,8 @@ default container, so the leftovers accumulate until an unrelated test fails for
 space.
 
 Both wrappers therefore run ``fastdds shm clean`` when the test command returns, before the
-domain is released, and print one line when it removed anything. The tool removes a file only
+domain is released, and print one line when it removed anything or when the tool exited with an
+error. The tool removes a file only
 when no process holds its lock, so segments of tests still running elsewhere stay. It runs for
 every test, whatever RMW the test used, and is skipped when ``fastdds`` is not installed. It never
 changes the test's exit code.

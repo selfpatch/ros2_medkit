@@ -635,6 +635,11 @@ def reclaim_shared_memory(timeout=60):
         print(f'[medkit-domain] could not run {tool} shm clean: {error}',
               file=sys.stderr, flush=True)
         return None
+    if completed.returncode != 0:
+        lines = completed.stderr.strip().splitlines()
+        print(f'[medkit-domain] {tool} shm clean failed (rc={completed.returncode}): '
+              f'{lines[-1] if lines else ""}', file=sys.stderr, flush=True)
+        return None
     found = re.findall(r'(\d+) zombie (ports|segments) cleaned', completed.stdout)
     counts = {kind: int(n) for n, kind in found}
     return counts.get('ports', 0), counts.get('segments', 0)

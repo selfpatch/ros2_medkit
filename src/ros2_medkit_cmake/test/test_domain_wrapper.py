@@ -590,6 +590,25 @@ def test_exec_wrapper_reclaims_shared_memory_of_a_killed_participant(tmp_path):
     assert 'reclaimed shared memory' in result.stderr, result.stderr
 
 
+def test_a_failing_shm_clean_is_reported_and_keeps_the_exit_code(tmp_path):
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    fake = bin_dir / 'fastdds'
+    fake.write_text(
+        '#!/bin/sh\n'
+        'echo "Traceback (most recent call last):" >&2\n'
+        'echo "RuntimeError: shm broke" >&2\n'
+        'exit 3\n'
+    )
+    fake.chmod(0o755)
+    result = run_wrapped(
+        [], [sys.executable, '-c', 'pass'],
+        env={'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'{fake} shm clean failed (rc=3): RuntimeError: shm broke' in result.stderr, \
+        result.stderr
+
+
 @pytest.mark.parametrize('count', [1, 2, 3, 4])
 def test_domain_counts_across_the_supported_range(count):
     result = run_wrapped(['--domains', str(count)], [sys.executable, '-c', REPORT_ENV])

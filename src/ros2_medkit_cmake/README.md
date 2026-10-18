@@ -186,7 +186,8 @@ is what a `RESOURCE_LOCK` never could.
 When the test command returns, and before the domain is released, the wrapper runs
 `fastdds shm clean`. It removes the shared memory of participants that were killed rather
 than shut down, and leaves every file a live process still holds. A line starting with
-`[medkit-domain] reclaimed shared memory` in the test output says it removed something.
+`[medkit-domain] reclaimed shared memory` in the test output says it removed something. A line
+with `shm clean failed (rc=N)` says the tool failed, and carries the last line of its stderr.
 
 A test that needs several domains at once - a multi-gateway test running a second and a third
 gateway - asks for them with `DOMAINS <n>`. The first arrives as `ROS_DOMAIN_ID` and the rest
