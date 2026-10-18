@@ -97,6 +97,12 @@ curl -N localhost:8080/api/v1/faults/stream
 docker run -p 3000:80 ghcr.io/selfpatch/ros2_medkit_web_ui:latest
 ```
 
+The browser calls the gateway from a different origin, so the gateway must allow that origin via
+CORS. The Docker image and `bringup.launch.py` allow `http://localhost:3000` and
+`http://localhost:5173`. The origin must match exactly: `http://127.0.0.1:3000` is not
+`http://localhost:3000`. To allow other origins, pass the full list, for example
+`cors_allowed_origins:=http://localhost:3000,http://127.0.0.1:3000` (it replaces the defaults).
+
 See the [web UI tutorial](https://selfpatch.github.io/ros2_medkit/tutorials/web-ui.html) and the
 [Postman collection](postman/).
 
@@ -128,6 +134,10 @@ To build from source or use Pixi, follow the
   terminal where your ROS 2 setup works.
 - Opening it from another computer? Add `server_host:=0.0.0.0` to the end of the command in
   step 2, on a network you trust, and use the robot's IP address instead of `localhost`.
+- Running it in a container without `--network host`? `bringup.launch.py` binds the REST API to
+  `127.0.0.1`, which is then the container's own loopback, and the published port answers with
+  `Connection reset by peer` or an empty reply. Add `server_host:=0.0.0.0` and publish the port as
+  `-p 127.0.0.1:8080:8080`, which keeps the API, unauthenticated by default, off the LAN.
 - No faults from `/diagnostics`? Add `enable_diagnostic_bridge:=true` to the end of the command
   in step 2.
 - Still stuck? See [troubleshooting](https://selfpatch.github.io/ros2_medkit/troubleshooting.html)
