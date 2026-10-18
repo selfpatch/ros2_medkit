@@ -24,10 +24,8 @@ never become apps - the app filter removes them - so declaring them would
 silence the warning and produce manifest entities the gateway then deletes. The
 two halves have to agree: what is never an App is never something to declare.
 
-Launched without a ``__node`` remap for the same reason as
-``test_own_node_apps.test.py``: ``launch_ros``' ``name=`` renames every node in
-the process, so under the suite's usual launch the helper names do not exist
-and nothing here could be observed.
+Launched without a ``__node`` remap, the way ``ros2 run`` and the container
+images start it, as ``test_own_node_apps.test.py`` is.
 """
 
 import os
@@ -57,9 +55,9 @@ BASE_URL = f'http://127.0.0.1:{GATEWAY_PORT}{API_BASE_PATH}'
 
 GATEWAY_NODE = 'ros2_medkit_gateway'
 HELPER_FQNS = (
-    f'/{GATEWAY_NODE}_sub',
-    f'/{GATEWAY_NODE}_fault_clients',
-    f'/{GATEWAY_NODE}_lifecycle_state_reader',
+    f'/_{GATEWAY_NODE}_sub',
+    f'/_{GATEWAY_NODE}_fault_clients',
+    f'/_{GATEWAY_NODE}_lifecycle_state_reader',
 )
 # An undeclared node of the test's own, so the warning below is known to have
 # something to list.

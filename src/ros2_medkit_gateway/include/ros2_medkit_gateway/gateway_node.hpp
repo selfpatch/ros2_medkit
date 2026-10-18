@@ -75,8 +75,8 @@ class GatewayNode : public rclcpp::Node {
   ~GatewayNode() override;
 
   /// Count application (peer) nodes from (name, namespace) pairs: excludes hidden
-  /// nodes and the gateway's own nodes (whose FQN starts with @p self_fqn). Static
-  /// and public so the startup-summary counting logic is unit-testable.
+  /// nodes (the gateway's helper nodes are hidden) and the node at @p self_fqn.
+  /// Static and public so the startup-summary counting logic is unit-testable.
   static size_t count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
                                  const std::string & self_fqn);
 
@@ -507,20 +507,21 @@ using ros2_common::is_own_gateway_helper_node;
 /**
  * @brief Filter ROS 2 internal nodes from an app list
  *
- * Removes apps whose base name begins with '_' (ROS 2 internal node convention).
- * For remote (peer-prefixed) apps, the peer prefix ("peer_name__") is stripped
- * before checking for the underscore prefix, using the routing table for precise
- * prefix detection.
+ * Removes ROS 2 internal nodes, whose name begins with '_'. A runtime app
+ * (source discovery::kRuntimeAppSource) is judged by the node name in its FQN
+ * only, because a name collision prefixes its id with the namespace. Every
+ * other app is judged by its id.
  *
  * Also removes local apps bound to one of the gateway's in-process helper nodes
- * (is_own_gateway_helper_node), which the underscore rule cannot see. The
- * gateway's own node is NOT removed - it is a diagnosable App whose ROS
- * parameters are served as its configurations. The test is on the bound node
- * FQN, and only for apps with no routing-table entry: a peer's helper nodes are
- * the peer's business and are left to the peer's own filter.
+ * (is_own_gateway_helper_node), whatever their id or source. The gateway's own
+ * node is NOT removed - it is a diagnosable App whose ROS parameters are served
+ * as its configurations.
+ *
+ * Apps with a routing-table entry came from a peer, which filtered them by its
+ * own rules. They are kept.
  *
  * @param apps App vector to filter in place
- * @param peer_routing_table Maps entity_id -> peer_name for remote entities
+ * @param peer_routing_table Maps entity_id -> peer_name for remote entities, which are kept
  * @param self_fqn The gateway node's own FQN. Empty disables the helper check
  * @param dropped_declared_apps Optional sink for "<app id> -> <node fqn>" of
  *        every app removed by the helper rule whose source is not runtime

@@ -912,14 +912,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       app.declared_source = app.source;
       app.source = peer_source;
     }
-    // Filter ROS 2 internal nodes (underscore prefix convention) at source.
-    // These are noise nodes like _param_client_node that should never appear
-    // as SOVD entities.
-    entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
-                                       [](const App & app) {
-                                         return !app.id.empty() && app.id[0] == '_';
-                                       }),
-                        entities.apps.end());
+    // No internal-node filter here: the peer applied its own, and an id that
+    // starts with '_' can name a visible node whose name collided.
 
     // Fetch each app's operations and data. Neither is ever declared in a
     // manifest - both are discovered from the ROS graph - so the only record of

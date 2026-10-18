@@ -1602,17 +1602,15 @@ size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, st
   size_t count = 0;
   for (const auto & [name, ns] : nodes_and_namespaces) {
     if (!name.empty() && name.front() == '_') {
-      continue;  // hidden node (name part starts with '_')
+      continue;  // hidden node, including the gateway's own helper nodes
     }
     std::string fqn = ns;
     if (ns != "/") {
       fqn += "/";
     }
     fqn += name;
-    // The gateway is not a peer of itself, and neither are the helper nodes it
-    // runs in its own process: a gateway alone on the graph has zero peers,
-    // which is what raises the empty-graph warning.
-    if (fqn == self_fqn || is_own_gateway_helper_node(fqn, self_fqn)) {
+    // Exact match: a peer named "<fqn>_monitor" or "<fqn>2" is still a peer.
+    if (fqn == self_fqn) {
       continue;
     }
     ++count;
@@ -2601,40 +2599,37 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
                                  const std::string & self_fqn, std::vector<std::string> * dropped_declared_apps) {
   auto before = apps.size();
   auto end = std::remove_if(apps.begin(), apps.end(), [&](const App & app) {
-    std::string original_id = app.id;
-    auto rt_it = peer_routing_table.find(app.id);
-    if (rt_it != peer_routing_table.end()) {
-      // Known remote entity: strip "peer_name__" prefix if present
-      const std::string & peer_name = rt_it->second;
-      std::string prefix = peer_name + "__";
-      if (original_id.size() > prefix.size() && original_id.compare(0, prefix.size(), prefix) == 0) {
-        original_id = original_id.substr(prefix.size());
-      }
-    } else if (is_own_gateway_helper_node(app.effective_fqn(), self_fqn)) {
-      // A local app bound to one of this gateway's own helper nodes. Those
-      // names do not start with '_' ("<gateway>_sub",
-      // "<gateway>_fault_clients", ...), so only the FQN test catches them, and
-      // without it the gateway advertises its own plumbing as diagnosable apps.
+    // A peer filtered its own Apps by its own rules and configuration.
+    if (peer_routing_table.count(app.id) > 0) {
+      return false;
+    }
+    const std::string node_fqn = app.effective_fqn();
+    if (is_own_gateway_helper_node(node_fqn, self_fqn)) {
+      // A local app bound to one of this gateway's own helper nodes. The
+      // underscore rule below reads a declared app's id, which need not start
+      // with '_', so only the FQN test catches every app on a helper node.
       // The gateway's own node is deliberately not covered: its ROS parameters
       // are served as that App's configurations, so callers reach them at
-      // /apps/<gateway>/configurations. Remote entities are skipped too - a
-      // peer's helper nodes carry the same FQNs and are the peer's own filter's
-      // business.
+      // /apps/<gateway>/configurations.
       //
       // Dropping a runtime-discovered app is the whole point and stays quiet.
-      // Dropping one somebody DECLARED is different: in manifest and hybrid
-      // mode the manifest is the source of truth, so removing an entry from it
-      // without a word is a silent override. The declared sources are the ones
-      // the merge pipeline already protects from orphan suppression, so the
-      // same predicate decides it here; those are reported to the caller, which
-      // owns the logger.
-      if (dropped_declared_apps != nullptr && discovery::is_protected_source(app.source)) {
-        dropped_declared_apps->push_back(app.id + " -> " + app.effective_fqn());
+      // Any other app was declared by a manifest or a plugin, and dropping it
+      // overrides that declaration. The caller owns the logger and reports it.
+      if (dropped_declared_apps != nullptr && app.source != discovery::kRuntimeAppSource) {
+        dropped_declared_apps->push_back(app.id + " -> " + node_fqn);
       }
       return true;
     }
-    // ROS 2 internal nodes use _ prefix convention
-    return !original_id.empty() && original_id[0] == '_';
+    // ROS 2 internal nodes use the '_' prefix convention on the node name. A
+    // runtime app is judged by its node name only, because a name collision
+    // prefixes its id with the namespace. Every other app is judged by its id.
+    if (app.source == discovery::kRuntimeAppSource) {
+      const auto last_slash = node_fqn.rfind('/');
+      if (last_slash != std::string::npos && last_slash + 1 < node_fqn.size()) {
+        return node_fqn[last_slash + 1] == '_';
+      }
+    }
+    return !app.id.empty() && app.id[0] == '_';
   });
   apps.erase(end, apps.end());
   return before - apps.size();

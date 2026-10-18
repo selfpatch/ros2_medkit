@@ -25,7 +25,7 @@ namespace ros2_medkit_gateway::ros2 {
 
 Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec,
                                                double negative_cache_ttl_sec, std::size_t client_cache_size,
-                                               std::size_t defaults_cache_size)
+                                               std::size_t defaults_cache_size, const std::string & client_node_name)
   : node_(node)
   , service_timeout_sec_(service_timeout_sec)
   , negative_cache_ttl_sec_(negative_cache_ttl_sec)
@@ -44,7 +44,7 @@ Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double servi
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
-  param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
+  param_node_ = std::make_shared<rclcpp::Node>(client_node_name, options);
 
   // Store own node FQN for self-query detection.
   own_node_fqn_ = node_->get_fully_qualified_name();

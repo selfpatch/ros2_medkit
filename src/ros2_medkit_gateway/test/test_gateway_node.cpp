@@ -1034,16 +1034,16 @@ TEST(ExtractEntityTypePath, unknown_routes) {
 
 TEST(GatewayStartupSummary, CountPeerNodesExcludesOwnAndHidden) {
   const std::vector<std::pair<std::string, std::string>> nodes = {
-      {"ros2_medkit_gateway", "/"},                // the gateway's own node (self)
-      {"ros2_medkit_gateway_sub", "/"},            // own internal helper (FQN prefix)
-      {"ros2_medkit_gateway_fault_clients", "/"},  // own internal helper (FQN prefix)
-      {"_hidden_node", "/"},                       // hidden node
-      {"camera", "/sensors"},                      // peer (hidden node name check is on the name part)
-      {"robot_planner", "/"},                      // peer
-      {"ros2_medkit_gateway_monitor", "/"},        // peer that merely shares the gateway name prefix
+      {"ros2_medkit_gateway", "/"},                 // the gateway's own node (self)
+      {"_ros2_medkit_gateway_sub", "/"},            // own helper node (hidden)
+      {"_ros2_medkit_gateway_fault_clients", "/"},  // own helper node (hidden)
+      {"_hidden_node", "/"},                        // hidden node
+      {"camera", "/sensors"},                       // peer (hidden node name check is on the name part)
+      {"robot_planner", "/"},                       // peer
+      {"ros2_medkit_gateway_monitor", "/"},         // peer that merely shares the gateway name prefix
   };
   // Three genuine peers: /sensors/camera, /robot_planner and the prefix-sharing
-  // /ros2_medkit_gateway_monitor (only the exact self FQN and known helpers drop out).
+  // /ros2_medkit_gateway_monitor (only the exact self FQN and hidden nodes drop out).
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 3u);
 }
 
@@ -1053,9 +1053,9 @@ TEST(GatewayStartupSummary, CountPeerNodesZeroWhenOnlyOwnNodes) {
   // be recognized as not-a-peer, the lifecycle reader included.
   const std::vector<std::pair<std::string, std::string>> nodes = {
       {"ros2_medkit_gateway", "/"},
-      {"ros2_medkit_gateway_sub", "/"},
-      {"ros2_medkit_gateway_fault_clients", "/"},
-      {"ros2_medkit_gateway_lifecycle_state_reader", "/"},
+      {"_ros2_medkit_gateway_sub", "/"},
+      {"_ros2_medkit_gateway_fault_clients", "/"},
+      {"_ros2_medkit_gateway_lifecycle_state_reader", "/"},
   };
   // Zero peers is the condition that triggers the empty-graph warning.
   EXPECT_EQ(ros2_medkit_gateway::GatewayNode::count_peer_nodes(nodes, "/ros2_medkit_gateway"), 0u);
