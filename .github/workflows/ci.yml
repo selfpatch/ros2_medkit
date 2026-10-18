@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Caches are restored on merge_group and never saved: no other run can read the
+  # queue ref they would be saved under.
   merge_group:
     types: [checks_requested]
 
@@ -68,8 +70,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
@@ -166,6 +169,13 @@ jobs:
           path: |
             log/
             build/*/test_results/
+
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
 
   # ros2_medkit_graph_watchdog on every distro, in a job of its own.
   # Same reasoning as sanitizer-graph-watchdog in quality.yml: the package's end-to-end suite runs
@@ -473,8 +483,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           # ccache-jazzy-test-, not ccache-jazzy-. The shorter prefix also
@@ -551,6 +562,13 @@ jobs:
           path: |
             log/
             build/*/test_results/
+
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-test-${{ github.sha }}
 
   # The one check branch rules require from this workflow. A matrix job skipped by
   # its `if` does not report its per-entry checks, so the rules cannot require them.

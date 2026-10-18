@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Caches are restored on merge_group and never saved: no other run can read the
+  # queue ref they would be saved under.
   merge_group:
     types: [checks_requested]
 
@@ -63,8 +65,9 @@ jobs:
           for attempt in 1 2 3; do rosdep update && break; [ "$attempt" = 3 ] && exit 1; echo "rosdep update attempt $attempt failed, retrying" >&2; sleep 5; done
           rosdep install --from-paths src --ignore-src -y
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-lint-${{ github.sha }}
@@ -109,6 +112,13 @@ jobs:
         if: always()
         run: colcon test-result --verbose
 
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-lint-${{ github.sha }}
+
   clang-tidy:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -134,8 +144,9 @@ jobs:
           apt-get update
           apt-get install -y ccache clang-tidy
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-tidy-${{ github.sha }}
@@ -150,8 +161,9 @@ jobs:
           printf '#!/bin/sh\nexec clang-tidy-cache /usr/bin/clang-tidy "$@"\n' > /usr/local/bin/ctcache-wrapper
           chmod +x /usr/local/bin/ctcache-wrapper
 
-      - name: Cache ctcache results
-        uses: actions/cache@v4
+      - name: Restore ctcache results
+        id: ctcache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.ctcache
           key: ctcache-jazzy-${{ hashFiles('src/ros2_medkit_cmake/cmake/.clang-tidy') }}-${{ github.sha }}
@@ -241,6 +253,20 @@ jobs:
               'src/ros2_medkit_.*/src/.*\.cpp$'
           fi
 
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-tidy-${{ github.sha }}
+
+      - name: Save ctcache results
+        if: github.event_name != 'merge_group' && steps.ctcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.ctcache
+          key: ctcache-jazzy-${{ hashFiles('src/ros2_medkit_cmake/cmake/.clang-tidy') }}-${{ github.sha }}
+
   sanitizer-asan:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -274,8 +300,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-asan-${{ github.sha }}
@@ -393,6 +420,13 @@ jobs:
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-asan-${{ github.sha }}
+
   sanitizer-tsan:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -419,8 +453,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-tsan-${{ github.sha }}
@@ -508,6 +543,13 @@ jobs:
             if [ "$(basename "$pkg_dir")" = "ros2_medkit_graph_watchdog" ]; then continue; fi
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
+
+      - name: Save ccache
+        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-tsan-${{ github.sha }}
 
   # ros2_medkit_graph_watchdog's end-to-end suite runs 24 minutes under
   # instrumentation, against a 45-minute test budget the rest of the workspace
