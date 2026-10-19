@@ -587,12 +587,21 @@ class LifecycleExpectationTracker {
         case LifecycleObservedState::kNotManaged:
           // Cause-blind advance: this clock does not care which of the two it is seeing,
           // only that a real measurement has not happened. While still climbing, `cause`
-          // tracks the live cause (for the withheld-clear log, and so that whatever is live
-          // AT MATURITY is what freezes); once matured it is left untouched - see the class
-          // doc's "Sticky vs. current-cause-wins".
+          // follows the live cause (for the withheld-clear log, and so that what holds AT
+          // MATURITY is what freezes); once matured it is left untouched - see the class
+          // doc's "Sticky vs. current-cause-wins". kUnreadable proves a get_state service and takes
+          // the cause at once. kNotManaged needs kDefaultObservationSettleTicks ticks: a dying node
+          // can read it for a sweep before its App leaves.
           if (!node.unmeasured_matured) {
-            node.cause = state == LifecycleObservedState::kUnreadable ? LifecycleUnmeasuredCause::kUnreadable
-                                                                      : LifecycleUnmeasuredCause::kNotManaged;
+            const auto live = state == LifecycleObservedState::kUnreadable ? LifecycleUnmeasuredCause::kUnreadable
+                                                                           : LifecycleUnmeasuredCause::kNotManaged;
+            if (node.unmeasured_clock == 0 || live == node.cause || live == LifecycleUnmeasuredCause::kUnreadable) {
+              node.cause = live;
+              node.cause_change_ticks = 0;
+            } else if (++node.cause_change_ticks >= kDefaultObservationSettleTicks) {
+              node.cause = live;
+              node.cause_change_ticks = 0;
+            }
           }
           advance_unmeasured_clock(node, fqn, crossed_unmeasured);
           // An unmeasured reading has to be CORROBORATED before absence may continue it - but
@@ -770,9 +779,10 @@ class LifecycleExpectationTracker {
                                       ///< the last real measurement (frozen one past the hold)
     bool unmeasured_matured = false;  ///< the unmeasured clock has crossed the hold and not
                                       ///< yet been reset by a real measurement
-    LifecycleUnmeasuredCause cause = LifecycleUnmeasuredCause::kUnreadable;  ///< live while
-                                                                             ///< climbing, frozen (sticky) once
-                                                                             ///< unmeasured_matured - see the class doc
+    /// Corroborated live cause while climbing, frozen (sticky) once unmeasured_matured - see
+    /// the class doc.
+    LifecycleUnmeasuredCause cause = LifecycleUnmeasuredCause::kUnreadable;
+    int cause_change_ticks = 0;  ///< consecutive matched ticks the live cause differed from `cause`
     /// What absence continues past absence_grace: the last observation of this node that
     /// COUNTS - a real measurement immediately, an unmeasured reading either immediately (if
     /// there is no real measurement for it to override) or once it has held for

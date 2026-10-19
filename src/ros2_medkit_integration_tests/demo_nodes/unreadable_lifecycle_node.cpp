@@ -84,6 +84,10 @@
  * node's ACTIVATE. Answering later GetState calls immediately (see `send_active` below)
  * is therefore necessary but not sufficient for the watcher to ever notice: nothing
  * calls GetState again to collect that answer unless this event arrives first.
+ *
+ * `advertise_lifecycle_services` (bool parameter, default true): false holds back get_state and
+ * change_state until a caller sets it to true. The node is then on the graph as a plain node
+ * first, which is how a slow DDS discovery shows a managed node.
  */
 
 #include <cstdint>
@@ -112,26 +116,9 @@ class UnreadableLifecycleNode : public rclcpp::Node {
     transition_event_pub_ = this->create_publisher<lifecycle_msgs::msg::TransitionEvent>(
         "~/transition_event", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
 
-    get_state_service_ = this->create_service<lifecycle_msgs::srv::GetState>(
-        "~/get_state", [this](const std::shared_ptr<rmw_request_id_t> & header,
-                              const std::shared_ptr<lifecycle_msgs::srv::GetState::Request> & /*request*/) {
-          // No lock needed: this node spins on a single-threaded executor (see main()
-          // below), so this callback and the parameter callback that flips
-          // `answering_` below can never run concurrently with each other.
-          if (answering_) {
-            send_state(header);
-            return;
-          }
-          pending_.push_back(header);  // deliberately leaked for this process's lifetime - see the file doc
-        });
-
-    change_state_service_ = this->create_service<lifecycle_msgs::srv::ChangeState>(
-        "~/change_state", [](const std::shared_ptr<lifecycle_msgs::srv::ChangeState::Request> & /*request*/,
-                             const std::shared_ptr<lifecycle_msgs::srv::ChangeState::Response> & response) {
-          // Not exercised by anything: only find_lifecycle_get_state_path()'s type
-          // check needs this service to exist at all.
-          response->success = true;
-        });
+    if (this->declare_parameter<bool>("advertise_lifecycle_services", true)) {
+      advertise_lifecycle_services();
+    }
 
     param_callback_handle_ =
         this->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & params) {
@@ -140,6 +127,9 @@ class UnreadableLifecycleNode : public rclcpp::Node {
           for (const auto & param : params) {
             if (param.get_name() == "start_answering" && param.as_bool()) {
               answer_all_pending();
+            }
+            if (param.get_name() == "advertise_lifecycle_services" && param.as_bool() && !get_state_service_) {
+              advertise_lifecycle_services();
             }
           }
           return result;
@@ -164,6 +154,29 @@ class UnreadableLifecycleNode : public rclcpp::Node {
   UnreadableLifecycleNode & operator=(UnreadableLifecycleNode &&) = delete;
 
  private:
+  void advertise_lifecycle_services() {
+    get_state_service_ = this->create_service<lifecycle_msgs::srv::GetState>(
+        "~/get_state", [this](const std::shared_ptr<rmw_request_id_t> & header,
+                              const std::shared_ptr<lifecycle_msgs::srv::GetState::Request> & /*request*/) {
+          // No lock needed: this node spins on a single-threaded executor (see main()
+          // below), so this callback and the parameter callback that flips
+          // `answering_` below can never run concurrently with each other.
+          if (answering_) {
+            send_state(header);
+            return;
+          }
+          pending_.push_back(header);  // deliberately leaked for this process's lifetime - see the file doc
+        });
+
+    change_state_service_ = this->create_service<lifecycle_msgs::srv::ChangeState>(
+        "~/change_state", [](const std::shared_ptr<lifecycle_msgs::srv::ChangeState::Request> & /*request*/,
+                             const std::shared_ptr<lifecycle_msgs::srv::ChangeState::Response> & response) {
+          // Not exercised by anything: only find_lifecycle_get_state_path()'s type
+          // check needs this service to exist at all.
+          response->success = true;
+        });
+  }
+
   /// The id the label maps to. Only the two the caller can select matter here; everything
   /// else answers with UNCONFIGURED's id, which every reader classifies as non-active.
   static std::uint8_t state_id_for(const std::string & label) {

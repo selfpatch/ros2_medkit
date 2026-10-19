@@ -992,15 +992,24 @@ if(BUILD_TESTING)
   # The two GROUNDS for ownership, and the only row here that asserts GRAPH_NODE_DISAPPEARED
   # ABSENT: the fixture is left until its GetState budget is spent (provisional ownership),
   # then told to announce "inactive", then killed. 60 (arming, app_id-scoped) + 30
-  # (faults-live) + 30 (unread-and-settled poll) + 30 (SetParameters call) + 30 (late-label
-  # poll) + 30 (release poll, node_death's own tracked_count) + 30 (departure poll) + 60
-  # (INACTIVE raise poll) + 10 (silence window, DISAPPEARED, SILENCE_WINDOW_SEC) = 310 internal
-  # - nine independent budgets, not merged. Rounded to 420 to also cover the launch's own
-  # teardown for TWO processes.
+  # (faults-live) + 30 (unread-label poll) + 30 (baseline, every visible node tracked) + 30
+  # (SetParameters call) + 30 (late-label poll) + 30 (release poll, node_death's own
+  # tracked_count) + 30 (departure poll) + 60 (INACTIVE raise poll) + 10 (silence window,
+  # DISAPPEARED, SILENCE_WINDOW_SEC) = 340 internal - ten independent budgets, not merged.
+  # Rounded to 420 to also cover the launch's own teardown for THREE processes.
   medkit_add_launch_test(test_presence_ownership_e2e_provisional_yields_to_a_real_label
     test/e2e/test_presence_ownership_e2e.test.py TIMEOUT 420
     LABELS "integration;e2e"
     ENV "GATEWAY_TEST_PORT=19590" "WATCHDOG_E2E_SCENARIO=provisional_yields_to_a_real_label"
+      "${_WATCHDOG_E2E_ENV}")
+
+  # The provisional row with the fixture's lifecycle services advertised late, so the node is
+  # admitted as a plain node first. Its budgets plus 60 (armed-without-record poll) + 30
+  # (SetParameters call) = 430 internal, rounded to 480 for the launch's own teardown.
+  medkit_add_launch_test(test_presence_ownership_e2e_late_services_yield_to_a_real_label
+    test/e2e/test_presence_ownership_e2e.test.py TIMEOUT 480
+    LABELS "integration;e2e"
+    ENV "GATEWAY_TEST_PORT=19630" "WATCHDOG_E2E_SCENARIO=late_services_yield_to_a_real_label"
       "${_WATCHDOG_E2E_ENV}")
 
   # The same shape in the SHIPPED configuration (no require_active at all), where node_death is

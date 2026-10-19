@@ -361,7 +361,11 @@ class NodeDeathDetector : public Detector {
           }
           released_.erase(key);
           released_no_record_ticks_.erase(key);
-          earned_.insert(key);  // knowledge, once had, is never withdrawn
+          // Only a measured "active" is kept against a later non-active label. "No record" can
+          // be lifecycle services the graph has not shown yet.
+          if (reads_active(ctx.gate, app.id)) {
+            earned_.insert(key);
+          }
           armed.insert(key);
           break;
         case PresenceOwnership::kProvisional:
@@ -757,10 +761,9 @@ class NodeDeathDetector : public Detector {
   /// counting as the node becoming this detector's. Cleared by a label reading "active", and
   /// pruned to the live graph every tick.
   std::set<std::string> released_;
-  /// Keys whose ownership the gate granted on kEarned grounds while they were present. Read
-  /// only by the kDisowned branch in tick(), which is the one place the difference between an
-  /// admission earned from a measurement and one granted provisionally decides anything.
-  /// Pruned to the live graph every tick.
+  /// Keys admitted on a tick where their lifecycle state read "active". Read only by the
+  /// kDisowned branch in tick(): a key in this set is kept against a later non-active label,
+  /// any other key is handed back. Pruned to the live graph every tick.
   std::set<std::string> earned_;
   std::set<std::string> id_allowlisted_;
   /// Departed keys a DURABLE suppressor has already vetoed at least once. Consulted before the

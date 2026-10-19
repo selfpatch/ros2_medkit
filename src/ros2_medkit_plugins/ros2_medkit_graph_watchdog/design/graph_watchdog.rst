@@ -93,8 +93,10 @@ Reliability core
     node with no lifecycle at all, PROVISIONAL for one whose state was asked for
     as often as it ever will be and never came (``measurement_pending()``, which
     reads the per-node GetState re-seed budget charged only for reads that
-    actually ran), and neither while the asking is still going on. Only the first
-    is permanent - see the ``node_death`` section.
+    actually ran), and neither while the asking is still going on. Only a state
+    read as ``active`` is permanent: a node with no lifecycle record can still
+    have lifecycle services the graph has not shown yet - see the ``node_death``
+    section.
 
     Those subscriptions follow the private-callback-group rule described in the
     plugin shell bullet above: created on the shared gateway node, but in the
@@ -422,7 +424,10 @@ clock matured under even if the LIVE cause later flips, and only a real measurem
 (resetting the whole clock) changes it. The rejected alternative, current-cause-wins,
 is more literal but makes a node that flaps between the two causes flap the fault
 surface too - a raise/clear/raise churn across two codes for a node whose actual
-situation never changed.
+situation never changed. Before maturity, an unreadable read takes the cause at once,
+because it proves a ``get_state`` service. A not-managed read takes it only after
+``kDefaultObservationSettleTicks`` consecutive matched ticks: a starting node is listed
+before its lifecycle services, and a dying one can lose them a sweep before its App leaves.
 
 **Absence continues the last CORROBORATED observation, it never erases.** A node not matched
 at all this tick is ABSENT, a fact separate from any observed state (there is no label to
@@ -1010,12 +1015,12 @@ node is still alive rather than reporting a death it was never entitled to. Owne
 from a measurement is not released that way: a node that ran and then deactivated is still a
 death when it stops running. Stickiness is earned by knowledge, never by ignorance.
 
-What that does NOT close: an App counts as managed only once the snapshot shows it advertising
-a ``GetState``-typed service, and until then it is indistinguishable from a plain node, so a
-managed node whose services have not yet been discovered can still be taken for one. That
-window is bounded by the arming warmup, which already needs several consecutive ticks of
-presence, and node and services come from the same introspection sweep. Nor does anything here
-close the case of a node that appears, lives fewer than ``warmup_cycles`` ticks and vanishes:
+An App counts as managed only once the snapshot shows it advertising a ``GetState``-typed
+service, and until then it is indistinguishable from a plain node. Discovery can show the node
+before its services for longer than the arming warmup, so a managed node can be admitted as a
+plain one. That admission is not a measurement either: only a label read as ``active`` is kept,
+so a non-active label that arrives later still takes the key back. Nothing here closes the case
+of a node that appears, lives fewer than ``warmup_cycles`` ticks and vanishes:
 the gate has always required completed warmup before it arms anything, so such a node is owned
 by nobody and reported by nobody. That is the bringup-quiesce trade-off working as designed,
 not a gap this boundary introduces. Once
