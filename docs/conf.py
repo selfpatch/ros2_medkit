@@ -170,6 +170,9 @@ linkcheck_ignore = [
     r'https://github\.com/selfpatch/ros2_medkit/blob/.+#L\d+',
     # GitHub issue links may 404 in linkcheck without auth token
     r'https://github\.com/selfpatch/ros2_medkit/issues/\d+',
+    # The changelogs link every pull request of this repository, and GitHub answers a burst of
+    # them with 502s.
+    r'https://github\.com/selfpatch/ros2_medkit/pull/\d+',
     # The rep-0149 page intermittently exceeds the read timeout in CI; the
     # canonical REP host is slow, not broken. Scope the skip to this exact URL
     # so other REP links stay checked.
