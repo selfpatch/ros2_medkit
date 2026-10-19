@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <pthread.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
+#include <stdexcept>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -127,9 +132,22 @@ ros2_medkit_gateway::Ros2TopicDataProvider::Config declare_data_provider_config(
 }  // namespace
 
 int main(int argc, char ** argv) {
+  // SIGINT and SIGTERM stay blocked until startup is done. A shutdown while GatewayNode is built
+  // aborts: rclcpp's NodeGraph::get_graph_event clears its listener flag before add_node fails,
+  // and ~NodeGraph then throws. Threads started meanwhile inherit the mask.
+  sigset_t shutdown_signals;
+  sigset_t previous_mask;
+  sigemptyset(&shutdown_signals);
+  sigaddset(&shutdown_signals, SIGINT);
+  sigaddset(&shutdown_signals, SIGTERM);
+  if (pthread_sigmask(SIG_BLOCK, &shutdown_signals, &previous_mask) != 0) {
+    fprintf(stderr, "[ros2_medkit_gateway] Fatal: could not block SIGINT and SIGTERM\n");
+    return 1;
+  }
+
   bool ros_inited = false;
   try {
-    rclcpp::init(argc, argv);
+    rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
     ros_inited = true;
 
     auto node = std::make_shared<ros2_medkit_gateway::GatewayNode>();
@@ -226,6 +244,16 @@ int main(int argc, char ** argv) {
     // Config-less threshold-rule (fault-trigger) engine (issue #235). Started
     // here so its evaluation loop sees loaded plugins; joined in ~GatewayNode.
     node->init_fault_trigger_engine();
+
+    // A signal that arrived during startup is delivered here and shuts the context down, so spin
+    // returns at once and the teardown below runs. init() with None already counts as installed.
+    rclcpp::uninstall_signal_handlers();
+    if (!rclcpp::install_signal_handlers()) {
+      throw std::runtime_error("could not install the rclcpp signal handlers");
+    }
+    if (pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr) != 0) {
+      throw std::runtime_error("could not unblock SIGINT and SIGTERM");
+    }
 
     // Spin in a try/catch so an uncaught handler exception falls through to the
     // explicit teardown block below. Without this, an escaping throw bypasses

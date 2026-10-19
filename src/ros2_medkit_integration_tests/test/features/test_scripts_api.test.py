@@ -26,6 +26,7 @@ A demo node (temp_sensor) is launched alongside so that entities exist in
 discovery for validate_entity_for_route to pass.
 """
 
+import os
 import tempfile
 import time
 import unittest
@@ -812,6 +813,50 @@ class TestScriptsExecution(GatewayTestCase):
             timeout=5,
         )
         self.assertEqual(r.status_code, 404)
+
+    # @verifies REQ_INTEROP_047
+    def test_15_stop_ends_the_script_process(self):
+        """The stop action ends the process, not only the execution's status."""
+        pid_file = os.path.join(SCRIPTS_DIR, 'stop_target.pid')
+        script = (
+            '#!/usr/bin/env python3\n'
+            'import os\n'
+            'import time\n'
+            f'with open({pid_file!r}, "w") as f:\n'
+            '    f.write(str(os.getpid()))\n'
+            'time.sleep(60)\n'
+        )
+        script_id = self._upload_script(filename='stop_target.py', content=script)
+        _, exec_id = self._start_execution(script_id)
+
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and not os.path.exists(pid_file):
+            time.sleep(0.1)
+        self.assertTrue(os.path.exists(pid_file), 'the script never wrote its PID')
+        with open(pid_file) as f:
+            pid = int(f.read())
+
+        r = requests.put(
+            f'{self.BASE_URL}/apps/temp_sensor/scripts/{script_id}/executions/{exec_id}',
+            json={'action': 'stop'},
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # A reaped process has no /proc entry. A zombie waits only for the gateway to reap it.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and _process_running(pid):
+            time.sleep(0.1)
+        self.assertFalse(_process_running(pid), f'script process {pid} still runs after stop')
+
+
+def _process_running(pid):
+    try:
+        with open(f'/proc/{pid}/stat') as f:
+            # The state follows the parenthesised command name.
+            return f.read().rsplit(')', 1)[1].split()[0] != 'Z'
+    except (FileNotFoundError, ProcessLookupError):
+        return False
 
 
 # ---------------------------------------------------------------------------

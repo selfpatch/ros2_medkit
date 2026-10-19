@@ -897,9 +897,10 @@ Safety / OT posture:
   the start-up scan only, or `enabled: false` to switch it off entirely.
 - A sweep is cancellable, so a stop does not have to wait out a subnet the size
   of a /16. The start-up sweep runs while the gateway node is still being
-  constructed, so what ends it is `SIGINT` / `SIGTERM`, which the plugin sees
-  through `rclcpp::ok()`. A re-scan sweep runs on the poll thread and is ended
-  by either that or the plugin's own `shutdown()`.
+  constructed, so what ends it is `SIGINT` / `SIGTERM`. `gateway_node` holds
+  both signals back until startup ends, and the plugin sees one that is pending.
+  The gateway then exits. A re-scan sweep runs on the poll thread and is ended by
+  a signal through `rclcpp::ok()` or by the plugin's own `shutdown()`.
 - An explicitly configured `endpoint_url` (or `OPCUA_ENDPOINT_URL`) always wins;
   discovery then does nothing, so it never opens a second session on a PLC the
   plugin already polls.

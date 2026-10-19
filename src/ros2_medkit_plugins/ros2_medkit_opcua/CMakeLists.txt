@@ -581,6 +581,7 @@ if(BUILD_TESTING)
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
       test/integration/test_opcua_comms_lost.test.py
+      test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
 
     # ---- Read-only / write-capable behaviour over real HTTP ----------------
@@ -626,6 +627,17 @@ if(BUILD_TESTING)
       LABELS "integration"
       RESOURCE_LOCK opcua_tcp_4840
       TIMEOUT 1200)
+
+    # A signal during the startup discovery sweep ends the sweep and the gateway.
+    # Two cases, each bounded by its own 60 s start and 21 s exit deadlines.
+    # The silent listener binds TCP 4840.
+    medkit_add_wrapped_test(test_opcua_startup_sweep_signal
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_startup_sweep_signal.test.py")
+    set_tests_properties(test_opcua_startup_sweep_signal PROPERTIES
+      LABELS "integration"
+      RESOURCE_LOCK opcua_tcp_4840
+      TIMEOUT 240)
 
     # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
     # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and

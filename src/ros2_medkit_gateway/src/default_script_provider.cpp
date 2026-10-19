@@ -498,6 +498,12 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     // Create a new process group so we can kill all child processes on timeout
     setpgid(0, 0);
 
+    // The forking thread can block SIGINT and SIGTERM (main() does that during startup, and
+    // threads started then keep it). exec keeps the mask, and stop sends SIGTERM.
+    sigset_t no_signals;
+    sigemptyset(&no_signals);
+    sigprocmask(SIG_SETMASK, &no_signals, nullptr);
+
     // Redirect stdin if passing JSON
     if (pass_stdin_json) {
       close(stdin_pipe[1]);  // Close write end

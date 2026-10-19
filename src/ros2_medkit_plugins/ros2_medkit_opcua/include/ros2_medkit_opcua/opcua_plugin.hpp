@@ -533,9 +533,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   //     poll thread long after start-up.
   //   - ``rclcpp_ok`` is false once rclcpp's own SIGINT / SIGTERM handler has
   //     run. The START-UP sweep runs inside set_context(), during node
-  //     construction and before the executor spins, so shutdown() cannot be
-  //     reached while it is in progress and the signal is the only thing that
-  //     can end it.
+  //     construction, so shutdown() cannot be reached while it is in progress
+  //     and a signal is the only thing that can end it. gateway_node blocks both
+  //     signals until startup ends, so discovery_cancelled() also reads a
+  //     pending one.
   static bool discovery_cancelled_for(bool shutdown_requested, bool rclcpp_ok) {
     return shutdown_requested || !rclcpp_ok;
   }

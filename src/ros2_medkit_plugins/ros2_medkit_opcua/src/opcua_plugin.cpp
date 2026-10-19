@@ -43,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <filesystem>
@@ -57,6 +58,16 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+// gateway_node blocks SIGINT and SIGTERM until startup ends, so a stop sent during the startup
+// sweep is pending and rclcpp::ok() stays true. sigpending() reports it on any thread.
+bool shutdown_signal_pending() {
+  sigset_t pending;
+  if (sigpending(&pending) != 0) {
+    return false;
+  }
+  return sigismember(&pending, SIGINT) == 1 || sigismember(&pending, SIGTERM) == 1;
+}
 
 // Flush one path's data to the device. Returns the reason on failure.
 std::string fsync_path(const std::string & path, bool is_directory) {
@@ -2436,8 +2447,7 @@ void OpcuaPlugin::run_startup_discovery() {
   // the report comes out in full. It is cancellable too, but not by shutdown():
   // this runs inside set_context(), i.e. during node construction and before the
   // executor spins, so nothing can call shutdown() until this returns. What ends
-  // it is the SIGINT / SIGTERM that rclcpp's own handler turns into
-  // !rclcpp::ok() - see discovery_cancelled().
+  // it is a SIGINT / SIGTERM - see discovery_cancelled().
   std::string selected_uri;
   const auto chosen = discover_endpoint(
       discovery_config_, endpoint_configured_, discovery_scan_fn_, discovery_identify_fn_,
@@ -2486,7 +2496,7 @@ bool OpcuaPlugin::discovery_cancelled() const {
   // host that built its node on a private context leaves the default one
   // uninitialised and every sweep would cancel before it started. The rule
   // itself, and why both signals are needed, lives in discovery_cancelled_for.
-  return discovery_cancelled_for_context(shutdown_requested_.load(), context_);
+  return discovery_cancelled_for_context(shutdown_requested_.load(), context_) || shutdown_signal_pending();
 }
 
 OpcuaPlugin::DiscoveryReporter OpcuaPlugin::discovery_reporter(std::string * previous_outcome) const {
