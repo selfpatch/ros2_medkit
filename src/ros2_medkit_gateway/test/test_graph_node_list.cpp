@@ -263,8 +263,8 @@ TEST(GraphNodeListReader, PastTheCapacityANameThatDepartsWithNoEntryLeftIsForgot
 
 TEST(LeftoverNodeReporter, ReportsOnTheReadWhereANodeStartsBeingLeftOut) {
   LeftoverNodeReporter reporter(rclcpp::get_logger("test_graph_node_list"));
-  const GraphNodeList left_out{{}, {"/ns/gone"}};
-  const GraphNodeList listed{{{"gone", "/ns"}}, {}};
+  const GraphNodeList left_out{{}, {"/ns/gone"}, {}};
+  const GraphNodeList listed{{{"gone", "/ns"}}, {}, {}};
   const GraphNodeList absent{};
 
   EXPECT_EQ(reporter.report(left_out), (std::vector<std::string>{"/ns/gone"}));

@@ -527,6 +527,14 @@ Per node name, on every read of the graph:
   and a reply endpoint, so it counts too);
 * an entry without an enclave for a name the gateway has never seen running is listed.
 
+A restarted node listed next to a leftover of its name needs one more step. The DDS RMWs
+answer a query for one node's services from the first entry of the name, in participant
+order, and that entry can be the leftover, which has no endpoints. For such a node the
+gateway takes its services and actions from the writers on each service's reply topic
+(``rr/<service>Reply``), which only the running node owns. A read that finds such a node
+makes one endpoint query per service an App can list: parameter and other internal services
+are skipped.
+
 A leftover is left out of ``GET /apps`` and ``GET /apps/{id}``, out of the Functions
 derived from namespaces, and out of the bare-name collision check that would otherwise
 rename a live node sharing its name. The read that starts leaving a node out logs:

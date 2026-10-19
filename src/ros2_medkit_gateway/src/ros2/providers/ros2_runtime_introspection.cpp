@@ -15,6 +15,8 @@
 #include "ros2_medkit_gateway/ros2/providers/ros2_runtime_introspection.hpp"
 
 #include <algorithm>
+#include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 
@@ -36,6 +38,16 @@ bool matches_internal_suffix(const std::string & service_path, const std::string
     return false;
   }
   return service_path.compare(service_path.length() - suffix.length(), suffix.length(), suffix) == 0;
+}
+
+/// Action type named by its send_goal service type: "pkg/action/Name_SendGoal" -> "pkg/action/Name".
+std::string action_type_from_send_goal(const std::string & send_goal_type) {
+  const std::string suffix = "_SendGoal";
+  if (send_goal_type.length() > suffix.length() &&
+      send_goal_type.compare(send_goal_type.length() - suffix.length(), suffix.length(), suffix) == 0) {
+    return send_goal_type.substr(0, send_goal_type.length() - suffix.length());
+  }
+  return send_goal_type;
 }
 
 }  // namespace
@@ -92,11 +104,13 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
 
   auto node_graph = node_->get_node_graph_interface();
   std::vector<std::pair<std::string, std::string>> names_and_namespaces;
+  std::set<std::string> shadowed;
   try {
     // Leftovers go before the bare-name collision count, so they never rename a live node.
     auto node_list = graph_node_reader_.read(*node_graph);
     leftover_node_reporter_.report(node_list);
     names_and_namespaces = std::move(node_list.nodes);
+    shadowed = std::move(node_list.shadowed);
   } catch (const std::runtime_error & ex) {
     // A graph query throws once rclcpp is shut down, e.g. a refresh between SIGINT and the
     // executor stopping. Return empty so the shutdown path does not end in std::terminate.
@@ -109,6 +123,8 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
   }
 
   std::set<std::string> seen_fqns;
+  // Built on the first shadowed node of a refresh: one endpoint query per service that can reach an App.
+  std::optional<std::map<std::string, std::map<std::string, std::vector<std::string>>>> services_by_server;
 
   // Detect bare-name collisions across namespaces so IDs are only disambiguated
   // when necessary (preserves backward compatibility for the common case where
@@ -149,7 +165,20 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
     app.bound_fqn = fqn;
 
     try {
-      auto node_services = node_->get_service_names_and_types_by_node(name, ns);
+      std::map<std::string, std::vector<std::string>> node_services;
+      if (shadowed.count(fqn) > 0) {
+        if (!services_by_server) {
+          services_by_server = ros2_common::graph_services_by_server(*node_graph, [](const std::string & service) {
+            return !is_internal_service(service) || matches_internal_suffix(service, "/_action/send_goal");
+          });
+        }
+        if (const auto served = services_by_server->find(fqn); served != services_by_server->end()) {
+          node_services = served->second;
+        }
+      }
+      if (node_services.empty()) {
+        node_services = node_->get_service_names_and_types_by_node(name, ns);
+      }
       for (const auto & [service_path, types] : node_services) {
         if (is_internal_service(service_path)) {
           continue;
@@ -180,6 +209,10 @@ std::vector<App> Ros2RuntimeIntrospection::discover_apps() {
             ActionInfo info;
             info.full_path = action_path;
             info.name = extract_name_from_path(action_path);
+            // The action list can be read before this action appeared; its send_goal type names it too.
+            if (!types.empty()) {
+              info.type = action_type_from_send_goal(types[0]);
+            }
             app.actions.push_back(info);
           }
         }
@@ -314,18 +347,8 @@ std::vector<ActionInfo> Ros2RuntimeIntrospection::discover_actions() {
         info.full_path = action_path;
         info.name = extract_name_from_path(action_path);
 
-        // Service type is like "example_interfaces/action/Fibonacci_SendGoal";
-        // strip the suffix to get "example_interfaces/action/Fibonacci".
         if (!types.empty()) {
-          std::string srv_type = types[0];
-          const std::string send_goal_suffix = "_SendGoal";
-          if (srv_type.length() > send_goal_suffix.length() &&
-              srv_type.compare(srv_type.length() - send_goal_suffix.length(), send_goal_suffix.length(),
-                               send_goal_suffix) == 0) {
-            info.type = srv_type.substr(0, srv_type.length() - send_goal_suffix.length());
-          } else {
-            info.type = srv_type;
-          }
+          info.type = action_type_from_send_goal(types[0]);
         }
 
         // Schemas (type_info) are resolved lazily by the operations handler

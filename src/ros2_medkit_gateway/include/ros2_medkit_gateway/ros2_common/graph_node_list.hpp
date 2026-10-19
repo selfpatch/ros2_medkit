@@ -18,6 +18,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -47,6 +48,9 @@ struct GraphNodeList {
   std::vector<std::pair<std::string, std::string>> nodes;
   /// FQN of every node left out as a leftover, once each, in graph order.
   std::vector<std::string> leftovers;
+  /// FQN of every running node the graph also lists without an enclave. A by-node query for it
+  /// can answer for that leftover entry.
+  std::set<std::string> shadowed;
 };
 
 /// Fully qualified name from the name and namespace the graph reports.
@@ -102,6 +106,30 @@ inline bool graph_node_has_endpoints(const rclcpp::node_interfaces::NodeGraphInt
 }
 
 /**
+ * @brief Services of each node, keyed by node FQN, from the writers on each `rr/<service>Reply` topic.
+ *
+ * A by-node query answers from the first graph entry of the name, which can be a leftover with no
+ * endpoints. Endpoint info names the node that owns each writer. Empty on an RMW without `rr/` topics.
+ * Throws what the graph queries throw, for example once the context is shut down.
+ *
+ * @param wanted `bool(const std::string & service)`. Only these services cost an endpoint query.
+ */
+template <typename Wanted>
+std::map<std::string, std::map<std::string, std::vector<std::string>>>
+graph_services_by_server(const rclcpp::node_interfaces::NodeGraphInterface & graph, Wanted && wanted) {
+  std::map<std::string, std::map<std::string, std::vector<std::string>>> by_server;
+  for (const auto & [service, types] : graph.get_service_names_and_types()) {
+    if (!wanted(service)) {
+      continue;
+    }
+    for (const auto & writer : graph.get_publishers_info_by_topic("rr" + service + "Reply", /*no_mangle=*/true)) {
+      by_server[graph_node_fqn(writer.node_name(), writer.node_namespace())].emplace(service, types);
+    }
+  }
+  return by_server;
+}
+
+/**
  * @brief Reads the ROS graph's node list, leaving out the leftovers of nodes it saw running.
  *
  * A leftover is an entry with an empty enclave and no endpoints that a late `ros_discovery_info`
@@ -109,7 +137,8 @@ inline bool graph_node_has_endpoints(const rclcpp::node_interfaces::NodeGraphInt
  * not enough: micro-ROS and DDS-router nodes read the same, so only names this reader saw running
  * are hidden. Per FQN, on every read:
  * - an entry with an enclave is listed;
- * - an entry without an enclave is dropped when another entry of the name has one;
+ * - an entry without an enclave is dropped when another entry of the name has one, and the name
+ *   is reported as shadowed;
  * - an entry without an enclave for a departed name is left out when it has no endpoints;
  * - any other entry without an enclave is listed.
  *
@@ -195,6 +224,7 @@ class GraphNodeListReader {
       }
       auto fqn = graph_node_fqn(name, ns);
       if (running_.count(fqn) > 0) {
+        result.shadowed.insert(std::move(fqn));
         continue;
       }
       if (departed_.count(fqn) == 0) {
