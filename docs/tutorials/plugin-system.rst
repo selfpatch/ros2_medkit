@@ -876,8 +876,9 @@ Multiple plugins can be loaded simultaneously:
 - **DataProvider / OperationProvider / FaultProvider**: These use per-entity routing based
   on entity ownership. Entities created by a plugin's IntrospectionProvider are automatically
   routed to that same plugin's DataProvider, OperationProvider, and FaultProvider. Multiple
-  plugins can each serve different entities concurrently - there is no "first wins" conflict
-  because each plugin only handles requests for its own entities.
+  plugins can each serve different entities concurrently, because each plugin only handles
+  requests for the entities it owns. An entity ID that several plugins publish has one owner
+  (see `Entity Ownership`_).
 - **Custom routes**: All plugins can register endpoints (use unique path prefixes)
 
 Entity Ownership
@@ -894,6 +895,17 @@ route requests to the correct plugin.
 - When a data, operation, or fault request arrives for an entity, the handler looks up
   the owning plugin and delegates to its corresponding provider. Entities not owned by
   any plugin fall through to the default gateway behavior.
+- When several plugins publish the same entity ID, for example a parent area that each of
+  them creates by default, the plugin loaded last among them owns it. Each refresh registers
+  the plugins in load order and every registration takes the ID over, so during a refresh
+  the ID passes from plugin to plugin and ends with the last one. Outside hybrid discovery
+  the entity cache also keeps the copy from the plugin loaded last, so requests go to the
+  plugin whose copy of the entity is served.
+- The gateway logs a warning the first time ownership of an ID passes between two plugins
+  and does not repeat it on later refreshes. Once a refresh ends with no plugin owning the ID,
+  the gateway forgets which pairs it reported, so a conflict that comes back is logged again.
+- When the owner stops publishing the ID, another plugin that still publishes it owns it by
+  the end of the same refresh.
 
 This model allows multiple plugins to coexist without conflict - each plugin manages
 its own entities independently.
