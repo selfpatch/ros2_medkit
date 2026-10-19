@@ -166,6 +166,13 @@ jobs:
                   # `latest` belongs to docker-publish.yml, which moves it on
                   # every push to main; without this the action's default
                   # `latest=auto` would have a release take that tag over.
+                  #
+                  # The split of the rest: this workflow owns the semver tags
+                  # and sha-<sha7>, all of them naming the multi-arch manifest
+                  # list. docker-publish.yml owns `latest` and main-<sha7>,
+                  # both naming its linux/amd64 image. No tag name is written
+                  # by both, so a release tag cut on a commit that is also on
+                  # main cannot leave one name pointing at two artefacts.
                   flavor: latest=false
                   tags: |
                       # version tag (0.7.0 -> 0.7.0)

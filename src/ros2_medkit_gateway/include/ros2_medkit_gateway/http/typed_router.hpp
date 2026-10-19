@@ -149,6 +149,16 @@ class TypedRequest {
     return req_.path;
   }
 
+  /// The request method, upper-case, as cpp-httplib parsed it.
+  ///
+  /// Paired with `path()` it is what identifies a route to the auth policy, so
+  /// a handler that has to ask the policy about its own route asks about the
+  /// request it is serving, so the route it was registered under is stated
+  /// once.
+  const std::string & method() const {
+    return req_.method;
+  }
+
   /// Framework-only escape hatch back to the raw cpp-httplib request. Do not
   /// use this from handler bodies - it exists for the routing layer and for
   /// helpers that need access to fields not yet wrapped by TypedRequest. The

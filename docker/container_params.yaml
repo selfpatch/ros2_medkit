@@ -1,0 +1,21 @@
+# The two values a container needs that a host install does not.
+#
+# Bind every interface, because the port is published and the gateway is reached
+# through it. Refresh faster, because a container's graph turns over as sibling
+# containers come and go.
+#
+# A file, and placed where the mount point can still beat it. rclcpp applies
+# the merged node entries in order of first appearance, and every `-p` joins the
+# entry the first `-p` created; the entrypoint passes these layers first and the
+# caller's arguments after them. As `-p` arguments these two keys would sit
+# above the mount point and a mounted /etc/ros2_medkit/params.yaml could set
+# neither.
+#
+# CORS names no origin here. A published image allowing development origins is a
+# setting nobody chose; a deployment that runs the web UI next to the gateway
+# names its own origin in the file it mounts.
+ros2_medkit_gateway:
+  ros__parameters:
+    server:
+      host: "0.0.0.0"
+    refresh_interval_ms: 2000

@@ -23,6 +23,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_environment.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"

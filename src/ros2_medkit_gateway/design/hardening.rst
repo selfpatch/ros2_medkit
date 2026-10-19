@@ -35,6 +35,36 @@ Control                          Default        Secure profile
 ``locking`` on operations        none           lock required before mutation
 ================================ ============== ===========================================
 
+Two things the secure profile brings with it are worth stating plainly.
+
+**The gateway refuses to start without a signing secret.** With
+``auth.enabled`` true and ``auth.jwt_secret`` empty it exits with "JWT secret is
+required when authentication is enabled" (and HS256 additionally requires at
+least 32 characters). That is the intended failure. A gateway that will not boot
+is a deployment problem someone fixes in a minute; a gateway that booted
+half-protected is one nobody notices.
+
+**Under ``require_auth_for: "all"`` only ``/api/v1/auth/*`` is exempt, and
+health is not.** Auth is exempt because authentication cannot bootstrap through
+a door that already demands the credential it exists to hand out. Everything
+else, ``GET /api/v1/health`` included, needs a credential, so a container
+supervisor, load balancer or browser UI that probes health without one gets
+401. A probe that accepts 200, 401 and 403 works against either profile and
+leaves nothing open; a probe that cannot be changed gets the route named for
+it::
+
+    auth:
+      public_routes: ["GET /api/v1/health"]
+
+``auth.public_routes`` is empty in both profiles, which is what makes the
+exemption a deployment decision, and never a property of the artefact. The
+match is on method and path exactly, so the entry above opens
+``GET /api/v1/health`` and neither ``HEAD`` nor ``/api/v1/health/detail``. An
+anonymous caller on a route opened that way gets liveness only - ``status``,
+``timestamp``, an empty ``warnings``, ``warning_schema_version`` and
+``x-medkit-reduced: true`` - because the full body names entities and ROS
+nodes.
+
 Credential and certificate provisioning
 ----------------------------------------
 
@@ -48,25 +78,20 @@ Credential and certificate provisioning
    (HS256) or provision an RS256 key pair. Inject it at deploy time from a
    secret store or environment variable - do not commit it to source control.
 
+   .. note::
+
+      The gateway does not publish the secret as a parameter value. It declares
+      ``auth.jwt_secret`` with a placeholder that names the source
+      (``<from MEDKIT_JWT_SECRET>`` or ``<set at start>``), so ``ros2 param get``
+      and ``/parameter_events`` do not carry it. ``auth.clients`` and
+      ``aggregation.peer_auth_header`` get the same treatment.
+
    .. warning::
 
-      ``auth.jwt_secret`` is a plain readable ROS 2 parameter. Beyond source
-      control it is exposed on two planes:
-
-      - **DDS control plane.** Any peer on the ROS 2 graph can read it with
-        ``ros2 param get /<gateway_node> auth.jwt_secret`` - the parameter is
-        declared readable and the DDS domain is unauthenticated by default.
-      - **Process table.** Passing it inline (``-p auth.jwt_secret:=...`` as in
-        the launch example above) also leaks the value via ``ps`` and
-        ``/proc/<pid>/cmdline``.
-
-      Injecting from an environment variable / params file instead of an inline
-      ``-p`` closes the process-table leak, but the value still lands in a
-      readable parameter, so it remains exposed on the DDS plane. To close that,
-      lock down the control plane: ROS 2 security (SROS2) with an access-control
-      policy that denies parameter reads to untrusted participants, or a
-      dedicated / firewalled ``ROS_DOMAIN_ID`` (optionally with
-      ``ROS_LOCALHOST_ONLY=1``) that no untrusted peer can join.
+      Passing the secret inline (``-p auth.jwt_secret:=...`` as in the launch
+      example above) leaks it through ``ps`` and ``/proc/<pid>/cmdline``. Inject
+      it from ``MEDKIT_JWT_SECRET`` or from a params file that only the gateway's
+      user can read.
 
 3. **Role-scoped clients.** Create the minimum set of clients in
    ``auth.clients`` (``client_id:client_secret:role``). Roles, least to most

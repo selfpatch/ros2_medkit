@@ -24,6 +24,13 @@ AuthMiddleware::AuthMiddleware(const AuthConfig & config, AuthManager * auth_man
   : config_(config), auth_manager_(auth_manager) {
 }
 
+bool AuthMiddleware::requires_authentication(const AuthRequest & request) const {
+  if (!config_.enabled || auth_manager_ == nullptr) {
+    return false;
+  }
+  return auth_manager_->requires_authentication(request.method, request.path);
+}
+
 AuthMiddlewareResult AuthMiddleware::process(const AuthRequest & request) const {
   // If auth is not enabled, allow all requests
   if (!config_.enabled || auth_manager_ == nullptr) {
