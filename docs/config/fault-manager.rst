@@ -428,6 +428,7 @@ Basic Snapshot Settings
          config_file: ""                   # Path to YAML config file
          recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
          max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
+         max_evidence_occurrences: 10      # With retain_on_clear, occurrences whose evidence is kept
          capture_pool_size: 2              # Max concurrent capture threads (>= 1)
          capture_queue_depth: 16           # Max pending captures before policy applies (>= 1)
          capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
@@ -479,7 +480,16 @@ Basic Snapshot Settings
        historical behaviour: clearing a fault deletes them. Turn it on together
        with ``rosbag.max_bags_per_fault``, or acknowledging leaves the fault
        holding recordings whose matching readings are gone. Independent of
-       ``max_per_fault``, which still bounds growth either way.
+       ``max_per_fault``, which still bounds growth either way. Also keeps the
+       reporter evidence of older occurrences of a fault (see
+       ``max_evidence_occurrences``); without it a new occurrence deletes the
+       evidence of the older ones.
+   * - ``snapshots.max_evidence_occurrences``
+     - ``10``
+     - With ``retain_on_clear`` on, how many occurrences per fault code keep
+       their reporter evidence. The oldest are dropped first. ``GetFault`` serves
+       only the current occurrence. Set to 0 for unlimited. Has no effect
+       without ``retain_on_clear``.
    * - ``snapshots.capture_pool_size``
      - ``2``
      - Max concurrent capture threads under a fault storm (>= 1). The capture pool is

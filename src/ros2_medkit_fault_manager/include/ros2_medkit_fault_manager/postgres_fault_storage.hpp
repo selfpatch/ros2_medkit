@@ -90,6 +90,14 @@ class PgFaultStorage : public FaultStorage {
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
   std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+
+  void set_max_evidence_occurrences_per_fault(size_t max_count) override;
+  size_t store_reported_evidence(const std::string & fault_code, uint32_t occurrence, const std::string & source_id,
+                                 const std::vector<std::pair<std::string, std::string>> & evidence,
+                                 int64_t reported_at_ns) override;
+  std::vector<ReportedEvidence> get_reported_evidence(const std::string & fault_code,
+                                                      uint32_t occurrence) const override;
+
   size_t set_max_near_misses_per_fault(size_t max_count) override;
   std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
 
@@ -193,6 +201,7 @@ class PgFaultStorage : public FaultStorage {
   size_t max_snapshots_per_fault_{0};    ///< 0 = unlimited
   size_t max_near_misses_per_fault_{0};  ///< 0 = unlimited
   bool retain_snapshots_on_clear_{false};
+  size_t max_evidence_occurrences_per_fault_{0};  ///< 0 = unlimited
   /// Defaults to 1, the pre-#620 behaviour: a new recording replaces the old one.
   /// 0 = unlimited, bounded only by max_total_storage_mb.
   size_t max_rosbags_per_fault_{1};

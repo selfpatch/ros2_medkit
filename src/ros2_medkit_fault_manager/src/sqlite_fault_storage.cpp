@@ -316,6 +316,28 @@ void SqliteFaultStorage::initialize_schema() {
     }
   }
 
+  // Create reported_evidence table: the key-value pairs reporters send with FAILED reports, one
+  // row per (fault_code, occurrence, source_id, key). Only the report handler writes it, so it
+  // never races with the capture thread, which writes freeze_frames.
+  const char * create_reported_evidence_table_sql = R"(
+    CREATE TABLE IF NOT EXISTS reported_evidence (
+      fault_code TEXT NOT NULL,
+      occurrence INTEGER NOT NULL,
+      source_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      reported_at_ns INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_reported_evidence_key
+      ON reported_evidence(fault_code, occurrence, source_id, key);
+  )";
+
+  if (sqlite3_exec(db_, create_reported_evidence_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create reported_evidence table: " + error);
+  }
+
   // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
   // several faults of a burst link to one bag, and one fault links to several bags
   // over time. Bytes belong to file_path, not to the row.
@@ -1313,6 +1335,109 @@ std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::s
   frame.data = stmt.column_text(1);
   frame.captured_at_ns = stmt.column_int64(2);
   return frame;
+}
+
+void SqliteFaultStorage::set_max_evidence_occurrences_per_fault(size_t max_count) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  max_evidence_occurrences_per_fault_ = max_count;
+}
+
+size_t SqliteFaultStorage::store_reported_evidence(const std::string & fault_code, uint32_t occurrence,
+                                                   const std::string & source_id,
+                                                   const std::vector<std::pair<std::string, std::string>> & evidence,
+                                                   int64_t reported_at_ns) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  const uint32_t oldest_kept =
+      oldest_kept_evidence_occurrence(occurrence, retain_snapshots_on_clear_, max_evidence_occurrences_per_fault_);
+
+  exec_or_throw("BEGIN IMMEDIATE");
+  try {
+    {
+      SqliteStatement prune(db_, "DELETE FROM reported_evidence WHERE fault_code = ? AND occurrence < ?");
+      prune.bind_text(1, fault_code);
+      prune.bind_int64(2, oldest_kept);
+      if (prune.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to prune reported evidence: ") + sqlite3_errmsg(db_));
+      }
+    }
+
+    std::set<std::pair<std::string, std::string>> stored_keys;
+    {
+      SqliteStatement keys(db_, "SELECT source_id, key FROM reported_evidence WHERE fault_code = ? AND occurrence = ?");
+      keys.bind_text(1, fault_code);
+      keys.bind_int64(2, occurrence);
+      while (keys.step() == SQLITE_ROW) {
+        stored_keys.emplace(keys.column_text(0), keys.column_text(1));
+      }
+    }
+
+    const auto update = plan_evidence_update(stored_keys, source_id, evidence);
+    {
+      SqliteStatement remove(db_,
+                             "DELETE FROM reported_evidence WHERE fault_code = ? AND occurrence = ? AND source_id = ? "
+                             "AND key = ?");
+      for (const auto & key : update.deletes) {
+        remove.reset();
+        remove.bind_text(1, fault_code);
+        remove.bind_int64(2, occurrence);
+        remove.bind_text(3, source_id);
+        remove.bind_text(4, key);
+        if (remove.step() != SQLITE_DONE) {
+          throw std::runtime_error(std::string("Failed to delete reported evidence: ") + sqlite3_errmsg(db_));
+        }
+      }
+    }
+    {
+      SqliteStatement upsert(db_,
+                             "INSERT INTO reported_evidence (fault_code, occurrence, source_id, key, value, "
+                             "reported_at_ns) VALUES (?, ?, ?, ?, ?, ?) "
+                             "ON CONFLICT(fault_code, occurrence, source_id, key) "
+                             "DO UPDATE SET value = excluded.value, reported_at_ns = excluded.reported_at_ns");
+      for (const auto & [key, value] : update.upserts) {
+        upsert.reset();
+        upsert.bind_text(1, fault_code);
+        upsert.bind_int64(2, occurrence);
+        upsert.bind_text(3, source_id);
+        upsert.bind_text(4, key);
+        upsert.bind_text(5, value);
+        upsert.bind_int64(6, reported_at_ns);
+        if (upsert.step() != SQLITE_DONE) {
+          throw std::runtime_error(std::string("Failed to store reported evidence: ") + sqlite3_errmsg(db_));
+        }
+      }
+    }
+
+    exec_or_throw("COMMIT");
+    return update.dropped;
+  } catch (...) {
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
+  }
+}
+
+std::vector<ReportedEvidence> SqliteFaultStorage::get_reported_evidence(const std::string & fault_code,
+                                                                        uint32_t occurrence) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SqliteStatement stmt(db_,
+                       "SELECT source_id, key, value, reported_at_ns FROM reported_evidence "
+                       "WHERE fault_code = ? AND occurrence = ? ORDER BY source_id, key");
+  stmt.bind_text(1, fault_code);
+  stmt.bind_int64(2, occurrence);
+
+  std::vector<ReportedEvidence> result;
+  while (stmt.step() == SQLITE_ROW) {
+    ReportedEvidence entry;
+    entry.fault_code = fault_code;
+    entry.occurrence = occurrence;
+    entry.source_id = stmt.column_text(0);
+    entry.key = stmt.column_text(1);
+    entry.value = stmt.column_text(2);
+    entry.reported_at_ns = stmt.column_int64(3);
+    result.push_back(std::move(entry));
+  }
+  return result;
 }
 
 size_t SqliteFaultStorage::set_max_near_misses_per_fault(size_t max_count) {

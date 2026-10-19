@@ -52,11 +52,13 @@ The following diagram shows the relationships between the main components.
            --
            + FaultReporter(node, source_id, service_name)
            + report(fault_code, severity, description): void
+           + report(fault_code, severity, description, evidence): void
+           + report_passed(fault_code): void
            + is_service_ready(): bool
            + filter(): const LocalFilter&
            --
            - load_parameters(): void
-           - send_report(fault_code, severity, description): void
+           - send_report(fault_code, event_type, severity, description, evidence): void
        }
 
        class LocalFilter {
@@ -110,7 +112,9 @@ Main Components
    - Takes a ``rclcpp::Node::SharedPtr`` and ``source_id`` in constructor
    - Creates a service client to ``/fault_manager/report_fault``
    - Loads filter configuration from ROS parameters
-   - Provides simple ``report(fault_code, severity, description)`` method
+   - Provides simple ``report(fault_code, severity, description)`` method, and an overload
+     with ``evidence`` (``diagnostic_msgs/KeyValue[]``) that is sent in the same
+     ``ReportFault`` request as the fault
    - Integrates ``LocalFilter`` to reduce noise from repeated faults
    - Fire-and-forget service calls (non-blocking)
 

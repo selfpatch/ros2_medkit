@@ -16,8 +16,10 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "ros2_medkit_fault_reporter/local_filter.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
@@ -123,6 +125,20 @@ class FaultReporter {
   /// @param description Human-readable fault description
   void report(const std::string & fault_code, uint8_t severity, const std::string & description);
 
+  /// Report a FAILED event, carrying the measurements behind it.
+  ///
+  /// Same filtering as the three-argument overload. The evidence is the numbers the
+  /// reporter already had when it decided the condition held; the fault manager keeps
+  /// them in the fault's freeze frame, bounded, so the fault record says what the
+  /// reporter saw and not only that it complained.
+  ///
+  /// @param fault_code Global fault identifier (e.g., "MOTOR_OVERHEAT")
+  /// @param severity Severity level (use Fault::SEVERITY_* constants)
+  /// @param description Human-readable fault description
+  /// @param evidence Key-value measurements to attach to this report
+  void report(const std::string & fault_code, uint8_t severity, const std::string & description,
+              const std::vector<diagnostic_msgs::msg::KeyValue> & evidence);
+
   /// Report a PASSED event (fault condition cleared)
   ///
   /// PASSED events bypass local filtering and are always forwarded to FaultManager.
@@ -145,7 +161,7 @@ class FaultReporter {
 
   /// Send the fault report to FaultManager (async, fire-and-forget)
   void send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                   const std::string & description);
+                   const std::string & description, const std::vector<diagnostic_msgs::msg::KeyValue> & evidence = {});
 
   std::string source_id_;
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr client_;

@@ -223,6 +223,16 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     max_snapshots = 0;
   }
 
+  // With retain_on_clear on, reporter evidence of older occurrences is kept too. This bounds
+  // how many occurrences per fault code keep it, oldest dropped first. Without retention only
+  // the current occurrence keeps evidence.
+  auto max_evidence_occurrences = declare_parameter<int64_t>("snapshots.max_evidence_occurrences", 10);
+  if (max_evidence_occurrences < 0) {
+    RCLCPP_WARN(get_logger(), "snapshots.max_evidence_occurrences should be >= 0, got %ld. Disabling limit.",
+                max_evidence_occurrences);
+    max_evidence_occurrences = 0;
+  }
+
   // Near-miss retention. The series is what any later look at "how often did this code approach
   // confirmation" reads, so it is bounded rather than unlimited by default: an appliance runs for
   // weeks and the rows are cheap but not free. 0 means unlimited and lets the file grow with the
@@ -249,6 +259,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Independent of the cap: max_per_fault 0 means unlimited, and retention across
   // acknowledgement is a separate question from how many sets are kept.
   storage_->set_retain_snapshots_on_clear(retain_snapshots_on_clear);
+  storage_->set_max_evidence_occurrences_per_fault(static_cast<size_t>(max_evidence_occurrences));
 
   // Apply near-miss retention bound to storage (0 = unlimited). Applying it also trims a series
   // that a previous run left over the bound, which deletes history for good, so say when it does.
@@ -935,6 +946,23 @@ void FaultManagerNode::handle_report_fault(
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     return;
   }
+
+  // Keep the numbers the reporter had when it decided the condition held. Written on every
+  // FAILED report, not only on the one that confirms: a fault that never confirms still owes
+  // its near-miss series an explanation, and a reporter that stops publishing after the first
+  // report would otherwise leave nothing behind.
+  //
+  // The fault is already stored at this point. If the connection is lost, only the evidence
+  // is missing, so log it and still publish the event.
+  if (fault_after && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
+      !request->evidence.empty()) {
+    try {
+      store_reported_evidence(*fault_after, request->source_id, request->evidence, event_time);
+    } catch (const FaultStorage::IgnorableConnectionException & e) {
+      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    }
+  }
+
   if (fault_after) {
     // Only for codes the store holds: a PASSED for an unknown code writes nothing, so it must
     // not add an entry here either (the diagnostic bridge sends PASSED for every OK status).
@@ -1304,25 +1332,39 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   // With retention on, snapshots never run out, so "none left" would never fire and the frame -
   // which is the state at the MOST RECENT confirmation - would stay hidden behind snapshots of
   // earlier occurrences. Serve it in that case too.
-  if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
-    std::optional<FreezeFrameData> frame;
-    try {
+  //
+  // Reporter evidence of the current occurrence is added to the frame under
+  // "x-medkit": {"reported": ...}. It is not in the snapshots, so it is served even when the
+  // topic values are not; then the frame holds only the evidence.
+  std::optional<FreezeFrameData> frame;
+  std::vector<ReportedEvidence> evidence;
+  try {
+    if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
       frame = storage_->get_freeze_frame(request->fault_code);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-      response->success = false;
-      response->error_message = storage_unavailable(e);
-      return;
     }
+    evidence = storage_->get_reported_evidence(request->fault_code, fault->occurrence_count);
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    response->success = false;
+    response->error_message = storage_unavailable(e);
+    return;
+  }
+  if (frame || !evidence.empty()) {
+    ros2_medkit_msgs::msg::Snapshot snapshot;
+    snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
+    snapshot.name = "freeze_frame";
+    snapshot.data = build_served_freeze_frame(frame ? frame->data : std::string{}, evidence);
+    // topic/message_type left empty: the frame aggregates values from multiple topics.
+    // captured_at_ns is the capture time. A frame with only evidence has no capture, so it
+    // takes the time of the newest evidence; each entry also has its own reported_at.
     if (frame) {
-      ros2_medkit_msgs::msg::Snapshot snapshot;
-      snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
-      snapshot.name = "freeze_frame";
-      snapshot.data = frame->data;
-      // topic/message_type left empty: the frame aggregates values from multiple topics
       snapshot.captured_at_ns = frame->captured_at_ns;
-      response->environment_data.snapshots.push_back(snapshot);
+    } else {
+      for (const auto & entry : evidence) {
+        snapshot.captured_at_ns = std::max(snapshot.captured_at_ns, entry.reported_at_ns);
+      }
     }
+    response->environment_data.snapshots.push_back(snapshot);
   }
 
   // One entry per recording, newest first. A fault that keeps re-confirming leaves a
@@ -1994,6 +2036,34 @@ void FaultManagerNode::warn_on_conflicting_debounce_policy(const std::string & f
               it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold,
               source_id.c_str(), resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false",
               resolved.healing_threshold);
+}
+
+void FaultManagerNode::store_reported_evidence(const ros2_medkit_msgs::msg::Fault & fault,
+                                               const std::string & source_id,
+                                               const std::vector<diagnostic_msgs::msg::KeyValue> & evidence,
+                                               const rclcpp::Time & event_time) {
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(evidence.size());
+  for (const auto & kv : evidence) {
+    pairs.emplace_back(kv.key, kv.value);
+  }
+
+  const std::string & fault_code = fault.fault_code;
+  const size_t dropped =
+      storage_->store_reported_evidence(fault_code, fault.occurrence_count, source_id, pairs, event_time.nanoseconds());
+
+  if (dropped > 0) {
+    // Throttled: a reporter that trips a bound trips it on every report, and the operator
+    // needs to see it periodically, not once per event. Local Clock copy because
+    // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue on Humble/Lyrical; the throttle
+    // state is a static at the call site, so the copy costs nothing.
+    rclcpp::Clock throttle_clock(*get_clock());
+    RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 60000,
+                         "Dropped %zu evidence entry/entries for fault '%s': at most %zu keys are kept per occurrence, "
+                         "a key may not exceed %zu bytes and a value %zu bytes. The fault is recorded either way.",
+                         dropped, fault_code.c_str(), kMaxEvidenceEntries, kMaxEvidenceKeyBytes,
+                         kMaxEvidenceValueBytes);
+  }
 }
 
 }  // namespace ros2_medkit_fault_manager

@@ -58,18 +58,56 @@ void DiagnosticBridgeNode::load_parameters() {
                  return !s.empty();
                });
 
+  // STALE is the one level whose severity is a deployment decision rather than a fact:
+  // a GPS in a tunnel and a dead sensor both publish STALE, and only the operator knows
+  // which is which. Default CRITICAL keeps today's behaviour for anyone not configuring it.
+  const std::string stale_severity_name = declare_parameter<std::string>("stale_severity", "CRITICAL");
+  if (auto parsed = parse_severity_name(stale_severity_name)) {
+    stale_severity_ = *parsed;
+  } else {
+    RCLCPP_WARN(get_logger(),
+                "stale_severity '%s' is not a severity name; using CRITICAL. "
+                "Expected one of INFO, WARN, ERROR, CRITICAL.",
+                stale_severity_name.c_str());
+  }
+
   // Load custom name_to_code mappings from parameter overrides
   // Format: name_to_code.<diagnostic_name> = <fault_code>
   // Example: --ros-args -p "name_to_code.motor_temp:=MOTOR_OVERHEAT"
   auto params = get_node_parameters_interface()->get_parameter_overrides();
   const std::string prefix = "name_to_code.";
+  const std::string stale_prefix = "stale_severity_overrides.";
   for (const auto & [name, value] : params) {
     if (name.rfind(prefix, 0) == 0 && value.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
       std::string diag_name = name.substr(prefix.length());
       name_to_code_[diag_name] = value.get<std::string>();
       RCLCPP_DEBUG(get_logger(), "Loaded mapping: '%s' -> '%s'", diag_name.c_str(), name_to_code_[diag_name].c_str());
+      continue;
+    }
+
+    // Format: stale_severity_overrides.<diagnostic name or prefix> = <SEVERITY>
+    if (name.rfind(stale_prefix, 0) == 0 && value.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+      const std::string diag_prefix = name.substr(stale_prefix.length());
+      const std::string severity_name = value.get<std::string>();
+      auto parsed = parse_severity_name(severity_name);
+      if (!parsed) {
+        // Skipped, not defaulted: an operator who wrote a typo asked for something specific,
+        // and quietly applying CRITICAL would confirm the fault they were trying to debounce.
+        RCLCPP_WARN(get_logger(),
+                    "stale_severity_overrides.%s = '%s' is not a severity name; ignoring this override. "
+                    "Expected one of INFO, WARN, ERROR, CRITICAL.",
+                    diag_prefix.c_str(), severity_name.c_str());
+        continue;
+      }
+      stale_severity_overrides_.push_back(StaleSeverityOverride{diag_prefix, *parsed});
     }
   }
+
+  // Longest prefix first, so the first match found is the most specific one.
+  std::sort(stale_severity_overrides_.begin(), stale_severity_overrides_.end(),
+            [](const StaleSeverityOverride & a, const StaleSeverityOverride & b) {
+              return a.prefix.size() > b.prefix.size();
+            });
 }
 
 void DiagnosticBridgeNode::diagnostics_callback(const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & msg) {
@@ -147,9 +185,14 @@ void DiagnosticBridgeNode::process_diagnostic(const diagnostic_msgs::msg::Diagno
     RCLCPP_DEBUG(get_logger(), "Diagnostic OK: %s -> PASSED for %s", status.name.c_str(), fault_code.c_str());
   } else {
     // WARN, ERROR, STALE -> send FAILED event
-    auto severity = map_to_severity(status.level);
+    auto severity = map_to_severity(status.level, status.name);
     // severity is guaranteed to have value here (not OK level)
-    reporter->report(fault_code, *severity, status.message);
+    //
+    // The key-values travel with the report as evidence. They are the numbers the publisher
+    // already computed to decide something was wrong - outlier counts, gate statistics - and
+    // without them the fault record says a node complained but not what it saw. keyvalue_codes
+    // still reads the same values to pick the code; the two uses are independent.
+    reporter->report(fault_code, *severity, status.message, status.values);
     RCLCPP_DEBUG(get_logger(), "Diagnostic %s: %s -> fault %s (severity=%d)", status.name.c_str(),
                  status.message.c_str(), fault_code.c_str(), *severity);
   }
@@ -187,7 +230,8 @@ std::string DiagnosticBridgeNode::map_to_fault_code(const diagnostic_msgs::msg::
   return "";
 }
 
-std::optional<uint8_t> DiagnosticBridgeNode::map_to_severity(uint8_t diagnostic_level) {
+std::optional<uint8_t> DiagnosticBridgeNode::map_to_severity(uint8_t diagnostic_level,
+                                                             const std::string & diagnostic_name) const {
   using DiagStatus = diagnostic_msgs::msg::DiagnosticStatus;
   using Fault = ros2_medkit_msgs::msg::Fault;
 
@@ -199,10 +243,44 @@ std::optional<uint8_t> DiagnosticBridgeNode::map_to_severity(uint8_t diagnostic_
     case DiagStatus::ERROR:
       return Fault::SEVERITY_ERROR;
     case DiagStatus::STALE:
-      return Fault::SEVERITY_CRITICAL;
+      return stale_severity_for(diagnostic_name);
     default:
       return Fault::SEVERITY_ERROR;  // Unknown level -> ERROR
   }
+}
+
+uint8_t DiagnosticBridgeNode::stale_severity_for(const std::string & diagnostic_name) const {
+  // Entries are sorted longest-prefix-first, so the first hit is the most specific.
+  for (const auto & entry : stale_severity_overrides_) {
+    if (diagnostic_name.rfind(entry.prefix, 0) == 0) {
+      return entry.severity;
+    }
+  }
+  return stale_severity_;
+}
+
+std::optional<uint8_t> DiagnosticBridgeNode::parse_severity_name(const std::string & name) {
+  using Fault = ros2_medkit_msgs::msg::Fault;
+
+  std::string upper;
+  upper.reserve(name.size());
+  for (char c : name) {
+    upper += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+
+  if (upper == "INFO") {
+    return Fault::SEVERITY_INFO;
+  }
+  if (upper == "WARN") {
+    return Fault::SEVERITY_WARN;
+  }
+  if (upper == "ERROR") {
+    return Fault::SEVERITY_ERROR;
+  }
+  if (upper == "CRITICAL") {
+    return Fault::SEVERITY_CRITICAL;
+  }
+  return std::nullopt;
 }
 
 bool DiagnosticBridgeNode::is_ok_level(uint8_t diagnostic_level) {

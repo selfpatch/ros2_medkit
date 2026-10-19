@@ -367,6 +367,22 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
       CREATE INDEX IF NOT EXISTS idx_near_misses_fault_code ON near_misses(fault_code, id);
     )");
 
+  // Create reported_evidence table: the key-value pairs reporters send with FAILED reports, one
+  // row per (fault_code, occurrence, source_id, key). Only the report handler writes it, so it
+  // never races with the capture thread, which writes freeze_frames.
+  execute(tx, R"(
+      CREATE TABLE IF NOT EXISTS reported_evidence (
+        fault_code TEXT NOT NULL,
+        occurrence BIGINT NOT NULL,
+        source_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        reported_at_ns BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_reported_evidence_key
+        ON reported_evidence(fault_code, occurrence, source_id, key);
+    )");
+
   // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
   // several faults of a burst link to one bag, and one fault links to several bags
   // over time. Bytes belong to file_path, not to the row.
@@ -396,6 +412,7 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         FROM faults LIMIT 0;
       SELECT id, fault_code, topic, message_type, data, captured_at_ns, capture_id FROM snapshots LIMIT 0;
       SELECT fault_code, data, captured_at_ns FROM freeze_frames LIMIT 0;
+      SELECT fault_code, occurrence, source_id, key, value, reported_at_ns FROM reported_evidence LIMIT 0;
       SELECT id, fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, source_id,
              resulting_status
         FROM near_misses LIMIT 0;
@@ -1027,6 +1044,73 @@ std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const std::strin
     frame.data = res[0]["data"].as<std::string>();
     frame.captured_at_ns = res[0]["captured_at_ns"].as<int64_t>();
     return frame;
+  });
+}
+
+void PgFaultStorage::set_max_evidence_occurrences_per_fault(size_t max_count) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  max_evidence_occurrences_per_fault_ = max_count;
+}
+
+size_t PgFaultStorage::store_reported_evidence(const std::string & fault_code, uint32_t occurrence,
+                                               const std::string & source_id,
+                                               const std::vector<std::pair<std::string, std::string>> & evidence,
+                                               int64_t reported_at_ns) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  const auto occ = static_cast<int64_t>(occurrence);
+  const auto oldest_kept = static_cast<int64_t>(
+      oldest_kept_evidence_occurrence(occurrence, retain_snapshots_on_clear_, max_evidence_occurrences_per_fault_));
+
+  return run_in_transaction("store_reported_evidence", [&](pqxx::work & tx) {
+    execute(tx, "DELETE FROM reported_evidence WHERE fault_code = $1 AND occurrence < $2", fault_code, oldest_kept);
+
+    std::set<std::pair<std::string, std::string>> stored_keys;
+    auto res = execute(tx, "SELECT source_id, key FROM reported_evidence WHERE fault_code = $1 AND occurrence = $2",
+                       fault_code, occ);
+    for (const auto & r : res) {
+      stored_keys.emplace(r["source_id"].as<std::string>(), r["key"].as<std::string>());
+    }
+
+    const auto update = plan_evidence_update(stored_keys, source_id, evidence);
+    for (const auto & key : update.deletes) {
+      execute(tx,
+              "DELETE FROM reported_evidence WHERE fault_code = $1 AND occurrence = $2 AND source_id = $3 AND key = $4",
+              fault_code, occ, source_id, key);
+    }
+    for (const auto & [key, value] : update.upserts) {
+      execute(tx,
+              "INSERT INTO reported_evidence (fault_code, occurrence, source_id, key, value, reported_at_ns) "
+              "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (fault_code, occurrence, source_id, key) "
+              "DO UPDATE SET value = EXCLUDED.value, reported_at_ns = EXCLUDED.reported_at_ns",
+              fault_code, occ, source_id, key, value, reported_at_ns);
+    }
+    return update.dropped;
+  });
+}
+
+std::vector<ReportedEvidence> PgFaultStorage::get_reported_evidence(const std::string & fault_code,
+                                                                    uint32_t occurrence) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  return run_in_transaction("get_reported_evidence", [&](pqxx::work & tx) {
+    // COLLATE "C" orders by bytes, like SQLite and the in-memory map.
+    auto res = execute(tx,
+                       "SELECT source_id, key, value, reported_at_ns FROM reported_evidence "
+                       "WHERE fault_code = $1 AND occurrence = $2 ORDER BY source_id COLLATE \"C\", key COLLATE \"C\"",
+                       fault_code, static_cast<int64_t>(occurrence));
+    std::vector<ReportedEvidence> result;
+    for (const auto & r : res) {
+      ReportedEvidence entry;
+      entry.fault_code = fault_code;
+      entry.occurrence = occurrence;
+      entry.source_id = r["source_id"].as<std::string>();
+      entry.key = r["key"].as<std::string>();
+      entry.value = r["value"].as<std::string>();
+      entry.reported_at_ns = r["reported_at_ns"].as<int64_t>();
+      result.push_back(std::move(entry));
+    }
+    return result;
   });
 }
 

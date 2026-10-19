@@ -26,6 +26,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "ros2_medkit_fault_reporter/fault_reporter.hpp"
+#include "ros2_medkit_msgs/msg/fault.hpp"
 
 namespace ros2_medkit_diagnostic_bridge {
 
@@ -38,7 +39,11 @@ namespace ros2_medkit_diagnostic_bridge {
 ///   - OK (0)    -> PASSED event (healing)
 ///   - WARN (1)  -> WARN severity (1)
 ///   - ERROR (2) -> ERROR severity (2)
-///   - STALE (3) -> CRITICAL severity (3)
+///   - STALE (3) -> stale_severity (CRITICAL by default, overridable per diagnostic name)
+///
+/// STALE is configurable because a node can be STALE by design - a GPS in every tunnel, an
+/// IMU reporting covariance -1 - and CRITICAL bypasses debounce, so an expected outage would
+/// confirm a CRITICAL fault on its first sample.
 ///
 /// Example launch configuration:
 /// @code{.yaml}
@@ -61,9 +66,20 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   /// 4. Return empty string if no mapping found
   std::string map_to_fault_code(const diagnostic_msgs::msg::DiagnosticStatus & status) const;
 
-  /// Map DiagnosticStatus level to Fault severity
-  /// Returns std::nullopt if level is OK (should send PASSED instead)
-  static std::optional<uint8_t> map_to_severity(uint8_t diagnostic_level);
+  /// Map DiagnosticStatus level to Fault severity for a named diagnostic.
+  /// Returns std::nullopt if level is OK (should send PASSED instead).
+  /// STALE resolves through stale_severity and stale_severity_overrides; every other
+  /// level maps fixed, so only the level that can be a design decision is configurable.
+  std::optional<uint8_t> map_to_severity(uint8_t diagnostic_level, const std::string & diagnostic_name) const;
+
+  /// Severity a STALE status from @p diagnostic_name reports at.
+  /// Longest matching prefix among stale_severity_overrides wins; stale_severity otherwise.
+  uint8_t stale_severity_for(const std::string & diagnostic_name) const;
+
+  /// Parse a severity name ("INFO", "WARN", "ERROR", "CRITICAL", case-insensitive).
+  /// Returns std::nullopt for anything else, so a caller can report the typo rather than
+  /// silently substituting a severity nobody configured.
+  static std::optional<uint8_t> parse_severity_name(const std::string & name);
 
   /// Check if diagnostic level indicates OK status
   static bool is_ok_level(uint8_t diagnostic_level);
@@ -110,6 +126,17 @@ class DiagnosticBridgeNode : public rclcpp::Node {
   int max_tracked_sources_{512};
   std::map<std::string, std::string> name_to_code_;
   std::vector<std::string> keyvalue_codes_;
+
+  /// Severity a STALE status reports at when no override matches.
+  uint8_t stale_severity_{ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL};
+
+  /// Per-diagnostic STALE severity, sorted by prefix length descending so the first
+  /// match found is the longest one.
+  struct StaleSeverityOverride {
+    std::string prefix;
+    uint8_t severity;
+  };
+  std::vector<StaleSeverityOverride> stale_severity_overrides_;
 };
 
 }  // namespace ros2_medkit_diagnostic_bridge

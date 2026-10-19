@@ -30,6 +30,7 @@ find_package(ament_cmake REQUIRED)
 
 include(ROS2MedkitCompat)
 
+find_package(diagnostic_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
@@ -46,6 +47,7 @@ target_include_directories(fault_reporter_lib PUBLIC
 )
 
 medkit_target_dependencies(fault_reporter_lib
+  diagnostic_msgs
   rclcpp
   rclcpp_lifecycle
   ros2_medkit_msgs
@@ -66,7 +68,7 @@ install(DIRECTORY include/
 
 # Export for downstream packages
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp rclcpp_lifecycle ros2_medkit_msgs)
+ament_export_dependencies(diagnostic_msgs rclcpp rclcpp_lifecycle ros2_medkit_msgs)
 
 # Testing
 if(BUILD_TESTING)

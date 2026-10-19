@@ -14,12 +14,116 @@
 
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <set>
 #include <tuple>
 
 namespace ros2_medkit_fault_manager {
+
+namespace {
+
+/// Replace invalid UTF-8 in an incoming key or value before storing it. If this only
+/// happened when the frame is written out, the stored key would not match the raw key of
+/// the next report, and the same key would be added again. Invalid bytes become U+FFFD,
+/// same as the audit log.
+std::string to_valid_utf8(const std::string & raw) {
+  return nlohmann::json::parse(nlohmann::json(raw).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+      .get<std::string>();
+}
+
+/// Same format as the gateway uses for its own timestamps: UTC, milliseconds, 'Z'.
+std::string format_reported_at(int64_t ns) {
+  const std::time_t seconds = ns / 1'000'000'000;
+  const auto millis = static_cast<int>((ns % 1'000'000'000) / 1'000'000);
+  std::tm tm_buf{};
+  if (gmtime_r(&seconds, &tm_buf) == nullptr) {
+    return "1970-01-01T00:00:00.000Z";
+  }
+  char date[32];
+  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &tm_buf);
+  char result[48];
+  std::snprintf(result, sizeof(result), "%s.%03dZ", date, millis);
+  return result;
+}
+
+}  // namespace
+
+EvidenceUpdate plan_evidence_update(const std::set<std::pair<std::string, std::string>> & stored_keys,
+                                    const std::string & source_id,
+                                    const std::vector<std::pair<std::string, std::string>> & evidence) {
+  EvidenceUpdate update;
+  // Keys of this occurrence after the update, to apply the count bound as entries arrive.
+  std::set<std::pair<std::string, std::string>> keys = stored_keys;
+
+  for (const auto & [raw_key, raw_value] : evidence) {
+    // Check the bounds on the cleaned-up strings, since those are what get stored.
+    const std::string key = to_valid_utf8(raw_key);
+    const std::string value = to_valid_utf8(raw_value);
+    // An entry with no key cannot be read back by name, and a key over the bound is never
+    // stored, so there is nothing to delete for either.
+    if (key.empty() || key.size() > kMaxEvidenceKeyBytes) {
+      ++update.dropped;
+      continue;
+    }
+    const auto id = std::make_pair(source_id, key);
+    if (value.size() > kMaxEvidenceValueBytes) {
+      // The stored value of this key is older than this report. Keeping it would show an old
+      // number as the current one.
+      ++update.dropped;
+      if (keys.erase(id) > 0) {
+        update.deletes.push_back(key);
+      }
+      continue;
+    }
+    // A key already present is an update, not a new entry, so it does not count against the
+    // bound - otherwise a steady reporter could not refresh its own numbers.
+    if (keys.count(id) == 0 && keys.size() >= kMaxEvidenceEntries) {
+      ++update.dropped;
+      continue;
+    }
+    keys.insert(id);
+    update.upserts.emplace_back(key, value);
+  }
+  return update;
+}
+
+uint32_t oldest_kept_evidence_occurrence(uint32_t occurrence, bool retain, size_t max_occurrences) {
+  if (!retain) {
+    return occurrence;
+  }
+  if (max_occurrences == 0 || max_occurrences >= occurrence) {
+    return 0;
+  }
+  return occurrence - static_cast<uint32_t>(max_occurrences) + 1;
+}
+
+std::string build_served_freeze_frame(const std::string & frame_json, const std::vector<ReportedEvidence> & evidence) {
+  nlohmann::json frame = nlohmann::json::object();
+  if (!frame_json.empty()) {
+    auto parsed = nlohmann::json::parse(frame_json, nullptr, false);
+    if (!parsed.is_discarded() && parsed.is_object()) {
+      frame = std::move(parsed);
+    }
+  }
+  if (!evidence.empty()) {
+    nlohmann::json reported = nlohmann::json::object();
+    for (const auto & entry : evidence) {
+      // The value sits in its own object next to its timestamp, so no evidence key can clash
+      // with "reported_at".
+      reported[entry.source_id][entry.key] = {{"value", entry.value},
+                                              {"reported_at", format_reported_at(entry.reported_at_ns)}};
+    }
+    frame[kVendorExtensionKey][kReportedEvidenceKey] = std::move(reported);
+  }
+  // Keys and values were cleaned on the way in, but a frame written by an older build may not
+  // be. The default dump() throws on invalid UTF-8, and the throw would crash the fault manager.
+  return frame.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
 
 std::string rosbag_recording_id(const std::string & file_path) {
   std::filesystem::path p(file_path);
@@ -494,6 +598,57 @@ std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std:
     return std::nullopt;
   }
   return it->second;
+}
+
+void InMemoryFaultStorage::set_max_evidence_occurrences_per_fault(size_t max_count) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  max_evidence_occurrences_per_fault_ = max_count;
+}
+
+size_t InMemoryFaultStorage::store_reported_evidence(const std::string & fault_code, uint32_t occurrence,
+                                                     const std::string & source_id,
+                                                     const std::vector<std::pair<std::string, std::string>> & evidence,
+                                                     int64_t reported_at_ns) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  const uint32_t oldest_kept =
+      oldest_kept_evidence_occurrence(occurrence, retain_snapshots_on_clear_, max_evidence_occurrences_per_fault_);
+  std::set<std::pair<std::string, std::string>> stored_keys;
+  for (auto it = reported_evidence_.begin(); it != reported_evidence_.end();) {
+    const auto & entry = it->second;
+    if (entry.fault_code == fault_code && entry.occurrence < oldest_kept) {
+      it = reported_evidence_.erase(it);
+      continue;
+    }
+    if (entry.fault_code == fault_code && entry.occurrence == occurrence) {
+      stored_keys.emplace(entry.source_id, entry.key);
+    }
+    ++it;
+  }
+
+  const auto update = plan_evidence_update(stored_keys, source_id, evidence);
+  for (const auto & key : update.deletes) {
+    reported_evidence_.erase(std::make_tuple(fault_code, occurrence, source_id, key));
+  }
+  for (const auto & [key, value] : update.upserts) {
+    reported_evidence_[std::make_tuple(fault_code, occurrence, source_id, key)] =
+        ReportedEvidence{fault_code, occurrence, source_id, key, value, reported_at_ns};
+  }
+  return update.dropped;
+}
+
+std::vector<ReportedEvidence> InMemoryFaultStorage::get_reported_evidence(const std::string & fault_code,
+                                                                          uint32_t occurrence) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // The map is ordered by (fault_code, occurrence, source_id, key), the order the SQL backends use.
+  std::vector<ReportedEvidence> result;
+  for (const auto & [id, entry] : reported_evidence_) {
+    if (entry.fault_code == fault_code && entry.occurrence == occurrence) {
+      result.push_back(entry);
+    }
+  }
+  return result;
 }
 
 void InMemoryFaultStorage::record_near_miss(const FaultState & state, const DebounceConfig & config, uint8_t severity,

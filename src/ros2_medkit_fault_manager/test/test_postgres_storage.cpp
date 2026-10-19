@@ -52,6 +52,7 @@
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
+using ros2_medkit_fault_manager::kMaxEvidenceValueBytes;
 using ros2_medkit_fault_manager::PgFaultStorage;
 using ros2_medkit_fault_manager::RosbagFileInfo;
 using ros2_medkit_msgs::msg::Fault;
@@ -2967,6 +2968,48 @@ TEST_F(PgFaultStorageTest, SnapshotsDroppedByHealedReclassificationByDefault) {
   ASSERT_EQ(storage_->reclassify_healed_as_cleared().size(), 1u);
 
   EXPECT_TRUE(storage_->get_snapshots("SNAPSHOT_DROP_TEST").empty());
+}
+
+// Reporter evidence: the same behaviour as InMemory and SQLite (test_reported_evidence.cpp).
+TEST_F(PgFaultStorageTest, ReportedEvidenceIsKeyedBySourceAndUpdatedPerKey) {
+  using Pairs = std::vector<std::pair<std::string, std::string>>;
+  storage_->store_reported_evidence("FUSION_DIVERGED", 1, "/a", Pairs{{"temp", "80"}, {"gate", "1"}}, 100);
+  storage_->store_reported_evidence("FUSION_DIVERGED", 1, "/b", Pairs{{"temp", "20"}}, 200);
+  storage_->store_reported_evidence("FUSION_DIVERGED", 1, "/a", Pairs{{"temp", "81"}}, 300);
+
+  auto stored = storage_->get_reported_evidence("FUSION_DIVERGED", 1);
+  ASSERT_EQ(stored.size(), 3u);
+  EXPECT_EQ(stored[0].source_id + ":" + stored[0].key + "=" + stored[0].value, "/a:gate=1");
+  EXPECT_EQ(stored[0].reported_at_ns, 100);
+  EXPECT_EQ(stored[1].source_id + ":" + stored[1].key + "=" + stored[1].value, "/a:temp=81");
+  EXPECT_EQ(stored[1].reported_at_ns, 300);
+  EXPECT_EQ(stored[2].source_id + ":" + stored[2].key + "=" + stored[2].value, "/b:temp=20");
+}
+
+TEST_F(PgFaultStorageTest, ReportedEvidenceOversizedUpdateRemovesTheStoredKey) {
+  using Pairs = std::vector<std::pair<std::string, std::string>>;
+  storage_->store_reported_evidence("FUSION_DIVERGED", 1, "/a", Pairs{{"blob", "short"}}, 100);
+  const size_t dropped = storage_->store_reported_evidence(
+      "FUSION_DIVERGED", 1, "/a", Pairs{{"blob", std::string(kMaxEvidenceValueBytes + 1, 'x')}}, 200);
+
+  EXPECT_EQ(dropped, 1u);
+  EXPECT_TRUE(storage_->get_reported_evidence("FUSION_DIVERGED", 1).empty());
+}
+
+TEST_F(PgFaultStorageTest, ReportedEvidenceFollowsTheOccurrence) {
+  using Pairs = std::vector<std::pair<std::string, std::string>>;
+  storage_->store_reported_evidence("FUSION_DIVERGED", 1, "/a", Pairs{{"n", "1"}}, 100);
+  storage_->store_reported_evidence("FUSION_DIVERGED", 2, "/a", Pairs{{"n", "2"}}, 200);
+  EXPECT_TRUE(storage_->get_reported_evidence("FUSION_DIVERGED", 1).empty());
+  EXPECT_EQ(storage_->get_reported_evidence("FUSION_DIVERGED", 2).size(), 1u);
+
+  storage_->set_retain_snapshots_on_clear(true);
+  storage_->set_max_evidence_occurrences_per_fault(2);
+  storage_->store_reported_evidence("FUSION_DIVERGED", 3, "/a", Pairs{{"n", "3"}}, 300);
+  storage_->store_reported_evidence("FUSION_DIVERGED", 4, "/a", Pairs{{"n", "4"}}, 400);
+  EXPECT_TRUE(storage_->get_reported_evidence("FUSION_DIVERGED", 2).empty());
+  EXPECT_EQ(storage_->get_reported_evidence("FUSION_DIVERGED", 3).size(), 1u);
+  EXPECT_EQ(storage_->get_reported_evidence("FUSION_DIVERGED", 4).size(), 1u);
 }
 
 int main(int argc, char ** argv) {
