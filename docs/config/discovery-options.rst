@@ -130,13 +130,16 @@ declare in a manifest. That report exists only in ``hybrid`` mode, where
 manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
 at all.
 
-**The gateway's own node stays an App.** If its name starts with ``_``, runtime
-discovery hides it like any other such node, and a declared App bound to it is
-judged by its id. Its ROS parameters are what the gateway serves as that App's
-configurations, so ``/apps/<gateway>/configurations`` is where a client reads
-and writes them - there is no other entity carrying, for instance,
+**The helper rule leaves the gateway's own node an App.** Its ROS parameters
+are what the gateway serves as that App's configurations, so
+``/apps/<gateway>/configurations`` is where a client reads and writes them -
+there is no other entity carrying, for instance,
 ``aggregation.peer_auth_header``. Two gateways watching one graph also have to
 agree about what is on it, which they cannot do if each hides a different node.
+A gateway whose node name starts with ``_`` is the exception: runtime discovery
+hides that node like any other such node, so no runtime App carries those
+parameters. A declared App bound to it is judged by its id: one whose id does
+not start with ``_`` is served and carries the parameters.
 
 Names and namespaces: each helper node is created in the gateway's namespace,
 and a node-local remap fixes its name. A process-wide namespace remap
@@ -182,8 +185,33 @@ Function Entities from Namespaces
 
 When ``create_functions_from_namespaces`` is true (the default), each ROS 2
 namespace becomes a Function entity that groups the Apps in that namespace.
-This is the SOVD-correct mapping where Functions represent logical capabilities
-(what the software does) rather than deployment topology.
+The Function takes the first namespace segment as its id, so ``/line_a/cell_2``
+belongs to ``line_a``, and the Apps in the root namespace form the Function
+``root``. This is the SOVD-correct mapping where Functions represent logical
+capabilities (what the software does) rather than deployment topology.
+
+.. _discovery-function-hosts:
+
+**One rule for Function hosts.** After every filter and merge has run, each
+Function keeps only the hosts that name an App or a Component this gateway
+serves. A Function that only runtime discovery created is not served once it
+has no host left, on ``GET /functions/{id}`` and on ``GET /functions/{id}/hosts``
+alike. A namespace with no served App therefore has no Function, the root
+namespace included. A Function that a manifest, a plugin or a peer also
+contributes stays, also when it loses every host. The rule does not depend on
+why a host is not served: ``filter_internal_nodes``, a node linked to a
+manifest App (served under the manifest id), ``unmanifested_nodes: ignore``,
+``allow_heuristic_apps: false``, a namespace blacklist or whitelist, or a
+declared host that names nothing. A peer host that names a peer App renamed
+for an id collision is listed under the new id, ``<peer>__<id>``.
+
+The rule covers the Functions this gateway answers itself. A Function that only
+a peer contributes is forwarded: ``GET /functions/{id}`` answers with the peer's
+view, so the peer's own ``filter_internal_nodes`` decides which hosts that answer
+lists. ``GET /functions/{id}/hosts`` is answered here and lists only Apps this
+gateway serves. A Function's resource collections (data, operations and the
+others) fan out to every peer that contributes to it, and each peer answers with
+its own view.
 
 Merge Pipeline (Hybrid Mode)
 -----------------------------

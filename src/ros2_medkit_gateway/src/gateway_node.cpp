@@ -2292,6 +2292,9 @@ void GatewayNode::refresh_cache() {
     auto areas = discovery_mgr_->discover_areas();
     auto apps = discovery_mgr_->discover_apps();
     auto functions = discovery_mgr_->discover_functions(apps);
+    // Functions only runtime introspection created. A peer or a plugin that
+    // contributes the same id below removes it.
+    auto introspection_only_ids = discovery_mgr_->introspection_only_function_ids(functions);
 
     // In RUNTIME_ONLY mode: HostInfoProvider component or empty.
     // In HYBRID/MANIFEST_ONLY: pipeline-merged or manifest components.
@@ -2327,6 +2330,14 @@ void GatewayNode::refresh_cache() {
       peer_routing_table = std::move(merged.routing_table);
       aggregation_mgr_->update_routing_table(peer_routing_table);
       aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
+      for (const auto & func : functions) {
+        for (const auto & contributor : func.contributors) {
+          if (contributor.rfind("peer:", 0) == 0) {
+            introspection_only_ids.erase(func.id);
+            break;
+          }
+        }
+      }
 
       // Track per-entity peer contributors: entity id -> list of peer
       // names that host or contribute to it. Covers both routed leaves
@@ -2426,6 +2437,7 @@ void GatewayNode::refresh_cache() {
               continue;
             }
             entity_ids.push_back(func.id);
+            introspection_only_ids.erase(func.id);
             if (func.source.empty()) {
               func.source = "plugin";
             }
@@ -2490,6 +2502,9 @@ void GatewayNode::refresh_cache() {
         }
       }
     }
+
+    // Every filter and merge has run: a Function hosts only what is served.
+    keep_served_function_hosts(functions, apps, all_components, introspection_only_ids);
 
     // Capture sizes for logging
     const size_t area_count = areas.size();
@@ -2581,6 +2596,34 @@ void GatewayNode::stop_rest_server() {
   if (server_thread_ && server_thread_->joinable()) {
     server_thread_->join();
   }
+}
+
+void keep_served_function_hosts(std::vector<Function> & functions, const std::vector<App> & apps,
+                                const std::vector<Component> & components,
+                                const std::unordered_set<std::string> & introspection_only_ids) {
+  std::unordered_set<std::string> served_ids;
+  for (const auto & app : apps) {
+    served_ids.insert(app.id);
+  }
+  for (const auto & comp : components) {
+    served_ids.insert(comp.id);
+  }
+  std::vector<Function> kept;
+  kept.reserve(functions.size());
+  for (auto & func : functions) {
+    func.hosts.erase(std::remove_if(func.hosts.begin(), func.hosts.end(),
+                                    [&served_ids](const std::string & host) {
+                                      return served_ids.count(host) == 0;
+                                    }),
+                     func.hosts.end());
+    // Introspection creates a Function only for a namespace that holds apps.
+    // A Function anything else contributed to stays without hosts.
+    if (func.hosts.empty() && introspection_only_ids.count(func.id) > 0) {
+      continue;
+    }
+    kept.push_back(std::move(func));
+  }
+  functions = std::move(kept);
 }
 
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered) {

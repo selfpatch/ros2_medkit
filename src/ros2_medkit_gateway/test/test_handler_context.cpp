@@ -27,11 +27,13 @@
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -1197,6 +1199,64 @@ TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
     remaining.insert(app.id);
   }
   EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway"}));
+}
+
+namespace {
+
+Function function_hosting(const std::string & id, std::vector<std::string> hosts, const std::string & source) {
+  Function func;
+  func.id = id;
+  func.name = id;
+  func.hosts = std::move(hosts);
+  func.source = source;
+  return func;
+}
+
+}  // namespace
+
+TEST(KeepServedFunctionHostsTest, KeepsOnlyHostsThatNameAServedAppOrComponent) {
+  // "plc_bridge" is an App declared on one of this gateway's own helper nodes,
+  // which the internal-node filter removed. "no_such_app" names nothing.
+  App sensor;
+  sensor.id = "line_a_sensor";
+  Component ecu;
+  ecu.id = "line_a_ecu";
+  std::vector<Function> functions{
+      function_hosting("line_a", {"line_a_sensor", "line_a_ecu", "plc_bridge", "no_such_app"}, "manifest")};
+
+  keep_served_function_hosts(functions, {sensor}, {ecu}, {});
+
+  ASSERT_EQ(functions.size(), 1u);
+  EXPECT_EQ(functions[0].hosts, (std::vector<std::string>{"line_a_sensor", "line_a_ecu"}));
+}
+
+TEST(KeepServedFunctionHostsTest, DropsAFunctionOnlyIntrospectionCreatedOnceNoHostIsLeft) {
+  // Runtime introspection creates a Function per namespace that holds apps,
+  // so one with no served App left is not served.
+  std::vector<Function> functions{function_hosting("hidden_ns", {"_probe"}, discovery::kRuntimeFunctionSource)};
+
+  keep_served_function_hosts(functions, {}, {}, {"hidden_ns"});
+
+  EXPECT_TRUE(functions.empty());
+}
+
+TEST(KeepServedFunctionHostsTest, KeepsAFunctionAnythingElseContributedToWithoutHosts) {
+  // cell_b carries the runtime source but a peer merged into it, so its id is
+  // not in the introspection-only set. The source string does not decide.
+  std::vector<Function> functions{
+      function_hosting("line_a", {"plc_bridge"}, "manifest"),
+      function_hosting("plc", {"plc_bridge"}, "plugin"),
+      function_hosting("cell_b", {"_cell_b_local"}, discovery::kRuntimeFunctionSource),
+  };
+
+  keep_served_function_hosts(functions, {}, {}, {});
+
+  std::set<std::string> kept;
+  for (const auto & func : functions) {
+    kept.insert(func.id);
+    EXPECT_TRUE(func.hosts.empty()) << func.id;
+  }
+  EXPECT_EQ(kept, (std::set<std::string>{"line_a", "plc", "cell_b"}));
 }
 
 // =============================================================================

@@ -287,6 +287,7 @@ if(BUILD_TESTING)
   # four where two are used takes two away from whatever the runner could
   # otherwise have started alongside it.
   set(_TWO_GATEWAY_TESTS
+    test_aggregated_function_hosts
     test_peer_recovery
     test_triggers_restore_before_discovery
     test_aggregator_fault_stream

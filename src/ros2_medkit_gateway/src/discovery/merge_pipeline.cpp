@@ -568,7 +568,24 @@ MergeResult MergePipeline::execute() {
     // as SOVD vendor extension resources via get_routes() and register_capability().
   }
 
+  // The runtime layer is the one that provides runtime apps. A Function id any
+  // other layer also returns, a plugin's unchanged copy included, has another
+  // origin. Read before the merge, which moves the layer outputs.
+  std::unordered_set<std::string> runtime_function_ids;
+  std::unordered_set<std::string> other_function_ids;
+  for (const auto & [layer_idx, functions] : function_layers) {
+    auto & ids = layers_[layer_idx]->provides_runtime_apps() ? runtime_function_ids : other_function_ids;
+    for (const auto & func : functions) {
+      ids.insert(func.id);
+    }
+  }
+
   MergeResult result;
+  for (const auto & id : runtime_function_ids) {
+    if (other_function_ids.count(id) == 0) {
+      result.introspection_only_function_ids.insert(id);
+    }
+  }
   result.areas = merge_entities<Area>(area_layers, report);
   result.components = merge_entities<Component>(component_layers, report);
   result.apps = merge_entities<App>(app_layers, report);

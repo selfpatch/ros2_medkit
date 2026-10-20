@@ -414,8 +414,10 @@ When aggregation is enabled, entities from peers are merged with local entities:
 - **Apps**: Prefixed on collision. If a remote App has the same ID as a local
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).
   For example, App ``camera_driver`` from peer ``arm`` becomes
-  ``arm__camera_driver``. Apps represent individual ROS 2 nodes with unique
-  behavior.
+  ``arm__camera_driver``, and a Function host of that peer that names it does
+  too. Apps represent individual ROS 2 nodes with unique behavior. The
+  aggregator does not filter a peer's Apps again: the peer applied its own
+  ``filter_internal_nodes``.
 
 Requests for remote entities are transparently forwarded to the owning peer.
 The routing table maps entity IDs to peer names.

@@ -21,6 +21,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -548,5 +549,23 @@ size_t filter_internal_node_apps(std::vector<App> & apps,
  * @return true when the caller should warn
  */
 bool remember_dropped_declared_apps(const std::vector<std::string> & dropped, std::set<std::string> & remembered);
+
+/**
+ * @brief Keep only the Function hosts that name a served App or Component
+ *
+ * Runs once, after every filter and merge. Removes every host id that names
+ * neither an App in `apps` nor a Component in `components`. Drops a Function
+ * whose id is in `introspection_only_ids` once it has no hosts. A Function
+ * anything else contributed to stays, with or without hosts.
+ *
+ * @param functions Function vector to prune in place
+ * @param apps The Apps the gateway serves
+ * @param components The Components the gateway serves
+ * @param introspection_only_ids Ids of the Functions only runtime
+ *        introspection created
+ */
+void keep_served_function_hosts(std::vector<Function> & functions, const std::vector<App> & apps,
+                                const std::vector<Component> & components,
+                                const std::unordered_set<std::string> & introspection_only_ids);
 
 }  // namespace ros2_medkit_gateway
