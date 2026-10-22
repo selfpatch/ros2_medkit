@@ -35,6 +35,7 @@ import unittest
 
 from launch import LaunchDescription
 import launch.actions
+import launch.event_handlers
 import launch_ros.actions
 import launch_testing.actions
 import launch_testing.markers
@@ -93,6 +94,7 @@ class TestPublisher(Node):
         self.string_pub = self.create_publisher(String, '/test/status', qos)
         self.timer = self.create_timer(0.1, self.publish)
         self.counter = 0
+        self.get_logger().info('TestPublisher started')
 
     def publish(self):
         temp_msg = Temperature()
@@ -171,15 +173,30 @@ if __name__ == '__main__':
         sigkill_timeout='15',
     )
 
-    delayed_fault_manager = launch.actions.TimerAction(
-        period=8.0,
-        actions=[fault_manager_node],
+    # Start fault_manager once test_publisher has announced its topics. The fault
+    # manager retries topic discovery for 10 s after it starts and then gives up, so
+    # a fixed start delay leaves it without subscriptions when the publisher
+    # process takes longer than that to come up.
+    publisher_up = {'seen': False}
+
+    def start_fault_manager_when_publisher_up(event):
+        if publisher_up['seen'] or b'TestPublisher started' not in event.text:
+            return None
+        publisher_up['seen'] = True
+        return [fault_manager_node]
+
+    start_after_publisher = launch.actions.RegisterEventHandler(
+        launch.event_handlers.OnProcessIO(
+            target_action=test_publisher,
+            on_stdout=start_fault_manager_when_publisher_up,
+            on_stderr=start_fault_manager_when_publisher_up,
+        )
     )
 
     return (
         LaunchDescription([
             test_publisher,
-            delayed_fault_manager,
+            start_after_publisher,
             launch_testing.actions.ReadyToTest(),
         ]),
         {
@@ -187,6 +204,11 @@ if __name__ == '__main__':
             'test_publisher': test_publisher,
         },
     )
+
+
+# Budget for the fault manager to come up, from the start of setUpClass. The
+# ctest TIMEOUT is 240 s, so the budget is well inside it.
+PRECONDITION_BUDGET_SEC = 70.0
 
 
 class TestRosbagHistory(unittest.TestCase):
@@ -211,14 +233,42 @@ class TestRosbagHistory(unittest.TestCase):
             ListRosbags, '/fault_manager/list_rosbags'
         )
 
-        assert cls.report_fault_client.wait_for_service(timeout_sec=15.0), \
-            'report_fault service not available'
-        assert cls.clear_fault_client.wait_for_service(timeout_sec=15.0), \
-            'clear_fault service not available'
-        assert cls.get_rosbag_client.wait_for_service(timeout_sec=15.0), \
-            'get_rosbag service not available'
-        assert cls.list_rosbags_client.wait_for_service(timeout_sec=15.0), \
-            'list_rosbags service not available'
+        # Precondition: the fault manager is up, serves its services and holds
+        # subscriptions on both topics. Without them a recording holds only the
+        # post-fault window. It starts only after the publisher process is up,
+        # which can take long on a loaded machine, so first wait for the node
+        # and then give it time to bring its services and subscriptions up.
+        started = time.time()
+
+        def node_is_up():
+            return any(name == 'fault_manager'
+                       for name, _ in cls.node.get_node_names_and_namespaces())
+
+        deadline = started + PRECONDITION_BUDGET_SEC
+        while not node_is_up() and time.time() < deadline:
+            time.sleep(0.2)
+        assert node_is_up(), 'fault_manager node did not start (publisher too slow?)'
+        clients = {
+            'report_fault': cls.report_fault_client,
+            'clear_fault': cls.clear_fault_client,
+            'get_rosbag': cls.get_rosbag_client,
+            'list_rosbags': cls.list_rosbags_client,
+        }
+        # At least 10 s once the node exists, at most 25 s, inside the budget.
+        now = time.time()
+        deadline = max(min(now + 25.0, started + PRECONDITION_BUDGET_SEC), now + 10.0)
+        missing = []
+        while time.time() < deadline:
+            missing = [f'service {name}' for name, client in clients.items()
+                       if not client.service_is_ready()]
+            missing += [f'subscription on {topic}'
+                        for topic in ('/test/temperature', '/test/status')
+                        if not any(info.node_name == 'fault_manager'
+                                   for info in cls.node.get_subscriptions_info_by_topic(topic))]
+            if not missing:
+                break
+            time.sleep(0.2)
+        assert not missing, 'fault_manager not ready: ' + ', '.join(missing)
 
         deadline = time.time() + 15.0
         while (not cls.node.get_publishers_info_by_topic('/test/temperature')
