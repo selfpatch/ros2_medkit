@@ -474,9 +474,29 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   // Collect env vars to set in child process
   auto env_vars = resolved->env;
 
+  // Without a stdin payload the child reads /dev/null, never the gateway's stdin.
+  int devnull_fd = -1;
+  if (!pass_stdin_json) {
+    devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (devnull_fd < 0) {
+      close(stdout_pipe[0]);
+      close(stdout_pipe[1]);
+      close(stderr_pipe[0]);
+      close(stderr_pipe[1]);
+      {
+        std::lock_guard<std::mutex> lock(exec_mutex_);
+        active_execution_count_--;  // Release reserved slot
+      }
+      return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Failed to open /dev/null"});
+    }
+  }
+
   // Fork
   pid_t child_pid = fork();
   if (child_pid < 0) {
+    if (devnull_fd >= 0) {
+      close(devnull_fd);
+    }
     close(stdout_pipe[0]);
     close(stdout_pipe[1]);
     close(stderr_pipe[0]);
@@ -509,6 +529,8 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
       close(stdin_pipe[1]);  // Close write end
       dup2(stdin_pipe[0], STDIN_FILENO);
       close(stdin_pipe[0]);
+    } else {
+      dup2(devnull_fd, STDIN_FILENO);
     }
 
     // Redirect stdout
@@ -541,6 +563,9 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   // --- Parent process ---
 
   setpgid(child_pid, child_pid);  // Also set in parent (race-free with child's setpgid(0,0))
+  if (devnull_fd >= 0) {
+    close(devnull_fd);
+  }
 
   // Close pipe ends we don't use
   close(stdout_pipe[1]);
