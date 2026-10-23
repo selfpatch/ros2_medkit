@@ -560,9 +560,11 @@ The storage backends, threshold resolver, correlation engine and audit log build
 static library `fault_manager_core` (`cmake/fault_manager_core.cmake`, plain CMake 3.16, C++17). It
 returns `ros2_medkit::fault_detection::FaultRecord` values with nanosecond times and logs through a
 `core::LogSink` that the caller supplies. The ROS node converts at its edge
-(`ros2/fault_msg_conversions.hpp`, `ros2/ros_log_sink.hpp`). The core compiles and is tested without
-ROS, with no DDS setup and with times the test passes in. `scripts/check_cores_without_ros/run.sh`
-builds it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with. The PostgreSQL backend needs libpqxx >= 7.5, which
+(`ros2/fault_msg_conversions.hpp`, `ros2/ros_log_sink.hpp`). The core compiles without ROS.
+`scripts/check_cores_without_ros/run.sh` builds it on Ubuntu 20.04 with gcc 9, the oldest compiler the
+cores are checked with, and runs a check program that reports a fault through `SqliteFaultStorage`
+with no ROS and no DDS setup. The unit test suites link `fault_manager_lib`, which uses rclcpp, and
+some of them build an `rclcpp::Clock`. The PostgreSQL backend needs libpqxx >= 7.5, which
 Ubuntu 20.04 does not package; SQLite is the default there.
 
 ## Testing

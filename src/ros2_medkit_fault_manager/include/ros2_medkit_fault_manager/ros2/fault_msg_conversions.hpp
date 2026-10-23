@@ -24,7 +24,6 @@ namespace ros2_medkit_fault_manager::ros2 {
 builtin_interfaces::msg::Time ns_to_time_msg(int64_t ns);
 
 ros2_medkit_msgs::msg::Fault to_msg(const ros2_medkit::fault_detection::FaultRecord & record);
-ros2_medkit::fault_detection::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg);
 ros2_medkit_msgs::msg::FaultEvent to_msg(const ros2_medkit::fault_detection::FaultEventRecord & record);
 
 }  // namespace ros2_medkit_fault_manager::ros2
