@@ -98,6 +98,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_fault_reporter_construction fault_reporter_lib)
   medkit_target_dependencies(test_fault_reporter_construction rclcpp rclcpp_lifecycle ros2_medkit_msgs)
 
+  # Pure logic: links the ROS-free core only, creates no node.
+  medkit_add_gtest(test_validate_filter_params test/test_validate_filter_params.cpp)
+  target_link_libraries(test_validate_filter_params fault_reporter_core)
+  medkit_test_needs_no_domain(test_validate_filter_params)
+
   # Integration tests
   install(DIRECTORY test
     DESTINATION share/${PROJECT_NAME}
