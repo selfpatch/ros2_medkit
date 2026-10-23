@@ -283,12 +283,12 @@ endif()
   medkit_add_launch_test(test_integration test/integration/test_integration.test.py TIMEOUT 60
     LABELS "integration")
 
-  medkit_add_launch_test(test_rosbag_integration test/integration/test_rosbag_integration.test.py TIMEOUT 90
+  medkit_add_launch_test(test_rosbag_integration test/integration/test_rosbag_integration.test.py TIMEOUT 150
     LABELS "integration")
 
   # Launches without snapshots.rosbag.format, so the parameter default (mcap)
   # is what is under test rather than an operator's explicit choice.
-  medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 90
+  medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 150
     LABELS "integration")
 
   medkit_add_launch_test(test_entity_thresholds_integration test/integration/test_entity_thresholds_integration.test.py

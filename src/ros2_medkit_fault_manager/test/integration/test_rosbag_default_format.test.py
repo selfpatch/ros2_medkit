@@ -218,9 +218,12 @@ if __name__ == '__main__':
     )
 
 
-# Budget for the fault manager to come up, from the start of setUpClass. The
-# tests' ctest TIMEOUT is 90 s; this leaves room for the tests' own ~15 s.
+# Budget for the whole precondition (node start and readiness), from the start of
+# setUpClass. The ctest TIMEOUT is 150 s; this leaves room for the publisher wait, the
+# buffer fill, the tests and the teardown.
 PRECONDITION_BUDGET_SEC = 70.0
+# Time kept for the readiness wait once the node exists.
+READINESS_MIN_SEC = 10.0
 
 
 class TestRosbagDefaultFormat(unittest.TestCase):
@@ -254,14 +257,14 @@ class TestRosbagDefaultFormat(unittest.TestCase):
             return any(name == 'fault_manager'
                        for name, _ in cls.node.get_node_names_and_namespaces())
 
-        deadline = started + PRECONDITION_BUDGET_SEC
+        deadline = started + PRECONDITION_BUDGET_SEC - READINESS_MIN_SEC
         while not node_is_up() and time.time() < deadline:
             time.sleep(0.2)
         assert node_is_up(), 'fault_manager node did not start (publisher too slow?)'
         clients = {'report_fault': cls.report_fault_client, 'get_rosbag': cls.get_rosbag_client}
         # At least 10 s once the node exists, at most 25 s, inside the budget.
         now = time.time()
-        deadline = max(min(now + 25.0, started + PRECONDITION_BUDGET_SEC), now + 10.0)
+        deadline = min(now + 25.0, started + PRECONDITION_BUDGET_SEC)
         missing = []
         while time.time() < deadline:
             missing = [f'service {name}' for name, client in clients.items()
