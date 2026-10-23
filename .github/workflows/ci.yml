@@ -594,7 +594,7 @@ jobs:
       - name: Run the check program and verify it links no ROS library
         run: |
           ldd /tmp/b/check_cores_without_ros | tee /tmp/ldd.txt
-          ! grep -q rclcpp /tmp/ldd.txt
+          if grep -q rclcpp /tmp/ldd.txt; then echo 'links rclcpp'; exit 1; fi
           /tmp/b/check_cores_without_ros
 
   # The one check branch rules require from this workflow. A matrix job skipped by

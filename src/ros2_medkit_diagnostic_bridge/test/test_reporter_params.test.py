@@ -109,11 +109,11 @@ class TestReporterParams(unittest.TestCase):
         cls.node.destroy_node()
         rclpy.shutdown()
 
-    def _publish_warn(self, name):
+    def _publish_warn(self, name, level=DiagnosticStatus.WARN, hardware_id='param_hw'):
         msg = DiagnosticArray()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.status = [DiagnosticStatus(
-            level=DiagnosticStatus.WARN, name=name, message='warn', hardware_id='param_hw')]
+            level=level, name=name, message='warn', hardware_id=hardware_id)]
         self.diag_pub.publish(msg)
         # Let the bridge and the fault manager process it.
         end = time.monotonic() + 0.5
@@ -129,9 +129,26 @@ class TestReporterParams(unittest.TestCase):
         self.assertIsNotNone(result, 'ListFaults timed out: is the fault manager still up?')
         return any(f.fault_code == code for f in result.faults)
 
+    def _wait_for_reporter_client(self):
+        """
+        Republish an ERROR until its fault appears.
+
+        ERROR bypasses the local filter. The bridge drops a report until its
+        ReportFault client has found the fault manager, so an arrived fault
+        proves the client is ready. The client belongs to the reporter, which
+        is shared by all faults, so the readiness holds for the WARN sequence.
+        """
+        deadline = time.monotonic() + 25.0
+        while not self._has_fault('WARMUP_PROBE'):
+            self.assertLess(time.monotonic(), deadline,
+                            'the bridge never reported the warm-up ERROR')
+            self._publish_warn(
+                'warmup_probe', level=DiagnosticStatus.ERROR, hardware_id='warmup_hw')
+
     def test_out_of_range_parameters_warn_and_keep_defaults(
             self, proc_output, diagnostic_bridge_node):
         """Warn for both values, and keep threshold 3 for a WARN fault."""
+        self._wait_for_reporter_client()
         # The reporter is built on the first diagnostic.
         self._publish_warn('param_probe')
         self._publish_warn('param_probe')

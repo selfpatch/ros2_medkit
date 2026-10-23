@@ -17,6 +17,7 @@
 # byte-equal, REORDERED when it has the same lines in another order, and SAME_SET when a repeated
 # case (<case>.rN.txt) produced the same set of distinct outcomes on both sides, where an outcome is
 # the sorted lines of one run. Anything else is DIFFERENT and prints the diff of the sorted lines.
+# Exit status: 0 when no case is DIFFERENT or MISSING, 1 otherwise, 2 for a missing directory or no captures.
 # Usage: compare.sh <base_dir> <branch_dir>
 set -u
 base="$1"
@@ -35,7 +36,18 @@ outcomes() {
   done | sort -u
 }
 
+for dir in "$base" "$branch"; do
+  if [ ! -d "$dir" ]; then
+    echo "compare: $dir is not a directory" >&2
+    exit 2
+  fi
+done
+
 all="$( { cases "$base"; cases "$branch"; } | sort -u)"
+if [ -z "$all" ]; then
+  echo "compare: no captures in $base or $branch" >&2
+  exit 2
+fi
 for name in $all; do
   if [ -f "$base/$name.txt" ] && [ -f "$branch/$name.txt" ]; then
     if cmp -s "$base/$name.txt" "$branch/$name.txt"; then

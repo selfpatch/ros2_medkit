@@ -19,7 +19,7 @@
 # Needs a sourced ROS environment. SWEEP_ONLY=<regex> limits the cases. Cases that depend on the
 # rosbag recorder timing run SWEEP_RACE_RUNS times (default 5) into <case>.rN.txt.
 # Run it against two builds and compare the out directories with compare.sh.
-# Exit status: 1 when any probe failed or any node ended with a status other than 0 or 143.
+# Exit status: 1 when any probe failed (PROBE_ALLOW_REJECTED=1 lets one case have rejected reports) or any node ended with a status other than 0 or 143.
 set -o pipefail
 : "${ROS_DISTRO:?source the ROS setup file first}"
 ws="$(cd "$1" && pwd)"
@@ -183,10 +183,14 @@ run_case rosbag_neg_after 2 0 0.2 -p snapshots.enabled:=true -p snapshots.rosbag
 run_case rosbag_cooldown_warn 2 0 0.2 -p snapshots.enabled:=true -p snapshots.rosbag.enabled:=true \
   -p snapshots.rosbag.max_bags_per_fault:=3 -p snapshots.recapture_cooldown_sec:=60.0 \
   -p "snapshots.rosbag.storage_path:=$work/bags"
-run_case rosbag_off_bad_values 2 0 0.2 -p snapshots.rosbag.enabled:=false
+run_case rosbag_off_bad_values 2 0 0.2 -p snapshots.enabled:=true -p snapshots.rosbag.enabled:=false \
+  -p snapshots.rosbag.duration_sec:=.nan -p snapshots.rosbag.duration_after_sec:=.nan \
+  -p snapshots.rosbag.max_bag_size_mb:=0 -p snapshots.rosbag.max_total_storage_mb:=-1 \
+  -p snapshots.rosbag.max_buffer_mb:=0 -p snapshots.rosbag.max_bags_per_fault:=-1 \
+  -p "snapshots.rosbag.storage_path:=$work/bags"
 run_case storage_memory 2 0 0.2 -p storage_type:=memory
 run_case storage_bogus 2 0 0.2 -p storage_type:=bogus
-run_case storage_postgres_unreachable 1 0 0.2 -p storage_type:=postgres \
+PROBE_ALLOW_REJECTED=1 run_case storage_postgres_unreachable 1 0 0.2 -p storage_type:=postgres \
   -p "database_url:=postgresql://nobody:nopass@127.0.0.1:1/none?connect_timeout=1"
 run_case thresholds_bad_files 3 0 0.2 -p "entity_thresholds.config_file:=$work/entity_bad.yaml" \
   -p "fault_thresholds.config_file:=$work/fault_bad.yaml"

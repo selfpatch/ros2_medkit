@@ -13,8 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Report FAILED then PASSED events to a running fault manager and print the resulting status."""
+"""
+Report FAILED then PASSED events to a running fault manager and print the resulting status.
 
+Exit status: 0 when every call answered and every report was accepted, 1 when a call timed out
+or a report was not accepted, 2 when a service is not available. PROBE_ALLOW_REJECTED=1 accepts
+a rejected report, for a case that runs without fault storage.
+"""
+
+import os
 import sys
 import time
 
@@ -36,6 +43,9 @@ def main():
         print('probe: service not available')
         return 2
 
+    problems = []
+    allow_rejected = os.environ.get('PROBE_ALLOW_REJECTED') == '1'
+
     def send(event_type):
         req = ReportFault.Request()
         req.fault_code = 'SWEEP_FAULT'
@@ -45,13 +55,18 @@ def main():
         req.source_id = '/sweep_source'
         fut = report.call_async(req)
         rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)
-        return fut.result().accepted if fut.result() else None
+        if fut.result() is None:
+            problems.append('ReportFault %d timed out' % event_type)
+        elif not fut.result().accepted and not allow_rejected:
+            problems.append('ReportFault %d not accepted' % event_type)
 
     def status(label):
         req = ListFaults.Request()
         req.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
         fut = listing.call_async(req)
         rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)
+        if fut.result() is None:
+            problems.append('ListFaults timed out (%s)' % label)
         faults = fut.result().faults if fut.result() else []
         rows = [(f.fault_code, f.status, f.occurrence_count) for f in faults]
         print('probe %s: %s' % (label, rows))
@@ -65,7 +80,9 @@ def main():
     status('after %d PASSED' % passed)
     node.destroy_node()
     rclpy.shutdown()
-    return 0
+    for problem in problems:
+        print('probe: ' + problem)
+    return 1 if problems else 0
 
 
 if __name__ == '__main__':
