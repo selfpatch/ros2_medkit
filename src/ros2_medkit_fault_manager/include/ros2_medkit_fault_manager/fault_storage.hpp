@@ -24,11 +24,11 @@
 #include <string>
 #include <vector>
 
-#include "rclcpp/rclcpp.hpp"
-#include "ros2_medkit_msgs/msg/fault.hpp"
-#include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "ros2_medkit_fault_detection/fault_types.hpp"
 
 namespace ros2_medkit_fault_manager {
+
+namespace fd = ros2_medkit::fault_detection;
 
 /// Debounce configuration for fault filtering.
 ///
@@ -89,21 +89,6 @@ bool is_near_miss(bool is_failed_event, const std::string & resulting_status);
 /// defaults (-1 / 3). Returns true if the config was already valid.
 bool sanitize_debounce_config(DebounceConfig & config);
 
-/// Nanoseconds to a message timestamp; a negative remainder is normalised like rclcpp::Time does.
-inline builtin_interfaces::msg::Time ns_to_time_msg(int64_t ns) {
-  constexpr int64_t kNsPerSec = 1000000000LL;
-  int64_t sec = ns / kNsPerSec;
-  int64_t rem = ns % kNsPerSec;
-  if (rem < 0) {
-    --sec;
-    rem += kNsPerSec;
-  }
-  builtin_interfaces::msg::Time t;
-  t.sec = static_cast<int32_t>(sec);
-  t.nanosec = static_cast<uint32_t>(rem);
-  return t;
-}
-
 /// Internal fault state stored in memory. Times are wall-clock ns >= 0; 0 means never.
 struct FaultState {
   std::string fault_code;
@@ -120,12 +105,9 @@ struct FaultState {
   int64_t last_failed_ns{0};    ///< Wall-clock ns of last FAILED event (0 = never)
   int64_t last_passed_ns{0};    ///< Wall-clock ns of last PASSED event (0 = never)
 
-  /// Convert to ROS 2 message
-  ros2_medkit_msgs::msg::Fault to_msg() const;
+  /// Convert to the neutral record.
+  fd::FaultRecord to_record() const;
 };
-
-/// Event type alias for convenience
-using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 
 /// Snapshot data captured when a fault is confirmed
 /// One captured topic value. A confirmation writes one of these PER TOPIC, and
@@ -241,7 +223,7 @@ class FaultStorage {
 
   /// Report a fault event (FAILED or PASSED)
   /// @param fault_code Global fault identifier
-  /// @param event_type EVENT_FAILED (0) or EVENT_PASSED (1)
+  /// @param kind Whether the report is a FAILED or a PASSED event
   /// @param severity Fault severity level (only used for FAILED events)
   /// @param description Human-readable description (only used for FAILED events)
   /// @param source_id Reporting source identifier
@@ -249,7 +231,7 @@ class FaultStorage {
   /// @param config Debounce configuration to apply for this event (resolved per-entity by the node)
   /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
   ///         false if existing active fault was updated
-  virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+  virtual bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                                   const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                   const DebounceConfig & config) = 0;
 
@@ -258,13 +240,13 @@ class FaultStorage {
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                                const std::vector<std::string> & statuses) const = 0;
+  virtual std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                                   const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
   /// @return The fault if found, nullopt otherwise
-  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
+  virtual std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const = 0;
 
   /// Clear a fault by fault_code (manual acknowledgment). Drops the fault's per-topic snapshots;
   /// the freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
@@ -477,7 +459,7 @@ class FaultStorage {
 
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
+  virtual std::vector<fd::FaultRecord> get_all_faults() const = 0;
 
   /// Predicate for reclassify_healed_as_cleared: true keeps that fault code HEALED.
   using KeepHealedFn = std::function<bool(const std::string & fault_code)>;
@@ -509,14 +491,14 @@ class InMemoryFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                           const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                           const DebounceConfig & config) override;
 
-  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) const override;
+  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                           const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
@@ -556,7 +538,7 @@ class InMemoryFaultStorage : public FaultStorage {
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
+  std::vector<fd::FaultRecord> get_all_faults() const override;
   std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
  private:

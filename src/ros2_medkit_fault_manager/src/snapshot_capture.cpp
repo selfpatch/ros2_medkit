@@ -216,8 +216,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   // Absent is not cleared: a caller driving the capture directly still stores.
   // Mirrors rosbag_capture's wants_a_row.
   const auto fault = storage_->get_fault(fault_code);
-  const bool acknowledged_mid_capture =
-      fault.has_value() && fault->status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
+  const bool acknowledged_mid_capture = fault.has_value() && fault->status == fd::fault_status::kCleared;
   if (acknowledged_mid_capture && !storage_->retains_snapshots_on_clear()) {
     RCLCPP_DEBUG(node_->get_logger(), "Dropping capture for '%s' - acknowledged while it ran", fault_code.c_str());
   } else {

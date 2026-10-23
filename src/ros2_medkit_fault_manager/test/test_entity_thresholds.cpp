@@ -24,6 +24,7 @@
 #include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 namespace fs = std::filesystem;
 using ros2_medkit_fault_manager::DebounceConfig;
@@ -186,7 +187,7 @@ TEST_F(YamlLoadTest, LoadValidFile) {
       << "  healing_enabled: false\n";
   }
 
-  auto entries = EntityThresholdResolver::load_from_yaml(path.string());
+  auto entries = EntityThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 3u);
 
   // Find the motor entry
@@ -204,7 +205,7 @@ TEST_F(YamlLoadTest, LoadValidFile) {
 
 // @verifies REQ_INTEROP_095
 TEST_F(YamlLoadTest, MissingFileReturnsEmpty) {
-  auto entries = EntityThresholdResolver::load_from_yaml("/nonexistent/path.yaml");
+  auto entries = EntityThresholdResolver::load_from_yaml("/nonexistent/path.yaml", test_log_sink());
   EXPECT_TRUE(entries.empty());
 }
 
@@ -216,7 +217,7 @@ TEST_F(YamlLoadTest, MalformedYamlReturnsEmpty) {
     f << "{{{{not valid yaml";
   }
 
-  auto entries = EntityThresholdResolver::load_from_yaml(path.string());
+  auto entries = EntityThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   EXPECT_TRUE(entries.empty());
 }
 
@@ -231,7 +232,7 @@ TEST_F(YamlLoadTest, BadValueReturnsEmpty) {
   }
 
   std::vector<EntityDebounceOverride> entries;
-  ASSERT_NO_THROW(entries = EntityThresholdResolver::load_from_yaml(path.string()));
+  ASSERT_NO_THROW(entries = EntityThresholdResolver::load_from_yaml(path.string(), test_log_sink()));
   EXPECT_TRUE(entries.empty());
 }
 
@@ -244,7 +245,7 @@ TEST_F(YamlLoadTest, PositiveConfirmationThresholdAutoNegated) {
       << "  confirmation_threshold: 5\n";
   }
 
-  auto entries = EntityThresholdResolver::load_from_yaml(path.string());
+  auto entries = EntityThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 1u);
   EXPECT_EQ(entries[0].confirmation_threshold.value(), -5);
 }
@@ -285,7 +286,7 @@ class PerEntityStorageTest : public ::testing::Test {
 // @verifies REQ_INTEROP_095
 TEST_F(PerEntityStorageTest, LidarFaultConfirmsImmediately) {
   auto ts = clock_.now();
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar failure",
+  storage_.report_fault_event("LIDAR_FAIL", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Lidar failure",
                               "/sensors/lidar", ts.nanoseconds(), lidar_config_);
 
   auto fault = storage_.get_fault("LIDAR_FAIL");
@@ -298,7 +299,7 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
   auto ts = clock_.now();
 
   // First event: counter = -1, threshold = -5, so PREFAILED
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Motor hot",
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor hot",
                               "/powertrain/motor_left", ts.nanoseconds(), motor_config_);
 
   auto fault = storage_.get_fault("MOTOR_OVERHEAT");
@@ -307,14 +308,14 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
 
   // Events 2-4: still PREFAILED (counter = -2, -3, -4)
   for (int i = 0; i < 3; ++i) {
-    storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "",
+    storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "",
                                 "/powertrain/motor_left", clock_.now().nanoseconds(), motor_config_);
   }
   fault = storage_.get_fault("MOTOR_OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);
 
   // Event 5: counter = -5, meets threshold -> CONFIRMED
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "",
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "",
                               "/powertrain/motor_left", clock_.now().nanoseconds(), motor_config_);
   fault = storage_.get_fault("MOTOR_OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
@@ -323,7 +324,7 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
 // @verifies REQ_INTEROP_095
 TEST_F(PerEntityStorageTest, UnknownEntityUsesGlobalConfig) {
   auto ts = clock_.now();
-  storage_.report_fault_event("UNKNOWN_FAULT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Unknown",
+  storage_.report_fault_event("UNKNOWN_FAULT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Unknown",
                               "/some/unknown/entity", ts.nanoseconds(), global_);
 
   auto fault = storage_.get_fault("UNKNOWN_FAULT");
@@ -336,14 +337,14 @@ TEST_F(PerEntityStorageTest, DifferentEntitiesSameFaultCode) {
   auto ts = clock_.now();
 
   // Motor reports with motor config (debounced)
-  storage_.report_fault_event("OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Motor overheat",
+  storage_.report_fault_event("OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor overheat",
                               "/powertrain/motor_left", ts.nanoseconds(), motor_config_);
   auto fault = storage_.get_fault("OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Motor needs 5 events
 
   // Lidar reports same fault_code with lidar config (threshold=-1)
   // Counter is now -2, lidar threshold is -1, -2 <= -1 -> CONFIRMED
-  storage_.report_fault_event("OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar overheat",
+  storage_.report_fault_event("OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Lidar overheat",
                               "/sensors/lidar", clock_.now().nanoseconds(), lidar_config_);
   fault = storage_.get_fault("OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Lidar config confirms at -1, counter is -2
@@ -354,16 +355,16 @@ TEST_F(PerEntityStorageTest, LidarHealingWithThreshold1) {
   auto ts = clock_.now();
 
   // Confirm fault
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar failure",
+  storage_.report_fault_event("LIDAR_FAIL", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Lidar failure",
                               "/sensors/lidar", ts.nanoseconds(), lidar_config_);
   auto fault = storage_.get_fault("LIDAR_FAIL");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 
   // One PASSED event should heal (healing_threshold=1 for lidar)
   // Counter goes from -1 to 0 (no status change at 0) then +1 -> healed
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar",
+  storage_.report_fault_event("LIDAR_FAIL", fd::ReportKind::kPassed, 0, "", "/sensors/lidar",
                               clock_.now().nanoseconds(), lidar_config_);
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar",
+  storage_.report_fault_event("LIDAR_FAIL", fd::ReportKind::kPassed, 0, "", "/sensors/lidar",
                               clock_.now().nanoseconds(), lidar_config_);
   fault = storage_.get_fault("LIDAR_FAIL");
   EXPECT_EQ(fault->status, Fault::STATUS_HEALED);
@@ -373,7 +374,7 @@ TEST_F(PerEntityStorageTest, LidarHealingWithThreshold1) {
 TEST_F(PerEntityStorageTest, BackwardCompatibleWithoutResolver) {
   // When no per-entity config is used, passing global config gives same behavior as before
   auto ts = clock_.now();
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               ts.nanoseconds(), global_);
 
   auto fault = storage_.get_fault("FAULT_1");

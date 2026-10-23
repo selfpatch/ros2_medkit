@@ -1,8 +1,9 @@
 # check_cores_without_ros
 
-Checks that the ROS-free cores build and run without ROS. It builds them with plain CMake
-and gcc 9 on Ubuntu 20.04, the oldest compiler the cores are checked with, then runs a small
-program that links them. The check fails if the binary links `rclcpp`.
+Checks that the ROS-free cores (fault reporter core, fault manager core) build and run
+without ROS. It builds them with plain CMake and gcc 9 on Ubuntu 20.04, the oldest compiler
+the cores are checked with, then runs a small program that links them. The check fails if
+the binary links `rclcpp`.
 
 ```bash
 scripts/check_cores_without_ros/run.sh

@@ -12,8 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ros2_medkit_fault_manager/fault_storage.hpp"
+#pragma once
 
-int main() {
-  return 0;
-}
+#include <string>
+
+#include "ros2_medkit_fault_manager/core/log_sink.hpp"
+
+namespace ros2_medkit_fault_manager::ros2 {
+
+/// Forwards core log lines to rcutils with the same level and logger name.
+class RosLogSink : public core::LogSink {
+ public:
+  void log(core::LogLevel level, const std::string & logger, const std::string & message) override;
+};
+
+}  // namespace ros2_medkit_fault_manager::ros2

@@ -32,9 +32,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "rcutils/logging_macros.h"
-#include "ros2_medkit_msgs/msg/fault.hpp"
-
 namespace ros2_medkit_fault_manager {
 
 namespace {
@@ -107,12 +104,13 @@ std::string service_name(const std::map<std::string, std::string> & options) {
 
 }  // namespace
 
-PgFaultStorage::PgFaultStorage(const std::string & conn_info) : PgFaultStorage(conn_info, 1, 500) {
+PgFaultStorage::PgFaultStorage(const std::string & conn_info, core::LogSink & log_sink)
+  : PgFaultStorage(conn_info, 1, 500, log_sink) {
 }
 
 PgFaultStorage::PgFaultStorage(const std::string & conn_info, const int max_retries,
-                               const unsigned reconnection_delay_ms)
-  : conn_info_(conn_info), max_retries_(max_retries), reconnection_delay_(reconnection_delay_ms) {
+                               const unsigned reconnection_delay_ms, core::LogSink & log_sink)
+  : conn_info_(conn_info), log_sink_(log_sink), max_retries_(max_retries), reconnection_delay_(reconnection_delay_ms) {
   // Fixed text: the libpq message quotes parts of the string, and those can be the password.
   auto options = parse_conn_info(conn_info_);
   if (!options) {
@@ -139,8 +137,8 @@ PgFaultStorage::PgFaultStorage(const std::string & conn_info, const int max_retr
     std::lock_guard<std::mutex> lock(mutex_);
     run_in_transaction("initialize_schema", [](pqxx::work &) {});
   } catch (const IgnorableConnectionException & e) {
-    RCUTILS_LOG_WARN_NAMED("postgres_fault_storage", "Starting without fault storage, PostgreSQL is unreachable: %s",
-                           e.what());
+    core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage",
+               "Starting without fault storage, PostgreSQL is unreachable: %s", e.what());
   }
 }
 
@@ -241,8 +239,8 @@ void PgFaultStorage::ensure_connection() const {
       // The server writes this text, and a server can put the password in it.
       last_error = redact(e.what());
     }
-    RCUTILS_LOG_WARN_NAMED("postgres_fault_storage", "Reconnection attempt %d/%d failed: %s", attempt + 1, retries + 1,
-                           last_error.c_str());
+    core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage", "Reconnection attempt %d/%d failed: %s",
+               attempt + 1, retries + 1, last_error.c_str());
   }
   fail_round(last_error);
   throw IgnorableConnectionException("Failed to connect to PostgreSQL: " + last_error);
@@ -280,8 +278,9 @@ auto PgFaultStorage::run_in_transaction(const char * what,
                                                          " failed to connect to PostgreSQL: " + error);
       }
       // No sleep here: ensure_connection spaces its own attempts.
-      RCUTILS_LOG_WARN_NAMED("postgres_fault_storage", "%s lost the connection (%s); retrying transaction %d/%d", what,
-                             error.c_str(), attempt + 1, max_retries_);
+      core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage",
+                 "%s lost the connection (%s); retrying transaction %d/%d", what, error.c_str(), attempt + 1,
+                 max_retries_);
     } catch (const std::exception & e) {
       // There are other types of error that "hide" connection issues
       // Before throwing a runtime_error, check if the connection is open
@@ -405,13 +404,14 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
     )");
 }
 
-std::vector<std::string> PgFaultStorage::parse_json_array(const std::string & json_str) {
+std::vector<std::string> PgFaultStorage::parse_json_array(const std::string & json_str) const {
   std::vector<std::string> result;
 
   // Simple JSON array parser for ["a", "b", "c"] format
   if (json_str.size() < 2 || json_str.front() != '[' || json_str.back() != ']') {
     if (!json_str.empty()) {
-      RCUTILS_LOG_WARN_NAMED("postgres_fault_storage", "Malformed JSON array in database: '%s'", json_str.c_str());
+      core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage", "Malformed JSON array in database: '%s'",
+                 json_str.c_str());
     }
     return result;
   }
@@ -538,7 +538,7 @@ std::string PgFaultStorage::serialize_json_array(const std::vector<std::string> 
   return oss.str();
 }
 
-bool PgFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+bool PgFaultStorage::report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                                         const std::string & description, const std::string & source_id,
                                         int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -549,15 +549,14 @@ bool PgFaultStorage::report_fault_event(const std::string & fault_code, uint8_t 
   // advance it a second time and the near miss it retried for would still be
   // missing from the series. run_in_transaction commits both rows together.
   return run_in_transaction("report_fault_event", [&](pqxx::work & tx) {
-    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp_ns, config,
-                                     tx);
+    return report_fault_event_locked(fault_code, kind, severity, description, source_id, timestamp_ns, config, tx);
   });
 }
 
-bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                                                const std::string & description, const std::string & source_id,
                                                int64_t timestamp_ns, const DebounceConfig & config, pqxx::work & tx) {
-  const bool is_failed = (event_type == EventType::EVENT_FAILED);
+  const bool is_failed = (kind == fd::ReportKind::kFailed);
 
   // No row lock needed: mutex_ serializes every call on this connection, and one database belongs to exactly one
   // fault manager.
@@ -583,7 +582,7 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
 
     // CLEARED faults can be reactivated by FAILED events
     bool is_reactivation = false;
-    if (current_status == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+    if (current_status == fd::fault_status::kCleared) {
       if (!is_failed) {
         // PASSED events for CLEARED faults are ignored
         return false;
@@ -621,8 +620,8 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
 
       // CRITICAL bypasses debounce; otherwise the shared state machine decides (with hysteresis).
       std::string new_status;
-      if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
-        new_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+      if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+        new_status = fd::fault_status::kConfirmed;
       } else {
         new_status = compute_debounce_status(debounce_counter, current_status, config);
       }
@@ -630,8 +629,7 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
       // Record the confirmation instant on the transition into CONFIRMED (also
       // on a reactivation that re-confirms); an already-confirmed fault keeps
       // its original timestamp.
-      if (new_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
-          current_status != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+      if (new_status == fd::fault_status::kConfirmed && current_status != fd::fault_status::kConfirmed) {
         confirmed_at_ns = timestamp_ns;
       }
 
@@ -679,13 +677,13 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
   // Determine initial status based on debounce logic (shared with the in-memory backend).
   std::string initial_status;
   constexpr int32_t initial_counter = -1;  // First FAILED event sets counter to -1
-  if (config.critical_immediate_confirm && severity == ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL) {
-    initial_status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+    initial_status = fd::fault_status::kConfirmed;
   } else {
     initial_status = compute_debounce_status(initial_counter, "", config);
   }
 
-  const bool confirmed_now = initial_status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
+  const bool confirmed_now = initial_status == fd::fault_status::kConfirmed;
   execute(
       tx,
       "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, "
@@ -702,24 +700,23 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, u
   return true;  // New fault created
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                                      const std::vector<std::string> & statuses) const {
+std::vector<fd::FaultRecord> PgFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
+                                                         const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
   std::set<std::string> status_filter;
   if (statuses.empty()) {
-    status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
+    status_filter.insert(fd::fault_status::kConfirmed);
   } else {
     for (const auto & s : statuses) {
-      if (s == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED || s == ros2_medkit_msgs::msg::Fault::STATUS_PREPASSED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED || s == ros2_medkit_msgs::msg::Fault::STATUS_HEALED ||
-          s == ros2_medkit_msgs::msg::Fault::STATUS_CLEARED) {
+      if (s == fd::fault_status::kPrefailed || s == fd::fault_status::kPrepassed || s == fd::fault_status::kConfirmed ||
+          s == fd::fault_status::kHealed || s == fd::fault_status::kCleared) {
         status_filter.insert(s);
       }
     }
     if (status_filter.empty()) {
-      status_filter.insert(ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
+      status_filter.insert(fd::fault_status::kConfirmed);
     }
   }
   const std::vector<std::string> status_filter_vector(status_filter.begin(), status_filter.end());
@@ -736,28 +733,28 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filte
     auto res = filter_by_severity ? execute(tx, sql, status_filter_vector, static_cast<int>(severity))
                                   : execute(tx, sql, status_filter_vector);
 
-    std::vector<ros2_medkit_msgs::msg::Fault> result;
+    std::vector<fd::FaultRecord> result;
     for (const auto & r : res) {
-      ros2_medkit_msgs::msg::Fault fault;
+      fd::FaultRecord fault;
       fault.fault_code = r["fault_code"].as<std::string>();
       fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
       fault.description = r["description"].as<std::string>();
-      fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
-      fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
+      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
+      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
       fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
       fault.status = r["status"].as<std::string>();
       fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
+      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
       result.push_back(fault);
     }
     return result;
   });
 }
 
-std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<fd::FaultRecord> PgFaultStorage::get_fault(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  return run_in_transaction("get_fault", [&](pqxx::work & tx) -> std::optional<ros2_medkit_msgs::msg::Fault> {
+  return run_in_transaction("get_fault", [&](pqxx::work & tx) -> std::optional<fd::FaultRecord> {
     auto res = execute(tx,
                        "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
                        "occurrence_count, status, reporting_sources, last_passed_ns FROM faults WHERE fault_code = $1",
@@ -766,16 +763,16 @@ std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std:
       return std::nullopt;
     }
     auto r = res[0];
-    ros2_medkit_msgs::msg::Fault fault;
+    fd::FaultRecord fault;
     fault.fault_code = r["fault_code"].as<std::string>();
     fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
     fault.description = r["description"].as<std::string>();
-    fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
-    fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
+    fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
+    fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
     fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
     fault.status = r["status"].as<std::string>();
     fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-    fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
+    fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
     return fault;
   });
 }
@@ -795,8 +792,8 @@ bool PgFaultStorage::clear_fault(const std::string & fault_code) {
       execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", fault_code);
     }
 
-    auto res = execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2",
-                       ros2_medkit_msgs::msg::Fault::STATUS_CLEARED, fault_code);
+    auto res =
+        execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2", fd::fault_status::kCleared, fault_code);
     return res.affected_rows() > 0;
   });
 }
@@ -808,8 +805,7 @@ std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared(const Keep
     // Collect the codes that will flip first so the caller can audit each one. Codes the
     // caller keeps HEALED are left out. Everything runs in the same transaction, so the
     // returned list matches the rows actually reclassified below.
-    auto res =
-        execute(tx, "SELECT fault_code FROM faults WHERE status = $1", ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+    auto res = execute(tx, "SELECT fault_code FROM faults WHERE status = $1", fd::fault_status::kHealed);
     std::vector<std::string> reclassified;
     for (const auto & r : res) {
       auto code = r["fault_code"].as<std::string>();
@@ -825,8 +821,8 @@ std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared(const Keep
       if (!retain_snapshots_on_clear_) {
         execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", code);
       }
-      execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND status = $3",
-              ros2_medkit_msgs::msg::Fault::STATUS_CLEARED, code, ros2_medkit_msgs::msg::Fault::STATUS_HEALED);
+      execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND status = $3", fd::fault_status::kCleared,
+              code, fd::fault_status::kHealed);
     }
     return reclassified;
   });
@@ -864,7 +860,7 @@ std::vector<std::string> PgFaultStorage::check_time_based_confirmation(int64_t n
     // so the returned list matches the rows actually confirmed below.
     auto res =
         execute(tx, "SELECT fault_code FROM faults WHERE status = $1 AND last_failed_ns <= $2 AND last_failed_ns > 0 ",
-                ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
+                fd::fault_status::kPrefailed, cutoff_ns);
 
     std::vector<std::string> confirmed;
     for (const auto & r : res) {
@@ -875,8 +871,7 @@ std::vector<std::string> PgFaultStorage::check_time_based_confirmation(int64_t n
       execute(tx,
               "UPDATE faults SET status = $1, confirmed_at_ns = $2 WHERE status = $3 AND last_failed_ns <= $4 "
               "AND last_failed_ns > 0",
-              ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED, now_ns, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED,
-              cutoff_ns);
+              fd::fault_status::kConfirmed, now_ns, fd::fault_status::kPrefailed, cutoff_ns);
     }
     return confirmed;
   });
@@ -1468,7 +1463,7 @@ std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::s
   });
 }
 
-std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() const {
+std::vector<fd::FaultRecord> PgFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_all_faults", [&](pqxx::work & tx) {
@@ -1476,18 +1471,18 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() const
                        "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
                        "occurrence_count, status, reporting_sources, last_passed_ns FROM faults");
 
-    std::vector<ros2_medkit_msgs::msg::Fault> result;
+    std::vector<fd::FaultRecord> result;
     for (const auto & r : res) {
-      ros2_medkit_msgs::msg::Fault fault;
+      fd::FaultRecord fault;
       fault.fault_code = r["fault_code"].as<std::string>();
       fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
       fault.description = r["description"].as<std::string>();
-      fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
-      fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
+      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
+      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
       fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
       fault.status = r["status"].as<std::string>();
       fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
+      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
       result.push_back(fault);
     }
     return result;

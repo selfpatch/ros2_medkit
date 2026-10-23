@@ -41,6 +41,7 @@
 #include "ros2_medkit_msgs/srv/get_snapshots.hpp"
 #include "ros2_medkit_msgs/srv/list_faults_for_entity.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 using ros2_medkit_fault_manager::clamp_debounce_counter;
 using ros2_medkit_fault_manager::compute_debounce_status;
@@ -81,7 +82,7 @@ TEST_F(FaultStorageTest, ReportNewFaultEvent) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  bool is_new = storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+  bool is_new = storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                                             "Motor temperature exceeded threshold", "/powertrain/motor",
                                             timestamp.nanoseconds(), default_config());
 
@@ -94,8 +95,8 @@ TEST_F(FaultStorageTest, PassedEventForNonExistentFaultIgnored) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  bool is_new = storage_.report_fault_event("NON_EXISTENT", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR,
-                                            "Test", "/node1", timestamp.nanoseconds(), default_config());
+  bool is_new = storage_.report_fault_event("NON_EXISTENT", fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "Test",
+                                            "/node1", timestamp.nanoseconds(), default_config());
 
   EXPECT_FALSE(is_new);
   EXPECT_EQ(storage_.size(), 0u);
@@ -106,12 +107,12 @@ TEST_F(FaultStorageTest, ReportExistingFaultEventUpdates) {
   auto timestamp1 = clock.now();
   auto timestamp2 = clock.now();
 
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                              "Initial report", "/powertrain/motor1", timestamp1.nanoseconds(), default_config());
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "Initial report",
+                              "/powertrain/motor1", timestamp1.nanoseconds(), default_config());
 
   bool is_new =
-      storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                  "Second report", "/powertrain/motor2", timestamp2.nanoseconds(), default_config());
+      storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Second report",
+                                  "/powertrain/motor2", timestamp2.nanoseconds(), default_config());
 
   EXPECT_FALSE(is_new);
   EXPECT_EQ(storage_.size(), 1u);
@@ -131,8 +132,8 @@ TEST_F(FaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCount) {
   // Simulate a level-triggered poller re-reporting the same still-true condition
   // every cycle (issue #11): occurrence_count must stay at 1, not grow per poll.
   for (int i = 0; i < 25; ++i) {
-    storage_.report_fault_event("TANK_OVERFILL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                "level = 95 > 80", "/tank", clock.now().nanoseconds(), default_config());
+    storage_.report_fault_event("TANK_OVERFILL", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "level = 95 > 80",
+                                "/tank", clock.now().nanoseconds(), default_config());
   }
 
   auto fault = storage_.get_fault("TANK_OVERFILL");
@@ -146,7 +147,7 @@ TEST_F(FaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, single report confirms immediately
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp.nanoseconds(), default_config());
 
   // Default query should return the CONFIRMED fault
@@ -164,7 +165,7 @@ TEST_F(FaultStorageTest, ListFaultsWithPrefailedStatus) {
   config.confirmation_threshold = -3;
   storage_.set_debounce_config(config);
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp.nanoseconds(), config);
 
   // Query with PREFAILED status
@@ -179,10 +180,10 @@ TEST_F(FaultStorageTest, ListFaultsFilterBySeverity) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, faults are immediately CONFIRMED
-  storage_.report_fault_event("FAULT_INFO", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Info", "/node1",
+  storage_.report_fault_event("FAULT_INFO", fd::ReportKind::kFailed, Fault::SEVERITY_INFO, "Info", "/node1",
                               timestamp.nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_ERROR", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Error",
-                              "/node1", timestamp.nanoseconds(), default_config());
+  storage_.report_fault_event("FAULT_ERROR", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Error", "/node1",
+                              timestamp.nanoseconds(), default_config());
 
   // Filter by ERROR severity (query CONFIRMED since that's the default status now)
   auto faults = storage_.list_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
@@ -194,8 +195,8 @@ TEST_F(FaultStorageTest, ClearFault) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
-                              "/node1", timestamp.nanoseconds(), default_config());
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
+                              timestamp.nanoseconds(), default_config());
 
   bool cleared = storage_.clear_fault("MOTOR_OVERHEAT");
   EXPECT_TRUE(cleared);
@@ -214,7 +215,7 @@ TEST_F(FaultStorageTest, GetClearedFaults) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp.nanoseconds(), default_config());
   storage_.clear_fault("FAULT_1");
 
@@ -229,7 +230,7 @@ TEST_F(FaultStorageTest, InvalidStatusDefaultsToConfirmed) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, fault is immediately CONFIRMED
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               timestamp.nanoseconds(), default_config());
 
   // Query with invalid status - defaults to CONFIRMED, which now matches our fault
@@ -273,9 +274,9 @@ TEST_F(FaultStorageTest, FaultStaysPrefailedAboveThreshold) {
   config.confirmation_threshold = -3;
   storage_.set_debounce_config(config);
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node2",
                               clock.now().nanoseconds(), config);
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -292,11 +293,11 @@ TEST_F(FaultStorageTest, FaultConfirmsAtThreshold) {
   config.confirmation_threshold = -3;
   storage_.set_debounce_config(config);
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node2",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node3",
                               clock.now().nanoseconds(), config);
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -310,7 +311,7 @@ TEST_F(FaultStorageTest, ConfirmedFaultStaysConfirmed) {
 
   // Report fault 4 times
   for (int i = 0; i < 4; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
                                 "/node" + std::to_string(i), clock.now().nanoseconds(), default_config());
   }
 
@@ -324,12 +325,12 @@ TEST_F(FaultStorageTest, MultiSourceConfirmsFault) {
   rclcpp::Clock clock;
 
   // Report same fault from 3 different sources
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
-                              "/sensor1", clock.now().nanoseconds(), default_config());
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
-                              "/sensor2", clock.now().nanoseconds(), default_config());
-  storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
-                              "/sensor3", clock.now().nanoseconds(), default_config());
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/sensor1",
+                              clock.now().nanoseconds(), default_config());
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/sensor2",
+                              clock.now().nanoseconds(), default_config());
+  storage_.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/sensor3",
+                              clock.now().nanoseconds(), default_config());
 
   auto fault = storage_.get_fault("MOTOR_OVERHEAT");
   ASSERT_TRUE(fault.has_value());
@@ -341,11 +342,11 @@ TEST_F(FaultStorageTest, SameSourceMultipleReportsConfirms) {
   rclcpp::Clock clock;
 
   // Same source reports 3 times
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), default_config());
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -362,7 +363,7 @@ TEST_F(FaultStorageTest, ImmediateConfirmationWithThresholdZero) {
   storage_.set_debounce_config(config);
 
   // Single report should confirm immediately
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -375,8 +376,8 @@ TEST_F(FaultStorageTest, CriticalSeverityBypassesDebounce) {
   rclcpp::Clock clock;
 
   // CRITICAL severity should confirm immediately
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "Critical test",
-                              "/node1", clock.now().nanoseconds(), default_config());
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "Critical test", "/node1",
+                              clock.now().nanoseconds(), default_config());
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
@@ -392,8 +393,8 @@ TEST_F(FaultStorageTest, CriticalBypassCanBeDisabled) {
   storage_.set_debounce_config(config);
 
   // CRITICAL should NOT confirm immediately when disabled
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "Critical test",
-                              "/node1", clock.now().nanoseconds(), config);
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "Critical test", "/node1",
+                              clock.now().nanoseconds(), config);
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
@@ -405,15 +406,15 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
 
   // Report to confirm (with default threshold=-1, single report confirms)
   auto first_ts = clock.now();
-  bool is_new = storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                            "Initial", "/node1", first_ts.nanoseconds(), default_config());
+  bool is_new = storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Initial",
+                                            "/node1", first_ts.nanoseconds(), default_config());
   EXPECT_TRUE(is_new);
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(fault->occurrence_count, 1u);
-  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), first_ts.nanoseconds());
+  EXPECT_EQ(fault->first_occurred_ns, first_ts.nanoseconds());
 
   // Clear the fault
   storage_.clear_fault("FAULT_1");
@@ -423,8 +424,8 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
 
   // Report again after a gap - should reactivate as a new cycle
   auto second_ts = rclcpp::Time(first_ts.nanoseconds() + 1'000'000'000LL);  // +1s
-  is_new = storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                                       "Reactivated", "/node2", second_ts.nanoseconds(), default_config());
+  is_new = storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Reactivated",
+                                       "/node2", second_ts.nanoseconds(), default_config());
   EXPECT_TRUE(is_new);  // Should return true like a new fault
 
   fault = storage_.get_fault("FAULT_1");
@@ -434,21 +435,21 @@ TEST_F(FaultStorageTest, ClearedFaultCanBeReactivated) {
   EXPECT_EQ(fault->reporting_sources.size(), 2u);     // Both sources
   EXPECT_EQ(fault->description, "Reactivated");       // Updated description
   // #25: first_occurred must reflect the new cycle, not the outage that already cleared.
-  EXPECT_EQ(rclcpp::Time(fault->first_occurred).nanoseconds(), second_ts.nanoseconds());
+  EXPECT_EQ(fault->first_occurred_ns, second_ts.nanoseconds());
 }
 
 TEST_F(FaultStorageTest, PassedEventForClearedFaultIgnored) {
   rclcpp::Clock clock;
 
   // Report and confirm
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), default_config());
 
   // Clear the fault
   storage_.clear_fault("FAULT_1");
 
   // PASSED event should be ignored for CLEARED fault
-  bool result = storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
+  bool result = storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1",
                                             clock.now().nanoseconds(), default_config());
   EXPECT_FALSE(result);
 
@@ -466,11 +467,11 @@ TEST_F(FaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   storage_.set_debounce_config(config);
 
   // Report 3 times to confirm
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node2",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node3",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node3",
                               clock.now().nanoseconds(), config);
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -481,7 +482,7 @@ TEST_F(FaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   storage_.clear_fault("FAULT_1");
 
   // Reactivate - should start in PREFAILED with counter=-1
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node4",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node4",
                               clock.now().nanoseconds(), config);
 
   fault = storage_.get_fault("FAULT_1");
@@ -489,9 +490,9 @@ TEST_F(FaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Not yet confirmed, needs 2 more FAILED
 
   // Report 2 more times to re-confirm
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node5",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node5",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node6",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node6",
                               clock.now().nanoseconds(), config);
 
   fault = storage_.get_fault("FAULT_1");
@@ -508,15 +509,14 @@ TEST_F(FaultStorageTest, PassedEventIncrementsCounter) {
   config.healing_threshold = 3;  // explicit upper clamp (don't depend on the default)
 
   // Report 2 FAILED events (counter = -2, PREFAILED)
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node2",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node2",
                               clock.now().nanoseconds(), config);
 
   // Report 3 PASSED events (counter = -2 + 3 = +1)
   for (int i = 0; i < 3; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(), config);
   }
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -532,31 +532,31 @@ TEST_F(FaultStorageTest, PassedEventDoesNotAdvanceLastOccurred) {
   const rclcpp::Time failed_at(1000, 0, RCL_SYSTEM_TIME);
   const rclcpp::Time passed_at(9000, 0, RCL_SYSTEM_TIME);
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               failed_at.nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", passed_at.nanoseconds(),
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", passed_at.nanoseconds(),
                               default_config());
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // healing disabled: latched, by design
-  EXPECT_EQ(rclcpp::Time(fault->last_occurred).nanoseconds(), failed_at.nanoseconds());
+  EXPECT_EQ(fault->last_occurred_ns, failed_at.nanoseconds());
   // The PASSED instant is not lost: it rides on the wire as last_passed.
-  EXPECT_EQ(rclcpp::Time(fault->last_passed).nanoseconds(), passed_at.nanoseconds());
+  EXPECT_EQ(fault->last_passed_ns, passed_at.nanoseconds());
 }
 
 TEST_F(FaultStorageTest, HealingDisabledByDefault) {
   rclcpp::Clock clock;
 
   // Report 1 FAILED event -> confirmed (threshold -1)
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), default_config());
 
   // With healing disabled, a heal heartbeat must not downgrade a confirmed fault.
   // The counter clamps at healing_threshold and the status latches CONFIRMED.
   for (int i = 0; i < 10; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), default_config());
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(),
+                                default_config());
   }
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -572,13 +572,12 @@ TEST_F(FaultStorageTest, HealingWhenEnabled) {
   storage_.set_debounce_config(config);
 
   // Report 1 FAILED event (counter = -1)
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
 
   // Report 4 PASSED events (counter = -1 + 4 = +3, reaches healing threshold)
   for (int i = 0; i < 4; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(), config);
   }
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -594,7 +593,7 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationDisabledByDefault) {
   config.confirmation_threshold = -3;
   storage_.set_debounce_config(config);
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
 
   // Advance time and check - should not auto-confirm (auto_confirm_after_sec = 0)
@@ -616,7 +615,7 @@ TEST_F(FaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   storage_.set_debounce_config(config);
 
   auto now = clock.now();
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               now.nanoseconds(), config);
 
   // Check before timeout - should not confirm
@@ -644,7 +643,7 @@ TEST_F(FaultStorageTest, ConfirmedFaultCanHealWithPassedEvents) {
 
   // Report 3 FAILED events to confirm (counter = -3)
   for (int i = 0; i < 3; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test",
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
                                 "/node" + std::to_string(i), clock.now().nanoseconds(), config);
   }
 
@@ -654,8 +653,7 @@ TEST_F(FaultStorageTest, ConfirmedFaultCanHealWithPassedEvents) {
 
   // Report 6 PASSED events (counter = -3 + 6 = +3, reaches healing threshold)
   for (int i = 0; i < 6; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(), config);
   }
 
   fault = storage_.get_fault("FAULT_1");
@@ -671,13 +669,12 @@ TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
   storage_.set_debounce_config(config);
 
   // Report 1 FAILED event (counter = -1)
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
 
   // Report 4 PASSED events to heal (counter = -1 + 4 = +3)
   for (int i = 0; i < 4; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(), config);
   }
 
   auto fault = storage_.get_fault("FAULT_1");
@@ -686,8 +683,8 @@ TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
 
   // Report 3 FAILED events - fault should recur and confirm (counter = +3 - 3 = 0, then -3)
   for (int i = 0; i < 6; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Recurrence",
-                                "/node2", clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Recurrence", "/node2",
+                                clock.now().nanoseconds(), config);
   }
 
   fault = storage_.get_fault("FAULT_1");
@@ -705,25 +702,24 @@ TEST_F(FaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
 
   // Long heal heartbeat: counter clamps at healing_threshold, then heals.
   for (int i = 0; i < 100; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1",
-                                clock.now().nanoseconds(), config);
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(), config);
   }
   EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_HEALED);
 
   // Re-confirmation is bounded and the healed status latches until the counter
   // walks all the way back down to the confirmation threshold.
   for (int i = 0; i < 3; ++i) {
-    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+    storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                                 clock.now().nanoseconds(), config);
     EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
   }
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
                               clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
 }
@@ -737,16 +733,15 @@ TEST_F(FaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
   config.healing_threshold = 3;
   config.critical_immediate_confirm = true;
 
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_CRITICAL, "crit", "/n",
+  storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
                               clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
   for (int i = 0; i < 3; ++i) {
-    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now().nanoseconds(),
-                                config);
+    storage_.report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
   }
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
-                              clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", clock.now().nanoseconds(),
+                              config);
   EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
 }
 
@@ -758,19 +753,18 @@ TEST_F(FaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
-                              clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", clock.now().nanoseconds(),
+                              config);
   for (int i = 0; i < 4; ++i) {
-    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now().nanoseconds(),
-                                config);
+    storage_.report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
   }
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
   for (int i = 0; i < 5; ++i) {  // +3 -> -2, latched HEALED
-    storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
+    storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                 clock.now().nanoseconds(), config);
     ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
   }
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
 }
 
@@ -780,11 +774,10 @@ TEST_F(FaultStorageTest, ReclassifyHealedAsCleared) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
-                              clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", clock.now().nanoseconds(),
+                              config);
   for (int i = 0; i < 4; ++i) {
-    storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now().nanoseconds(),
-                                config);
+    storage_.report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
   }
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
 
@@ -832,10 +825,10 @@ TEST_F(FaultStorageTest, HealingThresholdZeroHealsOnSinglePassed) {
   config.healing_enabled = true;
   config.healing_threshold = 0;
 
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "e", "/n",
-                              clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", clock.now().nanoseconds(),
+                              config);
   ASSERT_EQ(storage_.get_fault("F")->status, Fault::STATUS_CONFIRMED);
-  storage_.report_fault_event("F", ReportFault::Request::EVENT_PASSED, 0, "", "/n", clock.now().nanoseconds(), config);
+  storage_.report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_.get_fault("F")->status, Fault::STATUS_HEALED);
 }
 
@@ -855,11 +848,11 @@ TEST_F(FaultStorageTest, GetAllFaultsReturnsAllFaults) {
   auto timestamp = clock.now();
 
   // Add faults with different statuses
-  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test 1", "/node1",
+  storage_.report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test 1", "/node1",
                               timestamp.nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_2", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "Test 2", "/node2",
+  storage_.report_fault_event("FAULT_2", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "Test 2", "/node2",
                               timestamp.nanoseconds(), default_config());
-  storage_.report_fault_event("FAULT_3", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_INFO, "Test 3", "/node3",
+  storage_.report_fault_event("FAULT_3", fd::ReportKind::kFailed, Fault::SEVERITY_INFO, "Test 3", "/node3",
                               timestamp.nanoseconds(), default_config());
 
   auto all_faults = storage_.get_all_faults();
@@ -977,9 +970,8 @@ static void drive_near_misses(ros2_medkit_fault_manager::FaultStorage & storage,
   constexpr int64_t kBaseNs = 1700000000000000000LL;
 
   for (int i = 0; i < count; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", kBaseNs + static_cast<int64_t>(i) * 1000000LL,
-                               config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", kBaseNs + static_cast<int64_t>(i) * 1000000LL, config);
   }
 }
 
@@ -1153,7 +1145,7 @@ class FaultEventPublishingTest : public ::testing::Test {
   bool call_report_fault(const std::string & fault_code, uint8_t severity, const std::string & source_id) {
     auto request = std::make_shared<ReportFault::Request>();
     request->fault_code = fault_code;
-    request->event_type = ReportFault::Request::EVENT_FAILED;
+    request->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED;
     request->severity = severity;
     request->description = "Test fault";
     request->source_id = source_id;
@@ -1168,7 +1160,7 @@ class FaultEventPublishingTest : public ::testing::Test {
   bool call_report_passed(const std::string & fault_code, const std::string & source_id) {
     auto request = std::make_shared<ReportFault::Request>();
     request->fault_code = fault_code;
-    request->event_type = ReportFault::Request::EVENT_PASSED;
+    request->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED;
     request->source_id = source_id;
 
     auto future = report_fault_client_->async_send_request(request);
@@ -1656,9 +1648,8 @@ TEST(MatchesEntityTest, EmptySources) {
 TEST(InMemorySnapshotRetentionTest, ClearKeepsSnapshotsWhenEvidenceIsRetained) {
   InMemoryFaultStorage storage;
   rclcpp::Clock clock;
-  storage.report_fault_event("KEEP", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                             ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "keep", "/n", clock.now().nanoseconds(),
-                             ros2_medkit_fault_manager::DebounceConfig{});
+  storage.report_fault_event("KEEP", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "keep",
+                             "/n", clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   storage.set_retain_snapshots_on_clear(true);
 
   ros2_medkit_fault_manager::SnapshotData row;
@@ -1680,9 +1671,8 @@ TEST(InMemorySnapshotRetentionTest, ClearKeepsSnapshotsWhenEvidenceIsRetained) {
 TEST(InMemorySnapshotRetentionTest, ClearStillDropsSnapshotsByDefault) {
   InMemoryFaultStorage storage;
   rclcpp::Clock clock;
-  storage.report_fault_event("DROP", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                             ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "drop", "/n", clock.now().nanoseconds(),
-                             ros2_medkit_fault_manager::DebounceConfig{});
+  storage.report_fault_event("DROP", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "drop",
+                             "/n", clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   ros2_medkit_fault_manager::SnapshotData row;
   row.fault_code = "DROP";
@@ -1792,8 +1782,8 @@ TEST(InMemoryFreezeFrameTest, SurvivesClearFault) {
   InMemoryFaultStorage storage;
   rclcpp::Clock clock;
 
-  storage.report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                             "Pressure high", "/plc_node", clock.now().nanoseconds(), DebounceConfig{});
+  storage.report_fault_event("PLC_PRESSURE_HIGH", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Pressure high",
+                             "/plc_node", clock.now().nanoseconds(), DebounceConfig{});
 
   ros2_medkit_fault_manager::SnapshotData snap;
   snap.fault_code = "PLC_PRESSURE_HIGH";
@@ -1935,7 +1925,7 @@ class SnapshotCooldownTest : public ::testing::Test {
   bool report_fault(const std::string & code) {
     auto req = std::make_shared<ReportFault::Request>();
     req->fault_code = code;
-    req->event_type = ReportFault::Request::EVENT_FAILED;
+    req->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED;
     req->severity = Fault::SEVERITY_CRITICAL;  // Bypass debounce
     req->description = "Test";
     req->source_id = "/test";
@@ -1947,7 +1937,7 @@ class SnapshotCooldownTest : public ::testing::Test {
   bool report_passed(const std::string & code) {
     auto req = std::make_shared<ReportFault::Request>();
     req->fault_code = code;
-    req->event_type = ReportFault::Request::EVENT_PASSED;
+    req->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED;
     req->severity = 0;
     req->source_id = "/test";
     auto future = report_client_->async_send_request(req);
@@ -2084,7 +2074,7 @@ class FaultAuditIntegrationTest : public ::testing::Test {
 TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
   auto report = std::make_shared<ReportFault::Request>();
   report->fault_code = "AUDIT_FAULT";
-  report->event_type = ReportFault::Request::EVENT_FAILED;
+  report->event_type = ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED;
   report->severity = Fault::SEVERITY_CRITICAL;  // immediate confirm
   report->description = "overpressure";
   report->source_id = "/plc/pump";
@@ -2134,14 +2124,14 @@ TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
     ASSERT_TRUE(fut.get()->accepted);
   };
 
-  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1, threshold -1 => CONFIRMED
-  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0 (hysteresis): stays CONFIRMED
-  send_report(ReportFault::Request::EVENT_PASSED);  // counter 1 >= healing_threshold => HEALED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED);  // counter -1, threshold -1 => CONFIRMED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);  // counter 0 (hysteresis): stays CONFIRMED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);  // counter 1 >= healing_threshold => HEALED
 
   // HEALED is latched and the counter is clamped at the healing threshold: further
   // PASSED events keep status HEALED and must NOT append duplicate "healed" rows.
-  send_report(ReportFault::Request::EVENT_PASSED);
-  send_report(ReportFault::Request::EVENT_PASSED);
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);
 
   ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
   std::vector<std::string> transitions;
@@ -2181,9 +2171,10 @@ TEST_F(FaultAuditIntegrationTest, ConfirmedLatchNoDuplicateConfirmedRows) {
     ASSERT_TRUE(fut.get()->accepted);
   };
 
-  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 <= threshold -1 => CONFIRMED
-  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0: latch keeps CONFIRMED
-  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 again: still CONFIRMED, no new row
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED);  // counter -1 <= threshold -1 => CONFIRMED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);  // counter 0: latch keeps CONFIRMED
+  send_report(
+      ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED);  // counter -1 again: still CONFIRMED, no new row
 
   ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
   size_t confirmed_rows = 0;
@@ -2220,9 +2211,9 @@ TEST_F(FaultAuditSingleEventHealTest, SinglePassedHealAuditedOnce) {
     ASSERT_TRUE(fut.get()->accepted);
   };
 
-  send_report(ReportFault::Request::EVENT_FAILED);  // counter -1 => CONFIRMED
-  send_report(ReportFault::Request::EVENT_PASSED);  // counter 0 >= threshold 0 => HEALED
-  send_report(ReportFault::Request::EVENT_PASSED);  // clamped at 0, latched HEALED: no new row
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED);  // counter -1 => CONFIRMED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);  // counter 0 >= threshold 0 => HEALED
+  send_report(ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED);  // clamped at 0, latched HEALED: no new row
 
   ros2_medkit_fault_manager::FaultAuditLog audit(audit_path_);
   std::vector<std::string> transitions;
@@ -2277,9 +2268,8 @@ TEST(FaultAuditTimerTest, TimerConfirmationAppendsConfirmedAuditRow) {
   config.confirmation_threshold = -3;
   config.auto_confirm_after_sec = 0.2;
   rclcpp::Clock clock(RCL_SYSTEM_TIME);
-  node->get_storage_for_test().report_fault_event("AUTO_CONF_1", ReportFault::Request::EVENT_FAILED,
-                                                  Fault::SEVERITY_ERROR, "stuck", "/robot/src",
-                                                  clock.now().nanoseconds(), config);
+  node->get_storage_for_test().report_fault_event("AUTO_CONF_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                                                  "stuck", "/robot/src", clock.now().nanoseconds(), config);
   ASSERT_EQ(node->get_storage().get_fault("AUTO_CONF_1")->status, Fault::STATUS_PREFAILED);
 
   // Spin until a confirmed audit row appears or the budget expires (the wall
@@ -2310,16 +2300,16 @@ namespace {
 
 /// Leave a HEALED fault in a sqlite fault DB, as a previous healing-enabled run would.
 void seed_healed_fault(const std::string & db_path, const std::string & fault_code) {
-  ros2_medkit_fault_manager::SqliteFaultStorage seed(db_path);
+  ros2_medkit_fault_manager::SqliteFaultStorage seed(db_path, test_log_sink());
   DebounceConfig config;
   config.healing_enabled = true;
   config.healing_threshold = 3;
   rclcpp::Clock clock;
-  seed.report_fault_event(fault_code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "stale", "/robot/src",
+  seed.report_fault_event(fault_code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "stale", "/robot/src",
                           clock.now().nanoseconds(), config);
   for (int i = 0; i < 4; ++i) {
-    seed.report_fault_event(fault_code, ReportFault::Request::EVENT_PASSED, 0, "", "/robot/src",
-                            clock.now().nanoseconds(), config);
+    seed.report_fault_event(fault_code, fd::ReportKind::kPassed, 0, "", "/robot/src", clock.now().nanoseconds(),
+                            config);
   }
   ASSERT_EQ(seed.get_fault(fault_code)->status, Fault::STATUS_HEALED);
 }
@@ -2420,10 +2410,10 @@ void poison_next_audit_seq(const std::string & db_path) {
   ASSERT_EQ(rc, SQLITE_OK) << err_str;
 }
 
-Fault make_failclosed_fault() {
-  Fault f;
+fd::FaultRecord make_failclosed_fault() {
+  fd::FaultRecord f;
   f.fault_code = "FAILCLOSED";
-  f.severity = Fault::SEVERITY_ERROR;
+  f.severity = fd::severity::kError;
   f.status = "CONFIRMED";
   f.description = "injected";
   return f;
@@ -2516,7 +2506,7 @@ TEST(InMemorySnapshotRetentionTest, RetainedOnClearWhenConfigured) {
   InMemoryFaultStorage storage;
   storage.set_retain_snapshots_on_clear(true);
 
-  storage.report_fault_event("SNAPSHOT_RETAIN_TEST", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+  storage.report_fault_event("SNAPSHOT_RETAIN_TEST", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                              "fault with evidence", "/test_node", 1000, default_config());
   store_two_snapshots(storage, "SNAPSHOT_RETAIN_TEST");
   ASSERT_EQ(storage.get_snapshots("SNAPSHOT_RETAIN_TEST").size(), 2u);
@@ -2529,7 +2519,7 @@ TEST(InMemorySnapshotRetentionTest, RetainedOnClearWhenConfigured) {
 TEST(InMemorySnapshotRetentionTest, DeletedOnClearByDefault) {
   InMemoryFaultStorage storage;
 
-  storage.report_fault_event("SNAPSHOT_DROP_TEST", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+  storage.report_fault_event("SNAPSHOT_DROP_TEST", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                              "fault with evidence", "/test_node", 1000, default_config());
   store_two_snapshots(storage, "SNAPSHOT_DROP_TEST");
 
@@ -2546,12 +2536,12 @@ TEST(InMemorySnapshotRetentionTest, HealedReclassificationDropsSnapshotsByDefaul
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage.report_fault_event("SNAPSHOT_DROP_TEST", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+  storage.report_fault_event("SNAPSHOT_DROP_TEST", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                              "fault with evidence", "/test_node", 1000, config);
   store_two_snapshots(storage, "SNAPSHOT_DROP_TEST");
   for (int i = 1; i <= 2; ++i) {
-    storage.report_fault_event("SNAPSHOT_DROP_TEST", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "",
-                               "/test_node", 1000 + i, config);
+    storage.report_fault_event("SNAPSHOT_DROP_TEST", fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "", "/test_node",
+                               1000 + i, config);
   }
   auto healed = storage.get_fault("SNAPSHOT_DROP_TEST");
   ASSERT_TRUE(healed.has_value());
@@ -2569,12 +2559,12 @@ TEST(InMemorySnapshotRetentionTest, HealedReclassificationKeepsSnapshotsWhenConf
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage.report_fault_event("SNAPSHOT_RETAIN_TEST", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
+  storage.report_fault_event("SNAPSHOT_RETAIN_TEST", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                              "fault with evidence", "/test_node", 1000, config);
   store_two_snapshots(storage, "SNAPSHOT_RETAIN_TEST");
   for (int i = 1; i <= 2; ++i) {
-    storage.report_fault_event("SNAPSHOT_RETAIN_TEST", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "",
-                               "/test_node", 1000 + i, config);
+    storage.report_fault_event("SNAPSHOT_RETAIN_TEST", fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "", "/test_node",
+                               1000 + i, config);
   }
   ASSERT_EQ(storage.reclassify_healed_as_cleared().size(), 1u);
 
@@ -2587,16 +2577,16 @@ TEST(InMemorySnapshotRetentionTest, HealedReclassificationLeavesOtherFaultsSnaps
   healing.healing_enabled = true;
   healing.healing_threshold = 1;
 
-  storage.report_fault_event("HEALED_FAULT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "fault",
-                             "/test_node", 1000, healing);
+  storage.report_fault_event("HEALED_FAULT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "fault", "/test_node",
+                             1000, healing);
   store_two_snapshots(storage, "HEALED_FAULT");
   for (int i = 1; i <= 2; ++i) {
-    storage.report_fault_event("HEALED_FAULT", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_ERROR, "",
-                               "/test_node", 1000 + i, healing);
+    storage.report_fault_event("HEALED_FAULT", fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "", "/test_node",
+                               1000 + i, healing);
   }
 
-  storage.report_fault_event("ACTIVE_FAULT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "fault",
-                             "/test_node", 1000, default_config());
+  storage.report_fault_event("ACTIVE_FAULT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "fault", "/test_node",
+                             1000, default_config());
   store_two_snapshots(storage, "ACTIVE_FAULT");
 
   ASSERT_EQ(storage.reclassify_healed_as_cleared().size(), 1u);
@@ -2610,8 +2600,8 @@ TEST(InMemorySnapshotRetentionTest, RetentionIsPerFaultCodeNotGlobal) {
   storage.set_retain_snapshots_on_clear(true);
 
   for (const auto & code : {"FAULT_A", "FAULT_B"}) {
-    storage.report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "fault", "/test_node",
-                               1000, default_config());
+    storage.report_fault_event(code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "fault", "/test_node", 1000,
+                               default_config());
     store_two_snapshots(storage, code);
   }
 
@@ -2644,8 +2634,8 @@ TEST(InMemoryNearMissTest, SeriesIsAppendedAndSurvivesClear) {
   const auto config = near_miss_config();
 
   for (int i = 0; i < 3; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
 
   auto series = storage.get_near_misses("PUMP_PRESSURE_LOW");
@@ -2663,8 +2653,8 @@ TEST(InMemoryNearMissTest, ConfirmingReportIsNotANearMiss) {
   const auto config = near_miss_config();
 
   for (int i = 0; i < 4; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
 
   auto fault = storage.get_fault("PUMP_PRESSURE_LOW");
@@ -2680,8 +2670,8 @@ TEST(InMemoryNearMissTest, SeriesBoundedKeepingNewest) {
   storage.set_max_near_misses_per_fault(3);
 
   for (int i = 0; i < 5; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
 
   auto series = storage.get_near_misses("PUMP_PRESSURE_LOW");
@@ -2695,11 +2685,11 @@ TEST(InMemoryNearMissTest, PassedReportIsNotANearMiss) {
   const auto config = near_miss_config();
 
   for (int i = 0; i < 2; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
-  storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
-                             "/hydraulics/pump", near_miss_time(2).nanoseconds(), config);
+  storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "", "/hydraulics/pump",
+                             near_miss_time(2).nanoseconds(), config);
 
   EXPECT_EQ(storage.get_near_misses("PUMP_PRESSURE_LOW").size(), 2u);
 }
@@ -2710,10 +2700,10 @@ TEST(InMemoryNearMissTest, SeriesSurvivesHealedReclassification) {
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                             "pressure dipping", "/hydraulics/pump", near_miss_time(0).nanoseconds(), config);
+  storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                             "/hydraulics/pump", near_miss_time(0).nanoseconds(), config);
   for (int i = 1; i <= 2; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
                                "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
   auto healed = storage.get_fault("PUMP_PRESSURE_LOW");
@@ -2733,10 +2723,10 @@ TEST(InMemoryNearMissTest, BoundIsPerFaultCode) {
   storage.set_max_near_misses_per_fault(2);
 
   for (int i = 0; i < 3; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
-    storage.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "temperature rising", "/powertrain/motor", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "temperature rising",
+                               "/powertrain/motor", near_miss_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage.get_near_misses("PUMP_PRESSURE_LOW").size(), 2u);
@@ -2750,8 +2740,8 @@ TEST(InMemoryNearMissTest, BoundZeroIsUnlimited) {
   storage.set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 150; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage.get_near_misses("PUMP_PRESSURE_LOW").size(), 150u);
@@ -2764,8 +2754,8 @@ TEST(InMemoryNearMissTest, ApplyingSmallerBoundTrimsExistingSeries) {
   storage.set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 5; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
 
   storage.set_max_near_misses_per_fault(2);
@@ -2783,10 +2773,10 @@ TEST(InMemoryNearMissTest, ApplyingBoundReportsHowManyEntriesItDropped) {
   storage.set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 5; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "pressure dipping", "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
-    storage.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                               "temperature rising", "/powertrain/motor", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                               "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
+    storage.report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "temperature rising",
+                               "/powertrain/motor", near_miss_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage.set_max_near_misses_per_fault(2), 6u);
@@ -2799,18 +2789,18 @@ TEST(InMemoryNearMissTest, EntriesCarryTheResultingStatus) {
   config.healing_enabled = true;
   config.healing_threshold = 2;
 
-  storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                             "pressure dipping", "/hydraulics/pump", near_miss_time(0).nanoseconds(), config);
+  storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                             "/hydraulics/pump", near_miss_time(0).nanoseconds(), config);
   for (int i = 1; i <= 3; ++i) {
-    storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
+    storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
                                "/hydraulics/pump", near_miss_time(i).nanoseconds(), config);
   }
   auto healed = storage.get_fault("PUMP_PRESSURE_LOW");
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
 
-  storage.report_fault_event("PUMP_PRESSURE_LOW", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN,
-                             "pressure dipping", "/hydraulics/pump", near_miss_time(4).nanoseconds(), config);
+  storage.report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
+                             "/hydraulics/pump", near_miss_time(4).nanoseconds(), config);
 
   auto series = storage.get_near_misses("PUMP_PRESSURE_LOW");
   ASSERT_EQ(series.size(), 2u);
@@ -2841,14 +2831,14 @@ TEST(StorageBackendParityTest, MixedEntityThresholdsProduceTheSameSeries) {
   narrow.critical_immediate_confirm = false;
 
   auto drive = [&](ros2_medkit_fault_manager::FaultStorage & storage) {
-    storage.report_fault_event("SHARED_CODE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "dip",
-                               "/wide_source", 1000, wide);
+    storage.report_fault_event("SHARED_CODE", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "dip", "/wide_source",
+                               1000, wide);
     for (int i = 1; i <= 7; ++i) {
-      storage.report_fault_event("SHARED_CODE", ReportFault::Request::EVENT_PASSED, Fault::SEVERITY_WARN, "",
-                                 "/wide_source", 1000 + i, wide);
+      storage.report_fault_event("SHARED_CODE", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "", "/wide_source",
+                                 1000 + i, wide);
     }
-    storage.report_fault_event("SHARED_CODE", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_WARN, "dip",
-                               "/narrow_source", 2000, narrow);
+    storage.report_fault_event("SHARED_CODE", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "dip", "/narrow_source",
+                               2000, narrow);
   };
 
   InMemoryFaultStorage memory;
@@ -2857,9 +2847,9 @@ TEST(StorageBackendParityTest, MixedEntityThresholdsProduceTheSameSeries) {
   const auto memory_fault = memory.get_fault("SHARED_CODE");
 
   std::vector<ros2_medkit_fault_manager::NearMissRecord> sqlite_series;
-  std::optional<Fault> sqlite_fault;
+  std::optional<fd::FaultRecord> sqlite_fault;
   {
-    ros2_medkit_fault_manager::SqliteFaultStorage sqlite(db_path.string());
+    ros2_medkit_fault_manager::SqliteFaultStorage sqlite(db_path.string(), test_log_sink());
     drive(sqlite);
     sqlite_series = sqlite.get_near_misses("SHARED_CODE");
     sqlite_fault = sqlite.get_fault("SHARED_CODE");
@@ -2967,8 +2957,8 @@ class SnapshotReadPathTest : public ::testing::Test {
 
 TEST_F(SnapshotReadPathTest, NewestSnapshotOfATopicWins) {
   auto & storage = fault_manager_->get_storage_for_test();
-  storage.report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                             "pressure high", "/plc", 1000, DebounceConfig{});
+  storage.report_fault_event("PLC_PRESSURE_HIGH", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "pressure high",
+                             "/plc", 1000, DebounceConfig{});
   store_snapshot("PLC_PRESSURE_HIGH", "/plc/pressure", R"({"data":"old"})", 1000);
   store_snapshot("PLC_PRESSURE_HIGH", "/plc/pressure", R"({"data":"new"})", 5000);
 
@@ -2988,8 +2978,8 @@ TEST_F(SnapshotReadPathTest, NewestSnapshotOfATopicWins) {
 
 TEST_F(SnapshotReadPathTest, FreezeFrameStaysVisibleBehindRetainedSnapshots) {
   auto & storage = fault_manager_->get_storage_for_test();
-  storage.report_fault_event("PLC_PRESSURE_HIGH", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR,
-                             "pressure high", "/plc", 1000, DebounceConfig{});
+  storage.report_fault_event("PLC_PRESSURE_HIGH", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "pressure high",
+                             "/plc", 1000, DebounceConfig{});
   store_snapshot("PLC_PRESSURE_HIGH", "/plc/pressure", R"({"data":"from an earlier occurrence"})", 1000);
 
   ros2_medkit_fault_manager::FreezeFrameData frame;

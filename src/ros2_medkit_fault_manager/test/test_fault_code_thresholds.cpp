@@ -24,6 +24,7 @@
 #include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 namespace fs = std::filesystem;
 using ros2_medkit_fault_manager::debounce_policy_equal;
@@ -299,7 +300,7 @@ TEST_F(FaultCodeYamlLoadTest, LoadValidFile) {
       << "  healing_enabled: false\n";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 3u);
 
   bool found_motor = false;
@@ -316,7 +317,7 @@ TEST_F(FaultCodeYamlLoadTest, LoadValidFile) {
 
 // @verifies REQ_INTEROP_107
 TEST_F(FaultCodeYamlLoadTest, MissingFileReturnsEmpty) {
-  auto entries = FaultCodeThresholdResolver::load_from_yaml("/nonexistent/fault_thresholds.yaml");
+  auto entries = FaultCodeThresholdResolver::load_from_yaml("/nonexistent/fault_thresholds.yaml", test_log_sink());
   EXPECT_TRUE(entries.empty());
 }
 
@@ -328,7 +329,7 @@ TEST_F(FaultCodeYamlLoadTest, MalformedYamlReturnsEmpty) {
     f << "{{{{not valid yaml";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   EXPECT_TRUE(entries.empty());
 }
 
@@ -345,7 +346,7 @@ TEST_F(FaultCodeYamlLoadTest, BadValueReturnsEmpty) {
   }
 
   std::vector<FaultCodeDebounceOverride> entries;
-  ASSERT_NO_THROW(entries = FaultCodeThresholdResolver::load_from_yaml(path.string()));
+  ASSERT_NO_THROW(entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink()));
   EXPECT_TRUE(entries.empty());
 }
 
@@ -363,7 +364,7 @@ TEST_F(FaultCodeYamlLoadTest, RepeatedCodeKeepsTheFirstEntry) {
       << "  confirmation_threshold: -7\n";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 2u);
   EXPECT_EQ(entries[0].fault_code, "DUP.CODE");
   EXPECT_EQ(entries[0].confirmation_threshold.value(), -2);
@@ -378,7 +379,7 @@ TEST_F(FaultCodeYamlLoadTest, NonMapRootReturnsEmpty) {
     f << "- MOTOR_OVERHEAT\n- LIDAR_FAIL\n";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   EXPECT_TRUE(entries.empty());
 }
 
@@ -392,7 +393,7 @@ TEST_F(FaultCodeYamlLoadTest, NonMapEntryIsSkippedAndTheRestLoad) {
       << "  confirmation_threshold: -1\n";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 1u);
   EXPECT_EQ(entries[0].fault_code, "LIDAR_FAIL");
 }
@@ -407,7 +408,7 @@ TEST_F(FaultCodeYamlLoadTest, PositiveConfirmationThresholdAutoNegated) {
       << "  healing_threshold: -10\n";
   }
 
-  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string());
+  auto entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink());
   ASSERT_EQ(entries.size(), 1u);
   EXPECT_EQ(entries[0].confirmation_threshold.value(), -5);
   EXPECT_EQ(entries[0].healing_threshold.value(), 10);
@@ -448,7 +449,7 @@ class FaultCodeStorageTest : public ::testing::Test {
   }
 
   void report(const std::string & fault_code, const std::string & source_id) {
-    storage_.report_fault_event(fault_code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "", source_id,
+    storage_.report_fault_event(fault_code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", source_id,
                                 clock_.now().nanoseconds(),
                                 resolve_layered(entities_, codes_, source_id, fault_code, global_));
   }
@@ -485,11 +486,10 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   healing.healing_enabled = true;
   healing.healing_threshold = 1;
   for (const std::string code : {"KEEPS.HEALING", "STOPPED.HEALING"}) {
-    storage_.report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "", "/src",
+    storage_.report_fault_event(code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", "/src",
                                 clock_.now().nanoseconds(), healing);
     for (int i = 0; i < 3 && storage_.get_fault(code)->status != Fault::STATUS_HEALED; ++i) {
-      storage_.report_fault_event(code, ReportFault::Request::EVENT_PASSED, 0, "", "/src", clock_.now().nanoseconds(),
-                                  healing);
+      storage_.report_fault_event(code, fd::ReportKind::kPassed, 0, "", "/src", clock_.now().nanoseconds(), healing);
     }
     ASSERT_EQ(storage_.get_fault(code)->status, Fault::STATUS_HEALED);
   }

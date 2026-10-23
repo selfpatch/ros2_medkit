@@ -40,6 +40,7 @@
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 namespace {
 
@@ -65,7 +66,7 @@ struct BackendFactory<InMemoryFaultStorage> {
 template <>
 struct BackendFactory<SqliteFaultStorage> {
   static std::unique_ptr<FaultStorage> make(const std::filesystem::path & dir) {
-    return std::make_unique<SqliteFaultStorage>((dir / "parity.db").string());
+    return std::make_unique<SqliteFaultStorage>((dir / "parity.db").string(), test_log_sink());
   }
 };
 
@@ -428,9 +429,8 @@ class SnapshotRetentionParityTest : public ::testing::Test {
 
   void confirm(const std::string & code) {
     rclcpp::Clock clock;
-    storage_->report_fault_event(code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                                 ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity", "/node",
-                                 clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
+    storage_->report_fault_event(code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity",
+                                 "/node", clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   }
 
   std::filesystem::path dir_;

@@ -20,8 +20,6 @@
 #include <filesystem>
 #include <unordered_set>
 
-#include "rcutils/logging_macros.h"
-
 namespace ros2_medkit_fault_manager {
 
 namespace {
@@ -35,15 +33,16 @@ struct OverrideFields {
 
 /// Read the three override fields out of a YAML map node, correcting a sign an
 /// operator is likely to have written the other way round. `log_name` is the
-/// rcutils logger name and `key` names the entry in any message.
-OverrideFields parse_override_fields(const YAML::Node & node, const char * log_name, const std::string & key) {
+/// logger name and `key` names the entry in any message.
+OverrideFields parse_override_fields(const YAML::Node & node, core::LogSink & sink, const char * log_name,
+                                     const std::string & key) {
   OverrideFields fields;
 
   if (node["confirmation_threshold"]) {
     auto val = node["confirmation_threshold"].as<int>();
     if (val > 0) {
-      RCUTILS_LOG_WARN_NAMED(log_name, "confirmation_threshold for '%s' should be <= 0, got %d. Using %d.", key.c_str(),
-                             val, -val);
+      core::logf(sink, core::LogLevel::kWarn, log_name,
+                 "confirmation_threshold for '%s' should be <= 0, got %d. Using %d.", key.c_str(), val, -val);
       val = -val;
     }
     fields.confirmation_threshold = static_cast<int32_t>(val);
@@ -56,8 +55,8 @@ OverrideFields parse_override_fields(const YAML::Node & node, const char * log_n
   if (node["healing_threshold"]) {
     auto val = node["healing_threshold"].as<int>();
     if (val < 0) {
-      RCUTILS_LOG_WARN_NAMED(log_name, "healing_threshold for '%s' should be >= 0, got %d. Using %d.", key.c_str(), val,
-                             -val);
+      core::logf(sink, core::LogLevel::kWarn, log_name, "healing_threshold for '%s' should be >= 0, got %d. Using %d.",
+                 key.c_str(), val, -val);
       val = -val;
     }
     fields.healing_threshold = static_cast<int32_t>(val);
@@ -69,21 +68,23 @@ OverrideFields parse_override_fields(const YAML::Node & node, const char * log_n
 /// Open a threshold config file and hand back its top-level map, or an undefined
 /// node when the file is missing, unparseable or not a map. Every rejection is
 /// logged here so both loaders report the same way.
-YAML::Node load_override_map(const std::string & path, const char * log_name, const char * what) {
+YAML::Node load_override_map(const std::string & path, core::LogSink & sink, const char * log_name, const char * what) {
   if (!std::filesystem::exists(path)) {
-    RCUTILS_LOG_ERROR_NAMED(log_name, "%s config file not found: %s", what, path.c_str());
+    core::logf(sink, core::LogLevel::kError, log_name, "%s config file not found: %s", what, path.c_str());
     return YAML::Node(YAML::NodeType::Undefined);
   }
 
   try {
     YAML::Node root = YAML::LoadFile(path);
     if (!root.IsMap()) {
-      RCUTILS_LOG_ERROR_NAMED(log_name, "%s config must be a YAML map, got %d in %s", what, root.Type(), path.c_str());
+      core::logf(sink, core::LogLevel::kError, log_name, "%s config must be a YAML map, got %d in %s", what,
+                 root.Type(), path.c_str());
       return YAML::Node(YAML::NodeType::Undefined);
     }
     return root;
   } catch (const YAML::Exception & e) {
-    RCUTILS_LOG_ERROR_NAMED(log_name, "Failed to parse %s config %s: %s", what, path.c_str(), e.what());
+    core::logf(sink, core::LogLevel::kError, log_name, "Failed to parse %s config %s: %s", what, path.c_str(),
+               e.what());
     return YAML::Node(YAML::NodeType::Undefined);
   }
 }
@@ -128,10 +129,11 @@ size_t EntityThresholdResolver::size() const {
   return entries_.size();
 }
 
-std::vector<EntityDebounceOverride> EntityThresholdResolver::load_from_yaml(const std::string & path) {
+std::vector<EntityDebounceOverride> EntityThresholdResolver::load_from_yaml(const std::string & path,
+                                                                            core::LogSink & sink) {
   std::vector<EntityDebounceOverride> entries;
 
-  YAML::Node root = load_override_map(path, kEntityLogName, "Entity thresholds");
+  YAML::Node root = load_override_map(path, sink, kEntityLogName, "Entity thresholds");
   if (!root.IsMap()) {
     return entries;
   }
@@ -144,12 +146,12 @@ std::vector<EntityDebounceOverride> EntityThresholdResolver::load_from_yaml(cons
       entry.prefix = item.first.as<std::string>();
 
       if (!item.second.IsMap()) {
-        RCUTILS_LOG_WARN_NAMED(kEntityLogName, "Skipping non-map entry for prefix '%s' in %s", entry.prefix.c_str(),
-                               path.c_str());
+        core::logf(sink, core::LogLevel::kWarn, kEntityLogName, "Skipping non-map entry for prefix '%s' in %s",
+                   entry.prefix.c_str(), path.c_str());
         continue;
       }
 
-      auto fields = parse_override_fields(item.second, kEntityLogName, entry.prefix);
+      auto fields = parse_override_fields(item.second, sink, kEntityLogName, entry.prefix);
       entry.confirmation_threshold = fields.confirmation_threshold;
       entry.healing_enabled = fields.healing_enabled;
       entry.healing_threshold = fields.healing_threshold;
@@ -157,11 +159,13 @@ std::vector<EntityDebounceOverride> EntityThresholdResolver::load_from_yaml(cons
       entries.push_back(std::move(entry));
     }
   } catch (const YAML::Exception & e) {
-    RCUTILS_LOG_ERROR_NAMED(kEntityLogName, "Failed to parse entity thresholds config %s: %s", path.c_str(), e.what());
+    core::logf(sink, core::LogLevel::kError, kEntityLogName, "Failed to parse entity thresholds config %s: %s",
+               path.c_str(), e.what());
     return {};
   }
 
-  RCUTILS_LOG_INFO_NAMED(kEntityLogName, "Loaded %zu entity threshold entries from %s", entries.size(), path.c_str());
+  core::logf(sink, core::LogLevel::kInfo, kEntityLogName, "Loaded %zu entity threshold entries from %s", entries.size(),
+             path.c_str());
 
   return entries;
 }
@@ -199,10 +203,11 @@ size_t FaultCodeThresholdResolver::size() const {
   return entries_.size();
 }
 
-std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yaml(const std::string & path) {
+std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yaml(const std::string & path,
+                                                                                  core::LogSink & sink) {
   std::vector<FaultCodeDebounceOverride> entries;
 
-  YAML::Node root = load_override_map(path, kFaultCodeLogName, "Fault thresholds");
+  YAML::Node root = load_override_map(path, sink, kFaultCodeLogName, "Fault thresholds");
   if (!root.IsMap()) {
     return entries;
   }
@@ -215,22 +220,22 @@ std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yam
       entry.fault_code = item.first.as<std::string>();
 
       if (!item.second.IsMap()) {
-        RCUTILS_LOG_WARN_NAMED(kFaultCodeLogName, "Skipping non-map entry for fault code '%s' in %s",
-                               entry.fault_code.c_str(), path.c_str());
+        core::logf(sink, core::LogLevel::kWarn, kFaultCodeLogName, "Skipping non-map entry for fault code '%s' in %s",
+                   entry.fault_code.c_str(), path.c_str());
         continue;
       }
 
       // yaml-cpp accepts duplicate keys. The resolver keeps the first entry, so
       // skip the later ones here and say so.
       if (!seen.insert(entry.fault_code).second) {
-        RCUTILS_LOG_WARN_NAMED(kFaultCodeLogName,
-                               "Fault code '%s' is listed more than once in %s. Using the first entry and "
-                               "ignoring this one.",
-                               entry.fault_code.c_str(), path.c_str());
+        core::logf(sink, core::LogLevel::kWarn, kFaultCodeLogName,
+                   "Fault code '%s' is listed more than once in %s. Using the first entry and "
+                   "ignoring this one.",
+                   entry.fault_code.c_str(), path.c_str());
         continue;
       }
 
-      auto fields = parse_override_fields(item.second, kFaultCodeLogName, entry.fault_code);
+      auto fields = parse_override_fields(item.second, sink, kFaultCodeLogName, entry.fault_code);
       entry.confirmation_threshold = fields.confirmation_threshold;
       entry.healing_enabled = fields.healing_enabled;
       entry.healing_threshold = fields.healing_threshold;
@@ -238,13 +243,13 @@ std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yam
       entries.push_back(std::move(entry));
     }
   } catch (const YAML::Exception & e) {
-    RCUTILS_LOG_ERROR_NAMED(kFaultCodeLogName, "Failed to parse fault thresholds config %s: %s", path.c_str(),
-                            e.what());
+    core::logf(sink, core::LogLevel::kError, kFaultCodeLogName, "Failed to parse fault thresholds config %s: %s",
+               path.c_str(), e.what());
     return {};
   }
 
-  RCUTILS_LOG_INFO_NAMED(kFaultCodeLogName, "Loaded %zu fault-code threshold entries from %s", entries.size(),
-                         path.c_str());
+  core::logf(sink, core::LogLevel::kInfo, kFaultCodeLogName, "Loaded %zu fault-code threshold entries from %s",
+             entries.size(), path.c_str());
 
   return entries;
 }

@@ -4,7 +4,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-tar -c src/ros2_medkit_fault_detection src/ros2_medkit_fault_reporter scripts/check_cores_without_ros >/tmp/no_ros_ctx.$$.tar
+tar -c src/ros2_medkit_fault_detection src/ros2_medkit_fault_reporter src/ros2_medkit_fault_manager scripts/check_cores_without_ros >/tmp/no_ros_ctx.$$.tar
 image=$(docker build -q -f scripts/check_cores_without_ros/Dockerfile - </tmp/no_ros_ctx.$$.tar)
 rm -f /tmp/no_ros_ctx.$$.tar
 rc=0

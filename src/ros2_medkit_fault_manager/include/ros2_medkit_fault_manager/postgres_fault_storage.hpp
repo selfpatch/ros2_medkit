@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 
+#include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -37,7 +38,8 @@ class PgFaultStorage : public FaultStorage {
   /// @param conn_info libpq connection string or URI; empty uses the libpq environment variables
   /// @throws std::invalid_argument if libpq rejects @p conn_info
   /// @throws std::runtime_error if the server accepts the connection but the schema cannot be created
-  explicit PgFaultStorage(const std::string & conn_info);
+  /// @param log_sink Receives storage log lines; must outlive the storage
+  PgFaultStorage(const std::string & conn_info, core::LogSink & log_sink);
 
   /// Same as above, with the retry policy.
   /// @param conn_info libpq connection string or URI; empty uses the libpq environment variables
@@ -45,7 +47,8 @@ class PgFaultStorage : public FaultStorage {
   /// @param reconnection_delay_ms Delay in milliseconds between two attempts
   /// @throws std::invalid_argument if libpq rejects @p conn_info
   /// @throws std::runtime_error if the server accepts the connection but the schema cannot be created
-  explicit PgFaultStorage(const std::string & conn_info, const int max_retries, const unsigned reconnection_delay_ms);
+  PgFaultStorage(const std::string & conn_info, const int max_retries, const unsigned reconnection_delay_ms,
+                 core::LogSink & log_sink);
 
   /// Destructor - closes database connection
   ~PgFaultStorage() override;
@@ -59,14 +62,14 @@ class PgFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                           const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                           const DebounceConfig & config) override;
 
-  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) const override;
+  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                           const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
@@ -104,7 +107,7 @@ class PgFaultStorage : public FaultStorage {
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
+  std::vector<fd::FaultRecord> get_all_faults() const override;
   std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
   /// Get the connection info string used to initialize the database
@@ -149,7 +152,7 @@ class PgFaultStorage : public FaultStorage {
 
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and supplies the transaction, so the fault row and any near-miss row commit together.
-  bool report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
+  bool report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
                                  const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                  const DebounceConfig & config, pqxx::work & tx);
 
@@ -168,12 +171,13 @@ class PgFaultStorage : public FaultStorage {
                                const std::string & resulting_status, pqxx::work & tx);
 
   /// Deserialize JSON array string from PostgreSQL TEXT/JSONB field
-  static std::vector<std::string> parse_json_array(const std::string & json_str);
+  std::vector<std::string> parse_json_array(const std::string & json_str) const;
 
   /// Serialize vector of strings to JSON array string (for PostgreSQL JSONB)
   static std::string serialize_json_array(const std::vector<std::string> & vec);
 
   std::string conn_info_;
+  core::LogSink & log_sink_;
   /// conn_info_ in libpq key='value' form, with the default timeouts. Holds the password.
   std::string connect_string_;
   /// Password from conn_info_ or PGPASSWORD, removed from error text. Empty when unknown.

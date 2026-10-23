@@ -32,6 +32,7 @@ include(ROS2MedkitWarnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ros2_medkit_fault_detection REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 if(POSTGRES_SUPPORT)
@@ -115,26 +116,18 @@ find_package(rosbag2_storage REQUIRED)
 
 medkit_detect_compat_defs()
 
+# ROS-free core: storage, threshold resolver, correlation engine and audit log
+include(cmake/fault_manager_core.cmake)
+
 # Library target (shared between executable and tests)
 set(FAULT_MANAGER_FILES
     src/capture_thread_pool.cpp
     src/fault_manager_node.cpp
-    src/fault_storage.cpp
-    src/sqlite_fault_storage.cpp
-    src/fault_audit_log.cpp
     src/snapshot_capture.cpp
     src/rosbag_capture.cpp
-    src/correlation/types.cpp
-    src/correlation/config_parser.cpp
-    src/correlation/pattern_matcher.cpp
-    src/correlation/correlation_engine.cpp
-    src/threshold_resolver.cpp
+    src/ros2/fault_msg_conversions.cpp
+    src/ros2/ros_log_sink.cpp
 )
-if(POSTGRES_SUPPORT)
-  list(APPEND FAULT_MANAGER_FILES
-    src/postgres_fault_storage.cpp
-  )
-endif()
 add_library(fault_manager_lib STATIC
   ${FAULT_MANAGER_FILES}
 )
@@ -152,22 +145,9 @@ medkit_target_dependencies(fault_manager_lib PUBLIC
   rosbag2_storage
 )
 
-set(FAULT_MANAGER_TARGET_LIBS
-    SQLite::SQLite3
-    nlohmann_json::nlohmann_json
-    yaml-cpp::yaml-cpp
-    OpenSSL::Crypto
-)
-
-if(POSTGRES_SUPPORT)
-  # libpq directly as well: the connection string is checked with PQconninfoParse.
-  list(APPEND FAULT_MANAGER_TARGET_LIBS
-    pqxx
-    PostgreSQL::PostgreSQL
-  )
-endif()
 target_link_libraries(fault_manager_lib PUBLIC
-  ${FAULT_MANAGER_TARGET_LIBS}
+  fault_manager_core
+  ros2_medkit_fault_detection::ros2_medkit_fault_detection
 )
 
 medkit_apply_compat_defs(fault_manager_lib)

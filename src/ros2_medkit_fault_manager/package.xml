@@ -12,6 +12,7 @@
   <buildtool_depend>ros2_medkit_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_serialization</depend>
   <depend>libsqlite3-dev</depend>

@@ -1628,7 +1628,7 @@ void RosbagCapture::finalize_post_fault_recording() {
     }
     // Runs on the post-fault timer, where a throw terminates the process. A store that cannot answer
     // keeps the row: the bag stays referenced.
-    std::optional<ros2_medkit_msgs::msg::Fault> fault;
+    std::optional<fd::FaultRecord> fault;
     try {
       fault = storage_->get_fault(code);
     } catch (const std::exception & e) {
@@ -1639,7 +1639,7 @@ void RosbagCapture::finalize_post_fault_recording() {
     // Absent is not cleared. A caller driving the capture directly, or a fault the
     // store never saw, must keep its row - only a fault the store still holds AND
     // reports as cleared loses one.
-    return !fault.has_value() || fault->status != ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
+    return !fault.has_value() || fault->status != fd::fault_status::kCleared;
   };
 
   std::vector<RosbagFileInfo> rows;

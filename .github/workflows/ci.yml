@@ -585,7 +585,8 @@ jobs:
       - name: Install toolchain
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends g++-9 cmake make
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends g++-9 cmake make \
+            libsqlite3-dev libssl-dev nlohmann-json3-dev libyaml-cpp-dev
 
       - name: Build the ROS-free cores
         run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b

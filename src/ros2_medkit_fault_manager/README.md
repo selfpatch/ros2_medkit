@@ -554,6 +554,17 @@ colcon build --packages-select ros2_medkit_fault_manager
 source install/setup.bash
 ```
 
+### ROS-free core
+
+The storage backends, threshold resolver, correlation engine and audit log build without ROS as the
+static library `fault_manager_core` (`cmake/fault_manager_core.cmake`, plain CMake 3.16, C++17). It
+returns `ros2_medkit::fault_detection::FaultRecord` values with nanosecond times and logs through a
+`core::LogSink` that the caller supplies. The ROS node converts at its edge
+(`ros2/fault_msg_conversions.hpp`, `ros2/ros_log_sink.hpp`). The core compiles and is tested without
+ROS, with no DDS setup and with times the test passes in. `scripts/check_cores_without_ros/run.sh`
+builds it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with. The PostgreSQL backend needs libpqxx >= 7.5, which
+Ubuntu 20.04 does not package; SQLite is the default there.
+
 ## Testing
 
 ```bash

@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -63,9 +64,9 @@ class EntityThresholdResolver {
   size_t size() const;
 
   /// Load entity threshold overrides from a YAML file.
-  /// Returns an empty vector on parse error (logs warning via rcutils).
+  /// Returns an empty vector on parse error (logs warning through @p sink).
   /// YAML format: map of entity prefix -> {confirmation_threshold, healing_enabled, healing_threshold}
-  static std::vector<EntityDebounceOverride> load_from_yaml(const std::string & path);
+  static std::vector<EntityDebounceOverride> load_from_yaml(const std::string & path, core::LogSink & sink);
 
  private:
   /// Entries sorted by prefix length descending (longest first).
@@ -97,9 +98,9 @@ class FaultCodeThresholdResolver {
   size_t size() const;
 
   /// Load fault-code threshold overrides from a YAML file.
-  /// Returns an empty vector on parse error (logs warning via rcutils).
+  /// Returns an empty vector on parse error (logs warning through @p sink).
   /// YAML format: map of fault code -> {confirmation_threshold, healing_enabled, healing_threshold}
-  static std::vector<FaultCodeDebounceOverride> load_from_yaml(const std::string & path);
+  static std::vector<FaultCodeDebounceOverride> load_from_yaml(const std::string & path, core::LogSink & sink);
 
  private:
   std::unordered_map<std::string, FaultCodeDebounceOverride> entries_;

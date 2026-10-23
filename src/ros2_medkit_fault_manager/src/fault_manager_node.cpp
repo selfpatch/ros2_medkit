@@ -31,6 +31,7 @@
 #ifdef POSTGRES_SUPPORT
 #include "ros2_medkit_fault_manager/postgres_fault_storage.hpp"
 #endif
+#include "ros2_medkit_fault_manager/ros2/fault_msg_conversions.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 #include "ros2_medkit_msgs/msg/cluster_info.hpp"
@@ -285,7 +286,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Load per-entity threshold overrides (optional)
   auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds.config_file", "");
   if (!entity_thresholds_file.empty()) {
-    auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file);
+    auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file, log_sink_);
     // Validate each override against the global config: the merge is field by field, so an override
     // can break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
     for (auto & entry : entries) {
@@ -326,7 +327,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // code listed here debounces the same whichever source reports it.
   auto fault_thresholds_file = declare_parameter<std::string>("fault_thresholds.config_file", "");
   if (!fault_thresholds_file.empty()) {
-    auto entries = FaultCodeThresholdResolver::load_from_yaml(fault_thresholds_file);
+    auto entries = FaultCodeThresholdResolver::load_from_yaml(fault_thresholds_file, log_sink_);
     // Same field-by-field merge as the entity layer, so the same validation: an override can
     // break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
     // Checked against the global config, which is the base when no entity override matches.
@@ -531,7 +532,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
       // confirmations are invisible to the audit log's verify().
       const int64_t confirmed_at_ns = get_wall_clock_ns();
       for (const auto & fault_code : confirmed) {
-        std::optional<ros2_medkit_msgs::msg::Fault> fault;
+        std::optional<fd::FaultRecord> fault;
         try {
           fault = storage_->get_fault(fault_code);
         } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -628,12 +629,12 @@ std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
     }
 
     RCLCPP_INFO(get_logger(), "Using SQLite fault storage: %s", database_path_.c_str());
-    return std::make_unique<SqliteFaultStorage>(database_path_);
+    return std::make_unique<SqliteFaultStorage>(database_path_, log_sink_);
   }
 
 #ifdef POSTGRES_SUPPORT
   if (storage_type_ == "postgres") {
-    auto postgres_fault_storage = std::make_unique<PgFaultStorage>(database_url_);
+    auto postgres_fault_storage = std::make_unique<PgFaultStorage>(database_url_, log_sink_);
     RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage (%s)", postgres_fault_storage->target().c_str());
     if (!postgres_fault_storage->connected()) {
       RCLCPP_WARN(get_logger(), "PostgreSQL is unreachable: running without fault storage until it connects");
@@ -736,7 +737,7 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
   }
 }
 
-void FaultManagerNode::audit_transition(const char * transition, const ros2_medkit_msgs::msg::Fault & fault,
+void FaultManagerNode::audit_transition(const char * transition, const fd::FaultRecord & fault,
                                         const std::string & source_id, int64_t occurred_at_ns) {
   if (!audit_log_) {
     return;
@@ -901,7 +902,7 @@ void FaultManagerNode::handle_report_fault(
   }
 
   // Get status before update (if fault exists)
-  std::optional<ros2_medkit_msgs::msg::Fault> fault_before;
+  std::optional<fd::FaultRecord> fault_before;
   try {
     fault_before = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -917,9 +918,12 @@ void FaultManagerNode::handle_report_fault(
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
   const int64_t event_time_ns = get_wall_clock_ns();
   bool is_new = false;
+  const auto kind = request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED
+                        ? fd::ReportKind::kFailed
+                        : fd::ReportKind::kPassed;
   try {
-    is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
-                                          request->description, request->source_id, event_time_ns, resolved_config);
+    is_new = storage_->report_fault_event(request->fault_code, kind, request->severity, request->description,
+                                          request->source_id, event_time_ns, resolved_config);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     return;
@@ -928,7 +932,7 @@ void FaultManagerNode::handle_report_fault(
   response->accepted = true;
 
   // Get updated fault state to publish event
-  std::optional<ros2_medkit_msgs::msg::Fault> fault_after;
+  std::optional<fd::FaultRecord> fault_after;
   try {
     fault_after = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -969,20 +973,20 @@ void FaultManagerNode::handle_report_fault(
 
     // Determine event type based on status transition
     bool just_confirmed = false;
-    if (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+    if (is_new && fault_after->status == fd::fault_status::kConfirmed) {
       // New fault immediately confirmed (e.g., CRITICAL severity or threshold=-1)
       if (!should_mute) {
         publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
       }
       just_confirmed = true;
-    } else if (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED &&
-               fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+    } else if (!is_new && status_before != fd::fault_status::kConfirmed &&
+               fault_after->status == fd::fault_status::kConfirmed) {
       // Existing fault transitioned to CONFIRMED
       if (!should_mute) {
         publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
       }
       just_confirmed = true;
-    } else if (!is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED) {
+    } else if (!is_new && fault_after->status == fd::fault_status::kConfirmed) {
       // Fault was already CONFIRMED, data updated (last_occurred, severity, sources).
       // Not occurrence_count: a re-report inside one occurrence does not touch it.
       if (!should_mute) {
@@ -994,8 +998,8 @@ void FaultManagerNode::handle_report_fault(
     // A PASSED event can drive an existing fault past the healing threshold to
     // HEALED. That is the fault's END and must be audited (with a distinct kind
     // and source) so the timeline is complete, not just occurred+confirmed.
-    const bool just_healed = !is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_HEALED &&
-                             fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_HEALED;
+    const bool just_healed =
+        !is_new && status_before != fd::fault_status::kHealed && fault_after->status == fd::fault_status::kHealed;
 
     // The end of a fault must reach the event stream too, or an SSE consumer keeps
     // showing a fault that is over. EVENT_CLEARED (not a new event name) so existing
@@ -1023,9 +1027,9 @@ void FaultManagerNode::handle_report_fault(
     }
 
     // Handle PREFAILED state for lazy_start rosbag capture
-    bool just_prefailed = (is_new && fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) ||
-                          (!is_new && status_before != ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED &&
-                           fault_after->status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
+    bool just_prefailed = (is_new && fault_after->status == fd::fault_status::kPrefailed) ||
+                          (!is_new && status_before != fd::fault_status::kPrefailed &&
+                           fault_after->status == fd::fault_status::kPrefailed);
     if (just_prefailed && rosbag_capture_) {
       rosbag_capture_->on_fault_prefailed(request->fault_code);
     }
@@ -1049,7 +1053,11 @@ void FaultManagerNode::handle_list_faults(
     const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
   try {
-    response->faults = storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
+    const auto records = storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
+    response->faults.reserve(records.size());
+    for (const auto & record : records) {
+      response->faults.push_back(ros2::to_msg(record));
+    }
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     return;
@@ -1172,7 +1180,7 @@ void FaultManagerNode::handle_clear_fault(
         return;
       }
       if (audit_log_) {
-        std::optional<ros2_medkit_msgs::msg::Fault> symptom;
+        std::optional<fd::FaultRecord> symptom;
         try {
           symptom = storage_->get_fault(symptom_code);
         } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1208,7 +1216,7 @@ void FaultManagerNode::handle_clear_fault(
     }
 
     // Publish EVENT_CLEARED - get the cleared fault to include in event
-    std::optional<ros2_medkit_msgs::msg::Fault> fault;
+    std::optional<fd::FaultRecord> fault;
     try {
       fault = storage_->get_fault(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1227,7 +1235,7 @@ void FaultManagerNode::handle_clear_fault(
 }
 
 bool FaultManagerNode::is_valid_severity(uint8_t severity) {
-  return severity <= ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL;
+  return severity <= fd::severity::kCritical;
 }
 
 std::string FaultManagerNode::extract_topic_name(const std::string & topic_path) {
@@ -1251,7 +1259,7 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   }
 
   // Get fault from storage
-  std::optional<ros2_medkit_msgs::msg::Fault> fault;
+  std::optional<fd::FaultRecord> fault;
   try {
     fault = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1267,12 +1275,12 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
   }
 
   response->success = true;
-  response->fault = *fault;
+  response->fault = ros2::to_msg(*fault);
 
   // Populate extended_data_records with timestamps
   ros2_medkit_msgs::msg::ExtendedDataRecords extended_records;
-  extended_records.first_occurrence_ns = rclcpp::Time(fault->first_occurred).nanoseconds();
-  extended_records.last_occurrence_ns = rclcpp::Time(fault->last_occurred).nanoseconds();
+  extended_records.first_occurrence_ns = fault->first_occurred_ns;
+  extended_records.last_occurrence_ns = fault->last_occurred_ns;
   response->environment_data.extended_data_records = extended_records;
 
   // Get freeze frame snapshots from storage
@@ -1354,11 +1362,11 @@ void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::
                response->environment_data.snapshots.size());
 }
 
-void FaultManagerNode::publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
+void FaultManagerNode::publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault,
                                            const std::vector<std::string> & auto_cleared_codes) {
   ros2_medkit_msgs::msg::FaultEvent event;
   event.event_type = event_type;
-  event.fault = fault;
+  event.fault = ros2::to_msg(fault);
   event.timestamp = get_wall_clock_time();
   event.auto_cleared_codes = auto_cleared_codes;
 
@@ -1607,7 +1615,7 @@ void FaultManagerNode::handle_get_snapshots(
   }
 
   // Check if fault exists
-  std::optional<ros2_medkit_msgs::msg::Fault> fault;
+  std::optional<fd::FaultRecord> fault;
   try {
     fault = storage_->get_fault(request->fault_code);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1776,7 +1784,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     subject = "fault " + request->fault_code;
 
     // Check if fault exists
-    std::optional<ros2_medkit_msgs::msg::Fault> fault;
+    std::optional<fd::FaultRecord> fault;
     try {
       fault = storage_->get_fault(request->fault_code);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1916,7 +1924,7 @@ void FaultManagerNode::handle_list_faults_for_entity(
   }
 
   // Get all faults from storage
-  std::vector<ros2_medkit_msgs::msg::Fault> all_faults = {};
+  std::vector<fd::FaultRecord> all_faults = {};
   try {
     all_faults = storage_->get_all_faults();
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -1929,7 +1937,7 @@ void FaultManagerNode::handle_list_faults_for_entity(
   // Filter faults that have this entity in their reporting_sources
   for (const auto & fault : all_faults) {
     if (matches_entity(fault.reporting_sources, request->entity_id)) {
-      response->faults.push_back(fault);
+      response->faults.push_back(ros2::to_msg(fault));
     }
   }
 

@@ -26,6 +26,7 @@
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_fault_manager/threshold_resolver.hpp"
@@ -94,7 +95,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// Test-only: drive one audit append through the same failure-handling path the
   /// service handlers use. Throws when audit_log.fail_closed is set and the append
   /// fails; otherwise observe audit_dropped_writes()/audit_healthy().
-  void audit_transition_for_test(const char * transition, const ros2_medkit_msgs::msg::Fault & fault) {
+  void audit_transition_for_test(const char * transition, const fd::FaultRecord & fault) {
     audit_transition(transition, fault, "test", 0);
   }
 
@@ -172,7 +173,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
   /// @param auto_cleared_codes Optional list of auto-cleared symptom fault codes (for EVENT_CLEARED)
-  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
+  void publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault,
                            const std::vector<std::string> & auto_cleared_codes = {});
 
   /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
@@ -212,8 +213,8 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param fault The fault state at the time of the transition.
   /// @param source_id The reporting source that drove the transition.
   /// @param occurred_at_ns Wall-clock timestamp of the transition.
-  void audit_transition(const char * transition, const ros2_medkit_msgs::msg::Fault & fault,
-                        const std::string & source_id, int64_t occurred_at_ns);
+  void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
+                        int64_t occurred_at_ns);
 
   std::string storage_type_;
   std::string database_path_;
@@ -226,6 +227,7 @@ class FaultManagerNode : public rclcpp::Node {
   int capture_pool_size_{2};
   int capture_queue_depth_{16};
   QueueFullPolicy capture_queue_full_policy_{QueueFullPolicy::kRejectNewest};
+  ros2::RosLogSink log_sink_;     ///< Outlives storage_ and the resolvers it is passed to
   DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
   std::unique_ptr<FaultStorage> storage_;
   std::unique_ptr<EntityThresholdResolver> threshold_resolver_;      ///< Per-entity threshold overrides
