@@ -41,51 +41,8 @@ namespace ros2_medkit_fault_manager {
 
 namespace {
 
-/// Maximum allowed length for fault_code.
-///
-/// Matches the bound the gateway enforces on every route carrying
-/// `{fault_code}` and publishes as that parameter's `maxLength`. The two are
-/// one contract seen from two nodes, so they have to be the same number: while
-/// this was the lower of the two, a code the document called well-formed was
-/// admitted by the gateway and then refused here, and the refusal reached the
-/// client as a server error.
-///
-/// Nothing downstream constrains it further. Every column holding a fault code
-/// is SQLite `TEXT`, which is unbounded, and every `fault_code` field in the
-/// message and service definitions is an unbounded `string`. `RosbagCapture`
-/// is the one consumer with a limit of its own - it names a directory after
-/// the code - and it bounds its own path component rather than relying on this
-/// value.
-constexpr size_t kMaxFaultCodeLength = 256;
-
-/// Validate fault_code format
-/// @param fault_code The fault code to validate
-/// @return Empty string if valid, error message if invalid
-std::string validate_fault_code(const std::string & fault_code) {
-  if (fault_code.empty()) {
-    return "fault_code cannot be empty";
-  }
-
-  if (fault_code.length() > kMaxFaultCodeLength) {
-    return "fault_code exceeds maximum length of " + std::to_string(kMaxFaultCodeLength);
-  }
-
-  // Allow only alphanumeric, underscore, hyphen, and dot
-  // This prevents path traversal (../) and header injection (\r\n, ")
-  for (char c : fault_code) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') {
-      return "fault_code contains invalid character '" + std::string(1, c) +
-             "'. Only alphanumeric, underscore, hyphen, and dot are allowed";
-    }
-  }
-
-  // Prevent path traversal patterns
-  if (fault_code.find("..") != std::string::npos) {
-    return "fault_code cannot contain '..'";
-  }
-
-  return "";  // Valid
-}
+using core::storage_unavailable;
+using core::validate_fault_code;
 
 /// Validate a recording id (the bag directory basename, `fault_<CODE>_<millis>`).
 ///
@@ -95,7 +52,7 @@ std::string validate_fault_code(const std::string & fault_code) {
 /// maximal fault code produces ~148 characters and would be rejected by the
 /// fault-code validator it is derived from.
 std::string validate_recording_id(const std::string & recording_id) {
-  constexpr size_t kMaxRecordingIdLength = kMaxFaultCodeLength + 32;
+  constexpr size_t kMaxRecordingIdLength = core::kMaxFaultCodeLength + 32;
 
   if (recording_id.empty()) {
     return "recording_id cannot be empty";
@@ -113,11 +70,6 @@ std::string validate_recording_id(const std::string & recording_id) {
     return "recording_id cannot contain '..'";
   }
   return "";  // Valid
-}
-
-/// Response text for a request the fault storage server could not serve.
-std::string storage_unavailable(const std::exception & e) {
-  return std::string("Fault storage unavailable: ") + e.what();
 }
 
 }  // namespace
@@ -140,28 +92,43 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   capture_queue_full_policy_ = config_.snapshots_capture_queue_full_policy == "drop_oldest"
                                    ? QueueFullPolicy::kDropOldest
                                    : QueueFullPolicy::kRejectNewest;
-  audit_confirmed_only_ = (config_.audit_log_transitions == "confirmed_only");
-  audit_fail_closed_ = config_.audit_log_fail_closed;
 
   RCLCPP_INFO(get_logger(), "Capture concurrency: pool_size=%d, queue_depth=%d, policy=%s", capture_pool_size_,
               capture_queue_depth_,
               capture_queue_full_policy_ == QueueFullPolicy::kRejectNewest ? "reject_newest" : "drop_oldest");
 
   auto parts = core::build_core_parts(config_, log_sink_);
-  storage_ = std::move(parts.storage);
-  audit_log_ = std::move(parts.audit);
-  correlation_engine_ = std::move(parts.correlation);
-  global_config_ = parts.global_debounce;
-  threshold_resolver_ = std::move(parts.entity_resolver);
-  fault_code_resolver_ = std::move(parts.fault_code_resolver);
 
   // Create event publisher for SSE streaming
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
+  event_sink_ = std::make_unique<ros2::RosEventSink>(event_publisher_);
+  capture_hooks_ = std::make_unique<ros2::RosCaptureHooks>(
+      [this](const std::string & code) {
+        capture_on_confirm(code);
+      },
+      [this](const std::string & code) {
+        if (rosbag_capture_) {
+          rosbag_capture_->on_fault_prefailed(code);
+        }
+      },
+      [this](const std::string & code) {
+        if (rosbag_capture_) {
+          rosbag_capture_->on_fault_cleared(code);
+        }
+      },
+      [this](const std::string & code) {
+        std::lock_guard<std::mutex> lock(last_capture_mutex_);
+        last_capture_times_.erase(code);
+      });
+  core_ = std::make_unique<core::FaultManagerCore>(config_, std::move(parts), *event_sink_, *capture_hooks_,
+                                                   wall_clock_, log_sink_);
+  storage_ = &core_->storage();
 
   // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
   // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
-  core::reclassify_stale_healed(*storage_, fault_code_resolver_.get(), global_config_, audit_log_ != nullptr, log_sink_,
-                                config_.logger_name, [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
+  core::reclassify_stale_healed(*storage_, core_->fault_code_resolver(), core_->global_debounce(),
+                                core_->audit_log() != nullptr, log_sink_, config_.logger_name,
+                                [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
                                   audit_transition(kTransitionCleared, fault, "startup_reclassify", reclassified_at_ns);
                                 });
 
@@ -218,12 +185,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // Initialize snapshot capture
   auto snapshot_config = create_snapshot_config();
   if (snapshot_config.enabled) {
-    snapshot_capture_ = std::make_shared<SnapshotCapture>(this, storage_.get(), snapshot_config);
+    snapshot_capture_ = std::make_shared<SnapshotCapture>(this, storage_, snapshot_config);
   }
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
+    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_, snapshot_config.rosbag, snapshot_config);
 
     // The recapture cooldown gates the capture job as a whole, bags included, so it
     // puts a floor under how often a history can actually grow: a fault that
@@ -262,7 +229,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   }
 
   // Create correlation cleanup timer if correlation is enabled
-  if (correlation_engine_) {
+  if (core_->correlation()) {
     auto cleanup_interval_sec = declare_parameter<double>("correlation.cleanup_interval_sec", 5.0);
     if (!(std::isfinite(cleanup_interval_sec) && cleanup_interval_sec > 0.0)) {
       RCLCPP_WARN(get_logger(), "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
@@ -271,7 +238,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     }
     auto cleanup_interval_ms = static_cast<int64_t>(cleanup_interval_sec * 1000);
     correlation_cleanup_timer_ = create_wall_timer(std::chrono::milliseconds(cleanup_interval_ms), [this]() {
-      correlation_engine_->cleanup_expired();
+      core_->correlation()->cleanup_expired();
     });
   }
 
@@ -310,7 +277,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
           // the trigger subscribers see an alarm that the fault list hides.
           // Capture is deliberately not gated, matching the report path, where
           // just_confirmed is set regardless of muting.
-          if (!correlation_engine_ || !correlation_engine_->is_muted(fault_code)) {
+          if (!core_->correlation() || !core_->correlation()->is_muted(fault_code)) {
             publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault);
           }
           capture_on_confirm(fault_code);
@@ -321,15 +288,16 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     RCLCPP_INFO(get_logger(),
                 "FaultManager node started (storage=%s, confirmation_threshold=%d, "
                 "healing=%s, healing_threshold=%d, auto_confirm_after=%.1fs)",
-                storage_type_.c_str(), global_config_.confirmation_threshold,
-                global_config_.healing_enabled ? "enabled" : "disabled", global_config_.healing_threshold,
-                auto_confirm_after_sec_);
+                storage_type_.c_str(), core_->global_debounce().confirmation_threshold,
+                core_->global_debounce().healing_enabled ? "enabled" : "disabled",
+                core_->global_debounce().healing_threshold, auto_confirm_after_sec_);
   } else {
     RCLCPP_INFO(get_logger(),
                 "FaultManager node started (storage=%s, confirmation_threshold=%d, healing=%s, "
                 "healing_threshold=%d)",
-                storage_type_.c_str(), global_config_.confirmation_threshold,
-                global_config_.healing_enabled ? "enabled" : "disabled", global_config_.healing_threshold);
+                storage_type_.c_str(), core_->global_debounce().confirmation_threshold,
+                core_->global_debounce().healing_enabled ? "enabled" : "disabled",
+                core_->global_debounce().healing_threshold);
   }
 }
 
@@ -348,7 +316,7 @@ FaultManagerNode::~FaultManagerNode() {
   // Close the chain with a "logging deactivated" marker. Best-effort and appended
   // directly (recorded even in confirmed_only mode); a failure here must not throw
   // out of the destructor.
-  if (audit_log_) {
+  if (auto * audit = core_ ? core_->audit_log() : nullptr) {
     try {
       AuditEvent marker;
       marker.fault_code = "__audit__";
@@ -357,57 +325,9 @@ FaultManagerNode::~FaultManagerNode() {
       marker.source_id = "fault_manager";
       marker.description = "audit logging deactivated";
       marker.occurred_at_ns = get_wall_clock_ns();
-      audit_log_->append(marker);
+      audit->append(marker);
     } catch (const std::exception & e) {
       RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_deactivated' marker: %s", e.what());
-    }
-  }
-}
-
-void FaultManagerNode::audit_transition(const char * transition, const fd::FaultRecord & fault,
-                                        const std::string & source_id, int64_t occurred_at_ns) {
-  if (!audit_log_) {
-    return;
-  }
-  if (audit_confirmed_only_ && std::string(transition) != kTransitionConfirmed) {
-    return;
-  }
-
-  AuditEvent event;
-  event.fault_code = fault.fault_code;
-  event.transition = transition;
-  event.severity = fault.severity;
-  event.status = fault.status;
-  event.source_id = source_id;
-  event.description = fault.description;
-  event.occurred_at_ns = occurred_at_ns;
-
-  try {
-    audit_log_->append(event);
-  } catch (const std::exception & e) {
-    // A dropped append is a hole in the chain that verify() can never see (it
-    // proves nothing was deleted, not that everything was written). The fault-
-    // state transition that triggered this has ALREADY committed to the fault
-    // store, which is a SEPARATE SQLite database: there is no cross-DB atomicity,
-    // so this failure does NOT (and cannot) roll that change back. All we can do
-    // is make the broken audit loud and observable via the health signals.
-    audit_dropped_writes_.fetch_add(1, std::memory_order_relaxed);
-    audit_healthy_.store(false, std::memory_order_relaxed);
-    const uint64_t dropped = audit_dropped_writes_.load(std::memory_order_relaxed);
-    RCLCPP_ERROR(get_logger(), "Failed to append audit record for '%s' (%s): %s [audit dropped_writes=%" PRIu64 "]",
-                 fault.fault_code.c_str(), transition, e.what(), dropped);
-    if (audit_fail_closed_) {
-      // Explicit fail-FAST: surface the broken audit to the caller so a
-      // compliance-strict deployment learns the chain is now incomplete and an
-      // operator must act. Rethrowing propagates that signal ONLY - the fault-
-      // state change already committed (see above) and is NOT rolled back; this
-      // is not atomicity.
-      RCLCPP_FATAL(get_logger(),
-                   "audit_log.fail_closed is set: audit append failed for '%s' (%s); the audit chain is now "
-                   "incomplete and requires operator action. The already-committed fault-state change is NOT "
-                   "rolled back (the fault store is a separate database).",
-                   fault.fault_code.c_str(), transition);
-      throw;
     }
   }
 }
@@ -497,510 +417,108 @@ void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
 void FaultManagerNode::handle_report_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
-  // Validate fault_code
-  std::string validation_error = validate_fault_code(request->fault_code);
-  if (!validation_error.empty()) {
-    response->accepted = false;
-    RCLCPP_WARN(get_logger(), "ReportFault rejected: %s", validation_error.c_str());
-    return;
-  }
-
-  // Validate event_type
-  if (request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
-      request->event_type != ros2_medkit_msgs::srv::ReportFault::Request::EVENT_PASSED) {
-    response->accepted = false;
-    RCLCPP_WARN(get_logger(), "ReportFault rejected: invalid event_type %d", request->event_type);
-    return;
-  }
-
-  // For FAILED events, validate severity
-  if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED &&
-      !is_valid_severity(request->severity)) {
-    response->accepted = false;
-    RCLCPP_WARN(get_logger(), "ReportFault rejected: invalid severity %d for FAILED event", request->severity);
-    return;
-  }
-
-  // Validate source_id
-  if (request->source_id.empty()) {
-    response->accepted = false;
-    RCLCPP_WARN(get_logger(), "ReportFault rejected: source_id cannot be empty");
-    return;
-  }
-
-  // Get status before update (if fault exists)
-  std::optional<fd::FaultRecord> fault_before;
-  try {
-    fault_before = storage_->get_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
-  }
-  std::string status_before = fault_before ? fault_before->status : "";
-
-  // Resolve the debounce config: global, then the entity override matching
-  // source_id, then the fault code's own override.
-  auto resolved_config = resolve_config(request->source_id, request->fault_code);
-
-  // Report the fault event (use wall clock time, not sim time, for proper timestamps)
-  const int64_t event_time_ns = get_wall_clock_ns();
-  bool is_new = false;
-  const auto kind = request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED
-                        ? fd::ReportKind::kFailed
-                        : fd::ReportKind::kPassed;
-  try {
-    is_new = storage_->report_fault_event(request->fault_code, kind, request->severity, request->description,
-                                          request->source_id, event_time_ns, resolved_config);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
-  }
-
-  response->accepted = true;
-
-  // Get updated fault state to publish event
-  std::optional<fd::FaultRecord> fault_after;
-  try {
-    fault_after = storage_->get_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
-  }
-  if (fault_after) {
-    // Only for codes the store holds: a PASSED for an unknown code writes nothing, so it must
-    // not add an entry here either (the diagnostic bridge sends PASSED for every OK status).
-    warn_on_conflicting_debounce_policy(request->fault_code, request->source_id, resolved_config);
-
-    // Process through correlation engine (if enabled)
-    // Only process FAILED events with correlation
-    bool should_mute = false;
-    if (correlation_engine_ && request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
-      auto correlation_result =
-          correlation_engine_->process_fault(request->fault_code, correlation::severity_to_string(request->severity));
-
-      should_mute = correlation_result.should_mute;
-
-      if (correlation_result.is_root_cause) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s identified as root cause (rule=%s)", request->fault_code.c_str(),
-                     correlation_result.rule_id.c_str());
-      } else if (should_mute) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s muted as symptom of %s (rule=%s, delay=%ums)", request->fault_code.c_str(),
-                     correlation_result.root_cause_code.c_str(), correlation_result.rule_id.c_str(),
-                     correlation_result.delay_ms);
-      } else if (!correlation_result.cluster_id.empty()) {
-        RCLCPP_DEBUG(get_logger(), "Fault %s added to cluster %s", request->fault_code.c_str(),
-                     correlation_result.cluster_id.c_str());
-        // Log retroactively muted faults when cluster becomes active
-        if (!correlation_result.retroactive_mute_codes.empty()) {
-          RCLCPP_DEBUG(get_logger(), "Cluster %s activated: retroactively muting %zu faults",
-                       correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_codes.size());
-        }
-      }
-    }
-
-    // Determine event type based on status transition
-    bool just_confirmed = false;
-    if (is_new && fault_after->status == fd::fault_status::kConfirmed) {
-      // New fault immediately confirmed (e.g., CRITICAL severity or threshold=-1)
-      if (!should_mute) {
-        publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
-      }
-      just_confirmed = true;
-    } else if (!is_new && status_before != fd::fault_status::kConfirmed &&
-               fault_after->status == fd::fault_status::kConfirmed) {
-      // Existing fault transitioned to CONFIRMED
-      if (!should_mute) {
-        publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault_after);
-      }
-      just_confirmed = true;
-    } else if (!is_new && fault_after->status == fd::fault_status::kConfirmed) {
-      // Fault was already CONFIRMED, data updated (last_occurred, severity, sources).
-      // Not occurrence_count: a re-report inside one occurrence does not touch it.
-      if (!should_mute) {
-        publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED, *fault_after);
-      }
-    }
-    // Note: PREFAILED/PREPASSED status changes don't emit events (debounce in progress)
-
-    // A PASSED event can drive an existing fault past the healing threshold to
-    // HEALED. That is the fault's END and must be audited (with a distinct kind
-    // and source) so the timeline is complete, not just occurred+confirmed.
-    const bool just_healed =
-        !is_new && status_before != fd::fault_status::kHealed && fault_after->status == fd::fault_status::kHealed;
-
-    // The end of a fault must reach the event stream too, or an SSE consumer keeps
-    // showing a fault that is over. EVENT_CLEARED (not a new event name) so existing
-    // consumers act on it; the payload's status = HEALED distinguishes auto-heal from
-    // an acknowledged clear.
-    if (just_healed) {
-      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault_after);
-    }
-
-    // Append tamper-evident audit records for the transitions that just happened.
-    // Recorded regardless of correlation muting: muting affects display, not the
-    // fact that the state transition occurred.
-    if (is_new) {
-      audit_transition(kTransitionOccurred, *fault_after, request->source_id, event_time_ns);
-    }
-    if (just_confirmed) {
-      audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time_ns);
-    }
-    if (just_healed) {
-      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time_ns);
-    }
-
-    if (just_confirmed) {
-      capture_on_confirm(request->fault_code);
-    }
-
-    // Handle PREFAILED state for lazy_start rosbag capture
-    bool just_prefailed = (is_new && fault_after->status == fd::fault_status::kPrefailed) ||
-                          (!is_new && status_before != fd::fault_status::kPrefailed &&
-                           fault_after->status == fd::fault_status::kPrefailed);
-    if (just_prefailed && rosbag_capture_) {
-      rosbag_capture_->on_fault_prefailed(request->fault_code);
-    }
-  }
-
-  if (request->event_type == ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED) {
-    if (is_new) {
-      RCLCPP_INFO(get_logger(), "New fault reported: %s (severity=%d, source=%s)", request->fault_code.c_str(),
-                  request->severity, request->source_id.c_str());
-    } else {
-      RCLCPP_DEBUG(get_logger(), "Fault updated: %s (source=%s)", request->fault_code.c_str(),
-                   request->source_id.c_str());
-    }
-  } else {
-    RCLCPP_DEBUG(get_logger(), "PASSED event for fault: %s (source=%s)", request->fault_code.c_str(),
-                 request->source_id.c_str());
-  }
+  fd::FaultReport report;
+  report.fault_code = request->fault_code;
+  report.kind = static_cast<fd::ReportKind>(request->event_type);
+  report.severity = request->severity;
+  report.description = request->description;
+  report.source_id = request->source_id;
+  response->accepted = core_->report(report).accepted;
 }
 
 void FaultManagerNode::handle_list_faults(
     const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Response> & response) {
-  try {
-    const auto records = storage_->list_faults(request->filter_by_severity, request->severity, request->statuses);
-    response->faults.reserve(records.size());
-    for (const auto & record : records) {
-      response->faults.push_back(ros2::to_msg(record));
-    }
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    return;
+  core::ListQuery query;
+  query.filter_by_severity = request->filter_by_severity;
+  query.severity = request->severity;
+  query.statuses = request->statuses;
+  query.include_muted = request->include_muted;
+  query.include_clusters = request->include_clusters;
+  const auto outcome = core_->list(query);
+
+  response->faults.reserve(outcome.faults.size());
+  for (const auto & record : outcome.faults) {
+    response->faults.push_back(ros2::to_msg(record));
   }
-
-  // Include correlation data if engine is enabled
-  if (correlation_engine_) {
-    // Always include counts
-    response->muted_count = correlation_engine_->get_muted_count();
-    response->cluster_count = correlation_engine_->get_cluster_count();
-
-    auto muted_faults = correlation_engine_->get_muted_faults();
-
-    // Include muted faults details if requested
-    if (request->include_muted) {
-      response->muted_faults.reserve(muted_faults.size());
-      for (const auto & muted : muted_faults) {
-        ros2_medkit_msgs::msg::MutedFaultInfo info;
-        info.fault_code = muted.fault_code;
-        info.root_cause_code = muted.root_cause_code;
-        info.rule_id = muted.rule_id;
-        info.delay_ms = muted.delay_ms;
-        response->muted_faults.push_back(info);
-      }
-    } else {
-      // Build a set of muted codes for O(1) lookup.
-      std::unordered_set<std::string> muted_codes;
-      for (const auto & muted : muted_faults) {
-        muted_codes.insert(muted.fault_code);
-      }
-
-      // Remove all faults whose code is muted, in one pass.
-      auto & faults = response->faults;
-      faults.erase(std::remove_if(faults.begin(), faults.end(),
-                                  [&muted_codes](const ros2_medkit_msgs::msg::Fault & fault) {
-                                    return muted_codes.count(fault.fault_code) > 0;
-                                  }),
-                   faults.end());
-    }
-
-    // Include cluster details if requested
-    if (request->include_clusters) {
-      auto clusters = correlation_engine_->get_clusters();
-      response->clusters.reserve(clusters.size());
-      for (const auto & cluster : clusters) {
-        ros2_medkit_msgs::msg::ClusterInfo info;
-        info.cluster_id = cluster.cluster_id;
-        info.rule_id = cluster.rule_id;
-        info.rule_name = cluster.rule_name;
-        info.label = cluster.label;
-        info.representative_code = cluster.representative_code;
-        info.representative_severity = cluster.representative_severity;
-        info.fault_codes = cluster.fault_codes;
-        info.count = static_cast<uint32_t>(cluster.fault_codes.size());
-        // Convert chrono time_points to ROS time
-        auto first_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch()).count();
-        auto last_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.last_at.time_since_epoch()).count();
-        info.first_at = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
-        info.last_at = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
-        response->clusters.push_back(info);
-      }
-    }
+  response->muted_count = outcome.muted_count;
+  response->cluster_count = outcome.cluster_count;
+  response->muted_faults.reserve(outcome.muted_faults.size());
+  for (const auto & muted : outcome.muted_faults) {
+    ros2_medkit_msgs::msg::MutedFaultInfo info;
+    info.fault_code = muted.fault_code;
+    info.root_cause_code = muted.root_cause_code;
+    info.rule_id = muted.rule_id;
+    info.delay_ms = muted.delay_ms;
+    response->muted_faults.push_back(info);
   }
-
-  RCLCPP_DEBUG(get_logger(), "ListFaults returned %zu faults (muted=%u, clusters=%u)", response->faults.size(),
-               response->muted_count, response->cluster_count);
+  response->clusters.reserve(outcome.clusters.size());
+  for (const auto & cluster : outcome.clusters) {
+    ros2_medkit_msgs::msg::ClusterInfo info;
+    info.cluster_id = cluster.cluster_id;
+    info.rule_id = cluster.rule_id;
+    info.rule_name = cluster.rule_name;
+    info.label = cluster.label;
+    info.representative_code = cluster.representative_code;
+    info.representative_severity = cluster.representative_severity;
+    info.fault_codes = cluster.fault_codes;
+    info.count = cluster.count;
+    info.first_at = ros2::ns_to_time_msg(cluster.first_at_ns);
+    info.last_at = ros2::ns_to_time_msg(cluster.last_at_ns);
+    response->clusters.push_back(info);
+  }
 }
 
 void FaultManagerNode::handle_clear_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
-  // Validate fault_code
-  std::string validation_error = validate_fault_code(request->fault_code);
-  if (!validation_error.empty()) {
-    response->success = false;
-    response->message = validation_error;
-    return;
-  }
-
-  // Storage first: a clear that the storage refuses must not change the correlation state.
-  bool cleared = false;
-  try {
-    cleared = storage_->clear_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    response->success = false;
-    response->message = storage_unavailable(e);
-    return;
-  }
-
-  // Then the correlation engine (to get the auto-clear list).
-  // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
-  // correlated symptom fault codes. Per-entity DELETE routes set it to true
-  // so they cannot reach across entity boundaries via the correlation graph.
-  std::vector<std::string> auto_cleared_codes;
-  if (correlation_engine_ && !request->skip_correlation_auto_clear) {
-    auto clear_result = correlation_engine_->process_clear(request->fault_code);
-    auto_cleared_codes = clear_result.auto_cleared_codes;
-  }
-
-  response->success = cleared;
-  if (cleared) {
-    // Evict cooldown tracking for cleared fault and auto-cleared symptoms
-    {
-      std::lock_guard<std::mutex> lock(last_capture_mutex_);
-      last_capture_times_.erase(request->fault_code);
-      for (const auto & symptom_code : auto_cleared_codes) {
-        last_capture_times_.erase(symptom_code);
-      }
-    }
-
-    // Auto-clear correlated symptoms
-    for (const auto & symptom_code : auto_cleared_codes) {
-      try {
-        storage_->clear_fault(symptom_code);
-      } catch (const FaultStorage::IgnorableConnectionException & e) {
-        RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-        response->message = storage_unavailable(e);
-        return;
-      }
-      if (audit_log_) {
-        std::optional<fd::FaultRecord> symptom;
-        try {
-          symptom = storage_->get_fault(symptom_code);
-        } catch (const FaultStorage::IgnorableConnectionException & e) {
-          RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-          response->message = storage_unavailable(e);
-          return;
-        }
-        if (symptom) {
-          audit_transition(kTransitionCleared, *symptom, "clear_service", get_wall_clock_ns());
-        }
-      }
-      RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
-                   request->fault_code.c_str());
-      // Also cleanup rosbag for auto-cleared faults
-      if (rosbag_capture_) {
-        rosbag_capture_->on_fault_cleared(symptom_code);
-      }
-    }
-
-    response->auto_cleared_codes = auto_cleared_codes;
-    if (auto_cleared_codes.empty()) {
-      response->message = "Fault cleared: " + request->fault_code;
-    } else {
-      response->message = "Fault cleared: " + request->fault_code + " (auto-cleared " +
-                          std::to_string(auto_cleared_codes.size()) + " symptoms)";
-    }
-    RCLCPP_INFO(get_logger(), "Fault cleared: %s (auto-cleared %zu symptoms)", request->fault_code.c_str(),
-                auto_cleared_codes.size());
-
-    // Cleanup rosbag for the main fault (auto_cleanup handled inside RosbagCapture)
-    if (rosbag_capture_) {
-      rosbag_capture_->on_fault_cleared(request->fault_code);
-    }
-
-    // Publish EVENT_CLEARED - get the cleared fault to include in event
-    std::optional<fd::FaultRecord> fault;
-    try {
-      fault = storage_->get_fault(request->fault_code);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-      response->message = storage_unavailable(e);
-      return;
-    }
-    if (fault) {
-      publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
-      audit_transition(kTransitionCleared, *fault, "clear_service", get_wall_clock_ns());
-    }
-  } else {
-    response->message = "Fault not found: " + request->fault_code;
-    RCLCPP_WARN(get_logger(), "Attempted to clear non-existent fault: %s", request->fault_code.c_str());
-  }
-}
-
-bool FaultManagerNode::is_valid_severity(uint8_t severity) {
-  return severity <= fd::severity::kCritical;
-}
-
-std::string FaultManagerNode::extract_topic_name(const std::string & topic_path) {
-  auto pos = topic_path.rfind('/');
-  if (pos != std::string::npos && pos < topic_path.length() - 1) {
-    return topic_path.substr(pos + 1);
-  }
-  return topic_path;
+  auto outcome = core_->clear(request->fault_code, request->skip_correlation_auto_clear);
+  response->success = outcome.success;
+  response->message = std::move(outcome.message);
+  response->auto_cleared_codes = std::move(outcome.auto_cleared_codes);
 }
 
 void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
                                         const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
-  RCLCPP_DEBUG(get_logger(), "GetFault request for: %s", request->fault_code.c_str());
-
-  // Validate fault_code
-  std::string validation_error = validate_fault_code(request->fault_code);
-  if (!validation_error.empty()) {
-    response->success = false;
-    response->error_message = validation_error;
+  const auto detail = core_->get(request->fault_code);
+  response->success = detail.success;
+  response->error_message = detail.error_message;
+  if (detail.fault.fault_code.empty()) {
     return;
   }
-
-  // Get fault from storage
-  std::optional<fd::FaultRecord> fault;
-  try {
-    fault = storage_->get_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    response->success = false;
-    response->error_message = storage_unavailable(e);
-    return;
-  }
-  if (!fault) {
-    response->success = false;
-    response->error_message = "Fault not found: " + request->fault_code;
-    return;
-  }
-
-  response->success = true;
-  response->fault = ros2::to_msg(*fault);
-
-  // Populate extended_data_records with timestamps
-  ros2_medkit_msgs::msg::ExtendedDataRecords extended_records;
-  extended_records.first_occurrence_ns = fault->first_occurred_ns;
-  extended_records.last_occurrence_ns = fault->last_occurred_ns;
-  response->environment_data.extended_data_records = extended_records;
-
-  // Get freeze frame snapshots from storage
-  std::vector<SnapshotData> stored_snapshots = {};
-  try {
-    stored_snapshots = storage_->get_snapshots(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    response->success = false;
-    response->error_message = storage_unavailable(e);
-    return;
-  }
-  for (const auto & stored_snapshot : stored_snapshots) {
+  response->fault = ros2::to_msg(detail.fault);
+  response->environment_data.extended_data_records.first_occurrence_ns = detail.first_occurrence_ns;
+  response->environment_data.extended_data_records.last_occurrence_ns = detail.last_occurrence_ns;
+  for (const auto & entry : detail.snapshots) {
     ros2_medkit_msgs::msg::Snapshot snapshot;
-    snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
-    snapshot.name = extract_topic_name(stored_snapshot.topic);
-    snapshot.data = stored_snapshot.data;
-    snapshot.topic = stored_snapshot.topic;
-    snapshot.message_type = stored_snapshot.message_type;
-    snapshot.captured_at_ns = stored_snapshot.captured_at_ns;
-    // Rosbag fields left empty for freeze_frame type
+    snapshot.type = entry.type;
+    snapshot.name = entry.name;
+    snapshot.data = entry.data;
+    snapshot.topic = entry.topic;
+    snapshot.message_type = entry.message_type;
+    snapshot.bulk_data_id = entry.bulk_data_id;
+    snapshot.size_bytes = entry.size_bytes;
+    snapshot.duration_sec = entry.duration_sec;
+    snapshot.format = entry.format;
+    snapshot.captured_at_ns = entry.captured_at_ns;
     response->environment_data.snapshots.push_back(snapshot);
   }
-
-  // Per-topic snapshots are deleted on clear_fault unless snapshots.retain_on_clear is set, but
-  // the compact freeze-frame row is retained either way. When no snapshots remain, serve the
-  // retained frame so the confirmed-state record stays observable after acknowledgement.
-  //
-  // With retention on, snapshots never run out, so "none left" would never fire and the frame -
-  // which is the state at the MOST RECENT confirmation - would stay hidden behind snapshots of
-  // earlier occurrences. Serve it in that case too.
-  if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
-    std::optional<FreezeFrameData> frame;
-    try {
-      frame = storage_->get_freeze_frame(request->fault_code);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-      response->success = false;
-      response->error_message = storage_unavailable(e);
-      return;
-    }
-    if (frame) {
-      ros2_medkit_msgs::msg::Snapshot snapshot;
-      snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_FREEZE_FRAME;
-      snapshot.name = "freeze_frame";
-      snapshot.data = frame->data;
-      // topic/message_type left empty: the frame aggregates values from multiple topics
-      snapshot.captured_at_ns = frame->captured_at_ns;
-      response->environment_data.snapshots.push_back(snapshot);
-    }
-  }
-
-  // One entry per recording, newest first. A fault that keeps re-confirming leaves a
-  // trail of black boxes, and every one of them needs its own addressable id here -
-  // this list is the only place the fault itself advertises them.
-  try {
-    for (const auto & rosbag_info : storage_->get_rosbag_files(request->fault_code)) {
-      ros2_medkit_msgs::msg::Snapshot rosbag_snapshot;
-      rosbag_snapshot.type = ros2_medkit_msgs::msg::Snapshot::TYPE_ROSBAG;
-      rosbag_snapshot.name = "rosbag_" + rosbag_info.recording_id;
-      // The RECORDING, not the fault code: several recordings of one fault would
-      // otherwise all carry the same id and collapse into one download.
-      rosbag_snapshot.bulk_data_id = rosbag_info.recording_id;
-      rosbag_snapshot.size_bytes = rosbag_info.size_bytes;
-      rosbag_snapshot.duration_sec = rosbag_info.duration_sec;
-      rosbag_snapshot.format = rosbag_info.format;
-      rosbag_snapshot.captured_at_ns = rosbag_info.created_at_ns;
-      // Freeze frame fields left empty for rosbag type
-      response->environment_data.snapshots.push_back(rosbag_snapshot);
-    }
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-    response->success = false;
-    response->error_message = storage_unavailable(e);
-    return;
-  }
-
-  RCLCPP_DEBUG(get_logger(), "GetFault returned fault '%s' with %zu snapshots", request->fault_code.c_str(),
-               response->environment_data.snapshots.size());
 }
 
-void FaultManagerNode::publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault,
-                                           const std::vector<std::string> & auto_cleared_codes) {
-  ros2_medkit_msgs::msg::FaultEvent event;
+void FaultManagerNode::publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault) {
+  fd::FaultEventRecord event;
   event.event_type = event_type;
-  event.fault = ros2::to_msg(fault);
-  event.timestamp = get_wall_clock_time();
-  event.auto_cleared_codes = auto_cleared_codes;
-
-  event_publisher_->publish(event);
+  event.fault = fault;
+  event.timestamp_ns = wall_clock_.now_ns();
+  event_sink_->publish(event);
 
   RCLCPP_DEBUG(get_logger(), "Published fault event: %s for fault_code=%s", event_type.c_str(),
                fault.fault_code.c_str());
+}
+
+void FaultManagerNode::audit_transition(const char * transition, const fd::FaultRecord & fault,
+                                        const std::string & source_id, int64_t occurred_at_ns) {
+  core_->record_transition(transition, fault, source_id, occurred_at_ns);
 }
 
 core::FaultManagerConfig FaultManagerNode::declare_config() {
@@ -1506,85 +1024,22 @@ void FaultManagerNode::handle_list_faults_for_entity(
     return;
   }
 
-  // Get all faults from storage
-  std::vector<fd::FaultRecord> all_faults = {};
+  std::vector<fd::FaultRecord> faults = {};
   try {
-    all_faults = storage_->get_all_faults();
+    faults = core_->list_for_entity(request->entity_id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     response->success = false;
     response->error_message = storage_unavailable(e);
     return;
   }
-
-  // Filter faults that have this entity in their reporting_sources
-  for (const auto & fault : all_faults) {
-    if (matches_entity(fault.reporting_sources, request->entity_id)) {
-      response->faults.push_back(ros2::to_msg(fault));
-    }
+  for (const auto & fault : faults) {
+    response->faults.push_back(ros2::to_msg(fault));
   }
 
   response->success = true;
   RCLCPP_DEBUG(get_logger(), "ListFaultsForEntity returned %zu faults for entity '%s'", response->faults.size(),
                request->entity_id.c_str());
-}
-
-bool FaultManagerNode::matches_entity(const std::vector<std::string> & reporting_sources,
-                                      const std::string & entity_id) {
-  for (const auto & source : reporting_sources) {
-    // Exact match
-    if (source == entity_id) {
-      return true;
-    }
-
-    // FQN suffix match: source ends with "/" + entity_id
-    // e.g., source="/powertrain/motor_controller" matches entity_id="motor_controller"
-    std::string suffix = "/" + entity_id;
-    if (source.size() > suffix.size() && source.substr(source.size() - suffix.size()) == suffix) {
-      return true;
-    }
-  }
-  return false;
-}
-
-DebounceConfig FaultManagerNode::resolve_config(const std::string & source_id, const std::string & fault_code) const {
-  DebounceConfig config = global_config_;
-  if (threshold_resolver_) {
-    config = threshold_resolver_->resolve(source_id, global_config_);
-  }
-  // The fault code is the last layer: it is what the debounce counter belongs to, so an
-  // override on it settles the policy whichever source reported.
-  if (fault_code_resolver_) {
-    config = fault_code_resolver_->resolve(fault_code, config);
-  }
-  // Defensive: the merged config is validated at load time, but never hand the storage backend a
-  // config that violates confirmation_threshold < 0 <= healing_threshold (the counter would stick).
-  sanitize_debounce_config(config);
-  return config;
-}
-
-void FaultManagerNode::warn_on_conflicting_debounce_policy(const std::string & fault_code,
-                                                           const std::string & source_id,
-                                                           const DebounceConfig & resolved) {
-  auto [it, inserted] =
-      debounce_policy_witness_.try_emplace(fault_code, DebouncePolicyWitness{resolved, source_id, false});
-  if (inserted || it->second.warned || debounce_policy_equal(it->second.config, resolved)) {
-    return;
-  }
-
-  // One counter, two policies: the report that arrives decides the transition, so the other
-  // source's debounce policy is bypassed for as long as both report this code.
-  it->second.warned = true;
-  RCLCPP_WARN(get_logger(),
-              "Fault code '%s' is debounced two ways: '%s' resolves confirmation=%d healing_enabled=%s healing=%d, "
-              "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the fault "
-              "code, so whichever source reports decides the transition and the other policy is bypassed. Pin "
-              "confirmation_threshold, healing_enabled and healing_threshold for this code in "
-              "fault_thresholds.config_file.",
-              fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
-              it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold,
-              source_id.c_str(), resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false",
-              resolved.healing_threshold);
 }
 
 }  // namespace ros2_medkit_fault_manager

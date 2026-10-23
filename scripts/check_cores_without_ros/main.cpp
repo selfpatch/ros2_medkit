@@ -16,8 +16,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_startup.hpp"
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
@@ -32,6 +34,33 @@ class StderrSink : public ros2_medkit_fault_manager::core::LogSink {
   void log(ros2_medkit_fault_manager::core::LogLevel /*level*/, const std::string & logger,
            const std::string & message) override {
     std::fprintf(stderr, "[%s] %s\n", logger.c_str(), message.c_str());
+  }
+};
+
+class RecordingEventSink : public ros2_medkit_fault_manager::core::EventSink {
+ public:
+  void publish(const ros2_medkit::fault_detection::FaultEventRecord & event) override {
+    types.push_back(event.event_type);
+  }
+  std::vector<std::string> types;
+};
+
+class IgnoreCaptureHooks : public ros2_medkit_fault_manager::core::CaptureHooks {
+ public:
+  void on_confirmed(const std::string & /*code*/) override {
+  }
+  void on_prefailed(const std::string & /*code*/) override {
+  }
+  void on_cleared(const std::string & /*code*/) override {
+  }
+  void forget_cooldown(const std::string & /*code*/) override {
+  }
+};
+
+class FixedWallClock : public ros2_medkit_fault_manager::core::WallClock {
+ public:
+  int64_t now_ns() const override {
+    return 2000000000LL;
   }
 };
 
@@ -101,6 +130,42 @@ static int run() {
       ok &= check(parts.audit == nullptr && parts.correlation == nullptr, "audit and correlation stay off by default");
     }
     std::filesystem::remove(parts_db);
+  }
+
+  // Fault manager core: report, list and clear through the orchestration, SQLite storage.
+  {
+    namespace fmc = ros2_medkit_fault_manager::core;
+    const auto core_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_core.db";
+    std::filesystem::remove(core_db);
+    StderrSink sink;
+    fmc::FaultManagerConfig core_config;
+    core_config.storage_type = "sqlite";
+    core_config.database_path = core_db.string();
+    core_config.confirmation_threshold = -1;
+    RecordingEventSink events;
+    IgnoreCaptureHooks hooks;
+    FixedWallClock clock;
+    {
+      fmc::FaultManagerCore fault_core(core_config, fmc::build_core_parts(core_config, sink), events, hooks, clock,
+                                       sink);
+      fd::FaultReport report;
+      report.fault_code = "CORE_FAULT";
+      report.kind = fd::ReportKind::kFailed;
+      report.severity = fd::severity::kError;
+      report.description = "d";
+      report.source_id = "/src";
+      ok &= check(fault_core.report(report).accepted, "core accepts a FAILED report");
+      const auto listed = fault_core.list(fmc::ListQuery{});
+      ok &= check(listed.faults.size() == 1 && listed.faults[0].status == fd::fault_status::kConfirmed,
+                  "core list returns the fault CONFIRMED");
+      ok &= check(events.types.size() == 1 && events.types[0] == fd::fault_event_type::kConfirmed,
+                  "the sink saw exactly one fault_confirmed");
+      const auto cleared = fault_core.clear("CORE_FAULT", false);
+      ok &= check(cleared.success, "core clear succeeds");
+      ok &= check(events.types.size() == 2 && events.types[1] == fd::fault_event_type::kCleared,
+                  "the sink saw fault_cleared after the clear");
+    }
+    std::filesystem::remove(core_db);
   }
 
   return ok ? 0 : 1;

@@ -21,7 +21,7 @@
 
 namespace ros2_medkit_fault_manager::core {
 
-enum class LogLevel { kDebug, kInfo, kWarn, kError };
+enum class LogLevel { kDebug, kInfo, kWarn, kError, kFatal };
 
 /// Receives log lines from the ROS-free core. `logger` names the source.
 class LogSink {

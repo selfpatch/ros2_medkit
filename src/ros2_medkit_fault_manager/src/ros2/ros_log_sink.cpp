@@ -32,6 +32,9 @@ void RosLogSink::log(core::LogLevel level, const std::string & logger, const std
     case core::LogLevel::kError:
       RCUTILS_LOG_ERROR_NAMED(logger.c_str(), "%s", message.c_str());
       break;
+    case core::LogLevel::kFatal:
+      RCUTILS_LOG_FATAL_NAMED(logger.c_str(), "%s", message.c_str());
+      break;
   }
 }
 

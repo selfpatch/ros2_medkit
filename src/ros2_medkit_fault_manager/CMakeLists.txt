@@ -126,6 +126,7 @@ set(FAULT_MANAGER_FILES
     src/snapshot_capture.cpp
     src/rosbag_capture.cpp
     src/ros2/fault_msg_conversions.cpp
+    src/ros2/ros_event_sink.cpp
     src/ros2/ros_log_sink.cpp
 )
 add_library(fault_manager_lib STATIC
@@ -311,6 +312,11 @@ endif()
   # filter, over two full post-fault windows plus discovery.
   medkit_add_launch_test(test_rosbag_boundary_scope test/integration/test_rosbag_boundary_scope.test.py TIMEOUT 180
     LABELS "integration")
+
+  # Core orchestration under parallel callers. Plain C++ core, no ROS node.
+  medkit_add_gtest(test_fault_manager_core_concurrency test/test_fault_manager_core_concurrency.cpp)
+  target_link_libraries(test_fault_manager_core_concurrency fault_manager_core)
+  medkit_test_needs_no_domain(test_fault_manager_core_concurrency)
 
   # CaptureThreadPool unit tests
   medkit_add_gtest(test_capture_thread_pool test/test_capture_thread_pool.cpp)

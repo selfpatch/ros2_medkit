@@ -24,10 +24,14 @@
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_capture_hooks.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_event_sink.hpp"
 #include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
+#include "ros2_medkit_fault_manager/ros2/system_wall_clock.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_fault_manager/threshold_resolver.hpp"
@@ -73,7 +77,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Get the tamper-evident audit log (nullptr when disabled), for testing only.
   const FaultAuditLog * get_audit_log_for_test() const {
-    return audit_log_.get();
+    return core_->audit_log();
   }
 
   /// Health signal: number of audit transitions that failed to append (and were
@@ -82,7 +86,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// health surface yet, so an operator cannot read it at runtime in this
   /// revision (a runtime read/verify/health surface is future work).
   uint64_t audit_dropped_writes() const {
-    return audit_dropped_writes_.load(std::memory_order_relaxed);
+    return core_->audit_dropped_writes();
   }
 
   /// Health signal: false once any audit append has failed. A compliance-strict
@@ -90,7 +94,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// as the audit chain being incomplete. IN-PROCESS ONLY (see above): not yet
   /// observable at runtime by an operator.
   bool audit_healthy() const {
-    return audit_healthy_.load(std::memory_order_relaxed);
+    return core_->audit_healthy();
   }
 
   /// Test-only: drive one audit append through the same failure-handling path the
@@ -119,7 +123,9 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param reporting_sources List of reporting sources from fault
   /// @param entity_id Entity ID to match (exact match or as suffix of FQN)
   /// @return true if entity_id matches any source
-  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
+  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id) {
+    return core::FaultManagerCore::matches_entity(reporting_sources, entity_id);
+  }
 
  private:
   /// Handle ReportFault service request
@@ -169,9 +175,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
-  /// @param auto_cleared_codes Optional list of auto-cleared symptom fault codes (for EVENT_CLEARED)
-  void publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault,
-                           const std::vector<std::string> & auto_cleared_codes = {});
+  void publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault);
 
   /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
   /// Shared by the report path and the time-based confirmation timer so a
@@ -179,30 +183,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param fault_code Code of the fault that reached CONFIRMED
   void capture_on_confirm(const std::string & fault_code);
 
-  /// Validate severity value
-  static bool is_valid_severity(uint8_t severity);
-
-  /// Extract topic name from full topic path (last segment)
-  static std::string extract_topic_name(const std::string & topic_path);
-
-  /// Resolve the debounce config a report is debounced under.
-  /// Three layers, each applied on top of the last: the global config, the
-  /// longest-prefix entity override matching @p source_id, and the exact-match
-  /// override for @p fault_code. A layer only sets the fields it configures.
-  DebounceConfig resolve_config(const std::string & source_id, const std::string & fault_code) const;
-
-  /// Warn once per fault code when two sources debounce it under different
-  /// policies. The counter belongs to the fault code and the entity override to
-  /// the source, so the report that arrives decides the transition and the other
-  /// source's policy is silently bypassed.
-  /// @param fault_code The code just reported.
-  /// @param source_id The source that reported it.
-  /// @param resolved The config that report resolved to.
-  void warn_on_conflicting_debounce_policy(const std::string & fault_code, const std::string & source_id,
-                                           const DebounceConfig & resolved);
-
-  /// Append a fault state-transition to the audit log when enabled. No-op when
-  /// the log is off, or when only confirmations are logged and this is not one.
+  /// Append a fault state-transition to the audit log through the core.
   /// @param transition One of the kTransition* constants.
   /// @param fault The fault state at the time of the transition.
   /// @param source_id The reporting source that drove the transition.
@@ -220,37 +201,9 @@ class FaultManagerNode : public rclcpp::Node {
   int capture_pool_size_{2};
   int capture_queue_depth_{16};
   QueueFullPolicy capture_queue_full_policy_{QueueFullPolicy::kRejectNewest};
-  ros2::RosLogSink log_sink_;     ///< Outlives storage_ and the resolvers it is passed to
-  DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
-  std::unique_ptr<FaultStorage> storage_;
-  std::unique_ptr<EntityThresholdResolver> threshold_resolver_;      ///< Per-entity threshold overrides
-  std::unique_ptr<FaultCodeThresholdResolver> fault_code_resolver_;  ///< Per-fault_code threshold overrides
-
-  /// The first debounce policy seen for a fault code, and who reported it.
-  /// Kept only to notice a second source resolving a different policy for the
-  /// same code, and warned about once. One entry per fault code in the store
-  /// (it is only written once the store has the fault), so it is bounded by the
-  /// same thing the fault store is. Written from
-  /// the ReportFault callback, which the node's single-threaded executor
-  /// serialises with every other callback that touches node state.
-  struct DebouncePolicyWitness {
-    DebounceConfig config;  ///< The policy the first report resolved to
-    std::string source_id;  ///< The source that reported it
-    bool warned{false};     ///< Whether the conflict has already been reported
-  };
-  std::unordered_map<std::string, DebouncePolicyWitness> debounce_policy_witness_;
-
-  /// Tamper-evident audit log of fault transitions (nullptr when disabled).
-  std::unique_ptr<FaultAuditLog> audit_log_;
-  bool audit_confirmed_only_{false};  ///< When true, only "confirmed" transitions are logged
-  /// When true, an audit append failure is re-raised as a fail-FAST signal that
-  /// the chain is broken (operator must act). It does NOT roll back the already-
-  /// committed fault-state change (the fault store is a separate DB); it is not
-  /// atomicity.
-  bool audit_fail_closed_{false};
-
-  std::atomic<uint64_t> audit_dropped_writes_{0};  ///< Count of audit appends that failed (lost rows)
-  std::atomic<bool> audit_healthy_{true};          ///< Cleared on the first failed audit append
+  ros2::RosLogSink log_sink_;  ///< Outlives the core and the storage it is passed to
+  ros2::SystemWallClock wall_clock_;
+  FaultStorage * storage_{nullptr};  ///< Owned by core_
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;
@@ -276,12 +229,15 @@ class FaultManagerNode : public rclcpp::Node {
   /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<RosbagCapture> rosbag_capture_;
 
-  /// Correlation engine for fault correlation/muting (nullptr if disabled)
-  std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
-
   /// Bounded pool that runs capture jobs off the service thread (issue #441).
   /// Declared after snapshot_capture_/rosbag_capture_ so it is destroyed first.
   std::unique_ptr<CaptureThreadPool> capture_pool_;
+
+  std::unique_ptr<ros2::RosEventSink> event_sink_;
+  std::unique_ptr<ros2::RosCaptureHooks> capture_hooks_;
+
+  /// Report, clear and query sequences. Declared after the sink and the hooks it calls.
+  std::unique_ptr<core::FaultManagerCore> core_;
 
   /// Per-fault cooldown tracking for snapshot recapture
   std::mutex last_capture_mutex_;
