@@ -40,11 +40,23 @@ int64_t add_saturating(int64_t base, int64_t period_ns) {
   return base > INT64_MAX - period_ns ? INT64_MAX : base + period_ns;
 }
 
-/// The due time after a run at @p now of a job that was due at @p due. Keeps the job's phase
-/// unless it fell more than a period behind.
+/// A job due at @p due runs from half a period earlier: the callers' timers use the steady clock and
+/// @p now is wall time.
+bool job_is_due(int64_t now, int64_t due, int64_t period_ns) {
+  return now >= due - period_ns / 2;
+}
+
+/// The first @p due + k * @p period_ns (k >= 1) that is later than @p now. A late tick keeps the job's
+/// phase.
 int64_t next_due_ns(int64_t due, int64_t now, int64_t period_ns) {
-  const int64_t next = add_saturating(due, period_ns);
-  return next > now ? next : add_saturating(now, period_ns);
+  if (period_ns <= 0) {
+    return now;
+  }
+  const int64_t k = (now > due ? (now - due) / period_ns : 0) + 1;
+  if (k > (INT64_MAX - due) / period_ns) {
+    return INT64_MAX;
+  }
+  return due + k * period_ns;
 }
 
 std::string extract_topic_name(const std::string & topic_path) {
@@ -157,12 +169,12 @@ void FaultManagerCore::tick(int64_t wall_now_ns) {
   }
   last_tick_ns_ = wall_now_ns;
 
-  if (config_.auto_confirm_after_sec > 0.0 && wall_now_ns >= auto_confirm_due_ns_) {
+  if (config_.auto_confirm_after_sec > 0.0 && job_is_due(wall_now_ns, auto_confirm_due_ns_, auto_confirm_period_ns)) {
     auto_confirm_due_ns_ = next_due_ns(auto_confirm_due_ns_, wall_now_ns, auto_confirm_period_ns);
     auto_confirm_runs_.fetch_add(1, std::memory_order_relaxed);
     run_auto_confirm(wall_now_ns);
   }
-  if (correlation_ && wall_now_ns >= cleanup_due_ns_) {
+  if (correlation_ && job_is_due(wall_now_ns, cleanup_due_ns_, cleanup_period_ns)) {
     cleanup_due_ns_ = next_due_ns(cleanup_due_ns_, wall_now_ns, cleanup_period_ns);
     cleanup_runs_.fetch_add(1, std::memory_order_relaxed);
     correlation_->cleanup_expired();
