@@ -1,16 +1,19 @@
 # check_cores_without_ros
 
-Checks that the ROS-free cores (fault reporter core, fault manager core) build and run
-without ROS. It builds them with plain CMake and gcc 9 on Ubuntu 20.04, the oldest compiler
-the cores are checked with, then runs a small program that links them. The check fails if
-the binary links `rclcpp`.
+Checks that the ROS-free cores (fault reporter core, fault manager core, gateway core) build and
+run without ROS. It builds them with plain CMake and gcc 9 on Ubuntu 20.04, the oldest compiler
+the cores are checked with, then runs a small program that links them. The program also starts
+the gateway REST server over minimal `GatewayServices` and reads `/api/v1/health`. The check
+fails if the binary links `rclcpp`.
 
 ```bash
 scripts/check_cores_without_ros/run.sh
 ```
 
-The CMake file includes `cmake/fault_reporter_core.cmake` and `cmake/fault_manager_core.cmake` by path, as the ament builds do. The image installs only g++-9, cmake, make and the dev packages of SQLite3, OpenSSL, nlohmann_json and
-yaml-cpp. libpqxx is not installed, so the PostgreSQL backend is not built.
+The CMake file includes `cmake/fault_reporter_core.cmake`, `cmake/fault_manager_core.cmake` and
+`cmake/gateway_core.cmake` by path, as the ament builds do. The image installs only g++-9,
+cmake, make and the dev packages of SQLite3, OpenSSL, nlohmann_json and yaml-cpp. libpqxx is
+not installed, so the PostgreSQL backend is not built.
 
 ## What `main.cpp` checks
 

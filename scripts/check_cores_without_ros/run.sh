@@ -18,7 +18,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-tar -c src/ros2_medkit_fault_detection src/ros2_medkit_fault_reporter src/ros2_medkit_fault_manager scripts/check_cores_without_ros >"$ctx" || exit 1
+tar -c src/ros2_medkit_fault_detection src/ros2_medkit_fault_reporter src/ros2_medkit_fault_manager src/ros2_medkit_gateway scripts/check_cores_without_ros >"$ctx" || exit 1
 image=$(docker build -q -f scripts/check_cores_without_ros/Dockerfile - <"$ctx") || exit 1
 # Detached run: attached stdout can be cut short when the daemon is remote.
 container=$(docker run -d "$image") || exit 1

@@ -20,6 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../src/ros2_medkit_fault_reporter/cmake/fault_reporter_core.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../../src/ros2_medkit_fault_manager/cmake/fault_manager_core.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../../src/ros2_medkit_gateway/cmake/gateway_core.cmake)
 
 add_executable(check_cores_without_ros main.cpp)
-target_link_libraries(check_cores_without_ros PRIVATE fault_reporter_core fault_manager_core)
+target_link_libraries(check_cores_without_ros PRIVATE fault_reporter_core fault_manager_core gateway_core)
