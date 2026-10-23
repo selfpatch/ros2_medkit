@@ -23,6 +23,8 @@
 #include <string>
 #include <thread>
 
+#include <unistd.h>
+
 using namespace ros2_medkit_gateway;
 using json = nlohmann::json;
 
@@ -60,6 +62,38 @@ std::optional<ExecutionInfo> wait_for_completion(DefaultScriptProvider & provide
   }
   return std::nullopt;
 }
+
+/// Puts a pipe on fd 0 of this process for the life of the object, so a child that inherits stdin
+/// gets a pipe and not whatever ctest left there.
+class ScopedPipeStdin {
+ public:
+  ScopedPipeStdin() {
+    saved_ = dup(STDIN_FILENO);
+    int fds[2];
+    if (pipe(fds) == 0) {
+      write_end_ = fds[1];
+      dup2(fds[0], STDIN_FILENO);
+      close(fds[0]);
+    }
+  }
+  ScopedPipeStdin(const ScopedPipeStdin &) = delete;
+  ScopedPipeStdin & operator=(const ScopedPipeStdin &) = delete;
+  ~ScopedPipeStdin() {
+    if (saved_ >= 0) {
+      dup2(saved_, STDIN_FILENO);
+      close(saved_);
+    } else {
+      close(STDIN_FILENO);
+    }
+    if (write_end_ >= 0) {
+      close(write_end_);
+    }
+  }
+
+ private:
+  int saved_{-1};
+  int write_end_{-1};
+};
 
 class DefaultScriptProviderTest : public ::testing::Test {
  protected:
@@ -696,6 +730,35 @@ TEST_F(DefaultScriptProviderTest, EnvVars) {
   auto env = output["env"];
   EXPECT_EQ(env.value("ROBOT_ID", ""), "robot_42");
   EXPECT_EQ(env.value("GATEWAY_URL", ""), "http://localhost:8080");
+}
+
+// @verifies REQ_INTEROP_044
+TEST_F(DefaultScriptProviderTest, ChildWithoutParametersGetsDevNullAsStdin) {
+  auto script = test_dir_ / "check_stdin.py";
+  {
+    std::ofstream f(script);
+    f << "#!/usr/bin/env python3\nimport os\nimport sys\n"
+         "sys.exit(0 if os.path.samestat(os.fstat(0), os.stat('/dev/null')) else 1)\n";
+  }
+  std::filesystem::permissions(script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+
+  ScriptEntryConfig entry;
+  entry.id = "check_stdin";
+  entry.name = "Check stdin";
+  entry.path = script.string();
+  entry.format = "python";
+  entry.timeout_sec = 30;
+  DefaultScriptProvider provider(make_config({entry}));
+
+  ScopedPipeStdin pipe_on_stdin;
+  ExecutionRequest req{"now", std::nullopt, std::nullopt};
+  auto start = provider.start_execution("comp1", "check_stdin", req);
+  ASSERT_TRUE(start.has_value()) << start.error().message;
+
+  auto final_state = wait_for_completion(provider, "comp1", "check_stdin", start->id);
+  ASSERT_TRUE(final_state.has_value());
+  EXPECT_EQ(final_state->status, "completed")
+      << "error: " << (final_state->error.has_value() ? final_state->error->dump() : "none");
 }
 
 // @verifies REQ_INTEROP_044

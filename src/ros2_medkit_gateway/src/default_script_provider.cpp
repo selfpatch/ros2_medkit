@@ -524,7 +524,12 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     sigemptyset(&no_signals);
     sigprocmask(SIG_SETMASK, &no_signals, nullptr);
 
-    // Redirect stdin if passing JSON
+    // Close the read ends first. With fd 0 closed in the gateway, a pipe end can be fd 0, and
+    // redirecting stdin before this would close the redirect again.
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    // Redirect stdin
     if (pass_stdin_json) {
       close(stdin_pipe[1]);  // Close write end
       dup2(stdin_pipe[0], STDIN_FILENO);
@@ -534,12 +539,10 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     }
 
     // Redirect stdout
-    close(stdout_pipe[0]);  // Close read end
     dup2(stdout_pipe[1], STDOUT_FILENO);
     close(stdout_pipe[1]);
 
     // Redirect stderr
-    close(stderr_pipe[0]);  // Close read end
     dup2(stderr_pipe[1], STDERR_FILENO);
     close(stderr_pipe[1]);
 
