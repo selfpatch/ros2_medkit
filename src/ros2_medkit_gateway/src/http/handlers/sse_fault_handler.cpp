@@ -29,15 +29,16 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_json.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
-#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace fd = ros2_medkit::fault_detection;
 
 namespace {
 
@@ -49,13 +50,12 @@ std::string sanitize_sse_event_type(std::string event_type) {
 
 }  // namespace
 
-SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                                 const std::string & fault_events_topic)
-  : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec), fault_events_topic) {
+SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
+  : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec)) {
 }
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                                 std::chrono::milliseconds keepalive_interval, const std::string & fault_events_topic)
+                                 std::chrono::milliseconds keepalive_interval)
   : ctx_(ctx)
   , client_tracker_(std::move(client_tracker))
   , keepalive_interval_(keepalive_interval > std::chrono::milliseconds::zero()
@@ -67,13 +67,12 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                     keepalive_interval.count(), kKeepaliveIntervalSec);
   }
 
-  // Create subscription to fault events topic
-  // Use fully qualified topic name since FaultManager publishes on ~/events
-  subscription_ = ctx_.services().ros_node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      fault_events_topic, rclcpp::QoS(100).reliable(),
-      [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
-        on_fault_event(msg);
-      });
+  fault_source_ = ctx_.services().fault_events();
+  if (fault_source_ != nullptr) {
+    fault_source_->subscribe([this](const fd::FaultEventRecord & event) {
+      on_fault_event(event);
+    });
+  }
 
   // The aggregation manager is looked up per call rather than captured here:
   // it is wired onto the context during gateway start-up and this handler is
@@ -103,14 +102,13 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
         on_peer_event(event);
       });
 
-  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to %s, max_clients=%zu",
-                  fault_events_topic.c_str(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault handler initialized, event source %s, max_clients=%zu",
+                  fault_source_ != nullptr ? "attached" : "absent", client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
   // Signal shutdown and wake up any waiting clients
   request_shutdown();
-  subscription_.reset();
   // Before the queue-lock wait below: closing a peer stream joins its reader
   // thread, and that thread may be inside on_peer_event holding nothing but
   // wanting queue_mutex_.
@@ -129,6 +127,9 @@ SSEFaultHandler::~SSEFaultHandler() {
 }
 
 void SSEFaultHandler::request_shutdown() {
+  if (fault_source_ != nullptr) {
+    fault_source_->unsubscribe();
+  }
   if (peer_relay_) {
     peer_relay_->shutdown();
   }
@@ -167,7 +168,7 @@ std::deque<SSEFaultHandler::QueuedEvent>::iterator SSEFaultHandler::find_superse
     if (!entry.auto_cleared_codes.empty()) {
       continue;
     }
-    if (updates_only && entry.event_type != ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED) {
+    if (updates_only && entry.event_type != fd::fault_event_type::kUpdated) {
       continue;
     }
     if (newest_index[key] != i) {
@@ -237,13 +238,13 @@ SSEFaultHandler::EvictionStats SSEFaultHandler::evict_to_capacity_locked() {
   return stats;
 }
 
-void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+void SSEFaultHandler::on_fault_event(const fd::FaultEventRecord & event) {
   // Snapshot entity context before acquiring the queue lock so cache state
   // is pinned to the fault arrival timestamp and the formatting path stays
   // lock-free with respect to the cache.
-  auto entity = resolve_entity_context(msg->fault);
+  auto entity = resolve_entity_context(event.fault);
   QueuedEvent queued;
-  queued.event = *msg;
+  queued.event = event;
   queued.entity = std::move(entity);
   enqueue(std::move(queued));
 }
@@ -654,11 +655,17 @@ std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
 
   nlohmann::json json_event;
   json_event["event_type"] = sanitized_event_type;
-  json_event["fault"] = ros2::conversions::fault_to_json(queued.event.fault);
+  json_event["fault"] = fault_record_to_json(queued.event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
-  double timestamp_sec =
-      static_cast<double>(queued.event.timestamp.sec) + static_cast<double>(queued.event.timestamp.nanosec) * 1e-9;
+  constexpr int64_t kNsPerSec = 1000000000LL;
+  int64_t timestamp_s = queued.event.timestamp_ns / kNsPerSec;
+  int64_t timestamp_rem = queued.event.timestamp_ns % kNsPerSec;
+  if (timestamp_rem < 0) {
+    --timestamp_s;
+    timestamp_rem += kNsPerSec;
+  }
+  double timestamp_sec = static_cast<double>(timestamp_s) + static_cast<double>(timestamp_rem) * 1e-9;
   json_event["timestamp"] = timestamp_sec;
 
   // Correlation payload: symptom codes auto-cleared with this event's root
@@ -690,7 +697,7 @@ std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
 }
 
 std::optional<SSEFaultHandler::EntityContext>
-SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fault) const {
+SSEFaultHandler::resolve_entity_context(const fd::FaultRecord & fault) const {
   if (fault.reporting_sources.empty()) {
     return std::nullopt;
   }
