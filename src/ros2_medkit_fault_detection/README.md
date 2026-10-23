@@ -38,10 +38,16 @@ the fault manager as report/clear.
 
 ## Shared fault types
 
-`fault_types.hpp` holds std-only types used by the fault reporter core (the fault manager does not use them yet):
-`ReportKind`, `FaultReport`, `FaultRecord`, `FaultEventRecord`, and the constants
-for severity, fault status and fault event type. They mirror `Fault.msg`, `FaultEvent.msg` and
-`ReportFault.srv` in `ros2_medkit_msgs`.
+`fault_types.hpp` holds the std-only types that the ROS-free fault reporter core and fault manager core
+exchange: `ReportKind`, `FaultReport`, `FaultRecord`, `FaultEventRecord`, and the
+constants for severity, fault status and fault event type. They mirror `Fault.msg`, `FaultEvent.msg`
+and `ReportFault.srv` in `ros2_medkit_msgs`. Times are `int64_t` nanoseconds since the Unix epoch;
+0 means never. The ROS adapters of both packages convert to and from the messages at their edge.
+
+`cmake/fault_reporter_core.cmake` and `cmake/fault_manager_core.cmake` define an INTERFACE target
+`ros2_medkit_fault_detection` for `include/` of this package when the ament target is absent. That lets
+the cores build with plain CMake. See the READMEs of `ros2_medkit_fault_reporter` and
+`ros2_medkit_fault_manager`.
 
 ## Placement and packaging
 

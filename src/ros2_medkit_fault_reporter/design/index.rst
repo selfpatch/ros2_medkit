@@ -147,6 +147,9 @@ Main Components
    - Built as the static library ``fault_reporter_core`` from ``cmake/fault_reporter_core.cmake``
      (plain CMake, no ament); the neutral types come from ``ros2_medkit_fault_detection/fault_types.hpp``
 
+   - Everything in the core links only the header-only ``ros2_medkit_fault_detection``; the ROS adapter
+     (``FaultReporter``: parameters, ``ReportFault`` client) stays in ``fault_reporter_lib``
+
 5. **FaultTracker** - Internal state for per-fault-code tracking
 
    - Maintains vector of timestamps for recent reports
@@ -197,6 +200,17 @@ Parameters are loaded from the node's parameter server:
            default_threshold: 3
            default_window_sec: 10.0
            bypass_severity: 2
+
+Plain-CMake Build
+~~~~~~~~~~~~~~~~~
+
+``cmake/fault_reporter_core.cmake`` builds the core with plain CMake (CMake 3.16, C++17, no ament) as the
+target ``fault_reporter_core``. The ament build includes it, and so does
+``scripts/check_cores_without_ros``. The file finds ``fault_types.hpp`` at
+``../ros2_medkit_fault_detection/include``, so the package directories must stay side by side. The
+target is not installed or exported, and the core needs no library besides the standard library. The
+ROS adapter passes a ``ReportSink`` that sends each report to the fault manager. The check passes a
+counting sink.
 
 Design Decisions
 ----------------

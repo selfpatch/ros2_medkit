@@ -556,14 +556,71 @@ source install/setup.bash
 
 ### ROS-free core
 
-The storage backends, threshold resolver, correlation engine and audit log build without ROS as the
-static library `fault_manager_core` (`cmake/fault_manager_core.cmake`, plain CMake 3.16, C++17). It
-returns `ros2_medkit::fault_detection::FaultRecord` values with nanosecond times and logs through a
-`core::LogSink` that the caller supplies. The ROS node converts at its edge
-(`ros2/fault_msg_conversions.hpp`, `ros2/ros_log_sink.hpp`). The core compiles and is tested without
-ROS, with no DDS setup and with times the test passes in. `scripts/check_cores_without_ros/run.sh`
-builds it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with. The PostgreSQL backend needs libpqxx >= 7.5, which
-Ubuntu 20.04 does not package; SQLite is the default there.
+The package has two parts. The core compiles and is tested without ROS, without DDS setup and with a
+clock the test controls. `scripts/check_cores_without_ros` keeps it free of ROS.
+
+**Core** (`fault_manager_core`, static library, no ROS):
+
+- the storage backends (SQLite, in-memory, optional PostgreSQL), the threshold resolvers, the
+  correlation engine and the audit log;
+- `core::FaultManagerConfig`: every startup value, named after its parameter. `validate()` applies
+  the clamps and fallbacks and returns the lines to log as `ConfigNotice` values;
+- `core::build_core_parts()`: opens the storage and the audit log, loads the threshold and
+  correlation files. It throws when the storage or the audit log cannot be opened.
+  `core::reclassify_stale_healed()` is the startup pass for stale HEALED rows;
+- `core::FaultManagerCore`: `report`, `clear`, `list`, `get`, `list_for_entity`, `record_transition`
+  and `tick`. These calls run under one internal mutex.
+
+The core reaches the outside through four interfaces. The ROS adapter implements them.
+
+| Interface | Role |
+| --- | --- |
+| `core::EventSink` | `publish()` receives every fault event the core emits. |
+| `core::CaptureHooks` | `capture_now()` queues the snapshot and rosbag capture of a fault code. The core has already applied the recapture cooldown. `on_prefailed()` and `on_cleared()` notify the capture side. |
+| `core::WallClock` | `now_ns()` returns nanoseconds since the Unix epoch. |
+| `core::LogSink` | `log()` receives the log lines. |
+
+`EventSink` and `CaptureHooks` run inside the core mutex and must not call back into the core, or
+the call deadlocks. `LogSink::log()` is called from several threads at once (core callers and
+capture workers), so it must be thread-safe.
+
+`tick(wall_now_ns)` runs the periodic jobs that are due: time-based auto-confirmation
+every second and the correlation cleanup every `correlation.cleanup_interval_sec`. The core has no
+timer. The caller calls `tick` with the wall clock, at least as often as the shortest period it needs.
+
+The core returns `ros2_medkit::fault_detection` values (`FaultRecord`, `FaultEventRecord`) with
+nanosecond times.
+
+**ROS adapter** (`fault_manager_lib` and `fault_manager_node`): the services, the `FaultEvent`
+publisher, wall timers that call `tick`, the capture thread pool, snapshot and rosbag capture. It
+implements the four interfaces: `ros2::RosEventSink`, `ros2::RosCaptureHooks`,
+`ros2::SystemWallClock` and `ros2::RosLogSink`. It converts between the core values and the
+messages in `ros2/fault_msg_conversions.hpp`.
+
+### Plain-CMake build
+
+`cmake/fault_manager_core.cmake` is plain CMake (3.16 or newer, C++17), no ament. The ament build
+includes it by path, and so does `scripts/check_cores_without_ros`. The directories
+`ros2_medkit_fault_detection` and `ros2_medkit_fault_manager` must stay side by side, because the file
+finds the shared `fault_types.hpp` at `../ros2_medkit_fault_detection/include`. The file looks the
+libraries up itself when the project has not.
+
+| Dependency | When |
+| --- | --- |
+| SQLite3 | always |
+| OpenSSL (`OpenSSL::Crypto`) | always |
+| nlohmann_json | always |
+| yaml-cpp | always |
+| libpqxx >= 7.5 and PostgreSQL (libpq) | only with `-DPOSTGRES_SUPPORT=ON` |
+
+The core is built from a `core::FaultManagerConfig`: call `validate()` and log the notices, then
+`build_core_parts(config, sink)`, and pass the parts, the config and the four interface
+implementations to `FaultManagerCore`. The fault reporter core is a separate target, see
+`ros2_medkit_fault_reporter`. Both files can be included in one project and share the
+`ros2_medkit_fault_detection` target. Neither target is installed or exported.
+`scripts/check_cores_without_ros/run.sh` builds and runs both on Ubuntu 20.04 with gcc 9, the oldest
+compiler the cores are checked with. Ubuntu 20.04 does not package libpqxx 7.5, so the PostgreSQL
+backend is not built there. SQLite is the default.
 
 ## Testing
 

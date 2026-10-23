@@ -133,13 +133,39 @@ is NaN, infinite or not positive becomes 1.0. These last two are not logged.
 
 ## ROS-free core
 
-`ros2_medkit_fault_reporter::core::ReporterCore` holds the filter and builds a
-`ros2_medkit::fault_detection::FaultReport` (types from `ros2_medkit_fault_detection`). It hands each
-report that passed the filter to a sink function. `FaultReporter` is the ROS adapter: its sink sends
-the `ReportFault` request. The CMake target `fault_reporter_core` is defined in
-`cmake/fault_reporter_core.cmake`, which uses plain CMake (3.16, C++17). The core compiles and is
-tested without ROS, with no DDS setup. `scripts/check_cores_without_ros/run.sh` builds it on
-Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+The package has two parts. The core compiles and is tested without ROS and without DDS setup.
+`scripts/check_cores_without_ros` keeps it free of ROS.
+
+- **Core** (`fault_reporter_core`, static library): `core::ReporterCore` and `LocalFilter`. The core
+  applies the local filter, builds a `ros2_medkit::fault_detection::FaultReport` and hands each report
+  that passed the filter to a sink function (`core::ReportSink`). `core::validate_filter_params()` turns
+  raw int64 and double parameter values into a valid `FilterConfig` and reports the replaced values as
+  warnings. `LocalFilter` is guarded by a mutex. The core links only the header-only
+  `ros2_medkit_fault_detection`, so it needs no library besides the C++17 standard library.
+- **ROS adapter** (`fault_reporter_lib`, shared library): `FaultReporter` reads the ROS parameters,
+  owns the `ReportFault` service client and passes a sink to the core that sends the request.
+
+The core and the neutral types (`ros2_medkit_fault_detection/fault_types.hpp`) carry no ROS type.
+
+### Plain-CMake build
+
+`cmake/fault_reporter_core.cmake` is plain CMake (3.16 or newer, C++17), no ament. The ament build
+includes it by path, and so does `scripts/check_cores_without_ros`. The three package directories
+`ros2_medkit_fault_detection`, `ros2_medkit_fault_reporter` and `ros2_medkit_fault_manager` must stay
+side by side, because the file finds the detection header at `../ros2_medkit_fault_detection/include`.
+
+```cpp
+#include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
+
+namespace core = ros2_medkit_fault_reporter::core;
+core::ReporterCore reporter("my_source", ros2_medkit_fault_reporter::FilterConfig{},
+                            [](const ros2_medkit::fault_detection::FaultReport & report) { /* send it */ });
+reporter.report("SENSOR_FAILURE", ros2_medkit::fault_detection::severity::kError, "timeout");
+```
+
+There is one definition of the target. It is not installed or exported.
+`scripts/check_cores_without_ros/run.sh` builds and runs the core on Ubuntu 20.04 with gcc 9, the oldest
+compiler the cores are checked with.
 
 ## Advanced: Debounce Integration
 

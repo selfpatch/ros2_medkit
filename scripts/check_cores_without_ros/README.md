@@ -9,6 +9,25 @@ the binary links `rclcpp`.
 scripts/check_cores_without_ros/run.sh
 ```
 
+The CMake file includes `cmake/fault_reporter_core.cmake` and `cmake/fault_manager_core.cmake` by path, as the ament builds do. The image installs only g++-9, cmake, make and the dev packages of SQLite3, OpenSSL, nlohmann_json and
+yaml-cpp. libpqxx is not installed, so the PostgreSQL backend is not built.
+
+## What `main.cpp` checks
+
+- Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is
+  filtered by the same threshold, an empty fault code is not forwarded.
+- Fault manager storage: a FAILED report creates a CONFIRMED fault, and `list_faults` returns it with its nanosecond time.
+- `FaultManagerConfig::validate()`: a positive `confirmation_threshold` flips its sign, a NaN `auto_confirm_after_sec`
+  falls back to 0, int64 thresholds outside the int32 range clamp to its ends, and each change has a notice.
+- `build_core_parts()` opens a SQLite storage; audit and correlation stay off by default.
+- `FaultManagerCore`: report, list and clear, with the `EventSink` seeing `fault_confirmed` and then `fault_cleared`.
+- `FaultManagerCore::tick()`: auto-confirmation and the correlation cleanup run on their own periods, and not twice
+  within one period. `CaptureHooks::capture_now` is called once on confirmation. A tick earlier than the previous one runs
+  nothing, and the jobs then wait at most one period.
+- A `correlation.cleanup_interval_sec` of 9e9 does not overflow the due time.
+
+The Dockerfile also runs `ldd` on the binary and fails when `rclcpp` appears.
+
 The script sends only the needed source directories to `docker build` as the build
 context. CI runs the same CMake steps in an `ubuntu:20.04` container (job `cores-without-ros`).
 `COLCON_IGNORE` keeps colcon from treating this directory as a package.
