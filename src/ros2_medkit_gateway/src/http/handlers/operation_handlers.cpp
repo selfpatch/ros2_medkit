@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -379,8 +380,8 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
       // of rebuilding + deep-copying (issue #442).
       x_medkit.type_info = *type_introspection->get_service_type_info(svc.type);
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
-                   e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
+                       e.what());
     }
   }
   return x_medkit;
@@ -402,7 +403,8 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
     try {
       x_medkit.type_info = *type_introspection->get_action_type_info(act.type);
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(), e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
+                       e.what());
     }
   }
   return x_medkit;
@@ -631,12 +633,12 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
       }
       return *result;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -648,8 +650,8 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
     return tl::make_unexpected(lookup.error());
   }
   const auto & ops = lookup->ops;
-  RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
-               lookup->entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
+  MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
+                   lookup->entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
 
   // Build OperationItem list (services + actions). The wire shape is shared
   // with handle_get_operation so build_service_xmedkit / build_action_xmedkit
@@ -892,12 +894,12 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
       detail.item = std::move(*result);
       return detail;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -1036,12 +1038,12 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       }
       return SuccessPair{ResultVariant{std::move(*result)}, http::ResponseAttachments{}};
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -1233,12 +1235,12 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
       }
       return collection;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }

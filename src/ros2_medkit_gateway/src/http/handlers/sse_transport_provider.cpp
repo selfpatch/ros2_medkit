@@ -13,13 +13,12 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
-
-#include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -82,8 +81,9 @@ tl::expected<http::SseStream, ErrorInfo> SseTransportProvider::make_sse_stream(c
   // the legacy handle_client_connect path, exhaustion produces a 503 SOVD
   // GenericError that the typed wrapper renders for the framework.
   if (!client_tracker_->try_connect()) {
-    RCLCPP_WARN(handlers::HandlerContext::logger(),
-                "SSE client limit reached (%zu), rejecting cyclic subscription stream", client_tracker_->max_clients());
+    MEDKIT_LOG_WARN(handlers::HandlerContext::logger(),
+                    "SSE client limit reached (%zu), rejecting cyclic subscription stream",
+                    client_tracker_->max_clients());
     ErrorInfo err;
     err.code = ERR_SERVICE_UNAVAILABLE;
     err.message = "Maximum number of SSE clients reached. Please try again later.";
@@ -91,8 +91,8 @@ tl::expected<http::SseStream, ErrorInfo> SseTransportProvider::make_sse_stream(c
     return tl::make_unexpected(std::move(err));
   }
 
-  RCLCPP_INFO(handlers::HandlerContext::logger(), "SSE cyclic subscription client connected (%zu/%zu)",
-              client_tracker_->connected_clients(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(handlers::HandlerContext::logger(), "SSE cyclic subscription client connected (%zu/%zu)",
+                  client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   // The tracker_guard releases the SSE client slot on closure destruction. The
   // framework holds the SseStream via a shared_ptr, so the guard's deleter
@@ -106,8 +106,8 @@ tl::expected<http::SseStream, ErrorInfo> SseTransportProvider::make_sse_stream(c
   std::string captured_sub_id = sub_id;  // NOLINT(performance-unnecessary-copy-initialization)
   std::shared_ptr<void> tracker_guard(nullptr, [tracker, captured_sub_id](void *) {
     tracker->disconnect();
-    RCLCPP_DEBUG(rclcpp::get_logger("rest_server"), "SSE cyclic subscription stream disconnected: %s",
-                 captured_sub_id.c_str());
+    MEDKIT_LOG_DEBUG(log::Logger("rest_server"), "SSE cyclic subscription stream disconnected: %s",
+                     captured_sub_id.c_str());
   });
 
   http::SseStream stream;
@@ -171,8 +171,8 @@ tl::expected<http::SseStream, ErrorInfo> SseTransportProvider::make_sse_stream(c
         envelope["error"] = error;
       }
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("sse_transport"), "Sampler exception for sub %s: %s", captured_sub_id.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("sse_transport"), "Sampler exception for sub %s: %s", captured_sub_id.c_str(),
+                      e.what());
       json error;
       error["error_code"] = ERR_INTERNAL_ERROR;
       error["message"] = "Internal error during resource sampling";

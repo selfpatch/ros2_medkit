@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/plugins/plugin_loader.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
@@ -24,7 +25,6 @@
 #include "ros2_medkit_gateway/core/providers/update_provider.hpp"
 
 #include <dlfcn.h>
-#include <rclcpp/rclcpp.hpp>
 
 #include <filesystem>
 
@@ -205,11 +205,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.update_provider = update_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_update_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_update_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_update_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_update_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -219,11 +219,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.introspection_provider = introspection_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_introspection_provider threw in %s: %s",
-                  plugin_path.c_str(), e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_introspection_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_introspection_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_introspection_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -233,11 +233,10 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.log_provider = log_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_log_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_log_provider threw in %s: %s", plugin_path.c_str(), e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_log_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_log_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -247,11 +246,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.script_provider = script_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_script_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_script_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_script_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_script_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -261,11 +260,10 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.data_provider = data_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_data_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_data_provider threw in %s: %s", plugin_path.c_str(), e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_data_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_data_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -275,11 +273,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.operation_provider = operation_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_operation_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_operation_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_operation_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_operation_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -289,11 +287,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.fault_provider = fault_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_fault_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_fault_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_fault_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_fault_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 
@@ -303,11 +301,11 @@ tl::expected<GatewayPluginLoadResult, std::string> PluginLoader::load(const std:
     try {
       result.lifecycle_provider = lifecycle_fn(raw_plugin);
     } catch (const std::exception & e) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_lifecycle_provider threw in %s: %s", plugin_path.c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_lifecycle_provider threw in %s: %s", plugin_path.c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(rclcpp::get_logger("plugin_loader"), "get_lifecycle_provider threw unknown exception in %s",
-                  plugin_path.c_str());
+      MEDKIT_LOG_WARN(log::Logger("plugin_loader"), "get_lifecycle_provider threw unknown exception in %s",
+                      plugin_path.c_str());
     }
   }
 

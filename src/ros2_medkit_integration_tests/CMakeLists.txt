@@ -276,6 +276,7 @@ if(BUILD_TESTING)
     test_aggregator_only_configurations
     test_leaf_collision_aggregation
     test_startup_param_clamp_warnings
+    test_rest_logger_names
     test_aggregation_time_budgets
     test_peer_failure_reasons
     test_relay_peer_credential)

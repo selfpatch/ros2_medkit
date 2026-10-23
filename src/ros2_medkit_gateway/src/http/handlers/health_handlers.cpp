@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <chrono>
 
@@ -40,7 +41,7 @@ namespace handlers {
 namespace {
 
 ErrorInfo make_internal_error(const char * where, const std::exception & e) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   ErrorInfo err;
   err.code = ERR_INTERNAL_ERROR;
   err.message = "Internal server error";
@@ -190,10 +191,10 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
         if (auto valid = validate_entity_id(w.entity_id); valid) {
           warning.entity_ids = {w.entity_id};
         } else {
-          RCLCPP_WARN(HandlerContext::logger(),
-                      "Peer(s) [%s] announced Component id '%s', which is not a valid entity id (%s); omitting it "
-                      "from the '%s' warning's entity_ids",
-                      peers_list.c_str(), w.entity_id.c_str(), valid.error().c_str(), WARN_LEAF_ID_COLLISION);
+          MEDKIT_LOG_WARN(HandlerContext::logger(),
+                          "Peer(s) [%s] announced Component id '%s', which is not a valid entity id (%s); omitting it "
+                          "from the '%s' warning's entity_ids",
+                          peers_list.c_str(), w.entity_id.c_str(), valid.error().c_str(), WARN_LEAF_ID_COLLISION);
         }
         warning.peer_names = w.peer_names;
         warnings.push_back(std::move(warning));

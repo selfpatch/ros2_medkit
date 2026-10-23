@@ -13,14 +13,13 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
-
-#include <rclcpp/rclcpp.hpp>
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
 
 void log_peer_drop_warning(const char * dto_name, const char * reason) {
-  RCLCPP_WARN(rclcpp::get_logger("aggregation"), "fan_out_collection: peer item failed to parse as %s, dropping: %s",
-              dto_name, reason);
+  MEDKIT_LOG_WARN(log::Logger("aggregation"), "fan_out_collection: peer item failed to parse as %s, dropping: %s",
+                  dto_name, reason);
 }
 
 }  // namespace ros2_medkit_gateway

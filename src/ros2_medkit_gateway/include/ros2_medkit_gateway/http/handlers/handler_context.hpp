@@ -19,7 +19,6 @@
 #include <iomanip>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <rclcpp/rclcpp.hpp>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,6 +31,7 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
@@ -354,8 +354,9 @@ class HandlerContext {
   /**
    * @brief Get logger for handlers
    */
-  static rclcpp::Logger logger() {
-    return rclcpp::get_logger("rest_server");
+  static const log::Logger & logger() {
+    static const log::Logger instance("rest_server");
+    return instance;
   }
 
   /**

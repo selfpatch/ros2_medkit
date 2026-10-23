@@ -166,6 +166,7 @@ add_library(gateway_ros2 STATIC
   src/ros2/transports/ros2_topic_subscription_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
   src/ros2/status/ros2_lifecycle_state_reader.cpp
+  src/ros2/ros2_log_sink.cpp
   src/ros2/trigger_topic_subscriber.cpp
   src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/update_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <string>
 #include <utility>
@@ -31,7 +32,7 @@ namespace {
 /// Wrap a thrown std::exception as a 500 internal-error ErrorInfo, logging
 /// the original `what()` via the shared handler logger.
 ErrorInfo make_internal_error(const char * where, const std::exception & e) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   return make_error(500, ERR_INTERNAL_ERROR, e.what());
 }
 

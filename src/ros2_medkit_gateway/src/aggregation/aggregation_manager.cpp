@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <future>
@@ -23,8 +24,6 @@
 
 #include <arpa/inet.h>
 #include <netdb.h>
-
-#include <rclcpp/logging.hpp>
 
 #include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -189,8 +188,8 @@ bool is_valid_peer_url(const std::string & url) {
 
 }  // namespace
 
-AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger)
-  : config_(config), logger_(logger ? *logger : rclcpp::get_logger("aggregation_manager")) {
+AggregationManager::AggregationManager(const AggregationConfig & config, const log::Logger * logger)
+  : config_(config), logger_(logger ? *logger : log::Logger("aggregation_manager")) {
   for (const auto & peer_cfg : config_.peers) {
     // Validate scheme for static peers (http/https only).
     // Unlike mDNS peers, loopback addresses are valid for static config
@@ -204,14 +203,15 @@ AggregationManager::AggregationManager(const AggregationConfig & config, rclcpp:
     if (peer_cfg.url.rfind("http://", 0) == 0) {
       if (config_.require_tls) {
         if (logger) {
-          RCLCPP_ERROR(*logger, "Aggregation: skipping peer '%s' at %s - require_tls is enabled but URL uses http://",
-                       peer_cfg.name.c_str(), peer_cfg.url.c_str());
+          MEDKIT_LOG_ERROR(*logger,
+                           "Aggregation: skipping peer '%s' at %s - require_tls is enabled but URL uses http://",
+                           peer_cfg.name.c_str(), peer_cfg.url.c_str());
         }
         continue;
       }
       if (logger) {
-        RCLCPP_WARN(*logger, "Aggregation: peer '%s' at %s uses cleartext HTTP - consider using HTTPS",
-                    peer_cfg.name.c_str(), peer_cfg.url.c_str());
+        MEDKIT_LOG_WARN(*logger, "Aggregation: peer '%s' at %s uses cleartext HTTP - consider using HTTPS",
+                        peer_cfg.name.c_str(), peer_cfg.url.c_str());
       }
     }
 
@@ -265,10 +265,10 @@ void AggregationManager::add_discovered_peer(const std::string & url, const std:
   // Enforce max_discovered_peers limit (static peers do not count)
   size_t discovered_count = peers_.size() - static_peer_count_;
   if (discovered_count >= config_.max_discovered_peers) {
-    RCLCPP_WARN(logger_,
-                "Aggregation: max_discovered_peers limit (%zu) reached, "
-                "rejecting peer '%s' at %s",
-                config_.max_discovered_peers, name.c_str(), url.c_str());
+    MEDKIT_LOG_WARN(logger_,
+                    "Aggregation: max_discovered_peers limit (%zu) reached, "
+                    "rejecting peer '%s' at %s",
+                    config_.max_discovered_peers, name.c_str(), url.c_str());
     return;
   }
 
@@ -424,7 +424,7 @@ PeerEntities AggregationManager::replay_declaration(const std::string & peer_nam
 AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_entities(
     const std::vector<Area> & local_areas, const std::vector<Component> & local_components,
     const std::vector<App> & local_apps, const std::vector<Function> & local_functions, size_t max_entities_per_peer,
-    rclcpp::Logger * logger) {
+    const log::Logger * logger) {
   MergedPeerResult merged;
   merged.areas = local_areas;
   merged.components = local_components;
@@ -535,7 +535,8 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       // would outlive the cycle that failed and be replayed as the peer's own
       // account of itself.
       if (logger) {
-        RCLCPP_WARN(*logger, "Failed to fetch entities from peer '%s': %s", pfr.peer_name.c_str(), pfr.error.c_str());
+        MEDKIT_LOG_WARN(*logger, "Failed to fetch entities from peer '%s': %s", pfr.peer_name.c_str(),
+                        pfr.error.c_str());
       }
       unread_peers.push_back({pfr.peer_name, pfr.reachability,
                               pfr.reachability == Reachability::kReachable ? "refresh incomplete" : "not answering"});
@@ -546,8 +547,8 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       for (const auto & route : pfr.entities.absent_routes) {
         routes += routes.empty() ? route : ", " + route;
       }
-      RCLCPP_WARN(*logger, "Peer '%s' does not expose %s; aggregating without the members those routes carry",
-                  pfr.peer_name.c_str(), routes.c_str());
+      MEDKIT_LOG_WARN(*logger, "Peer '%s' does not expose %s; aggregating without the members those routes carry",
+                      pfr.peer_name.c_str(), routes.c_str());
     }
     remember_declaration(pfr.peer_name, pfr.entities);
     to_merge.push_back(std::move(pfr));
@@ -565,11 +566,11 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       const size_t count =
           retained.areas.size() + retained.components.size() + retained.apps.size() + retained.functions.size();
       if (peer.reachability == Reachability::kUnreachable) {
-        RCLCPP_INFO(*logger, "Peer '%s' %s; retaining %zu declared entities as unavailable", peer.name.c_str(),
-                    peer.reason.c_str(), count);
+        MEDKIT_LOG_INFO(*logger, "Peer '%s' %s; retaining %zu declared entities as unavailable", peer.name.c_str(),
+                        peer.reason.c_str(), count);
       } else {
-        RCLCPP_WARN(*logger, "Peer '%s' %s; it is still reachable, so its %zu declared entities stand as last read",
-                    peer.name.c_str(), peer.reason.c_str(), count);
+        MEDKIT_LOG_WARN(*logger, "Peer '%s' %s; it is still reachable, so its %zu declared entities stand as last read",
+                        peer.name.c_str(), peer.reason.c_str(), count);
       }
     }
     PeerFetchResult replayed;
@@ -626,7 +627,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
       // Log collision-prefixed entities to help operators diagnose naming conflicts
       if (id.find(EntityMerger::SEPARATOR) != std::string::npos) {
         if (logger) {
-          RCLCPP_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
+          MEDKIT_LOG_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
         }
       }
     }
@@ -657,7 +658,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
   if (logger) {
     for (const auto & msg : classified.malformed_parent_warnings) {
-      RCLCPP_WARN(*logger, "Aggregation: %s", msg.c_str());
+      MEDKIT_LOG_WARN(*logger, "Aggregation: %s", msg.c_str());
     }
     for (const auto & w : merged.leaf_warnings) {
       std::string peers_str;
@@ -667,8 +668,8 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
         }
         peers_str += w.peer_names[i];
       }
-      RCLCPP_WARN(*logger, "Leaf Component '%s' announced by multiple peers: %s. Routing uses last-writer-wins.",
-                  w.entity_id.c_str(), peers_str.c_str());
+      MEDKIT_LOG_WARN(*logger, "Leaf Component '%s' announced by multiple peers: %s. Routing uses last-writer-wins.",
+                      w.entity_id.c_str(), peers_str.c_str());
     }
   }
 

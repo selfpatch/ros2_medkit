@@ -39,6 +39,7 @@
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_log_sink.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
@@ -48,6 +49,7 @@ using namespace std::chrono_literals;
 namespace ros2_medkit_gateway {
 
 GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
+  log::set_sink(std::make_shared<Ros2LogSink>());
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 
   // Declare parameters with defaults
@@ -1243,7 +1245,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                   "Set aggregation.require_tls=true for production deployments.");
     }
 
-    auto logger = get_logger();
+    const log::Logger logger(get_logger().get_name());
     aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config, &logger);
 
     // mDNS discovery/announcement
@@ -2320,7 +2322,7 @@ void GatewayNode::refresh_cache() {
     std::unordered_map<std::string, std::string> peer_routing_table;
     if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
       aggregation_mgr_->check_all_health();
-      auto logger = get_logger();
+      const log::Logger logger(get_logger().get_name());
       auto merged =
           aggregation_mgr_->fetch_and_merge_peer_entities(areas, all_components, apps, functions, 10000, &logger);
       areas = std::move(merged.areas);

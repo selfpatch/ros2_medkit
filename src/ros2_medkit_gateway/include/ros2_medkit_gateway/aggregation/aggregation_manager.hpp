@@ -20,7 +20,6 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <rclcpp/logger.hpp>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -28,6 +27,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/classification.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 
 namespace ros2_medkit_gateway {
@@ -174,7 +174,7 @@ class AggregationManager {
    * @param config Aggregation configuration
    * @param logger Optional logger for TLS warnings (pass nullptr to suppress)
    */
-  explicit AggregationManager(const AggregationConfig & config, rclcpp::Logger * logger = nullptr);
+  explicit AggregationManager(const AggregationConfig & config, const log::Logger * logger = nullptr);
 
   /**
    * @brief Cancel every in-flight HTTP call to every peer.
@@ -258,7 +258,7 @@ class AggregationManager {
   MergedPeerResult
   fetch_and_merge_peer_entities(const std::vector<Area> & local_areas, const std::vector<Component> & local_components,
                                 const std::vector<App> & local_apps, const std::vector<Function> & local_functions,
-                                size_t max_entities_per_peer = 10000, rclcpp::Logger * logger = nullptr);
+                                size_t max_entities_per_peer = 10000, const log::Logger * logger = nullptr);
 
   /**
    * @brief Update the routing table (entity_id -> peer_name)
@@ -405,7 +405,7 @@ class AggregationManager {
 
  private:
   AggregationConfig config_;
-  rclcpp::Logger logger_;
+  log::Logger logger_;
   size_t static_peer_count_{0};  ///< Number of statically configured peers (not subject to max_discovered_peers)
   /// Whether a peer whose picture could not be refreshed can still be reached.
   ///

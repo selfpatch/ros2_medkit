@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/http_server.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
-#include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 
 namespace ros2_medkit_gateway {
@@ -38,14 +38,14 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     apply_thread_pool(*ssl_server_);
     apply_keep_alive(*ssl_server_);
 
-    RCLCPP_INFO(rclcpp::get_logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
-                tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
+    MEDKIT_LOG_INFO(log::Logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
+                    tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
     apply_thread_pool(*server_);
     apply_keep_alive(*server_);
-    RCLCPP_DEBUG(rclcpp::get_logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
+    MEDKIT_LOG_DEBUG(log::Logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
   }
 #else
   if (tls_config_.enabled) {
@@ -95,8 +95,7 @@ httplib::Server * HttpServerManager::get_server() {
 
 void HttpServerManager::listen(const std::string & host, int port) {
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
-  RCLCPP_INFO(rclcpp::get_logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(),
-              port);
+  MEDKIT_LOG_INFO(log::Logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(), port);
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled && ssl_server_) {
@@ -112,13 +111,13 @@ void HttpServerManager::listen(const std::string & host, int port) {
 void HttpServerManager::stop() {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled && ssl_server_ && ssl_server_->is_running()) {
-    RCLCPP_INFO(rclcpp::get_logger("http_server"), "Stopping HTTPS server...");
+    MEDKIT_LOG_INFO(log::Logger("http_server"), "Stopping HTTPS server...");
     ssl_server_->stop();
     return;
   }
 #endif
   if (server_ && server_->is_running()) {
-    RCLCPP_INFO(rclcpp::get_logger("http_server"), "Stopping HTTP server...");
+    MEDKIT_LOG_INFO(log::Logger("http_server"), "Stopping HTTP server...");
     server_->stop();
   }
 }
@@ -154,17 +153,17 @@ void HttpServerManager::configure_tls() {
   // to expose SSL_CTX for SSL_CTX_set_verify() with SSL_VERIFY_PEER
 
   if (tls_config_.min_version != "1.2") {
-    RCLCPP_WARN(rclcpp::get_logger("http_server"),
-                "min_version='%s' requested but cpp-httplib uses OpenSSL defaults (TLS 1.2+). "
-                "Custom min_version not enforced.",
-                tls_config_.min_version.c_str());
+    MEDKIT_LOG_WARN(log::Logger("http_server"),
+                    "min_version='%s' requested but cpp-httplib uses OpenSSL defaults (TLS 1.2+). "
+                    "Custom min_version not enforced.",
+                    tls_config_.min_version.c_str());
   }
 
   // Log TLS handshake failures for debugging
   ssl_server_->set_logger([](const httplib::Request & req, const httplib::Response & res) {
     if (res.status >= 400) {
-      RCLCPP_DEBUG(rclcpp::get_logger("http_server"), "Request %s %s -> %d", req.method.c_str(), req.path.c_str(),
-                   res.status);
+      MEDKIT_LOG_DEBUG(log::Logger("http_server"), "Request %s %s -> %d", req.method.c_str(), req.path.c_str(),
+                       res.status);
     }
   });
 }

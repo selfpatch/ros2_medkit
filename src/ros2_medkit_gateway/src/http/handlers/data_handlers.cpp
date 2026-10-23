@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/data_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -286,8 +287,8 @@ dto::XMedkitDataItem build_list_item_xmedkit(const std::string & topic_name, con
       type_info_obj["default_value"] = type_info.default_value;
       item_xm.type_info = type_info_obj;
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic_name.c_str(),
-                   e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic_name.c_str(),
+                       e.what());
     }
   }
   item_xm.ros2 = ros2_meta;
@@ -338,8 +339,8 @@ dto::DataValue build_read_response(const std::string & item_id, const std::strin
       type_info_obj["default_value"] = type_info.default_value;
       xm.type_info = type_info_obj;
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
-                   e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
+                       e.what());
     }
   }
   xm.ros2 = ros2_meta;
@@ -446,12 +447,12 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       // contract for exactly this case.
       return std::move(*result);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -615,7 +616,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
     // opaque DataListResult (consistent with the fault list route).
     return dto::DataListResult{dto::JsonWriter<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::write(response)};
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
     return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",
                                           json{{"details", e.what()}, {"entity_id", entity_id}}));
   }
@@ -663,12 +664,12 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
       }
       return std::move(*result);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -714,8 +715,8 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
     auto type_introspection = data_access_mgr->get_type_introspection();
     return build_read_response(addressed->item_id, full_topic_path, *r, entity_id, type_introspection);
   } catch (const TopicNotAvailableException & e) {
-    RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
+                     topic_name.c_str(), e.what());
     return tl::make_unexpected(make_error(404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
                                           json{{"entity_id", entity_id}, {"topic_name", topic_name}}));
   } catch (const ProviderErrorException & e) {
@@ -728,12 +729,12 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
     params["topic_name"] = topic_name;
     const std::string code = info.code.empty() ? std::string{ERR_INTERNAL_ERROR} : info.code;
     const int status = (info.http_status >= 400 && info.http_status < 600) ? info.http_status : 500;
-    RCLCPP_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
-                topic_name.c_str(), info.message.c_str(), info.http_status);
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
+                    topic_name.c_str(), info.message.c_str(), info.http_status);
     return tl::make_unexpected(make_error(status, code, info.message, std::move(params)));
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in get_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in get_data_item for entity '%s', topic '%s': %s",
+                     entity_id.c_str(), topic_name.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));
@@ -803,12 +804,12 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
       data_value.content = std::move(result->content);
       return data_value;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -874,8 +875,8 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     json publish_result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
     return build_write_response(addressed->item_id, full_topic_path, msg_type, entity_id, data, publish_result);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in put_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in put_data_item for entity '%s', topic '%s': %s",
+                     entity_id.c_str(), topic_name.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to publish to topic",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));
