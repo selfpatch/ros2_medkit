@@ -20,7 +20,7 @@ namespace ros2_medkit_gateway {
 
 class ThreadSafeEntityCache;
 class PluginManager;
-class DiscoveryManager;
+class EntityDiscovery;
 class ScriptManager;
 class FaultManager;
 class LockManager;
@@ -55,7 +55,7 @@ class GatewayServices {
 
   // Never null.
   virtual const ThreadSafeEntityCache & entity_cache() const = 0;
-  virtual DiscoveryManager * discovery() = 0;
+  virtual EntityDiscovery * discovery() = 0;
   virtual FaultManager * fault_manager() = 0;
   virtual ConfigurationManager * configuration_manager() = 0;
   virtual DataAccessManager * data_access_manager() = 0;

@@ -32,7 +32,7 @@ class NullGatewayServices final : public GatewayServices {
   PluginManager * plugin_manager() override {
     return nullptr;
   }
-  DiscoveryManager * discovery() override {
+  EntityDiscovery * discovery() override {
     return nullptr;
   }
   ScriptManager * script_manager() override {
