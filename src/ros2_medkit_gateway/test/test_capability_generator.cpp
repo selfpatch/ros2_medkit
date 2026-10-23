@@ -142,8 +142,9 @@ class CapabilityGeneratorTest : public ::testing::Test {
     route_registry_ = std::make_unique<RouteRegistry>();
     populate_test_routes(*route_registry_);
 
-    generator_ =
-        std::make_unique<CapabilityGenerator>(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+    generator_ = std::make_unique<CapabilityGenerator>(
+        *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+        node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
   }
 
   void TearDown() override {
@@ -758,7 +759,9 @@ TEST_F(CapabilityGeneratorTest, ByteBudgetEvictsBeforeTheEntryCountWould) {
   // A budget that fits one document of this size but not two.
   openapi::DocsCacheBounds bounds;
   bounds.max_bytes = first->size() + 64;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), bounds);
+  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+                              node_->get_parameter("server.host").as_string(),
+                              node_->get_parameter("server.port").as_int(), bounds);
 
   ASSERT_TRUE(bounded.generate_serialized("/areas").has_value());
   ASSERT_EQ(bounded.cache_entry_count(), 1u);
@@ -774,7 +777,9 @@ TEST_F(CapabilityGeneratorTest, ByteBudgetEvictsBeforeTheEntryCountWould) {
 TEST_F(CapabilityGeneratorTest, DocumentLargerThanTheBudgetIsServedUncached) {
   openapi::DocsCacheBounds bounds;
   bounds.max_bytes = 16;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), bounds);
+  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+                              node_->get_parameter("server.host").as_string(),
+                              node_->get_parameter("server.port").as_int(), bounds);
 
   auto document = bounded.generate_serialized("/areas");
   ASSERT_TRUE(document.has_value());
@@ -787,7 +792,9 @@ TEST_F(CapabilityGeneratorTest, DocumentLargerThanTheBudgetIsServedUncached) {
 TEST_F(CapabilityGeneratorTest, EntryCountEvictsWhenTheByteBudgetIsSlack) {
   openapi::DocsCacheBounds bounds;
   bounds.max_entries = 2;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), bounds);
+  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+                              node_->get_parameter("server.host").as_string(),
+                              node_->get_parameter("server.port").as_int(), bounds);
 
   ASSERT_TRUE(bounded.generate_serialized("/areas").has_value());
   ASSERT_TRUE(bounded.generate_serialized("/apps").has_value());

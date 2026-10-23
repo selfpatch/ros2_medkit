@@ -14,10 +14,23 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace ros2_medkit_gateway {
+
+/// Raw configuration values the REST layer reads. Clamping happens where the value is used.
+struct RestConfig {
+  int64_t http_thread_pool_size{2};
+  int64_t keep_alive_timeout_sec{2};
+  int64_t sse_keepalive_interval_sec{30};
+  int64_t sse_max_duration_sec{3600};
+  bool docs_enabled{true};
+  std::string server_host{"localhost"};
+  int64_t server_port{8080};
+  std::string fault_events_topic;
+};
 
 /**
  * @brief TLS/HTTPS configuration settings

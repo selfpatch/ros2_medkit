@@ -16,6 +16,7 @@
 
 #include <httplib.h>
 
+#include <cstdint>
 #include <memory>
 
 #include <nlohmann/json.hpp>
@@ -47,7 +48,8 @@ namespace handlers {
 class DocsHandlers {
  public:
   DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-               const openapi::RouteRegistry * route_registry = nullptr);
+               const openapi::RouteRegistry * route_registry, bool docs_enabled, std::string server_host,
+               int64_t server_port);
   ~DocsHandlers();
 
   /// GET /docs - Root capability description.

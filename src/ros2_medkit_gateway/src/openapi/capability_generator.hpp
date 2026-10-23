@@ -71,7 +71,8 @@ struct DocsCacheBounds {
 class CapabilityGenerator {
  public:
   CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-                      const RouteRegistry * route_registry = nullptr, DocsCacheBounds bounds = DocsCacheBounds{});
+                      const RouteRegistry * route_registry, std::string server_host, int64_t server_port,
+                      DocsCacheBounds bounds = DocsCacheBounds{});
 
   /// Number of documents currently cached.
   size_t cache_entry_count() const;
@@ -236,6 +237,8 @@ class CapabilityGenerator {
   PluginManager * plugin_mgr_;
   const RouteRegistry * route_registry_;
   SchemaBuilder schema_builder_;
+  std::string server_host_;
+  int64_t server_port_;
   DocsCacheBounds bounds_;
 
   // Generation-based document cache - invalidated when entity cache changes.

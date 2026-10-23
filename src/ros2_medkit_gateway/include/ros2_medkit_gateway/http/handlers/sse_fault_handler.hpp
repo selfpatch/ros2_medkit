@@ -81,16 +81,19 @@ class SSEFaultHandler {
    * @brief Construct SSE fault handler with shared context.
    * @param ctx The shared handler context
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
+   * @param fault_events_topic Fully qualified topic the FaultManager publishes fault events on
    */
-  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker);
+  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
+                  const std::string & fault_events_topic);
   /**
    * @brief Test-only constructor that overrides the keepalive interval.
    * @param ctx The shared handler context
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
    * @param keepalive_interval Must be positive; non-positive values fall back to the 30s default.
+   * @param fault_events_topic Fully qualified topic the FaultManager publishes fault events on
    */
   SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                  std::chrono::milliseconds keepalive_interval);
+                  std::chrono::milliseconds keepalive_interval, const std::string & fault_events_topic);
 
   /// Destructor. Signals shutdown, then blocks until every stream closure has
   /// been destroyed: the per-stream unregister deleter locks queue_mutex_ and

@@ -84,7 +84,7 @@ static_assert(std::is_constructible_v<httplib::Server::ExceptionHandler, Httplib
 
 RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
                        const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
-                       const TlsConfig & tls_config)
+                       const RestConfig & rest_config, const TlsConfig & tls_config)
   : node_(node)
   , host_(host)
   , port_(port)
@@ -104,13 +104,13 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // (default 2s) to recover workers quickly while retaining reuse.
   // Both clamps report when they fire: the pool that ends up serving requests
   // must be traceable to the config file that asked for it.
-  const auto requested_pool_size = node_->get_parameter("server.http_thread_pool_size").as_int();
+  const auto requested_pool_size = rest_config.http_thread_pool_size;
   const auto http_thread_pool_size = clamp_thread_count(requested_pool_size, 1, 1024);
   if (static_cast<int64_t>(http_thread_pool_size) != requested_pool_size) {
     MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.http_thread_pool_size %" PRId64 " clamped to %zu",
                     requested_pool_size, http_thread_pool_size);
   }
-  const auto requested_keep_alive = node_->get_parameter("server.keep_alive_timeout_sec").as_int();
+  const auto requested_keep_alive = rest_config.keep_alive_timeout_sec;
   const auto keep_alive_timeout_sec = clamp_keep_alive_timeout(requested_keep_alive, 1, 3600);
   if (static_cast<int64_t>(keep_alive_timeout_sec) != requested_keep_alive) {
     MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.keep_alive_timeout_sec %" PRId64 " clamped to %" PRId64,
@@ -179,8 +179,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // HealthHandlers as a null pointer and silently omit the field.
   sse_client_tracker_ = node_->get_sse_client_tracker();
 
-  health_handlers_ =
-      std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get(), sse_client_tracker_);
+  health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get(),
+                                                                sse_client_tracker_, rest_config.docs_enabled);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
   lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(
@@ -195,20 +195,20 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // disagree with no way to see it from outside.
   constexpr int64_t kMinKeepaliveSec = 1;
   constexpr int64_t kMaxKeepaliveSec = 3600;
-  const int64_t keepalive_raw = node_->get_parameter("sse.keepalive_interval_sec").as_int();
+  const int64_t keepalive_raw = rest_config.sse_keepalive_interval_sec;
   const int64_t keepalive_used = std::clamp<int64_t>(keepalive_raw, kMinKeepaliveSec, kMaxKeepaliveSec);
   if (keepalive_used != keepalive_raw) {
     MEDKIT_LOG_WARN(log::Logger(node_->get_logger().get_name()),
                     "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64, keepalive_raw, keepalive_used);
   }
-  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_,
-                                                                   std::chrono::seconds(keepalive_used));
+  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(
+      *handler_ctx_, sse_client_tracker_, std::chrono::seconds(keepalive_used), rest_config.fault_events_topic);
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
   // Validated as int64 before narrowing: narrowing first wraps a value above
   // INT_MAX into a small positive one that passes the check, so 4294967300
   // would silently cap every subscription at 4 seconds. The warning names the
   // requested value, otherwise the operator cannot tell which value was refused.
-  const int64_t max_duration_raw = node_->get_parameter("sse.max_duration_sec").as_int();
+  const int64_t max_duration_raw = rest_config.sse_max_duration_sec;
   int max_duration_sec = 3600;
   if (max_duration_raw < 1 || max_duration_raw > std::numeric_limits<int>::max()) {
     MEDKIT_LOG_WARN(log::Logger("rest_server"),
@@ -232,7 +232,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   }
 
   docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
-                                                            route_registry_.get());
+                                                            route_registry_.get(), rest_config.docs_enabled,
+                                                            rest_config.server_host, rest_config.server_port);
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();

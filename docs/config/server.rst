@@ -16,6 +16,9 @@ The gateway can be configured via:
 Out-of-range values
 -------------------
 
+Every ``server.*``, ``sse.*`` and ``docs.*`` parameter is read once, when the
+gateway starts. A later ``ros2 param set`` does not change the running server.
+
 Where a parameter documents a valid range, that range is enforced when the value
 is read at startup, and an out-of-range value is never accepted in silence. What
 happens next differs by parameter, in one of three ways.
