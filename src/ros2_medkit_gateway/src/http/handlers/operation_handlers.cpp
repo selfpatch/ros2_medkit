@@ -380,6 +380,8 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
     try {
       if (auto type_info = type_schemas.service_type_info(svc.type)) {
         x_medkit.type_info = *type_info;
+      } else {
+        MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s'", svc.type.c_str());
       }
     } catch (const std::exception & e) {
       MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
@@ -405,6 +407,8 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
     try {
       if (auto type_info = type_schemas.action_type_info(act.type)) {
         x_medkit.type_info = *type_info;
+      } else {
+        MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s'", act.type.c_str());
       }
     } catch (const std::exception & e) {
       MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),

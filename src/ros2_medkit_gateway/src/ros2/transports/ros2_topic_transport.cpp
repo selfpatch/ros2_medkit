@@ -157,6 +157,9 @@ TopicSample Ros2TopicTransport::sample(const std::string & topic_name, std::chro
   if (!res.message_type.empty()) {
     if (auto info = schemas_.type_info(res.message_type)) {
       out.type_info = std::move(*info);
+    } else {
+      RCLCPP_DEBUG(node_->get_logger(), "Could not get type info for topic '%s' (type '%s')", topic_name.c_str(),
+                   res.message_type.c_str());
     }
   }
 

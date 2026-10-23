@@ -282,6 +282,9 @@ dto::XMedkitDataItem build_list_item_xmedkit(const std::string & topic_name, con
     ros2_meta.type = topic_type;
     if (auto type_info = type_schemas.type_info(topic_type)) {
       item_xm.type_info = std::move(*type_info);
+    } else {
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s' (type '%s')",
+                       topic_name.c_str(), topic_type.c_str());
     }
   }
   item_xm.ros2 = ros2_meta;
@@ -327,6 +330,9 @@ dto::DataValue build_read_response(const std::string & item_id, const std::strin
     ros2_meta.type = sample.message_type;
     if (auto type_info = type_schemas.type_info(sample.message_type)) {
       xm.type_info = std::move(*type_info);
+    } else {
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s' (type '%s')",
+                       full_topic_path.c_str(), sample.message_type.c_str());
     }
   }
   xm.ros2 = ros2_meta;
