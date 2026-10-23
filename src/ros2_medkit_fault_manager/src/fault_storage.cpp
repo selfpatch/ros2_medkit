@@ -88,9 +88,9 @@ ros2_medkit_msgs::msg::Fault FaultState::to_msg() const {
   msg.fault_code = fault_code;
   msg.severity = severity;
   msg.description = description;
-  msg.first_occurred = first_occurred;
-  msg.last_occurred = last_occurred;
-  msg.last_passed = last_passed_time;
+  msg.first_occurred = rclcpp::Time(first_occurred_ns, RCL_SYSTEM_TIME);
+  msg.last_occurred = rclcpp::Time(last_occurred_ns, RCL_SYSTEM_TIME);
+  msg.last_passed = rclcpp::Time(last_passed_ns, RCL_SYSTEM_TIME);
   msg.occurrence_count = occurrence_count;
   msg.status = status;
 
@@ -121,7 +121,7 @@ void InMemoryFaultStorage::update_status(FaultState & state, const DebounceConfi
 
 bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                               const std::string & description, const std::string & source_id,
-                                              const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                              int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
@@ -137,9 +137,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     state.fault_code = fault_code;
     state.severity = severity;
     state.description = description;
-    state.first_occurred = timestamp;
-    state.last_occurred = timestamp;
-    state.last_failed_time = timestamp;
+    state.first_occurred_ns = timestamp_ns;
+    state.last_occurred_ns = timestamp_ns;
+    state.last_failed_ns = timestamp_ns;
     state.occurrence_count = 1;
     state.debounce_counter = -1;  // First FAILED event
     state.reporting_sources.insert(source_id);
@@ -153,7 +153,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     }
 
     if (is_near_miss(true, state.status)) {
-      record_near_miss(state, config, severity, source_id, timestamp);
+      record_near_miss(state, config, severity, source_id, timestamp_ns);
     }
 
     faults_.emplace(fault_code, std::move(state));
@@ -172,9 +172,9 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     // FAILED event reactivates the fault - reset debounce counter and first-seen:
     // this is a new outage cycle, not a continuation of the one that just cleared.
     state.debounce_counter = -1;
-    state.first_occurred = timestamp;
-    state.last_failed_time = timestamp;
-    state.last_occurred = timestamp;
+    state.first_occurred_ns = timestamp_ns;
+    state.last_failed_ns = timestamp_ns;
+    state.last_occurred_ns = timestamp_ns;
     state.reporting_sources.insert(source_id);
     if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
       ++state.occurrence_count;
@@ -192,7 +192,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       update_status(state, config);
     }
     if (is_near_miss(true, state.status)) {
-      record_near_miss(state, config, severity, source_id, timestamp);
+      record_near_miss(state, config, severity, source_id, timestamp_ns);
     }
     return true;  // Reactivation treated as new occurrence for event publishing
   }
@@ -205,11 +205,11 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   state.debounce_counter = clamp_debounce_counter(state.debounce_counter, config);
 
   if (is_failed) {
-    // last_occurred tracks occurrences only. A PASSED event is the fault ENDING, not
+    // last_occurred_ns tracks occurrences only. A PASSED event is the fault ENDING, not
     // occurring; bumping it there makes a long-stale CONFIRMED fault look freshly
-    // active to operators. The PASSED instant is kept in last_passed_time.
-    state.last_occurred = timestamp;
-    state.last_failed_time = timestamp;
+    // active to operators. The PASSED instant is kept in last_passed_ns.
+    state.last_occurred_ns = timestamp_ns;
+    state.last_failed_ns = timestamp_ns;
 
     // occurrence_count is NOT bumped here: this is a still-active fault being
     // re-reported (level-triggered poller, or debounce building toward
@@ -240,7 +240,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     }
   } else {
     // PASSED event
-    state.last_passed_time = timestamp;
+    state.last_passed_ns = timestamp_ns;
 
     // Increment towards healing, clamped to the thresholds (a heal heartbeat can't run the
     // counter off to INT32_MAX and then delay a real fault from confirming).
@@ -251,7 +251,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
   update_status(state, config);
 
   if (is_near_miss(is_failed, state.status)) {
-    record_near_miss(state, config, severity, source_id, timestamp);
+    record_near_miss(state, config, severity, source_id, timestamp_ns);
   }
 
   return false;
@@ -346,7 +346,7 @@ bool InMemoryFaultStorage::contains(const std::string & fault_code) const {
   return faults_.find(fault_code) != faults_.end();
 }
 
-std::vector<std::string> InMemoryFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<std::string> InMemoryFaultStorage::check_time_based_confirmation(int64_t now_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<std::string> confirmed;
@@ -354,12 +354,12 @@ std::vector<std::string> InMemoryFaultStorage::check_time_based_confirmation(con
     return confirmed;  // Time-based confirmation disabled
   }
 
-  const double threshold_ns = config_.auto_confirm_after_sec * 1e9;
+  const int64_t threshold_ns = std::llround(config_.auto_confirm_after_sec * 1e9);
 
   for (auto & [code, state] : faults_) {
     if (state.status == ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED) {
-      const int64_t age_ns = (current_time - state.last_failed_time).nanoseconds();
-      if (static_cast<double>(age_ns) >= threshold_ns) {
+      const int64_t age_ns = now_ns - state.last_failed_ns;
+      if (age_ns >= threshold_ns) {
         state.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
         confirmed.push_back(code);
       }
@@ -497,12 +497,12 @@ std::optional<FreezeFrameData> InMemoryFaultStorage::get_freeze_frame(const std:
 }
 
 void InMemoryFaultStorage::record_near_miss(const FaultState & state, const DebounceConfig & config, uint8_t severity,
-                                            const std::string & source_id, const rclcpp::Time & timestamp) {
+                                            const std::string & source_id, int64_t timestamp_ns) {
   auto & series = near_misses_[state.fault_code];
 
   NearMissRecord record;
   record.fault_code = state.fault_code;
-  record.occurred_at_ns = timestamp.nanoseconds();
+  record.occurred_at_ns = timestamp_ns;
   record.debounce_counter = state.debounce_counter;
   record.confirmation_threshold = config.confirmation_threshold;
   record.severity = severity;

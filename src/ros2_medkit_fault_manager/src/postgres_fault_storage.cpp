@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -539,7 +540,7 @@ std::string PgFaultStorage::serialize_json_array(const std::vector<std::string> 
 
 bool PgFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                         const std::string & description, const std::string & source_id,
-                                        const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                        int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Only a FAILED report can write two rows (fault row and near-miss row) and
@@ -548,15 +549,14 @@ bool PgFaultStorage::report_fault_event(const std::string & fault_code, uint8_t 
   // advance it a second time and the near miss it retried for would still be
   // missing from the series. run_in_transaction commits both rows together.
   return run_in_transaction("report_fault_event", [&](pqxx::work & tx) {
-    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config, tx);
+    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp_ns, config,
+                                     tx);
   });
 }
 
 bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                                const std::string & description, const std::string & source_id,
-                                               const rclcpp::Time & timestamp, const DebounceConfig & config,
-                                               pqxx::work & tx) {
-  int64_t timestamp_ns = timestamp.nanoseconds();
+                                               int64_t timestamp_ns, const DebounceConfig & config, pqxx::work & tx) {
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   // No row lock needed: mutex_ serializes every call on this connection, and one database belongs to exactly one
@@ -742,12 +742,12 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::list_faults(bool filte
       fault.fault_code = r["fault_code"].as<std::string>();
       fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
       fault.description = r["description"].as<std::string>();
-      fault.first_occurred = rclcpp::Time(r["first_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
-      fault.last_occurred = rclcpp::Time(r["last_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+      fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
+      fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
       fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
       fault.status = r["status"].as<std::string>();
       fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed = rclcpp::Time(r["last_passed_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+      fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
       result.push_back(fault);
     }
     return result;
@@ -770,12 +770,12 @@ std::optional<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_fault(const std:
     fault.fault_code = r["fault_code"].as<std::string>();
     fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
     fault.description = r["description"].as<std::string>();
-    fault.first_occurred = rclcpp::Time(r["first_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
-    fault.last_occurred = rclcpp::Time(r["last_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+    fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
+    fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
     fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
     fault.status = r["status"].as<std::string>();
     fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-    fault.last_passed = rclcpp::Time(r["last_passed_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+    fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
     return fault;
   });
 }
@@ -850,15 +850,13 @@ bool PgFaultStorage::contains(const std::string & fault_code) const {
   });
 }
 
-std::vector<std::string> PgFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<std::string> PgFaultStorage::check_time_based_confirmation(int64_t now_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (config_.auto_confirm_after_sec <= 0.0) {
     return {};  // Time-based confirmation disabled
   }
-
-  const int64_t current_ns = current_time.nanoseconds();
-  const int64_t cutoff_ns = current_ns - static_cast<int64_t>(config_.auto_confirm_after_sec * 1e9);
+  const int64_t cutoff_ns = now_ns - std::llround(config_.auto_confirm_after_sec * 1e9);
 
   return run_in_transaction("check_time_based_confirmation", [&](pqxx::work & tx) {
     // Collect the codes that will flip first so the caller can audit each one. The
@@ -877,8 +875,8 @@ std::vector<std::string> PgFaultStorage::check_time_based_confirmation(const rcl
       execute(tx,
               "UPDATE faults SET status = $1, confirmed_at_ns = $2 WHERE status = $3 AND last_failed_ns <= $4 "
               "AND last_failed_ns > 0",
-              ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED, current_ns,
-              ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED, cutoff_ns);
+              ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED, now_ns, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED,
+              cutoff_ns);
     }
     return confirmed;
   });
@@ -1484,12 +1482,12 @@ std::vector<ros2_medkit_msgs::msg::Fault> PgFaultStorage::get_all_faults() const
       fault.fault_code = r["fault_code"].as<std::string>();
       fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
       fault.description = r["description"].as<std::string>();
-      fault.first_occurred = rclcpp::Time(r["first_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
-      fault.last_occurred = rclcpp::Time(r["last_occurred_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+      fault.first_occurred = ns_to_time_msg(r["first_occurred_ns"].as<int64_t>());
+      fault.last_occurred = ns_to_time_msg(r["last_occurred_ns"].as<int64_t>());
       fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
       fault.status = r["status"].as<std::string>();
       fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed = rclcpp::Time(r["last_passed_ns"].as<int64_t>(), RCL_SYSTEM_TIME);
+      fault.last_passed = ns_to_time_msg(r["last_passed_ns"].as<int64_t>());
       result.push_back(fault);
     }
     return result;

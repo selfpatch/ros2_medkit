@@ -1182,8 +1182,8 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
 
   rclcpp::Clock clock;
   storage.report_fault_event("ACK_MID_ROLL", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                             ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "mid roll", "/node", clock.now(),
-                             ros2_medkit_fault_manager::DebounceConfig{});
+                             ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "mid roll", "/node",
+                             clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
@@ -1487,11 +1487,11 @@ TEST_F(RosbagCaptureIntegrationTest, AttachedFaultTopicsJoinTheEntityScopedRecor
 
   rclcpp::Clock clock;
   storage_->report_fault_event("FAULT_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault a", "/scope_source_a", clock.now(),
-                               ros2_medkit_fault_manager::DebounceConfig{});
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault a", "/scope_source_a",
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   storage_->report_fault_event("FAULT_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault b", "/scope_source_b", clock.now(),
-                               ros2_medkit_fault_manager::DebounceConfig{});
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault b", "/scope_source_b",
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -1860,10 +1860,10 @@ TEST_F(RosbagCaptureIntegrationTest, EntityScopedPostFaultOnlyBagCarriesOnlyTheF
   rclcpp::Clock clock;
   storage_->report_fault_event("SCOPED_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scoped a", "/boundary_scope_source_a",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   storage_->report_fault_event("SCOPED_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scoped b", "/boundary_scope_source_b",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -1926,10 +1926,10 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   rclcpp::Clock clock;
   storage_->report_fault_event("SCOPE_RACE_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scope race a", "/scope_race_source_a",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   storage_->report_fault_event("SCOPE_RACE_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scope race b", "/scope_race_source_b",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -2290,17 +2290,17 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultAttachingToABoundaryRecordingWidensIt
 
   rclcpp::Clock clock;
   storage_->report_fault_event("WIDEN_C", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c", "/widen_source_c", clock.now(),
-                               ros2_medkit_fault_manager::DebounceConfig{});
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c", "/widen_source_c",
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   storage_->report_fault_event("WIDEN_D", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen d", "/widen_source_d", clock.now(),
-                               ros2_medkit_fault_manager::DebounceConfig{});
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen d", "/widen_source_d",
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   // The fault that opens the boundary recording needs a reported source too, or its
   // scope resolves to nothing and the recording degrades to writing every topic -
   // which is what the bystander assertion below catches.
   storage_->report_fault_event("WIDEN_C2", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c2", "/widen_source_c", clock.now(),
-                               ros2_medkit_fault_manager::DebounceConfig{});
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c2", "/widen_source_c",
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -2450,7 +2450,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultClearedWhileItsBagWasOpeningGetsNoRow
   rclcpp::Clock clock;
   storage_->report_fault_event("CLEARED_WHILE_OPENING", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cleared while opening", "/test_source",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -2485,10 +2485,10 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
   const ros2_medkit_fault_manager::DebounceConfig debounce{};
   storage_->report_fault_event("CAP_PRIMARY", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap primary", "/cap_primary_source",
-                               clock.now(), debounce);
+                               clock.now().nanoseconds(), debounce);
   storage_->report_fault_event("CAP_LATE", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap late", "/cap_late_source",
-                               clock.now(), debounce);
+                               clock.now().nanoseconds(), debounce);
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -2510,7 +2510,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
     const std::string filler = "CAP_FILLER_" + std::string(i < 10 ? "0" : "") + std::to_string(i);
     storage_->report_fault_event(filler, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                  ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap filler", "/cap_primary_source",
-                                 clock.now(), debounce);
+                                 clock.now().nanoseconds(), debounce);
     capture.on_fault_confirmed(filler);
   }
   capture.on_fault_confirmed("CAP_LATE");
@@ -2572,7 +2572,7 @@ TEST_F(RosbagCaptureIntegrationTest, ReconfirmingTheRecordingsOwnFaultResolvesNo
   rclcpp::Clock clock;
   storage_ptr->report_fault_event("RECONFIRMED", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
                                   ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "reconfirmed", "/reconfirm_source",
-                                  clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                                  clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_ptr, rosbag_config, snapshot_config);
   capture.start();

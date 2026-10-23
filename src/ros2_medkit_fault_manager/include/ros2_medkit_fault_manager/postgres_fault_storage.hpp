@@ -60,8 +60,8 @@ class PgFaultStorage : public FaultStorage {
   DebounceConfig get_debounce_config() const override;
 
   bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                          const std::string & description, const std::string & source_id,
-                          const rclcpp::Time & timestamp, const DebounceConfig & config) override;
+                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
+                          const DebounceConfig & config) override;
 
   std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
                                                         const std::vector<std::string> & statuses) const override;
@@ -74,7 +74,7 @@ class PgFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
-  std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
+  std::vector<std::string> check_time_based_confirmation(int64_t now_ns) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
   void set_retain_snapshots_on_clear(bool retain) override;
@@ -150,8 +150,8 @@ class PgFaultStorage : public FaultStorage {
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and supplies the transaction, so the fault row and any near-miss row commit together.
   bool report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                                 const std::string & description, const std::string & source_id,
-                                 const rclcpp::Time & timestamp, const DebounceConfig & config, pqxx::work & tx);
+                                 const std::string & description, const std::string & source_id, int64_t timestamp_ns,
+                                 const DebounceConfig & config, pqxx::work & tx);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.

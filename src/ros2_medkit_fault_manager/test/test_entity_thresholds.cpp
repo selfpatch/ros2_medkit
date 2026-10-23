@@ -286,7 +286,7 @@ class PerEntityStorageTest : public ::testing::Test {
 TEST_F(PerEntityStorageTest, LidarFaultConfirmsImmediately) {
   auto ts = clock_.now();
   storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar failure",
-                              "/sensors/lidar", ts, lidar_config_);
+                              "/sensors/lidar", ts.nanoseconds(), lidar_config_);
 
   auto fault = storage_.get_fault("LIDAR_FAIL");
   ASSERT_TRUE(fault.has_value());
@@ -299,7 +299,7 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
 
   // First event: counter = -1, threshold = -5, so PREFAILED
   storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Motor hot",
-                              "/powertrain/motor_left", ts, motor_config_);
+                              "/powertrain/motor_left", ts.nanoseconds(), motor_config_);
 
   auto fault = storage_.get_fault("MOTOR_OVERHEAT");
   ASSERT_TRUE(fault.has_value());
@@ -308,14 +308,14 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
   // Events 2-4: still PREFAILED (counter = -2, -3, -4)
   for (int i = 0; i < 3; ++i) {
     storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "",
-                                "/powertrain/motor_left", clock_.now(), motor_config_);
+                                "/powertrain/motor_left", clock_.now().nanoseconds(), motor_config_);
   }
   fault = storage_.get_fault("MOTOR_OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);
 
   // Event 5: counter = -5, meets threshold -> CONFIRMED
   storage_.report_fault_event("MOTOR_OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "",
-                              "/powertrain/motor_left", clock_.now(), motor_config_);
+                              "/powertrain/motor_left", clock_.now().nanoseconds(), motor_config_);
   fault = storage_.get_fault("MOTOR_OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
@@ -324,7 +324,7 @@ TEST_F(PerEntityStorageTest, MotorFaultNeedsDebouncing) {
 TEST_F(PerEntityStorageTest, UnknownEntityUsesGlobalConfig) {
   auto ts = clock_.now();
   storage_.report_fault_event("UNKNOWN_FAULT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Unknown",
-                              "/some/unknown/entity", ts, global_);
+                              "/some/unknown/entity", ts.nanoseconds(), global_);
 
   auto fault = storage_.get_fault("UNKNOWN_FAULT");
   ASSERT_TRUE(fault.has_value());
@@ -337,14 +337,14 @@ TEST_F(PerEntityStorageTest, DifferentEntitiesSameFaultCode) {
 
   // Motor reports with motor config (debounced)
   storage_.report_fault_event("OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Motor overheat",
-                              "/powertrain/motor_left", ts, motor_config_);
+                              "/powertrain/motor_left", ts.nanoseconds(), motor_config_);
   auto fault = storage_.get_fault("OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Motor needs 5 events
 
   // Lidar reports same fault_code with lidar config (threshold=-1)
   // Counter is now -2, lidar threshold is -1, -2 <= -1 -> CONFIRMED
   storage_.report_fault_event("OVERHEAT", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar overheat",
-                              "/sensors/lidar", clock_.now(), lidar_config_);
+                              "/sensors/lidar", clock_.now().nanoseconds(), lidar_config_);
   fault = storage_.get_fault("OVERHEAT");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);  // Lidar config confirms at -1, counter is -2
 }
@@ -355,16 +355,16 @@ TEST_F(PerEntityStorageTest, LidarHealingWithThreshold1) {
 
   // Confirm fault
   storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Lidar failure",
-                              "/sensors/lidar", ts, lidar_config_);
+                              "/sensors/lidar", ts.nanoseconds(), lidar_config_);
   auto fault = storage_.get_fault("LIDAR_FAIL");
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 
   // One PASSED event should heal (healing_threshold=1 for lidar)
   // Counter goes from -1 to 0 (no status change at 0) then +1 -> healed
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar", clock_.now(),
-                              lidar_config_);
-  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar", clock_.now(),
-                              lidar_config_);
+  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar",
+                              clock_.now().nanoseconds(), lidar_config_);
+  storage_.report_fault_event("LIDAR_FAIL", ReportFault::Request::EVENT_PASSED, 0, "", "/sensors/lidar",
+                              clock_.now().nanoseconds(), lidar_config_);
   fault = storage_.get_fault("LIDAR_FAIL");
   EXPECT_EQ(fault->status, Fault::STATUS_HEALED);
 }
@@ -374,7 +374,7 @@ TEST_F(PerEntityStorageTest, BackwardCompatibleWithoutResolver) {
   // When no per-entity config is used, passing global config gives same behavior as before
   auto ts = clock_.now();
   storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
-                              ts, global_);
+                              ts.nanoseconds(), global_);
 
   auto fault = storage_.get_fault("FAULT_1");
   ASSERT_TRUE(fault.has_value());

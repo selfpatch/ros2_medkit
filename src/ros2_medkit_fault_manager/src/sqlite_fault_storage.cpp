@@ -665,7 +665,7 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
 
 bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                             const std::string & description, const std::string & source_id,
-                                            const rclcpp::Time & timestamp, const DebounceConfig & config) {
+                                            int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Only a FAILED report can write two rows, and only those two have to land together: written as
@@ -678,13 +678,13 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
   // heartbeat - including one that turns out to write nothing at all - contend for that lock and
   // fail with SQLITE_BUSY where before it could not.
   if (event_type != EventType::EVENT_FAILED) {
-    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config);
+    return report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp_ns, config);
   }
 
   exec_or_throw("BEGIN IMMEDIATE");
   try {
     const bool is_new_occurrence =
-        report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp, config);
+        report_fault_event_locked(fault_code, event_type, severity, description, source_id, timestamp_ns, config);
     exec_or_throw("COMMIT");
     return is_new_occurrence;
   } catch (...) {
@@ -695,8 +695,7 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
 
 bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_code, uint8_t event_type, uint8_t severity,
                                                    const std::string & description, const std::string & source_id,
-                                                   const rclcpp::Time & timestamp, const DebounceConfig & config) {
-  int64_t timestamp_ns = timestamp.nanoseconds();
+                                                   int64_t timestamp_ns, const DebounceConfig & config) {
   const bool is_failed = (event_type == EventType::EVENT_FAILED);
 
   // Check if fault exists
@@ -943,13 +942,13 @@ SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
 
     int64_t first_ns = stmt.column_int64(3);
     int64_t last_ns = stmt.column_int64(4);
-    fault.first_occurred = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
-    fault.last_occurred = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
+    fault.first_occurred = ns_to_time_msg(first_ns);
+    fault.last_occurred = ns_to_time_msg(last_ns);
 
     fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
     fault.status = stmt.column_text(6);
     fault.reporting_sources = parse_json_array(stmt.column_text(7));
-    fault.last_passed = rclcpp::Time(stmt.column_int64(8), RCL_SYSTEM_TIME);
+    fault.last_passed = ns_to_time_msg(stmt.column_int64(8));
 
     result.push_back(fault);
   }
@@ -976,13 +975,13 @@ std::optional<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_fault(const 
 
   int64_t first_ns = stmt.column_int64(3);
   int64_t last_ns = stmt.column_int64(4);
-  fault.first_occurred = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
-  fault.last_occurred = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
+  fault.first_occurred = ns_to_time_msg(first_ns);
+  fault.last_occurred = ns_to_time_msg(last_ns);
 
   fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
   fault.status = stmt.column_text(6);
   fault.reporting_sources = parse_json_array(stmt.column_text(7));
-  fault.last_passed = rclcpp::Time(stmt.column_int64(8), RCL_SYSTEM_TIME);
+  fault.last_passed = ns_to_time_msg(stmt.column_int64(8));
 
   return fault;
 }
@@ -1092,17 +1091,15 @@ bool SqliteFaultStorage::contains(const std::string & fault_code) const {
   return stmt.step() == SQLITE_ROW;
 }
 
-std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(const rclcpp::Time & current_time) {
+std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(int64_t now_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<std::string> confirmed;
   if (config_.auto_confirm_after_sec <= 0.0) {
     return confirmed;  // Time-based confirmation disabled
   }
-
-  int64_t current_ns = current_time.nanoseconds();
-  int64_t threshold_ns = static_cast<int64_t>(config_.auto_confirm_after_sec * 1e9);
-  int64_t cutoff_ns = current_ns - threshold_ns;
+  int64_t threshold_ns = std::llround(config_.auto_confirm_after_sec * 1e9);
+  int64_t cutoff_ns = now_ns - threshold_ns;
 
   // Collect the codes that will flip first so the caller can audit each one. The
   // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
@@ -1125,7 +1122,7 @@ std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(const
                               "UPDATE faults SET status = ?, confirmed_at_ns = ? "
                               "WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
   update_stmt.bind_text(1, ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED);
-  update_stmt.bind_int64(2, current_ns);
+  update_stmt.bind_int64(2, now_ns);
   update_stmt.bind_text(3, ros2_medkit_msgs::msg::Fault::STATUS_PREFAILED);
   update_stmt.bind_int64(4, cutoff_ns);
 
@@ -1864,13 +1861,13 @@ std::vector<ros2_medkit_msgs::msg::Fault> SqliteFaultStorage::get_all_faults() c
 
     int64_t first_ns = stmt.column_int64(3);
     int64_t last_ns = stmt.column_int64(4);
-    fault.first_occurred = rclcpp::Time(first_ns, RCL_SYSTEM_TIME);
-    fault.last_occurred = rclcpp::Time(last_ns, RCL_SYSTEM_TIME);
+    fault.first_occurred = ns_to_time_msg(first_ns);
+    fault.last_occurred = ns_to_time_msg(last_ns);
 
     fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
     fault.status = stmt.column_text(6);
     fault.reporting_sources = parse_json_array(stmt.column_text(7));
-    fault.last_passed = rclcpp::Time(stmt.column_int64(8), RCL_SYSTEM_TIME);
+    fault.last_passed = ns_to_time_msg(stmt.column_int64(8));
 
     result.push_back(fault);
   }

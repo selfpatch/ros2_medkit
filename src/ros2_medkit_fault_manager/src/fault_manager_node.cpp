@@ -157,8 +157,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   // switches itself off with nothing logged. clang-tidy's
   // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts
   // that back - leave this form alone.
-  // Upper bound as well as lower: the SQLite backend evaluates the window as
-  // static_cast<int64_t>(auto_confirm_after_sec * 1e9), which is undefined once
+  // Upper bound as well as lower: the SQLite and PostgreSQL backends evaluate the window as
+  // std::llround(auto_confirm_after_sec * 1e9), which is undefined once
   // the product leaves the int64 range.
   constexpr double kMaxAutoConfirmSec = 9.0e9;
   if (!(std::isfinite(auto_confirm_after_sec_) && auto_confirm_after_sec_ >= 0.0 &&
@@ -381,7 +381,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     });
     if (!reclassified.empty()) {
       if (audit_log_) {
-        const int64_t reclassified_at_ns = get_wall_clock_time().nanoseconds();
+        const int64_t reclassified_at_ns = get_wall_clock_ns();
         for (const auto & fault_code : reclassified) {
           auto fault = storage_->get_fault(fault_code);
           if (fault) {
@@ -519,7 +519,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
       std::vector<std::string> confirmed = {};
       try {
-        confirmed = storage_->check_time_based_confirmation(get_wall_clock_time());
+        confirmed = storage_->check_time_based_confirmation(get_wall_clock_ns());
       } catch (const FaultStorage::IgnorableConnectionException & e) {
         RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
         return;
@@ -529,7 +529,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
       }
       // Audit every timer-driven PREFAILED->CONFIRMED transition. Without this the
       // confirmations are invisible to the audit log's verify().
-      const int64_t confirmed_at_ns = get_wall_clock_time().nanoseconds();
+      const int64_t confirmed_at_ns = get_wall_clock_ns();
       for (const auto & fault_code : confirmed) {
         std::optional<ros2_medkit_msgs::msg::Fault> fault;
         try {
@@ -595,7 +595,7 @@ FaultManagerNode::~FaultManagerNode() {
       marker.status = "INACTIVE";
       marker.source_id = "fault_manager";
       marker.description = "audit logging deactivated";
-      marker.occurred_at_ns = get_wall_clock_time().nanoseconds();
+      marker.occurred_at_ns = get_wall_clock_ns();
       audit_log_->append(marker);
     } catch (const std::exception & e) {
       RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_deactivated' marker: %s", e.what());
@@ -723,7 +723,7 @@ std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
     marker.status = "ACTIVE";
     marker.source_id = "fault_manager";
     marker.description = "audit logging activated";
-    marker.occurred_at_ns = get_wall_clock_time().nanoseconds();
+    marker.occurred_at_ns = get_wall_clock_ns();
     try {
       log->append(marker);
     } catch (const std::exception & e) {
@@ -915,11 +915,11 @@ void FaultManagerNode::handle_report_fault(
   auto resolved_config = resolve_config(request->source_id, request->fault_code);
 
   // Report the fault event (use wall clock time, not sim time, for proper timestamps)
-  const rclcpp::Time event_time = get_wall_clock_time();
+  const int64_t event_time_ns = get_wall_clock_ns();
   bool is_new = false;
   try {
     is_new = storage_->report_fault_event(request->fault_code, request->event_type, request->severity,
-                                          request->description, request->source_id, event_time, resolved_config);
+                                          request->description, request->source_id, event_time_ns, resolved_config);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     return;
@@ -1009,13 +1009,13 @@ void FaultManagerNode::handle_report_fault(
     // Recorded regardless of correlation muting: muting affects display, not the
     // fact that the state transition occurred.
     if (is_new) {
-      audit_transition(kTransitionOccurred, *fault_after, request->source_id, event_time.nanoseconds());
+      audit_transition(kTransitionOccurred, *fault_after, request->source_id, event_time_ns);
     }
     if (just_confirmed) {
-      audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time.nanoseconds());
+      audit_transition(kTransitionConfirmed, *fault_after, request->source_id, event_time_ns);
     }
     if (just_healed) {
-      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time.nanoseconds());
+      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time_ns);
     }
 
     if (just_confirmed) {
@@ -1181,7 +1181,7 @@ void FaultManagerNode::handle_clear_fault(
           return;
         }
         if (symptom) {
-          audit_transition(kTransitionCleared, *symptom, "clear_service", get_wall_clock_time().nanoseconds());
+          audit_transition(kTransitionCleared, *symptom, "clear_service", get_wall_clock_ns());
         }
       }
       RCLCPP_DEBUG(get_logger(), "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
@@ -1218,7 +1218,7 @@ void FaultManagerNode::handle_clear_fault(
     }
     if (fault) {
       publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CLEARED, *fault, auto_cleared_codes);
-      audit_transition(kTransitionCleared, *fault, "clear_service", get_wall_clock_time().nanoseconds());
+      audit_transition(kTransitionCleared, *fault, "clear_service", get_wall_clock_ns());
     }
   } else {
     response->message = "Fault not found: " + request->fault_code;

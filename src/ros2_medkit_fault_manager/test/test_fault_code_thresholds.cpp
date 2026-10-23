@@ -449,7 +449,8 @@ class FaultCodeStorageTest : public ::testing::Test {
 
   void report(const std::string & fault_code, const std::string & source_id) {
     storage_.report_fault_event(fault_code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "", source_id,
-                                clock_.now(), resolve_layered(entities_, codes_, source_id, fault_code, global_));
+                                clock_.now().nanoseconds(),
+                                resolve_layered(entities_, codes_, source_id, fault_code, global_));
   }
 };
 
@@ -485,9 +486,10 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   healing.healing_threshold = 1;
   for (const std::string code : {"KEEPS.HEALING", "STOPPED.HEALING"}) {
     storage_.report_fault_event(code, ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "", "/src",
-                                clock_.now(), healing);
+                                clock_.now().nanoseconds(), healing);
     for (int i = 0; i < 3 && storage_.get_fault(code)->status != Fault::STATUS_HEALED; ++i) {
-      storage_.report_fault_event(code, ReportFault::Request::EVENT_PASSED, 0, "", "/src", clock_.now(), healing);
+      storage_.report_fault_event(code, ReportFault::Request::EVENT_PASSED, 0, "", "/src", clock_.now().nanoseconds(),
+                                  healing);
     }
     ASSERT_EQ(storage_.get_fault(code)->status, Fault::STATUS_HEALED);
   }
