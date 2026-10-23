@@ -31,7 +31,7 @@ class UpdateManager;
 class LogManager;
 class BulkDataStore;
 class FaultTriggerEngine;
-class EntityFreezeFrameCapture;
+class FreezeFrameSource;
 class TopicDataProvider;
 class TriggerManager;
 class SubscriptionManager;
@@ -78,7 +78,7 @@ class GatewayServices {
   virtual LogManager * log_manager() = 0;
   virtual BulkDataStore * bulk_data_store() = 0;
   virtual FaultTriggerEngine * fault_trigger_engine() = 0;
-  virtual EntityFreezeFrameCapture * freeze_frames() = 0;
+  virtual FreezeFrameSource * freeze_frames() = 0;
   virtual TopicDataProvider * topic_data_provider() = 0;
   virtual TriggerManager * trigger_manager() = 0;
 };

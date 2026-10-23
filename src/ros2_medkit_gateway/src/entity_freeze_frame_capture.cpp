@@ -34,13 +34,6 @@ constexpr size_t kMaxLoggedFaultCodes = 1024;
 /// the standing-fault snapshot; past it the catch-up proceeds best-effort.
 constexpr std::chrono::seconds kEventsMatchTimeout{10};
 
-/// Read a string field totally: json::value() throws type_error.302 when the
-/// key is present but not a string, and plugin content is untrusted.
-std::string string_field(const nlohmann::json & item, const char * field) {
-  const auto it = item.find(field);
-  return it != item.end() && it->is_string() ? it->get<std::string>() : std::string();
-}
-
 }  // namespace
 
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
@@ -102,56 +95,6 @@ EntityFreezeFrameCapture::frames_for(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = frames_.find(fault_code);
   return it != frames_.end() ? it->second : std::vector<Frame>{};
-}
-
-nlohmann::json EntityFreezeFrameCapture::values_from_list_content(const nlohmann::json & content) {
-  if (!content.contains("items") || !content["items"].is_array()) {
-    return content;
-  }
-  nlohmann::json values = nlohmann::json::object();
-  for (const auto & item : content["items"]) {
-    if (!item.is_object()) {
-      continue;
-    }
-    std::string key = string_field(item, "id");
-    if (key.empty()) {
-      key = string_field(item, "name");
-    }
-    if (key.empty()) {
-      continue;
-    }
-    values[key] = item.contains("value") ? item["value"] : nlohmann::json{};
-  }
-  return values;
-}
-
-bool EntityFreezeFrameCapture::content_has_live_data(const nlohmann::json & content) {
-  if (!content.is_object()) {
-    return false;
-  }
-  // Judged on the values, not on the link flag. A bridge that serves its last
-  // known values while disconnected is exactly what a loss-of-comms fault wants
-  // frozen - refusing on `connected: false` denied a frame to the one fault
-  // where the values before the link died are the whole story. The all-null row
-  // a genuinely cold cache yields is still rejected, by values_have_data().
-  return content.contains("items") && content["items"].is_array() && !content["items"].empty();
-}
-
-bool EntityFreezeFrameCapture::content_reports_disconnected(const nlohmann::json & content) {
-  return content.is_object() && content.contains("connected") && content["connected"].is_boolean() &&
-         !content["connected"].get<bool>();
-}
-
-bool EntityFreezeFrameCapture::values_have_data(const nlohmann::json & values) {
-  if (values.is_object()) {
-    for (const auto & entry : values.items()) {
-      if (!entry.value().is_null()) {
-        return true;
-      }
-    }
-    return false;
-  }
-  return !values.is_null();
 }
 
 std::optional<std::vector<EntityFreezeFrameCapture::StandingFault>>

@@ -65,7 +65,7 @@ class NullGatewayServices final : public GatewayServices {
   FaultTriggerEngine * fault_trigger_engine() override {
     return nullptr;
   }
-  EntityFreezeFrameCapture * freeze_frames() override {
+  FreezeFrameSource * freeze_frames() override {
     return nullptr;
   }
   TopicDataProvider * topic_data_provider() override {

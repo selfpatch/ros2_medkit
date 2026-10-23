@@ -131,7 +131,7 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   FaultTriggerEngine * fault_trigger_engine() override {
     return get_fault_trigger_engine();
   }
-  EntityFreezeFrameCapture * freeze_frames() override {
+  FreezeFrameSource * freeze_frames() override {
     return get_entity_freeze_frame_capture();
   }
   TopicDataProvider * topic_data_provider() override {

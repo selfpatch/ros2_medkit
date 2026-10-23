@@ -27,13 +27,13 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/data_point_suggest.hpp"
+#include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
-#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -261,8 +261,8 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       // a bridge with a dead PLC link answers 200 with connected=false and an
       // empty list, which must read as "unreadable right now", never as "this
       // entity has zero data points".
-      if (content && EntityFreezeFrameCapture::content_has_live_data(*content)) {
-        const auto values = EntityFreezeFrameCapture::values_from_list_content(*content);
+      if (content && FreezeFrameSource::content_has_live_data(*content)) {
+        const auto values = FreezeFrameSource::values_from_list_content(*content);
         if (values.is_object()) {
           std::vector<std::string> names;
           names.reserve(values.size());
