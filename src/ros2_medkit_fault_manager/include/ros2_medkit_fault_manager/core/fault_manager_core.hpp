@@ -208,10 +208,11 @@ class FaultManagerCore {
 
   /// Runs the periodic jobs that are due at @p wall_now_ns (ns since the epoch): time-based
   /// auto-confirmation every kAutoConfirmPeriodSec and correlation cleanup every
-  /// correlation_cleanup_interval_sec, each measured from its last run (from construction before the
-  /// first). A tick earlier than the previous one runs nothing: it pulls a due time that is later than
-  /// @p wall_now_ns plus one period back to that. After a wall clock step backwards no job waits more
-  /// than one period, none runs twice within one period of real time, and none confirms early.
+  /// correlation_cleanup_interval_sec. A job runs from half a period before its due time, because the
+  /// timers of the caller use the steady clock. After a run the next due time is the first one later than
+  /// @p wall_now_ns on the job's own grid (the due time plus whole periods), so a late tick does not delay
+  /// the run after it. A tick earlier than the previous one runs nothing: it pulls a due time that is
+  /// later than @p wall_now_ns plus one period back to that.
   void tick(int64_t wall_now_ns);
 
   /// Number of times each tick job has run. For tests and observability.

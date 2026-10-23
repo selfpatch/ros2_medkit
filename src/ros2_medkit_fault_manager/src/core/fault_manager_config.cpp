@@ -181,7 +181,7 @@ std::vector<ConfigNotice> FaultManagerConfig::validate() {
                                 correlation_cleanup_interval_sec <= kMaxCleanupIntervalSec;
   if (!cleanup_in_range) {
     logf(sink, LogLevel::kWarn, logger_name,
-         "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
+         "correlation.cleanup_interval_sec must be in (0, %.0f], got %.2f. Using default 5.0s", kMaxCleanupIntervalSec,
          correlation_cleanup_interval_sec);
     correlation_cleanup_interval_sec = 5.0;
   }

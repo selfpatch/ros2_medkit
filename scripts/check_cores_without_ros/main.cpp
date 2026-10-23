@@ -231,9 +231,9 @@ static int run() {
       ok &= check(before.faults.size() == 1 && before.faults[0].status == fd::fault_status::kPrefailed,
                   "tick: the fault is PREFAILED");
 
-      fault_core.tick(t0 + 999 * kMs);
-      ok &= check(events.types.empty() && hooks.captured.empty(), "tick at 999 ms: no event, no capture");
-      ok &= check(fault_core.auto_confirm_runs() == 0, "tick at 999 ms: auto-confirm job has not run");
+      fault_core.tick(t0 + 499 * kMs);
+      ok &= check(events.types.empty() && hooks.captured.empty(), "tick at 499 ms: no event, no capture");
+      ok &= check(fault_core.auto_confirm_runs() == 0, "tick at 499 ms: auto-confirm job has not run");
       fault_core.tick(t0 + 1001 * kMs);
       ok &= check(events.types.size() == 1 && events.types[0] == fd::fault_event_type::kConfirmed,
                   "tick at 1001 ms: one fault_confirmed");
@@ -242,12 +242,12 @@ static int run() {
       ok &= check(fault_core.auto_confirm_runs() == 1, "tick at 1001 ms: auto-confirm job ran once");
 
       ok &= check(fault_core.correlation_cleanup_runs() == 0, "cleanup has not run before its interval");
-      fault_core.tick(t0 + 4999 * kMs);
-      ok &= check(fault_core.correlation_cleanup_runs() == 0, "tick at 4999 ms: cleanup not due");
+      fault_core.tick(t0 + 2499 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 0, "tick at 2499 ms: cleanup not due");
       fault_core.tick(t0 + 5001 * kMs);
       ok &= check(fault_core.correlation_cleanup_runs() == 1, "tick at 5001 ms: cleanup ran once");
       fault_core.tick(t0 + 5002 * kMs);
-      fault_core.tick(t0 + 9000 * kMs);
+      fault_core.tick(t0 + 7000 * kMs);
       ok &= check(fault_core.correlation_cleanup_runs() == 1, "ticks inside the interval: cleanup does not repeat");
       fault_core.tick(t0 + 10001 * kMs);
       ok &= check(fault_core.correlation_cleanup_runs() == 2, "tick at 10001 ms: cleanup ran a second time");
@@ -259,14 +259,35 @@ static int run() {
       ok &= check(fault_core.auto_confirm_runs() == confirm_runs && fault_core.correlation_cleanup_runs() == 2,
                   "backwards tick: no job runs");
       ok &= check(events.types.size() == 1 && hooks.captured.size() == 1, "backwards tick: no event, no capture");
-      fault_core.tick(t0 + 6999 * kMs);
-      ok &= check(fault_core.correlation_cleanup_runs() == 2, "after a backwards tick: cleanup waits one interval");
+      fault_core.tick(t0 + 4499 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 2, "after a backwards tick: cleanup waits for its due time");
       fault_core.tick(t0 + 7001 * kMs);
       ok &= check(fault_core.correlation_cleanup_runs() == 3, "after a backwards tick: cleanup resumes");
       ok &= check(events.types.size() == 1, "after a backwards tick: still one fault_confirmed");
     }
     std::filesystem::remove(tick_db);
     std::filesystem::remove(corr_yaml);
+
+    // A callback that runs more than one period late keeps the job's phase.
+    const auto late_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_late.db";
+    std::filesystem::remove(late_db);
+    {
+      fmc::FaultManagerConfig late_config = tick_config;
+      late_config.database_path = late_db.string();
+      late_config.correlation_config_file.clear();
+      clock.now = t0;
+      fmc::FaultManagerCore late_core(late_config, fmc::build_core_parts(late_config, sink), events, hooks, clock,
+                                      sink);
+      late_core.tick(t0 + 2200 * kMs);
+      ok &= check(late_core.auto_confirm_runs() == 1, "late tick at 2200 ms (due 1000 ms): job ran once");
+      late_core.tick(t0 + 2300 * kMs);
+      ok &= check(late_core.auto_confirm_runs() == 1, "tick at 2300 ms: no second run inside one period");
+      late_core.tick(t0 + 3000 * kMs);
+      ok &= check(late_core.auto_confirm_runs() == 2, "tick at 3000 ms: the job runs on its original phase");
+      late_core.tick(t0 + 3100 * kMs);
+      ok &= check(late_core.auto_confirm_runs() == 2, "tick at 3100 ms: no second run inside one period");
+    }
+    std::filesystem::remove(late_db);
   }
 
   // A cleanup interval near the validation maximum must not overflow the due time.
