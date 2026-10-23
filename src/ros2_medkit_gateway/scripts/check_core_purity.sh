@@ -53,6 +53,9 @@ ROS_FREE_SOURCES=(
   "include/ros2_medkit_gateway/core/gateway_services.hpp"
   "include/ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
   "include/ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
+  "include/ros2_medkit_gateway/core/faults/fault_event_source.hpp"
+  "include/ros2_medkit_gateway/core/faults/fault_json.hpp"
+  "src/core/faults/fault_json.cpp"
   "include/ros2_medkit_gateway/core/discovery/linking_result.hpp"
   "include/ros2_medkit_gateway/core/types/type_schema_provider.hpp"
   "include/ros2_medkit_gateway/http/handlers/handler_context.hpp"
@@ -65,7 +68,7 @@ for src in "${ROS_FREE_SOURCES[@]}"; do
     continue
   fi
   if ! out=$(g++ -std=c++17 -fsyntax-only -Wno-pragma-once-outside-header \
-    -Iinclude -Isrc -Isrc/vendored/tl_expected/include -Isrc/vendored/cpp_httplib "$src" 2>&1); then
+    -Iinclude -I../ros2_medkit_fault_detection/include -Isrc -Isrc/vendored/tl_expected/include -Isrc/vendored/cpp_httplib "$src" 2>&1); then
     echo "DOES NOT COMPILE WITHOUT ROS: $src"
     echo "$out" | grep -E 'error' | head -5
     violations=$((violations + 1))

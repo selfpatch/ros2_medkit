@@ -57,6 +57,7 @@
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_fault_event_source.hpp"
 #include "ros2_medkit_gateway/ros2/ros2_type_schema_provider.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
@@ -133,6 +134,9 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   }
   FreezeFrameSource * freeze_frames() override {
     return get_entity_freeze_frame_capture();
+  }
+  FaultEventSource * fault_events() override {
+    return fault_event_source_.get();
   }
   TopicDataProvider * topic_data_provider() override {
     return get_topic_data_provider();
@@ -495,6 +499,8 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
   std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
+  // Destroyed after rest_server_, whose SSE fault handler holds a pointer to it.
+  std::unique_ptr<Ros2FaultEventSource> fault_event_source_;
   // Config-less threshold-rule engine + its dedicated evaluation loop (issue
   // #235). The thread is joined in ~GatewayNode BEFORE plugin/fault shutdown.
   std::unique_ptr<FaultTriggerEngine> fault_trigger_engine_;

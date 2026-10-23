@@ -68,6 +68,9 @@ class NullGatewayServices final : public GatewayServices {
   FreezeFrameSource * freeze_frames() override {
     return nullptr;
   }
+  FaultEventSource * fault_events() override {
+    return nullptr;
+  }
   TopicDataProvider * topic_data_provider() override {
     return nullptr;
   }

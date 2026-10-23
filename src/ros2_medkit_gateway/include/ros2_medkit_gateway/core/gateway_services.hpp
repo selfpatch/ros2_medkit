@@ -31,6 +31,7 @@ class UpdateManager;
 class LogManager;
 class BulkDataStore;
 class FaultTriggerEngine;
+class FaultEventSource;
 class FreezeFrameSource;
 class TopicDataProvider;
 class TriggerManager;
@@ -79,6 +80,8 @@ class GatewayServices {
   virtual BulkDataStore * bulk_data_store() = 0;
   virtual FaultTriggerEngine * fault_trigger_engine() = 0;
   virtual FreezeFrameSource * freeze_frames() = 0;
+  // May be null: a host without a fault manager has no fault stream.
+  virtual FaultEventSource * fault_events() = 0;
   virtual TopicDataProvider * topic_data_provider() = 0;
   virtual TriggerManager * trigger_manager() = 0;
 };
