@@ -13,6 +13,7 @@
 
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>ros2_medkit_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>

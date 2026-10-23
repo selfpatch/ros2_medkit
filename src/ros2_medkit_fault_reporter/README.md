@@ -78,6 +78,7 @@ class MyLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 - **Local Filtering** (optional): Suppress repeated faults until threshold is met
 - **Per-fault tracking**: Each fault_code has independent filtering
 - **Severity bypass**: High-severity faults bypass local filtering
+- **ROS-free core**: `ReporterCore` (filtering and report building) builds without ROS, see below
 
 ## API
 
@@ -93,7 +94,7 @@ reporter_->report("MOTOR_OVERHEAT",
 
 ### `report_passed(fault_code)` (Advanced)
 
-Report that a fault condition has cleared. Use this when FaultManager is configured with debounce filtering and healing enabled.
+Report that a fault condition has cleared. PASSED events are filtered by the same threshold and window as FAILED events. Use this when FaultManager is configured with debounce filtering and healing enabled.
 
 ```cpp
 reporter_->report_passed("MOTOR_OVERHEAT");
@@ -125,6 +126,20 @@ my_node:
 | `fault_reporter.local_filtering.default_threshold` | int | 3 | Reports needed before forwarding |
 | `fault_reporter.local_filtering.default_window_sec` | double | 10.0 | Time window in seconds |
 | `fault_reporter.local_filtering.bypass_severity` | int | 2 | Severity level that bypasses filtering |
+
+A `default_threshold` above `INT_MAX` or a `bypass_severity` outside `[0, 255]` is replaced by its
+default and logged as a warning. A `default_threshold` below 1 becomes 1. A `default_window_sec` that
+is NaN, infinite or not positive becomes 1.0. These last two are not logged.
+
+## ROS-free core
+
+`ros2_medkit_fault_reporter::core::ReporterCore` holds the filter and builds a
+`ros2_medkit::fault_detection::FaultReport` (types from `ros2_medkit_fault_detection`). It hands each
+report that passed the filter to a sink function. `FaultReporter` is the ROS adapter: its sink sends
+the `ReportFault` request. The CMake target `fault_reporter_core` is defined in
+`cmake/fault_reporter_core.cmake`, which uses plain CMake (3.16, C++17). The core compiles and is
+tested without ROS, with no DDS setup. `scripts/check_cores_without_ros/run.sh` builds it on
+Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
 ## Advanced: Debounce Integration
 

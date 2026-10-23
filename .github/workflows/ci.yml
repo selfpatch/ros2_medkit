@@ -570,12 +570,38 @@ jobs:
           path: /root/.cache/ccache
           key: ccache-jazzy-test-${{ github.sha }}
 
+  cores-without-ros:
+    name: cores-without-ros
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends g++-9 cmake make
+
+      - name: Build the ROS-free cores
+        run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b
+
+      - name: Run the check program and verify it links no ROS library
+        run: |
+          ldd /tmp/b/check_cores_without_ros | tee /tmp/ldd.txt
+          ! grep -q rclcpp /tmp/ldd.txt
+          /tmp/b/check_cores_without_ros
+
   # The one check branch rules require from this workflow. A matrix job skipped by
   # its `if` does not report its per-entry checks, so the rules cannot require them.
   # always(), not !cancelled(): a skipped gate would count as passed.
   ci-ok:
     if: always()
-    needs: [changes, build-and-test, graph-watchdog, jazzy-test]
+    needs: [changes, build-and-test, graph-watchdog, jazzy-test, cores-without-ros]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

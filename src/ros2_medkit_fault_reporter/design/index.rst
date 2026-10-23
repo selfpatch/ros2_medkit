@@ -47,7 +47,7 @@ The following diagram shows the relationships between the main components.
            - node_: rclcpp::Node::SharedPtr
            - source_id_: string
            - client_: ServiceClient<ReportFault>
-           - filter_: LocalFilter
+           - core_: ReporterCore
            - logger_: rclcpp::Logger
            --
            + FaultReporter(node, source_id, service_name)
@@ -55,8 +55,18 @@ The following diagram shows the relationships between the main components.
            + is_service_ready(): bool
            + filter(): const LocalFilter&
            --
-           - load_parameters(): void
-           - send_report(fault_code, severity, description): void
+           - load_parameters(node_params, logger): FilterConfig {static}
+           - send_report(report: FaultReport): void
+       }
+
+       class ReporterCore {
+           - source_id_: string
+           - filter_: LocalFilter
+           - sink_: ReportSink
+           --
+           + report(fault_code, severity, description): bool
+           + report_passed(fault_code): bool
+           + filter(): const LocalFilter&
        }
 
        class LocalFilter {
@@ -94,7 +104,8 @@ The following diagram shows the relationships between the main components.
 
    ' Relationships
    FaultReporter --> "rclcpp::Node" : uses
-   FaultReporter *-down-> LocalFilter : owns
+   FaultReporter *-down-> ReporterCore : owns
+   ReporterCore *-down-> LocalFilter : owns
    LocalFilter --> FilterConfig : configured by
    LocalFilter o--> FaultTracker : per fault_code
    FaultReporter ..> "srv::ReportFault" : calls
@@ -111,7 +122,7 @@ Main Components
    - Creates a service client to ``/fault_manager/report_fault``
    - Loads filter configuration from ROS parameters
    - Provides simple ``report(fault_code, severity, description)`` method
-   - Integrates ``LocalFilter`` to reduce noise from repeated faults
+   - Integrates ``LocalFilter`` to reduce noise from repeated faults, through ``ReporterCore``
    - Fire-and-forget service calls (non-blocking)
 
 2. **LocalFilter** - Per-fault-code filtering with threshold and time window
@@ -129,7 +140,14 @@ Main Components
    - ``default_window_sec``: Time window in seconds (default: 10.0)
    - ``bypass_severity``: Severity level that bypasses filtering (default: ERROR=2)
 
-4. **FaultTracker** - Internal state for per-fault-code tracking
+4. **ReporterCore** - ROS-free filtering and report building (``core/reporter_core.hpp``)
+
+   - Owns the ``LocalFilter`` and a sink function that receives each ``FaultReport`` that passed
+   - ``validate_filter_params()`` checks int64 parameter values before narrowing and replaces invalid ones
+   - Built as the static library ``fault_reporter_core`` from ``cmake/fault_reporter_core.cmake``
+     (plain CMake, no ament); the neutral types come from ``ros2_medkit_fault_detection/fault_types.hpp``
+
+5. **FaultTracker** - Internal state for per-fault-code tracking
 
    - Maintains vector of timestamps for recent reports
    - Expired timestamps are cleaned up on each ``should_forward()`` call
@@ -216,6 +234,6 @@ Integration with FaultManager
 
 The FaultReporter is designed as a thin client to the FaultManager node:
 
-- **Decoupled**: FaultReporter only depends on ``ros2_medkit_msgs``, not the manager
+- **Decoupled**: FaultReporter only depends on ``ros2_medkit_msgs`` and ``ros2_medkit_fault_detection``, not the manager
 - **Lightweight**: Nodes get simple API without pulling in server-side code
 - **Flexible**: Service name is configurable for custom deployments

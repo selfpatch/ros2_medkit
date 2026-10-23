@@ -19,6 +19,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
+#include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
 #include "ros2_medkit_fault_reporter/local_filter.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 
@@ -125,7 +126,7 @@ class FaultReporter {
 
   /// Report a PASSED event (fault condition cleared)
   ///
-  /// PASSED events bypass local filtering and are always forwarded to FaultManager.
+  /// PASSED events are filtered by the same threshold and window as FAILED events.
   /// Use this when the condition that caused a fault is no longer present.
   ///
   /// @param fault_code Global fault identifier (must match a previously reported fault)
@@ -136,21 +137,21 @@ class FaultReporter {
 
   /// Get read-only access to the local filter (for testing)
   const LocalFilter & filter() const {
-    return filter_;
+    return core_.filter();
   }
 
  private:
   /// Load filter configuration from ROS parameters
-  void load_parameters(const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params);
+  static FilterConfig load_parameters(const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
+                                      const rclcpp::Logger & logger);
 
   /// Send the fault report to FaultManager (async, fire-and-forget)
-  void send_report(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                   const std::string & description);
+  void send_report(const ros2_medkit::fault_detection::FaultReport & report);
 
   std::string source_id_;
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr client_;
-  LocalFilter filter_;
   rclcpp::Logger logger_;
+  core::ReporterCore core_;
 };
 
 }  // namespace ros2_medkit_fault_reporter

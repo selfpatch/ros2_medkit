@@ -36,6 +36,13 @@ or inactive). `FaultTransitionTracker` keeps the last-known state per
 `fault_code` and emits only the raise/clear edges, which a plugin forwards to
 the fault manager as report/clear.
 
+## Shared fault types
+
+`fault_types.hpp` holds std-only types used by the fault reporter core (the fault manager does not use them yet):
+`ReportKind`, `FaultReport`, `FaultRecord`, `FaultEventRecord`, and the constants
+for severity, fault status and fault event type. They mirror `Fault.msg`, `FaultEvent.msg` and
+`ReportFault.srv` in `ros2_medkit_msgs`.
+
 ## Placement and packaging
 
 This is a **header-only INTERFACE package**: the detection logic is compiled
