@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 
+#include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_startup.hpp"
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
@@ -75,6 +78,30 @@ static int run() {
     ok &= check(!faults.empty() && faults[0].first_occurred_ns == 1000000000LL, "the record keeps its nanosecond time");
   }
   std::filesystem::remove(db_path);
+
+  // Fault manager config rules and startup parts.
+  {
+    fm::core::FaultManagerConfig config;
+    config.confirmation_threshold = 5;
+    config.auto_confirm_after_sec = std::nan("");
+    const auto notices = config.validate();
+    ok &= check(config.confirmation_threshold == -5, "confirmation_threshold 5 becomes -5");
+    ok &= check(config.auto_confirm_after_sec == 0.0, "NaN auto_confirm_after_sec falls back to 0");
+    ok &= check(notices.size() == 2, "two notices: the sign flip and the NaN fallback");
+
+    const auto parts_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_parts.db";
+    std::filesystem::remove(parts_db);
+    StderrSink sink;
+    fm::core::FaultManagerConfig sqlite_config;
+    sqlite_config.storage_type = "sqlite";
+    sqlite_config.database_path = parts_db.string();
+    {
+      auto parts = fm::core::build_core_parts(sqlite_config, sink);
+      ok &= check(parts.storage != nullptr, "build_core_parts opens a sqlite storage");
+      ok &= check(parts.audit == nullptr && parts.correlation == nullptr, "audit and correlation stay off by default");
+    }
+    std::filesystem::remove(parts_db);
+  }
 
   return ok ? 0 : 1;
 }

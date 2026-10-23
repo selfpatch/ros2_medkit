@@ -23,6 +23,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
@@ -121,9 +122,6 @@ class FaultManagerNode : public rclcpp::Node {
   static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
 
  private:
-  /// Create storage backend based on configuration
-  std::unique_ptr<FaultStorage> create_storage();
-
   /// Handle ReportFault service request
   void handle_report_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
                            const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
@@ -157,17 +155,16 @@ class FaultManagerNode : public rclcpp::Node {
   handle_list_faults_for_entity(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
                                 const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response);
 
-  /// Create snapshot configuration from parameters
+  /// Declare every startup parameter and read it into a config, unvalidated.
+  core::FaultManagerConfig declare_config();
+
+  /// Create snapshot configuration from the validated config
   SnapshotConfig create_snapshot_config();
 
   /// Load snapshot configuration from YAML file
   /// @param config_file Path to the YAML configuration file
   /// @param config SnapshotConfig to populate with loaded values
   void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
-
-  /// Initialize correlation engine from configuration file
-  /// @return CorrelationEngine instance if enabled and config is valid, nullptr otherwise
-  std::unique_ptr<correlation::CorrelationEngine> create_correlation_engine();
 
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
@@ -204,9 +201,6 @@ class FaultManagerNode : public rclcpp::Node {
   void warn_on_conflicting_debounce_policy(const std::string & fault_code, const std::string & source_id,
                                            const DebounceConfig & resolved);
 
-  /// Create the tamper-evident audit log from parameters (nullptr if disabled).
-  std::unique_ptr<FaultAuditLog> create_audit_log();
-
   /// Append a fault state-transition to the audit log when enabled. No-op when
   /// the log is off, or when only confirmations are logged and this is not one.
   /// @param transition One of the kTransition* constants.
@@ -216,9 +210,8 @@ class FaultManagerNode : public rclcpp::Node {
   void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
                         int64_t occurred_at_ns);
 
+  core::FaultManagerConfig config_;  ///< Validated startup configuration
   std::string storage_type_;
-  std::string database_path_;
-  std::string database_url_;
   int32_t confirmation_threshold_{-1};
   bool healing_enabled_{false};
   int32_t healing_threshold_{3};

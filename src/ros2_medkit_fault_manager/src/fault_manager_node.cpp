@@ -27,10 +27,7 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "ros2_medkit_fault_manager/correlation/config_parser.hpp"
-#ifdef POSTGRES_SUPPORT
-#include "ros2_medkit_fault_manager/postgres_fault_storage.hpp"
-#endif
+#include "ros2_medkit_fault_manager/core/fault_manager_startup.hpp"
 #include "ros2_medkit_fault_manager/ros2/fault_msg_conversions.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
@@ -126,277 +123,47 @@ std::string storage_unavailable(const std::exception & e) {
 }  // namespace
 
 FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("fault_manager", options) {
-  // Declare and get parameters
-  storage_type_ = declare_parameter<std::string>("storage_type", "sqlite");
-  database_path_ = declare_parameter<std::string>("database_path", "/var/lib/ros2_medkit/faults.db");
-  database_url_ = declare_parameter<std::string>("database_url", "");
-
-  auto confirmation_threshold_param = declare_parameter<int>("confirmation_threshold", -1);
-  if (confirmation_threshold_param > 0) {
-    RCLCPP_WARN(get_logger(), "confirmation_threshold should be < 0 (-1 = immediate confirmation), got %d. Using %d.",
-                static_cast<int>(confirmation_threshold_param), static_cast<int>(-confirmation_threshold_param));
-    confirmation_threshold_param = -confirmation_threshold_param;
-  }
-  confirmation_threshold_ = static_cast<int32_t>(confirmation_threshold_param);
-
-  // Healing parameters
-  healing_enabled_ = declare_parameter<bool>("healing_enabled", false);
-  auto healing_threshold_param = declare_parameter<int>("healing_threshold", 3);
-  if (healing_threshold_param < 0) {
-    RCLCPP_WARN(get_logger(), "healing_threshold should be >= 0, got %d. Using %d.",
-                static_cast<int>(healing_threshold_param), static_cast<int>(-healing_threshold_param));
-    healing_threshold_param = -healing_threshold_param;
-  }
-  healing_threshold_ = static_cast<int32_t>(healing_threshold_param);
-
-  // Time-based auto-confirmation parameter
-  auto_confirm_after_sec_ = declare_parameter<double>("auto_confirm_after_sec", 0.0);
-  // Every double parameter in this node is range-checked in this shape, tested
-  // positively and then negated, because every comparison against NaN is false:
-  // a plain `< 0.0` accepts NaN, and the guard that would have caught it later
-  // (`> 0.0` before creating the timer) is false for NaN too, so the feature
-  // switches itself off with nothing logged. clang-tidy's
-  // readability-simplify-boolean-expr suggests the DeMorgan rewrite that puts
-  // that back - leave this form alone.
-  // Upper bound as well as lower: the SQLite and PostgreSQL backends evaluate the window as
-  // std::llround(auto_confirm_after_sec * 1e9), which is undefined once
-  // the product leaves the int64 range.
-  constexpr double kMaxAutoConfirmSec = 9.0e9;
-  if (!(std::isfinite(auto_confirm_after_sec_) && auto_confirm_after_sec_ >= 0.0 &&
-        auto_confirm_after_sec_ <= kMaxAutoConfirmSec)) {
-    RCLCPP_WARN(get_logger(), "auto_confirm_after_sec must be a finite value in [0, %.1e], got %.2f. Disabling.",
-                kMaxAutoConfirmSec, auto_confirm_after_sec_);
-    auto_confirm_after_sec_ = 0.0;
+  config_ = declare_config();
+  config_.logger_name = get_logger().get_name();
+  for (const auto & notice : config_.validate()) {
+    log_sink_.log(notice.level, notice.logger, notice.text);
   }
 
-  // Capture cooldown parameters (gates both snapshot and rosbag capture)
-  snapshot_recapture_cooldown_sec_ = declare_parameter<double>("snapshots.recapture_cooldown_sec", 60.0);
-  if (!(std::isfinite(snapshot_recapture_cooldown_sec_) && snapshot_recapture_cooldown_sec_ >= 0.0)) {
-    RCLCPP_WARN(get_logger(), "snapshots.recapture_cooldown_sec should be >= 0, got %.2f. Disabling.",
-                snapshot_recapture_cooldown_sec_);
-    snapshot_recapture_cooldown_sec_ = 0.0;
-  }
-
-  // Capture concurrency bound (issue #441): cap concurrent capture threads and
-  // bound the pending queue so a fault storm cannot grow memory without limit.
-  // declare_parameter<int> returns int64_t on Jazzy; the static_cast<int> keeps -Wconversion quiet.
-  capture_pool_size_ = static_cast<int>(declare_parameter<int>("snapshots.capture_pool_size", 2));
-  if (capture_pool_size_ < 1) {
-    RCLCPP_WARN(get_logger(), "snapshots.capture_pool_size must be >= 1, got %ld. Clamping to 1",
-                static_cast<long>(capture_pool_size_));
-    capture_pool_size_ = 1;
-  }
-
-  capture_queue_depth_ = static_cast<int>(declare_parameter<int>("snapshots.capture_queue_depth", 16));
-  if (capture_queue_depth_ < 1) {
-    RCLCPP_WARN(get_logger(), "snapshots.capture_queue_depth must be >= 1, got %ld. Clamping to 1",
-                static_cast<long>(capture_queue_depth_));
-    capture_queue_depth_ = 1;
-  }
-
-  const std::string policy_str = declare_parameter<std::string>("snapshots.capture_queue_full_policy", "reject_newest");
-  if (policy_str == "reject_newest") {
-    capture_queue_full_policy_ = QueueFullPolicy::kRejectNewest;
-  } else if (policy_str == "drop_oldest") {
-    capture_queue_full_policy_ = QueueFullPolicy::kDropOldest;
-  } else {
-    RCLCPP_WARN(get_logger(),
-                "snapshots.capture_queue_full_policy '%s' is invalid (expected 'reject_newest' or "
-                "'drop_oldest'). Using 'reject_newest'",
-                policy_str.c_str());
-    capture_queue_full_policy_ = QueueFullPolicy::kRejectNewest;
-  }
+  storage_type_ = config_.storage_type;
+  confirmation_threshold_ = static_cast<int32_t>(config_.confirmation_threshold);
+  healing_enabled_ = config_.healing_enabled;
+  healing_threshold_ = static_cast<int32_t>(config_.healing_threshold);
+  auto_confirm_after_sec_ = config_.auto_confirm_after_sec;
+  snapshot_recapture_cooldown_sec_ = config_.snapshots_recapture_cooldown_sec;
+  capture_pool_size_ = static_cast<int>(config_.snapshots_capture_pool_size);
+  capture_queue_depth_ = static_cast<int>(config_.snapshots_capture_queue_depth);
+  capture_queue_full_policy_ = config_.snapshots_capture_queue_full_policy == "drop_oldest"
+                                   ? QueueFullPolicy::kDropOldest
+                                   : QueueFullPolicy::kRejectNewest;
+  audit_confirmed_only_ = (config_.audit_log_transitions == "confirmed_only");
+  audit_fail_closed_ = config_.audit_log_fail_closed;
 
   RCLCPP_INFO(get_logger(), "Capture concurrency: pool_size=%d, queue_depth=%d, policy=%s", capture_pool_size_,
               capture_queue_depth_,
               capture_queue_full_policy_ == QueueFullPolicy::kRejectNewest ? "reject_newest" : "drop_oldest");
 
-  // Off by default, which is the historical behaviour. Turn it on together with a
-  // rosbag history: recordings now survive an acknowledgement, so deleting the
-  // readings captured beside them leaves the fault holding bags whose values are
-  // gone. The per-fault cap bounds growth either way, so clearing was never the
-  // only thing keeping the table down.
-  auto retain_snapshots_on_clear = declare_parameter<bool>("snapshots.retain_on_clear", false);
-
-  auto max_snapshots = declare_parameter<int>("snapshots.max_per_fault", 10);
-  if (max_snapshots < 0) {
-    RCLCPP_WARN(get_logger(), "snapshots.max_per_fault should be >= 0, got %ld. Disabling limit.", max_snapshots);
-    max_snapshots = 0;
-  }
-
-  // Near-miss retention. The series is what any later look at "how often did this code approach
-  // confirmation" reads, so it is bounded rather than unlimited by default: an appliance runs for
-  // weeks and the rows are cheap but not free. 0 means unlimited and lets the file grow with the
-  // reporting rate. declare_parameter<int64_t> deliberately: <int> narrows silently, and a
-  // negative value cast to size_t becomes SIZE_MAX, which would remove the bound entirely.
-  constexpr int64_t kDefaultMaxNearMissesPerFault = 200;
-  auto max_near_misses = declare_parameter<int64_t>("near_miss.max_per_fault", kDefaultMaxNearMissesPerFault);
-  if (max_near_misses < 0) {
-    RCLCPP_WARN(get_logger(), "near_miss.max_per_fault must be >= 0, got %ld. Using default %ld.", max_near_misses,
-                kDefaultMaxNearMissesPerFault);
-    max_near_misses = kDefaultMaxNearMissesPerFault;
-  }
-
-  // Create storage backend
-  storage_ = create_storage();
-
-  // Create the tamper-evident fault audit log (disabled by default)
-  audit_log_ = create_audit_log();
-
-  // Apply snapshot limit to storage
-  if (max_snapshots > 0) {
-    storage_->set_max_snapshots_per_fault(static_cast<size_t>(max_snapshots));
-  }
-  // Independent of the cap: max_per_fault 0 means unlimited, and retention across
-  // acknowledgement is a separate question from how many sets are kept.
-  storage_->set_retain_snapshots_on_clear(retain_snapshots_on_clear);
-
-  // Apply near-miss retention bound to storage (0 = unlimited). Applying it also trims a series
-  // that a previous run left over the bound, which deletes history for good, so say when it does.
-  // Storage that is unreachable at startup skips the trim; the bound still applies to new entries.
-  size_t evicted_near_misses = 0;
-  try {
-    evicted_near_misses = storage_->set_max_near_misses_per_fault(static_cast<size_t>(max_near_misses));
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Skipped the startup near-miss trim, fault storage unavailable: %s", e.what());
-  }
-  if (evicted_near_misses > 0) {
-    RCLCPP_WARN(get_logger(),
-                "near_miss.max_per_fault=%ld dropped %zu stored near-miss entries that exceeded the bound. "
-                "Raise the bound or set it to 0 before restarting if that history was needed.",
-                max_near_misses, evicted_near_misses);
-  }
+  auto parts = core::build_core_parts(config_, log_sink_);
+  storage_ = std::move(parts.storage);
+  audit_log_ = std::move(parts.audit);
+  correlation_engine_ = std::move(parts.correlation);
+  global_config_ = parts.global_debounce;
+  threshold_resolver_ = std::move(parts.entity_resolver);
+  fault_code_resolver_ = std::move(parts.fault_code_resolver);
 
   // Create event publisher for SSE streaming
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
 
-  // Build global debounce config
-  global_config_.confirmation_threshold = confirmation_threshold_;
-  global_config_.healing_enabled = healing_enabled_;
-  global_config_.healing_threshold = healing_threshold_;
-  global_config_.auto_confirm_after_sec = auto_confirm_after_sec_;
-  if (!sanitize_debounce_config(global_config_)) {
-    RCLCPP_WARN(get_logger(),
-                "Invalid debounce thresholds (need confirmation_threshold < 0 <= healing_threshold); using safe "
-                "defaults: confirmation=%d healing=%d",
-                global_config_.confirmation_threshold, global_config_.healing_threshold);
-  }
-  storage_->set_debounce_config(global_config_);
-
-  // Load per-entity threshold overrides (optional)
-  auto entity_thresholds_file = declare_parameter<std::string>("entity_thresholds.config_file", "");
-  if (!entity_thresholds_file.empty()) {
-    auto entries = EntityThresholdResolver::load_from_yaml(entity_thresholds_file, log_sink_);
-    // Validate each override against the global config: the merge is field by field, so an override
-    // can break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
-    for (auto & entry : entries) {
-      DebounceConfig merged = global_config_;
-      if (entry.confirmation_threshold) {
-        merged.confirmation_threshold = *entry.confirmation_threshold;
-      }
-      if (entry.healing_threshold) {
-        merged.healing_threshold = *entry.healing_threshold;
-      }
-      if (!sanitize_debounce_config(merged)) {
-        RCLCPP_WARN(get_logger(),
-                    "Entity '%s' debounce thresholds invalid (need confirmation_threshold < 0 <= healing_threshold); "
-                    "using safe defaults",
-                    entry.prefix.c_str());
-        if (entry.confirmation_threshold) {
-          entry.confirmation_threshold = merged.confirmation_threshold;
-        }
-        if (entry.healing_threshold) {
-          entry.healing_threshold = merged.healing_threshold;
-        }
-      }
-    }
-    if (!entries.empty()) {
-      threshold_resolver_ = std::make_unique<EntityThresholdResolver>(std::move(entries));
-      RCLCPP_INFO(get_logger(), "Loaded %zu per-entity threshold overrides from %s", threshold_resolver_->size(),
-                  entity_thresholds_file.c_str());
-      if (auto_confirm_after_sec_ > 0.0) {
-        RCLCPP_WARN(get_logger(),
-                    "Per-entity thresholds are configured but auto_confirm_after_sec=%.1f is also set. "
-                    "Auto-confirmation will bypass entity-specific debounce policies for PREFAILED faults.",
-                    auto_confirm_after_sec_);
-      }
-    }
-  }
-
-  // Load per-fault_code threshold overrides (optional). Applied after the entity layer, so a
-  // code listed here debounces the same whichever source reports it.
-  auto fault_thresholds_file = declare_parameter<std::string>("fault_thresholds.config_file", "");
-  if (!fault_thresholds_file.empty()) {
-    auto entries = FaultCodeThresholdResolver::load_from_yaml(fault_thresholds_file, log_sink_);
-    // Same field-by-field merge as the entity layer, so the same validation: an override can
-    // break confirmation_threshold < 0 <= healing_threshold even when the global config is valid.
-    // Checked against the global config, which is the base when no entity override matches.
-    for (auto & entry : entries) {
-      DebounceConfig merged = global_config_;
-      if (entry.confirmation_threshold) {
-        merged.confirmation_threshold = *entry.confirmation_threshold;
-      }
-      if (entry.healing_threshold) {
-        merged.healing_threshold = *entry.healing_threshold;
-      }
-      if (!sanitize_debounce_config(merged)) {
-        RCLCPP_WARN(get_logger(),
-                    "Fault code '%s' debounce thresholds invalid (need confirmation_threshold < 0 <= "
-                    "healing_threshold); using safe defaults",
-                    entry.fault_code.c_str());
-        if (entry.confirmation_threshold) {
-          entry.confirmation_threshold = merged.confirmation_threshold;
-        }
-        if (entry.healing_threshold) {
-          entry.healing_threshold = merged.healing_threshold;
-        }
-      }
-    }
-    if (!entries.empty()) {
-      fault_code_resolver_ = std::make_unique<FaultCodeThresholdResolver>(std::move(entries));
-      RCLCPP_INFO(get_logger(), "Loaded %zu per-fault_code threshold overrides from %s", fault_code_resolver_->size(),
-                  fault_thresholds_file.c_str());
-      if (auto_confirm_after_sec_ > 0.0) {
-        RCLCPP_WARN(get_logger(),
-                    "Per-fault_code thresholds are configured but auto_confirm_after_sec=%.1f is also set. "
-                    "Auto-confirmation will bypass fault-code debounce policies for PREFAILED faults.",
-                    auto_confirm_after_sec_);
-      }
-    }
-  }
-
-  // One-time cleanup: a HEALED row for a code whose healing is now disabled, left by a previous
-  // (healing-enabled) run, would behave inconsistently under the latch, so reclassify it as CLEARED
-  // at startup. Runs after the override files are loaded, so a code with its own
-  // healing_enabled: true keeps its HEALED status. Entity overrides are not used here: they depend
-  // on the reporting source, and a stored fault belongs to a code.
-  // Each flipped fault is audited (the audit log is already constructed above); without this the
-  // reclassification would be invisible to the audit log's verify().
-  // Storage that is unreachable at startup skips it until the next start.
-  try {
-    const auto reclassified = storage_->reclassify_healed_as_cleared([this](const std::string & fault_code) {
-      if (fault_code_resolver_) {
-        return fault_code_resolver_->resolve(fault_code, global_config_).healing_enabled;
-      }
-      return global_config_.healing_enabled;
-    });
-    if (!reclassified.empty()) {
-      if (audit_log_) {
-        const int64_t reclassified_at_ns = get_wall_clock_ns();
-        for (const auto & fault_code : reclassified) {
-          auto fault = storage_->get_fault(fault_code);
-          if (fault) {
-            audit_transition(kTransitionCleared, *fault, "startup_reclassify", reclassified_at_ns);
-          }
-        }
-      }
-      RCLCPP_INFO(get_logger(),
-                  "Reclassified %zu stale HEALED fault(s) as CLEARED, because healing is disabled for their codes",
-                  reclassified.size());
-    }
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Startup HEALED reclassification not done, fault storage unavailable: %s", e.what());
-  }
+  // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
+  // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
+  core::reclassify_stale_healed(*storage_, fault_code_resolver_.get(), global_config_, audit_log_ != nullptr, log_sink_,
+                                config_.logger_name, [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
+                                  audit_transition(kTransitionCleared, fault, "startup_reclassify", reclassified_at_ns);
+                                });
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
@@ -456,10 +223,6 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    // The cap lives in the storage backend, not in RosbagCapture: it has to be
-    // atomic with the insert, the unlink has to happen after the backend's commit,
-    // and the "is this bag still referenced" rule is backend-private.
-    storage_->set_max_rosbags_per_fault(snapshot_config.rosbag.max_bags_per_fault);
     rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_.get(), snapshot_config.rosbag, snapshot_config);
 
     // The recapture cooldown gates the capture job as a whole, bags included, so it
@@ -497,9 +260,6 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
           }
         });
   }
-
-  // Initialize correlation engine (nullptr if disabled or not configured)
-  correlation_engine_ = create_correlation_engine();
 
   // Create correlation cleanup timer if correlation is enabled
   if (correlation_engine_) {
@@ -601,139 +361,6 @@ FaultManagerNode::~FaultManagerNode() {
     } catch (const std::exception & e) {
       RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_deactivated' marker: %s", e.what());
     }
-  }
-}
-
-std::unique_ptr<FaultStorage> FaultManagerNode::create_storage() {
-  if (storage_type_ == "memory") {
-    RCLCPP_INFO(get_logger(), "Using in-memory fault storage");
-    return std::make_unique<InMemoryFaultStorage>();
-  }
-
-  if (storage_type_ == "sqlite") {
-    // Create parent directory if it doesn't exist (except for :memory:)
-    if (database_path_ != ":memory:") {
-      std::filesystem::path db_path(database_path_);
-      auto parent_dir = db_path.parent_path();
-      std::string parent_dir_str = parent_dir.string();
-      if (!parent_dir_str.empty() && !std::filesystem::exists(parent_dir)) {
-        try {
-          std::filesystem::create_directories(parent_dir);
-          RCLCPP_INFO(get_logger(), "Created database directory: %s", parent_dir_str.c_str());
-        } catch (const std::filesystem::filesystem_error & e) {
-          RCLCPP_ERROR(get_logger(), "Failed to create database directory for fault manager storage at '%s': %s",
-                       parent_dir_str.c_str(), e.what());
-          throw;
-        }
-      }
-    }
-
-    RCLCPP_INFO(get_logger(), "Using SQLite fault storage: %s", database_path_.c_str());
-    return std::make_unique<SqliteFaultStorage>(database_path_, log_sink_);
-  }
-
-#ifdef POSTGRES_SUPPORT
-  if (storage_type_ == "postgres") {
-    auto postgres_fault_storage = std::make_unique<PgFaultStorage>(database_url_, log_sink_);
-    RCLCPP_INFO(get_logger(), "Using PostgreSQL fault storage (%s)", postgres_fault_storage->target().c_str());
-    if (!postgres_fault_storage->connected()) {
-      RCLCPP_WARN(get_logger(), "PostgreSQL is unreachable: running without fault storage until it connects");
-    }
-    return postgres_fault_storage;
-  }
-#else
-  if (storage_type_ == "postgres") {
-    throw std::runtime_error("storage_type 'postgres' needs a build with -DPOSTGRES_SUPPORT=ON");
-  }
-#endif
-
-  RCLCPP_ERROR(get_logger(), "Unknown storage_type '%s', falling back to in-memory", storage_type_.c_str());
-  return std::make_unique<InMemoryFaultStorage>();
-}
-
-std::unique_ptr<FaultAuditLog> FaultManagerNode::create_audit_log() {
-  const bool enabled = declare_parameter<bool>("audit_log.enabled", false);
-
-  // Which transitions to record: "all" (occurred/confirmed/healed/cleared) or
-  // "confirmed_only".
-  const std::string transitions = declare_parameter<std::string>("audit_log.transitions", "all");
-  audit_confirmed_only_ = (transitions == "confirmed_only");
-  if (transitions != "all" && transitions != "confirmed_only") {
-    RCLCPP_WARN(get_logger(), "audit_log.transitions '%s' invalid, using 'all'", transitions.c_str());
-    audit_confirmed_only_ = false;
-  }
-
-  // Retention: seal + prune the oldest segment beyond this many records (0 = off).
-  auto retention = declare_parameter<int64_t>("audit_log.retention_max_records", 0);
-  if (retention < 0) {
-    RCLCPP_WARN(get_logger(), "audit_log.retention_max_records < 0, disabling rotation");
-    retention = 0;
-  }
-
-  // Fail-closed: when set, an audit append failure is re-raised as a hard error
-  // (fail-FAST) so a broken audit chain cannot be silently outlived. It does NOT
-  // roll back the fault-state change that triggered the transition - that change
-  // has already committed to the SEPARATE fault-store DB and cross-DB atomicity
-  // is not achievable here - it only signals the broken audit so an operator must
-  // act. Off by default so the audit never blocks fault processing.
-  audit_fail_closed_ = declare_parameter<bool>("audit_log.fail_closed", false);
-
-  // Path: explicit override, else a sibling of the fault DB, else :memory:.
-  std::string audit_path = declare_parameter<std::string>("audit_log.database_path", "");
-
-  if (!enabled) {
-    return nullptr;  // No table, no file, no write overhead when off.
-  }
-
-  if (audit_path.empty()) {
-    if (database_path_ == ":memory:" || (storage_type_ != "sqlite" && storage_type_ != "postgres")) {
-      audit_path = ":memory:";
-    } else {
-      std::filesystem::path base(database_path_);
-      audit_path = (base.parent_path() / "fault_audit.db").string();
-    }
-  }
-
-  if (audit_path != ":memory:") {
-    std::filesystem::path p(audit_path);
-    auto parent = p.parent_path();
-    if (!parent.empty() && !std::filesystem::exists(parent)) {
-      try {
-        std::filesystem::create_directories(parent);
-      } catch (const std::filesystem::filesystem_error & e) {
-        RCLCPP_ERROR(get_logger(), "Failed to create audit log directory '%s': %s", parent.string().c_str(), e.what());
-        throw;
-      }
-    }
-  }
-
-  try {
-    auto log = std::make_unique<FaultAuditLog>(audit_path, retention);
-    RCLCPP_INFO(get_logger(),
-                "Fault audit log enabled: %s (transitions=%s, retention=%" PRId64
-                ", fail_closed=%s, resume_seq=%" PRId64 ")",
-                audit_path.c_str(), audit_confirmed_only_ ? "confirmed_only" : "all", retention,
-                audit_fail_closed_ ? "true" : "false", log->head().seq);
-
-    // Record a "logging activated" marker so the chain documents its own start.
-    // Appended directly, so it is recorded even in confirmed_only mode.
-    // Best-effort: a failure here does not abort startup.
-    AuditEvent marker;
-    marker.fault_code = "__audit__";
-    marker.transition = kTransitionLoggingActivated;
-    marker.status = "ACTIVE";
-    marker.source_id = "fault_manager";
-    marker.description = "audit logging activated";
-    marker.occurred_at_ns = get_wall_clock_ns();
-    try {
-      log->append(marker);
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(get_logger(), "Failed to append audit 'logging_activated' marker: %s", e.what());
-    }
-    return log;
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR(get_logger(), "Failed to open fault audit log '%s': %s", audit_path.c_str(), e.what());
-    throw;
   }
 }
 
@@ -1376,113 +1003,115 @@ void FaultManagerNode::publish_fault_event(const std::string & event_type, const
                fault.fault_code.c_str());
 }
 
+core::FaultManagerConfig FaultManagerNode::declare_config() {
+  core::FaultManagerConfig c;
+  c.storage_type = declare_parameter<std::string>("storage_type", c.storage_type);
+  c.database_path = declare_parameter<std::string>("database_path", c.database_path);
+  c.database_url = declare_parameter<std::string>("database_url", c.database_url);
+  c.confirmation_threshold = declare_parameter<int64_t>("confirmation_threshold", c.confirmation_threshold);
+  c.healing_enabled = declare_parameter<bool>("healing_enabled", c.healing_enabled);
+  c.healing_threshold = declare_parameter<int64_t>("healing_threshold", c.healing_threshold);
+  c.auto_confirm_after_sec = declare_parameter<double>("auto_confirm_after_sec", c.auto_confirm_after_sec);
+  c.snapshots_recapture_cooldown_sec =
+      declare_parameter<double>("snapshots.recapture_cooldown_sec", c.snapshots_recapture_cooldown_sec);
+  c.snapshots_capture_pool_size =
+      declare_parameter<int64_t>("snapshots.capture_pool_size", c.snapshots_capture_pool_size);
+  c.snapshots_capture_queue_depth =
+      declare_parameter<int64_t>("snapshots.capture_queue_depth", c.snapshots_capture_queue_depth);
+  c.snapshots_capture_queue_full_policy =
+      declare_parameter<std::string>("snapshots.capture_queue_full_policy", c.snapshots_capture_queue_full_policy);
+  c.snapshots_retain_on_clear = declare_parameter<bool>("snapshots.retain_on_clear", c.snapshots_retain_on_clear);
+  c.snapshots_max_per_fault = declare_parameter<int64_t>("snapshots.max_per_fault", c.snapshots_max_per_fault);
+  c.near_miss_max_per_fault = declare_parameter<int64_t>("near_miss.max_per_fault", c.near_miss_max_per_fault);
+  c.entity_thresholds_config_file =
+      declare_parameter<std::string>("entity_thresholds.config_file", c.entity_thresholds_config_file);
+  c.fault_thresholds_config_file =
+      declare_parameter<std::string>("fault_thresholds.config_file", c.fault_thresholds_config_file);
+  c.audit_log_enabled = declare_parameter<bool>("audit_log.enabled", c.audit_log_enabled);
+  c.audit_log_transitions = declare_parameter<std::string>("audit_log.transitions", c.audit_log_transitions);
+  c.audit_log_retention_max_records =
+      declare_parameter<int64_t>("audit_log.retention_max_records", c.audit_log_retention_max_records);
+  c.audit_log_fail_closed = declare_parameter<bool>("audit_log.fail_closed", c.audit_log_fail_closed);
+  c.audit_log_database_path = declare_parameter<std::string>("audit_log.database_path", c.audit_log_database_path);
+  c.correlation_config_file = declare_parameter<std::string>("correlation.config_file", c.correlation_config_file);
+
+  c.snapshots_enabled = declare_parameter<bool>("snapshots.enabled", c.snapshots_enabled);
+  c.snapshots_background_capture =
+      declare_parameter<bool>("snapshots.background_capture", c.snapshots_background_capture);
+  c.snapshots_timeout_sec = declare_parameter<double>("snapshots.timeout_sec", c.snapshots_timeout_sec);
+  c.snapshots_max_message_size = declare_parameter<int64_t>("snapshots.max_message_size", c.snapshots_max_message_size);
+  c.snapshots_default_topics =
+      declare_parameter<std::vector<std::string>>("snapshots.default_topics", c.snapshots_default_topics);
+  c.snapshots_entity_default = declare_parameter<bool>("snapshots.entity_default", c.snapshots_entity_default);
+  c.snapshots_config_file = declare_parameter<std::string>("snapshots.config_file", c.snapshots_config_file);
+
+  // The rosbag parameters are declared only when rosbag capture is on.
+  c.snapshots_rosbag_enabled = declare_parameter<bool>("snapshots.rosbag.enabled", c.snapshots_rosbag_enabled);
+  if (c.snapshots_rosbag_enabled) {
+    c.snapshots_rosbag_duration_sec =
+        declare_parameter<double>("snapshots.rosbag.duration_sec", c.snapshots_rosbag_duration_sec);
+    c.snapshots_rosbag_duration_after_sec =
+        declare_parameter<double>("snapshots.rosbag.duration_after_sec", c.snapshots_rosbag_duration_after_sec);
+    c.snapshots_rosbag_topics = declare_parameter<std::string>("snapshots.rosbag.topics", c.snapshots_rosbag_topics);
+    c.snapshots_rosbag_include_topics = declare_parameter<std::vector<std::string>>("snapshots.rosbag.include_topics",
+                                                                                    c.snapshots_rosbag_include_topics);
+    c.snapshots_rosbag_exclude_topics = declare_parameter<std::vector<std::string>>("snapshots.rosbag.exclude_topics",
+                                                                                    c.snapshots_rosbag_exclude_topics);
+    c.snapshots_rosbag_exclude_sensor_topics =
+        declare_parameter<bool>("snapshots.rosbag.exclude_sensor_topics", c.snapshots_rosbag_exclude_sensor_topics);
+    c.snapshots_rosbag_qos_match = declare_parameter<bool>("snapshots.rosbag.qos_match", c.snapshots_rosbag_qos_match);
+    c.snapshots_rosbag_lazy_start =
+        declare_parameter<bool>("snapshots.rosbag.lazy_start", c.snapshots_rosbag_lazy_start);
+    c.snapshots_rosbag_format = declare_parameter<std::string>("snapshots.rosbag.format", c.snapshots_rosbag_format);
+    c.snapshots_rosbag_storage_path =
+        declare_parameter<std::string>("snapshots.rosbag.storage_path", c.snapshots_rosbag_storage_path);
+    c.snapshots_rosbag_max_bag_size_mb =
+        declare_parameter<int64_t>("snapshots.rosbag.max_bag_size_mb", c.snapshots_rosbag_max_bag_size_mb);
+    c.snapshots_rosbag_max_total_storage_mb =
+        declare_parameter<int64_t>("snapshots.rosbag.max_total_storage_mb", c.snapshots_rosbag_max_total_storage_mb);
+    c.snapshots_rosbag_max_buffer_mb =
+        declare_parameter<int64_t>("snapshots.rosbag.max_buffer_mb", c.snapshots_rosbag_max_buffer_mb);
+    c.snapshots_rosbag_max_bags_per_fault =
+        declare_parameter<int64_t>("snapshots.rosbag.max_bags_per_fault", c.snapshots_rosbag_max_bags_per_fault);
+    c.snapshots_rosbag_auto_cleanup =
+        declare_parameter<bool>("snapshots.rosbag.auto_cleanup", c.snapshots_rosbag_auto_cleanup);
+  }
+  return c;
+}
+
 SnapshotConfig FaultManagerNode::create_snapshot_config() {
   SnapshotConfig config;
 
-  // Declare snapshot parameters
-  config.enabled = declare_parameter<bool>("snapshots.enabled", true);
-  config.background_capture = declare_parameter<bool>("snapshots.background_capture", false);
+  config.enabled = config_.snapshots_enabled;
+  config.background_capture = config_.snapshots_background_capture;
+  config.timeout_sec = config_.snapshots_timeout_sec;
+  config.max_message_size = static_cast<size_t>(config_.snapshots_max_message_size);
 
-  // Validate timeout_sec (must be positive)
-  config.timeout_sec = declare_parameter<double>("snapshots.timeout_sec", 1.0);
-  if (!(std::isfinite(config.timeout_sec) && config.timeout_sec > 0.0)) {
-    RCLCPP_WARN(get_logger(), "snapshots.timeout_sec must be positive, got %.2f. Using default 1.0s",
-                config.timeout_sec);
-    config.timeout_sec = 1.0;
+  config.default_topics = config_.snapshots_default_topics;
+
+  config.entity_default = config_.snapshots_entity_default;
+
+  if (!config_.snapshots_config_file.empty()) {
+    load_snapshot_config_from_yaml(config_.snapshots_config_file, config);
   }
 
-  // Validate max_message_size (must be positive before casting to size_t)
-  auto max_message_size_param = declare_parameter<int>("snapshots.max_message_size", 65536);
-  if (max_message_size_param <= 0) {
-    // long long: the parameter type is long on some distros and int on others.
-    RCLCPP_WARN(get_logger(), "snapshots.max_message_size must be positive, got %lld. Using default 65536",
-                static_cast<long long>(max_message_size_param));
-    max_message_size_param = 65536;
-  }
-  config.max_message_size = static_cast<size_t>(max_message_size_param);
-
-  // Default topics (catch-all). Empty entries are dropped: launch files cannot
-  // express an empty string array, so [''] is the conventional "no defaults"
-  // and must not shadow the entity-default fallback below.
-  config.default_topics =
-      declare_parameter<std::vector<std::string>>("snapshots.default_topics", std::vector<std::string>{});
-  config.default_topics.erase(std::remove(config.default_topics.begin(), config.default_topics.end(), std::string{}),
-                              config.default_topics.end());
-
-  // Zero-config fallback: capture the reporting node's own published topics
-  // when no explicit config matches the fault code (opt-out).
-  config.entity_default = declare_parameter<bool>("snapshots.entity_default", true);
-
-  // Load fault_specific and patterns from YAML config file if provided
-  auto config_file = declare_parameter<std::string>("snapshots.config_file", "");
-  if (!config_file.empty()) {
-    load_snapshot_config_from_yaml(config_file, config);
-  }
-
-  // Rosbag configuration (opt-in)
-  config.rosbag.enabled = declare_parameter<bool>("snapshots.rosbag.enabled", false);
+  config.rosbag.enabled = config_.snapshots_rosbag_enabled;
   if (config.rosbag.enabled) {
-    config.rosbag.duration_sec = declare_parameter<double>("snapshots.rosbag.duration_sec", 5.0);
-    if (!(std::isfinite(config.rosbag.duration_sec) && config.rosbag.duration_sec > 0.0)) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_sec must be positive, got %.2f. Using default 5.0s",
-                  config.rosbag.duration_sec);
-      config.rosbag.duration_sec = 5.0;
-    }
-
-    config.rosbag.duration_after_sec = declare_parameter<double>("snapshots.rosbag.duration_after_sec", 1.0);
-    if (!(std::isfinite(config.rosbag.duration_after_sec) && config.rosbag.duration_after_sec >= 0.0)) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.duration_after_sec must be non-negative, got %.2f. Using 0.0s",
-                  config.rosbag.duration_after_sec);
-      config.rosbag.duration_after_sec = 0.0;
-    }
-
-    config.rosbag.topics = declare_parameter<std::string>("snapshots.rosbag.topics", "entity");
-    config.rosbag.include_topics =
-        declare_parameter<std::vector<std::string>>("snapshots.rosbag.include_topics", std::vector<std::string>{});
-    config.rosbag.exclude_topics =
-        declare_parameter<std::vector<std::string>>("snapshots.rosbag.exclude_topics", std::vector<std::string>{});
-    config.rosbag.exclude_sensor_topics = declare_parameter<bool>("snapshots.rosbag.exclude_sensor_topics", true);
-    config.rosbag.qos_match = declare_parameter<bool>("snapshots.rosbag.qos_match", true);
-
-    config.rosbag.lazy_start = declare_parameter<bool>("snapshots.rosbag.lazy_start", false);
-    config.rosbag.format = declare_parameter<std::string>("snapshots.rosbag.format", "mcap");
-    config.rosbag.storage_path = declare_parameter<std::string>("snapshots.rosbag.storage_path", "");
-
-    int64_t max_bag_size = declare_parameter<int64_t>("snapshots.rosbag.max_bag_size_mb", 50);
-    if (max_bag_size <= 0) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_bag_size_mb must be positive. Using 50MB");
-      max_bag_size = 50;
-    }
-    config.rosbag.max_bag_size_mb = static_cast<size_t>(max_bag_size);
-
-    int64_t max_total_storage = declare_parameter<int64_t>("snapshots.rosbag.max_total_storage_mb", 500);
-    if (max_total_storage <= 0) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_total_storage_mb must be positive. Using 500MB");
-      max_total_storage = 500;
-    }
-    config.rosbag.max_total_storage_mb = static_cast<size_t>(max_total_storage);
-
-    int64_t max_buffer = declare_parameter<int64_t>("snapshots.rosbag.max_buffer_mb", 256);
-    if (max_buffer <= 0) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_buffer_mb must be positive. Using 256MB");
-      max_buffer = 256;
-    }
-    config.rosbag.max_buffer_mb = static_cast<size_t>(max_buffer);
-
-    // Recordings kept per fault code. 1 is the pre-#620 behaviour exactly - a new
-    // recording replaces the old one - so the mechanism ships switched off and any
-    // regression report is about the plumbing rather than the policy. Note this is a
-    // FAIRNESS knob more than a depth knob: max_total_storage_mb is the real disk
-    // bound, and a large per-fault cap lets one flapping fault eat the budget and
-    // evict every other fault's black box.
-    int64_t max_bags_per_fault = declare_parameter<int64_t>("snapshots.rosbag.max_bags_per_fault", 1);
-    if (max_bags_per_fault < 0) {
-      RCLCPP_WARN(get_logger(), "snapshots.rosbag.max_bags_per_fault must be >= 0. Treating as unlimited");
-      max_bags_per_fault = 0;
-    }
-    config.rosbag.max_bags_per_fault = static_cast<size_t>(max_bags_per_fault);
-
-    config.rosbag.auto_cleanup = declare_parameter<bool>("snapshots.rosbag.auto_cleanup", true);
+    config.rosbag.duration_sec = config_.snapshots_rosbag_duration_sec;
+    config.rosbag.duration_after_sec = config_.snapshots_rosbag_duration_after_sec;
+    config.rosbag.topics = config_.snapshots_rosbag_topics;
+    config.rosbag.include_topics = config_.snapshots_rosbag_include_topics;
+    config.rosbag.exclude_topics = config_.snapshots_rosbag_exclude_topics;
+    config.rosbag.exclude_sensor_topics = config_.snapshots_rosbag_exclude_sensor_topics;
+    config.rosbag.qos_match = config_.snapshots_rosbag_qos_match;
+    config.rosbag.lazy_start = config_.snapshots_rosbag_lazy_start;
+    config.rosbag.format = config_.snapshots_rosbag_format;
+    config.rosbag.storage_path = config_.snapshots_rosbag_storage_path;
+    config.rosbag.max_bag_size_mb = static_cast<size_t>(config_.snapshots_rosbag_max_bag_size_mb);
+    config.rosbag.max_total_storage_mb = static_cast<size_t>(config_.snapshots_rosbag_max_total_storage_mb);
+    config.rosbag.max_buffer_mb = static_cast<size_t>(config_.snapshots_rosbag_max_buffer_mb);
+    config.rosbag.max_bags_per_fault = static_cast<size_t>(config_.snapshots_rosbag_max_bags_per_fault);
+    config.rosbag.auto_cleanup = config_.snapshots_rosbag_auto_cleanup;
 
     RCLCPP_INFO(get_logger(),
                 "Rosbag capture enabled (duration=%.1fs+%.1fs, topics=%s, qos_match=%s, lazy=%s, format=%s, "
@@ -1554,52 +1183,6 @@ void FaultManagerNode::load_snapshot_config_from_yaml(const std::string & config
 
   } catch (const YAML::Exception & e) {
     RCLCPP_ERROR(get_logger(), "Failed to parse snapshot config file %s: %s", config_file.c_str(), e.what());
-  }
-}
-
-std::unique_ptr<correlation::CorrelationEngine> FaultManagerNode::create_correlation_engine() {
-  // Get correlation config file path from parameter
-  auto config_file = declare_parameter<std::string>("correlation.config_file", "");
-
-  if (config_file.empty()) {
-    RCLCPP_DEBUG(get_logger(), "Correlation disabled: no config_file specified");
-    return nullptr;
-  }
-
-  if (!std::filesystem::exists(config_file)) {
-    RCLCPP_ERROR(get_logger(), "Correlation config file not found: %s", config_file.c_str());
-    return nullptr;
-  }
-
-  try {
-    RCLCPP_INFO(get_logger(), "Loading correlation config from: %s", config_file.c_str());
-    auto config = correlation::parse_config_file(config_file);
-
-    if (!config.enabled) {
-      RCLCPP_INFO(get_logger(), "Correlation explicitly disabled in config");
-      return nullptr;
-    }
-
-    // Validate the config
-    auto validation = correlation::validate_config(config);
-    for (const auto & warning : validation.warnings) {
-      RCLCPP_WARN(get_logger(), "Correlation config: %s", warning.c_str());
-    }
-    if (!validation.valid) {
-      for (const auto & error : validation.errors) {
-        RCLCPP_ERROR(get_logger(), "Correlation config error: %s", error.c_str());
-      }
-      return nullptr;
-    }
-
-    RCLCPP_INFO(get_logger(), "Correlation engine enabled (default_window=%ums, patterns=%zu, rules=%zu)",
-                config.default_window_ms, config.patterns.size(), config.rules.size());
-
-    return std::make_unique<correlation::CorrelationEngine>(config);
-
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR(get_logger(), "Failed to load correlation config: %s", e.what());
-    return nullptr;
   }
 }
 
