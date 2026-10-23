@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -48,6 +49,20 @@ class EventSink {
   virtual void publish(const fd::FaultEventRecord & event) = 0;
 };
 
+/// What a capture request came to.
+enum class CaptureEnqueue {
+  kNone,           ///< No capture is configured; nothing was queued.
+  kAccepted,       ///< Queued.
+  kDroppedNewest,  ///< Queue full: the request was dropped.
+  kEvictedOldest,  ///< Queue full: the oldest pending request was evicted and this one queued.
+  kShuttingDown    ///< The capture pool is stopping; nothing was queued.
+};
+
+struct CaptureResult {
+  CaptureEnqueue result{CaptureEnqueue::kNone};
+  std::string evicted_code;  ///< Set only for kEvictedOldest.
+};
+
 /// Snapshot and rosbag capture the core triggers. Called with the core mutex held; must not call back into the core.
 class CaptureHooks {
  public:
@@ -58,12 +73,10 @@ class CaptureHooks {
   CaptureHooks & operator=(CaptureHooks &&) = delete;
   virtual ~CaptureHooks() = default;
 
-  virtual void on_confirmed(const std::string & code) = 0;
+  /// Queue the snapshot and rosbag capture of @p code now. The core has already applied the recapture cooldown.
+  virtual CaptureResult capture_now(const std::string & code) = 0;
   virtual void on_prefailed(const std::string & code) = 0;
   virtual void on_cleared(const std::string & code) = 0;
-  /// Drops the recapture cooldown of @p code. Called for a cleared code and its auto-cleared symptoms
-  /// before any of them is processed.
-  virtual void forget_cooldown(const std::string & code) = 0;
 };
 
 /// Wall-clock source, nanoseconds since the Unix epoch.
@@ -167,10 +180,10 @@ struct FaultDetail {
 };
 
 /// Report, clear and query sequences of the fault manager, without any ROS handle. report, clear,
-/// list, get, list_for_entity and record_transition run under one internal mutex, so calls are
+/// list, get, list_for_entity, record_transition and tick run under one internal mutex, so calls are
 /// serialised as the node's executor serialises them. The sink and the hooks run inside that
-/// critical section. The accessors below return internals without the lock; they are for the
-/// node's timers until the tick seam moves those into the core.
+/// critical section. The accessors below return internals without the lock; they are for
+/// start-up code and the node's service handlers.
 class FaultManagerCore {
  public:
   FaultManagerCore(FaultManagerConfig config, CoreParts parts, EventSink & events, CaptureHooks & hooks,
@@ -192,6 +205,22 @@ class FaultManagerCore {
   /// this is not one. Throws when audit_log.fail_closed is set and the append fails.
   void record_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
                          int64_t occurred_at_ns);
+
+  /// Runs the periodic jobs that are due at @p wall_now_ns (ns since the epoch): time-based
+  /// auto-confirmation every kAutoConfirmPeriodSec and correlation cleanup every
+  /// correlation_cleanup_interval_sec, each measured from its last run (from construction before the
+  /// first). A tick earlier than the previous one runs nothing: it pulls a due time that is later than
+  /// @p wall_now_ns plus one period back to that. After a wall clock step backwards no job waits more
+  /// than one period, none runs twice within one period of real time, and none confirms early.
+  void tick(int64_t wall_now_ns);
+
+  /// Number of times each tick job has run. For tests and observability.
+  uint64_t auto_confirm_runs() const {
+    return auto_confirm_runs_.load(std::memory_order_relaxed);
+  }
+  uint64_t correlation_cleanup_runs() const {
+    return cleanup_runs_.load(std::memory_order_relaxed);
+  }
 
   /// True when @p entity_id equals a source or is the last path segment of one.
   static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
@@ -231,6 +260,9 @@ class FaultManagerCore {
   ClearOutcome clear_locked(const std::string & code, bool skip_correlation_auto_clear);
   ListOutcome list_locked(const ListQuery & query);
   FaultDetail get_locked(const std::string & code);
+  void run_auto_confirm(int64_t wall_now_ns);
+  /// Queues a capture unless @p code is inside its recapture cooldown.
+  void capture_on_confirm(const std::string & code);
 
   DebounceConfig resolve_config(const std::string & source_id, const std::string & fault_code) const;
   void warn_on_conflicting_debounce_policy(const std::string & fault_code, const std::string & source_id,
@@ -256,6 +288,14 @@ class FaultManagerCore {
 
   std::mutex mutex_;
   std::unordered_map<std::string, DebouncePolicyWitness> debounce_policy_witness_;
+  /// Next due time of each tick job, ns since the epoch.
+  int64_t auto_confirm_due_ns_{0};
+  int64_t cleanup_due_ns_{0};
+  int64_t last_tick_ns_{0};
+  std::atomic<uint64_t> auto_confirm_runs_{0};
+  std::atomic<uint64_t> cleanup_runs_{0};
+  /// Recapture cooldown starts, per fault code. Empty when the cooldown is off.
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_capture_times_;
   std::atomic<uint64_t> audit_dropped_writes_{0};
   std::atomic<bool> audit_healthy_{true};
 };

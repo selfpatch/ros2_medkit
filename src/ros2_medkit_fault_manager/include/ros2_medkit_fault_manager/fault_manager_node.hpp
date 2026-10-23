@@ -177,11 +177,9 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param fault The fault data associated with this event
   void publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault);
 
-  /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
-  /// Shared by the report path and the time-based confirmation timer so a
-  /// confirmation produces the same evidence whichever one produced it.
-  /// @param fault_code Code of the fault that reached CONFIRMED
-  void capture_on_confirm(const std::string & fault_code);
+  /// Queue the snapshot and rosbag capture of a confirmed fault on the capture pool. The core calls it
+  /// through the capture hooks after its cooldown check.
+  core::CaptureResult enqueue_capture(const std::string & fault_code);
 
   /// Append a fault state-transition to the audit log through the core.
   /// @param transition One of the kTransition* constants.
@@ -238,10 +236,6 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Report, clear and query sequences. Declared after the sink and the hooks it calls.
   std::unique_ptr<core::FaultManagerCore> core_;
-
-  /// Per-fault cooldown tracking for snapshot recapture
-  std::mutex last_capture_mutex_;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_capture_times_;
 };
 
 }  // namespace ros2_medkit_fault_manager

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -47,14 +48,23 @@ class RecordingEventSink : public ros2_medkit_fault_manager::core::EventSink {
 
 class IgnoreCaptureHooks : public ros2_medkit_fault_manager::core::CaptureHooks {
  public:
-  void on_confirmed(const std::string & /*code*/) override {
+  ros2_medkit_fault_manager::core::CaptureResult capture_now(const std::string & code) override {
+    captured.push_back(code);
+    return {ros2_medkit_fault_manager::core::CaptureEnqueue::kAccepted, {}};
   }
   void on_prefailed(const std::string & /*code*/) override {
   }
   void on_cleared(const std::string & /*code*/) override {
   }
-  void forget_cooldown(const std::string & /*code*/) override {
+  std::vector<std::string> captured;
+};
+
+class SettableWallClock : public ros2_medkit_fault_manager::core::WallClock {
+ public:
+  int64_t now_ns() const override {
+    return now;
   }
+  int64_t now{0};
 };
 
 class FixedWallClock : public ros2_medkit_fault_manager::core::WallClock {
@@ -118,6 +128,16 @@ static int run() {
     ok &= check(config.auto_confirm_after_sec == 0.0, "NaN auto_confirm_after_sec falls back to 0");
     ok &= check(notices.size() == 2, "two notices: the sign flip and the NaN fallback");
 
+    fm::core::FaultManagerConfig wide;
+    wide.confirmation_threshold = -4294967297LL;
+    wide.healing_threshold = 4294967296LL;
+    const auto wide_notices = wide.validate();
+    ok &= check(wide.confirmation_threshold == -2147483647LL && wide.healing_threshold == 2147483647LL,
+                "int64 thresholds outside the int32 range clamp to its ends");
+    ok &= check(wide_notices.size() == 2 &&
+                    wide_notices[0].text.find("confirmation_threshold must be in [-2147483647, 2147483647]") == 0,
+                "the clamp notice names the range");
+
     const auto parts_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_parts.db";
     std::filesystem::remove(parts_db);
     StderrSink sink;
@@ -166,6 +186,121 @@ static int run() {
                   "the sink saw fault_cleared after the clear");
     }
     std::filesystem::remove(core_db);
+  }
+
+  // Fault manager core: tick drives auto-confirmation and correlation cleanup, each on its own period.
+  {
+    namespace fmc = ros2_medkit_fault_manager::core;
+    constexpr int64_t kMs = 1000000LL;
+    const int64_t t0 = 10000000000LL;
+    const auto tick_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_tick.db";
+    const auto corr_yaml = std::filesystem::temp_directory_path() / "check_cores_without_ros_corr.yaml";
+    std::filesystem::remove(tick_db);
+    {
+      std::ofstream out(corr_yaml.string());
+      out << "correlation:\n  enabled: true\n  default_window_ms: 500\n  patterns:\n    sensor_errors:\n"
+             "      codes: [\"SENSOR_*\"]\n  rules:\n    - id: r1\n      name: R1\n      mode: hierarchical\n"
+             "      root_cause:\n        codes: [\"ESTOP_001\"]\n      symptoms:\n"
+             "        - pattern: sensor_errors\n      window_ms: 2000\n      mute_symptoms: true\n";
+    }
+    StderrSink sink;
+    fmc::FaultManagerConfig tick_config;
+    tick_config.storage_type = "sqlite";
+    tick_config.database_path = tick_db.string();
+    tick_config.confirmation_threshold = -3;
+    tick_config.auto_confirm_after_sec = 1.0;
+    tick_config.correlation_config_file = corr_yaml.string();
+    tick_config.correlation_cleanup_interval_sec = 5.0;
+    RecordingEventSink events;
+    IgnoreCaptureHooks hooks;
+    SettableWallClock clock;
+    clock.now = t0;
+    {
+      fmc::FaultManagerCore fault_core(tick_config, fmc::build_core_parts(tick_config, sink), events, hooks, clock,
+                                       sink);
+      fd::FaultReport report;
+      report.fault_code = "TICK_FAULT";
+      report.kind = fd::ReportKind::kFailed;
+      report.severity = fd::severity::kError;
+      report.description = "d";
+      report.source_id = "/src";
+      ok &= check(fault_core.report(report).accepted, "tick: core accepts a FAILED report");
+      fmc::ListQuery all_statuses;
+      all_statuses.statuses = {fd::fault_status::kPrefailed};
+      const auto before = fault_core.list(all_statuses);
+      ok &= check(before.faults.size() == 1 && before.faults[0].status == fd::fault_status::kPrefailed,
+                  "tick: the fault is PREFAILED");
+
+      fault_core.tick(t0 + 999 * kMs);
+      ok &= check(events.types.empty() && hooks.captured.empty(), "tick at 999 ms: no event, no capture");
+      ok &= check(fault_core.auto_confirm_runs() == 0, "tick at 999 ms: auto-confirm job has not run");
+      fault_core.tick(t0 + 1001 * kMs);
+      ok &= check(events.types.size() == 1 && events.types[0] == fd::fault_event_type::kConfirmed,
+                  "tick at 1001 ms: one fault_confirmed");
+      ok &= check(hooks.captured.size() == 1 && hooks.captured[0] == "TICK_FAULT",
+                  "tick at 1001 ms: capture requested once");
+      ok &= check(fault_core.auto_confirm_runs() == 1, "tick at 1001 ms: auto-confirm job ran once");
+
+      ok &= check(fault_core.correlation_cleanup_runs() == 0, "cleanup has not run before its interval");
+      fault_core.tick(t0 + 4999 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 0, "tick at 4999 ms: cleanup not due");
+      fault_core.tick(t0 + 5001 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 1, "tick at 5001 ms: cleanup ran once");
+      fault_core.tick(t0 + 5002 * kMs);
+      fault_core.tick(t0 + 9000 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 1, "ticks inside the interval: cleanup does not repeat");
+      fault_core.tick(t0 + 10001 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 2, "tick at 10001 ms: cleanup ran a second time");
+      ok &= check(events.types.size() == 1 && hooks.captured.size() == 1, "later ticks emit no second confirmation");
+
+      // A tick earlier than the last one runs nothing and pulls the due times back to now + interval.
+      const uint64_t confirm_runs = fault_core.auto_confirm_runs();
+      fault_core.tick(t0 + 2000 * kMs);
+      ok &= check(fault_core.auto_confirm_runs() == confirm_runs && fault_core.correlation_cleanup_runs() == 2,
+                  "backwards tick: no job runs");
+      ok &= check(events.types.size() == 1 && hooks.captured.size() == 1, "backwards tick: no event, no capture");
+      fault_core.tick(t0 + 6999 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 2, "after a backwards tick: cleanup waits one interval");
+      fault_core.tick(t0 + 7001 * kMs);
+      ok &= check(fault_core.correlation_cleanup_runs() == 3, "after a backwards tick: cleanup resumes");
+      ok &= check(events.types.size() == 1, "after a backwards tick: still one fault_confirmed");
+    }
+    std::filesystem::remove(tick_db);
+    std::filesystem::remove(corr_yaml);
+  }
+
+  // A cleanup interval near the validation maximum must not overflow the due time.
+  {
+    namespace fmc = ros2_medkit_fault_manager::core;
+    const int64_t epoch_now = 1790000000LL * 1000000000LL;
+    const auto huge_db = std::filesystem::temp_directory_path() / "check_cores_without_ros_huge.db";
+    const auto corr_yaml = std::filesystem::temp_directory_path() / "check_cores_without_ros_corr_huge.yaml";
+    std::filesystem::remove(huge_db);
+    {
+      std::ofstream out(corr_yaml.string());
+      out << "correlation:\n  enabled: true\n  default_window_ms: 500\n  patterns:\n    sensor_errors:\n"
+             "      codes: [\"SENSOR_*\"]\n  rules:\n    - id: r1\n      name: R1\n      mode: hierarchical\n"
+             "      root_cause:\n        codes: [\"ESTOP_001\"]\n      symptoms:\n"
+             "        - pattern: sensor_errors\n      window_ms: 2000\n      mute_symptoms: true\n";
+    }
+    StderrSink sink;
+    fmc::FaultManagerConfig huge_config;
+    huge_config.storage_type = "sqlite";
+    huge_config.database_path = huge_db.string();
+    huge_config.correlation_config_file = corr_yaml.string();
+    huge_config.correlation_cleanup_interval_sec = 9.0e9;
+    RecordingEventSink events;
+    IgnoreCaptureHooks hooks;
+    SettableWallClock clock;
+    clock.now = epoch_now;
+    {
+      fmc::FaultManagerCore fault_core(huge_config, fmc::build_core_parts(huge_config, sink), events, hooks, clock,
+                                       sink);
+      fault_core.tick(epoch_now + 1000000000LL);
+      ok &= check(fault_core.correlation_cleanup_runs() == 0, "cleanup interval 9e9 s: no run one second after start");
+    }
+    std::filesystem::remove(huge_db);
+    std::filesystem::remove(corr_yaml);
   }
 
   return ok ? 0 : 1;

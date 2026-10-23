@@ -142,6 +142,8 @@ run_case() {
 run_case default 2 1 0.2
 run_case conf_positive 4 0 0.2 -p confirmation_threshold:=5
 run_case conf_zero 3 0 0.2 -p confirmation_threshold:=0
+run_case conf_wrap_neg 2 0 0.2 -p confirmation_threshold:=-4294967297
+run_case heal_wrap_pos 2 3 0.2 -p healing_enabled:=true -p healing_threshold:=4294967296 -p confirmation_threshold:=-1
 run_case heal_negative 3 4 0.2 -p healing_enabled:=true -p healing_threshold:=-2 -p confirmation_threshold:=-1
 run_case heal_enabled_4294967296 2 3 0.2 -p healing_enabled:=true -p healing_threshold:=4294967296
 run_case autoconfirm_nan 1 0 3.5 -p confirmation_threshold:=-3 -p auto_confirm_after_sec:=.nan
@@ -153,9 +155,13 @@ run_case cooldown_nan 2 0 0.2 -p snapshots.recapture_cooldown_sec:=.nan
 run_case cooldown_neg 2 0 0.2 -p snapshots.recapture_cooldown_sec:=-5.0
 run_case pool_zero 2 0 0.2 -p snapshots.capture_pool_size:=0
 run_case pool_wrap 2 0 0.2 -p snapshots.capture_pool_size:=4294967296
+run_case pool_max 2 0 0.2 -p snapshots.capture_pool_size:=64
+run_case pool_over 2 0 0.2 -p snapshots.capture_pool_size:=65
 run_case depth_zero 2 0 0.2 -p snapshots.capture_queue_depth:=0
 run_case depth_wrap 2 0 0.2 -p snapshots.capture_queue_depth:=4294967296
 run_case depth_negative 2 0 0.2 -p snapshots.capture_queue_depth:=-7
+run_case depth_max 2 0 0.2 -p snapshots.capture_queue_depth:=65536
+run_case depth_over 2 0 0.2 -p snapshots.capture_queue_depth:=65537
 run_case policy_bogus 2 0 0.2 -p snapshots.capture_queue_full_policy:=bogus
 run_case policy_drop_oldest 2 0 0.2 -p snapshots.capture_queue_full_policy:=drop_oldest
 run_case policy_empty 2 0 0.2 -p "snapshots.capture_queue_full_policy:=''"

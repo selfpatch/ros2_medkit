@@ -142,7 +142,8 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    * - ``confirmation_threshold``
      - ``-1``
      - Number of FAILED events to confirm fault. Negative values mean more events needed.
-       Use ``-3`` to require 3 FAILED events before confirmation.
+       Use ``-3`` to require 3 FAILED events before confirmation. Values outside
+       -2147483647 to 2147483647 are clamped to the nearest end with a warning.
    * - ``healing_enabled``
      - ``false``
      - When true, PASSED events can heal confirmed faults.
@@ -150,7 +151,8 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
      - ``3``
      - Counter value at which a fault heals, not a number of events. Healing costs
        ``healing_threshold`` minus the counter the fault confirmed at, so with the
-       default ``-1`` it takes four PASSED events.
+       default ``-1`` it takes four PASSED events. Values outside -2147483647 to 2147483647
+       are clamped to the nearest end with a warning.
    * - ``auto_confirm_after_sec``
      - ``0.0``
      - Auto-confirm prefailed faults after this duration. Set to 0 to disable.
@@ -428,8 +430,8 @@ Basic Snapshot Settings
          config_file: ""                   # Path to YAML config file
          recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
          max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
-         capture_pool_size: 2              # Max concurrent capture threads (>= 1)
-         capture_queue_depth: 16           # Max pending captures before policy applies (>= 1)
+         capture_pool_size: 2              # Max concurrent capture threads (1-64)
+         capture_queue_depth: 16           # Max pending captures before policy applies (1-65536)
          capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
 
 .. list-table::
@@ -482,14 +484,16 @@ Basic Snapshot Settings
        ``max_per_fault``, which still bounds growth either way.
    * - ``snapshots.capture_pool_size``
      - ``2``
-     - Max concurrent capture threads under a fault storm (>= 1). The capture pool is
+     - Max concurrent capture threads under a fault storm (1 to 64; a value outside the range
+       is clamped to the nearest end with a warning). The capture pool is
        shared and created when snapshots **or** rosbag is enabled, so these parameters
        bound both. ``capture_pool_size`` parallelizes freeze-frame snapshot capture
        only; rosbag stays single-writer regardless - correlated faults confirming
        inside one post-roll window share a single recording.
    * - ``snapshots.capture_queue_depth``
      - ``16``
-     - Max pending captures before the full-queue policy applies (>= 1).
+     - Max pending captures before the full-queue policy applies (1 to 65536; a value outside
+       the range is clamped to the nearest end with a warning).
    * - ``snapshots.capture_queue_full_policy``
      - ``reject_newest``
      - Policy when the queue is full: ``reject_newest`` or ``drop_oldest``.

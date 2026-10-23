@@ -18,6 +18,8 @@
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
+#include <cstdint>
 #include <unordered_set>
 #include <utility>
 
@@ -27,6 +29,22 @@ namespace {
 
 bool is_valid_severity(uint8_t severity) {
   return severity <= fd::severity::kCritical;
+}
+
+int64_t seconds_to_ns(double seconds) {
+  return static_cast<int64_t>(std::llround(seconds * 1.0e9));
+}
+
+/// @p base plus @p period_ns, held at INT64_MAX instead of overflowing.
+int64_t add_saturating(int64_t base, int64_t period_ns) {
+  return base > INT64_MAX - period_ns ? INT64_MAX : base + period_ns;
+}
+
+/// The due time after a run at @p now of a job that was due at @p due. Keeps the job's phase
+/// unless it fell more than a period behind.
+int64_t next_due_ns(int64_t due, int64_t now, int64_t period_ns) {
+  const int64_t next = add_saturating(due, period_ns);
+  return next > now ? next : add_saturating(now, period_ns);
 }
 
 std::string extract_topic_name(const std::string & topic_path) {
@@ -83,6 +101,10 @@ FaultManagerCore::FaultManagerCore(FaultManagerConfig config, CoreParts parts, E
   , log_(log)
   , audit_confirmed_only_(config_.audit_log_transitions == "confirmed_only")
   , audit_fail_closed_(config_.audit_log_fail_closed) {
+  const int64_t now_ns = clock_.now_ns();
+  last_tick_ns_ = now_ns;
+  auto_confirm_due_ns_ = add_saturating(now_ns, seconds_to_ns(kAutoConfirmPeriodSec));
+  cleanup_due_ns_ = add_saturating(now_ns, seconds_to_ns(config_.correlation_cleanup_interval_sec));
 }
 
 ReportOutcome FaultManagerCore::report(const fd::FaultReport & report) {
@@ -120,6 +142,110 @@ void FaultManagerCore::record_transition(const char * transition, const fd::Faul
                                          const std::string & source_id, int64_t occurred_at_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
   audit_transition(transition, fault, source_id, occurred_at_ns);
+}
+
+void FaultManagerCore::tick(int64_t wall_now_ns) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const int64_t auto_confirm_period_ns = seconds_to_ns(kAutoConfirmPeriodSec);
+  const int64_t cleanup_period_ns = seconds_to_ns(config_.correlation_cleanup_interval_sec);
+
+  if (wall_now_ns < last_tick_ns_) {
+    auto_confirm_due_ns_ = std::min(auto_confirm_due_ns_, add_saturating(wall_now_ns, auto_confirm_period_ns));
+    cleanup_due_ns_ = std::min(cleanup_due_ns_, add_saturating(wall_now_ns, cleanup_period_ns));
+    last_tick_ns_ = wall_now_ns;
+    return;
+  }
+  last_tick_ns_ = wall_now_ns;
+
+  if (config_.auto_confirm_after_sec > 0.0 && wall_now_ns >= auto_confirm_due_ns_) {
+    auto_confirm_due_ns_ = next_due_ns(auto_confirm_due_ns_, wall_now_ns, auto_confirm_period_ns);
+    auto_confirm_runs_.fetch_add(1, std::memory_order_relaxed);
+    run_auto_confirm(wall_now_ns);
+  }
+  if (correlation_ && wall_now_ns >= cleanup_due_ns_) {
+    cleanup_due_ns_ = next_due_ns(cleanup_due_ns_, wall_now_ns, cleanup_period_ns);
+    cleanup_runs_.fetch_add(1, std::memory_order_relaxed);
+    correlation_->cleanup_expired();
+  }
+}
+
+void FaultManagerCore::run_auto_confirm(int64_t wall_now_ns) {
+  const std::string & logger = config_.logger_name;
+  const auto connection_lost = [&](const FaultStorage::IgnorableConnectionException & e) {
+    logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
+  };
+
+  std::vector<std::string> confirmed;
+  try {
+    confirmed = storage_->check_time_based_confirmation(wall_now_ns);
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    connection_lost(e);
+    return;
+  }
+  if (confirmed.empty()) {
+    return;
+  }
+  // Audit every timer-driven PREFAILED->CONFIRMED transition, or the audit log's verify() cannot see it.
+  for (const auto & fault_code : confirmed) {
+    std::optional<fd::FaultRecord> fault;
+    try {
+      fault = storage_->get_fault(fault_code);
+    } catch (const FaultStorage::IgnorableConnectionException & e) {
+      connection_lost(e);
+      return;
+    }
+    if (!fault) {
+      continue;
+    }
+    audit_transition(kTransitionConfirmed, *fault, "auto_confirm_timer", wall_now_ns);
+    // Same rules as the report path: a symptom muted by a root cause is not announced, and the
+    // capture is not gated by muting.
+    if (!correlation_ || !correlation_->is_muted(fault_code)) {
+      publish_event(fd::fault_event_type::kConfirmed, *fault);
+    }
+    capture_on_confirm(fault_code);
+  }
+  logf(log_, LogLevel::kInfo, logger, "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed.size());
+}
+
+void FaultManagerCore::capture_on_confirm(const std::string & code) {
+  const double cooldown_sec = config_.snapshots_recapture_cooldown_sec;
+  const bool cooldown_enabled = cooldown_sec > 0.0;
+  const auto cooldown = std::chrono::duration<double>(cooldown_sec);
+  const auto now = std::chrono::steady_clock::now();
+
+  if (cooldown_enabled) {
+    // Entries older than the cooldown can never gate a capture again; dropping them bounds the map.
+    for (auto it = last_capture_times_.begin(); it != last_capture_times_.end();) {
+      if (now - it->second >= cooldown) {
+        it = last_capture_times_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (last_capture_times_.find(code) != last_capture_times_.end()) {
+      logf(log_, LogLevel::kDebug, config_.logger_name, "Skipping capture for '%s' - cooldown active", code.c_str());
+      return;
+    }
+  }
+
+  const CaptureResult outcome = hooks_.capture_now(code);
+  if (!cooldown_enabled) {
+    return;
+  }
+  switch (outcome.result) {
+    case CaptureEnqueue::kAccepted:
+      last_capture_times_[code] = now;
+      break;
+    case CaptureEnqueue::kEvictedOldest:
+      last_capture_times_[code] = now;
+      last_capture_times_.erase(outcome.evicted_code);  // keeps the evicted fault retriable
+      break;
+    case CaptureEnqueue::kDroppedNewest:  // not recorded: a later re-confirmation may still capture
+    case CaptureEnqueue::kShuttingDown:
+    case CaptureEnqueue::kNone:
+      break;
+  }
 }
 
 bool FaultManagerCore::matches_entity(const std::vector<std::string> & reporting_sources,
@@ -291,7 +417,7 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     }
 
     if (just_confirmed) {
-      hooks_.on_confirmed(report.fault_code);
+      capture_on_confirm(report.fault_code);
     }
 
     // PREFAILED starts the lazy_start rosbag capture
@@ -360,9 +486,9 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
   }
 
   // Evict cooldown tracking for the cleared fault and the auto-cleared symptoms
-  hooks_.forget_cooldown(code);
+  last_capture_times_.erase(code);
   for (const auto & symptom_code : auto_cleared_codes) {
-    hooks_.forget_cooldown(symptom_code);
+    last_capture_times_.erase(symptom_code);
   }
 
   // Auto-clear correlated symptoms

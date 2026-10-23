@@ -104,7 +104,7 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   event_sink_ = std::make_unique<ros2::RosEventSink>(event_publisher_);
   capture_hooks_ = std::make_unique<ros2::RosCaptureHooks>(
       [this](const std::string & code) {
-        capture_on_confirm(code);
+        return enqueue_capture(code);
       },
       [this](const std::string & code) {
         if (rosbag_capture_) {
@@ -115,10 +115,6 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
         if (rosbag_capture_) {
           rosbag_capture_->on_fault_cleared(code);
         }
-      },
-      [this](const std::string & code) {
-        std::lock_guard<std::mutex> lock(last_capture_mutex_);
-        last_capture_times_.erase(code);
       });
   core_ = std::make_unique<core::FaultManagerCore>(config_, std::move(parts), *event_sink_, *capture_hooks_,
                                                    wall_clock_, log_sink_);
@@ -217,7 +213,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     auto rosbag_mutex = std::make_shared<std::mutex>();
     capture_pool_ = std::make_unique<CaptureThreadPool>(
         static_cast<std::size_t>(capture_pool_size_), static_cast<std::size_t>(capture_queue_depth_),
-        capture_queue_full_policy_, get_logger(), [snap, bag, rosbag_mutex](const std::string & fault_code) {
+        capture_queue_full_policy_, log_sink_,
+        [snap, bag, rosbag_mutex](const std::string & fault_code) {
           if (snap) {
             snap->capture(fault_code);
           }
@@ -225,65 +222,21 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
             std::lock_guard<std::mutex> bag_lock(*rosbag_mutex);
             bag->on_fault_confirmed(fault_code);
           }
-        });
+        },
+        config_.logger_name);
   }
 
-  // Create correlation cleanup timer if correlation is enabled
+  // Both jobs run inside the core; the timers only deliver the wall clock.
   if (core_->correlation()) {
-    auto cleanup_interval_sec = declare_parameter<double>("correlation.cleanup_interval_sec", 5.0);
-    if (!(std::isfinite(cleanup_interval_sec) && cleanup_interval_sec > 0.0)) {
-      RCLCPP_WARN(get_logger(), "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
-                  cleanup_interval_sec);
-      cleanup_interval_sec = 5.0;
-    }
-    auto cleanup_interval_ms = static_cast<int64_t>(cleanup_interval_sec * 1000);
+    const auto cleanup_interval_ms = static_cast<int64_t>(config_.correlation_cleanup_interval_sec * 1000);
     correlation_cleanup_timer_ = create_wall_timer(std::chrono::milliseconds(cleanup_interval_ms), [this]() {
-      core_->correlation()->cleanup_expired();
+      core_->tick(get_wall_clock_ns());
     });
   }
 
-  // Create auto-confirmation timer if enabled
   if (auto_confirm_after_sec_ > 0.0) {
     auto_confirm_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
-      std::vector<std::string> confirmed = {};
-      try {
-        confirmed = storage_->check_time_based_confirmation(get_wall_clock_ns());
-      } catch (const FaultStorage::IgnorableConnectionException & e) {
-        RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-        return;
-      }
-      if (confirmed.empty()) {
-        return;
-      }
-      // Audit every timer-driven PREFAILED->CONFIRMED transition. Without this the
-      // confirmations are invisible to the audit log's verify().
-      const int64_t confirmed_at_ns = get_wall_clock_ns();
-      for (const auto & fault_code : confirmed) {
-        std::optional<fd::FaultRecord> fault;
-        try {
-          fault = storage_->get_fault(fault_code);
-        } catch (const FaultStorage::IgnorableConnectionException & e) {
-          RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
-          return;
-        }
-        if (fault) {
-          audit_transition(kTransitionConfirmed, *fault, "auto_confirm_timer", confirmed_at_ns);
-          // A timer-driven confirmation is a confirmation: it has to reach the
-          // event stream and the black box exactly like one raised by a report,
-          // or subscribers see no alarm and no recording is ever made for it.
-          //
-          // Muting is checked for the same reason the report path checks it: a
-          // symptom suppressed by a root cause must not be announced, or SSE and
-          // the trigger subscribers see an alarm that the fault list hides.
-          // Capture is deliberately not gated, matching the report path, where
-          // just_confirmed is set regardless of muting.
-          if (!core_->correlation() || !core_->correlation()->is_muted(fault_code)) {
-            publish_fault_event(ros2_medkit_msgs::msg::FaultEvent::EVENT_CONFIRMED, *fault);
-          }
-          capture_on_confirm(fault_code);
-        }
-      }
-      RCLCPP_INFO(get_logger(), "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed.size());
+      core_->tick(get_wall_clock_ns());
     });
     RCLCPP_INFO(get_logger(),
                 "FaultManager node started (storage=%s, confirmation_threshold=%d, "
@@ -332,86 +285,38 @@ FaultManagerNode::~FaultManagerNode() {
   }
 }
 
-void FaultManagerNode::capture_on_confirm(const std::string & fault_code) {
-  // Capture snapshots/rosbag when a fault confirms, via the bounded pool.
-  // Both callers - the report handler and the auto-confirm timer - run on the
-  // node's single-threaded executor, so confirmations are already serialized;
-  // last_capture_mutex_ only guards last_capture_times_ itself (the cooldown
-  // check, the update below, and the expired-entry sweep). It is taken solely
-  // when the cooldown is enabled, since the map is otherwise never touched.
+core::CaptureResult FaultManagerNode::enqueue_capture(const std::string & fault_code) {
   if (!capture_pool_) {
-    return;
+    return {};
   }
-  const bool cooldown_enabled = snapshot_recapture_cooldown_sec_ > 0.0;
-  std::unique_lock<std::mutex> cd_lock(last_capture_mutex_, std::defer_lock);
-  if (cooldown_enabled) {
-    cd_lock.lock();
+  const EnqueueOutcome outcome = capture_pool_->enqueue(fault_code);
+  // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical compat); mirror
+  // rosbag_capture.cpp's local-copy pattern. The counter is cast to unsigned long long for %llu
+  // to avoid -Wuseless-cast (uint64_t == unsigned long on LP64).
+  rclcpp::Clock throttle_clock(*get_clock());
+  switch (outcome.result) {
+    case EnqueueResult::kAccepted:
+      return {core::CaptureEnqueue::kAccepted, {}};
+    case EnqueueResult::kEvictedOldest:
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
+                           "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
+                           "(pool=%d, queue=%d, total_dropped=%llu)",
+                           outcome.evicted_code ? outcome.evicted_code->c_str() : "?", fault_code.c_str(),
+                           capture_pool_size_, capture_queue_depth_,
+                           static_cast<unsigned long long>(capture_pool_->dropped_captures()));
+      return {core::CaptureEnqueue::kEvictedOldest, outcome.evicted_code.value_or(std::string{})};
+    case EnqueueResult::kDroppedNewest:
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
+                           "Capture queue full (reject_newest): dropped capture for '%s' "
+                           "(pool=%d, queue=%d, total_dropped=%llu)",
+                           fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
+                           static_cast<unsigned long long>(capture_pool_->dropped_captures()));
+      return {core::CaptureEnqueue::kDroppedNewest, {}};
+    case EnqueueResult::kRejectedShuttingDown:
+      RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", fault_code.c_str());
+      return {core::CaptureEnqueue::kShuttingDown, {}};
   }
-
-  bool on_cooldown = false;
-  if (cooldown_enabled) {
-    const auto cooldown = std::chrono::duration<double>(snapshot_recapture_cooldown_sec_);
-    const auto sweep_now = std::chrono::steady_clock::now();
-    // Bound the map (issue #441): a storm of distinct fault codes would otherwise
-    // leave one permanent entry per code. Entries older than the cooldown can never
-    // gate a capture again, so drop them while we hold the lock.
-    for (auto it = last_capture_times_.begin(); it != last_capture_times_.end();) {
-      if (sweep_now - it->second >= cooldown) {
-        it = last_capture_times_.erase(it);
-      } else {
-        ++it;
-      }
-    }
-    auto it = last_capture_times_.find(fault_code);
-    if (it != last_capture_times_.end()) {
-      on_cooldown = (sweep_now - it->second) < cooldown;
-    }
-  }
-
-  if (on_cooldown) {
-    RCLCPP_DEBUG(get_logger(), "Skipping capture for '%s' - cooldown active", fault_code.c_str());
-  } else {
-    const EnqueueOutcome outcome = capture_pool_->enqueue(fault_code);
-    const auto now = std::chrono::steady_clock::now();
-    // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical
-    // compat); mirror rosbag_capture.cpp's local-copy pattern. Cast the
-    // uint64_t counter to unsigned long long + %llu to avoid -Wuseless-cast
-    // (uint64_t == unsigned long on LP64).
-    rclcpp::Clock throttle_clock(*get_clock());
-    switch (outcome.result) {
-      case EnqueueResult::kAccepted:
-        if (cooldown_enabled) {
-          last_capture_times_[fault_code] = now;
-        }
-        break;
-      case EnqueueResult::kEvictedOldest:
-        if (cooldown_enabled) {
-          last_capture_times_[fault_code] = now;
-          if (outcome.evicted_code) {
-            last_capture_times_.erase(*outcome.evicted_code);  // keep evicted fault retriable
-          }
-        }
-        RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
-                             "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
-                             "(pool=%d, queue=%d, total_dropped=%llu)",
-                             outcome.evicted_code ? outcome.evicted_code->c_str() : "?", fault_code.c_str(),
-                             capture_pool_size_, capture_queue_depth_,
-                             static_cast<unsigned long long>(capture_pool_->dropped_captures()));
-        break;
-      case EnqueueResult::kDroppedNewest:
-        // Cooldown NOT recorded: capture still possible if the fault later
-        // heals/clears and re-confirms.
-        RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
-                             "Capture queue full (reject_newest): dropped capture for '%s' "
-                             "(pool=%d, queue=%d, total_dropped=%llu)",
-                             fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
-                             static_cast<unsigned long long>(capture_pool_->dropped_captures()));
-        break;
-      case EnqueueResult::kRejectedShuttingDown:
-        RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", fault_code.c_str());
-        break;
-    }
-  }
+  return {};
 }
 
 void FaultManagerNode::handle_report_fault(
@@ -552,6 +457,8 @@ core::FaultManagerConfig FaultManagerNode::declare_config() {
   c.audit_log_fail_closed = declare_parameter<bool>("audit_log.fail_closed", c.audit_log_fail_closed);
   c.audit_log_database_path = declare_parameter<std::string>("audit_log.database_path", c.audit_log_database_path);
   c.correlation_config_file = declare_parameter<std::string>("correlation.config_file", c.correlation_config_file);
+  c.correlation_cleanup_interval_sec =
+      declare_parameter<double>("correlation.cleanup_interval_sec", c.correlation_cleanup_interval_sec);
 
   c.snapshots_enabled = declare_parameter<bool>("snapshots.enabled", c.snapshots_enabled);
   c.snapshots_background_capture =

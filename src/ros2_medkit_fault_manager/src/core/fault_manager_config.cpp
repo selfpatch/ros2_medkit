@@ -15,8 +15,9 @@
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 
 #include <algorithm>
-#include <climits>
+#include <cinttypes>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
 namespace ros2_medkit_fault_manager::core {
@@ -26,6 +27,12 @@ namespace {
 /// Upper bound of auto_confirm_after_sec: the storage backends evaluate the window as
 /// std::llround(sec * 1e9), which is undefined past the int64 range.
 constexpr double kMaxAutoConfirmSec = 9.0e9;
+
+/// Largest magnitude of the debounce thresholds, which the node narrows to int32.
+constexpr int64_t kMaxThresholdMagnitude = INT32_MAX;
+
+/// Upper bound of correlation.cleanup_interval_sec: the period is kept in nanoseconds.
+constexpr double kMaxCleanupIntervalSec = 9.0e9;
 
 constexpr int64_t kDefaultMaxNearMissesPerFault = 200;
 
@@ -45,6 +52,27 @@ class CollectSink : public LogSink {
 // readability-simplify-boolean-expr from rewriting it back.
 std::vector<ConfigNotice> FaultManagerConfig::validate() {
   CollectSink sink;
+
+  // The thresholds are narrowed to int32 and negated below, so the range is symmetric.
+  const bool confirmation_in_range =
+      confirmation_threshold >= -kMaxThresholdMagnitude && confirmation_threshold <= kMaxThresholdMagnitude;
+  if (!confirmation_in_range) {
+    const int64_t clamped = confirmation_threshold < 0 ? -kMaxThresholdMagnitude : kMaxThresholdMagnitude;
+    logf(sink, LogLevel::kWarn, logger_name,
+         "confirmation_threshold must be in [%" PRId64 ", %" PRId64 "], got %" PRId64 ". Clamping to %" PRId64,
+         -kMaxThresholdMagnitude, kMaxThresholdMagnitude, confirmation_threshold, clamped);
+    confirmation_threshold = clamped;
+  }
+
+  const bool healing_in_range =
+      healing_threshold >= -kMaxThresholdMagnitude && healing_threshold <= kMaxThresholdMagnitude;
+  if (!healing_in_range) {
+    const int64_t clamped = healing_threshold < 0 ? -kMaxThresholdMagnitude : kMaxThresholdMagnitude;
+    logf(sink, LogLevel::kWarn, logger_name,
+         "healing_threshold must be in [%" PRId64 ", %" PRId64 "], got %" PRId64 ". Clamping to %" PRId64,
+         -kMaxThresholdMagnitude, kMaxThresholdMagnitude, healing_threshold, clamped);
+    healing_threshold = clamped;
+  }
 
   if (confirmation_threshold > 0) {
     logf(sink, LogLevel::kWarn, logger_name,
@@ -76,19 +104,24 @@ std::vector<ConfigNotice> FaultManagerConfig::validate() {
     snapshots_recapture_cooldown_sec = 0.0;
   }
 
-  // The node narrows these to int, so a value outside [1, INT_MAX] is rejected before it can wrap.
-  const bool pool_in_range = snapshots_capture_pool_size >= 1 && snapshots_capture_pool_size <= INT_MAX;
+  // The node narrows these to int, so a value outside the range is rejected before it can wrap.
+  const bool pool_in_range = snapshots_capture_pool_size >= 1 && snapshots_capture_pool_size <= kMaxCapturePoolSize;
   if (!pool_in_range) {
-    logf(sink, LogLevel::kWarn, logger_name, "snapshots.capture_pool_size must be >= 1, got %ld. Clamping to 1",
-         static_cast<long>(snapshots_capture_pool_size));
-    snapshots_capture_pool_size = 1;
+    const int64_t clamped = snapshots_capture_pool_size < 1 ? 1 : kMaxCapturePoolSize;
+    logf(sink, LogLevel::kWarn, logger_name,
+         "snapshots.capture_pool_size must be in [1, %" PRId64 "], got %" PRId64 ". Clamping to %" PRId64,
+         kMaxCapturePoolSize, snapshots_capture_pool_size, clamped);
+    snapshots_capture_pool_size = clamped;
   }
 
-  const bool depth_in_range = snapshots_capture_queue_depth >= 1 && snapshots_capture_queue_depth <= INT_MAX;
+  const bool depth_in_range =
+      snapshots_capture_queue_depth >= 1 && snapshots_capture_queue_depth <= kMaxCaptureQueueDepth;
   if (!depth_in_range) {
-    logf(sink, LogLevel::kWarn, logger_name, "snapshots.capture_queue_depth must be >= 1, got %ld. Clamping to 1",
-         static_cast<long>(snapshots_capture_queue_depth));
-    snapshots_capture_queue_depth = 1;
+    const int64_t clamped = snapshots_capture_queue_depth < 1 ? 1 : kMaxCaptureQueueDepth;
+    logf(sink, LogLevel::kWarn, logger_name,
+         "snapshots.capture_queue_depth must be in [1, %" PRId64 "], got %" PRId64 ". Clamping to %" PRId64,
+         kMaxCaptureQueueDepth, snapshots_capture_queue_depth, clamped);
+    snapshots_capture_queue_depth = clamped;
   }
 
   if (snapshots_capture_queue_full_policy != "reject_newest" && snapshots_capture_queue_full_policy != "drop_oldest") {
@@ -141,6 +174,16 @@ std::vector<ConfigNotice> FaultManagerConfig::validate() {
          "snapshots.max_message_size must be positive, got %lld. Using default 65536",
          static_cast<long long>(snapshots_max_message_size));
     snapshots_max_message_size = 65536;
+  }
+
+  const bool cleanup_in_range = std::isfinite(correlation_cleanup_interval_sec) &&
+                                correlation_cleanup_interval_sec > 0.0 &&
+                                correlation_cleanup_interval_sec <= kMaxCleanupIntervalSec;
+  if (!cleanup_in_range) {
+    logf(sink, LogLevel::kWarn, logger_name,
+         "correlation.cleanup_interval_sec must be positive, got %.2f. Using default 5.0s",
+         correlation_cleanup_interval_sec);
+    correlation_cleanup_interval_sec = 5.0;
   }
 
   if (snapshots_rosbag_enabled) {

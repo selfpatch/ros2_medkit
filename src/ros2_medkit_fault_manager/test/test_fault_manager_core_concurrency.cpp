@@ -64,13 +64,12 @@ class CountingEventSink : public core::EventSink {
 
 class NoCaptureHooks : public core::CaptureHooks {
  public:
-  void on_confirmed(const std::string & /*code*/) override {
+  core::CaptureResult capture_now(const std::string & /*code*/) override {
+    return {};
   }
   void on_prefailed(const std::string & /*code*/) override {
   }
   void on_cleared(const std::string & /*code*/) override {
-  }
-  void forget_cooldown(const std::string & /*code*/) override {
   }
 };
 

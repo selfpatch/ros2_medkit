@@ -23,7 +23,8 @@ namespace ros2_medkit_fault_manager::core {
 
 enum class LogLevel { kDebug, kInfo, kWarn, kError, kFatal };
 
-/// Receives log lines from the ROS-free core. `logger` names the source.
+/// Receives log lines from the ROS-free core. `logger` names the source. log() is called from several
+/// threads at once (core callers and capture pool workers); implementations must be thread-safe.
 class LogSink {
  public:
   LogSink() = default;

@@ -26,7 +26,7 @@
 #include <thread>
 #include <vector>
 
-#include "rclcpp/logger.hpp"
+#include "ros2_medkit_fault_manager/core/log_sink.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -59,11 +59,12 @@ class CaptureThreadPool {
   /// @param pool_size  Number of worker threads (clamped to >= 1).
   /// @param queue_depth  Max pending jobs (clamped to >= 1).
   /// @param full_policy  Behavior when the pending queue is full.
-  /// @param logger  Logger for worker-side capture failures.
+  /// @param log  Sink for worker-side capture failures. Must outlive the pool.
   /// @param capture_fn  Invoked per job on a worker thread. Must be thread-safe
   ///        for pool_size concurrent calls. Exceptions are caught and logged.
-  CaptureThreadPool(std::size_t pool_size, std::size_t queue_depth, QueueFullPolicy full_policy, rclcpp::Logger logger,
-                    std::function<void(const std::string &)> capture_fn);
+  /// @param logger_name  Logger name of the lines written to @p log.
+  CaptureThreadPool(std::size_t pool_size, std::size_t queue_depth, QueueFullPolicy full_policy, core::LogSink & log,
+                    std::function<void(const std::string &)> capture_fn, std::string logger_name = "fault_manager");
   ~CaptureThreadPool();
 
   CaptureThreadPool(const CaptureThreadPool &) = delete;
@@ -91,7 +92,8 @@ class CaptureThreadPool {
 
   const std::size_t queue_depth_;
   const QueueFullPolicy full_policy_;
-  rclcpp::Logger logger_;
+  core::LogSink & log_;
+  std::string logger_name_;
   std::function<void(const std::string &)> capture_fn_;
 
   mutable std::mutex queue_mutex_;

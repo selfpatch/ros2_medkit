@@ -26,17 +26,15 @@ namespace ros2_medkit_fault_manager::ros2 {
 /// the function given at construction; the node reads its capture members when it runs.
 class RosCaptureHooks : public core::CaptureHooks {
  public:
+  using CaptureFn = std::function<core::CaptureResult(const std::string &)>;
   using CodeFn = std::function<void(const std::string &)>;
 
-  RosCaptureHooks(CodeFn on_confirmed, CodeFn on_prefailed, CodeFn on_cleared, CodeFn forget_cooldown)
-    : on_confirmed_(std::move(on_confirmed))
-    , on_prefailed_(std::move(on_prefailed))
-    , on_cleared_(std::move(on_cleared))
-    , forget_cooldown_(std::move(forget_cooldown)) {
+  RosCaptureHooks(CaptureFn capture_now, CodeFn on_prefailed, CodeFn on_cleared)
+    : capture_now_(std::move(capture_now)), on_prefailed_(std::move(on_prefailed)), on_cleared_(std::move(on_cleared)) {
   }
 
-  void on_confirmed(const std::string & code) override {
-    on_confirmed_(code);
+  core::CaptureResult capture_now(const std::string & code) override {
+    return capture_now_(code);
   }
   void on_prefailed(const std::string & code) override {
     on_prefailed_(code);
@@ -44,15 +42,11 @@ class RosCaptureHooks : public core::CaptureHooks {
   void on_cleared(const std::string & code) override {
     on_cleared_(code);
   }
-  void forget_cooldown(const std::string & code) override {
-    forget_cooldown_(code);
-  }
 
  private:
-  CodeFn on_confirmed_;
+  CaptureFn capture_now_;
   CodeFn on_prefailed_;
   CodeFn on_cleared_;
-  CodeFn forget_cooldown_;
 };
 
 }  // namespace ros2_medkit_fault_manager::ros2

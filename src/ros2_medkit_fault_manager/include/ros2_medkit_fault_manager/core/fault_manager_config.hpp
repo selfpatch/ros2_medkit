@@ -22,6 +22,14 @@
 
 namespace ros2_medkit_fault_manager::core {
 
+/// Period of the time-based auto-confirmation job.
+inline constexpr double kAutoConfirmPeriodSec = 1.0;
+
+/// Bounds of `snapshots.capture_pool_size` and `snapshots.capture_queue_depth`. A worker is an OS
+/// thread running a multi-second capture; a queue entry is a fault code.
+inline constexpr int64_t kMaxCapturePoolSize = 64;
+inline constexpr int64_t kMaxCaptureQueueDepth = 65536;
+
 /// One line `FaultManagerConfig::validate()` wants logged.
 struct ConfigNotice {
   LogLevel level;
@@ -63,6 +71,7 @@ struct FaultManagerConfig {
   std::string audit_log_database_path;
 
   std::string correlation_config_file;
+  double correlation_cleanup_interval_sec{5.0};
 
   bool snapshots_enabled{true};
   bool snapshots_background_capture{false};
