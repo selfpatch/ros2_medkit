@@ -48,6 +48,26 @@ for dir in "${CORE_DIRS[@]}"; do
   done < <(grep -rEn "$FORBIDDEN_PATTERN" "$dir" 2>/dev/null || true)
 done
 
+# Files that must compile without any ROS include path.
+ROS_FREE_SOURCES=(
+  "include/ros2_medkit_gateway/core/gateway_services.hpp"
+  "include/ros2_medkit_gateway/http/handlers/handler_context.hpp"
+  "src/http/handlers/handler_context.cpp"
+)
+for src in "${ROS_FREE_SOURCES[@]}"; do
+  if [ ! -f "$src" ]; then
+    echo "ROS-FREE SOURCE MISSING: $src"
+    violations=$((violations + 1))
+    continue
+  fi
+  if ! out=$(g++ -std=c++17 -fsyntax-only -Wno-pragma-once-outside-header \
+    -Iinclude -Isrc -Isrc/vendored/tl_expected/include -Isrc/vendored/cpp_httplib "$src" 2>&1); then
+    echo "DOES NOT COMPILE WITHOUT ROS: $src"
+    echo "$out" | grep -E 'error' | head -5
+    violations=$((violations + 1))
+  fi
+done
+
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "Core purity check failed: $violations ROS-include violation(s) detected."

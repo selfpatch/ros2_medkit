@@ -28,6 +28,7 @@
 #include <regex>
 #include <string>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
@@ -133,7 +134,7 @@ TEST(LockHandlersStaticTest, LockingDisabledReturns501) {
   CorsConfig cors;
   AuthConfig auth;
   TlsConfig tls;
-  HandlerContext ctx(nullptr, cors, auth, tls, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors, auth, tls, nullptr);
   LockHandlers handlers(ctx, nullptr);
 
   httplib::Request req;
@@ -221,7 +222,7 @@ class LockHandlersTest : public ::testing::Test {
     lock_manager_ = suite_node_->get_lock_manager();
     ASSERT_NE(lock_manager_, nullptr) << "LockManager should be created when locking.enabled=true";
 
-    ctx_ = std::make_unique<HandlerContext>(suite_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*suite_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<LockHandlers>(*ctx_, lock_manager_);
   }
 

@@ -31,10 +31,10 @@
 #include "ros2_medkit_gateway/core/http/operation_item_id.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/openapi/document_checks.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
@@ -108,11 +108,10 @@ void for_each_operation(nlohmann::json & document, Visitor && visit) {
 
 }  // namespace
 
-CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, PluginManager * plugin_mgr,
                                          const RouteRegistry * route_registry, std::string server_host,
                                          int64_t server_port, DocsCacheBounds bounds)
   : ctx_(ctx)
-  , node_(node)
   , plugin_mgr_(plugin_mgr)
   , route_registry_(route_registry)
   , schema_builder_()
@@ -726,7 +725,7 @@ bool CapabilityGenerator::adopt_projected_framework(nlohmann::json & item, const
 void CapabilityGenerator::add_cache_derived_items(nlohmann::json & paths, const ResolvedPath & resolved,
                                                   const std::string & entity_path) const {
   const std::string collection_path = entity_path + "/" + resolved.resource_collection;
-  const auto & cache = node_.get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   const PathBuilder path_builder(schema_builder_);
   const bool one_item = !resolved.resource_id.empty();
 
@@ -969,7 +968,7 @@ nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & pat
 // -----------------------------------------------------------------------------
 
 bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolved) const {
-  const auto & cache = node_.get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
 
   // Validate the main entity exists
   if (!resolved.entity_id.empty()) {
@@ -1160,7 +1159,7 @@ size_t CapabilityGenerator::cache_byte_size() const {
 }
 
 std::string CapabilityGenerator::get_cache_key(const std::string & path) const {
-  auto & cache = node_.get_thread_safe_cache();
+  auto & cache = ctx_.services().entity_cache();
   auto generation = cache.generation();
   {
     std::unique_lock lock(cache_mutex_);

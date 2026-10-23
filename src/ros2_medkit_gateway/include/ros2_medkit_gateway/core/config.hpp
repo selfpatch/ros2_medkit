@@ -30,6 +30,8 @@ struct RestConfig {
   std::string server_host{"localhost"};
   int64_t server_port{8080};
   std::string fault_events_topic;
+  /// Logger name the REST server reports its warnings under.
+  std::string logger_name{"rest_server"};
 };
 
 /**

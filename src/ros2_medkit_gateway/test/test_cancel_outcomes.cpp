@@ -297,7 +297,7 @@ class CancelOutcomesFixtureTest : public ::testing::Test {
       std::this_thread::yield();
     }
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<OperationHandlers>(*ctx_);
 
     // The transport's wait_for_service must resolve the phantom cancel

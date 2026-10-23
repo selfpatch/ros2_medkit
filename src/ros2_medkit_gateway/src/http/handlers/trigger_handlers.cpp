@@ -30,10 +30,10 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -215,7 +215,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
   // cache and find the one whose name ends with the resource_path.
   std::string resolved_topic_name;
   if (parsed->collection == "data" && !parsed->resource_path.empty()) {
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto aggregated = cache.get_entity_data(entity_id);
     for (const auto & topic : aggregated.topics) {
       // Match: topic.name ends with the resource_path (e.g., topic "/sensor/temperature"
@@ -240,7 +240,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       // cache lags the plugin's live node map by up to one refresh cycle
       // (the retry budget is sized against it in gateway_node), and a
       // genuinely topic-less point surfaces through the retry-expiry warning.
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       std::optional<nlohmann::json> content;
       if (pmgr != nullptr) {
         if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_id)) {

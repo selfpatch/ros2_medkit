@@ -83,7 +83,7 @@ class DocsHandlersTest : public ::testing::Test {
     AuthConfig auth_config;
     TlsConfig tls_config;
 
-    ctx_ = std::make_unique<handlers::HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
+    ctx_ = std::make_unique<handlers::HandlerContext>(*node_, cors_config, auth_config, tls_config, nullptr);
 
     route_registry_ = std::make_unique<openapi::RouteRegistry>();
     populate_docs_test_routes(*route_registry_);
@@ -110,7 +110,7 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
   node_->set_parameter(rclcpp::Parameter("docs.enabled", false));
 
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
@@ -128,7 +128,7 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
@@ -154,7 +154,7 @@ TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
 // indent width, key order and separators all have to agree.
 TEST_F(DocsHandlersTest, DocsRootBodyIsTheSameBytesADomWouldHaveWritten) {
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
@@ -168,7 +168,7 @@ TEST_F(DocsHandlersTest, DocsRootBodyIsTheSameBytesADomWouldHaveWritten) {
 // `write_json_text` rather than through the typed router.
 TEST_F(DocsHandlersTest, DocsAnyPathBodyIsTheSameBytesADomWouldHaveWritten) {
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
@@ -195,7 +195,7 @@ TEST_F(DocsHandlersTest, DocsAnyPathBodyIsTheSameBytesADomWouldHaveWritten) {
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
@@ -231,7 +231,7 @@ TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns404ForInvalidPath) {
   handlers::DocsHandlers docs_handlers(
-      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      *ctx_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
       node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;

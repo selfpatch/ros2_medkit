@@ -197,7 +197,7 @@ CyclicSubscriptionHandlers::post_subscription(const http::TypedRequest & req,
 
   // Start transport delivery
   auto sampler = sampler_registry_.get_sampler(parsed->collection);
-  auto event_source_result = transport->start(*result, *sampler, ctx_.node());
+  auto event_source_result = transport->start(*result, *sampler, ctx_.services().ros_node());
   if (!event_source_result) {
     sub_mgr_.remove(result->id);
     return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, event_source_result.error()));

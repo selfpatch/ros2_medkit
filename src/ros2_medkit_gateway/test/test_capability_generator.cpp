@@ -136,15 +136,15 @@ class CapabilityGeneratorTest : public ::testing::Test {
     AuthConfig auth_config;
     TlsConfig tls_config;
 
-    ctx_ = std::make_unique<handlers::HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
+    ctx_ = std::make_unique<handlers::HandlerContext>(*node_, cors_config, auth_config, tls_config, nullptr);
 
     // Create a test route registry with representative routes
     route_registry_ = std::make_unique<RouteRegistry>();
     populate_test_routes(*route_registry_);
 
-    generator_ = std::make_unique<CapabilityGenerator>(
-        *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
-        node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
+    generator_ = std::make_unique<CapabilityGenerator>(*ctx_, node_->get_plugin_manager(), route_registry_.get(),
+                                                       node_->get_parameter("server.host").as_string(),
+                                                       node_->get_parameter("server.port").as_int());
   }
 
   void TearDown() override {
@@ -759,7 +759,7 @@ TEST_F(CapabilityGeneratorTest, ByteBudgetEvictsBeforeTheEntryCountWould) {
   // A budget that fits one document of this size but not two.
   openapi::DocsCacheBounds bounds;
   bounds.max_bytes = first->size() + 64;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+  CapabilityGenerator bounded(*ctx_, node_->get_plugin_manager(), route_registry_.get(),
                               node_->get_parameter("server.host").as_string(),
                               node_->get_parameter("server.port").as_int(), bounds);
 
@@ -777,7 +777,7 @@ TEST_F(CapabilityGeneratorTest, ByteBudgetEvictsBeforeTheEntryCountWould) {
 TEST_F(CapabilityGeneratorTest, DocumentLargerThanTheBudgetIsServedUncached) {
   openapi::DocsCacheBounds bounds;
   bounds.max_bytes = 16;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+  CapabilityGenerator bounded(*ctx_, node_->get_plugin_manager(), route_registry_.get(),
                               node_->get_parameter("server.host").as_string(),
                               node_->get_parameter("server.port").as_int(), bounds);
 
@@ -792,7 +792,7 @@ TEST_F(CapabilityGeneratorTest, DocumentLargerThanTheBudgetIsServedUncached) {
 TEST_F(CapabilityGeneratorTest, EntryCountEvictsWhenTheByteBudgetIsSlack) {
   openapi::DocsCacheBounds bounds;
   bounds.max_entries = 2;
-  CapabilityGenerator bounded(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(),
+  CapabilityGenerator bounded(*ctx_, node_->get_plugin_manager(), route_registry_.get(),
                               node_->get_parameter("server.host").as_string(),
                               node_->get_parameter("server.port").as_int(), bounds);
 

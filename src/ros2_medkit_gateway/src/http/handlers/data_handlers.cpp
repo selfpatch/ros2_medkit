@@ -35,11 +35,12 @@
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
@@ -405,7 +406,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
     if (data_prov == nullptr) {
       // PLC bridges serve live values through their own x-plc-data route
@@ -460,11 +461,11 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
 
   try {
     // Use unified cache method to get aggregated data.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto aggregated = cache.get_entity_data(entity_id);
 
     // Get data access manager for type introspection.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto data_access_mgr = ctx_.services().data_access_manager();
     auto type_introspection = data_access_mgr->get_type_introspection();
 
     // True for a topic every one of whose providers is a member another gateway
@@ -647,7 +648,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
     if (data_prov == nullptr) {
       // Same x-plc-data route fallback as list_data above, single-item form.
@@ -676,8 +677,8 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
   }
 
   try {
-    auto addressed = address_data_item(ctx_.node()->get_thread_safe_cache(), entity_id, topic_name,
-                                       ctx_.aggregation_manager() != nullptr);
+    auto addressed =
+        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -689,7 +690,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
     // Sampling goes through the pool-backed TopicDataProvider (issue #375 race
     // fix). The provider is configured in main() before serving traffic.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto data_access_mgr = ctx_.services().data_access_manager();
     const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
     auto * provider = data_access_mgr->get_topic_data_provider();
     if (provider == nullptr) {
@@ -782,7 +783,7 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
     if (data_prov == nullptr) {
       return tl::make_unexpected(
@@ -859,8 +860,8 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     // A write addresses the same item a read does, so it resolves the same way -
     // including which gateway publishes it. Publishing here for a member another
     // gateway runs would create a publisher on a graph that member is not on.
-    auto addressed = address_data_item(ctx_.node()->get_thread_safe_cache(), entity_id, topic_name,
-                                       ctx_.aggregation_manager() != nullptr);
+    auto addressed =
+        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -871,7 +872,7 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     const std::string & full_topic_path = addressed->full_topic_path;
 
     // Publish data using DataAccessManager.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto data_access_mgr = ctx_.services().data_access_manager();
     json publish_result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
     return build_write_response(addressed->item_id, full_topic_path, msg_type, entity_id, data, publish_result);
   } catch (const std::exception & e) {

@@ -39,6 +39,7 @@
 #include <variant>
 #include <vector>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
@@ -212,7 +213,7 @@ class OperationHandlersValidationTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   OperationHandlers handlers_{ctx_};
 };
 
@@ -352,7 +353,7 @@ class OperationHandlersFixtureTest : public ::testing::Test {
       std::this_thread::yield();
     }
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<OperationHandlers>(*ctx_);
 
     // Deterministic readiness, replacing a fixed discovery sleep. Two signals

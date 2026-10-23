@@ -30,7 +30,6 @@
 
 namespace ros2_medkit_gateway {
 
-class GatewayNode;
 class PluginManager;
 
 namespace handlers {
@@ -70,9 +69,8 @@ struct DocsCacheBounds {
 /// OpenApiSpecBuilder to produce the full document.
 class CapabilityGenerator {
  public:
-  CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-                      const RouteRegistry * route_registry, std::string server_host, int64_t server_port,
-                      DocsCacheBounds bounds = DocsCacheBounds{});
+  CapabilityGenerator(handlers::HandlerContext & ctx, PluginManager * plugin_mgr, const RouteRegistry * route_registry,
+                      std::string server_host, int64_t server_port, DocsCacheBounds bounds = DocsCacheBounds{});
 
   /// Number of documents currently cached.
   size_t cache_entry_count() const;
@@ -233,7 +231,6 @@ class CapabilityGenerator {
   void clear_cache_locked() const;
 
   handlers::HandlerContext & ctx_;
-  GatewayNode & node_;
   PluginManager * plugin_mgr_;
   const RouteRegistry * route_registry_;
   SchemaBuilder schema_builder_;

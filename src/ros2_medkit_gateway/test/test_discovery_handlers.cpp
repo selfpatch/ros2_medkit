@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/discovery_handlers.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
@@ -209,7 +210,7 @@ class DiscoveryHandlersValidationTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   DiscoveryHandlers handlers_{ctx_};
 };
 
@@ -282,7 +283,7 @@ class DiscoveryHandlersFixtureTest : public ::testing::Test {
     auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
     cache.update_all(areas, components, apps, functions);
 
-    ctx_ = std::make_unique<HandlerContext>(suite_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*suite_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<DiscoveryHandlers>(*ctx_);
   }
 

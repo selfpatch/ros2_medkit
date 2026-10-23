@@ -35,9 +35,10 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -108,7 +109,7 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
-  return detail::compute_bulkdata_source_filters(ctx_.node()->get_thread_safe_cache(), entity);
+  return detail::compute_bulkdata_source_filters(ctx_.services().entity_cache(), entity);
 }
 
 namespace detail {
@@ -329,7 +330,7 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
 
   if (category == "rosbags") {
     // === Rosbags: served via FaultManager ===
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     // Get source filters for this entity (single for most, multiple for functions).
     // Functions aggregate rosbags from all hosting apps.
@@ -438,7 +439,7 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // recording of this fault", which is what a fault-code URL has always returned.
     // Both routes end up holding a recording before anything is authorized, so there
     // is exactly one authorization semantic, not two.
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id);
     if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {

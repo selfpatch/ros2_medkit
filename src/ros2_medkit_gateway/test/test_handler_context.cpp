@@ -47,6 +47,7 @@
 #include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 #include "../src/openapi/route_registry.hpp"
+#include "null_gateway_services.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
@@ -91,14 +92,16 @@ class HandlerContextCorsTest : public ::testing::Test {
 };
 
 TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsTrueForConfiguredOrigins) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:3000"));
   EXPECT_TRUE(ctx.is_origin_allowed("http://example.com"));
 }
 
 TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsFalseForUnknownOrigins) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_FALSE(ctx.is_origin_allowed("http://malicious.com"));
   EXPECT_FALSE(ctx.is_origin_allowed("http://localhost:8080"));
@@ -113,14 +116,16 @@ TEST_F(HandlerContextCorsTest, IsOriginAllowedWithWildcard) {
                              .with_credentials(false)  // Must be false with wildcard
                              .build();
 
-  HandlerContext ctx(nullptr, wildcard_config, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), wildcard_config, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.is_origin_allowed("http://any-site.com"));
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:12345"));
 }
 
 TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
   httplib::Response res;
 
   ctx.set_cors_headers(res, "http://localhost:3000");
@@ -140,7 +145,7 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
                     .with_credentials(false)
                     .build();
 
-  HandlerContext ctx(nullptr, config, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), config, auth_config_, tls_config_, nullptr);
   httplib::Response res;
 
   ctx.set_cors_headers(res, "http://localhost:3000");
@@ -155,7 +160,8 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
 // =============================================================================
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.validate_entity_id("engine").has_value());
   EXPECT_TRUE(ctx.validate_entity_id("engine_temp_sensor").has_value());
@@ -168,7 +174,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   auto result = ctx.validate_entity_id("");
   EXPECT_FALSE(result.has_value());
@@ -176,7 +183,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Create a string longer than 256 characters
   std::string long_id(257, 'a');
@@ -187,7 +195,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   auto result = ctx.validate_entity_id("path/injection");
   EXPECT_FALSE(result.has_value());
@@ -195,7 +204,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Test various invalid characters
   EXPECT_FALSE(ctx.validate_entity_id("test@value").has_value());
@@ -211,7 +221,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Test non-printable characters
   std::string with_null = "test";
@@ -225,7 +236,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsMaxLengthId) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Create exactly 256 character string (max allowed)
   std::string max_id(256, 'a');
@@ -471,7 +483,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
 // Verify get_entity_info marks entity as remote when aggregation manager is set
 // and entity is in the routing table.
 TEST_F(HandlerContextForwardingTest, GetEntityInfoSetsRemoteFieldsWithAggregation) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto info = ctx.get_entity_info("remote_sensor", SovdEntityType::COMPONENT);
@@ -484,7 +496,7 @@ TEST_F(HandlerContextForwardingTest, GetEntityInfoSetsRemoteFieldsWithAggregatio
 
 // Verify get_entity_info does NOT set remote fields when aggregation manager is null.
 TEST_F(HandlerContextForwardingTest, GetEntityInfoNoRemoteWithoutAggregation) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   // No aggregation manager set
 
   auto info = ctx.get_entity_info("remote_sensor", SovdEntityType::COMPONENT);
@@ -507,7 +519,7 @@ TEST_F(HandlerContextForwardingTest, GetEntityInfoNoRemoteWithoutAggregation) {
 // =============================================================================
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_SuccessReturnsEntityInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/local_ecu/data");
@@ -522,7 +534,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_SuccessReturnsE
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_InvalidIdReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
 
   auto raw_req = make_request_with_path("/api/v1/components/bad%20id/data");
   http::TypedRequest typed_req(raw_req);
@@ -544,7 +556,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_InvalidIdReturn
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_UnknownEntityReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/nonexistent/data");
@@ -564,7 +576,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_UnknownEntityRe
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_WrongTypeReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   // remote_driver is an App, but we ask the /components route for it
@@ -589,7 +601,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_ForwardedWhenRe
   // legacy overload returns kForwarded and that the typed overload alone (with
   // no installed sink) signals Forwarded without crashing.
 
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/remote_sensor/data");
@@ -693,7 +705,7 @@ void expect_proxied_peer_unavailable(const httplib::Result & r) {
 }  // namespace
 
 TEST_F(HandlerContextForwardingTest, TypedBodyWrapperForwardsRemoteEntityWrite) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -717,7 +729,7 @@ TEST_F(HandlerContextForwardingTest, TypedBodyWrapperForwardsRemoteEntityWrite) 
 }
 
 TEST_F(HandlerContextForwardingTest, TypedPostAlternatesWrapperForwardsRemoteEntity) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -741,7 +753,7 @@ TEST_F(HandlerContextForwardingTest, TypedPostAlternatesWrapperForwardsRemoteEnt
 }
 
 TEST_F(HandlerContextForwardingTest, TypedDeleteAlternatesWrapperForwardsRemoteEntity) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -764,7 +776,7 @@ TEST_F(HandlerContextForwardingTest, TypedDeleteAlternatesWrapperForwardsRemoteE
 }
 
 TEST_F(HandlerContextForwardingTest, TypedMultipartWrapperForwardsRemoteEntityUpload) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -825,7 +837,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateCollectionAccess_UnsupportedRe
 TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenLockingDisabled) {
   // suite_node_ is created without a LockManager (default ctor path), so the
   // typed validator's phase-1 short-circuit kicks in and returns success.
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
 
   EntityInfo entity;
   entity.id = "engine_ecu";
@@ -840,7 +852,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenLockingD
 
 TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenNodeNull) {
   // No GatewayNode -> the validator must allow access (phase-1 short-circuit).
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
 
   EntityInfo entity;
   entity.id = "engine_ecu";

@@ -20,7 +20,6 @@
 #include "../../openapi/capability_generator.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
 
 #ifdef ENABLE_SWAGGER_UI
@@ -58,12 +57,12 @@ void DocsHandlers::write_error(httplib::Response & res, int status, const std::s
   http::detail::write_generic_error(http::detail::FrameworkOrPluginAccess{}, res, err);
 }
 
-DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
+DocsHandlers::DocsHandlers(HandlerContext & ctx, PluginManager * plugin_mgr,
                            const openapi::RouteRegistry * route_registry, bool docs_enabled, std::string server_host,
                            int64_t server_port)
   : ctx_(ctx)
-  , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, node, plugin_mgr, route_registry,
-                                                              std::move(server_host), server_port))
+  , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, plugin_mgr, route_registry, std::move(server_host),
+                                                              server_port))
   , docs_enabled_(docs_enabled) {
 }
 

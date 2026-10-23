@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/auth/auth.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/auth_handlers.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -60,7 +61,7 @@ class AuthHandlersDisabledTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};  // enabled = false by default
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   AuthHandlers handlers_{ctx_};
 };
 
@@ -116,7 +117,7 @@ class AuthHandlersAuthorizeTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "password", "client_id": "c", "client_secret": "s"})");
@@ -130,7 +131,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_secret": "s"})");
@@ -144,7 +145,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "", "client_secret": "s"})");
@@ -158,7 +159,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c"})");
@@ -172,7 +173,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientSecret) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "client_credentials", "client_id": "c", "client_secret": ""})");
@@ -189,7 +190,7 @@ TEST_F(AuthHandlersAuthorizeTest, ErrorCodeIsOAuth2Identifier) {
   // OAuth2 wire shape is enforced by the per-route renderer; the handler
   // carries the OAuth2 identifier in `ErrorInfo::code` so the renderer can
   // emit `{"error": "<identifier>"}` per RFC 6749 §5.2 without rewriting.
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "wrong"})");
@@ -219,7 +220,7 @@ class AuthHandlersTokenTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "client_credentials"})");
@@ -233,7 +234,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForWrongGrantType) {
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "refresh_token"})");
@@ -247,7 +248,7 @@ TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForMissingRefreshToken) {
 
 // @verifies REQ_INTEROP_087
 TEST_F(AuthHandlersTokenTest, ReturnsBadRequestForEmptyRefreshToken) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": ""})");
@@ -276,7 +277,7 @@ class AuthHandlersRevokeTest : public ::testing::Test {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   httplib::Request raw;
@@ -291,7 +292,7 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"other_field": "value"})");
@@ -305,7 +306,7 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForMissingTokenField) {
 
 // @verifies REQ_INTEROP_086
 TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForNonStringToken) {
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
   auto raw = make_json_request(R"({"token": 12345})");
@@ -342,7 +343,8 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
                        .build();
 
     auth_manager_ = std::make_unique<AuthManager>(auth_config_);
-    ctx_ = std::make_unique<HandlerContext>(nullptr, cors_, auth_config_, tls_, auth_manager_.get());
+    ctx_ = std::make_unique<HandlerContext>(ros2_medkit_gateway::test_support::null_services(), cors_, auth_config_,
+                                            tls_, auth_manager_.get());
     handlers_ = std::make_unique<AuthHandlers>(*ctx_);
   }
 
