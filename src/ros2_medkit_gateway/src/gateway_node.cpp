@@ -1576,21 +1576,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   rest_config.keep_alive_timeout_sec = get_parameter("server.keep_alive_timeout_sec").as_int();
   rest_config.sse_keepalive_interval_sec = get_parameter("sse.keepalive_interval_sec").as_int();
   rest_config.sse_max_duration_sec = get_parameter("sse.max_duration_sec").as_int();
-  try {
-    rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
-  } catch (...) {
-    rest_config.docs_enabled = true;
-  }
-  try {
-    rest_config.server_host = get_parameter("server.host").as_string();
-  } catch (...) {
-    rest_config.server_host = "localhost";
-  }
-  try {
-    rest_config.server_port = get_parameter("server.port").as_int();
-  } catch (...) {
-    rest_config.server_port = 8080;
-  }
+  rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
+  rest_config.server_host = server_host_;
+  rest_config.server_port = server_port_;
   rest_config.fault_events_topic = build_fault_manager_events_topic(this);
 
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
