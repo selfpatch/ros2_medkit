@@ -1581,7 +1581,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
   rest_config.server_host = server_host_;
   rest_config.server_port = server_port_;
-  rest_config.fault_events_topic = build_fault_manager_events_topic(this);
+  fault_event_source_ = std::make_unique<Ros2FaultEventSource>(*this, build_fault_manager_events_topic(this));
   rest_config.logger_name = get_logger().get_name();
 
   rest_server_ =

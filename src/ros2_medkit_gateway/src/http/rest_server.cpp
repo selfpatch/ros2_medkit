@@ -210,8 +210,8 @@ RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStat
     MEDKIT_LOG_WARN(log::Logger(rest_config.logger_name), "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64,
                     keepalive_raw, keepalive_used);
   }
-  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(
-      *handler_ctx_, sse_client_tracker_, std::chrono::seconds(keepalive_used), rest_config.fault_events_topic);
+  sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_,
+                                                                   std::chrono::seconds(keepalive_used));
   bulkdata_handlers_ = std::make_unique<handlers::BulkDataHandlers>(*handler_ctx_);
   // Validated as int64 before narrowing: narrowing first wraps a value above
   // INT_MAX into a small positive one that passes the check, so 4294967300

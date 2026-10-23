@@ -45,7 +45,7 @@ ALLOWED_DIRS_PATTERN="(${GATEWAY_ROOT}/src/ros2_common/|${GATEWAY_ROOT}/include/
 # Explicit files that still use the naked APIs pending provider migration.
 # Keep this list SHORT and add a TODO in the file referencing the follow-up.
 ALLOWED_LEGACY_FILES=(
-  "${GATEWAY_ROOT}/src/http/handlers/sse_fault_handler.cpp"        # faults provider follow-up
+  "${GATEWAY_ROOT}/src/ros2/ros2_fault_event_source.cpp"           # faults provider follow-up
   "${GATEWAY_ROOT}/src/trigger_fault_subscriber.cpp"               # faults provider follow-up
   "${GATEWAY_ROOT}/src/ros2/transports/ros2_action_transport.cpp"  # operations provider follow-up
   "${GATEWAY_ROOT}/src/ros2/transports/ros2_log_source.cpp"        # /rosout adapter (LogSource port)

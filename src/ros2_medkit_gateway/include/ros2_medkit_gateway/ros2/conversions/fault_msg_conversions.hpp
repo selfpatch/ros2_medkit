@@ -16,23 +16,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_fault_detection/fault_types.hpp"
 #include "ros2_medkit_msgs/msg/environment_data.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
+#include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway::ros2::conversions {
 
-/// Convert a ros2_medkit_msgs::msg::Fault to JSON.
-///
-/// Produces the flat per-fault representation consumed by `list_faults` items,
-/// the SSE fault-event payload, and the trigger subsystem's notifier change
-/// values. Timestamps become seconds-as-double; severity gains a label.
-///
-/// Lives at the ROS-coupled boundary because three independent call sites
-/// each translate `ros2_medkit_msgs::msg::Fault` directly into JSON: the
-/// fault-service transport adapter, the SSE fault handler (subscribes to the
-/// FaultEvent topic directly), and the trigger fault subscriber. Keeping the
-/// helper free standing avoids code duplication while preserving the neutral
-/// FaultManager contract.
+/// Message to neutral record; times become nanoseconds since the epoch.
+ros2_medkit::fault_detection::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg);
+ros2_medkit::fault_detection::FaultEventRecord from_msg(const ros2_medkit_msgs::msg::FaultEvent & msg);
+
+/// Fault message to JSON through fault_record_to_json.
 nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault);
 
 /// Convert a ros2_medkit_msgs::msg::EnvironmentData to JSON.

@@ -36,6 +36,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
+find_package(ros2_medkit_fault_detection REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 find_package(SQLite3 REQUIRED)
 
@@ -116,6 +117,7 @@ target_link_libraries(gateway_core
     OpenSSL::SSL
     OpenSSL::Crypto
     tl::expected
+    ros2_medkit_fault_detection::ros2_medkit_fault_detection
     jwt-cpp::jwt-cpp
     SQLite::SQLite3
     ${CMAKE_DL_LIBS}
@@ -166,6 +168,7 @@ add_library(gateway_ros2 STATIC
   src/ros2/transports/ros2_topic_subscription_transport.cpp
   src/ros2/transports/ros2_topic_transport.cpp
   src/ros2/status/ros2_lifecycle_state_reader.cpp
+  src/ros2/ros2_fault_event_source.cpp
   src/ros2/ros2_log_sink.cpp
   src/ros2/ros2_type_schema_provider.cpp
   src/ros2/trigger_topic_subscriber.cpp

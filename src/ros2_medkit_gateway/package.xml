@@ -28,6 +28,7 @@
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_serialization</depend>
   <depend>libsqlite3-dev</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>rosidl_typesupport_cpp</depend>
   <depend>rosidl_typesupport_introspection_cpp</depend>
   <exec_depend>rosidl_runtime_py</exec_depend>
