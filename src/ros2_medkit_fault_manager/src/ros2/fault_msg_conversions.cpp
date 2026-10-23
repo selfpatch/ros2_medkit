@@ -46,20 +46,6 @@ ros2_medkit_msgs::msg::Fault to_msg(const fd::FaultRecord & record) {
   return msg;
 }
 
-fd::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg) {
-  fd::FaultRecord record;
-  record.fault_code = msg.fault_code;
-  record.severity = msg.severity;
-  record.description = msg.description;
-  record.first_occurred_ns = static_cast<int64_t>(msg.first_occurred.sec) * 1000000000LL + msg.first_occurred.nanosec;
-  record.last_occurred_ns = static_cast<int64_t>(msg.last_occurred.sec) * 1000000000LL + msg.last_occurred.nanosec;
-  record.last_passed_ns = static_cast<int64_t>(msg.last_passed.sec) * 1000000000LL + msg.last_passed.nanosec;
-  record.occurrence_count = msg.occurrence_count;
-  record.status = msg.status;
-  record.reporting_sources = msg.reporting_sources;
-  return record;
-}
-
 ros2_medkit_msgs::msg::FaultEvent to_msg(const fd::FaultEventRecord & record) {
   ros2_medkit_msgs::msg::FaultEvent msg;
   msg.event_type = record.event_type;

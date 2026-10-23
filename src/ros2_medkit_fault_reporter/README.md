@@ -137,9 +137,11 @@ is NaN, infinite or not positive becomes 1.0. These last two are not logged.
 `ros2_medkit::fault_detection::FaultReport` (types from `ros2_medkit_fault_detection`). It hands each
 report that passed the filter to a sink function. `FaultReporter` is the ROS adapter: its sink sends
 the `ReportFault` request. The CMake target `fault_reporter_core` is defined in
-`cmake/fault_reporter_core.cmake`, which uses plain CMake (3.16, C++17). The core compiles and is
-tested without ROS, with no DDS setup. `scripts/check_cores_without_ros/run.sh` builds it on
-Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+`cmake/fault_reporter_core.cmake`, which uses plain CMake (3.16, C++17). The core compiles without
+ROS. `scripts/check_cores_without_ros/run.sh` builds it on Ubuntu 20.04 with gcc 9, the oldest compiler
+the cores are checked with, and runs a check program against it with no ROS and no DDS setup. The
+unit test `test_validate_filter_params` links only the core. The other unit tests link
+`fault_reporter_lib`, which uses rclcpp.
 
 ## Advanced: Debounce Integration
 
