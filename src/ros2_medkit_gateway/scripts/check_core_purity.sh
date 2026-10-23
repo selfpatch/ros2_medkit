@@ -20,7 +20,22 @@ set -euo pipefail
 
 CORE_DIRS=(
   "include/ros2_medkit_gateway/core"
+  "include/ros2_medkit_gateway/http"
+  "include/ros2_medkit_gateway/plugins"
+  "include/ros2_medkit_gateway/aggregation"
+  "include/ros2_medkit_gateway/dto"
   "src/core"
+  "src/http"
+  "src/openapi"
+  "src/aggregation"
+)
+# Files of gateway_core outside those directories (cmake/gateway_core.cmake lists the same sources).
+CORE_FILES=(
+  "src/plugins/plugin_manager.cpp"
+  "src/plugins/plugin_loader.cpp"
+  "src/plugins/plugin_http_types.cpp"
+  "src/script_manager.cpp"
+  "src/default_script_provider.cpp"
 )
 
 # Denylist of ROS 2 include prefixes that must not appear in core/.
@@ -48,32 +63,50 @@ for dir in "${CORE_DIRS[@]}"; do
   done < <(grep -rEn "$FORBIDDEN_PATTERN" "$dir" 2>/dev/null || true)
 done
 
-# Files that must compile without any ROS include path.
-ROS_FREE_SOURCES=(
+for file in "${CORE_FILES[@]}"; do
+  while IFS= read -r match; do
+    echo "FORBIDDEN ROS INCLUDE: $match"
+    violations=$((violations + 1))
+  done < <(grep -En "$FORBIDDEN_PATTERN" "$file" 2>/dev/null || true)
+done
+
+# Every gateway_core source must compile without any ROS include path.
+mapfile -t ROS_FREE_SOURCES < <({
+  find src/core src/http src/openapi src/aggregation -name '*.cpp'
+  printf '%s\n' "${CORE_FILES[@]}"
+} | sort)
+ROS_FREE_HEADERS=(
   "include/ros2_medkit_gateway/core/gateway_services.hpp"
   "include/ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
   "include/ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
   "include/ros2_medkit_gateway/core/faults/fault_event_source.hpp"
   "include/ros2_medkit_gateway/core/faults/fault_json.hpp"
-  "src/core/faults/fault_json.cpp"
   "include/ros2_medkit_gateway/core/discovery/linking_result.hpp"
   "include/ros2_medkit_gateway/core/types/type_schema_provider.hpp"
   "include/ros2_medkit_gateway/http/handlers/handler_context.hpp"
-  "src/http/handlers/handler_context.cpp"
 )
-for src in "${ROS_FREE_SOURCES[@]}"; do
+# shellcheck disable=SC2317
+compile_check() {
+  local src="$1"
   if [ ! -f "$src" ]; then
     echo "ROS-FREE SOURCE MISSING: $src"
-    violations=$((violations + 1))
-    continue
+    return 1
   fi
-  if ! out=$(g++ -std=c++17 -fsyntax-only -Wno-pragma-once-outside-header \
-    -Iinclude -I../ros2_medkit_fault_detection/include -Isrc -Isrc/vendored/tl_expected/include -Isrc/vendored/cpp_httplib "$src" 2>&1); then
+  local out
+  if ! out=$(g++ -std=c++17 -fsyntax-only -Wno-pragma-once-outside-header -DCPPHTTPLIB_OPENSSL_SUPPORT \
+    -DGATEWAY_VERSION_STRING='"0"' \
+    -Iinclude -I../ros2_medkit_fault_detection/include -Isrc -Isrc/openapi -Isrc/vendored/tl_expected/include \
+    -Isrc/vendored/cpp_httplib -Isrc/vendored/jwt_cpp/include -Isrc/vendored/mdns "$src" 2>&1); then
     echo "DOES NOT COMPILE WITHOUT ROS: $src"
     echo "$out" | grep -E 'error' | head -5
-    violations=$((violations + 1))
+    return 1
   fi
-done
+}
+export -f compile_check
+echo "Core purity: ${#ROS_FREE_SOURCES[@]} sources, ${#ROS_FREE_HEADERS[@]} headers compiled without ROS."
+failed=$(printf '%s\n' "${ROS_FREE_SOURCES[@]}" "${ROS_FREE_HEADERS[@]}" |
+  xargs -P "$(nproc)" -I{} bash -c 'compile_check {} || echo FAILED' | tee /dev/stderr | grep -c '^FAILED' || true)
+violations=$((violations + failed))
 
 if [ "$violations" -gt 0 ]; then
   echo ""
