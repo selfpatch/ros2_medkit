@@ -14,7 +14,6 @@
 
 #include "ros2_medkit_gateway/core/logging.hpp"
 
-#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <utility>
@@ -42,17 +41,18 @@ const char * level_name(Level level) {
 
 class StderrSink : public Sink {
  public:
-  bool enabled(std::string_view /*logger*/, Level level) const override {
+  bool enabled(const std::string & /*logger*/, Level level) const override {
     return level >= Level::kInfo;
   }
-  void write(std::string_view logger, Level level, std::string_view message, const Location & /*location*/) override {
-    std::fprintf(stderr, "[%s] [%.*s]: %.*s\n", level_name(level), static_cast<int>(logger.size()), logger.data(),
-                 static_cast<int>(message.size()), message.data());
+  void write(const std::string & logger, Level level, std::string_view message,
+             const Location & /*location*/) override {
+    std::fprintf(stderr, "[%s] [%s]: %.*s\n", level_name(level), logger.c_str(), static_cast<int>(message.size()),
+                 message.data());
   }
 };
 
-std::shared_ptr<Sink> current_sink() {
-  return std::atomic_load(&detail::sink_slot());
+Sink & current_sink() {
+  return *detail::sink_slot().active.load(std::memory_order_acquire);
 }
 
 }  // namespace
@@ -61,20 +61,31 @@ void set_sink(std::shared_ptr<Sink> sink) {
   if (!sink) {
     sink = std::make_shared<StderrSink>();
   }
-  std::atomic_store(&detail::sink_slot(), std::move(sink));
+  detail::sink_slot().install(std::move(sink));
 }
 
 Logger::Logger(std::string name) : name_(std::move(name)) {
 }
 
 bool Logger::enabled(Level level) const {
-  return current_sink()->enabled(name_, level);
+  return current_sink().enabled(name_, level);
 }
 
 namespace detail {
 
-std::shared_ptr<Sink> & sink_slot() {
-  static std::shared_ptr<Sink> slot = std::make_shared<StderrSink>();
+SinkSlot::SinkSlot() {
+  install(std::make_shared<StderrSink>());
+}
+
+void SinkSlot::install(std::shared_ptr<Sink> sink) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Sink * raw = sink.get();
+  installed_.push_back(std::move(sink));
+  active.store(raw, std::memory_order_release);
+}
+
+SinkSlot & sink_slot() {
+  static SinkSlot slot;
   return slot;
 }
 
@@ -90,8 +101,8 @@ void emit(const Logger & logger, Level level, const Location & location, const c
     std::vsnprintf(buffer.data(), buffer.size(), fmt, args);
   }
   va_end(args);
-  current_sink()->write(logger.name(), level,
-                        std::string_view(buffer.data(), needed > 0 ? static_cast<size_t>(needed) : 0), location);
+  current_sink().write(logger.name(), level,
+                       std::string_view(buffer.data(), needed > 0 ? static_cast<size_t>(needed) : 0), location);
 }
 
 }  // namespace detail

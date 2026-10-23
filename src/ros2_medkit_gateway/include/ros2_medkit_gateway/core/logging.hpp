@@ -14,9 +14,12 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ros2_medkit_gateway::log {
 
@@ -40,13 +43,14 @@ class Sink {
   Sink & operator=(Sink &&) = delete;
   virtual ~Sink() = default;
 
-  virtual bool enabled(std::string_view logger, Level level) const = 0;
-  virtual void write(std::string_view logger, Level level, std::string_view message, const Location & location) = 0;
+  virtual bool enabled(const std::string & logger, Level level) const = 0;
+  virtual void write(const std::string & logger, Level level, std::string_view message, const Location & location) = 0;
 };
 
 /// Replaces the active sink. Call it once at startup, before other threads log.
 /// A null sink restores the default sink, which writes "[LEVEL] [name]: message"
-/// to stderr for INFO and above.
+/// to stderr for INFO and above. Every installed sink stays alive until the process
+/// exits, because a thread that is logging may still use the sink it read before the call.
 void set_sink(std::shared_ptr<Sink> sink);
 
 /// A named log source. Cheap to copy.
@@ -65,7 +69,26 @@ class Logger {
 namespace detail {
 /// Process-wide sink slot. Default visibility, so a plugin that links this code
 /// binds to the executable's slot.
-__attribute__((visibility("default"))) std::shared_ptr<Sink> & sink_slot();
+struct SinkSlot {
+  SinkSlot();
+  SinkSlot(const SinkSlot &) = delete;
+  SinkSlot & operator=(const SinkSlot &) = delete;
+  SinkSlot(SinkSlot &&) = delete;
+  SinkSlot & operator=(SinkSlot &&) = delete;
+  ~SinkSlot() = default;
+
+  /// Makes @p sink the active sink and keeps it alive for the process.
+  void install(std::shared_ptr<Sink> sink);
+
+  /// The sink the log calls use. Never null.
+  std::atomic<Sink *> active{nullptr};
+
+ private:
+  std::mutex mutex_;
+  std::vector<std::shared_ptr<Sink>> installed_;
+};
+
+__attribute__((visibility("default"))) SinkSlot & sink_slot();
 
 void emit(const Logger & logger, Level level, const Location & location, const char * fmt, ...)
     __attribute__((format(printf, 4, 5)));

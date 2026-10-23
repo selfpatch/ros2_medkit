@@ -25,8 +25,8 @@ namespace ros2_medkit_gateway {
 /// control (`--log-level <name>:=debug`) and `/rosout` behave as with rclcpp.
 class Ros2LogSink : public log::Sink {
  public:
-  bool enabled(std::string_view logger, log::Level level) const override;
-  void write(std::string_view logger, log::Level level, std::string_view message,
+  bool enabled(const std::string & logger, log::Level level) const override;
+  void write(const std::string & logger, log::Level level, std::string_view message,
              const log::Location & location) override;
 };
 
