@@ -437,6 +437,7 @@ jobs:
       # fit the container overlay on small GitHub runners, so build on /mnt.
       volumes:
         - "/mnt:/mnt"
+      options: --privileged
     # Successful runs reach 59 min, and a timeout here reads as "TSan found
     # something" rather than "the job ran out of clock". Keep the headroom.
     timeout-minutes: 90
@@ -445,6 +446,13 @@ jobs:
         shell: bash
 
     steps:
+      # TSan needs at most 28 bits of mmap ASLR entropy. Newer runner kernels use more.
+      - name: Lower mmap ASLR entropy
+        run: |
+          sysctl -w vm.mmap_rnd_bits=28
+          cat /proc/sys/vm/mmap_rnd_bits
+          test "$(cat /proc/sys/vm/mmap_rnd_bits)" = 28
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -584,6 +592,7 @@ jobs:
       # container overlay on small GitHub runners, so build on /mnt.
       volumes:
         - "/mnt:/mnt"
+      options: ${{ matrix.sanitizer == 'tsan' && '--privileged' || '' }}
     # A cold cache builds the chain from scratch, which is the ~20 min the TSan
     # workspace job measures, before the 45-minute test budget starts.
     timeout-minutes: 90
@@ -592,6 +601,14 @@ jobs:
         shell: bash
 
     steps:
+      # TSan needs at most 28 bits of mmap ASLR entropy. Newer runner kernels use more.
+      - name: Lower mmap ASLR entropy
+        if: matrix.sanitizer == 'tsan'
+        run: |
+          sysctl -w vm.mmap_rnd_bits=28
+          cat /proc/sys/vm/mmap_rnd_bits
+          test "$(cat /proc/sys/vm/mmap_rnd_bits)" = 28
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
