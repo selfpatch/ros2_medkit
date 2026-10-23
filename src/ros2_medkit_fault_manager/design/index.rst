@@ -148,14 +148,13 @@ The following diagram shows the relationships between the main components of the
    FaultManagerCore --> CaptureHooks : requests captures
    FaultManagerCore --> WallClock : reads
    FaultManagerCore --> LogSink : logs
-   FaultManagerCore --> FaultStorage : uses
+   FaultManagerCore *-down-> FaultStorage : owns
    FaultManagerCore ..> FaultManagerConfig : built from
    RosEventSink -up-|> EventSink
    RosCaptureHooks -up-|> CaptureHooks
    SystemWallClock -up-|> WallClock
    RosLogSink -up-|> LogSink
 
-   FaultManagerNode *-down-> InMemoryFaultStorage : owns
    FaultManagerNode --> CaptureThreadPool : enqueues capture jobs
 
    ' InMemoryFaultStorage contains FaultStates
@@ -176,7 +175,6 @@ Main Components
 
 1. **FaultManagerNode** - The main ROS 2 node that provides fault management services
    - Extends ``rclcpp::Node``
-   - Owns a ``FaultStorage`` implementation for fault state persistence
    - Provides the ROS 2 services for fault reporting, querying, and clearing, and delegates them to ``FaultManagerCore``
    - Validates input parameters (fault_code, severity, source_id)
    - Logs fault lifecycle events at appropriate severity levels

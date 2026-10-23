@@ -122,14 +122,13 @@ FaultManagerCore --> EventSink : publishes events
 FaultManagerCore --> CaptureHooks : requests captures
 FaultManagerCore --> WallClock : reads
 FaultManagerCore --> LogSink : logs
-FaultManagerCore --> FaultStorage : uses
+FaultManagerCore *-down-> FaultStorage : owns
 FaultManagerCore ..> FaultManagerConfig : built from
 RosEventSink -up-|> EventSink
 RosCaptureHooks -up-|> CaptureHooks
 SystemWallClock -up-|> WallClock
 RosLogSink -up-|> LogSink
 
-FaultManagerNode *-down-> InMemoryFaultStorage : owns
 
 ' InMemoryFaultStorage contains FaultStates
 InMemoryFaultStorage o-right-> FaultState : contains many

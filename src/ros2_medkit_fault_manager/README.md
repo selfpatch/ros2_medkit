@@ -556,8 +556,11 @@ source install/setup.bash
 
 ### ROS-free core
 
-The package has two parts. The core compiles and is tested without ROS, without DDS setup and with a
-clock the test controls. `scripts/check_cores_without_ros` keeps it free of ROS.
+The package has two parts. The core compiles without ROS and without DDS setup.
+`scripts/check_cores_without_ros` builds it with plain CMake, runs a check program against it with no
+ROS (a fault through `SqliteFaultStorage`, and `FaultManagerCore` with a clock the program sets), and
+fails when the program links rclcpp. The unit test suites link `fault_manager_lib`, which uses rclcpp,
+and some of them build an `rclcpp::Clock`.
 
 **Core** (`fault_manager_core`, static library, no ROS):
 
@@ -585,8 +588,9 @@ the call deadlocks. `LogSink::log()` is called from several threads at once (cor
 capture workers), so it must be thread-safe.
 
 `tick(wall_now_ns)` runs the periodic jobs that are due: time-based auto-confirmation
-every second and the correlation cleanup every `correlation.cleanup_interval_sec`. The core has no
-timer. The caller calls `tick` with the wall clock, at least as often as the shortest period it needs.
+every second and the correlation cleanup every `correlation.cleanup_interval_sec`. A job runs from half
+a period before its due time. After a run its next due time stays on the job's own grid, so a late
+tick does not delay the run after it. The core has no timer. The caller calls `tick` with the wall clock, at least as often as the shortest period it needs.
 
 The core returns `ros2_medkit::fault_detection` values (`FaultRecord`, `FaultEventRecord`) with
 nanosecond times.

@@ -133,8 +133,10 @@ is NaN, infinite or not positive becomes 1.0. These last two are not logged.
 
 ## ROS-free core
 
-The package has two parts. The core compiles and is tested without ROS and without DDS setup.
-`scripts/check_cores_without_ros` keeps it free of ROS.
+The package has two parts. The core compiles without ROS and without DDS setup.
+`scripts/check_cores_without_ros` builds it with plain CMake, runs a check program against it with no
+ROS, and fails when the program links rclcpp. The unit test `test_validate_filter_params` links only
+the core. The other unit tests link `fault_reporter_lib`, which uses rclcpp.
 
 - **Core** (`fault_reporter_core`, static library): `core::ReporterCore` and `LocalFilter`. The core
   applies the local filter, builds a `ros2_medkit::fault_detection::FaultReport` and hands each report
@@ -150,9 +152,9 @@ The core and the neutral types (`ros2_medkit_fault_detection/fault_types.hpp`) c
 ### Plain-CMake build
 
 `cmake/fault_reporter_core.cmake` is plain CMake (3.16 or newer, C++17), no ament. The ament build
-includes it by path, and so does `scripts/check_cores_without_ros`. The three package directories
-`ros2_medkit_fault_detection`, `ros2_medkit_fault_reporter` and `ros2_medkit_fault_manager` must stay
-side by side, because the file finds the detection header at `../ros2_medkit_fault_detection/include`.
+includes it by path, and so does `scripts/check_cores_without_ros`. The two package directories
+`ros2_medkit_fault_detection` and `ros2_medkit_fault_reporter` must stay side by side, because the file
+finds the detection header at `../ros2_medkit_fault_detection/include`.
 
 ```cpp
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
