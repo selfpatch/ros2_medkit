@@ -459,8 +459,6 @@ pattern used by the ``test_*_manager_routing.cpp`` tests:
      count_publishers_subscribers(const std::string &) const override {
        return {1, 0};
      }
-     ros2_medkit_serialization::TypeIntrospection *
-     get_type_introspection() const override { return nullptr; }
 
      nlohmann::json next_sample_ = nlohmann::json::object();
    };
@@ -475,6 +473,9 @@ pattern used by the ``test_*_manager_routing.cpp`` tests:
    }
 
 The mock is purely C++; no ROS context, executor, or domain ID is needed.
+Message, service and action schemas are not part of ``TopicTransport``. They
+come from ``TypeSchemaProvider`` (``core/types/type_schema_provider.hpp``),
+which the HTTP layer reaches through ``GatewayServices::type_schemas()``.
 
 Main Components
 ---------------

@@ -38,10 +38,10 @@
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
-#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -363,7 +363,7 @@ std::string sovd_status_from_ros2(ActionGoalStatus status) {
 /// returned by the runtime discovery branch. Shared by list_operations and
 /// get_operation so the wire shape is identical for both.
 dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const std::string & entity_id,
-                                                ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                                TypeSchemaProvider & type_schemas) {
   dto::XMedkitRos2 ros2;
   ros2.service = svc.full_path;
   ros2.type = svc.type;
@@ -374,12 +374,13 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  if (type_introspection != nullptr && !svc.type.empty()) {
+  if (!svc.type.empty()) {
+    // The provider caches the schemas per type and shares them, so repeated
+    // /operations requests do not rebuild them.
     try {
-      // Schemas are assembled once per type and cached (shared) in
-      // TypeIntrospection, so repeated /operations requests reuse them instead
-      // of rebuilding + deep-copying (issue #442).
-      x_medkit.type_info = *type_introspection->get_service_type_info(svc.type);
+      if (auto type_info = type_schemas.service_type_info(svc.type)) {
+        x_medkit.type_info = *type_info;
+      }
     } catch (const std::exception & e) {
       MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
                        e.what());
@@ -389,7 +390,7 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
 }
 
 dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std::string & entity_id,
-                                               ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                               TypeSchemaProvider & type_schemas) {
   dto::XMedkitRos2 ros2;
   ros2.action = act.full_path;
   ros2.type = act.type;
@@ -400,9 +401,11 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  if (type_introspection != nullptr && !act.type.empty()) {
+  if (!act.type.empty()) {
     try {
-      x_medkit.type_info = *type_introspection->get_action_type_info(act.type);
+      if (auto type_info = type_schemas.action_type_info(act.type)) {
+        x_medkit.type_info = *type_info;
+      }
     } catch (const std::exception & e) {
       MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
                        e.what());
@@ -658,8 +661,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // with handle_get_operation so build_service_xmedkit / build_action_xmedkit
   // are factored out into the anon-ns helpers above.
   dto::Collection<dto::OperationItem> collection;
-  auto data_access_mgr = ctx_.services().data_access_manager();
-  auto type_introspection = data_access_mgr->get_type_introspection();
+  auto & type_schemas = *ctx_.services().type_schemas();
 
   // How many operations the DECLARED tree carries under each short name. This
   // is the same count `create_execution` refuses on, and it is read here so the
@@ -724,9 +726,9 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
     item.proximity_proof_required = false;
     item.asynchronous_execution = asynchronous;
     if constexpr (std::is_same_v<std::decay_t<decltype(op)>, ServiceInfo>) {
-      item.x_medkit = build_service_xmedkit(op, entity_id, type_introspection);
+      item.x_medkit = build_service_xmedkit(op, entity_id, type_schemas);
     } else {
-      item.x_medkit = build_action_xmedkit(op, entity_id, type_introspection);
+      item.x_medkit = build_action_xmedkit(op, entity_id, type_schemas);
     }
     if (auto owner = ops.owner_by_path.find(op.full_path); owner != ops.owner_by_path.end() && ops.is_aggregated) {
       item.x_medkit->member_ids = std::vector<std::string>{owner->second};
@@ -938,8 +940,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     return tl::make_unexpected(std::move(*ambiguous));
   }
 
-  auto data_access_mgr = ctx_.services().data_access_manager();
-  auto type_introspection = data_access_mgr->get_type_introspection();
+  auto & type_schemas = *ctx_.services().type_schemas();
 
   dto::OperationDetail detail;
   // The id echoes what was requested, so a caller that took a qualified id out
@@ -949,12 +950,12 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     detail.item.name = resolved.service->name;
     detail.item.proximity_proof_required = false;
     detail.item.asynchronous_execution = false;
-    detail.item.x_medkit = build_service_xmedkit(*resolved.service, entity_id, type_introspection);
+    detail.item.x_medkit = build_service_xmedkit(*resolved.service, entity_id, type_schemas);
   } else {
     detail.item.name = resolved.action->name;
     detail.item.proximity_proof_required = false;
     detail.item.asynchronous_execution = true;
-    detail.item.x_medkit = build_action_xmedkit(*resolved.action, entity_id, type_introspection);
+    detail.item.x_medkit = build_action_xmedkit(*resolved.action, entity_id, type_schemas);
   }
 
   // A retained member's operation is still described, because the description

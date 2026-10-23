@@ -635,7 +635,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                 raw_topic_sample_timeout_sec);
     topic_sample_timeout_sec = 1.0;
   }
-  topic_transport_ = std::make_shared<ros2::Ros2TopicTransport>(this, topic_sample_timeout_sec);
+  type_schemas_ = std::make_unique<ros2::Ros2TypeSchemaProvider>();
+  topic_transport_ = std::make_shared<ros2::Ros2TopicTransport>(this, topic_sample_timeout_sec, *type_schemas_);
   data_access_mgr_ = std::make_unique<DataAccessManager>(topic_transport_, topic_sample_timeout_sec);
   // Shared callback groups for blocking-RPC response dispatch and action
   // status tracking (issue #575). Created once, here on the startup thread,
@@ -1492,7 +1493,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   discovery_mgr_->set_topic_data_provider(data_access_mgr_->get_topic_data_provider());
 
   // Connect type introspection for operation schema enrichment
-  discovery_mgr_->set_type_introspection(data_access_mgr_->get_type_introspection());
+  discovery_mgr_->set_type_introspection(type_schemas_->introspection());
 
   // Initial discovery
   refresh_cache();

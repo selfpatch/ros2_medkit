@@ -39,10 +39,10 @@
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
-#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -273,23 +273,15 @@ std::optional<ErrorInfo> dispatch_data_item(const HandlerContext & ctx, const ht
 
 /// Build the typed x-medkit per-item payload for the list endpoint.
 dto::XMedkitDataItem build_list_item_xmedkit(const std::string & topic_name, const std::string & direction,
-                                             const std::string & topic_type,
-                                             ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                             const std::string & topic_type, TypeSchemaProvider & type_schemas) {
   dto::XMedkitDataItem item_xm;
   dto::XMedkitRos2 ros2_meta;
   ros2_meta.topic = topic_name;
   ros2_meta.direction = direction;
   if (!topic_type.empty()) {
     ros2_meta.type = topic_type;
-    try {
-      auto type_info = type_introspection->get_type_info(topic_type);
-      json type_info_obj;
-      type_info_obj["schema"] = type_info.schema;
-      type_info_obj["default_value"] = type_info.default_value;
-      item_xm.type_info = type_info_obj;
-    } catch (const std::exception & e) {
-      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic_name.c_str(),
-                       e.what());
+    if (auto type_info = type_schemas.type_info(topic_type)) {
+      item_xm.type_info = std::move(*type_info);
     }
   }
   item_xm.ros2 = ros2_meta;
@@ -318,7 +310,7 @@ void apply_fan_out_observability(dto::DataListXMedkit & xm, const FanOutResult<d
 /// that was actually sampled.
 dto::DataValue build_read_response(const std::string & item_id, const std::string & full_topic_path,
                                    const TopicSampleResult & sample, const std::string & entity_id,
-                                   ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                   TypeSchemaProvider & type_schemas) {
   json response;
   response["id"] = item_id;
   if (sample.has_data && sample.data) {
@@ -333,15 +325,8 @@ dto::DataValue build_read_response(const std::string & item_id, const std::strin
   xm.entity_id = entity_id;
   if (!sample.message_type.empty()) {
     ros2_meta.type = sample.message_type;
-    try {
-      auto type_info = type_introspection->get_type_info(sample.message_type);
-      json type_info_obj;
-      type_info_obj["schema"] = type_info.schema;
-      type_info_obj["default_value"] = type_info.default_value;
-      xm.type_info = type_info_obj;
-    } catch (const std::exception & e) {
-      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
-                       e.what());
+    if (auto type_info = type_schemas.type_info(sample.message_type)) {
+      xm.type_info = std::move(*type_info);
     }
   }
   xm.ros2 = ros2_meta;
@@ -464,9 +449,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
     const auto & cache = ctx_.services().entity_cache();
     auto aggregated = cache.get_entity_data(entity_id);
 
-    // Get data access manager for type introspection.
-    auto data_access_mgr = ctx_.services().data_access_manager();
-    auto type_introspection = data_access_mgr->get_type_introspection();
+    auto & type_schemas = *ctx_.services().type_schemas();
 
     // True for a topic every one of whose providers is a member another gateway
     // runs. The owners are a list because a topic can be published by one member
@@ -496,7 +479,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       di.name = topic.name;
       di.category = "currentData";
       const std::string topic_type = cache.get_topic_type(topic.name);
-      di.x_medkit = build_list_item_xmedkit(topic.name, topic.direction, topic_type, type_introspection);
+      di.x_medkit = build_list_item_xmedkit(topic.name, topic.direction, topic_type, type_schemas);
       // Attribute the item to the members that contribute it. Only a grouping
       // has members to name; on a leaf the entity is the sole contributor and
       // the field stays absent rather than repeating the entity id.
@@ -713,8 +696,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
       return tl::make_unexpected(make_error(status, code, err.message, std::move(params)));
     }
 
-    auto type_introspection = data_access_mgr->get_type_introspection();
-    return build_read_response(addressed->item_id, full_topic_path, *r, entity_id, type_introspection);
+    return build_read_response(addressed->item_id, full_topic_path, *r, entity_id, *ctx_.services().type_schemas());
   } catch (const TopicNotAvailableException & e) {
     MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
                      topic_name.c_str(), e.what());
