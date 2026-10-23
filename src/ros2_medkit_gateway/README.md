@@ -1749,8 +1749,17 @@ curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
 The package compiles into two layered static libraries with a strict dependency direction:
 
-- **`gateway_core`** - middleware-neutral business logic. Sources live under `src/core/` and headers under `include/ros2_medkit_gateway/core/`. Links only header-only and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp / rcl_interfaces / message-package dependency. Hosts the neutral HTTP request handlers, JWT authentication, fault model (debounce, storage, cache, correlation), peer aggregation, manifest parsing, the entity cache, the neutral managers (lock, bulk-data, subscription, script, update, plugin), and every provider interface contract.
-- **`gateway_ros2`** - ROS adapter layer. Compiles the remaining sources under `src/` and links `gateway_core` publicly via `medkit_target_dependencies`. Hosts `GatewayNode` (the `rclcpp::Node` entry point), the ROS-coupled managers (data access, operation, configuration, fault facade, log, trigger), runtime discovery, the native topic sampler, and the ROS-specific provider default implementations.
+- **`gateway_core`** - the ROS-free layer, defined in `cmake/gateway_core.cmake`. Sources: `src/core/`, the HTTP server and REST server, `src/http/handlers/`, `src/openapi/`, the plugin manager and loader, aggregation, and the script manager. Headers live under `include/ros2_medkit_gateway/core/` and the neighbouring `http/`, `plugins/` and `aggregation/` directories. Links only header-only and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp / rcl_interfaces / message-package dependency.
+- **`gateway_ros2`** - the ROS adapters. Compiles the remaining sources under `src/` and links `gateway_core` publicly via `medkit_target_dependencies`. Hosts `GatewayNode` (the `rclcpp::Node` entry point), the ROS transports and providers, runtime discovery, the native topic sampler, and the plugin context.
+
+The core compiles and is tested without ROS and without DDS setup. `cmake/gateway_core.cmake` is plain CMake. The ament build includes it by path, and so does `scripts/check_cores_without_ros`, which links `gateway_core`:
+
+```cmake
+include(path/to/ros2_medkit_gateway/cmake/gateway_core.cmake)
+target_link_libraries(check_cores_without_ros PRIVATE gateway_core)
+```
+
+The file takes a target the including build already defines, else `find_package`, else the copy vendored in `src/vendored/` (cpp-httplib, jwt-cpp, tl::expected). An existing `httplib::httplib` target is reused. `-DENABLE_SWAGGER_UI=ON` works in both builds and needs network access and `xxd` at configure time. The check implements `GatewayServices` with minimal stand-ins and starts `RESTServer`. `scripts/check_cores_without_ros/` builds and runs it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
 The `gateway_node` executable and existing test targets link `gateway_ros2`, so they transitively get both layers from a single dependency. The neutral contract is enforced by two CTest checks:
 

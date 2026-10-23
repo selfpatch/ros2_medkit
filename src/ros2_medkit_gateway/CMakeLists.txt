@@ -14,14 +14,6 @@ include(ROS2MedkitCoverage)
 include(ROS2MedkitLinting)
 include(ROS2MedkitWarnings)
 
-# Swagger UI embedding option
-option(ENABLE_SWAGGER_UI "Embed Swagger UI assets in gateway binary" OFF)
-
-# Extract version from package.xml so version.hpp stays in sync automatically
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/package.xml" _package_xml)
-string(REGEX MATCH "<version>([0-9]+\\.[0-9]+\\.[0-9]+)</version>" _ "${_package_xml}")
-set(GATEWAY_VERSION "${CMAKE_MATCH_1}")
-
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -57,30 +49,13 @@ add_compile_definitions(CPPHTTPLIB_OPENSSL_SUPPORT)
 # Emitted-status recorder (include/ros2_medkit_gateway/http/detail/status_recorder.hpp).
 # Instruments make_error() and every registry-mounted route so
 # test_openapi_error_coverage can assert the OpenAPI document declares every
-# status the gateway actually serves. Directory scope and set before any
-# target is created, because make_error() is an inline function shared by 13
-# translation units - a per-target definition would give it two bodies and
-# break ODR. A shipped gateway compiles none of it: the Dockerfile builds with
+# status the gateway actually serves. gateway_core carries the definition as a
+# PUBLIC compile definition, so every translation unit sees one make_error().
+# A shipped gateway compiles none of it: the Dockerfile builds with
 # -DBUILD_TESTING=OFF.
 if(BUILD_TESTING)
-  add_compile_definitions(MEDKIT_STATUS_RECORDER)
+  set(GATEWAY_CORE_STATUS_RECORDER ON)
 endif()
-
-# Vendored header-only libraries (no network access on ROS build farm)
-# tl::expected v1.3.1 (CC0) - https://github.com/TartanLlama/expected
-add_library(tl_expected_iface INTERFACE)
-target_include_directories(tl_expected_iface SYSTEM INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/tl_expected/include>
-  $<INSTALL_INTERFACE:include/ros2_medkit_gateway/vendored>
-)
-add_library(tl::expected ALIAS tl_expected_iface)
-
-# jwt-cpp v0.7.0 (MIT) - https://github.com/Thalhammer/jwt-cpp
-add_library(jwt_cpp_iface INTERFACE)
-target_include_directories(jwt_cpp_iface SYSTEM INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/vendored/jwt_cpp/include
-)
-add_library(jwt-cpp::jwt-cpp ALIAS jwt_cpp_iface)
 
 # mjansson/mdns (Public Domain) - https://github.com/mjansson/mdns
 # Header-only C library for mDNS/DNS-SD, used for peer gateway discovery
@@ -89,74 +64,17 @@ include_directories(SYSTEM src/vendored/mdns)
 # Include directories
 include_directories(include)
 
-# ─── Neutral core static library ───────────────────────────────────────────
-# Middleware-neutral business logic. No ROS dependencies. Compiled from
-# sources under src/core/ which were relocated from the flat src/ layout
-# during the layered-architecture refactor.
-file(GLOB_RECURSE GATEWAY_CORE_SOURCES
-  CONFIGURE_DEPENDS
-  "src/core/*.cpp"
-)
-
-add_library(gateway_core STATIC ${GATEWAY_CORE_SOURCES})
-
-target_include_directories(gateway_core
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-  PRIVATE
-    # Private implementation headers for the openapi module (not installed)
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/openapi>
-)
-
-target_link_libraries(gateway_core
-  PUBLIC
-    cpp_httplib_target
-    nlohmann_json::nlohmann_json
-    yaml-cpp::yaml-cpp
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    tl::expected
-    ros2_medkit_fault_detection::ros2_medkit_fault_detection
-    jwt-cpp::jwt-cpp
-    SQLite::SQLite3
-    ${CMAKE_DL_LIBS}
-)
-
-set_target_properties(gateway_core PROPERTIES
-  POSITION_INDEPENDENT_CODE ON
-  CXX_STANDARD 17
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF
-)
-
-# Pass version from package.xml to version.hpp
-target_compile_definitions(gateway_core PUBLIC GATEWAY_VERSION_STRING="${GATEWAY_VERSION}")
-
-# Core PCH - heavy headers used across the neutral layer, no ROS includes.
-# Speeds up full builds by ~30-40%. Disable with -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON.
-target_precompile_headers(gateway_core PRIVATE
-  <string>
-  <vector>
-  <memory>
-  <optional>
-  <functional>
-  <unordered_map>
-  <algorithm>
-  <sstream>
-  <chrono>
-  <mutex>
-  <nlohmann/json.hpp>
-  <httplib.h>
-  <tl/expected.hpp>
-)
+# ─── ROS-free core static library ──────────────────────────────────────────
+# Business logic, HTTP server, handlers, OpenAPI, plugin manager, aggregation and
+# scripts. Defined once, in plain CMake. The ament build and
+# scripts/check_cores_without_ros both include it.
+include(cmake/gateway_core.cmake)
 
 # ─── ROS adapter static library ────────────────────────────────────────────
 # Files that depend on rclcpp / rcl_interfaces / message-package interfaces.
 # Layered atop gateway_core via PUBLIC link so the executable and tests
 # transitively get both layers from a single dependency.
 add_library(gateway_ros2 STATIC
-  src/aggregation/aggregation_manager.cpp
   src/data/ros2_topic_data_provider.cpp
   src/ros2/conversions/fault_msg_conversions.cpp
   src/ros2/providers/ros2_runtime_introspection.cpp
@@ -172,7 +90,6 @@ add_library(gateway_ros2 STATIC
   src/ros2/ros2_log_sink.cpp
   src/ros2/ros2_type_schema_provider.cpp
   src/ros2/trigger_topic_subscriber.cpp
-  src/default_script_provider.cpp
   src/discovery/discovery_manager.cpp
   src/discovery/layers/manifest_layer.cpp
   src/discovery/layers/plugin_layer.cpp
@@ -184,41 +101,11 @@ add_library(gateway_ros2 STATIC
   src/entity_freeze_frame_capture.cpp
   src/fault_manager_paths.cpp
   src/gateway_node.cpp
-  src/http/fan_out_helpers.cpp
-  src/http/handlers/auth_handlers.cpp
-  src/http/handlers/bulkdata_handlers.cpp
-  src/http/handlers/config_handlers.cpp
-  src/http/handlers/cyclic_subscription_handlers.cpp
-  src/http/handlers/data_handlers.cpp
-  src/http/handlers/discovery_handlers.cpp
-  src/http/handlers/docs_handlers.cpp
-  src/http/handlers/fault_handlers.cpp
-  src/http/handlers/handler_context.cpp
-  src/http/handlers/health_handlers.cpp
-  src/http/handlers/lifecycle_handlers.cpp
-  src/http/handlers/lock_handlers.cpp
-  src/http/handlers/log_handlers.cpp
-  src/http/handlers/operation_handlers.cpp
-  src/http/handlers/script_handlers.cpp
-  src/http/handlers/sse_fault_handler.cpp
-  src/http/handlers/sse_transport_provider.cpp
-  src/http/handlers/trigger_handlers.cpp
-  src/http/handlers/update_handlers.cpp
-  src/http/http_server.cpp
-  src/http/rest_server.cpp
-  src/openapi/capability_generator.cpp
-  src/openapi/openapi_spec_builder.cpp
-  src/openapi/path_builder.cpp
-  src/openapi/schema_builder.cpp
   src/plugins/plugin_context.cpp
-  src/plugins/plugin_http_types.cpp
-  src/plugins/plugin_loader.cpp
-  src/plugins/plugin_manager.cpp
   src/ros2_common/callback_groups.cpp
   src/ros2_common/helper_node.cpp
   src/ros2_common/ros2_subscription_executor.cpp
   src/ros2_common/ros2_subscription_slot.cpp
-  src/script_manager.cpp
   src/trigger_fault_subscriber.cpp
 )
 
@@ -262,14 +149,6 @@ add_executable(gateway_node src/main.cpp)
 target_link_libraries(gateway_node gateway_ros2)
 # Export symbols to dlopen'd plugins (PluginContext::send_json, send_error, etc.)
 set_target_properties(gateway_node PROPERTIES ENABLE_EXPORTS ON)
-
-# Apply Swagger UI compile definition and embed assets
-if(ENABLE_SWAGGER_UI)
-  target_compile_definitions(gateway_ros2 PRIVATE ENABLE_SWAGGER_UI)
-  target_compile_definitions(gateway_node PRIVATE ENABLE_SWAGGER_UI)
-  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SwaggerUI.cmake)
-  target_compile_definitions(gateway_ros2 PRIVATE SWAGGER_UI_VERSION="${SWAGGER_UI_VERSION}")
-endif()
 
 # Install
 install(TARGETS gateway_node

@@ -67,11 +67,10 @@ class GatewayServices {
   virtual TransportRegistry * transport_registry() = 0;
   virtual TypeSchemaProvider * type_schemas() = 0;
   virtual std::shared_ptr<SSEClientTracker> sse_client_tracker() = 0;
-  /// Never null while SSEFaultHandler subscribes through it. Otherwise only
-  /// handed to subscription transports.
-  virtual GatewayNode * ros_node() = 0;
 
   // May be null.
+  /// Null when no ROS node exists. Only handed to subscription transports.
+  virtual GatewayNode * ros_node() = 0;
   virtual PluginManager * plugin_manager() = 0;
   virtual ScriptManager * script_manager() = 0;
   virtual LockManager * lock_manager() = 0;

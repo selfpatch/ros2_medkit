@@ -12,23 +12,26 @@ Build Layers
 The package compiles into two layered static libraries with a strict
 dependency direction:
 
-* ``gateway_core`` - middleware-neutral business logic. Sources live under
-  ``src/core/`` and headers under ``include/ros2_medkit_gateway/core/``.
-  Links only header-only and C-level externals (cpp-httplib,
-  nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl).
-  Carries no rclcpp / rcl_interfaces / message-package dependency.
-  Hosts the neutral HTTP request handlers, JWT authentication,
-  fault model (debounce, storage, cache, correlation), peer aggregation,
-  manifest parsing, the entity cache, the neutral managers (lock,
-  bulk-data, subscription, script, update, plugin), and every provider
-  interface contract.
-* ``gateway_ros2`` - ROS adapter layer. Compiles the remaining sources
+* ``gateway_core`` - the ROS-free layer, defined in
+  ``cmake/gateway_core.cmake``. Sources: ``src/core/``, the HTTP server and
+  REST server, ``src/http/handlers/``, ``src/openapi/``, the plugin manager
+  and loader, aggregation, and the script manager. Links only header-only
+  and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp,
+  tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp /
+  rcl_interfaces / message-package dependency.
+* ``gateway_ros2`` - the ROS adapters. Compiles the remaining sources
   under ``src/`` and links ``gateway_core`` publicly via
   ``medkit_target_dependencies``. Hosts ``GatewayNode`` (the
-  ``rclcpp::Node`` entry point), the ROS-coupled managers (data access,
-  operation, configuration, fault facade, log, trigger), runtime
-  discovery, the native topic sampler, and the ROS-specific provider
-  default implementations.
+  ``rclcpp::Node`` entry point), the ROS transports and providers,
+  runtime discovery, the native topic sampler, and the plugin context.
+
+``cmake/gateway_core.cmake`` is plain CMake. The ament build includes it by
+path, and so does ``scripts/check_cores_without_ros``, which links
+``gateway_core``. The file takes a target the including build already
+defines, else ``find_package``, else the copy vendored in ``src/vendored/``.
+The check implements ``GatewayServices`` with minimal stand-ins and starts
+``RESTServer``. ``scripts/check_cores_without_ros/`` builds and runs it on
+Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single
@@ -69,8 +72,8 @@ The following diagram shows the relationships between the main components of the
 
    note as N_layer_split
    This package compiles into two layered static libraries:
-   * gateway_core - middleware-neutral business logic (handlers,
-     auth, fault model, aggregation, all SOVD managers including
+   * gateway_core - the ROS-free layer (HTTP server, REST server,
+     handlers, OpenAPI, plugin manager, auth, fault model, aggregation, all SOVD managers including
      DataAccessManager, OperationManager, ConfigurationManager,
      FaultManager, LogManager, TriggerManager, providers, entity
      model). Does not link rclcpp. Managers consume neutral
@@ -548,7 +551,7 @@ Each entry below is tagged with the static library it compiles into:
    - Automatically cleans up completed goals older than 5 minutes
    - JSON ↔ ROS 2 message conversion is performed inside the ROS-side transport adapter via ``ros2_medkit_serialization``
 
-4. **RESTServer** ``[gateway_ros2]`` - Provides the HTTP/REST API (route table couples to gateway lifecycle; the individual handlers it dispatches to live in ``gateway_core``)
+4. **RESTServer** ``[gateway_core]`` - Provides the HTTP/REST API (route table couples to gateway lifecycle; the individual handlers it dispatches to live in ``gateway_core``)
    - Discovery endpoints: ``/health``, ``/areas``, ``/components``
    - Data endpoints: ``/components/{id}/data``, ``/components/{id}/data/{topic}``
    - Operations endpoints: ``/apps/{id}/operations``, ``/apps/{id}/operations/{op}/executions``
@@ -609,7 +612,7 @@ Each entry below is tagged with the static library it compiles into:
     - ``ActionInfo`` - Action metadata (path, name, type)
     - ``EntityCache`` - Thread-safe cache of discovered entities (areas, components, apps)
 
-11. **ScriptManager** ``[gateway_ros2]`` - Manages diagnostic script upload, storage, and execution (SOVD 7.15)
+11. **ScriptManager** ``[gateway_core]`` - Manages diagnostic script upload, storage, and execution (SOVD 7.15)
     - Delegates to a pluggable ``ScriptProvider`` backend (set via ``set_backend()``)
     - Lists, uploads, and deletes scripts per entity
     - Starts script executions as POSIX subprocesses with timeout support

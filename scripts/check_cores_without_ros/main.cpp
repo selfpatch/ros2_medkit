@@ -12,12 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+#error "gateway_core must export CPPHTTPLIB_OPENSSL_SUPPORT"
+#endif
+#include <httplib.h>
 
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
@@ -25,6 +38,27 @@
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
+#include "ros2_medkit_gateway/core/gateway_services.hpp"
+#include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
+#include "ros2_medkit_gateway/core/http/rest_server.hpp"
+#include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/action_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/fault_service_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/parameter_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/service_transport.hpp"
+#include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 
 namespace core = ros2_medkit_fault_reporter::core;
 using ros2_medkit_fault_reporter::FilterConfig;
@@ -73,6 +107,304 @@ class FixedWallClock : public ros2_medkit_fault_manager::core::WallClock {
     return 2000000000LL;
   }
 };
+
+namespace gw = ros2_medkit_gateway;
+
+// Minimal transports: every call answers "not supported".
+class NoFaultTransport : public gw::FaultServiceTransport {
+ public:
+  gw::FaultResult report_fault(const std::string & /*fault_code*/, uint8_t /*severity*/,
+                               const std::string & /*description*/, const std::string & /*source_id*/) override {
+    return none();
+  }
+  gw::FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
+                              bool /*include_cleared*/, bool /*include_healed*/, bool /*include_muted*/,
+                              bool /*include_clusters*/) override {
+    return none();
+  }
+  gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
+                                                const std::string & /*source_id*/) override {
+    return {false, "not supported", {}, gw::FaultFailure::Unavailable};
+  }
+  gw::FaultResult get_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/) override {
+    return none();
+  }
+  gw::FaultResult clear_fault(const std::string & /*fault_code*/, bool /*skip_correlation_auto_clear*/) override {
+    return none();
+  }
+  gw::FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*topic*/) override {
+    return none();
+  }
+  gw::FaultResult get_rosbag(const std::string & /*fault_code*/) override {
+    return none();
+  }
+  gw::FaultResult list_rosbags(const std::string & /*entity_fqn*/) override {
+    return none();
+  }
+  bool wait_for_services(std::chrono::duration<double> /*timeout*/) override {
+    return false;
+  }
+  bool is_available() const override {
+    return false;
+  }
+
+ private:
+  static gw::FaultResult none() {
+    return {false, {}, "not supported", gw::FaultFailure::Unavailable};
+  }
+};
+
+class NoParameterTransport : public gw::ParameterTransport {
+ public:
+  bool is_self_node(const std::string & /*node_name*/) const override {
+    return false;
+  }
+  gw::ParameterResult list_parameters(const std::string & /*node_name*/) override {
+    return none();
+  }
+  gw::ParameterResult get_parameter(const std::string & /*node_name*/, const std::string & /*param_name*/) override {
+    return none();
+  }
+  gw::ParameterResult set_parameter(const std::string & /*node_name*/, const std::string & /*param_name*/,
+                                    const gw::json & /*value*/) override {
+    return none();
+  }
+  gw::ParameterResult list_own_parameters() override {
+    return none();
+  }
+  gw::ParameterResult get_own_parameter(const std::string & /*param_name*/) override {
+    return none();
+  }
+  gw::ParameterResult get_default(const std::string & /*node_name*/, const std::string & /*param_name*/) override {
+    return none();
+  }
+  gw::ParameterResult list_defaults(const std::string & /*node_name*/) override {
+    return none();
+  }
+  bool is_node_available(const std::string & /*node_name*/) const override {
+    return false;
+  }
+  void shutdown() override {
+  }
+
+ private:
+  static gw::ParameterResult none() {
+    return {false, {}, "not supported", gw::ParameterErrorCode::SERVICE_UNAVAILABLE};
+  }
+};
+
+class NoTopicTransport : public gw::TopicTransport {
+ public:
+  gw::json publish(const std::string & /*topic_path*/, const std::string & /*msg_type*/, const gw::json & /*data*/,
+                   std::chrono::duration<double> /*timeout*/) override {
+    return {{"error", "not supported"}};
+  }
+  gw::TopicSample sample(const std::string & topic, std::chrono::duration<double> /*timeout*/) override {
+    gw::TopicSample out{};
+    out.success = false;
+    out.status = "error";
+    out.topic = topic;
+    out.error_message = "not supported";
+    return out;
+  }
+  std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & /*topic_name*/) const override {
+    return {0, 0};
+  }
+};
+
+class NoServiceTransport : public gw::ServiceTransport {
+ public:
+  gw::ServiceCallResult call(const std::string & /*service_path*/, const std::string & /*service_type*/,
+                             const gw::json & /*request*/, std::chrono::duration<double> /*timeout*/) override {
+    gw::ServiceCallResult out{};
+    out.success = false;
+    out.error_message = "not supported";
+    return out;
+  }
+};
+
+class NoActionTransport : public gw::ActionTransport {
+ public:
+  gw::ActionSendGoalResult send_goal(const std::string & /*action_path*/, const std::string & /*action_type*/,
+                                     const gw::json & /*goal*/, std::chrono::duration<double> /*timeout*/) override {
+    gw::ActionSendGoalResult out{};
+    out.success = false;
+    out.goal_accepted = false;
+    out.error_message = "not supported";
+    return out;
+  }
+  gw::ActionCancelResult cancel_goal(const std::string & /*action_path*/, const std::string & /*goal_id*/,
+                                     std::chrono::duration<double> /*timeout*/) override {
+    gw::ActionCancelResult out;
+    out.error_message = "not supported";
+    return out;
+  }
+  gw::ActionGetResultResult get_result(const std::string & /*action_path*/, const std::string & /*action_type*/,
+                                       const std::string & /*goal_id*/,
+                                       std::chrono::duration<double> /*timeout*/) override {
+    return {false, gw::ActionGoalStatus::UNKNOWN, {}, "not supported"};
+  }
+  void subscribe_status(const std::string & /*action_path*/, StatusCallback /*callback*/) override {
+  }
+  void unsubscribe_status(const std::string & /*action_path*/) override {
+  }
+};
+
+class EmptyDiscovery : public gw::EntityDiscovery {
+ public:
+  std::optional<gw::Area> get_area(const std::string & /*id*/) override {
+    return std::nullopt;
+  }
+  std::optional<gw::Component> get_component(const std::string & /*id*/) override {
+    return std::nullopt;
+  }
+  std::optional<gw::App> get_app(const std::string & /*id*/) override {
+    return std::nullopt;
+  }
+  std::optional<gw::Function> get_function(const std::string & /*id*/) override {
+    return std::nullopt;
+  }
+  gw::DiscoveryMode get_mode() const override {
+    return gw::DiscoveryMode::RUNTIME_ONLY;
+  }
+  std::string get_strategy_name() const override {
+    return "none";
+  }
+  std::optional<gw::discovery::MergeReport> get_merge_report() const override {
+    return std::nullopt;
+  }
+  std::optional<gw::discovery::LinkingResult> get_linking_result() const override {
+    return std::nullopt;
+  }
+  gw::discovery::ManifestConfig get_manifest_config() const override {
+    return {};
+  }
+};
+
+class NoTypeSchemas : public gw::TypeSchemaProvider {
+ public:
+  std::optional<gw::json> message_schema(const std::string & /*type_name*/) override {
+    return std::nullopt;
+  }
+  std::optional<gw::json> type_info(const std::string & /*type_name*/) override {
+    return std::nullopt;
+  }
+  std::shared_ptr<const gw::json> service_type_info(const std::string & /*type_name*/) override {
+    return nullptr;
+  }
+  std::shared_ptr<const gw::json> action_type_info(const std::string & /*type_name*/) override {
+    return nullptr;
+  }
+};
+
+// Every never-null getter is backed by a real core object; the optional ones stay null.
+class MinimalServices : public gw::GatewayServices {
+ public:
+  MinimalServices()
+    : fault_(std::make_shared<NoFaultTransport>())
+    , config_(std::make_shared<NoParameterTransport>())
+    , data_(std::make_shared<NoTopicTransport>())
+    , operations_(std::make_shared<NoServiceTransport>(), std::make_shared<NoActionTransport>(), nullptr)
+    , sse_(std::make_shared<gw::SSEClientTracker>(4)) {
+  }
+  const gw::ThreadSafeEntityCache & entity_cache() const override {
+    return cache_;
+  }
+  gw::EntityDiscovery * discovery() override {
+    return &discovery_;
+  }
+  gw::FaultManager * fault_manager() override {
+    return &fault_;
+  }
+  gw::ConfigurationManager * configuration_manager() override {
+    return &config_;
+  }
+  gw::DataAccessManager * data_access_manager() override {
+    return &data_;
+  }
+  gw::OperationManager * operation_manager() override {
+    return &operations_;
+  }
+  gw::SubscriptionManager * subscription_manager() override {
+    return &subscriptions_;
+  }
+  gw::ResourceSamplerRegistry * sampler_registry() override {
+    return &samplers_;
+  }
+  gw::TransportRegistry * transport_registry() override {
+    return &transports_;
+  }
+  gw::TypeSchemaProvider * type_schemas() override {
+    return &schemas_;
+  }
+  std::shared_ptr<gw::SSEClientTracker> sse_client_tracker() override {
+    return sse_;
+  }
+  gw::GatewayNode * ros_node() override {
+    return nullptr;
+  }
+  gw::PluginManager * plugin_manager() override {
+    return nullptr;
+  }
+  gw::ScriptManager * script_manager() override {
+    return nullptr;
+  }
+  gw::LockManager * lock_manager() override {
+    return nullptr;
+  }
+  gw::UpdateManager * update_manager() override {
+    return nullptr;
+  }
+  gw::LogManager * log_manager() override {
+    return nullptr;
+  }
+  gw::BulkDataStore * bulk_data_store() override {
+    return nullptr;
+  }
+  gw::FaultTriggerEngine * fault_trigger_engine() override {
+    return nullptr;
+  }
+  gw::FreezeFrameSource * freeze_frames() override {
+    return nullptr;
+  }
+  gw::FaultEventSource * fault_events() override {
+    return nullptr;
+  }
+  gw::TopicDataProvider * topic_data_provider() override {
+    return nullptr;
+  }
+  gw::TriggerManager * trigger_manager() override {
+    return nullptr;
+  }
+
+ private:
+  gw::ThreadSafeEntityCache cache_;
+  EmptyDiscovery discovery_;
+  NoTypeSchemas schemas_;
+  gw::FaultManager fault_;
+  gw::ConfigurationManager config_;
+  gw::DataAccessManager data_;
+  gw::OperationManager operations_;
+  gw::SubscriptionManager subscriptions_;
+  gw::ResourceSamplerRegistry samplers_;
+  gw::TransportRegistry transports_;
+  std::shared_ptr<gw::SSEClientTracker> sse_;
+};
+
+int free_port() {
+  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (fd < 0 || ::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    return 0;
+  }
+  socklen_t len = sizeof(addr);
+  ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+  ::close(fd);
+  return ntohs(addr.sin_port);
+}
 
 bool check(bool ok, const char * what) {
   std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
@@ -322,6 +654,33 @@ static int run() {
     }
     std::filesystem::remove(huge_db);
     std::filesystem::remove(corr_yaml);
+  }
+
+  // Gateway: REST server over minimal services answers /health.
+  {
+    MinimalServices services;
+    const int port = free_port();
+    ok &= check(port != 0, "an ephemeral port was found");
+    gw::RestConfig rest;
+    gw::RESTServer server(services, nullptr, "127.0.0.1", port, gw::CorsConfig{}, gw::AuthConfig{},
+                          gw::RateLimitConfig{}, rest);
+    std::thread server_thread([&server] {
+      server.start();
+    });
+    for (int i = 0; i < 100 && !server.is_running(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    httplib::Client client("127.0.0.1", port);
+    client.set_connection_timeout(5);
+    client.set_read_timeout(5);
+    auto res = client.Get("/api/v1/health");
+    const int status = res ? res->status : 0;
+    ok &= check(status == 200, "GET /api/v1/health answers 200");
+    if (status == 200) {
+      std::printf("ok gateway health %d\n", status);
+    }
+    server.stop();
+    server_thread.join();
   }
 
   return ok ? 0 : 1;
