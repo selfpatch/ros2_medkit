@@ -29,6 +29,7 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
 #include "ros2_medkit_gateway/core/http/operation_item_id.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/openapi/document_checks.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
@@ -344,10 +345,10 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // silently replacing the gateway's description of that path would hide it.
   for (const auto & [path, item] : extension_paths.items()) {
     if (registry_paths.contains(path)) {
-      RCLCPP_WARN(handlers::HandlerContext::logger(),
-                  "Plugin describes path '%s', which the gateway already documents; keeping the gateway's "
-                  "description. The plugin's route is still mounted - check it is not shadowing a gateway route.",
-                  path.c_str());
+      MEDKIT_LOG_WARN(handlers::HandlerContext::logger(),
+                      "Plugin describes path '%s', which the gateway already documents; keeping the gateway's "
+                      "description. The plugin's route is still mounted - check it is not shadowing a gateway route.",
+                      path.c_str());
       continue;
     }
     builder.add_paths(nlohmann::json{{path, item}});
@@ -391,10 +392,10 @@ nlohmann::json CapabilityGenerator::generate_root() const {
     for (const auto & name : orphans) {
       names += (names.empty() ? "" : ", ") + name;
     }
-    RCLCPP_WARN(handlers::HandlerContext::logger(),
-                "OpenAPI document ships %zu schema(s) no operation can reach: %s. Bind each to the route "
-                "that returns it, or drop it from dto::AllDtos.",
-                orphans.size(), names.c_str());
+    MEDKIT_LOG_WARN(handlers::HandlerContext::logger(),
+                    "OpenAPI document ships %zu schema(s) no operation can reach: %s. Bind each to the route "
+                    "that returns it, or drop it from dto::AllDtos.",
+                    orphans.size(), names.c_str());
   }
 
   return document;

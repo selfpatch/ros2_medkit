@@ -13,11 +13,11 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <dlfcn.h>
 #include <httplib.h>
 
-#include <rclcpp/rclcpp.hpp>
 #include <regex>
 #include <unordered_set>
 
@@ -28,24 +28,25 @@
 namespace ros2_medkit_gateway {
 
 namespace {
-auto logger() {
-  return rclcpp::get_logger("plugin_manager");
+const log::Logger & logger() {
+  static const log::Logger instance("plugin_manager");
+  return instance;
 }
 }  // namespace
 
 void PluginManager::setup_plugin_logging(GatewayPlugin & plugin) {
   std::string plugin_name = plugin.name();
   plugin.set_logger([plugin_name](PluginLogLevel level, const std::string & msg) {
-    auto log = rclcpp::get_logger("plugin." + plugin_name);
+    const log::Logger plugin_logger("plugin." + plugin_name);
     switch (level) {
       case PluginLogLevel::kInfo:
-        RCLCPP_INFO(log, "%s", msg.c_str());
+        MEDKIT_LOG_INFO(plugin_logger, "%s", msg.c_str());
         break;
       case PluginLogLevel::kWarn:
-        RCLCPP_WARN(log, "%s", msg.c_str());
+        MEDKIT_LOG_WARN(plugin_logger, "%s", msg.c_str());
         break;
       case PluginLogLevel::kError:
-        RCLCPP_ERROR(log, "%s", msg.c_str());
+        MEDKIT_LOG_ERROR(plugin_logger, "%s", msg.c_str());
         break;
     }
   });
@@ -89,7 +90,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
     if (!first_update_provider_) {
       first_update_provider_ = lp.update_provider;
     } else {
-      RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
+      MEDKIT_LOG_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
     }
   }
 
@@ -98,7 +99,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
     if (!first_log_provider_) {
       first_log_provider_ = lp.log_provider;
     } else {
-      RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", plugin->name().c_str());
+      MEDKIT_LOG_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", plugin->name().c_str());
     }
   }
 
@@ -107,7 +108,7 @@ void PluginManager::add_plugin(std::unique_ptr<GatewayPlugin> plugin) {
     if (!first_script_provider_) {
       first_script_provider_ = lp.script_provider;
     } else {
-      RCLCPP_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
+      MEDKIT_LOG_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'", plugin->name().c_str());
     }
   }
 
@@ -122,7 +123,7 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
   for (const auto & cfg : configs) {
     auto result = PluginLoader::load(cfg.path);
     if (result) {
-      RCLCPP_INFO(logger(), "Loaded plugin '%s' from %s", result->plugin->name().c_str(), cfg.path.c_str());
+      MEDKIT_LOG_INFO(logger(), "Loaded plugin '%s' from %s", result->plugin->name().c_str(), cfg.path.c_str());
 
       LoadedPlugin lp;
       lp.config = cfg.config;
@@ -151,8 +152,8 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
         if (!first_update_provider_) {
           first_update_provider_ = lp.update_provider;
         } else {
-          RCLCPP_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'",
-                      result->plugin->name().c_str());
+          MEDKIT_LOG_WARN(logger(), "Multiple UpdateProvider plugins loaded - ignoring '%s'",
+                          result->plugin->name().c_str());
         }
       }
 
@@ -161,7 +162,8 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
         if (!first_log_provider_) {
           first_log_provider_ = lp.log_provider;
         } else {
-          RCLCPP_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only", result->plugin->name().c_str());
+          MEDKIT_LOG_DEBUG(logger(), "LogProvider plugin '%s' registered as observer only",
+                           result->plugin->name().c_str());
         }
       }
 
@@ -170,8 +172,8 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
         if (!first_script_provider_) {
           first_script_provider_ = lp.script_provider;
         } else {
-          RCLCPP_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'",
-                      result->plugin->name().c_str());
+          MEDKIT_LOG_WARN(logger(), "Multiple ScriptProvider plugins loaded - ignoring '%s'",
+                          result->plugin->name().c_str());
         }
       }
 
@@ -180,7 +182,7 @@ size_t PluginManager::load_plugins(const std::vector<PluginConfig> & configs) {
       plugins_.push_back(std::move(lp));
       ++loaded;
     } else {
-      RCLCPP_ERROR(logger(), "Failed to load plugin from %s: %s", cfg.path.c_str(), result.error().c_str());
+      MEDKIT_LOG_ERROR(logger(), "Failed to load plugin from %s: %s", cfg.path.c_str(), result.error().c_str());
     }
   }
   return loaded;
@@ -191,10 +193,11 @@ void PluginManager::disable_plugin(LoadedPlugin & lp) {
     try {
       lp.load_result.plugin->shutdown();
     } catch (const std::exception & e) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(), e.what());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
-                  lp.load_result.plugin->name().c_str());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
+                      lp.load_result.plugin->name().c_str());
     }
   }
   // Invalidate cached provider if this plugin was the source, re-scan for next
@@ -279,12 +282,12 @@ void PluginManager::configure_plugins() {
     try {
       lp.load_result.plugin->configure(lp.config);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during configure(): %s", lp.load_result.plugin->name().c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw during configure(): %s", lp.load_result.plugin->name().c_str(),
+                       e.what());
       disable_plugin(lp);
     } catch (...) {
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during configure()",
-                   lp.load_result.plugin->name().c_str());
+      MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw unknown exception during configure()",
+                       lp.load_result.plugin->name().c_str());
       disable_plugin(lp);
     }
   }
@@ -311,13 +314,13 @@ void PluginManager::set_context(PluginContext & context) {
       capture_new_sampler_collections(lp, before_collections);
     } catch (const std::exception & e) {
       capture_new_sampler_collections(lp, before_collections);
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw during set_context(): %s - disabling",
-                   lp.load_result.plugin->name().c_str(), e.what());
+      MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw during set_context(): %s - disabling",
+                       lp.load_result.plugin->name().c_str(), e.what());
       disable_plugin(lp);
     } catch (...) {
       capture_new_sampler_collections(lp, before_collections);
-      RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during set_context() - disabling",
-                   lp.load_result.plugin->name().c_str());
+      MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw unknown exception during set_context() - disabling",
+                       lp.load_result.plugin->name().c_str());
       disable_plugin(lp);
     }
   }
@@ -344,12 +347,12 @@ bool PluginManager::cache_routes_locked(LoadedPlugin & lp) {
     lp.routes_cached = true;
     return true;
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "Plugin '%s' threw during get_routes(): %s - disabling",
-                 lp.load_result.plugin->name().c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw during get_routes(): %s - disabling",
+                     lp.load_result.plugin->name().c_str(), e.what());
     disable_plugin(lp);
   } catch (...) {
-    RCLCPP_ERROR(logger(), "Plugin '%s' threw unknown exception during get_routes() - disabling",
-                 lp.load_result.plugin->name().c_str());
+    MEDKIT_LOG_ERROR(logger(), "Plugin '%s' threw unknown exception during get_routes() - disabling",
+                     lp.load_result.plugin->name().c_str());
     disable_plugin(lp);
   }
   return false;
@@ -372,13 +375,13 @@ void PluginManager::register_routes(httplib::Server & server, const std::string 
           PluginResponse plugin_res(&res);
           handler_fn(plugin_req, plugin_res);
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s", plugin_name.c_str(),
-                       full_pattern.c_str(), e.what());
+          MEDKIT_LOG_ERROR(log::Logger("plugin_manager"), "Plugin '%s' handler threw on %s: %s", plugin_name.c_str(),
+                           full_pattern.c_str(), e.what());
           PluginResponse plugin_res(&res);
           plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
         } catch (...) {
-          RCLCPP_ERROR(rclcpp::get_logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
-                       plugin_name.c_str(), full_pattern.c_str());
+          MEDKIT_LOG_ERROR(log::Logger("plugin_manager"), "Plugin '%s' handler threw unknown exception on %s",
+                           plugin_name.c_str(), full_pattern.c_str());
           PluginResponse plugin_res(&res);
           plugin_res.send_error(500, ERR_PLUGIN_ERROR, "Internal plugin error");
         }
@@ -393,8 +396,8 @@ void PluginManager::register_routes(httplib::Server & server, const std::string 
       } else if (route.method == "DELETE") {
         server.Delete(full_pattern, httplib_handler);
       } else {
-        RCLCPP_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
-                    lp.load_result.plugin->name().c_str(), route.method.c_str());
+        MEDKIT_LOG_WARN(logger(), "Plugin '%s' registered route with unknown method '%s' - skipping",
+                        lp.load_result.plugin->name().c_str(), route.method.c_str());
       }
     }
   }
@@ -491,10 +494,11 @@ std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(const s
     PluginResponse plugin_res(&res);
     handler(plugin_req, plugin_res);
   } catch (const std::exception & e) {
-    RCLCPP_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw: %s", entity_id.c_str(), e.what());
+    MEDKIT_LOG_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw: %s", entity_id.c_str(), e.what());
     return std::nullopt;
   } catch (...) {
-    RCLCPP_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw unknown exception", entity_id.c_str());
+    MEDKIT_LOG_WARN(logger(), "In-process x-plc-data dispatch for entity '%s' threw unknown exception",
+                    entity_id.c_str());
     return std::nullopt;
   }
 
@@ -521,10 +525,11 @@ void PluginManager::shutdown_all() {
     try {
       lp.load_result.plugin->shutdown();
     } catch (const std::exception & e) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(), e.what());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw during shutdown(): %s", lp.load_result.plugin->name().c_str(),
+                      e.what());
     } catch (...) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
-                  lp.load_result.plugin->name().c_str());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw unknown exception during shutdown()",
+                      lp.load_result.plugin->name().c_str());
     }
     // The plugin instance itself is freed later, in ~PluginManager()'s
     // plugins_.clear() - but ResourceSamplerRegistry is owned by GatewayNode
@@ -614,8 +619,8 @@ void PluginManager::register_entity_ownership(const std::string & plugin_name,
   for (const auto & eid : entity_ids) {
     auto it = entity_ownership_.find(eid);
     if (it != entity_ownership_.end() && it->second != plugin_name) {
-      RCLCPP_WARN(logger(), "Entity '%s' ownership transferred from plugin '%s' to '%s'", eid.c_str(),
-                  it->second.c_str(), plugin_name.c_str());
+      MEDKIT_LOG_WARN(logger(), "Entity '%s' ownership transferred from plugin '%s' to '%s'", eid.c_str(),
+                      it->second.c_str(), plugin_name.c_str());
     }
     entity_ownership_[eid] = plugin_name;
   }
@@ -726,11 +731,11 @@ std::vector<openapi::RouteDescriptions> PluginManager::collect_route_description
     try {
       all_descriptions.push_back(fn());
     } catch (const std::exception & e) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw in describe_plugin_routes(): %s", lp.load_result.plugin->name().c_str(),
-                  e.what());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw in describe_plugin_routes(): %s",
+                      lp.load_result.plugin->name().c_str(), e.what());
     } catch (...) {
-      RCLCPP_WARN(logger(), "Plugin '%s' threw unknown exception in describe_plugin_routes()",
-                  lp.load_result.plugin->name().c_str());
+      MEDKIT_LOG_WARN(logger(), "Plugin '%s' threw unknown exception in describe_plugin_routes()",
+                      lp.load_result.plugin->name().c_str());
     }
   }
 

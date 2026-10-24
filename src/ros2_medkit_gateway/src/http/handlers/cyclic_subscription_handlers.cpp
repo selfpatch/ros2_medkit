@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/http/handlers/cyclic_subscription_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <regex>
 #include <string>
@@ -21,7 +22,6 @@
 #include <variant>
 
 #include <nlohmann/json.hpp>
-#include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -441,7 +441,7 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const std::string & 
     case SovdEntityType::AREA:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", path.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", path.c_str());
       return "apps";
   }
 }

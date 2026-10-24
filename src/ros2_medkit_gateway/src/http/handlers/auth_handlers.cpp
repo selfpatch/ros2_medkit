@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/auth_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <string>
 #include <utility>
@@ -125,7 +126,7 @@ http::Result<dto::AuthTokenResponse> AuthHandlers::post_authorize(const http::Ty
     }
     return to_auth_token_response(*result);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_authorize: %s", e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in post_authorize: %s", e.what());
     return tl::make_unexpected(
         make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }
@@ -165,7 +166,7 @@ http::Result<dto::AuthTokenResponse> AuthHandlers::post_token(const http::TypedR
     }
     return to_auth_token_response(*result);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_token: %s", e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in post_token: %s", e.what());
     return tl::make_unexpected(
         make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }
@@ -213,7 +214,7 @@ http::Result<dto::AuthRevokeResponse> AuthHandlers::post_revoke(const http::Type
     resp.status = "revoked";
     return resp;
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in post_revoke: %s", e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in post_revoke: %s", e.what());
     return tl::make_unexpected(
         make_oauth2_error(500, "server_error", std::string("Internal server error: ") + e.what()));
   }

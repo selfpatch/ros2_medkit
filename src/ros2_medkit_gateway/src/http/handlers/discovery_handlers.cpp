@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/discovery_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <map>
@@ -165,7 +166,7 @@ ErrorInfo make_invalid_id_error(const char * entity_label, const std::string & i
 }
 
 ErrorInfo make_internal_error(const char * where, const std::exception & e) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   ErrorInfo err;
   err.code = ERR_INTERNAL_ERROR;
   err.message = "Internal server error";
@@ -175,7 +176,7 @@ ErrorInfo make_internal_error(const char * where, const std::exception & e) {
 }
 
 ErrorInfo make_internal_error_no_details(const char * where, const std::exception & e) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   ErrorInfo err;
   err.code = ERR_INTERNAL_ERROR;
   err.message = "Internal server error";
@@ -1001,8 +1002,8 @@ DiscoveryHandlers::get_component_depends_on(const http::TypedRequest & req) {
         dto::XMedkitComponent x_medkit_comp;
         x_medkit_comp.missing = true;
         item.x_medkit = x_medkit_comp;
-        RCLCPP_WARN(HandlerContext::logger(), "Component '%s' declares dependency on unknown component '%s'",
-                    component_id.c_str(), dep_id.c_str());
+        MEDKIT_LOG_WARN(HandlerContext::logger(), "Component '%s' declares dependency on unknown component '%s'",
+                        component_id.c_str(), dep_id.c_str());
       }
 
       response.items.push_back(std::move(item));
@@ -1303,8 +1304,8 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_app_depen
         dto::XMedkitApp x_medkit_app;
         x_medkit_app.missing = true;
         item.x_medkit = x_medkit_app;
-        RCLCPP_WARN(HandlerContext::logger(), "App '%s' declares dependency on unknown app '%s'", app_id.c_str(),
-                    dep_id.c_str());
+        MEDKIT_LOG_WARN(HandlerContext::logger(), "App '%s' declares dependency on unknown app '%s'", app_id.c_str(),
+                        dep_id.c_str());
       }
 
       response.items.push_back(std::move(item));
@@ -1379,8 +1380,8 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_app_belo
         x_medkit_area.unresolved_component = app.component_id;
         item.x_medkit = x_medkit_area;
         response.items.push_back(std::move(item));
-        RCLCPP_WARN(HandlerContext::logger(), "App '%s' belongs-to unresolvable: parent component '%s' is unknown",
-                    app_id.c_str(), app.component_id.c_str());
+        MEDKIT_LOG_WARN(HandlerContext::logger(), "App '%s' belongs-to unresolvable: parent component '%s' is unknown",
+                        app_id.c_str(), app.component_id.c_str());
       } else if (!snapshot.component->area.empty()) {
         const auto & area_id_ref = snapshot.component->area;
         dto::AreaListItem item;
@@ -1395,8 +1396,8 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_app_belo
           dto::XMedkitArea x_medkit_area;
           x_medkit_area.missing = true;
           item.x_medkit = x_medkit_area;
-          RCLCPP_WARN(HandlerContext::logger(), "App '%s' belongs to unknown area '%s' (via component '%s')",
-                      app_id.c_str(), area_id_ref.c_str(), app.component_id.c_str());
+          MEDKIT_LOG_WARN(HandlerContext::logger(), "App '%s' belongs to unknown area '%s' (via component '%s')",
+                          app_id.c_str(), area_id_ref.c_str(), app.component_id.c_str());
         }
         response.items.push_back(std::move(item));
       }
@@ -1475,8 +1476,8 @@ DiscoveryHandlers::get_app_is_located_on(const http::TypedRequest & req) {
         item.x_medkit = x_medkit_comp;
         response.items.push_back(std::move(item));
 
-        RCLCPP_WARN(HandlerContext::logger(), "App '%s' references unknown component '%s'", app_id.c_str(),
-                    app.component_id.c_str());
+        MEDKIT_LOG_WARN(HandlerContext::logger(), "App '%s' references unknown component '%s'", app_id.c_str(),
+                        app.component_id.c_str());
       }
     }
 

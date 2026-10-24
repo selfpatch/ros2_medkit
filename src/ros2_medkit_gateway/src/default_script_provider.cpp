@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/default_script_provider.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -31,8 +32,6 @@
 #include <sstream>
 #include <thread>
 #include <vector>
-
-#include <rclcpp/logging.hpp>
 
 namespace ros2_medkit_gateway {
 
@@ -60,9 +59,9 @@ DefaultScriptProvider::DefaultScriptProvider(const ScriptsConfig & config) : con
     if (!entry.path.empty()) {
       std::error_code ec;
       if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
-        RCLCPP_WARN(rclcpp::get_logger("default_script_provider"),
-                    "Manifest script '%s' path does not exist or is not a regular file: %s", id.c_str(),
-                    entry.path.c_str());
+        MEDKIT_LOG_WARN(log::Logger("default_script_provider"),
+                        "Manifest script '%s' path does not exist or is not a regular file: %s", id.c_str(),
+                        entry.path.c_str());
       }
     }
   }

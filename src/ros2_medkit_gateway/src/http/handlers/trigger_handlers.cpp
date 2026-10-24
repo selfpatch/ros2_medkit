@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/trigger_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -24,8 +25,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/core/data_point_suggest.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -287,10 +286,10 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       }
     }
     if (resolved_topic_name.empty()) {
-      RCLCPP_WARN(HandlerContext::logger(),
-                  "Could not resolve resource_path '%s' to a ROS 2 topic for entity '%s'. "
-                  "Topic subscription will be attempted when topic becomes available.",
-                  parsed->resource_path.c_str(), entity_id.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(),
+                      "Could not resolve resource_path '%s' to a ROS 2 topic for entity '%s'. "
+                      "Topic subscription will be attempted when topic becomes available.",
+                      parsed->resource_path.c_str(), entity_id.c_str());
     }
   }
 
@@ -596,7 +595,7 @@ std::string TriggerHandlers::extract_entity_type(const std::string & path) {
     case SovdEntityType::SERVER:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", path.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", path.c_str());
       return "apps";
   }
 }

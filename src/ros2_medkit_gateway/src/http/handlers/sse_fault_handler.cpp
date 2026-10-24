@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -61,9 +62,9 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                             ? keepalive_interval
                             : std::chrono::seconds(kKeepaliveIntervalSec)) {
   if (keepalive_interval <= std::chrono::milliseconds::zero()) {
-    RCLCPP_WARN(HandlerContext::logger(),
-                "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
-                keepalive_interval.count(), kKeepaliveIntervalSec);
+    MEDKIT_LOG_WARN(HandlerContext::logger(),
+                    "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
+                    keepalive_interval.count(), kKeepaliveIntervalSec);
   }
 
   const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
@@ -104,8 +105,8 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
         on_peer_event(event);
       });
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to %s, max_clients=%zu",
-              fault_events_topic.c_str(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to %s, max_clients=%zu",
+                  fault_events_topic.c_str(), client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
@@ -252,8 +253,8 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
 void SSEFaultHandler::on_peer_event(const StreamEvent & event) {
   auto payload = nlohmann::json::parse(event.data, nullptr, false);
   if (payload.is_discarded() || !payload.is_object()) {
-    RCLCPP_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",
-                event.peer_name.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",
+                    event.peer_name.c_str());
     return;
   }
 
@@ -333,18 +334,18 @@ void SSEFaultHandler::enqueue(QueuedEvent queued) {
     const auto previous = dropped_events_.fetch_add(stats.dropped);
     const auto total = previous + stats.dropped;
     if (previous == 0 || (total / kDropLogEveryN) > (previous / kDropLogEveryN)) {
-      RCLCPP_WARN(HandlerContext::logger(),
-                  "SSE fault event lost: %zu event(s) dropped total for %zu slow client(s) "
-                  "(buffer cap=%zu, %zu coalesced so far)",
-                  total, stats.slow_clients, kMaxBufferedEvents, coalesced_events_.load());
+      MEDKIT_LOG_WARN(HandlerContext::logger(),
+                      "SSE fault event lost: %zu event(s) dropped total for %zu slow client(s) "
+                      "(buffer cap=%zu, %zu coalesced so far)",
+                      total, stats.slow_clients, kMaxBufferedEvents, coalesced_events_.load());
     }
   }
 
   // Notify all waiting clients
   queue_cv_.notify_all();
 
-  RCLCPP_DEBUG(HandlerContext::logger(), "Received fault event: %s for %s (id=%" PRIu64 ")", event_type.c_str(),
-               fault_code.c_str(), event_id);
+  MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Received fault event: %s for %s (id=%" PRIu64 ")", event_type.c_str(),
+                   fault_code.c_str(), event_id);
 }
 
 namespace {
@@ -533,8 +534,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
   if (!client_tracker_->try_connect()) {
-    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
-                client_tracker_->max_clients(), raw_req.remote_addr.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                    client_tracker_->max_clients(), raw_req.remote_addr.c_str());
     ErrorInfo err;
     err.code = ERR_SERVICE_UNAVAILABLE;
     err.message = "Maximum number of SSE clients reached. Please try again later.";
@@ -542,8 +543,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
     return tl::make_unexpected(std::move(err));
   }
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", raw_req.remote_addr.c_str(),
-              client_tracker_->connected_clients(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", raw_req.remote_addr.c_str(),
+                  client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   const uint64_t last_event_id = parse_last_event_id(req.header("Last-Event-ID").value_or(std::string{}));
 
@@ -554,7 +555,7 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
   // analogous to the legacy `handle_stream`'s 3-arg overload.
   auto release_guard = std::shared_ptr<void>(nullptr, [this, addr = raw_req.remote_addr](void *) {
     client_tracker_->disconnect();
-    RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s", addr.c_str());
+    MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s", addr.c_str());
   });
 
   // An aggregating gateway relaying from another sends X-Medkit-No-Fan-Out,
@@ -573,8 +574,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
 void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Response & res) {
   // Check if we're at the combined SSE client limit before accepting connection
   if (!client_tracker_->try_connect()) {
-    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
-                client_tracker_->max_clients(), req.remote_addr.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                    client_tracker_->max_clients(), req.remote_addr.c_str());
     // The legacy raw-route entry calls the framework primitive directly via
     // the friend gate; the HandlerContext public send_* surface has been
     // pruned and the typed `sse_stream` path is the production route.
@@ -586,8 +587,8 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
-              client_tracker_->connected_clients(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
+                  client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   const uint64_t last_event_id =
       req.has_header("Last-Event-ID") ? parse_last_event_id(req.get_header_value("Last-Event-ID")) : 0;
@@ -611,8 +612,8 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
       },
       [this, addr = req.remote_addr](bool success) {
         client_tracker_->disconnect();
-        RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s (success=%d)", addr.c_str(),
-                    success);
+        MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s (success=%d)", addr.c_str(),
+                        success);
       });
 }
 
@@ -738,10 +739,10 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
   }
 
   if (entity_id.empty()) {
-    RCLCPP_DEBUG(HandlerContext::logger(),
-                 "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
-                 "omitting x-medkit extension",
-                 raw_fqn.c_str(), fault.fault_code.c_str());
+    MEDKIT_LOG_DEBUG(HandlerContext::logger(),
+                     "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
+                     "omitting x-medkit extension",
+                     raw_fqn.c_str(), fault.fault_code.c_str());
     return std::nullopt;
   }
 

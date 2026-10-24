@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -383,10 +384,10 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
         // row instead of advertising it.
         if (!s.contains("bulk_data_id") || !s["bulk_data_id"].is_string() ||
             s["bulk_data_id"].get<std::string>().empty()) {
-          RCLCPP_WARN(HandlerContext::logger(),
-                      "Rosbag snapshot for fault '%s' on entity '%s' carries no 'bulk_data_id'; omitting it, as "
-                      "nothing could address the recording. This is a transport-side bug.",
-                      fault_code.c_str(), entity_path.c_str());
+          MEDKIT_LOG_WARN(HandlerContext::logger(),
+                          "Rosbag snapshot for fault '%s' on entity '%s' carries no 'bulk_data_id'; omitting it, as "
+                          "nothing could address the recording. This is a transport-side bug.",
+                          fault_code.c_str(), entity_path.c_str());
           continue;
         }
         std::string bulk_data_uri = entity_path;
@@ -508,7 +509,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     response["x-medkit"] = dto::JsonWriter<dto::FaultListXMedkit>::write(xm);
     return wrap_list_result(std::move(response));
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in list_all_faults: %s", e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in list_all_faults: %s", e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to list faults", json{{"details", e.what()}}));
   }
@@ -548,12 +549,12 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
           }
           return std::move(*result);
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
+                           entity_id.c_str(), e.what());
           return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
         } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                           entity_id.c_str());
           return tl::make_unexpected(
               make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
@@ -717,7 +718,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     response["x-medkit"] = std::move(xm_json);
     return wrap_list_result(std::move(response));
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in list_faults for entity '%s': %s", entity_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in list_faults for entity '%s': %s", entity_id.c_str(), e.what());
     return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to list faults",
                                           json{{"details", e.what()}, {"entity_id", entity_id}}));
   }
@@ -800,12 +801,12 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
           }
           return std::move(*result);
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
+                           entity_id.c_str(), e.what());
           return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
         } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                           entity_id.c_str());
           return tl::make_unexpected(
               make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
@@ -844,8 +845,8 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
 
     return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in get_fault for entity '%s', fault '%s': %s", entity_id.c_str(),
-                 fault_code.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in get_fault for entity '%s', fault '%s': %s", entity_id.c_str(),
+                     fault_code.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to get fault",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}}));
@@ -937,12 +938,12 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
           }
           return Outcome{std::move(*result)};
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
+                           entity_id.c_str(), e.what());
           return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
         } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                           entity_id.c_str());
           return tl::make_unexpected(
               make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
@@ -980,8 +981,8 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
     }
     return Outcome{http::NoContent{}};
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in clear_fault for entity '%s', fault '%s': %s", entity_id.c_str(),
-                 fault_code.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in clear_fault for entity '%s', fault '%s': %s",
+                     entity_id.c_str(), fault_code.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to clear fault",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"fault_code", fault_code}}));
@@ -1044,12 +1045,12 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
           }
           return http::NoContent{};
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
+                           entity_id.c_str(), e.what());
           return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
         } catch (...) {
-          RCLCPP_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
+          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                           entity_id.c_str());
           return tl::make_unexpected(
               make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
@@ -1083,15 +1084,15 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
         std::string code = fault["fault_code"].get<std::string>();
         auto clear_result = fault_mgr->clear_fault(code, /*skip_correlation_auto_clear=*/true);
         if (!clear_result.success) {
-          RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", code.c_str(),
-                      entity_id.c_str(), clear_result.error_message.c_str());
+          MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", code.c_str(),
+                          entity_id.c_str(), clear_result.error_message.c_str());
         }
       }
     }
     return http::NoContent{};
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in clear_all_faults for entity '%s': %s", entity_id.c_str(),
-                 e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in clear_all_faults for entity '%s': %s", entity_id.c_str(),
+                     e.what());
     return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to clear faults",
                                           json{{"details", e.what()}, {"entity_id", entity_id}}));
   }
@@ -1167,8 +1168,8 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
         std::string code = fault["fault_code"].get<std::string>();
         auto clear_result = fault_mgr->clear_fault(code);
         if (!clear_result.success) {
-          RCLCPP_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", code.c_str(),
-                      clear_result.error_message.c_str());
+          MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", code.c_str(),
+                          clear_result.error_message.c_str());
         }
       }
     }
@@ -1186,7 +1187,7 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
     att.with_header("X-Medkit-Local-Only", "true");
     return std::pair{http::NoContent{}, std::move(att)};
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in clear_all_faults_global: %s", e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in clear_all_faults_global: %s", e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to clear faults", json{{"details", e.what()}}));
   }

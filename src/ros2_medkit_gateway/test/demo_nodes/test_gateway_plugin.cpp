@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_context.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
@@ -42,6 +43,7 @@ class TestGatewayPlugin : public GatewayPlugin, public UpdateProvider, public In
   }
 
   void configure(const nlohmann::json & /*config*/) override {
+    MEDKIT_LOG_INFO(log::Logger("test_gateway_plugin"), "test_gateway_plugin configured");
   }
 
   void set_context(PluginContext & context) override {

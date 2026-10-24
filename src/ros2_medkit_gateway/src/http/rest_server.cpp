@@ -13,13 +13,13 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <exception>
 #include <limits>
-#include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 #include <type_traits>
 
@@ -59,20 +59,20 @@ struct HttplibExceptionHandlerAdapter {
       if (ep) {
         std::rethrow_exception(ep);
       }
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled empty exception_ptr");
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled empty exception_ptr");
       set_internal_server_error(res, "Unknown exception");
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled exception: %s", e.what());
       set_internal_server_error(res, "An internal error occurred");
     } catch (...) {
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unknown exception caught");
       set_internal_server_error(res, "An internal error occurred");
     }
   }
 
   // Older cpp-httplib versions pass std::exception directly.
   void operator()(const httplib::Request & /*req*/, httplib::Response & res, const std::exception & e) const {
-    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+    MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled exception: %s", e.what());
     set_internal_server_error(res, "An internal error occurred");
   }
 };
@@ -107,20 +107,20 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   const auto requested_pool_size = node_->get_parameter("server.http_thread_pool_size").as_int();
   const auto http_thread_pool_size = clamp_thread_count(requested_pool_size, 1, 1024);
   if (static_cast<int64_t>(http_thread_pool_size) != requested_pool_size) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"), "server.http_thread_pool_size %" PRId64 " clamped to %zu",
-                requested_pool_size, http_thread_pool_size);
+    MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.http_thread_pool_size %" PRId64 " clamped to %zu",
+                    requested_pool_size, http_thread_pool_size);
   }
   const auto requested_keep_alive = node_->get_parameter("server.keep_alive_timeout_sec").as_int();
   const auto keep_alive_timeout_sec = clamp_keep_alive_timeout(requested_keep_alive, 1, 3600);
   if (static_cast<int64_t>(keep_alive_timeout_sec) != requested_keep_alive) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"), "server.keep_alive_timeout_sec %" PRId64 " clamped to %" PRId64,
-                requested_keep_alive, static_cast<int64_t>(keep_alive_timeout_sec));
+    MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.keep_alive_timeout_sec %" PRId64 " clamped to %" PRId64,
+                    requested_keep_alive, static_cast<int64_t>(keep_alive_timeout_sec));
   }
   http_server_ = std::make_unique<HttpServerManager>(tls_config_, http_thread_pool_size, keep_alive_timeout_sec);
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"),
-              "HTTP request thread pool bounded to %zu workers (each active SSE stream holds one), "
-              "keep-alive timeout %" PRId64 "s",
-              http_thread_pool_size, static_cast<int64_t>(keep_alive_timeout_sec));
+  MEDKIT_LOG_INFO(log::Logger("rest_server"),
+                  "HTTP request thread pool bounded to %zu workers (each active SSE stream holds one), "
+                  "keep-alive timeout %" PRId64 "s",
+                  http_thread_pool_size, static_cast<int64_t>(keep_alive_timeout_sec));
 
   // Set maximum payload size for uploads (cpp-httplib default is 8MB)
   auto * srv = http_server_->get_server();
@@ -128,7 +128,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
     size_t max_payload = node_->get_bulk_data_store() ? node_->get_bulk_data_store()->max_upload_bytes() : 0;
     if (max_payload > 0) {
       srv->set_payload_max_length(max_payload);
-      RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
+      MEDKIT_LOG_INFO(log::Logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
     }
   }
 
@@ -136,18 +136,18 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   if (auth_config_.enabled) {
     auth_manager_ = std::make_unique<AuthManager>(auth_config_);
     auth_middleware_ = std::make_unique<AuthMiddleware>(auth_config_, auth_manager_.get());
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
-                algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
-                auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
-                : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
-                                                                          : "all");
+    MEDKIT_LOG_INFO(log::Logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
+                    algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
+                    auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
+                    : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
+                                                                              : "all");
   }
 
   // Initialize rate limiter if enabled
   if (rate_limit_config.enabled) {
     rate_limiter_ = std::make_unique<RateLimiter>(rate_limit_config);
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
-                rate_limit_config.global_requests_per_minute, rate_limit_config.client_requests_per_minute);
+    MEDKIT_LOG_INFO(log::Logger("rest_server"), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
+                    rate_limit_config.global_requests_per_minute, rate_limit_config.client_requests_per_minute);
   }
 
   // Create handler context and domain-specific handlers
@@ -198,8 +198,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   const int64_t keepalive_raw = node_->get_parameter("sse.keepalive_interval_sec").as_int();
   const int64_t keepalive_used = std::clamp<int64_t>(keepalive_raw, kMinKeepaliveSec, kMaxKeepaliveSec);
   if (keepalive_used != keepalive_raw) {
-    RCLCPP_WARN(node_->get_logger(), "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64, keepalive_raw,
-                keepalive_used);
+    MEDKIT_LOG_WARN(log::Logger(node_->get_logger().get_name()),
+                    "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64, keepalive_raw, keepalive_used);
   }
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_,
                                                                    std::chrono::seconds(keepalive_used));
@@ -211,8 +211,9 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   const int64_t max_duration_raw = node_->get_parameter("sse.max_duration_sec").as_int();
   int max_duration_sec = 3600;
   if (max_duration_raw < 1 || max_duration_raw > std::numeric_limits<int>::max()) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"),
-                "sse.max_duration_sec %" PRId64 " must be in [1, 2147483647]. Using default 3600.", max_duration_raw);
+    MEDKIT_LOG_WARN(log::Logger("rest_server"),
+                    "sse.max_duration_sec %" PRId64 " must be in [1, 2147483647]. Using default 3600.",
+                    max_duration_raw);
   } else {
     max_duration_sec = static_cast<int>(max_duration_raw);
   }
@@ -2577,20 +2578,20 @@ void RESTServer::report_route_metadata_issues() const {
   for (const auto & issue : route_registry_->validate_completeness()) {
     if (issue.severity == openapi::ValidationIssue::Severity::kError) {
       ++errors;
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "OpenAPI metadata error on %s: %s", issue.route.c_str(),
-                   issue.message.c_str());
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "OpenAPI metadata error on %s: %s", issue.route.c_str(),
+                       issue.message.c_str());
     } else {
       ++warnings;
-      RCLCPP_WARN(rclcpp::get_logger("rest_server"), "OpenAPI metadata warning on %s: %s", issue.route.c_str(),
-                  issue.message.c_str());
+      MEDKIT_LOG_WARN(log::Logger("rest_server"), "OpenAPI metadata warning on %s: %s", issue.route.c_str(),
+                      issue.message.c_str());
     }
   }
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"),
-              "OpenAPI metadata check: %zu error(s), %zu warning(s) across %zu route(s)", errors, warnings,
-              route_registry_->size());
+  MEDKIT_LOG_INFO(log::Logger("rest_server"),
+                  "OpenAPI metadata check: %zu error(s), %zu warning(s) across %zu route(s)", errors, warnings,
+                  route_registry_->size());
   if (errors > 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
-                 "Routes above publish incomplete OpenAPI metadata; generated clients will be wrong for them");
+    MEDKIT_LOG_ERROR(log::Logger("rest_server"),
+                     "Routes above publish incomplete OpenAPI metadata; generated clients will be wrong for them");
   }
 }
 

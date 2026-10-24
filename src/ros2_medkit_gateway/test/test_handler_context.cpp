@@ -65,10 +65,9 @@ using namespace ros2_medkit_gateway::handlers;
 // =============================================================================
 
 TEST(HandlerContextStaticTest, LoggerReturnsValidLogger) {
-  auto logger = HandlerContext::logger();
+  const auto & logger = HandlerContext::logger();
   // Just verify it doesn't throw and returns a valid logger name
-  EXPECT_NE(logger.get_name(), nullptr);
-  EXPECT_GT(strlen(logger.get_name()), 0);
+  EXPECT_EQ(logger.name(), "rest_server");
 }
 
 // =============================================================================
