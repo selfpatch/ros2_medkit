@@ -51,6 +51,8 @@ done
 # Files that must compile without any ROS include path.
 ROS_FREE_SOURCES=(
   "include/ros2_medkit_gateway/core/gateway_services.hpp"
+  "include/ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
+  "include/ros2_medkit_gateway/core/discovery/linking_result.hpp"
   "include/ros2_medkit_gateway/http/handlers/handler_context.hpp"
   "src/http/handlers/handler_context.cpp"
 )

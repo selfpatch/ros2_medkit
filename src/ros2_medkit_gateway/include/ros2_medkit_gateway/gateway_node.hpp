@@ -97,7 +97,7 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   PluginManager * plugin_manager() override {
     return get_plugin_manager();
   }
-  DiscoveryManager * discovery() override {
+  EntityDiscovery * discovery() override {
     return get_discovery_manager();
   }
   ScriptManager * script_manager() override {
