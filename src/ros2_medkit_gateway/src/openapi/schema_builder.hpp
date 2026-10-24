@@ -18,18 +18,17 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "ros2_medkit_serialization/json_serializer.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 
 namespace ros2_medkit_gateway {
 namespace openapi {
 
-/// Wraps JsonSerializer::get_schema() with OpenAPI-specific formatting,
+/// Wraps TypeSchemaProvider::message_schema() with OpenAPI-specific formatting,
 /// graceful degradation, and static schema factories for SOVD types.
 class SchemaBuilder {
  public:
-  /// Constructs SchemaBuilder with its own JsonSerializer instance.
-  /// JsonSerializer is stateless and thread-safe - no sharing needed.
-  SchemaBuilder();
+  /// @param schemas Must outlive the builder.
+  explicit SchemaBuilder(TypeSchemaProvider & schemas);
 
   // Runtime schema generation from ROS 2 types
 
@@ -68,7 +67,7 @@ class SchemaBuilder {
   static const std::map<std::string, nlohmann::json> & component_schemas();
 
  private:
-  ros2_medkit_serialization::JsonSerializer serializer_;  // Owns its own instance
+  TypeSchemaProvider & schemas_;
 };
 
 }  // namespace openapi

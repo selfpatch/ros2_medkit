@@ -24,6 +24,7 @@
 #include "ros2_medkit_gateway/core/exceptions.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/data/ros2_topic_data_provider.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_type_schema_provider.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_topic_transport.hpp"
 #include "ros2_medkit_gateway/ros2_common/ros2_subscription_executor.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
@@ -47,7 +48,7 @@ class DataAccessManagerTest : public ::testing::Test {
 
   void SetUp() override {
     node_ = std::make_shared<rclcpp::Node>("test_data_access_node");
-    transport_ = std::make_shared<ros2::Ros2TopicTransport>(node_.get(), 0.5);
+    transport_ = std::make_shared<ros2::Ros2TopicTransport>(node_.get(), 0.5, schemas_);
     data_manager_ = std::make_unique<DataAccessManager>(transport_, 0.5);
   }
 
@@ -58,18 +59,13 @@ class DataAccessManagerTest : public ::testing::Test {
   }
 
   std::shared_ptr<rclcpp::Node> node_;
+  ros2::Ros2TypeSchemaProvider schemas_;
   std::shared_ptr<ros2::Ros2TopicTransport> transport_;
   std::unique_ptr<DataAccessManager> data_manager_;
 };
 
 TEST_F(DataAccessManagerTest, topic_data_provider_is_null_until_attached) {
   EXPECT_EQ(data_manager_->get_topic_data_provider(), nullptr);
-}
-
-TEST_F(DataAccessManagerTest, get_type_introspection_returns_valid_ptr) {
-  auto introspection = data_manager_->get_type_introspection();
-
-  EXPECT_NE(introspection, nullptr);
 }
 
 TEST_F(DataAccessManagerTest, get_topic_sample_timeout_returns_configured_value) {
@@ -152,7 +148,7 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_);
 
-    transport_ = std::make_shared<ros2::Ros2TopicTransport>(node_.get(), 1.0);
+    transport_ = std::make_shared<ros2::Ros2TopicTransport>(node_.get(), 1.0, schemas_);
     data_manager_ = std::make_unique<DataAccessManager>(transport_, 1.0);
 
     sub_exec_ = std::make_shared<ros2_common::Ros2SubscriptionExecutor>(node_);
@@ -198,6 +194,7 @@ class DataAccessManagerWithPublisherTest : public ::testing::Test {
   std::shared_ptr<rclcpp::Node> node_;
   std::shared_ptr<rclcpp::Node> publisher_node_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+  ros2::Ros2TypeSchemaProvider schemas_;
   std::shared_ptr<ros2::Ros2TopicTransport> transport_;
   std::unique_ptr<DataAccessManager> data_manager_;
   std::shared_ptr<ros2_common::Ros2SubscriptionExecutor> sub_exec_;
@@ -278,8 +275,9 @@ class DataAccessManagerParameterTest : public ::testing::Test {
 
 TEST_F(DataAccessManagerParameterTest, invalid_timeout_uses_default) {
   auto node = std::make_shared<rclcpp::Node>("test_param_node2");
+  ros2::Ros2TypeSchemaProvider schemas;
   // Out-of-range timeout should be clamped to the safe default (1.0).
-  auto transport = std::make_shared<ros2::Ros2TopicTransport>(node.get(), 100.0);
+  auto transport = std::make_shared<ros2::Ros2TopicTransport>(node.get(), 100.0, schemas);
   auto manager = std::make_unique<DataAccessManager>(transport, 100.0);
   EXPECT_NEAR(manager->get_topic_sample_timeout(), 1.0, 0.01);
 }

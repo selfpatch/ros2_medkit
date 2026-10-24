@@ -57,6 +57,7 @@
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_type_schema_provider.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_action_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_fault_service_transport.hpp"
 #include "ros2_medkit_gateway/ros2/transports/ros2_log_source.hpp"
@@ -147,6 +148,9 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   }
   TransportRegistry * transport_registry() override {
     return get_transport_registry();
+  }
+  TypeSchemaProvider * type_schemas() override {
+    return type_schemas_.get();
   }
   std::shared_ptr<SSEClientTracker> sse_client_tracker() override {
     return get_sse_client_tracker();
@@ -422,6 +426,10 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // is constructed). Owned via shared_ptr because the provider is handed out
   // as a raw TopicDataProvider* to DataAccessManager.
   std::shared_ptr<TopicDataProvider> topic_data_provider_;
+
+  // Message, service and action schemas. The one TypeIntrospection of the
+  // gateway lives here, so it is declared before everything that uses it.
+  std::unique_ptr<ros2::Ros2TypeSchemaProvider> type_schemas_;
 
   // Topic transport adapter shared with DataAccessManager. Held here so the
   // provider attach/detach hooks can forward into the adapter alongside the

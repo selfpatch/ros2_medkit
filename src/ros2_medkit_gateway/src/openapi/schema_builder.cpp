@@ -16,21 +16,20 @@
 
 #include "ros2_medkit_gateway/dto/registry.hpp"
 
+#include <utility>
+
 namespace ros2_medkit_gateway {
 namespace openapi {
 
-SchemaBuilder::SchemaBuilder() : serializer_() {
+SchemaBuilder::SchemaBuilder(TypeSchemaProvider & schemas) : schemas_(schemas) {
 }
 
 nlohmann::json SchemaBuilder::from_ros_msg(const std::string & type_string) const {
-  try {
-    return serializer_.get_schema(type_string);
-  } catch (const std::exception &) {
-    // Expected for unknown ROS 2 message types - graceful degradation
-    return {{"type", "object"}, {"x-medkit-schema-unavailable", true}};
-  } catch (...) {
-    return {{"type", "object"}, {"x-medkit-schema-unavailable", true}};
+  if (auto schema = schemas_.message_schema(type_string)) {
+    return std::move(*schema);
   }
+  // Unknown type - graceful degradation
+  return {{"type", "object"}, {"x-medkit-schema-unavailable", true}};
 }
 
 nlohmann::json SchemaBuilder::from_ros_srv_request(const std::string & srv_type) const {

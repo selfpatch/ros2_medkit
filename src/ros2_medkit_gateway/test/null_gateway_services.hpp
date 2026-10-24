@@ -83,6 +83,9 @@ class NullGatewayServices final : public GatewayServices {
   TransportRegistry * transport_registry() override {
     return nullptr;
   }
+  TypeSchemaProvider * type_schemas() override {
+    return nullptr;
+  }
   std::shared_ptr<SSEClientTracker> sse_client_tracker() override {
     return nullptr;
   }

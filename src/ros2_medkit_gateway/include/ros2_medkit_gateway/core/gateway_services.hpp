@@ -38,6 +38,7 @@ class SubscriptionManager;
 class ResourceSamplerRegistry;
 class TransportRegistry;
 class SSEClientTracker;
+class TypeSchemaProvider;
 class GatewayNode;
 
 /// The gateway services the HTTP layer reaches. Pointers stay valid for the
@@ -63,6 +64,7 @@ class GatewayServices {
   virtual SubscriptionManager * subscription_manager() = 0;
   virtual ResourceSamplerRegistry * sampler_registry() = 0;
   virtual TransportRegistry * transport_registry() = 0;
+  virtual TypeSchemaProvider * type_schemas() = 0;
   virtual std::shared_ptr<SSEClientTracker> sse_client_tracker() = 0;
   /// Never null while SSEFaultHandler subscribes through it. Otherwise only
   /// handed to subscription transports.

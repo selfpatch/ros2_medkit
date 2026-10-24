@@ -114,7 +114,7 @@ CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, PluginM
   : ctx_(ctx)
   , plugin_mgr_(plugin_mgr)
   , route_registry_(route_registry)
-  , schema_builder_()
+  , schema_builder_(*ctx.services().type_schemas())
   , server_host_(std::move(server_host))
   , server_port_(server_port)
   , bounds_(bounds) {

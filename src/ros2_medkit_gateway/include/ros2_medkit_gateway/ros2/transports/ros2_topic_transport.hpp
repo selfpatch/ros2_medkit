@@ -24,8 +24,8 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 #include "ros2_medkit_serialization/json_serializer.hpp"
-#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -36,9 +36,9 @@ namespace ros2 {
 /**
  * @brief rclcpp adapter implementing the TopicTransport port.
  *
- * Owns the publisher cache, the JsonSerializer instance and the
- * TypeIntrospection helper (lives in `ros2_medkit_serialization` alongside
- * the rest of the rosidl glue) that the manager previously held directly.
+ * Owns the publisher cache and the JsonSerializer instance. Message type
+ * metadata for samples comes from the TypeSchemaProvider it holds a
+ * reference to.
  * The sample path delegates to an attached TopicDataProvider; the adapter
  * itself does not maintain a sampling executor.
  */
@@ -49,8 +49,10 @@ class Ros2TopicTransport : public TopicTransport {
    *             publisher creation.
    * @param default_sample_timeout_sec Used when callers pass a non-positive
    *                                   timeout into sample().
+   * @param schemas Type schemas for the metadata a sample carries. Must
+   *                outlive the transport.
    */
-  Ros2TopicTransport(rclcpp::Node * node, double default_sample_timeout_sec);
+  Ros2TopicTransport(rclcpp::Node * node, double default_sample_timeout_sec, TypeSchemaProvider & schemas);
   ~Ros2TopicTransport() override = default;
 
   Ros2TopicTransport(const Ros2TopicTransport &) = delete;
@@ -75,17 +77,13 @@ class Ros2TopicTransport : public TopicTransport {
 
   std::pair<uint64_t, uint64_t> count_publishers_subscribers(const std::string & topic_name) const override;
 
-  ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const override {
-    return type_introspection_.get();
-  }
-
  private:
   rclcpp::GenericPublisher::SharedPtr get_or_create_publisher(const std::string & topic_path,
                                                               const std::string & msg_type);
 
   rclcpp::Node * node_;
   std::shared_ptr<ros2_medkit_serialization::JsonSerializer> serializer_;
-  std::unique_ptr<ros2_medkit_serialization::TypeIntrospection> type_introspection_;
+  TypeSchemaProvider & schemas_;
 
   mutable std::shared_mutex publishers_mutex_;
   std::unordered_map<std::string, rclcpp::GenericPublisher::SharedPtr> publishers_;

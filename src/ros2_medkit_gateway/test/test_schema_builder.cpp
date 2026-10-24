@@ -25,6 +25,7 @@
 #include "ros2_medkit_gateway/dto/registry.hpp"
 #include "ros2_medkit_gateway/dto/schema_writer.hpp"
 #include "ros2_medkit_gateway/dto/triggers.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_type_schema_provider.hpp"
 
 using ros2_medkit_gateway::openapi::SchemaBuilder;
 
@@ -504,7 +505,8 @@ TEST(SchemaBuilderStaticTest, VersionInfoSchemaComesFromDto) {
 
 TEST(SchemaBuilderRuntimeTest, FromRosMsgKnownType) {
   // @verifies REQ_INTEROP_002
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_msg("std_msgs/msg/String");
 
   // Should return valid JSON Schema with type: object and properties.data
@@ -515,7 +517,8 @@ TEST(SchemaBuilderRuntimeTest, FromRosMsgKnownType) {
 
 TEST(SchemaBuilderRuntimeTest, FromRosMsgUnknownType) {
   // @verifies REQ_INTEROP_002
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_msg("nonexistent/msg/Type");
 
   // Should gracefully degrade to generic object
@@ -525,7 +528,8 @@ TEST(SchemaBuilderRuntimeTest, FromRosMsgUnknownType) {
 }
 
 TEST(SchemaBuilderRuntimeTest, FromRosSrvRequest) {
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_srv_request("std_srvs/srv/SetBool");
 
   // SetBool_Request has a "data" field (bool)
@@ -535,7 +539,8 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvRequest) {
 }
 
 TEST(SchemaBuilderRuntimeTest, FromRosSrvResponse) {
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_srv_response("std_srvs/srv/SetBool");
 
   // SetBool_Response has "success" and "message" fields
@@ -546,7 +551,8 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvResponse) {
 }
 
 TEST(SchemaBuilderRuntimeTest, FromRosSrvRequestUnknown) {
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_srv_request("nonexistent/srv/Foo");
 
   // Should gracefully degrade
@@ -556,7 +562,8 @@ TEST(SchemaBuilderRuntimeTest, FromRosSrvRequestUnknown) {
 }
 
 TEST(SchemaBuilderRuntimeTest, FromRosSrvResponseUnknown) {
-  SchemaBuilder builder;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas;
+  SchemaBuilder builder(schemas);
   auto schema = builder.from_ros_srv_response("nonexistent/srv/Foo");
 
   // Should gracefully degrade
