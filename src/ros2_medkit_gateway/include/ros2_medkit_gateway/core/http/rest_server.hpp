@@ -61,7 +61,7 @@ class TriggerManager;
 class RESTServer {
  public:
   RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-             const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
+             const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config, const RestConfig & rest_config,
              const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 

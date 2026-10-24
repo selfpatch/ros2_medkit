@@ -109,7 +109,9 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
   // Override docs.enabled to false (GatewayNode already declares it as true by default)
   node_->set_parameter(rclcpp::Parameter("docs.enabled", false));
 
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   auto result = docs_handlers.handle_docs_root(http::TypedRequest(req));
@@ -125,7 +127,9 @@ TEST_F(DocsHandlersTest, DocsDisabledReturns501) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   auto result = docs_handlers.handle_docs_root(http::TypedRequest(req));
@@ -149,7 +153,9 @@ TEST_F(DocsHandlersTest, DocsRootReturnsValidJson) {
 // `dump(2)`. Re-dumping the parse and comparing is the mechanical check:
 // indent width, key order and separators all have to agree.
 TEST_F(DocsHandlersTest, DocsRootBodyIsTheSameBytesADomWouldHaveWritten) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   auto result = docs_handlers.handle_docs_root(http::TypedRequest(req));
@@ -161,7 +167,9 @@ TEST_F(DocsHandlersTest, DocsRootBodyIsTheSameBytesADomWouldHaveWritten) {
 // Same contract on the scoped route, which reaches the response through
 // `write_json_text` rather than through the typed router.
 TEST_F(DocsHandlersTest, DocsAnyPathBodyIsTheSameBytesADomWouldHaveWritten) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   httplib::Response res;
@@ -186,7 +194,9 @@ TEST_F(DocsHandlersTest, DocsAnyPathBodyIsTheSameBytesADomWouldHaveWritten) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   httplib::Response res;
@@ -220,7 +230,9 @@ TEST_F(DocsHandlersTest, DocsAnyPathReturns200ForEntityCollection) {
 
 // @verifies REQ_INTEROP_002
 TEST_F(DocsHandlersTest, DocsAnyPathReturns404ForInvalidPath) {
-  handlers::DocsHandlers docs_handlers(*ctx_, *node_, node_->get_plugin_manager(), route_registry_.get());
+  handlers::DocsHandlers docs_handlers(
+      *ctx_, *node_, node_->get_plugin_manager(), route_registry_.get(), node_->get_parameter("docs.enabled").as_bool(),
+      node_->get_parameter("server.host").as_string(), node_->get_parameter("server.port").as_int());
 
   httplib::Request req;
   httplib::Response res;

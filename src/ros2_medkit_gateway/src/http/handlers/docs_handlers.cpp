@@ -59,18 +59,12 @@ void DocsHandlers::write_error(httplib::Response & res, int status, const std::s
 }
 
 DocsHandlers::DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-                           const openapi::RouteRegistry * route_registry)
+                           const openapi::RouteRegistry * route_registry, bool docs_enabled, std::string server_host,
+                           int64_t server_port)
   : ctx_(ctx)
-  , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, node, plugin_mgr, route_registry))
-  , docs_enabled_(true) {
-  // Read docs.enabled parameter if it has been declared
-  try {
-    docs_enabled_ = node.get_parameter("docs.enabled").as_bool();
-  } catch (const std::exception &) {
-    docs_enabled_ = true;  // Parameter may not be declared - default to enabled
-  } catch (...) {
-    docs_enabled_ = true;
-  }
+  , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, node, plugin_mgr, route_registry,
+                                                              std::move(server_host), server_port))
+  , docs_enabled_(docs_enabled) {
 }
 
 DocsHandlers::~DocsHandlers() = default;

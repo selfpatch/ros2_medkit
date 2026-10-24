@@ -37,6 +37,7 @@
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/logs/log_scope.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
+#include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "ros2_medkit_gateway/ros2/ros2_log_sink.hpp"
@@ -1570,8 +1571,18 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 
   // Start REST server with configured host, port, CORS, auth, and TLS
+  RestConfig rest_config;
+  rest_config.http_thread_pool_size = get_parameter("server.http_thread_pool_size").as_int();
+  rest_config.keep_alive_timeout_sec = get_parameter("server.keep_alive_timeout_sec").as_int();
+  rest_config.sse_keepalive_interval_sec = get_parameter("sse.keepalive_interval_sec").as_int();
+  rest_config.sse_max_duration_sec = get_parameter("sse.max_duration_sec").as_int();
+  rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
+  rest_config.server_host = server_host_;
+  rest_config.server_port = server_port_;
+  rest_config.fault_events_topic = build_fault_manager_events_topic(this);
+
   rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
-                                              rate_limit_config_, tls_config_);
+                                              rate_limit_config_, rest_config, tls_config_);
 
   // Wire trigger handlers into REST server
   if (trigger_mgr_) {

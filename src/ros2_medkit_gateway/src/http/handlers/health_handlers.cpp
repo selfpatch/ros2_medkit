@@ -265,15 +265,7 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     // and it is the only endpoint `docs.enabled` now hides from this list. The
     // `/docs` routes stay listed when the capability is off, because they stay
     // mounted and answer 501: this list says what is mounted, not what is on.
-    bool docs_enabled = true;
-    if (ctx_.node()) {
-      try {
-        docs_enabled = ctx_.node()->get_parameter("docs.enabled").as_bool();
-      } catch (...) {
-        // Parameter may not be declared - default to true
-      }
-    }
-    if (docs_enabled) {
+    if (docs_enabled_) {
       endpoints.push_back("GET " + std::string(API_BASE_PATH) + "/swagger-ui");
     }
 #endif

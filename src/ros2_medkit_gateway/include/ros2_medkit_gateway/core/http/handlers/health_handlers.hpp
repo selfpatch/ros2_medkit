@@ -53,9 +53,10 @@ class HealthHandlers {
   /// @param sse_tracker Shared SSE client counter, so /health can report how
   /// much of `sse.max_clients` is in use. Optional: a gateway built without
   /// one simply omits the field.
+  /// @param docs_enabled Value of `docs.enabled`; hides the Swagger UI entry when false.
   explicit HealthHandlers(HandlerContext & ctx, const openapi::RouteRegistry * route_registry = nullptr,
-                          std::shared_ptr<const SSEClientTracker> sse_tracker = nullptr)
-    : ctx_(ctx), route_registry_(route_registry), sse_tracker_(std::move(sse_tracker)) {
+                          std::shared_ptr<const SSEClientTracker> sse_tracker = nullptr, bool docs_enabled = true)
+    : ctx_(ctx), route_registry_(route_registry), sse_tracker_(std::move(sse_tracker)), docs_enabled_(docs_enabled) {
   }
 
   /// GET /health - Health check endpoint
@@ -71,6 +72,7 @@ class HealthHandlers {
   HandlerContext & ctx_;
   const openapi::RouteRegistry * route_registry_{nullptr};
   std::shared_ptr<const SSEClientTracker> sse_tracker_;
+  bool docs_enabled_;
 };
 
 }  // namespace handlers

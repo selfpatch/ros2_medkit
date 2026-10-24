@@ -32,7 +32,6 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
-#include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
 #include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
@@ -50,12 +49,13 @@ std::string sanitize_sse_event_type(std::string event_type) {
 
 }  // namespace
 
-SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker)
-  : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec)) {
+SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
+                                 const std::string & fault_events_topic)
+  : SSEFaultHandler(ctx, std::move(client_tracker), std::chrono::seconds(kKeepaliveIntervalSec), fault_events_topic) {
 }
 
 SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                                 std::chrono::milliseconds keepalive_interval)
+                                 std::chrono::milliseconds keepalive_interval, const std::string & fault_events_topic)
   : ctx_(ctx)
   , client_tracker_(std::move(client_tracker))
   , keepalive_interval_(keepalive_interval > std::chrono::milliseconds::zero()
@@ -66,8 +66,6 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                     "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
                     keepalive_interval.count(), kKeepaliveIntervalSec);
   }
-
-  const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
 
   // Create subscription to fault events topic
   // Use fully qualified topic name since FaultManager publishes on ~/events

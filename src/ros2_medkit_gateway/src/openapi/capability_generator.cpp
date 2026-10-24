@@ -109,12 +109,15 @@ void for_each_operation(nlohmann::json & document, Visitor && visit) {
 }  // namespace
 
 CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-                                         const RouteRegistry * route_registry, DocsCacheBounds bounds)
+                                         const RouteRegistry * route_registry, std::string server_host,
+                                         int64_t server_port, DocsCacheBounds bounds)
   : ctx_(ctx)
   , node_(node)
   , plugin_mgr_(plugin_mgr)
   , route_registry_(route_registry)
   , schema_builder_()
+  , server_host_(std::move(server_host))
+  , server_port_(server_port)
   , bounds_(bounds) {
 }
 
@@ -1104,17 +1107,8 @@ bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolve
 // -----------------------------------------------------------------------------
 
 std::string CapabilityGenerator::build_server_url() const {
-  // Read host/port independently so a missing host doesn't clobber a valid port
-  std::string host = "localhost";
-  int port = 8080;
-  try {
-    host = node_.get_parameter("server.host").as_string();
-  } catch (...) {
-  }
-  try {
-    port = static_cast<int>(node_.get_parameter("server.port").as_int());
-  } catch (...) {
-  }
+  std::string host = server_host_;
+  const int port = static_cast<int>(server_port_);
 
   // Use localhost for display if bound to all interfaces
   if (host == "0.0.0.0") {
