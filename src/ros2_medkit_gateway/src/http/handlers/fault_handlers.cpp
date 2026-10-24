@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
+#include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
@@ -40,7 +41,6 @@
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
-#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 namespace ros2_medkit_gateway {
@@ -240,8 +240,7 @@ bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std
 
 // Static method: merge zero-config entity freeze-frames into the intermediate
 // environment-data JSON (transport shape), before build_sovd_fault_response.
-json FaultHandlers::merge_entity_freeze_frames(json env_data,
-                                               const std::vector<EntityFreezeFrameCapture::Frame> & frames) {
+json FaultHandlers::merge_entity_freeze_frames(json env_data, const std::vector<FreezeFrameSource::Frame> & frames) {
   if (frames.empty()) {
     return env_data;
   }

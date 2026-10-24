@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/faults/fault_types.hpp"
+#include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
-#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -217,7 +217,7 @@ class FaultHandlers {
    * Public static for direct unit testing; called by `get_fault`.
    */
   static nlohmann::json merge_entity_freeze_frames(nlohmann::json env_data,
-                                                   const std::vector<EntityFreezeFrameCapture::Frame> & frames);
+                                                   const std::vector<FreezeFrameSource::Frame> & frames);
 
  private:
   HandlerContext & ctx_;
