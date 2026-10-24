@@ -29,6 +29,7 @@
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
@@ -101,7 +102,6 @@ struct EntityInfo {
 };
 
 // Forward declarations
-class GatewayNode;
 class AuthManager;
 class BulkDataStore;
 class AggregationManager;
@@ -127,14 +127,14 @@ enum class MemberDispatch {
 /**
  * @brief Shared context for all HTTP handlers
  *
- * Provides access to gateway node, configuration, and common utilities
+ * Provides access to the gateway services, configuration, and common utilities
  * that handlers need to process requests.
  */
 class HandlerContext {
  public:
-  HandlerContext(GatewayNode * node, const CorsConfig & cors_config, const AuthConfig & auth_config,
+  HandlerContext(GatewayServices & services, const CorsConfig & cors_config, const AuthConfig & auth_config,
                  const TlsConfig & tls_config, AuthManager * auth_manager, BulkDataStore * bulk_data_store = nullptr)
-    : node_(node)
+    : services_(services)
     , cors_config_(cors_config)
     , auth_config_(auth_config)
     , tls_config_(tls_config)
@@ -142,9 +142,9 @@ class HandlerContext {
     , bulk_data_store_(bulk_data_store) {
   }
 
-  /// Get gateway node
-  GatewayNode * node() const {
-    return node_;
+  /// Get the gateway services
+  GatewayServices & services() const {
+    return services_;
   }
 
   /// Get CORS configuration
@@ -408,7 +408,7 @@ class HandlerContext {
                                                           const EntityInfo & entity);
 
  private:
-  GatewayNode * node_;
+  GatewayServices & services_;
   CorsConfig cors_config_;
   AuthConfig auth_config_;
   TlsConfig tls_config_;

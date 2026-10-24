@@ -197,9 +197,9 @@ class SSEFaultHandlerTest : public ::testing::Test {
     AuthConfig auth_config;
     TlsConfig tls_config;
 
-    ctx_ = std::make_unique<HandlerContext>(node_.get(), cors_config, auth_config, tls_config, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*node_, cors_config, auth_config, tls_config, nullptr);
     tracker_ = std::make_shared<SSEClientTracker>(4);
-    handler_ = std::make_unique<SSEFaultHandler>(*ctx_, tracker_, build_fault_manager_events_topic(ctx_->node()));
+    handler_ = std::make_unique<SSEFaultHandler>(*ctx_, tracker_, build_fault_manager_events_topic(node_.get()));
 
     publisher_node_ = std::make_shared<rclcpp::Node>("test_sse_fault_handler_publisher_" + std::to_string(test_id));
     fault_events_topic_ = ros2_medkit_gateway::build_fault_manager_events_topic(node_.get());
@@ -283,7 +283,7 @@ TEST_F(SSEFaultHandlerTest, HandleStreamSetsSseHeadersAndChunkedProvider) {
 
 TEST_F(SSEFaultHandlerTest, HandleStreamRejectsWhenClientLimitIsReached) {
   auto limited_tracker = std::make_shared<SSEClientTracker>(1);
-  SSEFaultHandler limited_handler(*ctx_, limited_tracker, build_fault_manager_events_topic(ctx_->node()));
+  SSEFaultHandler limited_handler(*ctx_, limited_tracker, build_fault_manager_events_topic(node_.get()));
 
   auto req_one = make_stream_request("127.0.0.1");
   auto req_two = make_stream_request("127.0.0.2");
@@ -575,7 +575,7 @@ TEST_F(SSEFaultHandlerTest, StreamSanitizesNewlinesInEventType) {
 
 TEST_F(SSEFaultHandlerTest, StreamSendsKeepaliveCommentAfterTimeout) {
   auto fast_tracker = std::make_shared<SSEClientTracker>(1);
-  SSEFaultHandler fast_handler(*ctx_, fast_tracker, 10ms, build_fault_manager_events_topic(ctx_->node()));
+  SSEFaultHandler fast_handler(*ctx_, fast_tracker, 10ms, build_fault_manager_events_topic(node_.get()));
 
   auto req = make_stream_request("127.0.0.1");
   httplib::Response res;
@@ -593,7 +593,7 @@ TEST_F(SSEFaultHandlerTest, NonPositiveKeepaliveOverrideLogsWarning) {
   testing::internal::CaptureStderr();
   {
     auto warn_tracker = std::make_shared<SSEClientTracker>(1);
-    SSEFaultHandler warn_handler(*ctx_, warn_tracker, 0ms, build_fault_manager_events_topic(ctx_->node()));
+    SSEFaultHandler warn_handler(*ctx_, warn_tracker, 0ms, build_fault_manager_events_topic(node_.get()));
   }
   auto logs = testing::internal::GetCapturedStderr();
 

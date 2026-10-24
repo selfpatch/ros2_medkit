@@ -33,12 +33,13 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
 #include "ros2_medkit_gateway/core/http/operation_item_id.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 #include "ros2_medkit_serialization/type_introspection.hpp"
 
@@ -298,7 +299,7 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
                                                          const std::string & operation_id,
                                                          const std::string & execution_id) {
   const auto entity_info = ctx.get_entity_info(entity_id);
-  const auto & cache = ctx.node()->get_thread_safe_cache();
+  const auto & cache = ctx.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return MemberDispatch::kServeLocally;
@@ -439,7 +440,7 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     // this gate any aggregate could name the owner of someone else's goal and
     // read, stop or cancel it from an unrelated URI.
     const auto entity_info = ctx.get_entity_info(entity_id);
-    const auto & cache = ctx.node()->get_thread_safe_cache();
+    const auto & cache = ctx.services().entity_cache();
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
       const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
       if (parsed.has_member && names_a_member(lookup->ops, parsed.member_id) &&
@@ -620,7 +621,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
 
   // Delegate to plugin OperationProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -644,7 +645,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
     }
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -657,7 +658,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // with handle_get_operation so build_service_xmedkit / build_action_xmedkit
   // are factored out into the anon-ns helpers above.
   dto::Collection<dto::OperationItem> collection;
-  auto data_access_mgr = ctx_.node()->get_data_access_manager();
+  auto data_access_mgr = ctx_.services().data_access_manager();
   auto type_introspection = data_access_mgr->get_type_introspection();
 
   // How many operations the DECLARED tree carries under each short name. This
@@ -879,7 +880,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
   const auto entity_info = *entity_result;
 
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -905,7 +906,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     }
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -937,7 +938,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     return tl::make_unexpected(std::move(*ambiguous));
   }
 
-  auto data_access_mgr = ctx_.node()->get_data_access_manager();
+  auto data_access_mgr = ctx_.services().data_access_manager();
   auto type_introspection = data_access_mgr->get_type_introspection();
 
   dto::OperationDetail detail;
@@ -1006,7 +1007,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   // `OperationExecutionResult` envelope. Pre-typed plugins kept the raw JSON
   // body shape, so the wire format is unchanged.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -1050,7 +1051,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   }
 
   // Runtime discovery branch.
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -1111,7 +1112,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   const std::optional<ServiceInfo> & service_info = resolved.service;
   const std::optional<ActionInfo> & action_info = resolved.action;
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
 
   // ---- Action (asynchronous: 202 + Location) ----
   if (action_info.has_value()) {
@@ -1222,7 +1223,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // provider still decides whether the operation exists at all, so a typo is a
   // miss here and not an empty success.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -1252,7 +1253,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // did not exist - immediately after the same entity listed the operation.
   // `resolve_entity_operations` is the same lookup `list_operations` uses, so
   // the two endpoints now agree on what an entity's operations are.
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -1305,7 +1306,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // to stay different, because a client reading a collection of executions
   // cannot otherwise tell a synchronous operation from a mistyped id.
   if (resolved.action.has_value()) {
-    auto * operation_mgr = ctx_.node()->get_operation_manager();
+    auto * operation_mgr = ctx_.services().operation_manager();
     for (const auto & goal : operation_mgr->get_goals_for_action(resolved.action->full_path)) {
       // An action reachable through several entities is one action with one
       // set of goals, so the collection has to say whose executions it lists.
@@ -1366,7 +1367,7 @@ http::Result<dto::OperationExecution> OperationHandlers::get_execution(const htt
     }
   }
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
@@ -1438,7 +1439,7 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
     }
   }
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
@@ -1508,7 +1509,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
 
   const std::string capability = body.capability;
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());

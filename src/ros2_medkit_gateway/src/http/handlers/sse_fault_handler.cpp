@@ -69,7 +69,7 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
 
   // Create subscription to fault events topic
   // Use fully qualified topic name since FaultManager publishes on ~/events
-  subscription_ = ctx_.node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
+  subscription_ = ctx_.services().ros_node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
       fault_events_topic, rclcpp::QoS(100).reliable(),
       [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
         on_fault_event(msg);
@@ -703,7 +703,7 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
     return std::nullopt;
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
 
   // Manifest / hybrid mode: the linking step populated node_to_app with the
   // ROS FQN -> manifest app id mapping. Try both FQN forms (with and without

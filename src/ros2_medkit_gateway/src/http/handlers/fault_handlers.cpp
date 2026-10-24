@@ -33,11 +33,14 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 namespace ros2_medkit_gateway {
@@ -457,7 +460,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     }
     const auto filter = *filter_result;
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
     // Empty source_id = no filtering, return all faults
     auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
                                          filter.include_healed, q.include_muted, q.include_clusters);
@@ -538,7 +541,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     // their faults live in the fault_manager, so fall through to the shared
     // scoped listing below like any other entity.
     if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       if (fault_prov != nullptr) {
         try {
@@ -582,7 +585,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     // it on a scoped response would leak cross-entity data. The global
     // `GET /faults` route is the only place these flags are declared and honored.
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     // For Functions, aggregate faults from all host apps.
     // Functions don't have a single namespace_path (it is always empty in EntityInfo)
@@ -602,7 +605,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       // Resolve FQN set via the shared helper so subareas (Areas) and
       // component-hosted Functions are handled the same way as the per-fault
       // routes.
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      const auto & cache = ctx_.services().entity_cache();
       auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
       json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
@@ -649,7 +652,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
                        json{{"details", result.error_message}, {entity_info.id_field, entity_id}}));
       }
 
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      const auto & cache = ctx_.services().entity_cache();
       auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
       json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], app_fqns);
@@ -680,7 +683,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     }
 
     // For Apps, scope by the app's effective FQN set.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
                                          filter.include_healed,
@@ -764,7 +767,7 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
 
     // Delegate to plugin FaultProvider if entity is plugin-owned
     if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       // Plugins without a FaultProvider report via ReportFault only (the
       // native path): skip the plugin delegation entirely and serve the
@@ -776,15 +779,15 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
         // freeze-frame/rosbag snapshots, consistent with the non-plugin detail
         // path. Fall through to the plugin's own provider for faults the
         // fault_manager does not hold (e.g. on-demand UDS DTCs).
-        if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+        if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr) {
           auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
           if (mgr_result.success) {
             const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-            const auto & cache = ctx_.node()->get_thread_safe_cache();
+            const auto & cache = ctx_.services().entity_cache();
             auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
             if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
               json env_data_json = mgr_result.data.value("environment_data", json::object());
-              if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
+              if (auto * capture = ctx_.services().freeze_frames()) {
                 env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
               }
               auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
@@ -813,7 +816,7 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
       }
     }
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     auto result = fault_mgr->get_fault_with_env(fault_code, "");
     if (!result.success) {
@@ -824,7 +827,7 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
     // Build SOVD-compliant response from the transport-supplied JSON shape.
     const auto & fault_json = result.data.value("fault", json::object());
 
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
       return tl::make_unexpected(
@@ -838,7 +841,7 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
     }
 
     json env_data_json = result.data.value("environment_data", json::object());
-    if (auto * capture = ctx_.node()->get_entity_freeze_frame_capture()) {
+    if (auto * capture = ctx_.services().freeze_frames()) {
       env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
     }
     auto detail = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
@@ -897,7 +900,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
     // wire shape via `send_dto`); the typed alternates variant maps
     // `FaultClearResult` -> 200 via the default `dto_alternate_status<T>`.
     if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       // Plugins without a FaultProvider report via ReportFault only (the
       // native path): fall through to the scope-checked fault_manager clear
@@ -911,11 +914,11 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         // fault_manager does not hold (plugin-internal, e.g. on-demand UDS DTCs)
         // fall through to the plugin provider unchanged. Mirrors the ownership
         // check in the plugin get_fault branch and the non-plugin clear path.
-        if (auto * fault_mgr = ctx_.node()->get_fault_manager(); fault_mgr != nullptr) {
+        if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr) {
           auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
           if (mgr_result.success) {
             const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-            const auto & cache = ctx_.node()->get_thread_safe_cache();
+            const auto & cache = ctx_.services().entity_cache();
             auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
             if (!FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
               return tl::make_unexpected(
@@ -950,7 +953,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
       }
     }
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     // Verify the fault is in this entity's scope BEFORE clearing.
     auto get_result = fault_mgr->get_fault_with_env(fault_code, "");
@@ -960,7 +963,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
                                                         fault_code));
     }
 
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     const auto & fault_json = get_result.data.value("fault", json::object());
     if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
@@ -1016,7 +1019,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     // without a FaultProvider report via ReportFault only (the native path):
     // fall through to the scope-checked fault_manager clear below.
     if (entity_info.is_plugin) {
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
       if (fault_prov != nullptr) {
         try {
@@ -1057,7 +1060,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
       }
     }
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     // Same scope rules as `list_faults` and `get_fault`: every entity type
     // resolves through `HandlerContext::resolve_entity_source_fqns` so the
@@ -1069,7 +1072,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
           make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to retrieve faults",
                      json{{"details", result.error_message}, {entity_info.id_field, entity_id}}));
     }
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto entity_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     json faults_to_clear = faults::filter_faults_by_sources(result.data["faults"], entity_fqns);
 
@@ -1112,7 +1115,7 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
     }
     const auto filter = *filter_result;
 
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
     // Global clear is the "nuclear option" - always include muted (correlated)
     // faults, unlike per-entity clear which respects the default
     // include_muted=false.
@@ -1124,10 +1127,10 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
     }
 
     // Build FQN-to-entity-ID map for lock checking
-    auto * lock_mgr = ctx_.node() ? ctx_.node()->get_lock_manager() : nullptr;
+    auto * lock_mgr = ctx_.services().lock_manager();
     std::unordered_map<std::string, std::string> fqn_to_entity;
     if (lock_mgr) {
-      const auto & cache = ctx_.node()->get_thread_safe_cache();
+      const auto & cache = ctx_.services().entity_cache();
       for (const auto & app : cache.get_apps()) {
         auto fqn = app.effective_fqn();
         if (!fqn.empty()) {

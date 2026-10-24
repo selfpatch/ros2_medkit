@@ -29,9 +29,10 @@
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/parameter_error_classification.hpp"
+#include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 namespace ros2_medkit_gateway {
@@ -371,7 +372,7 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
     return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto agg_configs = cache.get_entity_configurations(entity_id);
 
   dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit> response;
@@ -385,7 +386,7 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
   std::vector<std::string> queried_nodes;
 
   if (!agg_configs.nodes.empty()) {
-    auto * config_mgr = ctx_.node()->get_configuration_manager();
+    auto * config_mgr = ctx_.services().configuration_manager();
     const auto node_results = query_nodes_in_parallel(config_mgr, agg_configs);
 
     bool any_success = false;
@@ -524,7 +525,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
                                      json{{"details", "Parameter ID is empty or too long"}}));
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto agg_configs = cache.get_entity_configurations(entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
@@ -541,7 +542,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
                                      json{{"entity_id", entity_id}, {"id", param_id}}));
   }
 
-  auto * config_mgr = ctx_.node()->get_configuration_manager();
+  auto * config_mgr = ctx_.services().configuration_manager();
 
   // The id named a member this gateway owns; read the parameter from that
   // member's own node rather than probing every node the entity has.
@@ -645,7 +646,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::set_configuration(cons
     return tl::unexpected(lock_err.error());
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto agg_configs = cache.get_entity_configurations(entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
@@ -670,7 +671,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::set_configuration(cons
                                      json{{"entity_id", entity_id}, {"id", param_id}}));
   }
 
-  auto * config_mgr = ctx_.node()->get_configuration_manager();
+  auto * config_mgr = ctx_.services().configuration_manager();
 
   if (parsed.has_prefix) {
     const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
@@ -745,7 +746,7 @@ http::Result<http::NoContent> ConfigHandlers::delete_configuration(const http::T
     return tl::unexpected(lock_err.error());
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto agg_configs = cache.get_entity_configurations(entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
@@ -761,7 +762,7 @@ http::Result<http::NoContent> ConfigHandlers::delete_configuration(const http::T
                                      json{{"entity_id", entity_id}, {"id", param_id}}));
   }
 
-  auto * config_mgr = ctx_.node()->get_configuration_manager();
+  auto * config_mgr = ctx_.services().configuration_manager();
 
   if (parsed.has_prefix) {
     const auto * node_info = find_node_for_app(agg_configs.nodes, parsed.app_id);
@@ -818,10 +819,10 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
     return tl::unexpected(lock_err.error());
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto agg_configs = cache.get_entity_configurations(entity_id);
 
-  auto * config_mgr = ctx_.node()->get_configuration_manager();
+  auto * config_mgr = ctx_.services().configuration_manager();
   bool all_reset = true;
   dto::ConfigurationDeleteMultiStatus multi_status;
   multi_status.entity_id = entity_id;

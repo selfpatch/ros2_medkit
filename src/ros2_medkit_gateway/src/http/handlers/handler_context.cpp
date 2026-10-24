@@ -19,12 +19,14 @@
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
+#include "ros2_medkit_gateway/core/gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/models/entity_capabilities.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
 
 using json = nlohmann::json;
@@ -38,7 +40,7 @@ tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::st
 
 tl::expected<std::string, std::string>
 HandlerContext::get_component_namespace_path(const std::string & component_id) const {
-  const auto & cache = node_->get_thread_safe_cache();
+  const auto & cache = services_.entity_cache();
   auto component = cache.get_component(component_id);
   if (component) {
     return component->namespace_path;
@@ -47,7 +49,7 @@ HandlerContext::get_component_namespace_path(const std::string & component_id) c
 }
 
 EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEntityType expected_type) const {
-  const auto & cache = node_->get_thread_safe_cache();
+  const auto & cache = services_.entity_cache();
   EntityInfo info;
   info.id = entity_id;
 
@@ -63,7 +65,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     }
     // Check plugin ownership (only if not already a remote entity)
     if (!ei.is_remote) {
-      auto * pmgr = node_->get_plugin_manager();
+      auto * pmgr = services_.plugin_manager();
       if (pmgr) {
         auto owner = pmgr->get_entity_owner(ei.id);
         if (owner) {
@@ -208,10 +210,7 @@ tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::T
                                                                    const EntityInfo & entity,
                                                                    const std::string & collection) {
   // Phase 1: If locking disabled, allow all access.
-  if (!node_) {
-    return {};
-  }
-  auto * lock_mgr = node_->get_lock_manager();
+  auto * lock_mgr = services_.lock_manager();
   if (!lock_mgr) {
     return {};
   }
@@ -372,7 +371,7 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   // Only an App or a Component can be addressed on the peer; those are the two
   // collections a resource route exists under. A member that is neither names
   // nothing this gateway can re-address, so the local path answers for it.
-  const auto & cache = node_->get_thread_safe_cache();
+  const auto & cache = services_.entity_cache();
   std::string collection;
   if (cache.get_app(member_id)) {
     collection = "apps";
@@ -400,7 +399,7 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
 /// being retained. An entity this gateway has never heard of is not "not
 /// available" - it is absent, and the caller already got a 404 for it.
 bool HandlerContext::is_entity_available(const std::string & entity_id) const {
-  const auto & cache = node_->get_thread_safe_cache();
+  const auto & cache = services_.entity_cache();
   if (auto app = cache.get_app(entity_id)) {
     return app->available;
   }

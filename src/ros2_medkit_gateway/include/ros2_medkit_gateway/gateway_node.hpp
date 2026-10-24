@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/default_script_provider.hpp"
 #include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
+#include "ros2_medkit_gateway/core/gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
@@ -70,7 +71,7 @@
 
 namespace ros2_medkit_gateway {
 
-class GatewayNode : public rclcpp::Node {
+class GatewayNode : public rclcpp::Node, public GatewayServices {
  public:
   explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
@@ -88,6 +89,71 @@ class GatewayNode : public rclcpp::Node {
   GatewayNode & operator=(const GatewayNode &) = delete;
   GatewayNode(GatewayNode &&) = delete;
   GatewayNode & operator=(GatewayNode &&) = delete;
+
+  // GatewayServices: the HTTP layer reaches the managers through these.
+  const ThreadSafeEntityCache & entity_cache() const override {
+    return get_thread_safe_cache();
+  }
+  PluginManager * plugin_manager() override {
+    return get_plugin_manager();
+  }
+  DiscoveryManager * discovery() override {
+    return get_discovery_manager();
+  }
+  ScriptManager * script_manager() override {
+    return get_script_manager();
+  }
+  FaultManager * fault_manager() override {
+    return get_fault_manager();
+  }
+  LockManager * lock_manager() override {
+    return get_lock_manager();
+  }
+  ConfigurationManager * configuration_manager() override {
+    return get_configuration_manager();
+  }
+  DataAccessManager * data_access_manager() override {
+    return get_data_access_manager();
+  }
+  OperationManager * operation_manager() override {
+    return get_operation_manager();
+  }
+  UpdateManager * update_manager() override {
+    return get_update_manager();
+  }
+  LogManager * log_manager() override {
+    return get_log_manager();
+  }
+  BulkDataStore * bulk_data_store() override {
+    return get_bulk_data_store();
+  }
+  FaultTriggerEngine * fault_trigger_engine() override {
+    return get_fault_trigger_engine();
+  }
+  EntityFreezeFrameCapture * freeze_frames() override {
+    return get_entity_freeze_frame_capture();
+  }
+  TopicDataProvider * topic_data_provider() override {
+    return get_topic_data_provider();
+  }
+  TriggerManager * trigger_manager() override {
+    return get_trigger_manager();
+  }
+  SubscriptionManager * subscription_manager() override {
+    return get_subscription_manager();
+  }
+  ResourceSamplerRegistry * sampler_registry() override {
+    return get_sampler_registry();
+  }
+  TransportRegistry * transport_registry() override {
+    return get_transport_registry();
+  }
+  std::shared_ptr<SSEClientTracker> sse_client_tracker() override {
+    return get_sse_client_tracker();
+  }
+  GatewayNode * ros_node() override {
+    return this;
+  }
 
   /**
    * @brief Get the thread-safe entity cache with O(1) lookups

@@ -24,15 +24,23 @@
 #include <type_traits>
 
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
+#include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/parameter_error_classification.hpp"
+#include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/update_manager.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/dto/fault_triggers.hpp"
 #include "ros2_medkit_gateway/dto/sse_frames.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/status_recorder.hpp"
-#include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "../openapi/route_registry.hpp"
 #include "../openapi/schema_builder.hpp"
@@ -82,10 +90,11 @@ static_assert(std::is_constructible_v<httplib::Server::ExceptionHandler, Httplib
 
 }  // namespace
 
-RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
+RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStateReader> lifecycle_reader,
+                       const std::string & host, int port, const CorsConfig & cors_config,
                        const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
                        const RestConfig & rest_config, const TlsConfig & tls_config)
-  : node_(node)
+  : services_(services)
   , host_(host)
   , port_(port)
   , cors_config_(cors_config)
@@ -125,7 +134,7 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // Set maximum payload size for uploads (cpp-httplib default is 8MB)
   auto * srv = http_server_->get_server();
   if (srv) {
-    size_t max_payload = node_->get_bulk_data_store() ? node_->get_bulk_data_store()->max_upload_bytes() : 0;
+    size_t max_payload = services_.bulk_data_store() ? services_.bulk_data_store()->max_upload_bytes() : 0;
     if (max_payload > 0) {
       srv->set_payload_max_length(max_payload);
       MEDKIT_LOG_INFO(log::Logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
@@ -151,8 +160,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   }
 
   // Create handler context and domain-specific handlers
-  handler_ctx_ = std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_,
-                                                            auth_manager_.get(), node_->get_bulk_data_store());
+  handler_ctx_ = std::make_unique<handlers::HandlerContext>(services_, cors_config_, auth_config_, tls_config_,
+                                                            auth_manager_.get(), services_.bulk_data_store());
 
   // Create route registry before handlers that need it (HealthHandlers, DocsHandlers).
   // Routes are populated later in setup_routes(), but both handlers only access
@@ -172,19 +181,19 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // absence that `HandlerContext::validate_lock_access` short-circuits on. This
   // is the same source `get_root` reports `capabilities.locking` from, so the
   // document and the root cannot disagree.
-  route_registry_->set_locking_enabled(node_->get_lock_manager() != nullptr);
+  route_registry_->set_locking_enabled(services_.lock_manager() != nullptr);
 
   // Taken before the handlers that read it: /health reports how much of the
   // SSE client cap is in use, and a tracker fetched afterwards would reach
   // HealthHandlers as a null pointer and silently omit the field.
-  sse_client_tracker_ = node_->get_sse_client_tracker();
+  sse_client_tracker_ = services_.sse_client_tracker();
 
   health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get(),
                                                                 sse_client_tracker_, rest_config.docs_enabled);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
-  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(
-      *handler_ctx_, node_->get_plugin_manager(), std::make_shared<Ros2LifecycleStateReader>(node_));
+  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(*handler_ctx_, services_.plugin_manager(),
+                                                                      std::move(lifecycle_reader));
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -198,8 +207,8 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   const int64_t keepalive_raw = rest_config.sse_keepalive_interval_sec;
   const int64_t keepalive_used = std::clamp<int64_t>(keepalive_raw, kMinKeepaliveSec, kMaxKeepaliveSec);
   if (keepalive_used != keepalive_raw) {
-    MEDKIT_LOG_WARN(log::Logger(node_->get_logger().get_name()),
-                    "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64, keepalive_raw, keepalive_used);
+    MEDKIT_LOG_WARN(log::Logger(rest_config.logger_name), "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64,
+                    keepalive_raw, keepalive_used);
   }
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(
       *handler_ctx_, sse_client_tracker_, std::chrono::seconds(keepalive_used), rest_config.fault_events_topic);
@@ -218,20 +227,20 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
     max_duration_sec = static_cast<int>(max_duration_raw);
   }
   cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
-      *handler_ctx_, *node_->get_subscription_manager(), *node_->get_sampler_registry(),
-      *node_->get_transport_registry(), max_duration_sec);
+      *handler_ctx_, *services_.subscription_manager(), *services_.sampler_registry(), *services_.transport_registry(),
+      max_duration_sec);
 
-  if (node_->get_update_manager()) {
-    update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
+  if (services_.update_manager()) {
+    update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, services_.update_manager());
   }
 
-  lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, node_->get_lock_manager());
+  lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, services_.lock_manager());
 
-  if (node_->get_script_manager()) {
-    script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, node_->get_script_manager());
+  if (services_.script_manager()) {
+    script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, services_.script_manager());
   }
 
-  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
+  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, services_.plugin_manager(),
                                                             route_registry_.get(), rest_config.docs_enabled,
                                                             rest_config.server_host, rest_config.server_port);
 
@@ -242,10 +251,10 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   setup_routes();
 
   // Register plugin custom routes
-  if (node_->get_plugin_manager()) {
+  if (services_.plugin_manager()) {
     auto * plugin_srv = http_server_->get_server();
     if (plugin_srv) {
-      node_->get_plugin_manager()->register_routes(*plugin_srv, API_BASE_PATH);
+      services_.plugin_manager()->register_routes(*plugin_srv, API_BASE_PATH);
     }
   }
 }
@@ -549,7 +558,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("get", "/apps/{app_id}/fault-triggers",
               [this, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;
@@ -580,7 +589,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("post", "/apps/{app_id}/fault-triggers",
               [this, ft_json_error, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;
@@ -651,7 +660,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("delete", "/apps/{app_id}/fault-triggers/{trigger_id}",
               [this, ft_json_error, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;

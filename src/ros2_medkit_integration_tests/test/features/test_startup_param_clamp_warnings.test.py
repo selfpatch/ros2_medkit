@@ -22,7 +22,7 @@ another, and nothing in between said so. The symptom of a wrong value (a slow
 or jittery gateway) shows up far from the cause (one line in a YAML file), so
 the warning is the only thing that connects them.
 
-Four gateways launch with deliberately mis-set values and the test reads their
+Five gateways launch with deliberately mis-set values and the test reads their
 own process output:
 
 - ``gateway_node`` (the default port) sets every clamped parameter BELOW its
@@ -35,6 +35,9 @@ own process output:
   nothing at all. Without it, a site that lost its "did the clamp actually
   fire" guard would warn at every boot of a correctly configured gateway, and
   no other assertion in this file would notice.
+- ``gw_namespaced`` runs in a ROS namespace with ``sse.keepalive_interval_sec``
+  below its floor. The clamp warning must log under the node's own logger name,
+  ``<namespace>.<node name>``.
 - ``gw_rejected`` carries the parameters that are REFUSED rather than clamped
   (half a port number is not a port), including three values above INT_MAX
   that used to wrap back into the legal band and be accepted in silence.
@@ -266,6 +269,10 @@ WARNING_TIMEOUT = 20
 STARTUP_COMPLETE = 'fault-trigger engine active'
 
 
+NAMESPACE = '/clampns'
+NAMESPACED_NODE_NAME = 'gateway_clamp_namespaced'
+
+
 def generate_test_description():
     # Two parameters in the table are only read when something else is on:
     # aggregation.max_discovered_peers needs aggregation, and the
@@ -334,12 +341,23 @@ def generate_test_description():
         },
     )
 
+    # Shares the floor gateway's domain: the node name and namespace differ, and
+    # the DOMAINS count of a glob-registered test is fixed at four.
+    gw_namespaced = create_gateway_node(
+        port=get_test_port(4),
+        name=NAMESPACED_NODE_NAME,
+        namespace=NAMESPACE,
+        extra_env=_domain(0),
+        extra_params={'sse.keepalive_interval_sec': 0, **reachable},
+    )
+
     return (
         LaunchDescription([
             gateway_node,
             gw_ceiling,
             gw_in_range,
             gw_rejected,
+            gw_namespaced,
             launch_testing.actions.ReadyToTest(),
         ]),
         {
@@ -347,6 +365,7 @@ def generate_test_description():
             'gw_ceiling': gw_ceiling,
             'gw_in_range': gw_in_range,
             'gw_rejected': gw_rejected,
+            'gw_namespaced': gw_namespaced,
         },
     )
 
@@ -405,6 +424,18 @@ class TestStartupParamClampWarnings(GatewayTestCase):
         self.assertEqual(
             reported, [],
             f'a gateway with every parameter in range still reported: {reported}',
+        )
+
+    def test_clamp_warning_uses_the_nodes_logger_name(self, proc_output, gw_namespaced):
+        """The REST server warns under the node's logger, namespace included."""
+        text = _output_text(proc_output, gw_namespaced)
+        lines = [
+            line for line in text.splitlines()
+            if 'sse.keepalive_interval_sec 0 clamped to 1' in line
+        ]
+        self.assertEqual(len(lines), 1, f'expected one clamp line, got: {lines}')
+        self.assertIn(
+            f'[{NAMESPACE.lstrip("/")}.{NAMESPACED_NODE_NAME}]', lines[0],
         )
 
     def test_ceiling_coverage_is_not_dropped_by_accident(self):

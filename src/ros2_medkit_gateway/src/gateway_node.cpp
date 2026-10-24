@@ -41,6 +41,7 @@
 #include "ros2_medkit_gateway/param_utils.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "ros2_medkit_gateway/ros2/ros2_log_sink.hpp"
+#include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
@@ -1580,9 +1581,11 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   rest_config.server_host = server_host_;
   rest_config.server_port = server_port_;
   rest_config.fault_events_topic = build_fault_manager_events_topic(this);
+  rest_config.logger_name = get_logger().get_name();
 
-  rest_server_ = std::make_unique<RESTServer>(this, server_host_, server_port_, cors_config_, auth_config_,
-                                              rate_limit_config_, rest_config, tls_config_);
+  rest_server_ =
+      std::make_unique<RESTServer>(*this, std::make_shared<Ros2LifecycleStateReader>(this), server_host_, server_port_,
+                                   cors_config_, auth_config_, rate_limit_config_, rest_config, tls_config_);
 
   // Wire trigger handlers into REST server
   if (trigger_mgr_) {

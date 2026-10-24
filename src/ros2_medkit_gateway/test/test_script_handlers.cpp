@@ -22,6 +22,7 @@
 #include <regex>
 #include <string>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/script_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -242,7 +243,7 @@ class ScriptHandlersNoBackendTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   // Null script manager -> the typed handlers short-circuit with 501.
   ScriptHandlers handlers_{ctx_, nullptr};
 
@@ -381,7 +382,7 @@ class ScriptHandlersErrorMappingTest : public ::testing::Test {
     auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
     cache.update_all(areas, components, apps, functions);
 
-    ctx_ = std::make_unique<HandlerContext>(node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*node_, cors_, auth_, tls_, nullptr);
 
     mock_provider_ = std::make_unique<ErrorMockScriptProvider>();
     script_manager_ = std::make_unique<ScriptManager>();

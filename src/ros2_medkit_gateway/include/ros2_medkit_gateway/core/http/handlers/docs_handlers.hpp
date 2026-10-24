@@ -28,7 +28,6 @@
 
 namespace ros2_medkit_gateway {
 
-class GatewayNode;
 class PluginManager;
 
 namespace openapi {
@@ -47,9 +46,8 @@ namespace handlers {
  */
 class DocsHandlers {
  public:
-  DocsHandlers(HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-               const openapi::RouteRegistry * route_registry, bool docs_enabled, std::string server_host,
-               int64_t server_port);
+  DocsHandlers(HandlerContext & ctx, PluginManager * plugin_mgr, const openapi::RouteRegistry * route_registry,
+               bool docs_enabled, std::string server_host, int64_t server_port);
   ~DocsHandlers();
 
   /// GET /docs - Root capability description.

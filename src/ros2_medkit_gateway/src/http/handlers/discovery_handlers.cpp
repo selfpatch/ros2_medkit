@@ -24,9 +24,12 @@
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/capability_builder.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -71,8 +74,8 @@ bool has_capability(const std::vector<dto::EntityCapability> & capabilities, con
 
 /// Append plugin-registered capabilities to an entity's capabilities array
 void append_plugin_capabilities(std::vector<dto::EntityCapability> & capabilities, const std::string & entity_type_path,
-                                const std::string & entity_id, SovdEntityType entity_type, const GatewayNode * node) {
-  auto * pmgr = node->get_plugin_manager();
+                                const std::string & entity_id, SovdEntityType entity_type, GatewayServices & services) {
+  auto * pmgr = services.plugin_manager();
   if (!pmgr) {
     return;
   }
@@ -122,8 +125,8 @@ void append_plugin_capabilities(std::vector<dto::EntityCapability> & capabilitie
 /// registered, so advertising those capabilities is a dead link every SOVD
 /// client (and the UI) follows into a guaranteed 404.
 void prune_plugin_unserved_capabilities(std::vector<CapabilityBuilder::Capability> & caps,
-                                        const std::string & entity_id, const GatewayNode * node) {
-  auto * pmgr = node ? node->get_plugin_manager() : nullptr;
+                                        const std::string & entity_id, GatewayServices & services) {
+  auto * pmgr = services.plugin_manager();
   if (!pmgr || !pmgr->get_entity_owner(entity_id)) {
     return;  // native entity: the core managers serve these collections
   }
@@ -215,7 +218,7 @@ tl::expected<std::string, ErrorInfo> read_path_param(const http::TypedRequest & 
 http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_areas(const http::TypedRequest & req) {
   (void)req;
   try {
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     const auto areas = cache.get_areas();
 
     dto::Collection<dto::AreaListItem> response;
@@ -275,10 +278,10 @@ http::Result<dto::AreaDetail> DiscoveryHandlers::get_area(const http::TypedReque
     }
 
     // Local entity - look up full object from cache for detail response.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       area_opt = discovery->get_area(area_id);
     }
 
@@ -321,9 +324,9 @@ http::Result<dto::AreaDetail> DiscoveryHandlers::get_area(const http::TypedReque
     std::vector<Cap> caps = {Cap::SUBAREAS,        Cap::CONTAINS,    Cap::COMPONENTS, Cap::DATA,
                              Cap::DATA_CATEGORIES, Cap::DATA_GROUPS, Cap::OPERATIONS, Cap::CONFIGURATIONS,
                              Cap::FAULTS,          Cap::LOGS,        Cap::BULK_DATA,  Cap::TRIGGERS};
-    prune_plugin_unserved_capabilities(caps, area.id, ctx_.node());
+    prune_plugin_unserved_capabilities(caps, area.id, ctx_.services());
     auto area_caps = CapabilityBuilder::build_capabilities("areas", area.id, caps);
-    append_plugin_capabilities(area_caps, "areas", area.id, SovdEntityType::AREA, ctx_.node());
+    append_plugin_capabilities(area_caps, "areas", area.id, SovdEntityType::AREA, ctx_.services());
     detail.capabilities = area_caps;
 
     LinksBuilder links;
@@ -367,7 +370,7 @@ DiscoveryHandlers::get_area_components(const http::TypedRequest & req) {
       return tl::unexpected(make_invalid_id_error("area", "area_id", area_id, validation_result.error()));
     }
 
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
 
     if (!cache.has_area(area_id)) {
       return tl::unexpected(make_not_found_error("Area", "area_id", area_id));
@@ -428,10 +431,10 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_subareas
     }
 
     // Cache-first lookup: EntityCache has merged entities from peers.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       area_opt = discovery->get_area(area_id);
     }
 
@@ -498,10 +501,10 @@ DiscoveryHandlers::get_area_contains(const http::TypedRequest & req) {
     }
 
     // Cache-first lookup: EntityCache has merged entities from peers.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto area_opt = cache.get_area(area_id);
     if (!area_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       area_opt = discovery->get_area(area_id);
     }
 
@@ -582,7 +585,7 @@ http::Result<dto::Collection<dto::ComponentListItem>>
 DiscoveryHandlers::get_components(const http::TypedRequest & req) {
   (void)req;
   try {
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     const auto components = cache.get_components();
 
     dto::Collection<dto::ComponentListItem> response;
@@ -657,10 +660,10 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     }
 
     // Local entity - look up full object from cache for detail response.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       comp_opt = discovery->get_component(component_id);
     }
 
@@ -697,14 +700,14 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     detail.cyclic_subscriptions = base + "/cyclic-subscriptions";
     detail.triggers = base + "/triggers";
 
-    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+    if (ctx_.services().script_manager() && ctx_.services().script_manager()->has_backend()) {
       detail.scripts = base + "/scripts";
     }
 
     // Same gate as Cap::LOCKS below. The routes are registered either way; with
     // `locking.enabled` off there is no LockManager and they answer 501, so the
     // URI is emitted only when it leads to a collection that exists.
-    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+    if (ctx_.services().lock_manager()) {
       detail.locks = base + "/locks";
     }
 
@@ -774,18 +777,18 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
                              Cap::OPERATIONS,    Cap::CONFIGURATIONS, Cap::FAULTS,          Cap::LOGS,
                              Cap::SUBCOMPONENTS, Cap::HOSTS,          Cap::BULK_DATA,       Cap::CYCLIC_SUBSCRIPTIONS,
                              Cap::TRIGGERS};
-    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+    if (ctx_.services().script_manager() && ctx_.services().script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
-    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+    if (ctx_.services().lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
-    prune_plugin_unserved_capabilities(caps, comp.id, ctx_.node());
+    prune_plugin_unserved_capabilities(caps, comp.id, ctx_.services());
     auto comp_caps = CapabilityBuilder::build_capabilities("components", comp.id, caps);
-    append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.node());
+    append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.services());
     // Capabilities at root level (SOVD standard) and in x-medkit (vendor extension for tools
     // that only read x-medkit). Apps don't duplicate because they have no vendor extensions block.
     detail.capabilities = comp_caps;
@@ -814,10 +817,10 @@ DiscoveryHandlers::get_subcomponents(const http::TypedRequest & req) {
     }
 
     // Cache-first lookup: EntityCache has merged entities from peers.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       comp_opt = discovery->get_component(component_id);
     }
 
@@ -887,10 +890,10 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_component
     }
 
     // Cache-first lookup: EntityCache has merged entities from peers.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       comp_opt = discovery->get_component(component_id);
     }
 
@@ -966,10 +969,10 @@ DiscoveryHandlers::get_component_depends_on(const http::TypedRequest & req) {
     }
 
     // Cache-first lookup: EntityCache has merged entities from peers.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       comp_opt = discovery->get_component(component_id);
     }
 
@@ -1032,7 +1035,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_apps(cons
   (void)req;
   try {
     // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints).
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto apps = cache.get_apps();
 
     dto::Collection<dto::AppListItem> response;
@@ -1098,10 +1101,10 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     }
 
     // Local entity - look up full object from cache for detail response.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto app_opt = cache.get_app(app_id);
     if (!app_opt) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       app_opt = discovery->get_app(app_id);
     }
 
@@ -1143,13 +1146,13 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     detail.cyclic_subscriptions = base_uri + "/cyclic-subscriptions";
     detail.triggers = base_uri + "/triggers";
 
-    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+    if (ctx_.services().script_manager() && ctx_.services().script_manager()->has_backend()) {
       detail.scripts = base_uri + "/scripts";
     }
 
     // Same gate as Cap::LOCKS below, and the same reasoning as the component
     // handler: registered either way, 501 without a LockManager.
-    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+    if (ctx_.services().lock_manager()) {
       detail.locks = base_uri + "/locks";
     }
 
@@ -1185,15 +1188,15 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     if (!app.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
-    if (ctx_.node()->get_script_manager() && ctx_.node()->get_script_manager()->has_backend()) {
+    if (ctx_.services().script_manager() && ctx_.services().script_manager()->has_backend()) {
       caps.push_back(Cap::SCRIPTS);
     }
-    if (ctx_.node() && ctx_.node()->get_lock_manager()) {
+    if (ctx_.services().lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
-    prune_plugin_unserved_capabilities(caps, app.id, ctx_.node());
+    prune_plugin_unserved_capabilities(caps, app.id, ctx_.services());
     auto app_caps = CapabilityBuilder::build_capabilities("apps", app.id, caps);
-    append_plugin_capabilities(app_caps, "apps", app.id, SovdEntityType::APP, ctx_.node());
+    append_plugin_capabilities(app_caps, "apps", app.id, SovdEntityType::APP, ctx_.services());
     detail.capabilities = app_caps;
 
     LinksBuilder links;
@@ -1261,10 +1264,10 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_app_depen
     // Atomic snapshot keeps the app + every dependency resolved in the same
     // cache generation; a writer refresh between per-dependency lookups could
     // otherwise yield a mix from N different generations.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto snapshot = cache.get_app_with_dependencies(app_id);
     if (!snapshot.app) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       snapshot.app = discovery->get_app(app_id);
       if (snapshot.app) {
         snapshot.dependencies.reserve(snapshot.app->depends_on.size());
@@ -1345,10 +1348,10 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_app_belo
     // Area across concurrent cache refreshes. Fall back to the discovery
     // manager (no atomic guarantee, but rare path) when the app is not in
     // the cache.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto snapshot = cache.get_app_with_links(app_id);
     if (!snapshot.app) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       snapshot.app = discovery->get_app(app_id);
       if (snapshot.app && !snapshot.app->component_id.empty()) {
         snapshot.component = discovery->get_component(snapshot.app->component_id);
@@ -1439,10 +1442,10 @@ DiscoveryHandlers::get_app_is_located_on(const http::TypedRequest & req) {
     // Atomic snapshot keeps app -> component consistent across a concurrent
     // cache refresh. Fall back to discovery manager when the app is not in
     // the cache.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto snapshot = cache.get_app_with_links(app_id);
     if (!snapshot.app) {
-      auto discovery = ctx_.node()->get_discovery_manager();
+      auto discovery = ctx_.services().discovery();
       snapshot.app = discovery->get_app(app_id);
       if (snapshot.app && !snapshot.app->component_id.empty()) {
         snapshot.component = discovery->get_component(snapshot.app->component_id);
@@ -1504,7 +1507,7 @@ http::Result<dto::Collection<dto::FunctionListItem>> DiscoveryHandlers::get_func
   (void)req;
   try {
     // Use ThreadSafeEntityCache for consistent discovery (avoids race with data endpoints).
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto functions = cache.get_functions();
 
     dto::Collection<dto::FunctionListItem> response;
@@ -1557,7 +1560,7 @@ http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::Ty
 
     // The cache holds the Functions the gateway serves, after the
     // internal-node filter. The hosts route reads only the cache too.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {
       return tl::unexpected(make_not_found_error("Function", "function_id", function_id));
@@ -1597,9 +1600,9 @@ http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::Ty
     std::vector<Cap> caps = {
         Cap::HOSTS,  Cap::DATA, Cap::DATA_CATEGORIES, Cap::DATA_GROUPS,          Cap::OPERATIONS, Cap::CONFIGURATIONS,
         Cap::FAULTS, Cap::LOGS, Cap::BULK_DATA,       Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
-    prune_plugin_unserved_capabilities(caps, func.id, ctx_.node());
+    prune_plugin_unserved_capabilities(caps, func.id, ctx_.services());
     auto func_caps = CapabilityBuilder::build_capabilities("functions", func.id, caps);
-    append_plugin_capabilities(func_caps, "functions", func.id, SovdEntityType::FUNCTION, ctx_.node());
+    append_plugin_capabilities(func_caps, "functions", func.id, SovdEntityType::FUNCTION, ctx_.services());
     detail.capabilities = func_caps;
 
     // Read off the capability list rather than set unconditionally: nothing in
@@ -1662,7 +1665,7 @@ http::Result<dto::Collection<dto::AppListItem>> DiscoveryHandlers::get_function_
     // Read from cache only (merged hosts from aggregation, after the
     // internal-node filter), so this route and GET /functions/{id} agree on
     // which Functions exist. Discovery still holds Functions the filter dropped.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto func_opt = cache.get_function(function_id);
     if (!func_opt) {
       return tl::unexpected(make_not_found_error("Function", "function_id", function_id));

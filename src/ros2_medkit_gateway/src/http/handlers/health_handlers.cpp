@@ -26,10 +26,15 @@
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/warning_codes.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/update_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include "../../openapi/route_registry.hpp"
 
@@ -65,7 +70,7 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     std::vector<dto::HealthWarning> warnings;
 
     // Add discovery info
-    auto * dm = ctx_.node() ? ctx_.node()->get_discovery_manager() : nullptr;
+    auto * dm = ctx_.services().discovery();
     if (dm) {
       dto::HealthDiscovery discovery;
       discovery.mode = discovery_mode_to_string(dm->get_mode());
@@ -130,26 +135,24 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     // vendor extensions. Atomic reads only; safe to serve from /health even
     // under load. External monitors (k8s liveness, systemd watchdog, Docker
     // HEALTHCHECK) can trigger on `x-medkit-subscription-executor.degraded`.
-    if (ctx_.node()) {
-      if (auto * tdp = ctx_.node()->get_topic_data_provider()) {
-        auto x = tdp->x_medkit_stats();
-        if (x.contains("x-medkit-data-provider")) {
-          response.x_medkit_data_provider = x["x-medkit-data-provider"];
-        }
-        if (x.contains("x-medkit-subscription-executor")) {
-          response.x_medkit_subscription_executor = x["x-medkit-subscription-executor"];
-        }
+    if (auto * tdp = ctx_.services().topic_data_provider()) {
+      auto x = tdp->x_medkit_stats();
+      if (x.contains("x-medkit-data-provider")) {
+        response.x_medkit_data_provider = x["x-medkit-data-provider"];
       }
-
-      // Surface entity cache live counts and capacity via x-medkit-entity-cache.
-      // Enables external monitors and operators to verify the cache is sized
-      // correctly (grew == true signals that entity_cache.capacity should be raised).
-      const auto stats = ctx_.node()->get_thread_safe_cache().get_stats();
-      response.x_medkit_entity_cache =
-          json{{"capacity", stats.capacity}, {"areas", stats.area_count},         {"components", stats.component_count},
-               {"apps", stats.app_count},    {"functions", stats.function_count}, {"generation", stats.generation},
-               {"grew", stats.grew}};
+      if (x.contains("x-medkit-subscription-executor")) {
+        response.x_medkit_subscription_executor = x["x-medkit-subscription-executor"];
+      }
     }
+
+    // Surface entity cache live counts and capacity via x-medkit-entity-cache.
+    // Enables external monitors and operators to verify the cache is sized
+    // correctly (grew == true signals that entity_cache.capacity should be raised).
+    const auto stats = ctx_.services().entity_cache().get_stats();
+    response.x_medkit_entity_cache =
+        json{{"capacity", stats.capacity}, {"areas", stats.area_count},         {"components", stats.component_count},
+             {"apps", stats.app_count},    {"functions", stats.function_count}, {"generation", stats.generation},
+             {"grew", stats.grew}};
 
     // How much of the SSE client cap is in use. The cap is small - two by
     // default - and on an aggregating deployment a peer's slots are consumed
@@ -239,9 +242,9 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     // the document says what is *documented*. A `hidden()` route is mounted and
     // answers 405; a plugin route is mounted and is documented. Pinned by
     // `test_openapi_contract.test.py::test_the_root_list_and_the_document_agree`.
-    if (ctx_.node() && ctx_.node()->get_plugin_manager()) {
+    if (ctx_.services().plugin_manager()) {
       const std::string api_base_path{API_BASE_PATH};
-      for (const auto & desc : ctx_.node()->get_plugin_manager()->collect_route_descriptions()) {
+      for (const auto & desc : ctx_.services().plugin_manager()->collect_route_descriptions()) {
         for (const auto & [method, path] : desc.endpoints()) {
           // Built in place rather than by `+` chaining, matching
           // `RouteRegistry::to_endpoint_list` above: the chain allocates a
@@ -283,16 +286,16 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     capabilities.logs = true;
     capabilities.bulk_data = true;
     capabilities.cyclic_subscriptions = true;
-    capabilities.locking = ctx_.node() && ctx_.node()->get_lock_manager() != nullptr;
-    capabilities.triggers = ctx_.node() && ctx_.node()->get_trigger_manager() != nullptr;
-    capabilities.updates = ctx_.node() && ctx_.node()->get_update_manager() != nullptr;
+    capabilities.locking = ctx_.services().lock_manager() != nullptr;
+    capabilities.triggers = ctx_.services().trigger_manager() != nullptr;
+    capabilities.updates = ctx_.services().update_manager() != nullptr;
     capabilities.authentication = auth_config.enabled;
     capabilities.tls = tls_config.enabled;
     capabilities.scripts =
-        ctx_.node() && ctx_.node()->get_script_manager() != nullptr && ctx_.node()->get_script_manager()->has_backend();
+        ctx_.services().script_manager() != nullptr && ctx_.services().script_manager()->has_backend();
     capabilities.aggregation = ctx_.aggregation_manager() != nullptr;
     capabilities.vendor_extensions =
-        ctx_.node() && ctx_.node()->get_plugin_manager() && ctx_.node()->get_plugin_manager()->has_plugins();
+        ctx_.services().plugin_manager() && ctx_.services().plugin_manager()->has_plugins();
 
     dto::RootOverview response;
     response.name = "ROS 2 Medkit Gateway";

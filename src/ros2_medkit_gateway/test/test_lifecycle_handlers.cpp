@@ -116,7 +116,7 @@ class LifecycleHandlersTest : public ::testing::Test {
       std::this_thread::yield();
     }
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<LifecycleHandlers>(*ctx_, nullptr);  // no plugin manager
 
     // Give the executor a moment to start before seeding cache.
@@ -368,7 +368,7 @@ class EntityDetailStatusLinkTest : public ::testing::Test {
     auto & cache = const_cast<ThreadSafeEntityCache &>(gateway_node_->get_thread_safe_cache());
     cache.update_all({}, {comp}, {app}, {});
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     discovery_ = std::make_unique<DiscoveryHandlers>(*ctx_);
   }
 
@@ -522,7 +522,7 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
     plugin_mgr_->add_plugin(std::move(mock));
     plugin_mgr_->register_entity_ownership("mock_lifecycle", {"plugin_app"});
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<LifecycleHandlers>(*ctx_, plugin_mgr_.get());
   }
 
