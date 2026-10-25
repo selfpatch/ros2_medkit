@@ -42,6 +42,7 @@
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_reaper.hpp"
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
@@ -490,6 +491,8 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   std::unique_ptr<ScriptManager> script_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<LockManager> lock_manager_;
+  // Declared after lock_manager_ and subscription_mgr_, which it uses: destroyed before both.
+  std::unique_ptr<LockReaper> lock_reaper_;
 
   // Trigger infrastructure (destroyed after rest_server_)
   std::unique_ptr<ResourceChangeNotifier> resource_change_notifier_;
@@ -575,9 +578,6 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
-
-  // Timer for periodic cleanup of expired locks
-  rclcpp::TimerBase::SharedPtr lock_cleanup_timer_;
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;

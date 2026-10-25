@@ -63,6 +63,8 @@
 #include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_reaper.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
@@ -512,7 +514,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::LockManager * lock_manager() override {
-    return nullptr;
+    return locks_;
   }
   gw::UpdateManager * update_manager() override {
     return nullptr;
@@ -563,6 +565,9 @@ class MinimalServices : public gw::GatewayServices {
   void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
     bulk_store_ = std::move(store);
   }
+  void set_lock_manager(gw::LockManager * locks) {
+    locks_ = locks;
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
@@ -573,6 +578,7 @@ class MinimalServices : public gw::GatewayServices {
   std::unique_ptr<gw::PluginManager> plugins_;
   gw::FreezeFrameSource * freeze_frames_{nullptr};
   gw::FaultEventSource * fault_events_{nullptr};
+  gw::LockManager * locks_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -803,6 +809,59 @@ void add_sse_transport(MinimalServices & services) {
     }
   });
 }
+gw::App online_app(const std::string & id, const std::string & name) {
+  gw::App app = hosted_app();
+  app.id = id;
+  app.name = name;
+  app.is_online = true;
+  return app;
+}
+
+// Items of a collection body, or an empty array.
+nlohmann::json items_of(const httplib::Result & res) {
+  return res ? nlohmann::json::parse(res->body, nullptr, false).value("items", nlohmann::json::array())
+             : nlohmann::json::array();
+}
+
+// A lock taken over HTTP with a short expiry is reaped by the core: the lock is gone and the cyclic subscriptions in
+// its scope are removed, with no host code calling cleanup_expired.
+bool check_lock_reaping() {
+  bool ok = true;
+  MinimalServices services;
+  services.fault_transport().reports_faults = true;
+  services.mutable_cache().update_apps({online_app("lock_app", "Lock app")});
+  gw::register_builtin_samplers(services);
+  add_sse_transport(services);
+  gw::LockConfig lock_config;
+  lock_config.cleanup_interval = 1;
+  gw::LockManager locks(services.entity_cache(), lock_config);
+  services.set_lock_manager(&locks);
+  auto reaper = std::make_unique<gw::LockReaper>(locks, services.subscription_manager(), lock_config.cleanup_interval,
+                                                 gw::log::Logger("check_cores_without_ros"));
+  {
+    RunningServer running(services);
+    auto client = make_client(running.port());
+    const auto sub = subscribe(client, "/api/v1/apps/lock_app/faults", "lock_app");
+    ok &= check(!sub.first.empty(), "a cyclic subscription is created before the lock");
+    const nlohmann::json lock_body = {{"lock_expiration", 1}, {"scopes", {"cyclic-subscriptions"}}};
+    auto acquired = client.Post("/api/v1/apps/lock_app/locks", httplib::Headers{{"X-Client-Id", "check_client"}},
+                                lock_body.dump(), "application/json");
+    ok &= check(acquired && acquired->status == 201, "a lock with a one second expiry is acquired over HTTP");
+    ok &= check(locks.get_lock("lock_app").has_value(), "the lock is held before it expires");
+    const bool lock_gone = wait_until([&] {
+      return !locks.get_lock("lock_app").has_value();
+    });
+    ok &= check(lock_gone, "the expired lock is gone");
+    const bool sub_gone = wait_until([&] {
+      return items_of(client.Get("/api/v1/apps/lock_app/cyclic-subscriptions")).empty();
+    });
+    ok &= check(sub_gone, "the expiry removed the cyclic subscriptions in the lock scope");
+  }
+  reaper.reset();
+  services.transport_registry()->shutdown_all(*services.subscription_manager());
+  return ok;
+}
+
 }  // namespace
 
 static int run() {
@@ -1380,6 +1439,9 @@ static int run() {
     const auto rosbag_caps = root_capabilities(rosbags_only);
     ok &= check(rosbag_caps.value("bulk_data", false), "rosbags without a store: bulk_data true");
   }
+
+  // Host wiring the core owns: lock reaping, script manager, aggregation, lifecycle without a reader.
+  ok &= check_lock_reaping();
 
   return ok ? 0 : 1;
 }
