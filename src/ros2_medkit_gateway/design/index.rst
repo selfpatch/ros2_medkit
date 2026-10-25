@@ -35,6 +35,28 @@ The check implements ``GatewayServices`` with minimal stand-ins and starts
 defaults are the ROS 2 node's values. ``scripts/check_cores_without_ros/`` builds and runs it on
 Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
+A program that hosts the core also gets the cyclic-subscription samplers and the bulk-data
+store from it:
+
+* ``register_builtin_samplers(services)`` (``core/builtin_samplers.hpp``)
+  registers ``data``, ``faults``, ``configurations`` and ``logs`` on
+  ``services.sampler_registry()``, plus ``updates`` when
+  ``services.update_manager()`` is set. Each sampler reads through the
+  managers and helpers of its GET route. ``data`` on a plugin-owned entity
+  goes through the plugin's ``DataProvider`` (``core/data/data_item_reader.hpp``,
+  shared with ``GET /{entity}/data/{item}``); on any other entity it goes
+  through ``DataAccessManager`` and its ``TopicDataProvider``. The host passes
+  ``GatewayServices``, which must outlive the samplers, and registers a
+  subscription transport itself.
+* ``BulkDataConfig`` (``core/config.hpp``) and ``make_bulk_data_store()``
+  (``core/managers/bulk_data_store.hpp``) build the store. The host returns it
+  from ``GatewayServices::bulk_data_store()`` before it starts ``RESTServer``.
+  The ``rosbags`` category is listed only when
+  ``FaultServiceTransport::serves_rosbags()`` is true (the default).
+* ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
+  served, and ``cyclic_subscriptions`` true only when a transport and at least
+  one sampler are registered.
+
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single
 dependency. The neutral contract is enforced by two CTest checks:
