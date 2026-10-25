@@ -82,6 +82,11 @@ store from it:
   ``ScriptManager`` from a ``ScriptsConfig`` and an optional plugin backend. A
   non-empty ``scripts_dir`` gives the ``DefaultScriptProvider``. The host
   returns the manager from ``GatewayServices::script_manager()``.
+* ``AggregationHost`` (``core/aggregation/aggregation_host.hpp``) builds the
+  ``AggregationManager`` and the mDNS discovery from an ``AggregationConfig``.
+  The host passes the manager to ``RESTServer::set_aggregation_manager()`` and
+  calls ``merge_peers()`` on every entity refresh. The ROS 2 node reads the
+  ``aggregation.*`` parameters into the config and uses the same class.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single

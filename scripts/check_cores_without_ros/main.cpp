@@ -46,6 +46,7 @@
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
+#include "ros2_medkit_gateway/core/aggregation/aggregation_host.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -617,11 +618,15 @@ bool check(bool ok, const char * what) {
 // A REST server on an ephemeral port, stopped and joined on scope exit.
 class RunningServer {
  public:
-  explicit RunningServer(MinimalServices & services) : port_(free_port()) {
+  explicit RunningServer(MinimalServices & services, gw::AggregationManager * aggregation = nullptr)
+    : port_(free_port()) {
     gw::RestConfig rest;
     rest.http_thread_pool_size = 6;
     server_ = std::make_unique<gw::RESTServer>(services, nullptr, "127.0.0.1", port_, gw::CorsConfig{},
                                                gw::AuthConfig{}, gw::RateLimitConfig{}, rest);
+    if (aggregation != nullptr) {
+      server_->set_aggregation_manager(aggregation);
+    }
     thread_ = std::thread([this] {
       server_->start();
     });
@@ -915,6 +920,39 @@ bool check_script_host() {
                 "the script output is readable");
   }
   std::filesystem::remove_all(dir);
+  return ok;
+}
+
+// Two core servers in one process: the second is a peer of the first through the core aggregation config.
+bool check_aggregation_host() {
+  bool ok = true;
+  MinimalServices peer_services;
+  peer_services.mutable_cache().update_apps({online_app("peer_app", "Peer app")});
+  RunningServer peer(peer_services);
+
+  gw::AggregationConfig config;
+  config.enabled = true;
+  config.peers.push_back({"http://127.0.0.1:" + std::to_string(peer.port()), "peer_b"});
+  gw::AggregationHost host(config, 0, "", gw::log::Logger("check_cores_without_ros"));
+
+  MinimalServices front_services;
+  std::vector<gw::Area> areas;
+  std::vector<gw::Component> components;
+  std::vector<gw::App> apps{online_app("front_app", "Front app")};
+  std::vector<gw::Function> functions;
+  const auto routing = host.merge_peers(areas, components, apps, functions);
+  ok &= check(routing.has_value(), "the host merges the configured peer");
+  front_services.mutable_cache().update_all(areas, components, apps, functions);
+
+  RunningServer front(front_services, &host.manager());
+  auto client = make_client(front.port());
+  auto local = client.Get("/api/v1/apps/front_app");
+  ok &= check(local && local->status == 200, "the first server answers its own entity");
+  auto remote = client.Get("/api/v1/apps/peer_app");
+  const auto remote_json = remote ? nlohmann::json::parse(remote->body, nullptr, false) : nlohmann::json();
+  ok &= check(remote && remote->status == 200 && remote_json.value("name", "") == "Peer app",
+              "the first server reads the peer's entity from the peer");
+  host.shutdown();
   return ok;
 }
 
@@ -1499,6 +1537,7 @@ static int run() {
   // Host wiring the core owns: lock reaping, script manager, aggregation, lifecycle without a reader.
   ok &= check_lock_reaping();
   ok &= check_script_host();
+  ok &= check_aggregation_host();
 
   return ok ? 0 : 1;
 }

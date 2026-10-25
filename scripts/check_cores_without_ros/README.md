@@ -34,6 +34,8 @@ not installed, so the PostgreSQL backend is not built.
   expiry and the subscription is removed, with a `LockReaper` as the only cleanup.
 - Scripts: `make_script_host()` over a scripts directory gives a manager with a backend (none without a directory); a script
   uploaded over HTTP runs, completes and its JSON output is readable.
+- Aggregation: a second REST server in the same process is the peer of the first through `AggregationHost`; `merge_peers()`
+  returns a routing table and the first server reads the peer's entity from the peer.
 - Gateway: with `server_name`, `vendor_name` and `server_version` set in `RestConfig`, `GET /api/v1/` returns the name and version, and `GET /api/v1/version-info` returns the vendor name and version.
 
 - Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is

@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
+#include "ros2_medkit_gateway/core/aggregation/aggregation_host.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -513,11 +513,10 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
   std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;
 
-  // Aggregation infrastructure (destroyed in order: mdns -> rest_server -> aggregation)
-  // mDNS threads must stop before rest_server to avoid callbacks during shutdown.
+  // Aggregation infrastructure (destroyed in order: rest_server -> aggregation)
+  // The host stops its mDNS threads in ~GatewayNode, before rest_server, to avoid callbacks during shutdown.
   // AggregationManager must outlive rest_server because handlers reference it.
-  std::unique_ptr<AggregationManager> aggregation_mgr_;
-  std::unique_ptr<MdnsDiscovery> mdns_discovery_;
+  std::unique_ptr<AggregationHost> aggregation_host_;
 
   std::unique_ptr<RESTServer> rest_server_;
 
