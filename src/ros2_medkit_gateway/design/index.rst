@@ -78,6 +78,10 @@ store from it:
   the cyclic subscriptions of the locked entity when the lock scope is empty or
   names ``cyclic-subscriptions``. A host that does not start one keeps expired
   locks. The ROS 2 node starts the same class.
+* ``make_script_host`` (``core/managers/script_manager.hpp``) builds the
+  ``ScriptManager`` from a ``ScriptsConfig`` and an optional plugin backend. A
+  non-empty ``scripts_dir`` gives the ``DefaultScriptProvider``. The host
+  returns the manager from ``GatewayServices::script_manager()``.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single

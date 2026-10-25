@@ -66,6 +66,7 @@
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_reaper.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
@@ -511,7 +512,7 @@ class MinimalServices : public gw::GatewayServices {
     return plugins_.get();
   }
   gw::ScriptManager * script_manager() override {
-    return nullptr;
+    return scripts_;
   }
   gw::LockManager * lock_manager() override {
     return locks_;
@@ -568,6 +569,9 @@ class MinimalServices : public gw::GatewayServices {
   void set_lock_manager(gw::LockManager * locks) {
     locks_ = locks;
   }
+  void set_script_manager(gw::ScriptManager * scripts) {
+    scripts_ = scripts;
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
@@ -579,6 +583,7 @@ class MinimalServices : public gw::GatewayServices {
   gw::FreezeFrameSource * freeze_frames_{nullptr};
   gw::FaultEventSource * fault_events_{nullptr};
   gw::LockManager * locks_{nullptr};
+  gw::ScriptManager * scripts_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -859,6 +864,57 @@ bool check_lock_reaping() {
   }
   reaper.reset();
   services.transport_registry()->shutdown_all(*services.subscription_manager());
+  return ok;
+}
+
+// A script configured through the core script config runs over HTTP on the default provider, and its output is
+// readable.
+bool check_script_host() {
+  bool ok = true;
+  const auto dir = std::filesystem::temp_directory_path() / "check_cores_without_ros_scripts";
+  std::filesystem::remove_all(dir);
+  gw::ScriptsConfig config;
+  config.scripts_dir = dir.string();
+  config.default_timeout_sec = 10;
+  auto host = gw::make_script_host(config, nullptr);
+  ok &= check(host.manager && host.manager->has_backend(), "a scripts directory gives the script manager a backend");
+  {
+    const gw::ScriptsConfig none;
+    auto without = gw::make_script_host(none, nullptr);
+    ok &= check(without.manager && !without.manager->has_backend(),
+                "no scripts directory leaves the manager without a backend");
+  }
+  MinimalServices services;
+  services.mutable_cache().update_apps({online_app("script_app", "Script app")});
+  services.set_script_manager(host.manager.get());
+  {
+    RunningServer running(services);
+    auto client = make_client(running.port());
+    auto uploaded =
+        client.Post("/api/v1/apps/script_app/scripts",
+                    httplib::MultipartFormDataItems{{"file", "#!/bin/sh\necho '{\"greeting\": \"from the core\"}'\n",
+                                                     "greet.sh", "application/octet-stream"}});
+    const std::string script_id = uploaded && uploaded->status == 201
+                                      ? nlohmann::json::parse(uploaded->body, nullptr, false).value("id", "")
+                                      : "";
+    ok &= check(!script_id.empty(), "a script is uploaded over HTTP");
+    const nlohmann::json start_body = {{"execution_type", "now"}};
+    auto started = client.Post("/api/v1/apps/script_app/scripts/" + script_id + "/executions", start_body.dump(),
+                               "application/json");
+    ok &= check(started && started->status == 202, "an execution starts and answers 202");
+    const std::string exec_id =
+        started ? nlohmann::json::parse(started->body, nullptr, false).value("id", "") : std::string{};
+    nlohmann::json execution;
+    const bool finished = wait_until([&] {
+      auto res = client.Get("/api/v1/apps/script_app/scripts/" + script_id + "/executions/" + exec_id);
+      execution = res ? nlohmann::json::parse(res->body, nullptr, false) : nlohmann::json();
+      return execution.is_object() && execution.contains("status") && execution.value("status", "") != "running";
+    });
+    ok &= check(finished && execution.value("status", "") == "completed", "the execution completes");
+    ok &= check(execution.contains("parameters") && execution["parameters"].value("greeting", "") == "from the core",
+                "the script output is readable");
+  }
+  std::filesystem::remove_all(dir);
   return ok;
 }
 
@@ -1442,6 +1498,7 @@ static int run() {
 
   // Host wiring the core owns: lock reaping, script manager, aggregation, lifecycle without a reader.
   ok &= check_lock_reaping();
+  ok &= check_script_host();
 
   return ok ? 0 : 1;
 }
