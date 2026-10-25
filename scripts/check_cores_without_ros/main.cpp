@@ -956,6 +956,38 @@ bool check_aggregation_host() {
   return ok;
 }
 
+// A host without a lifecycle reader: readiness comes from graph presence, transitions are not implemented.
+bool check_lifecycle_without_reader() {
+  bool ok = true;
+  MinimalServices services;
+  auto managed = online_app("managed_app", "Managed app");
+  gw::ServiceInfo get_state;
+  get_state.name = "get_state";
+  get_state.full_path = "/managed_app/get_state";
+  get_state.type = "lifecycle_msgs/srv/GetState";
+  gw::ServiceInfo change_state;
+  change_state.name = "change_state";
+  change_state.full_path = "/managed_app/change_state";
+  change_state.type = "lifecycle_msgs/srv/ChangeState";
+  managed.services = {get_state, change_state};
+  auto offline = online_app("offline_app", "Offline app");
+  offline.is_online = false;
+  services.mutable_cache().update_apps({managed, offline});
+  RunningServer running(services);
+  auto client = make_client(running.port());
+  auto managed_status = client.Get("/api/v1/apps/managed_app/status");
+  ok &= check(managed_status && managed_status->status == 200 &&
+                  nlohmann::json::parse(managed_status->body, nullptr, false).value("status", "") == "ready",
+              "without a reader a lifecycle node reports readiness from presence");
+  auto offline_status = client.Get("/api/v1/apps/offline_app/status");
+  ok &= check(offline_status && offline_status->status == 200 &&
+                  nlohmann::json::parse(offline_status->body, nullptr, false).value("status", "") == "notReady",
+              "without a reader an offline node is notReady");
+  auto restart = client.Put("/api/v1/apps/managed_app/status/restart", "", "application/json");
+  ok &= check(restart && restart->status == 501, "without a lifecycle provider a transition answers 501");
+  return ok;
+}
+
 }  // namespace
 
 static int run() {
@@ -1538,6 +1570,7 @@ static int run() {
   ok &= check_lock_reaping();
   ok &= check_script_host();
   ok &= check_aggregation_host();
+  ok &= check_lifecycle_without_reader();
 
   return ok ? 0 : 1;
 }
