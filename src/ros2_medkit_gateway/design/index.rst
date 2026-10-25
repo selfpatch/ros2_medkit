@@ -73,6 +73,11 @@ store from it:
 * ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
   served, and ``cyclic_subscriptions`` true only when a transport and at least
   one sampler are registered.
+* ``LockReaper`` (``core/managers/lock_reaper.hpp``) removes expired locks every
+  ``LockConfig::cleanup_interval`` seconds on a thread it owns, and with them
+  the cyclic subscriptions of the locked entity when the lock scope is empty or
+  names ``cyclic-subscriptions``. A host that does not start one keeps expired
+  locks. The ROS 2 node starts the same class.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single
