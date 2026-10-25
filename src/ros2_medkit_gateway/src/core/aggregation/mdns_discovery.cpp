@@ -28,7 +28,10 @@
 #include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -73,6 +76,90 @@ struct AnnounceContext {
   MdnsDiscovery::Config * config;
   MdnsDiscovery::LogCallback * on_log;
 };
+
+// 224.0.0.251, the mDNS IPv4 group
+constexpr uint32_t kMdnsGroupIpv4 = (224U << 24U) | 251U;
+
+/// Lowercase and strip trailing dots, so wire names compare with config names.
+std::string normalize_dns_name(std::string name) {
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  while (!name.empty() && name.back() == '.') {
+    name.pop_back();
+  }
+  return name;
+}
+
+/// True when record_name is "<instance>.<service>" for a non-empty instance.
+bool is_instance_of_service(const std::string & record_name, const std::string & service) {
+  const std::string name = normalize_dns_name(record_name);
+  const std::string suffix = "." + normalize_dns_name(service);
+  return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+/**
+ * @brief Open the browse socket bound to the mDNS group 224.0.0.251:5353
+ *
+ * Bound to the group address, the socket gets only multicast to 5353. Bound to
+ * INADDR_ANY it would also take unicast datagrams meant for our announce socket
+ * or avahi. mdns_socket_open_ipv4() cannot do this: it uses the bind address as
+ * the interface of the group membership.
+ */
+int open_browse_socket_on_mdns_group() {
+  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (sock < 0) {
+    return -1;
+  }
+  const int one = 1;
+  const unsigned char ttl = 1;
+  const unsigned char loopback = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef SO_REUSEPORT
+  setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+#endif
+  setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+  setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, &loopback, sizeof(loopback));
+
+  struct ip_mreq req {};
+  req.imr_multiaddr.s_addr = htonl(kMdnsGroupIpv4);
+  req.imr_interface.s_addr = htonl(INADDR_ANY);
+
+  struct sockaddr_in addr {};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(kMdnsGroupIpv4);
+  addr.sin_port = htons(MDNS_PORT);
+
+  const int flags = fcntl(sock, F_GETFL, 0);
+  if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &req, sizeof(req)) != 0 ||
+      bind(sock, reinterpret_cast<const struct sockaddr *>(&addr), sizeof(addr)) != 0 || flags < 0 ||
+      fcntl(sock, F_SETFL, flags | O_NONBLOCK) != 0) {
+    close(sock);
+    return -1;
+  }
+  return sock;
+}
+
+/**
+ * @brief Consume the next datagram unless it is an mDNS response
+ *
+ * Other hosts' queries reach the browse socket too, and a known-answer SRV in a
+ * query must not add a peer at the address of the host that asked.
+ * @return true when the next datagram is a response (QR bit set) and is left queued
+ */
+bool next_datagram_is_response(int sock) {
+  std::array<uint8_t, 12> header{};
+  const ssize_t n = recv(sock, header.data(), header.size(), MSG_PEEK);
+  if (n < 0) {
+    return false;
+  }
+  if (static_cast<size_t>(n) == header.size() && (header[2] & 0x80U) != 0) {
+    return true;
+  }
+  // A short read drops the rest of the datagram
+  (void)recv(sock, header.data(), header.size(), 0);
+  return false;
+}
 
 /**
  * @brief Get the local hostname
@@ -123,6 +210,15 @@ int browse_callback(int /*sock*/, const struct sockaddr * from, size_t addrlen, 
 
   std::string instance_name(entry_name.str, entry_name.length);
   std::string target(srv.name.str, srv.name.length);
+
+  // On 5353 the socket sees all mDNS traffic on the LAN. Only instances of our
+  // service type are peers, for new peers and for goodbyes alike.
+  if (!is_instance_of_service(instance_name, ctx->service_name)) {
+    if (ctx->on_log && *ctx->on_log) {
+      (*ctx->on_log)("browse: ignoring SRV '" + instance_name + "' outside service '" + ctx->service_name + "'");
+    }
+    return 0;
+  }
 
   // Build peer URL from the source IP of the mDNS response rather than resolving
   // the SRV target hostname. This is intentional: the source IP is what we can
@@ -229,21 +325,7 @@ int announce_callback(int sock, const struct sockaddr * from, size_t addrlen, md
   // to queries for unrelated services that happen to contain our service name.
   // Strip trailing dots: DNS wire format returns FQDNs with trailing dot
   // (e.g., "_medkit._tcp.local.") but config uses "_medkit._tcp.local" without.
-  std::string queried_lower = queried_name;
-  std::string service_lower = config->service;
-  std::transform(queried_lower.begin(), queried_lower.end(), queried_lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  std::transform(service_lower.begin(), service_lower.end(), service_lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  while (!queried_lower.empty() && queried_lower.back() == '.') {
-    queried_lower.pop_back();
-  }
-  while (!service_lower.empty() && service_lower.back() == '.') {
-    service_lower.pop_back();
-  }
-  if (queried_lower != service_lower && rtype != MDNS_RECORDTYPE_ANY) {
+  if (normalize_dns_name(queried_name) != normalize_dns_name(config->service) && rtype != MDNS_RECORDTYPE_ANY) {
     if (ctx->on_log && *ctx->on_log) {
       (*ctx->on_log)("announce: query name '" + queried_name + "' (rtype=" + std::to_string(rtype) +
                      ") does not match service '" + config->service + "', ignoring");
@@ -516,14 +598,10 @@ void MdnsDiscovery::browse_loop() {
   // Query from port 5353 so peers answer by multicast to 5353. From an ephemeral
   // port the query asks for unicast replies to that port, which a host firewall
   // allowing only the mdns service (udp/5353) drops. The socket shares 5353 with
-  // our announce socket and with avahi (SO_REUSEADDR/SO_REUSEPORT).
-  struct sockaddr_in saddr {};
-  saddr.sin_family = AF_INET;
-  saddr.sin_addr.s_addr = INADDR_ANY;
-  saddr.sin_port = htons(MDNS_PORT);
-
+  // our announce socket and with avahi, bound to the group so their unicast stays
+  // theirs. When the group bind fails, fall back to an ephemeral port.
   bool on_mdns_port = true;
-  int sock = mdns_socket_open_ipv4(&saddr);
+  int sock = open_browse_socket_on_mdns_group();
   if (sock < 0) {
     on_mdns_port = false;
     sock = mdns_socket_open_ipv4(nullptr);
@@ -541,7 +619,7 @@ void MdnsDiscovery::browse_loop() {
 
   if (config_.on_log) {
     config_.on_log(std::string("browse_loop: socket opened on ") +
-                   (on_mdns_port ? "port 5353 (multicast replies)"
+                   (on_mdns_port ? "224.0.0.251:5353 (multicast replies)"
                                  : "an ephemeral port (unicast replies, port 5353 unavailable)") +
                    " (fd=" + std::to_string(sock) + ")");
   }
@@ -595,7 +673,11 @@ void MdnsDiscovery::browse_loop() {
       }
       break;
     }
-    if (ret > 0) {
+    if (ret > 0 && !next_datagram_is_response(sock)) {
+      if (config_.on_log) {
+        config_.on_log("browse_loop: dropped a datagram that is not an mDNS response");
+      }
+    } else if (ret > 0) {
       if (config_.on_log) {
         config_.on_log("browse_loop: select() returned data, calling mdns_query_recv");
       }
