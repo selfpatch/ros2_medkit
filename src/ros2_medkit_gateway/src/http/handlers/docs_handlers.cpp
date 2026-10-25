@@ -59,10 +59,11 @@ void DocsHandlers::write_error(httplib::Response & res, int status, const std::s
 
 DocsHandlers::DocsHandlers(HandlerContext & ctx, PluginManager * plugin_mgr,
                            const openapi::RouteRegistry * route_registry, bool docs_enabled, std::string server_host,
-                           int64_t server_port)
+                           int64_t server_port, ServerIdentity identity)
   : ctx_(ctx)
   , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, plugin_mgr, route_registry, std::move(server_host),
-                                                              server_port))
+                                                              server_port, openapi::DocsCacheBounds{},
+                                                              std::move(identity)))
   , docs_enabled_(docs_enabled) {
 }
 
