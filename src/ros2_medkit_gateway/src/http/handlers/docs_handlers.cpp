@@ -62,9 +62,9 @@ DocsHandlers::DocsHandlers(HandlerContext & ctx, PluginManager * plugin_mgr,
                            int64_t server_port, ServerIdentity identity)
   : ctx_(ctx)
   , generator_(std::make_unique<openapi::CapabilityGenerator>(ctx, plugin_mgr, route_registry, std::move(server_host),
-                                                              server_port, openapi::DocsCacheBounds{},
-                                                              std::move(identity)))
-  , docs_enabled_(docs_enabled) {
+                                                              server_port, openapi::DocsCacheBounds{}, identity))
+  , docs_enabled_(docs_enabled)
+  , server_name_(std::move(identity.server_name)) {
 }
 
 DocsHandlers::~DocsHandlers() = default;
@@ -101,37 +101,60 @@ void DocsHandlers::handle_docs_any_path(const httplib::Request & req, httplib::R
 
 namespace {
 
+std::string html_escape(const std::string & text) {
+  std::string out;
+  for (const char c : text) {
+    switch (c) {
+      case '&':
+        out += "&amp;";
+        break;
+      case '<':
+        out += "&lt;";
+        break;
+      case '>':
+        out += "&gt;";
+        break;
+      case '"':
+        out += "&quot;";
+        break;
+      default:
+        out += c;
+    }
+  }
+  return out;
+}
+
 // HTML page that loads embedded Swagger UI assets and points to /api/v1/docs
-const std::string & get_embedded_html() {
-  static const std::string html =
-      "<!DOCTYPE html>\n"
-      "<html lang=\"en\">\n"
-      "<head>\n"
-      "  <meta charset=\"UTF-8\">\n"
-      "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
-      "  <title>ROS 2 Medkit Gateway - API Documentation</title>\n"
-      "  <link rel=\"stylesheet\" href=\"/api/v1/swagger-ui/swagger-ui.css\">\n"
-      "  <style>\n"
-      "    html { box-sizing: border-box; overflow-y: scroll; }\n"
-      "    *, *:before, *:after { box-sizing: inherit; }\n"
-      "    body { margin: 0; background: #fafafa; }\n"
-      "  </style>\n"
-      "</head>\n"
-      "<body>\n"
-      "  <div id=\"swagger-ui\"></div>\n"
-      "  <script src=\"/api/v1/swagger-ui/swagger-ui-bundle.js\"></script>\n"
-      "  <script src=\"/api/v1/swagger-ui/swagger-ui-standalone-preset.js\"></script>\n"
-      "  <script>\n"
-      "    SwaggerUIBundle({\n"
-      "      url: '/api/v1/docs',\n"
-      "      dom_id: '#swagger-ui',\n"
-      "      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
-      "      layout: 'StandaloneLayout'\n"
-      "    });\n"
-      "  </script>\n"
-      "</body>\n"
-      "</html>\n";
-  return html;
+std::string build_embedded_html(const std::string & server_name) {
+  return "<!DOCTYPE html>\n"
+         "<html lang=\"en\">\n"
+         "<head>\n"
+         "  <meta charset=\"UTF-8\">\n"
+         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+         "  <title>" +
+         html_escape(server_name) +
+         " - API Documentation</title>\n"
+         "  <link rel=\"stylesheet\" href=\"/api/v1/swagger-ui/swagger-ui.css\">\n"
+         "  <style>\n"
+         "    html { box-sizing: border-box; overflow-y: scroll; }\n"
+         "    *, *:before, *:after { box-sizing: inherit; }\n"
+         "    body { margin: 0; background: #fafafa; }\n"
+         "  </style>\n"
+         "</head>\n"
+         "<body>\n"
+         "  <div id=\"swagger-ui\"></div>\n"
+         "  <script src=\"/api/v1/swagger-ui/swagger-ui-bundle.js\"></script>\n"
+         "  <script src=\"/api/v1/swagger-ui/swagger-ui-standalone-preset.js\"></script>\n"
+         "  <script>\n"
+         "    SwaggerUIBundle({\n"
+         "      url: '/api/v1/docs',\n"
+         "      dom_id: '#swagger-ui',\n"
+         "      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
+         "      layout: 'StandaloneLayout'\n"
+         "    });\n"
+         "  </script>\n"
+         "</body>\n"
+         "</html>\n";
 }
 
 }  // namespace
@@ -144,7 +167,7 @@ void DocsHandlers::handle_swagger_ui(const httplib::Request & /*req*/, httplib::
 
   res.set_header("Content-Security-Policy",
                  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
-  res.set_content(get_embedded_html(), "text/html");
+  res.set_content(build_embedded_html(server_name_), "text/html");
 }
 
 void DocsHandlers::handle_swagger_asset(const httplib::Request & req, httplib::Response & res) {
