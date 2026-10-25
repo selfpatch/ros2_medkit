@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/core/data/data_item_reader.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/exceptions.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -55,21 +56,6 @@ using json = nlohmann::json;
 // Helper free functions
 // =============================================================================
 
-/// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
-/// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
-ErrorInfo make_plugin_error(int http_status, const std::string & message, json extra_params = {}) {
-  static constexpr size_t kMaxMessageLength = 512;
-  int status = http_status < 400 ? 400 : (http_status > 599 ? 599 : http_status);
-  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
-  return make_error(status, ERR_PLUGIN_ERROR, std::move(msg), std::move(extra_params));
-}
-
-/// Map a `DataProviderErrorInfo` (from the typed plugin ABI) into the SOVD
-/// `x-medkit-plugin-error` wire shape via `make_plugin_error`.
-ErrorInfo make_provider_error(const DataProviderErrorInfo & info, const std::string & entity_id) {
-  return make_plugin_error(info.http_status, info.message, json{{"entity_id", entity_id}});
-}
-
 /// Read the first positional capture group (entity_id) with the same "missing
 /// capture is treated as 400 invalid-request" semantics as the other migrated
 /// handlers (matches the legacy `req.matches.size() < N` guard).
@@ -89,15 +75,6 @@ tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & re
     return *raw;
   }
   return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
-}
-
-/// A data item is addressed by its full ROS topic path; the leading slash is
-/// optional on the wire because the route captures a percent-decoded segment.
-std::string to_full_topic_path(const std::string & topic_name) {
-  if (topic_name.empty() || topic_name.front() == '/') {
-    return topic_name;
-  }
-  return "/" + topic_name;
 }
 
 /// What one addressed data item resolves to: the ROS topic to act on, the id to
@@ -637,32 +614,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.services().plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
-    if (data_prov == nullptr) {
-      // Same x-plc-data route fallback as list_data above, single-item form.
-      if (auto via_route = pmgr ? pmgr->fetch_entity_data_via_route(entity_id, topic_name) : std::nullopt) {
-        return dto::DataValue{std::move(*via_route)};
-      }
-      return tl::make_unexpected(
-          make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
-    }
-    try {
-      auto result = data_prov->read_data(entity_id, topic_name);
-      if (!result) {
-        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
-      }
-      return std::move(*result);
-    } catch (const std::exception & e) {
-      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                       e.what());
-      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-    } catch (...) {
-      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                       entity_id.c_str());
-      return tl::make_unexpected(
-          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
-    }
+    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_id, topic_name);
   }
 
   try {
@@ -677,16 +629,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
     }
     const std::string & full_topic_path = addressed->full_topic_path;
 
-    // Sampling goes through the pool-backed TopicDataProvider (issue #375 race
-    // fix). The provider is configured in main() before serving traffic.
-    auto data_access_mgr = ctx_.services().data_access_manager();
-    const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
-    auto * provider = data_access_mgr->get_topic_data_provider();
-    if (provider == nullptr) {
-      return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Topic sampling is not configured"));
-    }
-    const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
-    auto r = provider->sample(full_topic_path, timeout_ms);
+    auto r = sample_data_topic(*ctx_.services().data_access_manager(), full_topic_path);
     if (!r) {
       // Propagate the provider's ErrorInfo verbatim: http_status, code (SOVD
       // constant or x-medkit-*), message, and structured params. Collapsing

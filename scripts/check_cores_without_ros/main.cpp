@@ -17,12 +17,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,9 +46,12 @@
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
@@ -52,6 +61,9 @@
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/transports/action_transport.hpp"
@@ -118,10 +130,17 @@ class NoFaultTransport : public gw::FaultServiceTransport {
                                const std::string & /*description*/, const std::string & /*source_id*/) override {
     return none();
   }
+  // Once set, every list answers one fault whose occurrence_count grows with each call.
   gw::FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
                               bool /*include_cleared*/, bool /*include_healed*/, bool /*include_muted*/,
                               bool /*include_clusters*/) override {
-    return none();
+    if (!reports_faults.load()) {
+      return none();
+    }
+    gw::json fault = {{"fault_code", "CHECK_FAULT"},
+                      {"occurrence_count", ++list_calls},
+                      {"reporting_sources", gw::json::array({"hosted_app"})}};
+    return {true, {{"faults", gw::json::array({fault})}}, {}, gw::FaultFailure::Declined};
   }
   gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
                                                 const std::string & /*source_id*/) override {
@@ -148,11 +167,97 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   bool is_available() const override {
     return false;
   }
+  std::atomic<bool> reports_faults{false};
+  std::atomic<int> list_calls{0};
 
  private:
   static gw::FaultResult none() {
     return {false, {}, "not supported", gw::FaultFailure::Unavailable};
   }
+};
+
+// Answers every sample with a value that grows by one per call.
+class CountingTopicProvider : public gw::TopicDataProvider {
+ public:
+  tl::expected<gw::TopicSampleResult, gw::ErrorInfo> sample(const std::string & topic,
+                                                            std::chrono::milliseconds /*timeout*/) override {
+    gw::TopicSampleResult out;
+    out.topic_name = topic;
+    out.message_type = "check/msg/Counter";
+    out.data = gw::json{{"value", ++samples}};
+    out.has_data = true;
+    return out;
+  }
+  tl::expected<std::vector<gw::TopicSampleResult>, gw::ErrorInfo>
+  sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds timeout) override {
+    std::vector<gw::TopicSampleResult> out;
+    out.reserve(topics.size());
+    for (const auto & topic : topics) {
+      out.push_back(*sample(topic, timeout));
+    }
+    return out;
+  }
+  std::optional<gw::TopicInfo> get_topic_info(const std::string & /*topic*/) override {
+    return std::nullopt;
+  }
+  bool has_publishers(const std::string & /*topic*/) override {
+    return true;
+  }
+  std::vector<gw::TopicInfo> discover(const std::string & /*namespace_prefix*/) override {
+    return {};
+  }
+  std::vector<gw::TopicInfo> discover_all() override {
+    return {};
+  }
+  std::map<std::string, gw::ComponentTopics> build_component_topic_map() override {
+    return {};
+  }
+  gw::ComponentTopics get_component_topics(const std::string & /*component_fqn*/) override {
+    return {};
+  }
+  gw::TopicDiscoveryResult discover_topics_by_namespace() override {
+    return {};
+  }
+  std::set<std::string> discover_topic_namespaces() override {
+    return {};
+  }
+  gw::ComponentTopics get_topics_for_namespace(const std::string & /*ns_prefix*/) override {
+    return {};
+  }
+  std::vector<gw::TopicEndpoint> get_topic_publishers(const std::string & /*topic*/) override {
+    return {};
+  }
+  std::vector<gw::TopicEndpoint> get_topic_subscribers(const std::string & /*topic*/) override {
+    return {};
+  }
+  gw::TopicConnection get_topic_connection(const std::string & /*topic*/) override {
+    return {};
+  }
+  std::atomic<int> samples{0};
+};
+
+// A plugin that serves the data of the entities it owns; every read counts up.
+class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
+ public:
+  std::string name() const override {
+    return "check_plugin";
+  }
+  void configure(const gw::json & /*config*/) override {
+  }
+  tl::expected<gw::dto::DataListResult, gw::DataProviderErrorInfo>
+  list_data(const std::string & /*entity_id*/) override {
+    return gw::dto::DataListResult{{{"items", gw::json::array()}}};
+  }
+  tl::expected<gw::dto::DataValue, gw::DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                        const std::string & resource_name) override {
+    return gw::dto::DataValue{{{"source", "plugin"}, {"name", resource_name}, {"value", ++reads}}};
+  }
+  tl::expected<gw::dto::DataWriteResult, gw::DataProviderErrorInfo> write_data(const std::string & /*entity_id*/,
+                                                                               const std::string & /*resource_name*/,
+                                                                               const gw::json & /*value*/) override {
+    return tl::make_unexpected(gw::DataProviderErrorInfo{gw::DataProviderError::ReadOnly, "read only", 405});
+  }
+  std::atomic<int> reads{0};
 };
 
 class NoParameterTransport : public gw::ParameterTransport {
@@ -302,7 +407,8 @@ class NoTypeSchemas : public gw::TypeSchemaProvider {
 class MinimalServices : public gw::GatewayServices {
  public:
   MinimalServices()
-    : fault_(std::make_shared<NoFaultTransport>())
+    : fault_transport_(std::make_shared<NoFaultTransport>())
+    , fault_(fault_transport_)
     , config_(std::make_shared<NoParameterTransport>())
     , data_(std::make_shared<NoTopicTransport>())
     , operations_(std::make_shared<NoServiceTransport>(), std::make_shared<NoActionTransport>(), nullptr)
@@ -345,7 +451,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::PluginManager * plugin_manager() override {
-    return nullptr;
+    return plugins_.get();
   }
   gw::ScriptManager * script_manager() override {
     return nullptr;
@@ -378,10 +484,28 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
 
+  gw::ThreadSafeEntityCache & mutable_cache() {
+    return cache_;
+  }
+  NoFaultTransport & fault_transport() {
+    return *fault_transport_;
+  }
+  // Plugins exist only after this call; the plugin owns the entity ids it is given.
+  CheckDataPlugin & add_data_plugin(const std::vector<std::string> & owned_entities) {
+    plugins_ = std::make_unique<gw::PluginManager>();
+    auto plugin = std::make_unique<CheckDataPlugin>();
+    auto & ref = *plugin;
+    plugins_->add_plugin(std::move(plugin));
+    plugins_->register_entity_ownership("check_plugin", owned_entities);
+    return ref;
+  }
+
  private:
   gw::ThreadSafeEntityCache cache_;
   EmptyDiscovery discovery_;
   NoTypeSchemas schemas_;
+  std::shared_ptr<NoFaultTransport> fault_transport_;
+  std::unique_ptr<gw::PluginManager> plugins_;
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -410,6 +534,111 @@ int free_port() {
 bool check(bool ok, const char * what) {
   std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
   return ok;
+}
+
+// A REST server on an ephemeral port, stopped and joined on scope exit.
+class RunningServer {
+ public:
+  explicit RunningServer(MinimalServices & services) : port_(free_port()) {
+    gw::RestConfig rest;
+    rest.http_thread_pool_size = 6;
+    server_ = std::make_unique<gw::RESTServer>(services, nullptr, "127.0.0.1", port_, gw::CorsConfig{},
+                                               gw::AuthConfig{}, gw::RateLimitConfig{}, rest);
+    thread_ = std::thread([this] {
+      server_->start();
+    });
+    for (int i = 0; i < 100 && !server_->is_running(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  ~RunningServer() {
+    server_->stop();
+    thread_.join();
+  }
+  RunningServer(const RunningServer &) = delete;
+  RunningServer & operator=(const RunningServer &) = delete;
+  RunningServer(RunningServer &&) = delete;
+  RunningServer & operator=(RunningServer &&) = delete;
+  int port() const {
+    return port_;
+  }
+
+ private:
+  int port_;
+  std::unique_ptr<gw::RESTServer> server_;
+  std::thread thread_;
+};
+
+// Reads SSE frames from `path` until `want` of them arrived, the stream ended or the read timed out.
+std::vector<nlohmann::json> read_events(httplib::Client & client, const std::string & path, size_t want) {
+  std::vector<nlohmann::json> events;
+  std::string buffer;
+  client.Get(
+      path, httplib::Headers{},
+      [](const httplib::Response &) {
+        return true;
+      },
+      [&](const char * data, size_t len) {
+        buffer.append(data, len);
+        for (size_t end = buffer.find("\n\n"); end != std::string::npos; end = buffer.find("\n\n")) {
+          const std::string frame = buffer.substr(0, end);
+          buffer.erase(0, end + 2);
+          if (frame.rfind("data: ", 0) == 0) {
+            events.push_back(nlohmann::json::parse(frame.substr(6), nullptr, false));
+          }
+        }
+        return events.size() < want;
+      });
+  return events;
+}
+
+httplib::Client make_client(int port) {
+  httplib::Client client("127.0.0.1", port);
+  client.set_connection_timeout(5);
+  client.set_read_timeout(5);
+  return client;
+}
+
+// Creates a fast cyclic subscription on `resource`; returns {subscription id, events path}.
+std::pair<std::string, std::string> subscribe(httplib::Client & client, const std::string & resource,
+                                              const std::string & app = "hosted_app") {
+  const nlohmann::json body = {{"resource", resource}, {"interval", "fast"}, {"duration", 60}};
+  auto res = client.Post("/api/v1/apps/" + app + "/cyclic-subscriptions", body.dump(), "application/json");
+  if (!res || res->status != 201) {
+    std::printf("subscribe %s -> %d %s\n", resource.c_str(), res ? res->status : 0, res ? res->body.c_str() : "");
+    return {};
+  }
+  const auto json = nlohmann::json::parse(res->body, nullptr, false);
+  return {json.value("id", ""), json.value("event_source", "")};
+}
+
+// True when the first two sampled payloads exist and `field` differs between them.
+bool values_change(const std::vector<nlohmann::json> & events,
+                   const std::function<nlohmann::json(const nlohmann::json &)> & pick) {
+  if (events.size() < 2 || !events[0].contains("payload") || !events[1].contains("payload")) {
+    return false;
+  }
+  const auto first = pick(events[0]["payload"]);
+  const auto second = pick(events[1]["payload"]);
+  return !first.is_null() && !second.is_null() && first != second;
+}
+
+gw::App hosted_app() {
+  gw::App app;
+  app.id = "hosted_app";
+  app.name = "Hosted app";
+  app.external = true;
+  return app;
+}
+
+void add_sse_transport(MinimalServices & services) {
+  services.transport_registry()->register_transport(
+      std::make_unique<gw::SseTransportProvider>(*services.subscription_manager(), services.sse_client_tracker()));
+  services.subscription_manager()->set_on_removed([&services](const gw::CyclicSubscriptionInfo & info) {
+    if (auto * transport = services.transport_registry()->get_transport(info.protocol)) {
+      transport->stop(info.id);
+    }
+  });
 }
 }  // namespace
 
@@ -707,6 +936,80 @@ static int run() {
     }
     server.stop();
     server_thread.join();
+  }
+
+  // A host that registers the samplers and a transport gets cyclic subscriptions.
+  {
+    MinimalServices services;
+    CountingTopicProvider topics;
+    services.data_access_manager()->set_topic_data_provider(&topics);
+    services.fault_transport().reports_faults = true;
+    auto plugin_app = hosted_app();
+    plugin_app.id = "plugin_app";
+    services.mutable_cache().update_apps({hosted_app(), plugin_app});
+    services.add_data_plugin({"plugin_app"});
+    gw::register_builtin_samplers(services);
+    add_sse_transport(services);
+    {
+      RunningServer running(services);
+      auto client = make_client(running.port());
+
+      // Cyclic subscription on a data resource.
+      const auto data_sub = subscribe(client, "/api/v1/apps/hosted_app/data/temperature");
+      ok &= check(!data_sub.second.empty(), "a cyclic subscription on a data resource is created");
+      const auto data_events =
+          data_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, data_sub.second, 2);
+      ok &= check(data_events.size() == 2, "the data subscription streams two events");
+      ok &= check(values_change(data_events,
+                                [](const nlohmann::json & p) {
+                                  return p.contains("data") ? p["data"].value("value", nlohmann::json())
+                                                            : nlohmann::json();
+                                }),
+                  "the data value differs between the two events");
+      ok &= check(!data_events.empty() && data_events[0].contains("payload") &&
+                      data_events[0]["payload"].value("id", "") == "/temperature",
+                  "the data payload names the resource");
+      if (!data_sub.first.empty()) {
+        client.Delete("/api/v1/apps/hosted_app/cyclic-subscriptions/" + data_sub.first);
+      }
+
+      // Cyclic subscription on a resource a plugin serves.
+      const auto plugin_sub = subscribe(client, "/api/v1/apps/plugin_app/data/speed", "plugin_app");
+      ok &= check(!plugin_sub.second.empty(), "a cyclic subscription on a plugin-served data resource is created");
+      const auto plugin_events =
+          plugin_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, plugin_sub.second, 2);
+      ok &= check(plugin_events.size() == 2, "the plugin-data subscription streams two events");
+      ok &= check(!plugin_events.empty() && plugin_events[0].contains("payload") &&
+                      plugin_events[0]["payload"].value("source", "") == "plugin" &&
+                      plugin_events[0]["payload"].value("name", "") == "speed",
+                  "the plugin-data payload comes from the plugin's provider");
+      ok &= check(values_change(plugin_events,
+                                [](const nlohmann::json & p) {
+                                  return p.value("value", nlohmann::json());
+                                }),
+                  "the plugin value differs between the two events");
+      if (!plugin_sub.first.empty()) {
+        client.Delete("/api/v1/apps/plugin_app/cyclic-subscriptions/" + plugin_sub.first);
+      }
+
+      // Cyclic subscription on faults.
+      const auto fault_sub = subscribe(client, "/api/v1/apps/hosted_app/faults");
+      ok &= check(!fault_sub.second.empty(), "a cyclic subscription on faults is created");
+      const auto fault_events =
+          fault_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, fault_sub.second, 2);
+      ok &= check(fault_events.size() == 2, "the faults subscription streams two events");
+      ok &= check(values_change(fault_events,
+                                [](const nlohmann::json & p) {
+                                  return p.contains("faults") && p["faults"].is_array() && !p["faults"].empty()
+                                             ? p["faults"][0].value("occurrence_count", nlohmann::json())
+                                             : nlohmann::json();
+                                }),
+                  "the fault occurrence_count differs between the two events");
+      if (!fault_sub.first.empty()) {
+        client.Delete("/api/v1/apps/hosted_app/cyclic-subscriptions/" + fault_sub.first);
+      }
+    }
+    services.transport_registry()->shutdown_all(*services.subscription_manager());
   }
 
   return ok ? 0 : 1;
