@@ -17,6 +17,13 @@ not installed, so the PostgreSQL backend is not built.
 
 ## What `main.cpp` checks
 
+- Cyclic subscriptions: with `register_builtin_samplers()` and the SSE transport, a subscription on a data resource (served by
+  a controlled `TopicDataProvider`), on a resource a plugin's `DataProvider` serves, and on faults each stream two events whose
+  values differ.
+- Bulk data: a store built by `make_bulk_data_store()` takes an upload over HTTP, lists it, returns it byte-equal and deletes
+  it; an upload past `max_upload_size` is refused; the categories do not contain `rosbags` when the fault manager serves none.
+- `GET /` capabilities: `bulk_data` and `cyclic_subscriptions` are false for services without a store, rosbags, transport or
+  sampler, and true as soon as a store or rosbags (bulk data), or a transport and a sampler (subscriptions), exist.
 - Gateway: with `server_name`, `vendor_name` and `server_version` set in `RestConfig`, `GET /api/v1/` returns the name and version, and `GET /api/v1/version-info` returns the vendor name and version.
 
 - Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is

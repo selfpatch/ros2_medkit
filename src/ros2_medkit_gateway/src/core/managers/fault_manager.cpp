@@ -61,6 +61,10 @@ bool FaultManager::is_available() const {
   return transport_->is_available();
 }
 
+bool FaultManager::serves_rosbags() const {
+  return transport_->serves_rosbags();
+}
+
 bool FaultManager::wait_for_services(std::chrono::duration<double> timeout) {
   return transport_->wait_for_services(timeout);
 }

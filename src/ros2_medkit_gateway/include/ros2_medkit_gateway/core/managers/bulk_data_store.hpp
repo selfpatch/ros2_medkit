@@ -15,6 +15,7 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -22,6 +23,8 @@
 #include <tl/expected.hpp>
 #include <unordered_set>
 #include <vector>
+
+#include "ros2_medkit_gateway/core/config.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -147,5 +150,9 @@ class BulkDataStore {
   /// Validate path component (reject traversal attacks)
   static tl::expected<void, std::string> validate_path_component(const std::string & value, const std::string & name);
 };
+
+/// Builds the store a host serves bulk data from. Drops empty category names. A negative
+/// `max_upload_size` is logged and replaced by the default of `BulkDataConfig`.
+std::unique_ptr<BulkDataStore> make_bulk_data_store(const BulkDataConfig & config);
 
 }  // namespace ros2_medkit_gateway

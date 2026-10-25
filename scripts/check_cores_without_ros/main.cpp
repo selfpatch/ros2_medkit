@@ -55,6 +55,7 @@
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
@@ -167,7 +168,11 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   bool is_available() const override {
     return false;
   }
+  bool serves_rosbags() const override {
+    return rosbags.load();
+  }
   std::atomic<bool> reports_faults{false};
+  std::atomic<bool> rosbags{false};
   std::atomic<int> list_calls{0};
 
  private:
@@ -466,7 +471,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::BulkDataStore * bulk_data_store() override {
-    return nullptr;
+    return bulk_store_.get();
   }
   gw::FaultTriggerEngine * fault_trigger_engine() override {
     return nullptr;
@@ -499,12 +504,16 @@ class MinimalServices : public gw::GatewayServices {
     plugins_->register_entity_ownership("check_plugin", owned_entities);
     return ref;
   }
+  void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
+    bulk_store_ = std::move(store);
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
   EmptyDiscovery discovery_;
   NoTypeSchemas schemas_;
   std::shared_ptr<NoFaultTransport> fault_transport_;
+  std::unique_ptr<gw::BulkDataStore> bulk_store_;
   std::unique_ptr<gw::PluginManager> plugins_;
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
@@ -621,6 +630,17 @@ bool values_change(const std::vector<nlohmann::json> & events,
   const auto first = pick(events[0]["payload"]);
   const auto second = pick(events[1]["payload"]);
   return !first.is_null() && !second.is_null() && first != second;
+}
+
+// `GET /` capabilities of a server over `services`.
+nlohmann::json root_capabilities(MinimalServices & services) {
+  RunningServer running(services);
+  auto client = make_client(running.port());
+  auto res = client.Get("/api/v1/");
+  if (!res || res->status != 200) {
+    return nlohmann::json::object();
+  }
+  return nlohmann::json::parse(res->body, nullptr, false).value("capabilities", nlohmann::json::object());
 }
 
 gw::App hosted_app() {
@@ -938,7 +958,7 @@ static int run() {
     server_thread.join();
   }
 
-  // A host that registers the samplers and a transport gets cyclic subscriptions.
+  // A host that registers the samplers, a transport and a bulk-data store gets subscriptions and bulk data.
   {
     MinimalServices services;
     CountingTopicProvider topics;
@@ -948,6 +968,13 @@ static int run() {
     plugin_app.id = "plugin_app";
     services.mutable_cache().update_apps({hosted_app(), plugin_app});
     services.add_data_plugin({"plugin_app"});
+    const auto store_dir = std::filesystem::temp_directory_path() / "check_cores_without_ros_bulk";
+    std::filesystem::remove_all(store_dir);
+    gw::BulkDataConfig bulk;
+    bulk.storage_dir = store_dir.string();
+    bulk.max_upload_size = 1024;
+    bulk.categories = {"calibration", ""};
+    services.set_bulk_store(gw::make_bulk_data_store(bulk));
     gw::register_builtin_samplers(services);
     add_sse_transport(services);
     {
@@ -1008,8 +1035,97 @@ static int run() {
       if (!fault_sub.first.empty()) {
         client.Delete("/api/v1/apps/hosted_app/cyclic-subscriptions/" + fault_sub.first);
       }
+
+      // Bulk data: upload, list, download, delete.
+      const std::string payload("bulk\0payload\xff\x01", 15);
+      const std::string base = "/api/v1/apps/hosted_app/bulk-data";
+      httplib::MultipartFormDataItems items = {{"file", payload, "cal.bin", "application/octet-stream"}};
+      auto uploaded = client.Post(base + "/calibration", items);
+      ok &= check(uploaded && uploaded->status == 201, "an upload to a configured category answers 201");
+      const std::string item_id = uploaded && uploaded->status == 201
+                                      ? nlohmann::json::parse(uploaded->body, nullptr, false).value("id", "")
+                                      : "";
+      auto listed = client.Get(base + "/calibration");
+      const auto listed_json = listed ? nlohmann::json::parse(listed->body, nullptr, false) : nlohmann::json();
+      ok &=
+          check(listed && listed->status == 200 && listed_json.contains("items") && listed_json["items"].size() == 1 &&
+                    listed_json["items"][0].value("id", "") == item_id && !item_id.empty(),
+                "the uploaded item is listed");
+      auto downloaded = client.Get(base + "/calibration/" + item_id);
+      ok &= check(downloaded && downloaded->status == 200 && downloaded->body == payload, "the download is byte-equal");
+      auto removed = client.Delete(base + "/calibration/" + item_id);
+      ok &= check(removed && removed->status == 204, "the delete answers 204");
+      auto relisted = client.Get(base + "/calibration");
+      const auto relisted_json = relisted ? nlohmann::json::parse(relisted->body, nullptr, false) : nlohmann::json();
+      ok &= check(relisted && relisted_json.contains("items") && relisted_json["items"].empty(),
+                  "the deleted item is gone");
+      auto too_big = client.Post(
+          base + "/calibration",
+          httplib::MultipartFormDataItems{{"file", std::string(2048, 'x'), "big.bin", "application/octet-stream"}});
+      ok &= check(too_big && too_big->status >= 400, "an upload past max_upload_size is refused");
+
+      // Categories: the store's own, and no rosbags when the fault manager serves none.
+      auto categories = client.Get(base);
+      const auto categories_json =
+          categories ? nlohmann::json::parse(categories->body, nullptr, false) : nlohmann::json();
+      const auto cat_items = categories_json.value("items", nlohmann::json::array());
+      ok &= check(categories && categories->status == 200 &&
+                      std::find(cat_items.begin(), cat_items.end(), nlohmann::json("calibration")) != cat_items.end(),
+                  "the categories list the configured category");
+      ok &= check(std::find(cat_items.begin(), cat_items.end(), nlohmann::json("rosbags")) == cat_items.end(),
+                  "the categories do not list rosbags when the fault manager serves none");
+
+      auto root = client.Get("/api/v1/");
+      const auto caps =
+          root ? nlohmann::json::parse(root->body, nullptr, false).value("capabilities", nlohmann::json::object())
+               : nlohmann::json::object();
+      ok &= check(caps.value("bulk_data", false), "GET / reports bulk_data true with a store");
+      ok &= check(caps.value("cyclic_subscriptions", false),
+                  "GET / reports cyclic_subscriptions true with samplers and a transport");
     }
     services.transport_registry()->shutdown_all(*services.subscription_manager());
+    std::filesystem::remove_all(store_dir);
+  }
+
+  // Capabilities follow what the host provides.
+  {
+    MinimalServices bare;
+    const auto caps = root_capabilities(bare);
+    ok &=
+        check(caps.contains("bulk_data") && !caps.value("bulk_data", true), "no store and no rosbags: bulk_data false");
+    ok &= check(caps.contains("cyclic_subscriptions") && !caps.value("cyclic_subscriptions", true),
+                "no transport and no sampler: cyclic_subscriptions false");
+
+    MinimalServices transport_only;
+    add_sse_transport(transport_only);
+    const auto transport_caps = root_capabilities(transport_only);
+    ok &= check(transport_caps.contains("cyclic_subscriptions") && !transport_caps.value("cyclic_subscriptions", true),
+                "a transport without a sampler: cyclic_subscriptions false");
+    transport_only.transport_registry()->shutdown_all(*transport_only.subscription_manager());
+
+    MinimalServices sampler_only;
+    sampler_only.sampler_registry()->register_sampler(
+        "x-check", [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+          return nlohmann::json::object();
+        });
+    const auto sampler_caps = root_capabilities(sampler_only);
+    ok &= check(sampler_caps.contains("cyclic_subscriptions") && !sampler_caps.value("cyclic_subscriptions", true),
+                "a sampler without a transport: cyclic_subscriptions false");
+
+    MinimalServices store_only;
+    gw::BulkDataConfig store_only_config;
+    store_only_config.storage_dir =
+        (std::filesystem::temp_directory_path() / "check_cores_without_ros_store_only").string();
+    store_only.set_bulk_store(gw::make_bulk_data_store(store_only_config));
+    store_only.fault_transport().rosbags = false;
+    const auto store_caps = root_capabilities(store_only);
+    ok &= check(store_caps.value("bulk_data", false), "a store without rosbags: bulk_data true");
+    std::filesystem::remove_all(std::filesystem::temp_directory_path() / "check_cores_without_ros_store_only");
+
+    MinimalServices rosbags_only;
+    rosbags_only.fault_transport().rosbags = true;
+    const auto rosbag_caps = root_capabilities(rosbags_only);
+    ok &= check(rosbag_caps.value("bulk_data", false), "rosbags without a store: bulk_data true");
   }
 
   return ok ? 0 : 1;
