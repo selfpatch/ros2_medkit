@@ -172,6 +172,10 @@ struct Health {
   /// why a peer refused their stream with 503.
   std::optional<nlohmann::json> x_medkit_sse;
   std::optional<nlohmann::json> peers;  // free-form array of peer status objects
+  /// Random id of this gateway process, present when aggregation is on. Wire
+  /// key: "x-medkit-instance-id". An aggregating peer reads it in its health
+  /// check, so a global fault-list fan-out can skip a gateway it already passed.
+  std::optional<std::string> x_medkit_instance_id;
   // NOT optional: these two are emitted in every mode, aggregation or not, so
   // the generated schema must list them in `required` and let a typed client
   // read them without a presence check. An empty `warnings` array is the
@@ -190,8 +194,12 @@ inline constexpr auto dto_fields<Health> = std::make_tuple(
     field("discovery", &Health::discovery), field("x-medkit-data-provider", &Health::x_medkit_data_provider),
     field("x-medkit-subscription-executor", &Health::x_medkit_subscription_executor),
     field("x-medkit-entity-cache", &Health::x_medkit_entity_cache), field("x-medkit-sse", &Health::x_medkit_sse),
-    field("peers", &Health::peers), field("warning_schema_version", &Health::warning_schema_version),
-    field("warnings", &Health::warnings));
+    field("peers", &Health::peers),
+    field("x-medkit-instance-id", &Health::x_medkit_instance_id,
+          "Random id of this gateway process, present when aggregation is enabled. Generated at startup and "
+          "carried on X-Medkit-Fan-Out-Visited by the global fault list, so a gateway already asked is not asked "
+          "again."),
+    field("warning_schema_version", &Health::warning_schema_version), field("warnings", &Health::warnings));
 
 template <>
 inline constexpr std::string_view dto_name<Health> = "HealthStatus";

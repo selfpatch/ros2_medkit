@@ -459,6 +459,20 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     }
     const auto filter = *filter_result;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+    auto * agg = ctx_.aggregation_manager();
+    const auto fan_out = plan_global_fault_fan_out(raw_req, agg ? agg->instance_id() : std::string{});
+    if (fan_out.mode == GlobalFaultFanOut::Mode::kAlreadyCounted) {
+      // The request came back round a loop of peers. The first time it passed
+      // here this gateway's faults went into the answer being built.
+      json response = {{"items", json::array()}};
+      response["x-medkit"] = dto::JsonWriter<dto::FaultListXMedkit>::write(dto::FaultListXMedkit{});
+      return wrap_list_result(std::move(response));
+    }
+
     auto fault_mgr = ctx_.services().fault_manager();
     // Empty source_id = no filtering, return all faults
     auto result = fault_mgr->list_faults("", filter.include_pending, filter.include_confirmed, filter.include_cleared,
@@ -473,7 +487,6 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
 
     // x-medkit extension for ros2_medkit-specific fields (typed DTO)
     dto::FaultListXMedkit xm;
-    xm.count = result.data.value("count", static_cast<int64_t>(0));
     xm.muted_count = result.data.value("muted_count", static_cast<int64_t>(0));
     xm.cluster_count = result.data.value("cluster_count", static_cast<int64_t>(0));
 
@@ -490,16 +503,9 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     // path used the raw `fan_out_get` here (not the typed `fan_out_collection`)
     // because the per-item shape on the global list includes vendor extensions
     // that JsonReader<FaultListItem> would drop; preserve that behaviour.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    const auto & raw_req = req.raw_for_framework();
-#pragma GCC diagnostic pop
-    // A request carrying X-Medkit-No-Fan-Out comes from an aggregating peer.
-    // Answering it with our own fan-out sends it back, so two gateways that
-    // aggregate each other would bounce it until the peer timeouts.
-    auto * agg = raw_req.has_header("X-Medkit-No-Fan-Out") ? nullptr : ctx_.aggregation_manager();
-    if (agg) {
-      auto fan_result = agg->fan_out_get(raw_req.path, raw_req.get_header_value("Authorization"));
+    if (agg && fan_out.mode == GlobalFaultFanOut::Mode::kFanOut) {
+      auto fan_result = agg->fan_out_get(build_fan_out_path(raw_req), raw_req.get_header_value("Authorization"),
+                                         nullptr, {{kFanOutVisitedHeader, fan_out.visited}});
       if (fan_result.merged_items.is_array()) {
         for (const auto & item : fan_result.merged_items) {
           response["items"].push_back(item);
@@ -511,6 +517,20 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
         xm.peer_failures = fan_result.peer_failures;
       }
     }
+    if (agg && fan_out.mode == GlobalFaultFanOut::Mode::kTooDeep) {
+      // The path is at its limit, so the peers behind this gateway were not
+      // asked. Saying nothing would report a truncated list as complete.
+      for (const auto & peer : agg->healthy_peer_endpoints()) {
+        xm.partial = true;
+        if (!xm.failed_peers) {
+          xm.failed_peers.emplace();
+          xm.peer_failures.emplace();
+        }
+        xm.failed_peers->push_back(peer.name);
+        xm.peer_failures->push_back(dto::PeerFailure{peer.name, "too-deep"});
+      }
+    }
+    xm.count = static_cast<int64_t>(response["items"].size());
 
     response["x-medkit"] = dto::JsonWriter<dto::FaultListXMedkit>::write(xm);
     return wrap_list_result(std::move(response));
