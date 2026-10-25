@@ -24,6 +24,8 @@ not installed, so the PostgreSQL backend is not built.
   `DataProvider` freezes the entity's values on a fault confirmation. The fault detail over HTTP holds a `freeze_frame` with the
   value from the confirmation, not the one set after it. An entity no plugin serves gets none, the oldest fault's frames are
   evicted past `max_faults`, a re-confirmation replaces the frame, and a disabled configuration builds no capture.
+- Fault event fan-out: one upstream source shared through `FaultEventFanOut` by the fault SSE stream (read over HTTP) and the
+  capture: a confirmation shows up as an SSE event and as a freeze frame. Without the fan-out one source serves one consumer only.
 - Bulk data: a store built by `make_bulk_data_store()` takes an upload over HTTP, lists it, returns it byte-equal and deletes
   it; an upload past `max_upload_size` is refused; the categories do not contain `rosbags` when the fault manager serves none.
 - `GET /` capabilities: `bulk_data` and `cyclic_subscriptions` are false for services without a store, rosbags, transport or

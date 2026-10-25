@@ -51,6 +51,7 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_event_fan_out.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -529,7 +530,7 @@ class MinimalServices : public gw::GatewayServices {
     return freeze_frames_;
   }
   gw::FaultEventSource * fault_events() override {
-    return nullptr;
+    return fault_events_;
   }
   gw::TopicDataProvider * topic_data_provider() override {
     return nullptr;
@@ -556,6 +557,9 @@ class MinimalServices : public gw::GatewayServices {
   void set_freeze_frames(gw::FreezeFrameSource * source) {
     freeze_frames_ = source;
   }
+  void set_fault_events(gw::FaultEventSource * source) {
+    fault_events_ = source;
+  }
   void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
     bulk_store_ = std::move(store);
   }
@@ -568,6 +572,7 @@ class MinimalServices : public gw::GatewayServices {
   std::unique_ptr<gw::BulkDataStore> bulk_store_;
   std::unique_ptr<gw::PluginManager> plugins_;
   gw::FreezeFrameSource * freeze_frames_{nullptr};
+  gw::FaultEventSource * fault_events_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -728,6 +733,65 @@ gw::App hosted_app() {
   app.name = "Hosted app";
   app.external = true;
   return app;
+}
+
+// Two consumers on ONE upstream fault event source: the fault SSE stream (read over HTTP) and the freeze-frame
+// capture. Returns {the SSE stream carried the confirmation, the capture holds a frame for it}.
+std::pair<bool, bool> share_one_event_source(bool through_fan_out) {
+  MinimalServices services;
+  auto plugin_app = hosted_app();
+  plugin_app.id = "plugin_app";
+  services.mutable_cache().update_apps({plugin_app});
+  services.add_data_plugin({"plugin_app"});
+  ControlledFaultEvents upstream;
+  gw::FaultEventFanOut fan_out(upstream);
+  std::unique_ptr<gw::FaultEventSource> sse_branch;
+  std::unique_ptr<gw::FaultEventSource> capture_branch;
+  gw::FaultEventSource * sse_source = &upstream;
+  gw::FaultEventSource * capture_source = &upstream;
+  if (through_fan_out) {
+    sse_branch = fan_out.make_branch();
+    capture_branch = fan_out.make_branch();
+    sse_source = sse_branch.get();
+    capture_source = capture_branch.get();
+  }
+  auto capture =
+      gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, *capture_source, services.plugin_manager());
+  if (!capture) {
+    return {false, false};
+  }
+  services.set_freeze_frames(capture.get());
+  services.set_fault_events(sse_source);
+  RunningServer running(services);
+  std::atomic<bool> sse_seen{false};
+  std::atomic<bool> stream_done{false};
+  std::thread reader([&] {
+    auto client = make_client(running.port());
+    std::string buffer;
+    client.Get(
+        "/api/v1/faults/stream", httplib::Headers{},
+        [](const httplib::Response &) {
+          return true;
+        },
+        [&](const char * data, size_t len) {
+          buffer.append(data, len);
+          if (buffer.find("fault_confirmed") != std::string::npos) {
+            sse_seen = true;
+          }
+          return !sse_seen && !stream_done;
+        });
+  });
+  // The stream attaches asynchronously, so the confirmation is repeated until the stream has seen one.
+  for (int i = 1; i <= 60 && !sse_seen; ++i) {
+    upstream.confirm("SHARED_" + std::to_string(i), "plugin_app");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  stream_done = true;
+  reader.join();
+  const bool framed = wait_until([&] {
+    return !capture->frames_for("SHARED_1").empty();
+  });
+  return {sse_seen.load(), framed};
 }
 
 void add_sse_transport(MinimalServices & services) {
@@ -1117,6 +1181,16 @@ static int run() {
                   }),
                   "a re-confirmation replaces the frame with the new value");
     }
+  }
+
+  // One upstream event source shared by the fault SSE stream and the capture.
+  {
+    const auto shared = share_one_event_source(true);
+    ok &= check(shared.first, "through the fan-out the fault SSE stream carries the confirmation");
+    ok &= check(shared.second, "through the fan-out the capture frames the same confirmation");
+    const auto unshared = share_one_event_source(false);
+    ok &= check(unshared.first != unshared.second,
+                "without the fan-out one source serves one consumer only: the later subscriber replaces the earlier");
   }
 
   // A host that registers the samplers, a transport and a bulk-data store gets subscriptions and bulk data.
