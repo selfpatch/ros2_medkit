@@ -88,6 +88,7 @@ class DocsHandlers {
   HandlerContext & ctx_;
   std::unique_ptr<openapi::CapabilityGenerator> generator_;
   bool docs_enabled_{true};
+  std::string server_name_;
 };
 
 }  // namespace handlers
