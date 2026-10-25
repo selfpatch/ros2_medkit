@@ -87,6 +87,10 @@ store from it:
   The host passes the manager to ``RESTServer::set_aggregation_manager()`` and
   calls ``merge_peers()`` on every entity refresh. The ROS 2 node reads the
   ``aggregation.*`` parameters into the config and uses the same class.
+* ``RESTServer`` takes a null ``LifecycleStateReader`` for a host without
+  lifecycle nodes. ``GET /{entity}/status`` then derives readiness from
+  presence and ``PUT /{entity}/status/{action}`` answers 501 without a
+  ``LifecycleProvider``.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single
