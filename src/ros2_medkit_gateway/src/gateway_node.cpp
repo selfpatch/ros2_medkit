@@ -918,48 +918,38 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Scripts
-  script_mgr_ = std::make_unique<ScriptManager>();
   auto * plugin_script_provider = plugin_mgr_->get_script_provider();
-  if (plugin_script_provider) {
-    script_mgr_->set_backend(plugin_script_provider);
-    RCLCPP_INFO(get_logger(), "Using plugin ScriptProvider");
-  } else {
-    auto scripts_dir = get_parameter("scripts.scripts_dir").as_string();
-    if (!scripts_dir.empty()) {
-      ScriptsConfig scripts_config;
-      scripts_config.scripts_dir = scripts_dir;
-      scripts_config.max_file_size_mb = static_cast<int>(get_parameter("scripts.max_file_size_mb").as_int());
-      scripts_config.max_concurrent_executions =
-          static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
-      scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
-      scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
-      scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
-
-      // Load manifest-defined scripts
-      auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
-      if (manifest_mgr) {
-        scripts_config.entries = manifest_mgr->get_scripts();
-        if (!scripts_config.entries.empty()) {
-          RCLCPP_INFO(get_logger(), "Loaded %zu manifest-defined scripts", scripts_config.entries.size());
-        }
-      }
-
-      default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
-      script_mgr_->set_backend(default_script_provider_.get());
-      RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_dir.c_str());
-    } else {
-      auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
-      if (manifest_mgr) {
-        auto manifest_scripts = manifest_mgr->get_scripts();
-        if (!manifest_scripts.empty()) {
-          RCLCPP_WARN(get_logger(),
-                      "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
-                      "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
-                      manifest_scripts.size());
-        }
-      }
-    }
+  ScriptsConfig scripts_config;
+  scripts_config.scripts_dir = get_parameter("scripts.scripts_dir").as_string();
+  scripts_config.max_file_size_mb = static_cast<int>(get_parameter("scripts.max_file_size_mb").as_int());
+  scripts_config.max_concurrent_executions =
+      static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
+  scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
+  scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
+  scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
+  // Manifest-defined scripts come from the discovery manager.
+  auto * script_manifest_mgr = discovery_mgr_->get_manifest_manager();
+  std::vector<ScriptEntryConfig> manifest_scripts;
+  if (script_manifest_mgr) {
+    manifest_scripts = script_manifest_mgr->get_scripts();
   }
+  if (plugin_script_provider) {
+    RCLCPP_INFO(get_logger(), "Using plugin ScriptProvider");
+  } else if (!scripts_config.scripts_dir.empty()) {
+    scripts_config.entries = manifest_scripts;
+    if (!scripts_config.entries.empty()) {
+      RCLCPP_INFO(get_logger(), "Loaded %zu manifest-defined scripts", scripts_config.entries.size());
+    }
+    RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_config.scripts_dir.c_str());
+  } else if (!manifest_scripts.empty()) {
+    RCLCPP_WARN(get_logger(),
+                "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
+                "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
+                manifest_scripts.size());
+  }
+  auto script_host = make_script_host(scripts_config, plugin_script_provider);
+  default_script_provider_ = std::move(script_host.default_provider);
+  script_mgr_ = std::move(script_host.manager);
 
   // --- Trigger infrastructure ---
   resource_change_notifier_ = std::make_unique<ResourceChangeNotifier>([this](const std::string & msg) {
