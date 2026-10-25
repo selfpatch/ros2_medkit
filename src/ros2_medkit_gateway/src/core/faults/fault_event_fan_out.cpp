@@ -28,6 +28,10 @@ class FaultEventFanOut::Branch : public FaultEventSource {
   ~Branch() override {
     unsubscribe();
   }
+  Branch(const Branch &) = delete;
+  Branch & operator=(const Branch &) = delete;
+  Branch(Branch &&) = delete;
+  Branch & operator=(Branch &&) = delete;
 
   void subscribe(Callback callback) override {
     {
