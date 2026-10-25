@@ -1236,6 +1236,24 @@ static int run() {
       ok &= check(std::find(cat_items.begin(), cat_items.end(), nlohmann::json("rosbags")) == cat_items.end(),
                   "the categories do not list rosbags when the fault manager serves none");
 
+      // A host without rosbags answers rosbags like any category that does not exist.
+      const auto error_code_of = [](const httplib::Result & r) {
+        return r ? nlohmann::json::parse(r->body, nullptr, false).value("error_code", "") : std::string{};
+      };
+      auto no_rosbag_list = client.Get(base + "/rosbags");
+      auto no_such_list = client.Get(base + "/no_such_category");
+      ok &= check(no_such_list && no_such_list->status == 404, "an unknown category list answers 404");
+      ok &= check(no_rosbag_list && no_such_list && no_rosbag_list->status == no_such_list->status &&
+                      error_code_of(no_rosbag_list) == error_code_of(no_such_list),
+                  "listing rosbags without rosbags answers like an unknown category");
+      auto no_rosbag_item = client.Get(base + "/rosbags/some-recording");
+      auto no_such_item = client.Get(base + "/no_such_category/some-recording");
+      ok &= check(no_rosbag_item && no_rosbag_item->body.find("Unknown category: rosbags") != std::string::npos,
+                  "the rosbag download error names the unknown category");
+      ok &= check(no_rosbag_item && no_such_item && no_rosbag_item->status == no_such_item->status &&
+                      error_code_of(no_rosbag_item) == error_code_of(no_such_item),
+                  "downloading a rosbag without rosbags answers like an unknown category");
+
       auto root = client.Get("/api/v1/");
       const auto caps =
           root ? nlohmann::json::parse(root->body, nullptr, false).value("capabilities", nlohmann::json::object())

@@ -269,6 +269,14 @@ std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityC
 
 }  // namespace detail
 
+namespace {
+/// Whether the fault manager serves the `rosbags` category. When it does not, the category is unknown.
+bool rosbags_served(const HandlerContext & ctx) {
+  auto * fault_mgr = ctx.services().fault_manager();
+  return fault_mgr != nullptr && fault_mgr->serves_rosbags();
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // GET /{entity}/bulk-data - list categories
 // ---------------------------------------------------------------------------
@@ -291,7 +299,7 @@ http::Result<dto::BulkDataCategoryList> BulkDataHandlers::list_categories(const 
 
   // Build categories list: "rosbags" when the fault manager serves them + BulkDataStore categories.
   dto::BulkDataCategoryList response;
-  if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr && fault_mgr->serves_rosbags()) {
+  if (rosbags_served(ctx_)) {
     response.items.push_back("rosbags");
   }
 
@@ -330,7 +338,7 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
     return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Missing category"));
   }
 
-  if (category == "rosbags") {
+  if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
     auto fault_mgr = ctx_.services().fault_manager();
 
@@ -433,7 +441,7 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
   std::string mimetype;
   std::string filename;
 
-  if (category == "rosbags") {
+  if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
     //
     // The id is a recording id. A pre-#620 URL carrying a fault code still resolves:
