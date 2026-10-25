@@ -78,6 +78,17 @@ tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * pl
   }
 }
 
+PluginDataReaders plugin_data_readers(PluginManager * plugins) {
+  PluginDataReaders readers;
+  readers.provider = [plugins](const std::string & entity_id) -> DataProvider * {
+    return plugins ? plugins->get_data_provider_for_entity(entity_id) : nullptr;
+  };
+  readers.route = [plugins](const std::string & entity_id) -> std::optional<json> {
+    return plugins ? plugins->fetch_entity_data_via_route(entity_id) : std::nullopt;
+  };
+  return readers;
+}
+
 tl::expected<TopicSampleResult, ErrorInfo> sample_data_topic(DataAccessManager & data,
                                                              const std::string & full_topic_path) {
   // Sampling goes through the pool-backed TopicDataProvider.
