@@ -18,10 +18,23 @@
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/version.hpp"
+
 namespace ros2_medkit_gateway {
 
+/// How the server names itself to clients. The defaults describe the ROS 2 node.
+struct ServerIdentity {
+  /// `name` on `GET /` and the title of the OpenAPI documents.
+  std::string server_name{"ROS 2 Medkit Gateway"};
+  /// `vendor_info.name` on `GET /version-info`.
+  std::string vendor_name{"ros2_medkit"};
+  /// `version` on `GET /`, `vendor_info.version` and the OpenAPI document version.
+  std::string server_version{kGatewayVersion};
+};
+
 /// Raw configuration values the REST layer reads. Clamping happens where the value is used.
-struct RestConfig {
+/// A program that hosts the core sets the `ServerIdentity` fields to its own values.
+struct RestConfig : ServerIdentity {
   int64_t http_thread_pool_size{2};
   int64_t keep_alive_timeout_sec{2};
   int64_t sse_keepalive_interval_sec{30};

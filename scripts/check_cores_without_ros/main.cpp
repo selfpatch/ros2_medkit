@@ -31,6 +31,7 @@
 #error "gateway_core must export CPPHTTPLIB_OPENSSL_SUPPORT"
 #endif
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
@@ -662,6 +663,9 @@ static int run() {
     const int port = free_port();
     ok &= check(port != 0, "an ephemeral port was found");
     gw::RestConfig rest;
+    rest.server_name = "Hosted Server";
+    rest.vendor_name = "hosted_vendor";
+    rest.server_version = "9.8.7";
     gw::RESTServer server(services, nullptr, "127.0.0.1", port, gw::CorsConfig{}, gw::AuthConfig{},
                           gw::RateLimitConfig{}, rest);
     std::thread server_thread([&server] {
@@ -678,6 +682,28 @@ static int run() {
     ok &= check(status == 200, "GET /api/v1/health answers 200");
     if (status == 200) {
       std::printf("ok gateway health %d\n", status);
+    }
+    auto root = client.Get("/api/v1/");
+    ok &= check(root && root->status == 200, "GET /api/v1/ answers 200");
+    if (root && root->status == 200) {
+      const auto body = nlohmann::json::parse(root->body, nullptr, false);
+      ok &= check(body.is_object() && body.value("name", "") == "Hosted Server",
+                  "GET /api/v1/ names the server the host set");
+      ok &= check(body.is_object() && body.value("version", "") == "9.8.7",
+                  "GET /api/v1/ reports the server version the host set");
+    }
+    auto info = client.Get("/api/v1/version-info");
+    ok &= check(info && info->status == 200, "GET /api/v1/version-info answers 200");
+    if (info && info->status == 200) {
+      const auto body = nlohmann::json::parse(info->body, nullptr, false);
+      const bool shaped = body.is_object() && body.contains("items") && body["items"].is_array() &&
+                          !body["items"].empty() && body["items"][0].contains("vendor_info");
+      ok &= check(shaped, "GET /api/v1/version-info carries items[0].vendor_info");
+      if (shaped) {
+        const auto & vendor = body["items"][0]["vendor_info"];
+        ok &= check(vendor.value("name", "") == "hosted_vendor", "version-info vendor_info.name is the host's");
+        ok &= check(vendor.value("version", "") == "9.8.7", "version-info vendor_info.version is the host's");
+      }
     }
     server.stop();
     server_thread.join();

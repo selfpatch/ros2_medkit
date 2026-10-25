@@ -30,7 +30,9 @@ path, and so does ``scripts/check_cores_without_ros``, which links
 ``gateway_core``. The file takes a target the including build already
 defines, else ``find_package``, else the copy vendored in ``src/vendored/``.
 The check implements ``GatewayServices`` with minimal stand-ins and starts
-``RESTServer``. ``scripts/check_cores_without_ros/`` builds and runs it on
+``RESTServer``. A program that hosts the core names its server through
+``RestConfig::server_name``, ``vendor_name`` and ``server_version``; the
+defaults are the ROS 2 node's values. ``scripts/check_cores_without_ros/`` builds and runs it on
 Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
 The ``gateway_node`` executable and existing test targets link

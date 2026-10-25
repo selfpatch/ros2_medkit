@@ -1759,7 +1759,7 @@ include(path/to/ros2_medkit_gateway/cmake/gateway_core.cmake)
 target_link_libraries(check_cores_without_ros PRIVATE gateway_core)
 ```
 
-The file takes a target the including build already defines, else `find_package`, else the copy vendored in `src/vendored/` (cpp-httplib, jwt-cpp, tl::expected). An existing `httplib::httplib` target is reused. `-DENABLE_SWAGGER_UI=ON` works in both builds and needs network access and `xxd` at configure time. The check implements `GatewayServices` with minimal stand-ins and starts `RESTServer`. `scripts/check_cores_without_ros/` builds and runs it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+The file takes a target the including build already defines, else `find_package`, else the copy vendored in `src/vendored/` (cpp-httplib, jwt-cpp, tl::expected). An existing `httplib::httplib` target is reused. `-DENABLE_SWAGGER_UI=ON` works in both builds and needs network access and `xxd` at configure time. The check implements `GatewayServices` with minimal stand-ins and starts `RESTServer`. A program that hosts the core names its server through `RestConfig::server_name`, `vendor_name` and `server_version` (`name` and `version` on `GET /`, `vendor_info` on `GET /version-info`, and the OpenAPI title and version). The defaults are the ROS 2 node's values. `scripts/check_cores_without_ros/` builds and runs it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
 
 The `gateway_node` executable and existing test targets link `gateway_ros2`, so they transitively get both layers from a single dependency. The neutral contract is enforced by two CTest checks:
 
