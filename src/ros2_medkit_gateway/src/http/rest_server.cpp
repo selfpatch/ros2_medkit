@@ -189,8 +189,8 @@ RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStat
   // HealthHandlers as a null pointer and silently omit the field.
   sse_client_tracker_ = services_.sse_client_tracker();
 
-  health_handlers_ = std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get(),
-                                                                sse_client_tracker_, rest_config.docs_enabled);
+  health_handlers_ = std::make_unique<handlers::HealthHandlers>(
+      *handler_ctx_, route_registry_.get(), sse_client_tracker_, rest_config.docs_enabled, rest_config);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
   lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(*handler_ctx_, services_.plugin_manager(),
@@ -241,9 +241,9 @@ RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStat
     script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, services_.script_manager());
   }
 
-  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, services_.plugin_manager(),
-                                                            route_registry_.get(), rest_config.docs_enabled,
-                                                            rest_config.server_host, rest_config.server_port);
+  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(
+      *handler_ctx_, services_.plugin_manager(), route_registry_.get(), rest_config.docs_enabled,
+      rest_config.server_host, rest_config.server_port, rest_config);
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();

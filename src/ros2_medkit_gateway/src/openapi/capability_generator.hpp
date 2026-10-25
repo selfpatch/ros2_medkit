@@ -26,6 +26,7 @@
 #include "route_registry.hpp"
 #include "schema_builder.hpp"
 
+#include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 
 namespace ros2_medkit_gateway {
@@ -70,7 +71,8 @@ struct DocsCacheBounds {
 class CapabilityGenerator {
  public:
   CapabilityGenerator(handlers::HandlerContext & ctx, PluginManager * plugin_mgr, const RouteRegistry * route_registry,
-                      std::string server_host, int64_t server_port, DocsCacheBounds bounds = DocsCacheBounds{});
+                      std::string server_host, int64_t server_port, DocsCacheBounds bounds = DocsCacheBounds{},
+                      ServerIdentity identity = {});
 
   /// Number of documents currently cached.
   size_t cache_entry_count() const;
@@ -237,6 +239,7 @@ class CapabilityGenerator {
   std::string server_host_;
   int64_t server_port_;
   DocsCacheBounds bounds_;
+  ServerIdentity identity_;
 
   // Generation-based document cache - invalidated when entity cache changes.
   //

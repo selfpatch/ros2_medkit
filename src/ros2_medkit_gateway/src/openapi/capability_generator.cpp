@@ -110,14 +110,15 @@ void for_each_operation(nlohmann::json & document, Visitor && visit) {
 
 CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, PluginManager * plugin_mgr,
                                          const RouteRegistry * route_registry, std::string server_host,
-                                         int64_t server_port, DocsCacheBounds bounds)
+                                         int64_t server_port, DocsCacheBounds bounds, ServerIdentity identity)
   : ctx_(ctx)
   , plugin_mgr_(plugin_mgr)
   , route_registry_(route_registry)
   , schema_builder_(*ctx.services().type_schemas())
   , server_host_(std::move(server_host))
   , server_port_(server_port)
-  , bounds_(bounds) {
+  , bounds_(bounds)
+  , identity_(std::move(identity)) {
 }
 
 // TODO(#272): Fix TOCTOU race - use compare-and-swap when storing cached specs
@@ -330,7 +331,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   }
 
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
+  builder.info(identity_.server_name, identity_.server_version)
       .description(
           "SOVD-compatible REST API for ROS 2 diagnostics and control. "
           "See https://selfpatch.github.io/ros2_medkit/ for documentation.")
@@ -459,7 +460,7 @@ nlohmann::json CapabilityGenerator::project(const nlohmann::json & served, const
 nlohmann::json CapabilityGenerator::build_subtree_document(const std::string & title,
                                                            const nlohmann::json & paths) const {
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway - " + title, kGatewayVersion)
+  builder.info(identity_.server_name + " - " + title, identity_.server_version)
       .sovd_version(kSovdVersion)
       .server(build_server_url(), "Gateway server")
       // The projected operations carry whatever `security` their registration
@@ -953,7 +954,7 @@ nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & pat
   }
 
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway - Plugin", kGatewayVersion)
+  builder.info(identity_.server_name + " - Plugin", identity_.server_version)
       .sovd_version(kSovdVersion)
       .server(build_server_url(), "Gateway server")
       // Without the definition, the per-operation `security` a plugin

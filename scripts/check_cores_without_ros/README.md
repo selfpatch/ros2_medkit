@@ -3,7 +3,7 @@
 Checks that the ROS-free cores (fault reporter core, fault manager core, gateway core) build and
 run without ROS. It builds them with plain CMake and gcc 9 on Ubuntu 20.04, the oldest compiler
 the cores are checked with, then runs a small program that links them. The program also starts
-the gateway REST server over minimal `GatewayServices` and reads `/api/v1/health`. The check
+the gateway REST server over minimal `GatewayServices` and reads `/api/v1/health`, `/api/v1/` and `/api/v1/version-info`. The check
 fails if the binary links `rclcpp`.
 
 ```bash
@@ -16,6 +16,8 @@ cmake, make and the dev packages of SQLite3, OpenSSL, nlohmann_json and yaml-cpp
 not installed, so the PostgreSQL backend is not built.
 
 ## What `main.cpp` checks
+
+- Gateway: with `server_name`, `vendor_name` and `server_version` set in `RestConfig`, `GET /api/v1/` returns the name and version, and `GET /api/v1/version-info` returns the vendor name and version.
 
 - Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is
   filtered by the same threshold, an empty fault code is not forwarded.

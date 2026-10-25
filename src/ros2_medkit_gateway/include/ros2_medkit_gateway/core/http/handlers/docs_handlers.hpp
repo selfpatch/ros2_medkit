@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/http/handler_result.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -47,7 +48,7 @@ namespace handlers {
 class DocsHandlers {
  public:
   DocsHandlers(HandlerContext & ctx, PluginManager * plugin_mgr, const openapi::RouteRegistry * route_registry,
-               bool docs_enabled, std::string server_host, int64_t server_port);
+               bool docs_enabled, std::string server_host, int64_t server_port, ServerIdentity identity = {});
   ~DocsHandlers();
 
   /// GET /docs - Root capability description.

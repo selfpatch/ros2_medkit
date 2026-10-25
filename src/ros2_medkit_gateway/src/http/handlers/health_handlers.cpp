@@ -299,8 +299,8 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
         ctx_.services().plugin_manager() && ctx_.services().plugin_manager()->has_plugins();
 
     dto::RootOverview response;
-    response.name = "ROS 2 Medkit Gateway";
-    response.version = kGatewayVersion;
+    response.name = identity_.server_name;
+    response.version = identity_.server_version;
     response.api_base = API_BASE_PATH;
     response.endpoints = std::move(endpoints);
     response.capabilities = capabilities;
@@ -335,8 +335,8 @@ http::Result<dto::VersionInfo> HealthHandlers::get_version_info(const http::Type
   try {
     // SOVD 7.4.1 compliant response format
     dto::VersionInfoVendor vendor;
-    vendor.version = kGatewayVersion;
-    vendor.name = "ros2_medkit";
+    vendor.version = identity_.server_version;
+    vendor.name = identity_.vendor_name;
 
     dto::VersionInfoEntry entry;
     entry.version = kSovdVersion;    // SOVD standard version
