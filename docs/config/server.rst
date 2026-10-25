@@ -1275,7 +1275,7 @@ components and apps to prevent concurrent modification.
    * - ``locking.cleanup_interval``
      - int
      - ``30``
-     - Seconds between expired lock cleanup sweeps
+     - Seconds between expired lock cleanup sweeps. Values below ``1`` are raised to ``1``. The sweep runs on a thread of the gateway core (``LockReaper``).
    * - ``locking.defaults.components.lock_required_scopes``
      - [string]
      - ``[""]``

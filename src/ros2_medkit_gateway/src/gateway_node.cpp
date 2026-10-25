@@ -908,29 +908,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     lock_manager_ = std::make_unique<LockManager>(get_thread_safe_cache(), lock_config);
 
-    auto cleanup_interval = lock_config.cleanup_interval;
-    lock_cleanup_timer_ = this->create_wall_timer(std::chrono::seconds(cleanup_interval), [this]() {
-      auto expired = lock_manager_->cleanup_expired();
-      for (const auto & info : expired) {
-        RCLCPP_INFO(get_logger(), "Lock %s expired on entity %s", info.lock_id.c_str(), info.entity_id.c_str());
-
-        // Clean up temporary resources within expired lock scope
-        auto scope_includes = [&](const std::string & collection) {
-          return info.scopes.empty() ||
-                 std::find(info.scopes.begin(), info.scopes.end(), collection) != info.scopes.end();
-        };
-
-        // Remove cyclic subscriptions for the entity
-        if (scope_includes("cyclic-subscriptions") && subscription_mgr_) {
-          auto subs = subscription_mgr_->list(info.entity_id);
-          for (const auto & sub : subs) {
-            if (subscription_mgr_->remove(sub.id)) {
-              RCLCPP_INFO(get_logger(), "Removed subscription %s on lock expiry", sub.id.c_str());
-            }
-          }
-        }
-      }
-    });
+    lock_reaper_ = std::make_unique<LockReaper>(*lock_manager_, subscription_mgr_.get(), lock_config.cleanup_interval,
+                                                log::Logger(get_logger().get_name()));
 
     RCLCPP_INFO(get_logger(), "Lock manager: enabled, max_expiration=%ds, cleanup_interval=%ds",
                 lock_config.default_max_expiration, lock_config.cleanup_interval);
@@ -1532,6 +1511,10 @@ void GatewayNode::log_startup_summary() {
 
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
+  // 0. Stop the lock reaper: it removes subscriptions through the transports shut down below.
+  if (lock_reaper_) {
+    lock_reaper_->stop();
+  }
   // 0. Stop mDNS discovery first (prevents new peer additions during shutdown)
   if (mdns_discovery_) {
     mdns_discovery_->stop();

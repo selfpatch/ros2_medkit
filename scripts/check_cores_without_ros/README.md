@@ -30,6 +30,8 @@ not installed, so the PostgreSQL backend is not built.
   it; an upload past `max_upload_size` is refused; the categories do not contain `rosbags` when the fault manager serves none.
 - `GET /` capabilities: `bulk_data` and `cyclic_subscriptions` are false for services without a store, rosbags, transport or
   sampler, and true as soon as a store or rosbags (bulk data), or a transport and a sampler (subscriptions), exist.
+- Lock expiry: a lock with a one second expiry, taken over HTTP with a cyclic subscription in its scope, is gone after the
+  expiry and the subscription is removed, with a `LockReaper` as the only cleanup.
 - Gateway: with `server_name`, `vendor_name` and `server_version` set in `RestConfig`, `GET /api/v1/` returns the name and version, and `GET /api/v1/version-info` returns the vendor name and version.
 
 - Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is
