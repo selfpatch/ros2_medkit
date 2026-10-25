@@ -387,6 +387,8 @@ Configure how the gateway connects to the fault manager services and event topic
        values, marked ``connected: false`` in the snapshot's ``x-medkit`` block.
        Explicit snapshot config in the fault manager always wins when present.
        Only active when plugins are loaded.
+       A program that hosts the gateway core without ROS sets the same switch
+       as ``FreezeFrameCaptureConfig::enabled`` (see the gateway README).
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default

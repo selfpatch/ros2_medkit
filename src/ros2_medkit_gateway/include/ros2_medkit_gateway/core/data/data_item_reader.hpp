@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <functional>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -42,6 +44,21 @@ std::string to_full_topic_path(const std::string & topic_name);
 /// `x-plc-data` route. `GET /{entity}/data/{item}` and the cyclic-subscription sampler both use it.
 tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * plugins, const std::string & entity_id,
                                                               const std::string & topic_name);
+
+/// The two reads of a plugin-owned entity's whole data list, in the order `GET /{entity}/data` uses them:
+/// the plugin's `DataProvider`, else its `x-plc-data` route.
+struct PluginDataReaders {
+  /// The `DataProvider` of the plugin that owns the entity. Null when it has none.
+  using ProviderResolver = std::function<DataProvider *(const std::string & entity_id)>;
+  /// The body of the entity's `x-plc-data` route, dispatched in process. Nullopt when there is none or it fails.
+  using RouteFetcher = std::function<std::optional<nlohmann::json>(const std::string & entity_id)>;
+
+  ProviderResolver provider;
+  RouteFetcher route;
+};
+
+/// The data-list reads over the entities `plugins` owns. A null manager owns none.
+PluginDataReaders plugin_data_readers(PluginManager * plugins);
 
 /// Samples one topic through the `TopicDataProvider` of `data`. Answers 503 when none is configured.
 /// `GET /{entity}/data/{item}` and the cyclic-subscription sampler both use it.
