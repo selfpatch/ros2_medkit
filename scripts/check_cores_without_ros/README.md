@@ -36,6 +36,8 @@ not installed, so the PostgreSQL backend is not built.
   uploaded over HTTP runs, completes and its JSON output is readable.
 - Aggregation: a second REST server in the same process is the peer of the first through `AggregationHost`; `merge_peers()`
   returns a routing table and the first server reads the peer's entity from the peer.
+- Lifecycle without a reader: `/status` reports readiness from presence (also for an app with lifecycle services) and a
+  transition answers 501.
 - Gateway: with `server_name`, `vendor_name` and `server_version` set in `RestConfig`, `GET /api/v1/` returns the name and version, and `GET /api/v1/version-info` returns the vendor name and version.
 
 - Reporter core: a report below the local filter threshold is filtered, the next one reaches the sink, a PASSED report is
