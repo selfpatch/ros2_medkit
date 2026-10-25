@@ -46,6 +46,16 @@ struct RestConfig : ServerIdentity {
   std::string logger_name{"rest_server"};
 };
 
+/// Where uploaded bulk data goes and what a host accepts. The defaults are the node's `bulk_data.*` defaults.
+struct BulkDataConfig {
+  /// Base directory of the stored files.
+  std::string storage_dir{"/tmp/ros2_medkit_bulk_data"};
+  /// Largest accepted upload in bytes. 0 means unlimited. A negative value is refused and the default is used.
+  int64_t max_upload_size{104857600};
+  /// Accepted upload categories. Empty names are dropped. `rosbags` is never listed here.
+  std::vector<std::string> categories;
+};
+
 /**
  * @brief TLS/HTTPS configuration settings
  *

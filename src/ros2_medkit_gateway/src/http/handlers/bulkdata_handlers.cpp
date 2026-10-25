@@ -289,9 +289,11 @@ http::Result<dto::BulkDataCategoryList> BulkDataHandlers::list_categories(const 
     return tl::unexpected(make_error(400, ERR_COLLECTION_NOT_SUPPORTED, access.error().message));
   }
 
-  // Build categories list: "rosbags" always available + BulkDataStore categories.
+  // Build categories list: "rosbags" when the fault manager serves them + BulkDataStore categories.
   dto::BulkDataCategoryList response;
-  response.items.push_back("rosbags");  // Always available via FaultManager
+  if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr && fault_mgr->serves_rosbags()) {
+    response.items.push_back("rosbags");
+  }
 
   auto * store = ctx_.bulk_data_store();
   if (store) {

@@ -66,7 +66,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ### Bulk Data Endpoints
 
-- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (rosbags + configured)
+- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (configured, plus `rosbags` when the fault manager serves them)
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}` - List bulk-data items in a category
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Download a bulk-data file
 - `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
@@ -1760,6 +1760,11 @@ target_link_libraries(check_cores_without_ros PRIVATE gateway_core)
 ```
 
 The file takes a target the including build already defines, else `find_package`, else the copy vendored in `src/vendored/` (cpp-httplib, jwt-cpp, tl::expected). An existing `httplib::httplib` target is reused. `-DENABLE_SWAGGER_UI=ON` works in both builds and needs network access and `xxd` at configure time. The check implements `GatewayServices` with minimal stand-ins and starts `RESTServer`. A program that hosts the core names its server through `RestConfig::server_name`, `vendor_name` and `server_version` (`name` and `version` on `GET /`, `vendor_info` on `GET /version-info`, and the OpenAPI title and version). The defaults are the ROS 2 node's values. `scripts/check_cores_without_ros/` builds and runs it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+
+A program that hosts the core gets the cyclic-subscription samplers and the bulk-data store from the core, and passes the following:
+
+- **Samplers.** `register_builtin_samplers(services)` (`core/builtin_samplers.hpp`) registers `data`, `faults`, `configurations` and `logs` on `services.sampler_registry()`, plus `updates` when `services.update_manager()` is set. Each sampler reads through the same managers and helpers as its GET route. A `data` subscription on an entity a plugin owns reads through that plugin's `DataProvider` (or its `x-plc-data` route), and on any other entity through `services.data_access_manager()` and its `TopicDataProvider`. A collection with no manager behind it answers with the error text of its GET route, not a crash. The host passes `GatewayServices` (it must outlive the samplers) and registers a subscription transport itself, for example `SseTransportProvider`. `GET /` reports `cyclic_subscriptions` true only when a transport and at least one sampler are registered.
+- **Bulk data.** `BulkDataConfig` (`core/config.hpp`: `storage_dir`, `max_upload_size`, `categories`, with the defaults of the `bulk_data.*` parameters) and `make_bulk_data_store(config)` (`core/managers/bulk_data_store.hpp`) build the store. The host returns it from `GatewayServices::bulk_data_store()` before it starts `RESTServer`, which sizes the upload limit from it. The `rosbags` category is listed only when `FaultServiceTransport::serves_rosbags()` is true. The default is true; a host whose fault manager records no rosbags overrides it. `GET /` reports `bulk_data` true only when a store exists or rosbags are served.
 
 The `gateway_node` executable and existing test targets link `gateway_ros2`, so they transitively get both layers from a single dependency. The neutral contract is enforced by two CTest checks:
 

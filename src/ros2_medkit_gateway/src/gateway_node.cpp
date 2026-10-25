@@ -269,8 +269,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.peer_names", std::vector<std::string>{""});
 
   // Bulk data storage parameters
-  declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
-  declare_parameter("bulk_data.max_upload_size", 104857600);  // 100MB
+  const BulkDataConfig bulk_data_defaults;
+  declare_parameter("bulk_data.storage_dir", bulk_data_defaults.storage_dir);
+  declare_parameter("bulk_data.max_upload_size", bulk_data_defaults.max_upload_size);
   declare_parameter("bulk_data.categories", std::vector<std::string>{});
 
   // Runtime (heuristic) discovery options
@@ -691,34 +692,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   fault_mgr_ = std::make_unique<FaultManager>(fault_service_transport_);
 
   // Initialize bulk data store
-  auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();
-  // A negative value would wrap to a huge size_t and be handed to
-  // set_payload_max_length as an effectively unlimited cap. 0 already means
-  // unlimited by documented design, so a negative cannot be folded into it
-  // without turning a typo into that same silent "no limit". Reject it and say
-  // which value was refused.
-  const int64_t bd_max_upload_raw = get_parameter("bulk_data.max_upload_size").as_int();
-  size_t bd_max_upload = 0;
-  if (bd_max_upload_raw < 0) {
-    RCLCPP_WARN(get_logger(),
-                "bulk_data.max_upload_size %" PRId64
-                " is negative. Must be >= 0 (0 = unlimited). "
-                "Using default 104857600.",
-                bd_max_upload_raw);
-    bd_max_upload = 104857600;
-  } else {
-    bd_max_upload = static_cast<size_t>(bd_max_upload_raw);
-  }
-  auto bd_categories = get_parameter("bulk_data.categories").as_string_array();
-  bd_categories.erase(std::remove_if(bd_categories.begin(), bd_categories.end(),
-                                     [](const auto & item) {
-                                       return item.empty();
-                                     }),
-                      bd_categories.end());
-
-  bulk_data_store_ = std::make_unique<BulkDataStore>(bd_storage_dir, bd_max_upload, bd_categories);
-  RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu", bd_storage_dir.c_str(),
-              bd_max_upload, bd_categories.size());
+  BulkDataConfig bulk_data_config;
+  bulk_data_config.storage_dir = get_parameter("bulk_data.storage_dir").as_string();
+  bulk_data_config.max_upload_size = get_parameter("bulk_data.max_upload_size").as_int();
+  bulk_data_config.categories = get_parameter("bulk_data.categories").as_string_array();
+  bulk_data_store_ = make_bulk_data_store(bulk_data_config);
+  RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu",
+              bulk_data_config.storage_dir.c_str(), bulk_data_store_->max_upload_bytes(),
+              bulk_data_store_->list_categories().size());
 
   // Initialize subscription manager for cyclic subscriptions
   // Same wrap hazard as bulk_data.max_upload_size: a negative here becomes a

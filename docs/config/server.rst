@@ -696,7 +696,7 @@ Bulk Data Storage
 -----------------
 
 Configure file-based bulk data storage for uploads (calibration files, firmware, etc.).
-The ``rosbags`` category is always available via the Fault Manager and does not need
+The ``rosbags`` category is served by the Fault Manager and does not need
 configuration.
 
 .. list-table::
@@ -733,8 +733,9 @@ Example:
 
 .. note::
 
-   The ``rosbags`` category is always available through the Fault Manager and cannot be
-   used for uploads or deletes. It is automatically included in the category list.
+   The ``rosbags`` category is available through the Fault Manager and cannot be
+   used for uploads or deletes. It is included in the category list whenever the Fault
+   Manager serves rosbags, which is always the case on the ROS 2 node.
 
 .. note::
 

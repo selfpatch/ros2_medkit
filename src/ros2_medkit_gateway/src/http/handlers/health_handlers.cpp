@@ -27,12 +27,16 @@
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/warning_codes.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/update_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
 
@@ -284,8 +288,14 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     capabilities.configurations = true;
     capabilities.faults = true;
     capabilities.logs = true;
-    capabilities.bulk_data = true;
-    capabilities.cyclic_subscriptions = true;
+    const auto * fault_mgr = ctx_.services().fault_manager();
+    const auto * transports = ctx_.services().transport_registry();
+    const auto * samplers = ctx_.services().sampler_registry();
+    capabilities.bulk_data =
+        ctx_.services().bulk_data_store() != nullptr || (fault_mgr != nullptr && fault_mgr->serves_rosbags());
+    capabilities.cyclic_subscriptions = ctx_.services().subscription_manager() != nullptr && transports != nullptr &&
+                                        !transports->empty() && samplers != nullptr &&
+                                        !samplers->collection_names().empty();
     capabilities.locking = ctx_.services().lock_manager() != nullptr;
     capabilities.triggers = ctx_.services().trigger_manager() != nullptr;
     capabilities.updates = ctx_.services().update_manager() != nullptr;

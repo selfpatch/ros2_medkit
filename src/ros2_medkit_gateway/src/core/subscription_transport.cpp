@@ -41,6 +41,11 @@ bool TransportRegistry::has_transport(const std::string & protocol) const {
   return transports_.count(protocol) > 0;
 }
 
+bool TransportRegistry::empty() const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  return transports_.empty();
+}
+
 void TransportRegistry::shutdown_all(SubscriptionManager & sub_mgr) {
   // Delegate to sub_mgr.shutdown() which triggers on_removed callbacks
   // for each active subscription, causing transport->stop() for each.
