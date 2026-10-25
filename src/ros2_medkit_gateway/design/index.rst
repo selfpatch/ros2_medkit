@@ -61,7 +61,11 @@ store from it:
   own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` (oldest
   fault evicted first), and serves them as ``FreezeFrameSource``. The host
   passes the config, a ``FaultEventSource`` that serves this capture alone,
-  and the ``PluginManager``, and returns the capture from
+  and the ``PluginManager``. ``FaultEventSource::subscribe`` replaces an
+  earlier callback, so a host with one upstream source puts a
+  ``FaultEventFanOut`` (``core/faults/fault_event_fan_out.hpp``) in front of
+  it and gives the capture and the fault SSE stream a branch each. The host
+  also returns the capture from
   ``GatewayServices::freeze_frames()``. The ROS 2 node feeds the same class
   through ``EntityFreezeFrameCapture``, which subscribes on the shared
   subscription executor and holds the startup catch-up until the events
