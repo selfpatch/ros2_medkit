@@ -32,16 +32,20 @@ class ResourceSamplerRegistry;
  * @brief ROS-aware plugin context.
  *
  * Extends the middleware-neutral PluginContext with the rclcpp::Node *
- * accessor used by ROS-coupled plugins. Lives in gateway_ros2 so that
- * gateway_core stays free of any rclcpp coupling, even at the level of
- * forward declarations or virtual signatures. Plugins that need ROS
- * primitives (subscriptions, service clients, parameter access) take a
- * RosPluginContext * member; plugins that only consume the neutral
- * surface can keep a PluginContext * and never see rclcpp.
+ * accessor used by ROS-coupled plugins. The header only forward-declares
+ * rclcpp::Node, so gateway_core includes it without any ROS include path.
+ * Plugins that need ROS primitives (subscriptions, service clients,
+ * parameter access) take a RosPluginContext * member; plugins that only
+ * consume the neutral surface can keep a PluginContext * and never see rclcpp.
+ *
+ * Every context the gateway hands out is a RosPluginContext. On a host
+ * without a ROS node (see CorePluginContext) node() returns nullptr, so a
+ * plugin that needs ROS checks it and declines to start.
  */
 class RosPluginContext : public PluginContext {
  public:
   /// Get the ROS 2 node pointer for subscriptions, service clients, etc.
+  /// Null on a host without a ROS node.
   virtual rclcpp::Node * node() const = 0;
 };
 
@@ -50,18 +54,17 @@ class RosPluginContext : public PluginContext {
  *
  * The gateway always passes a RosPluginContext through
  * GatewayPlugin::set_context, so this static_cast is safe for any
- * in-process plugin loaded by PluginManager. Out-of-process or
- * test-only PluginContext implementations that do not derive from
- * RosPluginContext must not be passed through this helper.
+ * in-process plugin loaded by PluginManager, on the ROS 2 node and on a
+ * host without one. Out-of-process or test-only PluginContext
+ * implementations that do not derive from RosPluginContext must not be
+ * passed through this helper.
  */
 inline RosPluginContext * as_ros_plugin_context(PluginContext & ctx) {
   return static_cast<RosPluginContext *>(&ctx);
 }
 
-/// Factory for the concrete gateway plugin context. Always returns a
-/// RosPluginContext because the gateway is itself a ROS 2 node; callers
-/// that only consume the neutral PluginContext API can hold the result
-/// as a unique_ptr<PluginContext>.
+/// Factory for the plugin context of the ROS 2 gateway node. Its node() is the
+/// gateway node. A host without a node uses make_core_plugin_context().
 std::unique_ptr<RosPluginContext> make_gateway_plugin_context(GatewayNode * node, FaultManager * fault_manager,
                                                               ResourceSamplerRegistry * sampler_registry = nullptr);
 
