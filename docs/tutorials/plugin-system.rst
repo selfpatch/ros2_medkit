@@ -252,7 +252,7 @@ Plugin Lifecycle
 3. ``create_plugin()`` factory function creates the plugin instance
 4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()`` / ``get_data_provider()`` / ``get_operation_provider()`` / ``get_fault_provider()``
 5. ``configure()`` is called with per-plugin JSON config
-6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
+6. ``set_context()`` provides ``PluginContext`` with entity cache, faults, locks, and HTTP utilities, and the ROS 2 node when the host has one
 7. ``get_routes()`` returns custom REST endpoint definitions as ``vector<PluginRoute>``
 8. Runtime: subsystem managers call provider methods as needed
 9. ``shutdown()`` is called before the plugin is destroyed
@@ -263,7 +263,7 @@ PluginContext
 After ``configure()``, the gateway calls ``set_context()`` with a ``PluginContext`` reference
 providing access to gateway data and utilities:
 
-- ``node()`` - ROS 2 node pointer for service clients, timers, and parameter access.
+- ``node()`` - ROS 2 node pointer for service clients, timers, and parameter access. Null when the host is a program that hosts the core without a ROS 2 node (see ``CorePluginContext`` in the gateway README). A plugin that needs ROS checks it and declines to start; a plugin that needs no ROS never calls it. ``as_ros_plugin_context()`` is valid on every host.
 
   .. warning::
 
