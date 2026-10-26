@@ -55,6 +55,7 @@
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
+#include "ros2_medkit_gateway/core/trigger_host.hpp"
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
@@ -497,8 +498,7 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // Trigger infrastructure (destroyed after rest_server_)
   std::unique_ptr<ResourceChangeNotifier> resource_change_notifier_;
   std::unique_ptr<ConditionRegistry> condition_registry_;
-  std::unique_ptr<TriggerStore> trigger_store_;
-  std::unique_ptr<TriggerManager> trigger_mgr_;
+  TriggerHost trigger_host_;
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
   std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
