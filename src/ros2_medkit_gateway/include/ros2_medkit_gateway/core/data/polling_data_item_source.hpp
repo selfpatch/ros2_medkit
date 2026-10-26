@@ -49,8 +49,9 @@ class PollingDataItemSource : public DataItemSource {
   std::shared_ptr<Shared> shared_;
 };
 
-/// A polling source over `read_plugin_data_item`: the value is what `GET /{entity}/data/{item}` answers for an entity
-/// a plugin serves. `plugins` must outlive the source.
+/// A polling source over `read_plugin_data_item`. The sample is the `data` field of what
+/// `GET /{entity}/data/{item}` answers for an entity a plugin serves, which is what a topic trigger sees: the message.
+/// A body with no `data` field is the sample as it is. `plugins` must outlive the source.
 std::unique_ptr<DataItemSource> make_plugin_data_item_source(PluginManager * plugins,
                                                              std::chrono::milliseconds interval);
 

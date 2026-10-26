@@ -316,6 +316,10 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
     ++read_calls;
     const int pinned_value = pinned.load();
     const int value = pinned_value >= 0 ? pinned_value : ++reads;
+    if (wrapped) {
+      return gw::dto::DataValue{
+          {{"id", resource_name}, {"data", {{"value", value}}}, {"x-medkit", {{"source", "plugin"}}}}};
+    }
     return gw::dto::DataValue{{{"source", "plugin"}, {"name", resource_name}, {"value", value}}};
   }
   tl::expected<gw::dto::DataWriteResult, gw::DataProviderErrorInfo> write_data(const std::string & /*entity_id*/,
@@ -328,6 +332,8 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   // At or above zero every read answers this value instead of the counter.
   std::atomic<int> pinned{-1};
   std::atomic<int> read_calls{0};
+  // True: reads answer the body of a topic item, {id, data, x-medkit}, with the value inside data.
+  std::atomic<bool> wrapped{false};
 };
 
 // A fault event feed the check drives by hand.
@@ -1115,6 +1121,7 @@ bool check_triggers() {
   services.mutable_cache().update_apps({plugin_app});
   auto & plugin = services.add_data_plugin({"plugin_app"});
   plugin.pinned = 10;
+  plugin.wrapped = true;
   ControlledFaultEvents upstream;
   gw::FaultEventFanOut fan_out(upstream);
   auto sse_branch = fan_out.make_branch();
