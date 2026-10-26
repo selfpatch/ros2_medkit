@@ -31,6 +31,17 @@ not installed, so the PostgreSQL backend is not built.
   confirmation. A data trigger on a plugin-served item does not fire while the value is below its range, fires once when the value
   enters it, and the item is read again and again by the core's polling source. A fourth trigger with `max_triggers = 3` answers
   503. A limit below 1 or past `INT_MAX` and a polling interval outside 100-60000 ms fall back with a notice.
+- Plugin context: `context_plugin.cpp` builds as a shared object without ROS. The core `PluginManager` loads it, a
+  `make_core_plugin_context()` context goes to it, and its routes and `DataProvider` answer over HTTP. The plugin gets a null
+  `node()`, reads the host's entities, registers a capability, takes, checks and releases a lock, lists faults, reaches the
+  notifier and the condition registry, and its entity change notification reaches the host's callback. A route on an unknown
+  entity answers 404.
+- Fault-trigger engine: a host built by `make_fault_trigger_host()` over that plugin. A rule created over HTTP reports nothing
+  while the plugin's value is below the threshold. When the value crosses it, the fault goes through the host's fault manager
+  into the host's single event source, and the fault SSE stream and the freeze-frame capture (which holds the value that crossed
+  the threshold) both get the confirmation. When the value comes back the engine clears the fault. A rule on an unknown app
+  answers 404, a disabled configuration or a host with no plugin builds no engine, and a polling interval below 50 ms is raised
+  and one past `INT_MAX` is capped, each with a notice.
 - Bulk data: a store built by `make_bulk_data_store()` takes an upload over HTTP, lists it, returns it byte-equal and deletes
   it; an upload past `max_upload_size` is refused; the categories do not contain `rosbags` when the fault manager serves none.
 - `GET /` capabilities: `bulk_data` and `cyclic_subscriptions` are false for services without a store, rosbags, transport or
@@ -57,8 +68,8 @@ not installed, so the PostgreSQL backend is not built.
   nothing, and the jobs then wait at most one period.
 - A `correlation.cleanup_interval_sec` of 9e9 does not overflow the due time.
 
-The Dockerfile also runs `ldd` on the binary and fails when `rclcpp` appears.
+The Dockerfile also runs `ldd` on the binary and on the plugin and fails when `rclcpp` appears.
 
 The script sends only the needed source directories to `docker build` as the build
-context. CI runs the same CMake steps in an `ubuntu:20.04` container (job `cores-without-ros`).
+context. The build runs with `-q`; when it fails, the script repeats it with the full log, so the compiler message is printed. CI runs the same CMake steps in an `ubuntu:20.04` container (job `cores-without-ros`).
 `COLCON_IGNORE` keeps colcon from treating this directory as a package.
