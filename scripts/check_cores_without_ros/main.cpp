@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -52,6 +53,7 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
+#include "ros2_medkit_gateway/core/fault_trigger_host.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_fan_out.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
@@ -71,6 +73,7 @@
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/core_plugin_context.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
@@ -138,9 +141,19 @@ namespace gw = ros2_medkit_gateway;
 // Minimal transports: every call answers "not supported".
 class NoFaultTransport : public gw::FaultServiceTransport {
  public:
-  gw::FaultResult report_fault(const std::string & /*fault_code*/, uint8_t /*severity*/,
-                               const std::string & /*description*/, const std::string & /*source_id*/) override {
-    return none();
+  gw::FaultResult report_fault(const std::string & fault_code, uint8_t /*severity*/,
+                               const std::string & /*description*/, const std::string & source_id) override {
+    std::function<void(const std::string &, const std::string &)> hook;
+    {
+      std::lock_guard<std::mutex> lock(detail_mutex_);
+      hook = on_report_;
+    }
+    if (!hook) {
+      return none();
+    }
+    ++reports;
+    hook(fault_code, source_id);
+    return {true, {}, {}, gw::FaultFailure::Declined};
   }
   // Once set, every list answers one fault whose occurrence_count grows with each call.
   gw::FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
@@ -177,7 +190,11 @@ class NoFaultTransport : public gw::FaultServiceTransport {
     return none();
   }
   gw::FaultResult clear_fault(const std::string & /*fault_code*/, bool /*skip_correlation_auto_clear*/) override {
-    return none();
+    if (!on_report_set()) {
+      return none();
+    }
+    ++clears;
+    return {true, {}, {}, gw::FaultFailure::Declined};
   }
   gw::FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*topic*/) override {
     return none();
@@ -197,11 +214,23 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   bool serves_rosbags() const override {
     return rosbags.load();
   }
+  // Once set, a report is accepted and `hook` is called with its fault code and source.
+  void set_on_report(std::function<void(const std::string &, const std::string &)> hook) {
+    std::lock_guard<std::mutex> lock(detail_mutex_);
+    on_report_ = std::move(hook);
+  }
   std::atomic<bool> reports_faults{false};
   std::atomic<bool> rosbags{false};
   std::atomic<int> list_calls{0};
+  std::atomic<int> reports{0};
+  std::atomic<int> clears{0};
 
  private:
+  bool on_report_set() {
+    std::lock_guard<std::mutex> lock(detail_mutex_);
+    return static_cast<bool>(on_report_);
+  }
+  std::function<void(const std::string &, const std::string &)> on_report_;
   std::mutex detail_mutex_;
   std::map<std::string, std::string> detail_sources_;
   static gw::FaultResult none() {
@@ -537,7 +566,7 @@ class MinimalServices : public gw::GatewayServices {
     return bulk_store_.get();
   }
   gw::FaultTriggerEngine * fault_trigger_engine() override {
-    return nullptr;
+    return fault_trigger_engine_;
   }
   gw::FreezeFrameSource * freeze_frames() override {
     return freeze_frames_;
@@ -585,6 +614,14 @@ class MinimalServices : public gw::GatewayServices {
   void set_trigger_manager(gw::TriggerManager * triggers) {
     triggers_ = triggers;
   }
+  void set_fault_trigger_engine(gw::FaultTriggerEngine * engine) {
+    fault_trigger_engine_ = engine;
+  }
+  // An empty plugin manager, for plugins loaded from shared objects.
+  gw::PluginManager & make_plugin_manager() {
+    plugins_ = std::make_unique<gw::PluginManager>();
+    return *plugins_;
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
@@ -598,6 +635,7 @@ class MinimalServices : public gw::GatewayServices {
   gw::LockManager * locks_{nullptr};
   gw::ScriptManager * scripts_{nullptr};
   gw::TriggerManager * triggers_{nullptr};
+  gw::FaultTriggerEngine * fault_trigger_engine_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -1207,6 +1245,191 @@ bool check_triggers() {
   return ok;
 }
 
+// A plugin with no ROS dependency, loaded from a shared object through the core PluginManager, gets the core plugin
+// context: its routes and data provider answer over HTTP, it reaches the services the context documents and its node is
+// null. The fault-trigger engine of the core host reads the plugin's data, reports through the host's fault manager
+// into the host's single event source, and the fault SSE stream and the freeze-frame capture both get the confirmation.
+bool check_plugin_context_and_fault_triggers() {
+  bool ok = true;
+  MinimalServices services;
+  services.mutable_cache().update_apps({online_app("plugin_app", "Plugin app")});
+  gw::LockManager locks(services.entity_cache(), gw::LockConfig{});
+  services.set_lock_manager(&locks);
+  auto & plugins = services.make_plugin_manager();
+  const auto loaded = plugins.load_plugins(
+      {gw::PluginConfig{"check_context_plugin", CHECK_CONTEXT_PLUGIN_PATH, nlohmann::json::object()}});
+  ok &= check(loaded == 1, "the core PluginManager loads a plugin built without ROS");
+  plugins.configure_plugins();
+  plugins.register_entity_ownership("check_context_plugin", {"plugin_app"});
+  gw::ResourceChangeNotifier notifier;
+  gw::ConditionRegistry conditions;
+  std::atomic<int> notified{0};
+  gw::CorePluginContextWiring wiring;
+  wiring.notifier = [&notifier] {
+    return &notifier;
+  };
+  wiring.conditions = [&conditions] {
+    return &conditions;
+  };
+  wiring.on_entities_changed = [&notified](const gw::EntityChangeScope &) {
+    ++notified;
+  };
+  auto context = gw::make_core_plugin_context(services, wiring);
+  ok &= check(context->node() == nullptr, "the core plugin context has no ROS node");
+  plugins.set_context(*context);
+
+  ControlledFaultEvents upstream;
+  gw::FaultEventFanOut fan_out(upstream);
+  auto sse_branch = fan_out.make_branch();
+  auto capture_branch = fan_out.make_branch();
+  auto capture =
+      gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, *capture_branch, services.plugin_manager());
+  ok &= check(capture != nullptr, "the core builds a freeze-frame capture over the loaded plugin");
+  if (!capture) {
+    return false;
+  }
+  services.set_freeze_frames(capture.get());
+  services.set_fault_events(sse_branch.get());
+  auto & transport = services.fault_transport();
+  transport.serve_detail("SPEED_HIGH", "plugin_app");
+  // A report accepted by the host's fault manager confirms on the host's single event source.
+  transport.set_on_report([&upstream](const std::string & code, const std::string & source) {
+    upstream.confirm(code, source);
+  });
+
+  gw::FaultTriggerHostConfig engine_config;
+  engine_config.poll_interval_ms = 50;
+  gw::FaultTriggerHostWiring engine_wiring;
+  engine_wiring.cache = &services.entity_cache();
+  engine_wiring.plugins = services.plugin_manager();
+  engine_wiring.faults = services.fault_manager();
+  {
+    gw::FaultTriggerHostConfig disabled = engine_config;
+    disabled.enabled = false;
+    gw::PluginManager no_plugins;
+    auto without_plugins = engine_wiring;
+    without_plugins.plugins = &no_plugins;
+    ok &= check(gw::make_fault_trigger_host(disabled, engine_wiring) == nullptr,
+                "a disabled configuration builds no fault-trigger engine");
+    ok &= check(gw::make_fault_trigger_host(engine_config, without_plugins) == nullptr,
+                "a host with no plugin loaded builds no fault-trigger engine");
+  }
+  std::vector<std::string> notices;
+  auto noticing = engine_wiring;
+  noticing.warn = [&notices](const std::string & message) {
+    notices.push_back(message);
+  };
+  {
+    gw::FaultTriggerHostConfig low = engine_config;
+    low.poll_interval_ms = 5;
+    auto raised = gw::make_fault_trigger_host(low, noticing);
+    ok &= check(raised && raised->poll_interval_ms() == 50 && notices.size() == 1,
+                "a polling interval below 50 ms is raised to 50 ms with a notice");
+    low.poll_interval_ms = 9000000000LL;
+    auto capped = gw::make_fault_trigger_host(low, noticing);
+    ok &= check(capped && capped->poll_interval_ms() == std::numeric_limits<int>::max() && notices.size() == 2,
+                "a polling interval past what an int holds is capped at INT_MAX with a notice");
+  }
+  auto engine_host = gw::make_fault_trigger_host(engine_config, engine_wiring);
+  ok &= check(engine_host != nullptr, "the core builds the fault-trigger engine for a host with a plugin");
+  if (!engine_host) {
+    return false;
+  }
+  services.set_fault_trigger_engine(&engine_host->engine());
+
+  RunningServer running(services);
+  auto client = make_client(running.port());
+
+  auto described = client.Get("/api/v1/x-check/context");
+  const auto reach = described ? nlohmann::json::parse(described->body, nullptr, false) : nlohmann::json();
+  ok &= check(described && described->status == 200 && reach.is_object(), "a plugin route answers over HTTP");
+  if (reach.is_object()) {
+    ok &= check(reach.value("node_is_null", false), "the plugin gets a null node from the context");
+    ok &= check(reach.value("entity_found", false) && reach.value("snapshot_apps", 0) == 1,
+                "the plugin reads the host's entities through the context");
+    ok &= check(reach.value("type_capabilities", nlohmann::json::array()) == nlohmann::json::array({"x-check-context"}),
+                "the capability the plugin registered is listed");
+    ok &= check(reach.value("notifier", false) && reach.value("conditions", false),
+                "the plugin reaches the host's change notifier and condition registry");
+    ok &= check(reach.value("lock_acquired", false) && reach.value("lock_denies_other_client", false) &&
+                    reach.value("lock_released", false),
+                "the plugin takes, checks and releases a lock on the host's lock manager");
+    ok &= check(reach.contains("faults") && reach["faults"].is_object(), "the plugin lists the host's faults");
+  }
+  ok &= check(notified.load() == 1, "an entity change the plugin reports reaches the host's callback");
+  auto entity_route = client.Get("/api/v1/apps/plugin_app/x-check-context");
+  ok &= check(entity_route && entity_route->status == 200, "an entity-scoped plugin route validates the entity");
+  auto unknown_entity = client.Get("/api/v1/apps/no_such_app/x-check-context");
+  ok &= check(unknown_entity && unknown_entity->status == 404, "the same route answers 404 for an unknown entity");
+  auto data = client.Get("/api/v1/apps/plugin_app/data");
+  ok &= check(data && data->status == 200 && data->body.find("speed") != std::string::npos,
+              "the plugin's data provider answers over HTTP");
+
+  const nlohmann::json rule = {{"data_name", "speed"},
+                               {"operator", ">"},
+                               {"threshold", 50},
+                               {"fault_code", "SPEED_HIGH"},
+                               {"severity", "ERROR"}};
+  auto unknown_app = client.Post("/api/v1/apps/no_such_app/fault-triggers", rule.dump(), "application/json");
+  ok &= check(unknown_app && unknown_app->status == 404, "a rule on an unknown app is refused with 404");
+  auto created = client.Post("/api/v1/apps/plugin_app/fault-triggers", rule.dump(), "application/json");
+  ok &= check(created && created->status == 201, "a threshold rule is created over HTTP");
+  const auto rule_json = created ? nlohmann::json::parse(created->body, nullptr, false) : nlohmann::json();
+  const std::string rule_id = rule_json.is_object() ? rule_json.value("id", "") : "";
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
+  ok &= check(transport.reports.load() == 0, "a value below the threshold reports no fault");
+
+  std::atomic<bool> sse_seen{false};
+  std::atomic<bool> stream_done{false};
+  std::thread stream([&] {
+    auto stream_client = make_client(running.port());
+    std::string buffer;
+    stream_client.Get(
+        "/api/v1/faults/stream", httplib::Headers{},
+        [](const httplib::Response &) {
+          return true;
+        },
+        [&](const char * chunk, size_t len) {
+          buffer.append(chunk, len);
+          if (buffer.find("SPEED_HIGH") != std::string::npos) {
+            sse_seen = true;
+          }
+          return !sse_seen && !stream_done;
+        });
+  });
+  // The engine reports on every poll while the value stays past the threshold, so the stream sees one after it
+  // attaches.
+  client.Get("/api/v1/x-check/set?value=80");
+  ok &= check(wait_until([&] {
+                return transport.reports.load() >= 1;
+              }),
+              "a value past the threshold reports the fault through the host's fault manager");
+  ok &= check(wait_until([&] {
+                return sse_seen.load();
+              }),
+              "the fault SSE stream gets the confirmation from the host's single event source");
+  stream_done = true;
+  stream.join();
+  ok &= check(wait_until([&] {
+                return !capture->frames_for("SPEED_HIGH").empty();
+              }),
+              "the freeze-frame capture gets the same confirmation");
+  const auto detail = client.Get("/api/v1/apps/plugin_app/faults/SPEED_HIGH");
+  const auto frame = detail ? freeze_frame_of(detail->body, "plugin_app") : nlohmann::json();
+  ok &= check(!frame.is_null() && frame["x-medkit"]["full_data"].value("speed", -1) == 80,
+              "the freeze frame holds the value that crossed the threshold");
+  client.Get("/api/v1/x-check/set?value=10");
+  ok &= check(wait_until([&] {
+                return transport.clears.load() >= 1;
+              }),
+              "the engine clears the fault when the value comes back");
+  if (!rule_id.empty()) {
+    auto removed = client.Delete("/api/v1/apps/plugin_app/fault-triggers/" + rule_id);
+    ok &= check(removed && removed->status == 204, "the rule is deleted over HTTP");
+  }
+  return ok;
+}
+
 }  // namespace
 
 static int run() {
@@ -1791,6 +2014,7 @@ static int run() {
   ok &= check_aggregation_host();
   ok &= check_lifecycle_without_reader();
   ok &= check_triggers();
+  ok &= check_plugin_context_and_fault_triggers();
 
   return ok ? 0 : 1;
 }
