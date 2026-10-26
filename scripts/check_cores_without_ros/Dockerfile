@@ -9,5 +9,5 @@ COPY src/ros2_medkit_gateway src/ros2_medkit_gateway
 COPY scripts/check_cores_without_ros scripts/check_cores_without_ros
 RUN CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b --parallel "$(nproc)"
 RUN CXX=g++-9 scripts/check_cores_without_ros/hosts/run.sh
-RUN ldd /tmp/b/check_cores_without_ros | tee /tmp/ldd.txt && ! grep -q rclcpp /tmp/ldd.txt
+RUN ldd /tmp/b/check_cores_without_ros /tmp/b/libcheck_context_plugin.so | tee /tmp/ldd.txt && ! grep -q rclcpp /tmp/ldd.txt
 CMD ["sh", "-c", "ldd /tmp/b/check_cores_without_ros; /tmp/b/check_cores_without_ros"]
