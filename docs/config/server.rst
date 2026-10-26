@@ -846,6 +846,13 @@ Example:
          storage:
            path: "/var/lib/ros2_medkit/triggers.db"
 
+A program that hosts the gateway core instead of the ROS 2 node sets the same
+values in ``TriggerHostConfig`` (``enabled``, ``max_triggers``,
+``on_restart_behavior``, ``storage_path``). It has one more setting, which the
+node does not read: ``data_poll_interval_ms`` (default ``1000``, clamped to
+``100`` - ``60000`` with a warning) is the period at which a data trigger on an
+item a plugin serves reads that item. A trigger has no interval of its own.
+
 Fault-trigger rules
 ^^^^^^^^^^^^^^^^^^^
 

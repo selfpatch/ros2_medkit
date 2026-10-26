@@ -87,6 +87,18 @@ store from it:
   The host passes the manager to ``RESTServer::set_aggregation_manager()`` and
   calls ``merge_peers()`` on every entity refresh. The ROS 2 node reads the
   ``aggregation.*`` parameters into the config and uses the same class.
+* ``make_trigger_host`` (``core/trigger_host.hpp``) builds the trigger store and
+  the ``TriggerManager`` from a ``TriggerHostConfig`` (the ``triggers.*``
+  names and defaults, plus ``data_poll_interval_ms``), wires the entity lookups
+  to the entity cache and restores persistent triggers. Fault triggers are fed
+  by a ``TriggerFaultFeed`` over a ``FaultEventSource`` (a ``FaultEventFanOut``
+  branch when the source is shared). A data trigger with a known topic reads
+  from the ``TopicSubscriptionTransport``. Any other data trigger reads from a
+  ``DataItemSource``; ``PollingDataItemSource`` reads the item through
+  ``read_plugin_data_item`` once per ``data_poll_interval_ms``, so a host whose
+  data a plugin serves needs no topics. The ROS 2 node passes the topic
+  transport and feeds fault triggers through ``TriggerFaultSubscriber``, a ROS
+  2 event source under the same feed.
 * ``RESTServer`` takes a null ``LifecycleStateReader`` for a host without
   lifecycle nodes. ``GET /{entity}/status`` then derives readiness from
   presence and ``PUT /{entity}/status/{action}`` answers 501 without a
