@@ -175,6 +175,14 @@ std::unique_ptr<DataItemSource> make_plugin_data_item_source(PluginManager * plu
         if (!item) {
           return tl::make_unexpected(item.error().message);
         }
+        // A topic trigger sees the message, which is the `data` field of the item body. The same trigger path must
+        // work here. A body without `data` (a plugin's own shape) is delivered whole.
+        if (item->content.is_object()) {
+          const auto data = item->content.find("data");
+          if (data != item->content.end()) {
+            return std::move(*data);
+          }
+        }
         return std::move(item->content);
       },
       interval);

@@ -95,7 +95,8 @@ store from it:
   branch when the source is shared). A data trigger with a known topic reads
   from the ``TopicSubscriptionTransport``. Any other data trigger reads from a
   ``DataItemSource``; ``PollingDataItemSource`` reads the item through
-  ``read_plugin_data_item`` once per ``data_poll_interval_ms``, so a host whose
+  ``read_plugin_data_item`` once per ``data_poll_interval_ms`` and delivers the
+  ``data`` field of the item body, as a topic trigger sees the message, so a host whose
   data a plugin serves needs no topics. The ROS 2 node passes the topic
   transport and feeds fault triggers through ``TriggerFaultSubscriber``, a ROS
   2 event source under the same feed.
