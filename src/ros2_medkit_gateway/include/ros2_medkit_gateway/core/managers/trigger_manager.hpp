@@ -32,6 +32,7 @@
 
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
+#include "ros2_medkit_gateway/core/transports/data_item_source.hpp"
 #include "ros2_medkit_gateway/core/transports/topic_subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/trigger_store.hpp"
 
@@ -91,8 +92,12 @@ class TriggerManager {
   ///                      topic subscriptions. When null the manager retains
   ///                      its CRUD/dispatch behaviour but never subscribes
   ///                      (useful in tests that don't need topic routing).
+  /// @param data_source   Optional source for data triggers that have no topic. With a transport and a source, a
+  ///                      trigger whose topic is known uses the transport and every other data trigger uses the
+  ///                      source. With a source alone, every data trigger uses it.
   TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
-                 const TriggerConfig & config, std::shared_ptr<TopicSubscriptionTransport> topic_transport = nullptr);
+                 const TriggerConfig & config, std::shared_ptr<TopicSubscriptionTransport> topic_transport = nullptr,
+                 std::shared_ptr<DataItemSource> data_source = nullptr);
   ~TriggerManager();
 
   // Non-copyable, non-movable (owns trigger state and notifier subscription)
@@ -289,6 +294,9 @@ class TriggerManager {
   // Data trigger topic transport (shared, optional). The adapter side owns
   // the rclcpp resources; the manager only stores per-trigger handles.
   std::shared_ptr<TopicSubscriptionTransport> topic_transport_;
+
+  // Data trigger item source (shared, optional). Handles live in topic_handles_ with the topic ones.
+  std::shared_ptr<DataItemSource> data_source_;
 
   // Per-trigger live subscription handles. Destruction of a handle
   // unsubscribes the underlying topic; the manager removes entries from
