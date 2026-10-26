@@ -287,8 +287,8 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
     }
     if (resolved_topic_name.empty()) {
       MEDKIT_LOG_WARN(HandlerContext::logger(),
-                      "Could not resolve resource_path '%s' to a ROS 2 topic for entity '%s'. "
-                      "Topic subscription will be attempted when topic becomes available.",
+                      "Could not resolve resource_path '%s' to a data source for entity '%s'. "
+                      "The trigger resolves it when the entity serves the item.",
                       parsed->resource_path.c_str(), entity_id.c_str());
     }
   }
