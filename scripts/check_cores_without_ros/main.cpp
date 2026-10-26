@@ -69,10 +69,12 @@
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/transports/action_transport.hpp"
@@ -80,6 +82,7 @@
 #include "ros2_medkit_gateway/core/transports/parameter_transport.hpp"
 #include "ros2_medkit_gateway/core/transports/service_transport.hpp"
 #include "ros2_medkit_gateway/core/transports/topic_transport.hpp"
+#include "ros2_medkit_gateway/core/trigger_host.hpp"
 #include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 
 namespace core = ros2_medkit_fault_reporter::core;
@@ -281,7 +284,10 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   }
   tl::expected<gw::dto::DataValue, gw::DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
                                                                         const std::string & resource_name) override {
-    return gw::dto::DataValue{{{"source", "plugin"}, {"name", resource_name}, {"value", ++reads}}};
+    ++read_calls;
+    const int pinned_value = pinned.load();
+    const int value = pinned_value >= 0 ? pinned_value : ++reads;
+    return gw::dto::DataValue{{{"source", "plugin"}, {"name", resource_name}, {"value", value}}};
   }
   tl::expected<gw::dto::DataWriteResult, gw::DataProviderErrorInfo> write_data(const std::string & /*entity_id*/,
                                                                                const std::string & /*resource_name*/,
@@ -290,6 +296,9 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   }
   std::atomic<int> reads{0};
   std::atomic<int> speed{10};
+  // At or above zero every read answers this value instead of the counter.
+  std::atomic<int> pinned{-1};
+  std::atomic<int> read_calls{0};
 };
 
 // A fault event feed the check drives by hand.
@@ -540,7 +549,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::TriggerManager * trigger_manager() override {
-    return nullptr;
+    return triggers_;
   }
 
   gw::ThreadSafeEntityCache & mutable_cache() {
@@ -573,6 +582,9 @@ class MinimalServices : public gw::GatewayServices {
   void set_script_manager(gw::ScriptManager * scripts) {
     scripts_ = scripts;
   }
+  void set_trigger_manager(gw::TriggerManager * triggers) {
+    triggers_ = triggers;
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
@@ -585,6 +597,7 @@ class MinimalServices : public gw::GatewayServices {
   gw::FaultEventSource * fault_events_{nullptr};
   gw::LockManager * locks_{nullptr};
   gw::ScriptManager * scripts_{nullptr};
+  gw::TriggerManager * triggers_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -626,6 +639,9 @@ class RunningServer {
                                                gw::AuthConfig{}, gw::RateLimitConfig{}, rest);
     if (aggregation != nullptr) {
       server_->set_aggregation_manager(aggregation);
+    }
+    if (auto * triggers = services.trigger_manager()) {
+      server_->set_trigger_handlers(*triggers);
     }
     thread_ = std::thread([this] {
       server_->start();
@@ -985,6 +1001,209 @@ bool check_lifecycle_without_reader() {
               "without a reader an offline node is notReady");
   auto restart = client.Put("/api/v1/apps/managed_app/status/restart", "", "application/json");
   ok &= check(restart && restart->status == 501, "without a lifecycle provider a transition answers 501");
+  return ok;
+}
+
+// Collects the events of one trigger's SSE stream until the stream ends.
+class TriggerEventReader {
+ public:
+  TriggerEventReader(int port, const std::string & path) {
+    thread_ = std::thread([this, port, path] {
+      httplib::Client client("127.0.0.1", port);
+      client.set_connection_timeout(5);
+      client.set_read_timeout(60);
+      std::string buffer;
+      client.Get(
+          path, httplib::Headers{},
+          [](const httplib::Response &) {
+            return true;
+          },
+          [&](const char * data, size_t len) {
+            buffer.append(data, len);
+            for (size_t end = buffer.find("\n\n"); end != std::string::npos; end = buffer.find("\n\n")) {
+              const std::string frame = buffer.substr(0, end);
+              buffer.erase(0, end + 2);
+              const auto at = frame.find("data: ");
+              if (at != std::string::npos) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                events_.push_back(nlohmann::json::parse(frame.substr(at + 6), nullptr, false));
+              }
+            }
+            return true;
+          });
+    });
+  }
+  // The stream ends when the trigger is deleted.
+  void join() {
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+  ~TriggerEventReader() {
+    join();
+  }
+  TriggerEventReader(const TriggerEventReader &) = delete;
+  TriggerEventReader & operator=(const TriggerEventReader &) = delete;
+  TriggerEventReader(TriggerEventReader &&) = delete;
+  TriggerEventReader & operator=(TriggerEventReader &&) = delete;
+  std::vector<nlohmann::json> events() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return events_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<nlohmann::json> events_;
+  std::thread thread_;
+};
+
+httplib::Result post_trigger(httplib::Client & client, const std::string & resource, const nlohmann::json & condition,
+                             const std::string & path = "") {
+  nlohmann::json body = {{"resource", resource}, {"trigger_condition", condition}, {"multishot", true}};
+  if (!path.empty()) {
+    body["path"] = path;
+  }
+  return client.Post("/api/v1/apps/plugin_app/triggers", body.dump(), "application/json");
+}
+
+// Triggers on a host with no ROS node: a fault confirmation from the host's single event source (shared with the fault
+// SSE stream through the fan-out) fires a fault trigger, a plugin-served data item fires a data trigger when it crosses
+// a threshold, and the trigger count is bounded.
+bool check_triggers() {
+  bool ok = true;
+  MinimalServices services;
+  auto plugin_app = hosted_app();
+  plugin_app.id = "plugin_app";
+  services.mutable_cache().update_apps({plugin_app});
+  auto & plugin = services.add_data_plugin({"plugin_app"});
+  plugin.pinned = 10;
+  ControlledFaultEvents upstream;
+  gw::FaultEventFanOut fan_out(upstream);
+  auto sse_branch = fan_out.make_branch();
+  services.set_fault_events(sse_branch.get());
+  gw::ResourceChangeNotifier notifier;
+  gw::ConditionRegistry conditions;
+  gw::register_builtin_conditions(conditions);
+  gw::TriggerHostConfig config;
+  config.max_triggers = 3;
+  config.data_poll_interval_ms = 100;
+  gw::TriggerHostWiring wiring;
+  wiring.cache = &services.entity_cache();
+  wiring.polled_plugins = services.plugin_manager();
+  auto trigger_branch = fan_out.make_branch();
+  wiring.fault_events = trigger_branch.get();
+  auto host = gw::make_trigger_host(config, notifier, conditions, wiring);
+  ok &= check(host.max_triggers == 3 && host.data_poll_interval_ms == 100,
+              "the host builds with the configured trigger limit and polling interval");
+  {
+    // Settings outside their documented range fall back with a notice; a disabled host builds nothing.
+    std::vector<std::string> notices;
+    auto wiring_with_notices = wiring;
+    wiring_with_notices.fault_events = nullptr;
+    wiring_with_notices.warn = [&notices](const std::string & message) {
+      notices.push_back(message);
+    };
+    gw::ResourceChangeNotifier other_notifier;
+    gw::ConditionRegistry other_conditions;
+    gw::TriggerHostConfig out_of_range;
+    out_of_range.max_triggers = 0;
+    out_of_range.data_poll_interval_ms = 5;
+    auto low = gw::make_trigger_host(out_of_range, other_notifier, other_conditions, wiring_with_notices);
+    ok &= check(low.max_triggers == 1000 && low.data_poll_interval_ms == 100 && notices.size() == 2,
+                "a limit below 1 uses 1000 and an interval below 100 ms is raised to 100 ms, each with a notice");
+    out_of_range.max_triggers = 5000000000LL;
+    out_of_range.data_poll_interval_ms = 1000000000LL;
+    auto high = gw::make_trigger_host(out_of_range, other_notifier, other_conditions, wiring_with_notices);
+    ok &= check(high.max_triggers == 1000 && high.data_poll_interval_ms == 60000 && notices.size() == 4,
+                "a limit past what an int holds uses 1000 and an interval past 60 s is lowered to 60 s");
+    out_of_range.enabled = false;
+    ok &= check(!gw::make_trigger_host(out_of_range, other_notifier, other_conditions, wiring_with_notices).manager,
+                "a disabled configuration builds no trigger manager");
+  }
+  services.set_trigger_manager(host.manager.get());
+  RunningServer running(services);
+  auto client = make_client(running.port());
+
+  // Fault trigger.
+  auto fault_trigger = post_trigger(client, "/api/v1/apps/plugin_app/faults", {{"condition_type", "OnChange"}});
+  ok &= check(fault_trigger && fault_trigger->status == 201, "a fault trigger is created over HTTP");
+  const auto fault_json = fault_trigger ? nlohmann::json::parse(fault_trigger->body, nullptr, false) : nlohmann::json();
+  const std::string fault_id = fault_json.is_object() ? fault_json.value("id", "") : "";
+  const std::string fault_events_path = fault_json.is_object() ? fault_json.value("event_source", "") : "";
+  TriggerEventReader fault_reader(running.port(), fault_events_path);
+  std::atomic<bool> sse_seen{false};
+  std::atomic<bool> stream_done{false};
+  std::thread fault_stream([&] {
+    auto stream_client = make_client(running.port());
+    std::string buffer;
+    stream_client.Get(
+        "/api/v1/faults/stream", httplib::Headers{},
+        [](const httplib::Response &) {
+          return true;
+        },
+        [&](const char * data, size_t len) {
+          buffer.append(data, len);
+          if (buffer.find("TRIGGER_FAULT") != std::string::npos) {
+            sse_seen = true;
+          }
+          return !sse_seen && !stream_done;
+        });
+  });
+  for (int i = 0; i < 60 && !sse_seen; ++i) {
+    upstream.confirm("TRIGGER_FAULT", "plugin_app");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  stream_done = true;
+  fault_stream.join();
+  ok &= check(sse_seen.load(), "the fault SSE stream still gets the confirmation");
+  const bool fault_fired = wait_until([&] {
+    return !fault_reader.events().empty();
+  });
+  ok &= check(fault_fired, "a confirmation from the host's event source fires the fault trigger");
+  if (fault_fired) {
+    const auto event = fault_reader.events().front();
+    ok &= check(event.contains("payload") && event["payload"].value("fault_code", "") == "TRIGGER_FAULT" &&
+                    event["payload"].value("event_type", "") == "fault_confirmed",
+                "the trigger event carries the confirmed fault");
+  }
+  if (!fault_id.empty()) {
+    client.Delete("/api/v1/apps/plugin_app/triggers/" + fault_id);
+  }
+  fault_reader.join();
+
+  // Data trigger on a plugin-served item.
+  auto data_trigger =
+      post_trigger(client, "/api/v1/apps/plugin_app/data/speed",
+                   {{"condition_type", "EnterRange"}, {"lower_bound", 50}, {"upper_bound", 100}}, "/value");
+  ok &= check(data_trigger && data_trigger->status == 201, "a data trigger on a plugin-served item is created");
+  const auto data_json = data_trigger ? nlohmann::json::parse(data_trigger->body, nullptr, false) : nlohmann::json();
+  const std::string data_id = data_json.is_object() ? data_json.value("id", "") : "";
+  TriggerEventReader data_reader(running.port(), data_json.is_object() ? data_json.value("event_source", "") : "");
+  const bool polled = wait_until([&] {
+    return plugin.read_calls.load() >= 5;
+  });
+  ok &= check(polled, "the host reads the data item again and again");
+  ok &= check(data_reader.events().empty(), "the data trigger does not fire while the value is below the range");
+  plugin.pinned = 60;
+  const bool data_fired = wait_until([&] {
+    return !data_reader.events().empty();
+  });
+  ok &= check(data_fired, "the data trigger fires when the value enters the range");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  ok &= check(data_reader.events().size() == 1, "the data trigger fires once, not on every sample");
+  if (!data_id.empty()) {
+    client.Delete("/api/v1/apps/plugin_app/triggers/" + data_id);
+  }
+  data_reader.join();
+
+  // The count limit.
+  std::vector<std::string> ids;
+  for (int i = 0; i < 3; ++i) {
+    auto created = post_trigger(client, "/api/v1/apps/plugin_app/faults", {{"condition_type", "OnChange"}});
+    ok &= check(created && created->status == 201, "a trigger below the limit is created");
+  }
+  auto refused = post_trigger(client, "/api/v1/apps/plugin_app/faults", {{"condition_type", "OnChange"}});
+  ok &= check(refused && refused->status == 503, "a trigger past triggers.max_triggers is refused with 503");
   return ok;
 }
 
@@ -1571,6 +1790,7 @@ static int run() {
   ok &= check_script_host();
   ok &= check_aggregation_host();
   ok &= check_lifecycle_without_reader();
+  ok &= check_triggers();
 
   return ok ? 0 : 1;
 }

@@ -26,6 +26,11 @@ not installed, so the PostgreSQL backend is not built.
   evicted past `max_faults`, a re-confirmation replaces the frame, and a disabled configuration builds no capture.
 - Fault event fan-out: one upstream source shared through `FaultEventFanOut` by the fault SSE stream (read over HTTP) and the
   capture: a confirmation shows up as an SSE event and as a freeze frame. Without the fan-out one source serves one consumer only.
+- Triggers: a host built by `make_trigger_host()` over the fan-out of the single fault event source. A fault trigger created over
+  HTTP fires on a confirmation, its event is read from the trigger's event stream, and the fault SSE stream still gets the
+  confirmation. A data trigger on a plugin-served item does not fire while the value is below its range, fires once when the value
+  enters it, and the item is read again and again by the core's polling source. A fourth trigger with `max_triggers = 3` answers
+  503. A limit below 1 or past `INT_MAX` and a polling interval outside 100-60000 ms fall back with a notice.
 - Bulk data: a store built by `make_bulk_data_store()` takes an upload over HTTP, lists it, returns it byte-equal and deletes
   it; an upload past `max_upload_size` is refused; the categories do not contain `rosbags` when the fault manager serves none.
 - `GET /` capabilities: `bulk_data` and `cyclic_subscriptions` are false for services without a store, rosbags, transport or
