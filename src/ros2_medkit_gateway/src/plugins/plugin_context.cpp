@@ -28,6 +28,10 @@ CorePluginContextWiring node_wiring(GatewayNode * node, FaultManager * fault_man
   CorePluginContextWiring wiring;
   wiring.fault_manager = fault_manager;
   wiring.sampler_registry = sampler_registry;
+  // A null node is allowed: the context then offers capabilities and samplers only.
+  if (!node) {
+    return wiring;
+  }
   wiring.notifier = [node] {
     return node->get_resource_change_notifier();
   };
@@ -52,7 +56,7 @@ CorePluginContextWiring node_wiring(GatewayNode * node, FaultManager * fault_man
 class GatewayPluginContext : public CorePluginContext {
  public:
   GatewayPluginContext(GatewayNode * node, FaultManager * fault_manager, ResourceSamplerRegistry * sampler_registry)
-    : CorePluginContext(*node, node_wiring(node, fault_manager, sampler_registry)), node_(node) {
+    : CorePluginContext(node, node_wiring(node, fault_manager, sampler_registry)), node_(node) {
   }
 
   rclcpp::Node * node() const override {

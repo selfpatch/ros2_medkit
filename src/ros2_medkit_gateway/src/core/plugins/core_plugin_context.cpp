@@ -54,7 +54,7 @@ std::string entity_type_to_url_segment(SovdEntityType type) {
 
 }  // namespace
 
-CorePluginContext::CorePluginContext(GatewayServices & services, CorePluginContextWiring wiring)
+CorePluginContext::CorePluginContext(GatewayServices * services, CorePluginContextWiring wiring)
   : services_(services), wiring_(std::move(wiring)) {
 }
 
@@ -63,7 +63,10 @@ rclcpp::Node * CorePluginContext::node() const {
 }
 
 std::optional<PluginEntityInfo> CorePluginContext::get_entity(const std::string & id) const {
-  const auto & cache = services_.entity_cache();
+  if (!services_) {
+    return std::nullopt;
+  }
+  const auto & cache = services_->entity_cache();
 
   if (auto comp = cache.get_component(id)) {
     return PluginEntityInfo{SovdEntityType::COMPONENT, id, comp->namespace_path, comp->fqn};
@@ -82,7 +85,10 @@ std::optional<PluginEntityInfo> CorePluginContext::get_entity(const std::string 
 
 std::vector<PluginEntityInfo> CorePluginContext::get_child_apps(const std::string & component_id) const {
   std::vector<PluginEntityInfo> result;
-  const auto & cache = services_.entity_cache();
+  if (!services_) {
+    return result;
+  }
+  const auto & cache = services_->entity_cache();
   auto app_ids = cache.get_apps_for_component(component_id);
   for (const auto & app_id : app_ids) {
     if (auto app = cache.get_app(app_id)) {
@@ -112,7 +118,7 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
     // the inner array.
     auto result = wiring_.fault_manager->list_faults("");
     if (result.success && result.data.contains("faults") && result.data["faults"].is_array()) {
-      const auto & cache = services_.entity_cache();
+      const auto & cache = services_->entity_cache();
       const auto source_fqns = faults::resolve_entity_source_fqns(cache, entity->type, entity_id);
       local_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
     }
@@ -218,7 +224,7 @@ std::vector<std::string> CorePluginContext::get_entity_capabilities(const std::s
 
 LockAccessResult CorePluginContext::check_lock(const std::string & entity_id, const std::string & client_id,
                                                const std::string & collection) const {
-  auto * lock_mgr = services_.lock_manager();
+  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
   if (!lock_mgr) {
     return LockAccessResult{true, "", "", ""};
   }
@@ -229,7 +235,7 @@ tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock(const std::str
                                                                   const std::string & client_id,
                                                                   const std::vector<std::string> & scopes,
                                                                   int expiration_seconds) {
-  auto * lock_mgr = services_.lock_manager();
+  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
   if (!lock_mgr) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
   }
@@ -238,7 +244,7 @@ tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock(const std::str
 
 tl::expected<void, LockError> CorePluginContext::release_lock(const std::string & entity_id,
                                                               const std::string & client_id) {
-  auto * lock_mgr = services_.lock_manager();
+  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
   if (!lock_mgr) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
   }
@@ -247,7 +253,10 @@ tl::expected<void, LockError> CorePluginContext::release_lock(const std::string 
 
 IntrospectionInput CorePluginContext::get_entity_snapshot() const {
   IntrospectionInput input;
-  const auto & cache = services_.entity_cache();
+  if (!services_) {
+    return input;
+  }
+  const auto & cache = services_->entity_cache();
   input.areas = cache.get_areas();
   input.components = cache.get_components();
   input.apps = cache.get_apps();
@@ -331,7 +340,7 @@ std::unique_ptr<CorePluginContext> make_core_plugin_context(GatewayServices & se
   if (!wiring.sampler_registry) {
     wiring.sampler_registry = services.sampler_registry();
   }
-  return std::make_unique<CorePluginContext>(services, std::move(wiring));
+  return std::make_unique<CorePluginContext>(&services, std::move(wiring));
 }
 
 }  // namespace ros2_medkit_gateway
