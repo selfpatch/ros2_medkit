@@ -32,6 +32,31 @@
 
 namespace ros2_medkit_gateway {
 
+/// Instance ids of the gateways a global `GET /faults` fan-out has already
+/// passed through, comma-separated. A gateway that finds its own id here has
+/// its faults in the answer already; one that does not answers for itself and
+/// for its own peers. See `plan_global_fault_fan_out`.
+inline constexpr const char * kFanOutVisitedHeader = "X-Medkit-Fan-Out-Visited";
+
+/// The ids on an `X-Medkit-Fan-Out-Visited` value, trimmed, empty entries dropped.
+inline std::vector<std::string> split_fan_out_visited(const std::string & value) {
+  std::vector<std::string> ids;
+  for (size_t start = 0; start <= value.size();) {
+    auto end = value.find(',', start);
+    if (end == std::string::npos) {
+      end = value.size();
+    }
+    std::string id = value.substr(start, end - start);
+    id.erase(0, id.find_first_not_of(" \t"));
+    id.erase(id.find_last_not_of(" \t") + 1);
+    if (!id.empty()) {
+      ids.push_back(std::move(id));
+    }
+    start = end + 1;
+  }
+  return ids;
+}
+
 /// A peer's name and where to reach it.
 struct PeerEndpoint {
   std::string name;
@@ -192,6 +217,14 @@ class AggregationManager {
 
   /// Get the number of known peers (static + discovered)
   size_t peer_count() const;
+
+  /// Random id of this gateway process, put on `X-Medkit-Fan-Out-Visited`.
+  ///
+  /// Generated, not configured: peer names are what the aggregator calls a
+  /// peer, so a gateway cannot recognise itself by one.
+  const std::string & instance_id() const {
+    return instance_id_;
+  }
 
   /**
    * @brief Add a dynamically discovered peer
@@ -392,10 +425,18 @@ class AggregationManager {
    *        list means "no matching peers" and produces an empty result with
    *        no fan-out. When null (default), all healthy peers are queried,
    *        preserving the pre-filtering behavior for global endpoints.
+   * @param extra_headers Sent on every peer request next to
+   *        `X-Medkit-No-Fan-Out`. When they carry `X-Medkit-Fan-Out-Visited`,
+   *        a peer whose instance id is on that path is not asked at all: its
+   *        answer is already counted, and asking it would hold a worker on
+   *        both sides until it answered empty. A peer that reports itself
+   *        partial makes this result partial too, with its failed peers named
+   *        `<peer>/<its peer>`.
    * @return FanOutResult with merged items and failure info.
    */
   FanOutResult fan_out_get(const std::string & path, const std::string & auth_header,
-                           const std::vector<std::string> * target_peers = nullptr);
+                           const std::vector<std::string> * target_peers = nullptr,
+                           const httplib::Headers & extra_headers = {});
 
   /**
    * @brief Get peer status for /health endpoint
@@ -406,6 +447,7 @@ class AggregationManager {
  private:
   AggregationConfig config_;
   log::Logger logger_;
+  std::string instance_id_;
   size_t static_peer_count_{0};  ///< Number of statically configured peers (not subject to max_discovered_peers)
   /// Whether a peer whose picture could not be refreshed can still be reached.
   ///

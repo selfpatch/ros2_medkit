@@ -491,6 +491,14 @@ into the local response. This applies to:
 - ``GET /api/v1/{entity_type}/{id}/logs``
 - ``GET /api/v1/faults`` (global fault list)
 
+The global fault list reaches the whole chain: in A -> B -> C, ``GET
+/api/v1/faults`` on A lists the faults of A, B and C. Each gateway adds its own
+id to an ``X-Medkit-Fan-Out-Visited`` header on the peer requests and does not
+ask a peer whose id is already there. Two gateways that list each other as
+peers therefore do not pass the request back and forth. If B cannot reach C,
+A's answer is partial and names ``subsystem_b/subsystem_c`` in
+``failed_peers``.
+
 If a peer request fails during fan-out (peer unreachable or non-2xx response),
 the response body includes:
 
