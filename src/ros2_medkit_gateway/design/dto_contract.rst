@@ -714,7 +714,8 @@ Further ``RouteEntry`` knobs shape the published operation:
 - ``fan_out_aware()`` - this route reads the ``X-Medkit-No-Fan-Out`` request
   header, i.e. a client can ask it to answer from this gateway alone instead of
   merging aggregated peers. Carried by the routes whose handlers go through
-  ``fan_out_collection`` or ``merge_peer_items``. The declared schema is a bare
+  ``fan_out_collection`` or ``merge_peer_items``, and by the global ``GET
+  /faults``, which reads it through ``plan_global_fault_fan_out``. The declared schema is a bare
   string, not a boolean: the gateway tests ``has_header`` and never reads the
   value, so ``X-Medkit-No-Fan-Out: false`` still suppresses fan-out and a
   boolean schema would promise a generated client the opposite. Also

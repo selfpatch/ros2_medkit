@@ -45,20 +45,33 @@ operations that read them.
 ``X-Medkit-No-Fan-Out``
    Answer from this gateway alone: do not query aggregated peers and do not
    merge their items. Read by the **per-entity** resource-collection list
-   endpoints (data, operations, configurations, faults, logs) and by ``GET
-   /api/v1/version-info`` - exactly the operations that declare it in the
-   OpenAPI document.
+   endpoints (data, operations, configurations, faults, logs), by the global
+   ``GET /api/v1/faults`` and by ``GET /api/v1/version-info`` - exactly the
+   operations that declare it in the OpenAPI document.
 
    The gateway sets it on its own outbound peer requests, which stops
    bidirectional aggregation from recursing **on the routes that check it**.
-   The global ``GET /api/v1/faults`` does not check it, so it neither declares
-   the header nor honours it (see :ref:`the fan-out design note
-   <aggregation-fan-out>`).
 
    **Presence-only.** The value is never read, so ``X-Medkit-No-Fan-Out:
    false`` suppresses fan-out exactly like any other value. The OpenAPI schema
    is a string rather than a boolean for that reason. Omit the header to get
    the aggregated answer.
+
+``X-Medkit-Fan-Out-Visited``
+   Read by the global ``GET /api/v1/faults`` only, and set by the gateway on
+   its own fan-out of that route: the instance ids of the gateways the request
+   has already passed through, comma-separated. Each aggregating gateway
+   publishes its id as ``x-medkit-instance-id`` on ``GET /api/v1/health``,
+   where its peers read it. A gateway does not ask a peer whose id is on the
+   path. A gateway asked anyway answers an empty list, because its faults are
+   already in the answer. Any other gateway answers with its own faults and
+   those of its peers, adding its id. This is what lets the global list reach
+   the end of a chain (A -> B -> C) while two gateways that aggregate each
+   other do not ask each other twice. It takes precedence over
+   ``X-Medkit-No-Fan-Out``, which the same request also carries. A path of 16
+   ids is not extended: the gateway answers for itself and reports its peers
+   as ``too-deep``. Clients do not send it (see :ref:`the fan-out design note
+   <aggregation-fan-out>`).
 
 Server Capabilities
 -------------------
@@ -3892,6 +3905,13 @@ why, one entry per name, with ``reason`` one of:
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
        promises.
+   * - ``too-deep``
+     - Global ``GET /faults`` only. The request had already passed through 16
+       gateways, so this gateway did not ask the peer.
+
+On the global ``GET /faults`` a peer that could not reach one of its own
+peers is reported partial in turn. The entry names both hops,
+``<peer>/<its peer>``, with the reason the peer gave.
 
 Without ``peer_failures`` a client cannot tell a busy subsystem from a dead
 one, which is the whole of what a partial answer is asked.
