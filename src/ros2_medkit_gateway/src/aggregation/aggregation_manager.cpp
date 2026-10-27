@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <future>
+#include <random>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -31,6 +32,17 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+std::string make_instance_id() {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::random_device rd;
+  std::uniform_int_distribution<int> digit(0, 15);
+  std::string id(32, '0');
+  for (auto & c : id) {
+    c = kHex[digit(rd)];
+  }
+  return id;
+}
 
 /**
  * @brief Extract the host portion from a URL
@@ -189,7 +201,7 @@ bool is_valid_peer_url(const std::string & url) {
 }  // namespace
 
 AggregationManager::AggregationManager(const AggregationConfig & config, const log::Logger * logger)
-  : config_(config), logger_(logger ? *logger : log::Logger("aggregation_manager")) {
+  : config_(config), logger_(logger ? *logger : log::Logger("aggregation_manager")), instance_id_(make_instance_id()) {
   for (const auto & peer_cfg : config_.peers) {
     // Validate scheme for static peers (http/https only).
     // Unlike mDNS peers, loopback addresses are valid for static config
@@ -827,7 +839,8 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
 
 AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::string & path,
                                                                  const std::string & auth_header,
-                                                                 const std::vector<std::string> * target_peers) {
+                                                                 const std::vector<std::string> * target_peers,
+                                                                 const httplib::Headers & extra_headers) {
   // Per-peer result collected by each async task
   struct PeerResult {
     std::string peer_name;
@@ -837,6 +850,8 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     /// fan-out failure indistinguishable on the wire.
     std::string failure_reason;
     nlohmann::json items = nlohmann::json::array();
+    /// What the peer itself could not reach, when it fanned out further.
+    std::vector<dto::PeerFailure> nested_failures;
   };
 
   // A non-null, empty target list means "no peers match" - skip fan-out
@@ -847,6 +862,11 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     FanOutResult empty_result;
     empty_result.merged_items = nlohmann::json::array();
     return empty_result;
+  }
+
+  std::vector<std::string> visited;
+  if (auto it = extra_headers.find(kFanOutVisitedHeader); it != extra_headers.end()) {
+    visited = split_fan_out_visited(it->second);
   }
 
   // Snapshot healthy peers under lock, release before network I/O.
@@ -862,20 +882,31 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
           std::find(target_peers->begin(), target_peers->end(), peer->name()) == target_peers->end()) {
         continue;
       }
+      // Already answered for this request. Asked anyway it would answer empty,
+      // but only once one of its workers is free, and every worker it has may
+      // be waiting on this gateway.
+      if (!visited.empty()) {
+        const auto peer_id = peer->instance_id();
+        if (!peer_id.empty() && std::find(visited.begin(), visited.end(), peer_id) != visited.end()) {
+          continue;
+        }
+      }
       snapshot.push_back(peer);
     }
   }
 
   // Fan out GET requests in parallel via std::async to reduce worst-case
   // latency from N * timeout_ms (sequential) to just timeout_ms (parallel).
+  httplib::Headers headers{{"X-Medkit-No-Fan-Out", "1"}};
+  headers.insert(extra_headers.begin(), extra_headers.end());
   std::vector<std::future<PeerResult>> futures;
   futures.reserve(snapshot.size());
   for (auto & peer : snapshot) {
-    futures.push_back(std::async(std::launch::async, [peer, path, auth_header]() {
+    futures.push_back(std::async(std::launch::async, [peer, path, auth_header, headers]() {
       PeerResult pr;
       pr.peer_name = peer->name();
 
-      auto result = peer->forward_and_get_json("GET", path, auth_header, {{"X-Medkit-No-Fan-Out", "1"}});
+      auto result = peer->forward_and_get_json("GET", path, auth_header, headers);
       if (!result.has_value()) {
         pr.success = false;
         pr.failure_reason = peer_failure_reason(result.error().kind);
@@ -886,6 +917,47 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
       const auto & response_json = result.value();
       if (response_json.contains("items") && response_json["items"].is_array()) {
         pr.items = response_json["items"];
+      }
+      // A peer that fanned out further and could not reach everything says so.
+      // Dropping that would report this answer complete without those items.
+      const auto x_medkit = response_json.find("x-medkit");
+      const bool peer_partial = x_medkit != response_json.end() && x_medkit->is_object() &&
+                                x_medkit->contains("partial") && (*x_medkit)["partial"].is_boolean() &&
+                                (*x_medkit)["partial"].get<bool>();
+      if (peer_partial) {
+        std::vector<std::string> nested_names;
+        if (auto names = x_medkit->find("failed_peers"); names != x_medkit->end() && names->is_array()) {
+          for (const auto & name : *names) {
+            if (name.is_string()) {
+              nested_names.push_back(name.get<std::string>());
+            }
+          }
+        }
+        for (const auto & name : nested_names) {
+          // A peer that predates peer_failures names no reason. Its partial
+          // flag meant a peer call that failed, which is what unreachable says.
+          std::string reason = "unreachable";
+          if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
+            for (const auto & failure : *failures) {
+              if (!failure.is_object()) {
+                continue;
+              }
+              const auto named = failure.find("peer");
+              const auto why = failure.find("reason");
+              if (named != failure.end() && named->is_string() && named->get<std::string>() == name) {
+                if (why != failure.end() && why->is_string()) {
+                  reason = why->get<std::string>();
+                }
+                break;
+              }
+            }
+          }
+          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name + "/" + name, std::move(reason)});
+        }
+        // Partial with nobody named breaks the contract this route promises.
+        if (pr.nested_failures.empty()) {
+          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name, "invalid-response"});
+        }
       }
       return pr;
     }));
@@ -905,6 +977,11 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     for (auto & item : pr.items) {
       fan_out_result.merged_items.push_back(std::move(item));
       fan_out_result.item_peers.push_back(pr.peer_name);
+    }
+    for (auto & failure : pr.nested_failures) {
+      fan_out_result.is_partial = true;
+      fan_out_result.failed_peers.push_back(failure.peer);
+      fan_out_result.peer_failures.push_back(std::move(failure));
     }
   }
 

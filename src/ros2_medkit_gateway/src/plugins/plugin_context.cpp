@@ -270,9 +270,11 @@ class GatewayPluginContext : public RosPluginContext {
     // Fan-out to peer gateways: fetch all faults from /api/v1/faults on each peer.
     // Auth: see list_entity_faults - the ROS 2 service path forwards no inbound
     // Authorization header, so peers are queried with an empty credential.
+    // The visited path is what lets a peer ask its own peers, so the list
+    // reaches past the first hop without coming back here.
     auto * agg = node_->get_aggregation_manager();
     if (agg) {
-      auto fan_result = agg->fan_out_get("/api/v1/faults", "");
+      auto fan_result = agg->fan_out_get("/api/v1/faults", "", nullptr, {{kFanOutVisitedHeader, agg->instance_id()}});
       if (fan_result.merged_items.is_array()) {
         // Ensure local response has a "faults" array to append to.
         if (!response.contains("faults") || !response["faults"].is_array()) {

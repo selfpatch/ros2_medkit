@@ -64,9 +64,10 @@ inline constexpr std::string_view dto_name<DroppedItem> = "DroppedItem";
 // tell a slow subsystem from a dead one.
 //
 // Wire keys:
-//   peer   - peer name, matching the entry in failed_peers
+//   peer   - peer name, matching the entry in failed_peers. On the global
+//            fault list a peer's own failed peer is named <peer>/<its peer>.
 //   reason - one of: timeout, unreachable, canceled, error-status, too-large,
-//            invalid-response
+//            invalid-response, too-deep (global fault list only)
 // ---------------------------------------------------------------------------
 struct PeerFailure {
   std::string peer;

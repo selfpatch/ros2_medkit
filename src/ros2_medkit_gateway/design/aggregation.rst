@@ -621,26 +621,54 @@ healthy peers, collects the responses, and merges the ``items`` arrays. If some
 peers fail, the response body includes ``x-medkit.partial: true`` and
 ``x-medkit.failed_peers``. Fan-out requests carry an ``X-Medkit-No-Fan-Out``
 header, and both helpers return early when the incoming request has it, so a
-peer that aggregates back never fans out a second time. These are the routes
-that declare the header in the OpenAPI document
-(``RouteEntry::fan_out_aware()``).
+peer that aggregates back never fans out a second time. These routes and the
+global fault list below are the ones that declare the header in the OpenAPI
+document (``RouteEntry::fan_out_aware()``).
 
-.. warning::
+**The global fault list** (``GET /api/v1/faults``) fans out as well, but it
+cannot stop at the first peer. There is no routing table behind it: in a chain
+A -> B -> C the only way A lists C's faults is for B to ask C. So
+``FaultHandlers::list_all_faults`` (and ``PluginContext::list_all_faults``,
+which calls the same route on the peers) sends ``X-Medkit-Fan-Out-Visited``
+next to ``X-Medkit-No-Fan-Out``. The header carries the instance ids of the
+gateways the request has passed through. Each ``AggregationManager`` generates
+its id at startup, because a peer name is what the aggregator calls a peer and
+a gateway cannot recognise itself by it. It publishes the id as
+``x-medkit-instance-id`` on ``/health``, and ``PeerClient::check_health``
+records each peer's. ``plan_global_fault_fan_out()`` in ``fan_out_helpers.hpp``
+reads the request:
 
-   The global ``GET /api/v1/faults`` is **not** one of them.
-   ``FaultHandlers::list_all_faults`` calls ``fan_out_get()`` directly rather
-   than through either helper, so it never inspects ``X-Medkit-No-Fan-Out`` -
-   and ``fan_out_get()`` is the code that *sets* the header outbound. Nothing
-   else in ``aggregation/`` guards the loop. Two gateways that peer with each
-   other therefore recurse unbounded on this one route: A queries B, B queries
-   A, and each hop holds a ``std::async`` thread until its timeout, so the
-   thread cost grows with recursion depth.
+- No visited path and no ``X-Medkit-No-Fan-Out``: a client request. Answer
+  locally and fan out with the path set to this gateway's id.
+- Visited path that does not name this gateway: answer locally and fan out
+  with this gateway's id added. ``X-Medkit-No-Fan-Out`` is ignored here,
+  because ``fan_out_get()`` puts it on every peer request.
+- Visited path that names this gateway: the request came back round a loop.
+  Answer ``200`` with an empty list, since this gateway's faults are already
+  in the answer the first pass is building.
+- A path of 16 ids, or one holding an id longer than 64 characters: answer
+  locally, do not extend it, and report every healthy peer as failed with
+  reason ``too-deep``, so a truncated list is not reported complete.
+- ``X-Medkit-No-Fan-Out`` alone: answer locally only. That is a client opting
+  out, or a gateway that predates the visited path.
 
-   The route consequently does not declare the header either - advertising an
-   opt-out it ignores would be worse than silence. Fixing this means routing
-   ``list_all_faults`` through the helper (which changes the per-item wire
-   shape it deliberately preserves) or adding a loop guard inside
-   ``fan_out_get()``; both are aggregation changes, not documentation ones.
+``fan_out_get()`` does not send the request to a peer whose recorded id is on
+the path. Two gateways that aggregate each other therefore do not ask each
+other twice: A asks B with ``[A]``, and B asks only its other peers. This
+matters for more than latency. A is holding a worker while it waits for B, so
+a request sent back to A could only be answered once another of A's workers
+is free. Under as many concurrent requests as A has workers, none would be,
+and every one would wait for the peer timeout. The empty answer for a gateway
+that finds itself on the path covers a peer whose id is not known yet (before
+its first health check) or one that predates the id.
+
+A peer that answers partial makes the result partial too. Its failed peers are
+named ``<peer>/<its peer>`` with the reason it gave, so a dead gateway at the
+end of a chain shows up at the head. ``x-medkit.count`` is the length of the
+merged ``items``.
+
+The path does not deduplicate a gateway reached over two different routes in
+the same request (A -> B -> C plus A -> C): C answers both, as it did before.
 
 **Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
 asks ``AggregationManager::get_peer_contributors(id)`` for the list of
