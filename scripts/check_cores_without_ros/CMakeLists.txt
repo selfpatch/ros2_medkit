@@ -24,3 +24,10 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../src/ros2_medkit_gateway/cmake/gateway_co
 
 add_executable(check_cores_without_ros main.cpp)
 target_link_libraries(check_cores_without_ros PRIVATE fault_reporter_core fault_manager_core gateway_core)
+
+# A plugin with no ROS dependency, loaded by the check through the core PluginManager.
+add_library(check_context_plugin MODULE context_plugin.cpp)
+target_link_libraries(check_context_plugin PRIVATE gateway_core)
+target_compile_definitions(check_cores_without_ros PRIVATE
+  CHECK_CONTEXT_PLUGIN_PATH="$<TARGET_FILE:check_context_plugin>")
+add_dependencies(check_cores_without_ros check_context_plugin)

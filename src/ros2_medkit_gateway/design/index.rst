@@ -100,6 +100,22 @@ store from it:
   data a plugin serves needs no topics. The ROS 2 node passes the topic
   transport and feeds fault triggers through ``TriggerFaultSubscriber``, a ROS
   2 event source under the same feed.
+* ``make_core_plugin_context`` (``core/plugins/core_plugin_context.hpp``) builds
+  the plugin context from ``GatewayServices`` and a ``CorePluginContextWiring``
+  (notifier, condition registry, aggregation, entity-change callback, notices).
+  It is a ``RosPluginContext`` whose ``node()`` is null, so
+  ``as_ros_plugin_context()`` is valid for every plugin and a plugin that needs
+  ROS checks the pointer. The host gives it to ``PluginManager::set_context()``.
+  The ROS 2 node derives its context from the same class and overrides only
+  ``node()``.
+* ``make_fault_trigger_host`` (``core/fault_trigger_host.hpp``) builds the
+  threshold-rule ``FaultTriggerEngine`` and the thread that evaluates it from a
+  ``FaultTriggerHostConfig`` (the ``fault_triggers.*`` names and defaults). The
+  rules read plugin data through the ``PluginManager`` and report and clear
+  faults through the ``FaultManager``. It returns null when disabled or when no
+  plugin is loaded. The host returns the engine from
+  ``GatewayServices::fault_trigger_engine()``. The ROS 2 node uses the same
+  builder.
 * ``RESTServer`` takes a null ``LifecycleStateReader`` for a host without
   lifecycle nodes. ``GET /{entity}/status`` then derives readiness from
   presence and ``PUT /{entity}/status/{action}`` answers 501 without a
