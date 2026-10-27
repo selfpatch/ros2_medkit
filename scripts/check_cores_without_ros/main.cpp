@@ -27,6 +27,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -50,6 +51,9 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_event_fan_out.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
+#include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
@@ -143,9 +147,24 @@ class NoFaultTransport : public gw::FaultServiceTransport {
                       {"reporting_sources", gw::json::array({"hosted_app"})}};
     return {true, {{"faults", gw::json::array({fault})}}, {}, gw::FaultFailure::Declined};
   }
-  gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
+  gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & fault_code,
                                                 const std::string & /*source_id*/) override {
-    return {false, "not supported", {}, gw::FaultFailure::Unavailable};
+    std::lock_guard<std::mutex> lock(detail_mutex_);
+    const auto it = detail_sources_.find(fault_code);
+    if (it == detail_sources_.end()) {
+      return {false, "not supported", {}, gw::FaultFailure::Unavailable};
+    }
+    const gw::json fault = {{"fault_code", fault_code},
+                            {"severity", 2},
+                            {"status", "CONFIRMED"},
+                            {"occurrence_count", 1},
+                            {"reporting_sources", gw::json::array({it->second})}};
+    return {true, {}, {{"fault", fault}, {"environment_data", gw::json::object()}}, gw::FaultFailure::Declined};
+  }
+  // Makes the detail of `fault_code` answer, reported by `source`.
+  void serve_detail(const std::string & fault_code, const std::string & source) {
+    std::lock_guard<std::mutex> lock(detail_mutex_);
+    detail_sources_[fault_code] = source;
   }
   gw::FaultResult get_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/) override {
     return none();
@@ -176,6 +195,8 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   std::atomic<int> list_calls{0};
 
  private:
+  std::mutex detail_mutex_;
+  std::map<std::string, std::string> detail_sources_;
   static gw::FaultResult none() {
     return {false, {}, "not supported", gw::FaultFailure::Unavailable};
   }
@@ -251,7 +272,8 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   }
   tl::expected<gw::dto::DataListResult, gw::DataProviderErrorInfo>
   list_data(const std::string & /*entity_id*/) override {
-    return gw::dto::DataListResult{{{"items", gw::json::array()}}};
+    return gw::dto::DataListResult{
+        {{"items", gw::json::array({{{"id", "speed"}, {"name", "speed"}, {"value", speed.load()}}})}}};
   }
   tl::expected<gw::dto::DataValue, gw::DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
                                                                         const std::string & resource_name) override {
@@ -263,6 +285,34 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
     return tl::make_unexpected(gw::DataProviderErrorInfo{gw::DataProviderError::ReadOnly, "read only", 405});
   }
   std::atomic<int> reads{0};
+  std::atomic<int> speed{10};
+};
+
+// A fault event feed the check drives by hand.
+class ControlledFaultEvents : public gw::FaultEventSource {
+ public:
+  void subscribe(Callback callback) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    callback_ = std::move(callback);
+  }
+  void unsubscribe() override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    callback_ = nullptr;
+  }
+  void confirm(const std::string & fault_code, const std::string & source) {
+    ros2_medkit::fault_detection::FaultEventRecord event;
+    event.event_type = ros2_medkit::fault_detection::fault_event_type::kConfirmed;
+    event.fault.fault_code = fault_code;
+    event.fault.reporting_sources = {source};
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (callback_) {
+      callback_(event);
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  Callback callback_;
 };
 
 class NoParameterTransport : public gw::ParameterTransport {
@@ -477,10 +527,10 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::FreezeFrameSource * freeze_frames() override {
-    return nullptr;
+    return freeze_frames_;
   }
   gw::FaultEventSource * fault_events() override {
-    return nullptr;
+    return fault_events_;
   }
   gw::TopicDataProvider * topic_data_provider() override {
     return nullptr;
@@ -504,6 +554,12 @@ class MinimalServices : public gw::GatewayServices {
     plugins_->register_entity_ownership("check_plugin", owned_entities);
     return ref;
   }
+  void set_freeze_frames(gw::FreezeFrameSource * source) {
+    freeze_frames_ = source;
+  }
+  void set_fault_events(gw::FaultEventSource * source) {
+    fault_events_ = source;
+  }
   void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
     bulk_store_ = std::move(store);
   }
@@ -515,6 +571,8 @@ class MinimalServices : public gw::GatewayServices {
   std::shared_ptr<NoFaultTransport> fault_transport_;
   std::unique_ptr<gw::BulkDataStore> bulk_store_;
   std::unique_ptr<gw::PluginManager> plugins_;
+  gw::FreezeFrameSource * freeze_frames_{nullptr};
+  gw::FaultEventSource * fault_events_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -643,12 +701,97 @@ nlohmann::json root_capabilities(MinimalServices & services) {
   return nlohmann::json::parse(res->body, nullptr, false).value("capabilities", nlohmann::json::object());
 }
 
+// True once `pred` holds, polled for up to five seconds.
+bool wait_until(const std::function<bool()> & pred) {
+  for (int i = 0; i < 100; ++i) {
+    if (pred()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return pred();
+}
+
+// The `freeze_frame` snapshot named `entity` in a fault detail body, or null.
+nlohmann::json freeze_frame_of(const std::string & body, const std::string & entity) {
+  const auto detail = nlohmann::json::parse(body, nullptr, false);
+  if (!detail.is_object() || !detail.contains("environment_data") ||
+      !detail["environment_data"].contains("snapshots")) {
+    return nullptr;
+  }
+  for (const auto & snap : detail["environment_data"]["snapshots"]) {
+    if (snap.value("type", "") == "freeze_frame" && snap.value("name", "") == entity) {
+      return snap;
+    }
+  }
+  return nullptr;
+}
+
 gw::App hosted_app() {
   gw::App app;
   app.id = "hosted_app";
   app.name = "Hosted app";
   app.external = true;
   return app;
+}
+
+// Two consumers on ONE upstream fault event source: the fault SSE stream (read over HTTP) and the freeze-frame
+// capture. Returns {the SSE stream carried the confirmation, the capture holds a frame for it}.
+std::pair<bool, bool> share_one_event_source(bool through_fan_out) {
+  MinimalServices services;
+  auto plugin_app = hosted_app();
+  plugin_app.id = "plugin_app";
+  services.mutable_cache().update_apps({plugin_app});
+  services.add_data_plugin({"plugin_app"});
+  ControlledFaultEvents upstream;
+  gw::FaultEventFanOut fan_out(upstream);
+  std::unique_ptr<gw::FaultEventSource> sse_branch;
+  std::unique_ptr<gw::FaultEventSource> capture_branch;
+  gw::FaultEventSource * sse_source = &upstream;
+  gw::FaultEventSource * capture_source = &upstream;
+  if (through_fan_out) {
+    sse_branch = fan_out.make_branch();
+    capture_branch = fan_out.make_branch();
+    sse_source = sse_branch.get();
+    capture_source = capture_branch.get();
+  }
+  auto capture =
+      gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, *capture_source, services.plugin_manager());
+  if (!capture) {
+    return {false, false};
+  }
+  services.set_freeze_frames(capture.get());
+  services.set_fault_events(sse_source);
+  RunningServer running(services);
+  std::atomic<bool> sse_seen{false};
+  std::atomic<bool> stream_done{false};
+  std::thread reader([&] {
+    auto client = make_client(running.port());
+    std::string buffer;
+    client.Get(
+        "/api/v1/faults/stream", httplib::Headers{},
+        [](const httplib::Response &) {
+          return true;
+        },
+        [&](const char * data, size_t len) {
+          buffer.append(data, len);
+          if (buffer.find("fault_confirmed") != std::string::npos) {
+            sse_seen = true;
+          }
+          return !sse_seen && !stream_done;
+        });
+  });
+  // The stream attaches asynchronously, so the confirmation is repeated until the stream has seen one.
+  for (int i = 1; i <= 60 && !sse_seen; ++i) {
+    upstream.confirm("SHARED_" + std::to_string(i), "plugin_app");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  stream_done = true;
+  reader.join();
+  const bool framed = wait_until([&] {
+    return !capture->frames_for("SHARED_1").empty();
+  });
+  return {sse_seen.load(), framed};
 }
 
 void add_sse_transport(MinimalServices & services) {
@@ -956,6 +1099,98 @@ static int run() {
     }
     server.stop();
     server_thread.join();
+  }
+
+  // A host that attaches the core freeze-frame capture to its own fault events gets frames in the fault detail.
+  {
+    MinimalServices services;
+    auto plugin_app = hosted_app();
+    plugin_app.id = "plugin_app";
+    services.mutable_cache().update_apps({hosted_app(), plugin_app});
+    auto & plugin = services.add_data_plugin({"plugin_app"});
+    ControlledFaultEvents events;
+    gw::FreezeFrameCaptureConfig capture_config;
+    capture_config.max_faults = 2;
+    auto capture = gw::make_freeze_frame_capture(capture_config, events, services.plugin_manager());
+    ok &= check(capture != nullptr, "the core builds a freeze-frame capture over a plugin manager");
+    gw::FreezeFrameCaptureConfig disabled;
+    disabled.enabled = false;
+    ok &= check(gw::make_freeze_frame_capture(disabled, events, services.plugin_manager()) == nullptr,
+                "a disabled configuration builds no capture");
+    if (capture) {
+      services.set_freeze_frames(capture.get());
+      auto & transport = services.fault_transport();
+      for (const char * code : {"FF_1", "FF_2", "FF_3"}) {
+        transport.serve_detail(code, "plugin_app");
+      }
+      transport.serve_detail("FF_HOSTED", "hosted_app");
+      RunningServer running(services);
+      auto client = make_client(running.port());
+      const auto detail_of = [&](const std::string & app, const std::string & code) {
+        auto res = client.Get("/api/v1/apps/" + app + "/faults/" + code);
+        return res ? std::make_pair(res->status, res->body) : std::make_pair(0, std::string{});
+      };
+
+      // The value at the confirmation moment is the one served, not the later one.
+      plugin.speed = 10;
+      events.confirm("FF_1", "plugin_app");
+      ok &= check(wait_until([&] {
+                    return !capture->frames_for("FF_1").empty();
+                  }),
+                  "a fault confirmation for a plugin-served entity is captured");
+      plugin.speed = 99;
+      const auto first = detail_of("plugin_app", "FF_1");
+      ok &= check(first.first == 200, "GET the fault detail answers 200");
+      const auto frame = freeze_frame_of(first.second, "plugin_app");
+      ok &= check(!frame.is_null(), "environment_data holds a freeze_frame named after the entity");
+      ok &= check(!frame.is_null() && frame["x-medkit"]["full_data"].value("speed", -1) == 10,
+                  "the freeze_frame holds the value from the confirmation moment, not the later one");
+      ok &= check(!frame.is_null() && frame["x-medkit"].value("source", "") == "plugin_data_provider",
+                  "the freeze_frame names the DataProvider as its source");
+
+      // An entity no plugin serves gets no frame.
+      events.confirm("FF_HOSTED", "hosted_app");
+      events.confirm("FF_2", "plugin_app");
+      ok &= check(wait_until([&] {
+                    return !capture->frames_for("FF_2").empty();
+                  }),
+                  "a second fault is captured");
+      ok &= check(capture->frames_for("FF_HOSTED").empty() &&
+                      freeze_frame_of(detail_of("hosted_app", "FF_HOSTED").second, "hosted_app").is_null(),
+                  "an entity no plugin serves gets no freeze_frame");
+
+      // Past max_faults the oldest fault's frames are evicted.
+      plugin.speed = 30;
+      events.confirm("FF_3", "plugin_app");
+      ok &= check(wait_until([&] {
+                    return !capture->frames_for("FF_3").empty();
+                  }),
+                  "a third fault is captured");
+      ok &= check(capture->frames_for("FF_1").empty() &&
+                      freeze_frame_of(detail_of("plugin_app", "FF_1").second, "plugin_app").is_null(),
+                  "past max_faults the oldest fault's frames are evicted");
+      ok &= check(!capture->frames_for("FF_2").empty() && !capture->frames_for("FF_3").empty(),
+                  "the newer faults keep their frames");
+
+      // A re-confirmation takes a new frame.
+      plugin.speed = 55;
+      events.confirm("FF_3", "plugin_app");
+      ok &= check(wait_until([&] {
+                    const auto again = freeze_frame_of(detail_of("plugin_app", "FF_3").second, "plugin_app");
+                    return !again.is_null() && again["x-medkit"]["full_data"].value("speed", -1) == 55;
+                  }),
+                  "a re-confirmation replaces the frame with the new value");
+    }
+  }
+
+  // One upstream event source shared by the fault SSE stream and the capture.
+  {
+    const auto shared = share_one_event_source(true);
+    ok &= check(shared.first, "through the fan-out the fault SSE stream carries the confirmation");
+    ok &= check(shared.second, "through the fan-out the capture frames the same confirmation");
+    const auto unshared = share_one_event_source(false);
+    ok &= check(unshared.first != unshared.second,
+                "without the fan-out one source serves one consumer only: the later subscriber replaces the earlier");
   }
 
   // A host that registers the samplers, a transport and a bulk-data store gets subscriptions and bulk data.

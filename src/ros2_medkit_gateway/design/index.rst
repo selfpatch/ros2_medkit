@@ -53,6 +53,23 @@ store from it:
   from ``GatewayServices::bulk_data_store()`` before it starts ``RESTServer``.
   The ``rosbags`` category is listed only when
   ``FaultServiceTransport::serves_rosbags()`` is true (the default).
+* ``make_freeze_frame_capture()`` (``core/faults/freeze_frame_capture.hpp``)
+  builds a ``FreezeFrameCapture``. On ``fault_confirmed`` it reads the data
+  of each reporting source through ``plugin_data_readers()``
+  (``core/data/data_item_reader.hpp``, the path of ``GET /{entity}/data``: the
+  plugin's ``DataProvider``, else its ``x-plc-data`` route) on a thread of its
+  own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` (oldest
+  fault evicted first), and serves them as ``FreezeFrameSource``. The host
+  passes the config, a ``FaultEventSource`` that serves this capture alone,
+  and the ``PluginManager``. ``FaultEventSource::subscribe`` replaces an
+  earlier callback, so a host with one upstream source puts a
+  ``FaultEventFanOut`` (``core/faults/fault_event_fan_out.hpp``) in front of
+  it and gives the capture and the fault SSE stream a branch each. The host
+  also returns the capture from
+  ``GatewayServices::freeze_frames()``. The ROS 2 node feeds the same class
+  through ``EntityFreezeFrameCapture``, which subscribes on the shared
+  subscription executor and holds the startup catch-up until the events
+  subscription has matched a publisher.
 * ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
   served, and ``cyclic_subscriptions`` true only when a transport and at least
   one sampler are registered.
