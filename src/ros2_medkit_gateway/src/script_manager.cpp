@@ -24,6 +24,18 @@ const log::Logger & logger() {
 }
 }  // namespace
 
+ScriptHost make_script_host(const ScriptsConfig & config, ScriptProvider * plugin_backend) {
+  ScriptHost host;
+  host.manager = std::make_unique<ScriptManager>();
+  if (plugin_backend != nullptr) {
+    host.manager->set_backend(plugin_backend);
+  } else if (!config.scripts_dir.empty()) {
+    host.default_provider = std::make_unique<DefaultScriptProvider>(config);
+    host.manager->set_backend(host.default_provider.get());
+  }
+  return host;
+}
+
 void ScriptManager::set_backend(ScriptProvider * backend) {
   backend_ = backend;
 }

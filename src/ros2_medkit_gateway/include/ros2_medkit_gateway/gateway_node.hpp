@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/aggregation/mdns_discovery.hpp"
+#include "ros2_medkit_gateway/core/aggregation/aggregation_host.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -42,6 +42,7 @@
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_reaper.hpp"
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
@@ -490,6 +491,8 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   std::unique_ptr<ScriptManager> script_mgr_;
   std::unique_ptr<UpdateManager> update_mgr_;
   std::unique_ptr<LockManager> lock_manager_;
+  // Declared after lock_manager_ and subscription_mgr_, which it uses: destroyed before both.
+  std::unique_ptr<LockReaper> lock_reaper_;
 
   // Trigger infrastructure (destroyed after rest_server_)
   std::unique_ptr<ResourceChangeNotifier> resource_change_notifier_;
@@ -510,11 +513,10 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // Adapter routing manager-side subscribe() calls onto trigger_topic_subscriber_.
   std::shared_ptr<ros2::Ros2TopicSubscriptionTransport> trigger_topic_transport_;
 
-  // Aggregation infrastructure (destroyed in order: mdns -> rest_server -> aggregation)
-  // mDNS threads must stop before rest_server to avoid callbacks during shutdown.
+  // Aggregation infrastructure (destroyed in order: rest_server -> aggregation)
+  // The host stops its mDNS threads in ~GatewayNode, before rest_server, to avoid callbacks during shutdown.
   // AggregationManager must outlive rest_server because handlers reference it.
-  std::unique_ptr<AggregationManager> aggregation_mgr_;
-  std::unique_ptr<MdnsDiscovery> mdns_discovery_;
+  std::unique_ptr<AggregationHost> aggregation_host_;
 
   std::unique_ptr<RESTServer> rest_server_;
 
@@ -575,9 +577,6 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
-
-  // Timer for periodic cleanup of expired locks
-  rclcpp::TimerBase::SharedPtr lock_cleanup_timer_;
 
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;

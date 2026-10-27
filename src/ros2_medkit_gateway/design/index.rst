@@ -73,6 +73,24 @@ store from it:
 * ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
   served, and ``cyclic_subscriptions`` true only when a transport and at least
   one sampler are registered.
+* ``LockReaper`` (``core/managers/lock_reaper.hpp``) removes expired locks every
+  ``LockConfig::cleanup_interval`` seconds on a thread it owns, and with them
+  the cyclic subscriptions of the locked entity when the lock scope is empty or
+  names ``cyclic-subscriptions``. A host that does not start one keeps expired
+  locks. The ROS 2 node starts the same class.
+* ``make_script_host`` (``core/managers/script_manager.hpp``) builds the
+  ``ScriptManager`` from a ``ScriptsConfig`` and an optional plugin backend. A
+  non-empty ``scripts_dir`` gives the ``DefaultScriptProvider``. The host
+  returns the manager from ``GatewayServices::script_manager()``.
+* ``AggregationHost`` (``core/aggregation/aggregation_host.hpp``) builds the
+  ``AggregationManager`` and the mDNS discovery from an ``AggregationConfig``.
+  The host passes the manager to ``RESTServer::set_aggregation_manager()`` and
+  calls ``merge_peers()`` on every entity refresh. The ROS 2 node reads the
+  ``aggregation.*`` parameters into the config and uses the same class.
+* ``RESTServer`` takes a null ``LifecycleStateReader`` for a host without
+  lifecycle nodes. ``GET /{entity}/status`` then derives readiness from
+  presence and ``PUT /{entity}/status/{action}`` answers 501 without a
+  ``LifecycleProvider``.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single

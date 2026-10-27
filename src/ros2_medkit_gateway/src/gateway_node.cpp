@@ -29,7 +29,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
 #include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
@@ -908,29 +907,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     lock_manager_ = std::make_unique<LockManager>(get_thread_safe_cache(), lock_config);
 
-    auto cleanup_interval = lock_config.cleanup_interval;
-    lock_cleanup_timer_ = this->create_wall_timer(std::chrono::seconds(cleanup_interval), [this]() {
-      auto expired = lock_manager_->cleanup_expired();
-      for (const auto & info : expired) {
-        RCLCPP_INFO(get_logger(), "Lock %s expired on entity %s", info.lock_id.c_str(), info.entity_id.c_str());
-
-        // Clean up temporary resources within expired lock scope
-        auto scope_includes = [&](const std::string & collection) {
-          return info.scopes.empty() ||
-                 std::find(info.scopes.begin(), info.scopes.end(), collection) != info.scopes.end();
-        };
-
-        // Remove cyclic subscriptions for the entity
-        if (scope_includes("cyclic-subscriptions") && subscription_mgr_) {
-          auto subs = subscription_mgr_->list(info.entity_id);
-          for (const auto & sub : subs) {
-            if (subscription_mgr_->remove(sub.id)) {
-              RCLCPP_INFO(get_logger(), "Removed subscription %s on lock expiry", sub.id.c_str());
-            }
-          }
-        }
-      }
-    });
+    lock_reaper_ = std::make_unique<LockReaper>(*lock_manager_, subscription_mgr_.get(), lock_config.cleanup_interval,
+                                                log::Logger(get_logger().get_name()));
 
     RCLCPP_INFO(get_logger(), "Lock manager: enabled, max_expiration=%ds, cleanup_interval=%ds",
                 lock_config.default_max_expiration, lock_config.cleanup_interval);
@@ -939,48 +917,38 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Scripts
-  script_mgr_ = std::make_unique<ScriptManager>();
   auto * plugin_script_provider = plugin_mgr_->get_script_provider();
-  if (plugin_script_provider) {
-    script_mgr_->set_backend(plugin_script_provider);
-    RCLCPP_INFO(get_logger(), "Using plugin ScriptProvider");
-  } else {
-    auto scripts_dir = get_parameter("scripts.scripts_dir").as_string();
-    if (!scripts_dir.empty()) {
-      ScriptsConfig scripts_config;
-      scripts_config.scripts_dir = scripts_dir;
-      scripts_config.max_file_size_mb = static_cast<int>(get_parameter("scripts.max_file_size_mb").as_int());
-      scripts_config.max_concurrent_executions =
-          static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
-      scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
-      scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
-      scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
-
-      // Load manifest-defined scripts
-      auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
-      if (manifest_mgr) {
-        scripts_config.entries = manifest_mgr->get_scripts();
-        if (!scripts_config.entries.empty()) {
-          RCLCPP_INFO(get_logger(), "Loaded %zu manifest-defined scripts", scripts_config.entries.size());
-        }
-      }
-
-      default_script_provider_ = std::make_unique<DefaultScriptProvider>(scripts_config);
-      script_mgr_->set_backend(default_script_provider_.get());
-      RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_dir.c_str());
-    } else {
-      auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
-      if (manifest_mgr) {
-        auto manifest_scripts = manifest_mgr->get_scripts();
-        if (!manifest_scripts.empty()) {
-          RCLCPP_WARN(get_logger(),
-                      "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
-                      "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
-                      manifest_scripts.size());
-        }
-      }
-    }
+  ScriptsConfig scripts_config;
+  scripts_config.scripts_dir = get_parameter("scripts.scripts_dir").as_string();
+  scripts_config.max_file_size_mb = static_cast<int>(get_parameter("scripts.max_file_size_mb").as_int());
+  scripts_config.max_concurrent_executions =
+      static_cast<int>(get_parameter("scripts.max_concurrent_executions").as_int());
+  scripts_config.default_timeout_sec = static_cast<int>(get_parameter("scripts.default_timeout_sec").as_int());
+  scripts_config.max_execution_history = static_cast<int>(get_parameter("scripts.max_execution_history").as_int());
+  scripts_config.allow_uploads = get_parameter("scripts.allow_uploads").as_bool();
+  // Manifest-defined scripts come from the discovery manager.
+  auto * script_manifest_mgr = discovery_mgr_->get_manifest_manager();
+  std::vector<ScriptEntryConfig> manifest_scripts;
+  if (script_manifest_mgr) {
+    manifest_scripts = script_manifest_mgr->get_scripts();
   }
+  if (plugin_script_provider) {
+    RCLCPP_INFO(get_logger(), "Using plugin ScriptProvider");
+  } else if (!scripts_config.scripts_dir.empty()) {
+    scripts_config.entries = manifest_scripts;
+    if (!scripts_config.entries.empty()) {
+      RCLCPP_INFO(get_logger(), "Loaded %zu manifest-defined scripts", scripts_config.entries.size());
+    }
+    RCLCPP_INFO(get_logger(), "Scripts enabled with directory: %s", scripts_config.scripts_dir.c_str());
+  } else if (!manifest_scripts.empty()) {
+    RCLCPP_WARN(get_logger(),
+                "Manifest defines %zu script(s) but scripts.scripts_dir is not configured - "
+                "manifest scripts will not be loaded. Set 'scripts.scripts_dir' in gateway parameters to enable.",
+                manifest_scripts.size());
+  }
+  auto script_host = make_script_host(scripts_config, plugin_script_provider);
+  default_script_provider_ = std::move(script_host.default_provider);
+  script_mgr_ = std::move(script_host.manager);
 
   // --- Trigger infrastructure ---
   resource_change_notifier_ = std::make_unique<ResourceChangeNotifier>([this](const std::string & msg) {
@@ -1214,99 +1182,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       }
     }
 
-    if (agg_config.peers.empty() && !agg_config.announce && !agg_config.discover) {
-      RCLCPP_WARN(get_logger(),
-                  "Aggregation enabled but no static peers and mDNS disabled. "
-                  "No peer communication will occur.");
-    }
-
-    // Security warning: forwarding auth tokens over cleartext is dangerous
-    if (agg_config.forward_auth && !agg_config.require_tls) {
-      RCLCPP_WARN(get_logger(),
-                  "Aggregation: forward_auth is enabled but require_tls is false. "
-                  "Authorization tokens may be sent to peers over cleartext HTTP. "
-                  "Set aggregation.require_tls=true for production deployments.");
-    }
-
-    const log::Logger logger(get_logger().get_name());
-    aggregation_mgr_ = std::make_unique<AggregationManager>(agg_config, &logger);
-
-    // mDNS discovery/announcement
-    if (agg_config.announce || agg_config.discover) {
-      MdnsDiscovery::Config mdns_config;
-      mdns_config.announce = agg_config.announce;
-      mdns_config.discover = agg_config.discover;
-      mdns_config.service = agg_config.mdns_service;
-      mdns_config.port = server_port_;
-      mdns_config.peer_scheme = agg_config.peer_scheme;
-      // mDNS instance name must be unique per gateway instance.
-      // Defaults to hostname via MdnsDiscovery constructor when empty.
-      // Operators should set aggregation.mdns_name for multi-gateway-per-host deployments.
-      mdns_config.name = get_parameter("aggregation.mdns_name").as_string();
-      mdns_config.on_error = [this](const std::string & msg) {
-        RCLCPP_ERROR(get_logger(), "mDNS: %s", msg.c_str());
-      };
-      mdns_config.on_log = [this](const std::string & msg) {
-        RCLCPP_DEBUG(get_logger(), "mDNS: %s", msg.c_str());
-      };
-      mdns_discovery_ = std::make_unique<MdnsDiscovery>(mdns_config);
-      // Get the actual mDNS instance name for self-discovery filtering.
-      // MdnsDiscovery constructor resolves empty name to gethostname().
-      // Sanitize it the same way browse_callback sanitizes discovered peer names.
-      const std::string self_mdns_name = HostInfoProvider::sanitize_entity_id(mdns_discovery_->instance_name());
-
-      // Collect local interface addresses for IP-based self-discovery filtering.
-      // Name-only checks are insufficient: an attacker can send mDNS responses with
-      // a different name but our own IP:port, creating forwarding loops.
-      // The address set is refreshed periodically (every 60s) to pick up network
-      // changes (new interfaces, DHCP renewals) without stale data.
-      auto local_addrs = std::make_shared<std::unordered_set<std::string>>(collect_local_addresses());
-      auto last_addr_refresh =
-          std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
-      auto addr_mutex = std::make_shared<std::mutex>();
-      const int self_port = server_port_;
-
-      mdns_discovery_->start(
-          [this, self_mdns_name, local_addrs, last_addr_refresh, addr_mutex, self_port](const std::string & url,
-                                                                                        const std::string & name) {
-            if (name == self_mdns_name) {
-              return;  // Skip self-discovery (name match)
-            }
-
-            // Refresh local addresses periodically (every 60s) to handle network changes.
-            // collect_local_addresses() is cheap (getifaddrs syscall), safe to call often.
-            {
-              std::lock_guard<std::mutex> lock(*addr_mutex);
-              auto now = std::chrono::steady_clock::now();
-              if (std::chrono::duration_cast<std::chrono::seconds>(now - *last_addr_refresh).count() >= 60) {
-                *local_addrs = collect_local_addresses();
-                *last_addr_refresh = now;
-              }
-            }
-
-            // Also reject peers whose resolved IP:port matches our own listen address.
-            // Prevents forwarding loops from spoofed mDNS responses.
-            auto [peer_host, peer_port] = parse_url_host_port(url);
-            if (peer_port == self_port && local_addrs->count(peer_host) > 0) {
-              RCLCPP_WARN(get_logger(),
-                          "mDNS: rejecting peer '%s' at %s - resolves to local address with our port "
-                          "(possible spoofed mDNS response)",
-                          name.c_str(), url.c_str());
-              return;
-            }
-            aggregation_mgr_->add_discovered_peer(url, name);
-          },
-          [this](const std::string & name) {
-            aggregation_mgr_->remove_discovered_peer(name);
-          });
-    }
-
-    RCLCPP_INFO(get_logger(),
-                "Aggregation: enabled (timeout=%dms, announce=%s, discover=%s, "
-                "forward_auth=%s, require_tls=%s, peer_scheme=%s, max_discovered_peers=%zu)",
-                agg_config.timeout_ms, agg_config.announce ? "true" : "false", agg_config.discover ? "true" : "false",
-                agg_config.forward_auth ? "true" : "false", agg_config.require_tls ? "true" : "false",
-                agg_config.peer_scheme.c_str(), agg_config.max_discovered_peers);
+    aggregation_host_ =
+        std::make_unique<AggregationHost>(agg_config, server_port_, get_parameter("aggregation.mdns_name").as_string(),
+                                          log::Logger(get_logger().get_name()));
   } else {
     RCLCPP_INFO(get_logger(), "Aggregation: disabled");
   }
@@ -1433,8 +1311,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Wire aggregation manager into REST server handler context
-  if (aggregation_mgr_) {
-    rest_server_->set_aggregation_manager(aggregation_mgr_.get());
+  if (aggregation_host_) {
+    rest_server_->set_aggregation_manager(&aggregation_host_->manager());
   }
 
   start_rest_server();
@@ -1532,22 +1410,21 @@ void GatewayNode::log_startup_summary() {
 
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
-  // 0. Stop mDNS discovery first (prevents new peer additions during shutdown)
-  if (mdns_discovery_) {
-    mdns_discovery_->stop();
+  // 0. Stop the lock reaper: it removes subscriptions through the transports shut down below.
+  if (lock_reaper_) {
+    lock_reaper_->stop();
   }
-  // 0b. Cancel in-flight peer HTTP calls so REST worker threads that are
-  //     mid-forward unblock promptly. Without this, stop_rest_server() below
-  //     waits for those workers to finish their full peer read timeout,
-  //     which under TSan / heavy load exceeds the launch_test SIGINT grace
-  //     window and forces a SIGKILL with non-zero exit. The handlers still
-  //     hold references to aggregation_mgr_, so we do not destroy it here
-  //     - only cancel its outbound calls.
-  if (aggregation_mgr_) {
-    aggregation_mgr_->shutdown();
+  // 0b. Stop mDNS discovery (prevents new peer additions during shutdown) and cancel in-flight
+  //     peer HTTP calls so REST worker threads that are mid-forward unblock promptly. Without
+  //     this, stop_rest_server() below waits for those workers to finish their full peer read
+  //     timeout, which under TSan / heavy load exceeds the launch_test SIGINT grace window and
+  //     forces a SIGKILL with non-zero exit. The handlers still hold references to the
+  //     aggregation manager, so it is not destroyed here - only its outbound calls are cancelled.
+  if (aggregation_host_) {
+    aggregation_host_->shutdown();
   }
   // 1. Stop REST server (kills HTTP connections, SSE streams exit)
-  //    Handlers may reference aggregation_mgr_, so it must outlive the server.
+  //    Handlers may reference the aggregation manager, so it must outlive the server.
   stop_rest_server();
   // 2. Shutdown subscriptions via transport registry (calls sub_mgr.shutdown(),
   //    which triggers on_removed -> transport->stop() for each active subscription)
@@ -1969,7 +1846,7 @@ ConditionRegistry * GatewayNode::get_condition_registry() const {
 }
 
 AggregationManager * GatewayNode::get_aggregation_manager() const {
-  return aggregation_mgr_.get();
+  return aggregation_host_ ? &aggregation_host_->manager() : nullptr;
 }
 
 namespace {
@@ -2174,61 +2051,18 @@ void GatewayNode::refresh_cache() {
     // Merge remote peer entities if aggregation is active.
     // Keep the routing table accessible for the internal-node filter below.
     std::unordered_map<std::string, std::string> peer_routing_table;
-    if (aggregation_mgr_ && aggregation_mgr_->peer_count() > 0) {
-      aggregation_mgr_->check_all_health();
-      const log::Logger logger(get_logger().get_name());
-      auto merged =
-          aggregation_mgr_->fetch_and_merge_peer_entities(areas, all_components, apps, functions, 10000, &logger);
-      areas = std::move(merged.areas);
-      all_components = std::move(merged.components);
-      apps = std::move(merged.apps);
-      functions = std::move(merged.functions);
-      peer_routing_table = std::move(merged.routing_table);
-      aggregation_mgr_->update_routing_table(peer_routing_table);
-      aggregation_mgr_->set_leaf_warnings(std::move(merged.leaf_warnings));
-      for (const auto & func : functions) {
-        for (const auto & contributor : func.contributors) {
-          if (contributor.rfind("peer:", 0) == 0) {
-            introspection_only_ids.erase(func.id);
-            break;
+    if (aggregation_host_) {
+      if (auto routing_table = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
+        peer_routing_table = std::move(*routing_table);
+        for (const auto & func : functions) {
+          for (const auto & contributor : func.contributors) {
+            if (contributor.rfind("peer:", 0) == 0) {
+              introspection_only_ids.erase(func.id);
+              break;
+            }
           }
         }
       }
-
-      // Track per-entity peer contributors: entity id -> list of peer
-      // names that host or contribute to it. Covers both routed leaves
-      // (also tracked via routing_table) and merged / hierarchical entities
-      // (Areas, Functions, parent Components). Fan-out helpers use this map
-      // to target per-entity collection requests at the peers that actually
-      // own the entity, avoiding spurious 404s from non-contributing peers.
-      //
-      // The "peer:" prefix is stripped from the contributors list produced
-      // by EntityMerger. Entries starting with anything else (including
-      // "local") are ignored.
-      std::unordered_map<std::string, std::vector<std::string>> peer_contributors;
-      static constexpr std::string_view kPeerPrefix = "peer:";
-      auto collect_contributors = [&peer_contributors](const auto & entities) {
-        for (const auto & e : entities) {
-          for (const auto & c : e.contributors) {
-            if (c.rfind(kPeerPrefix, 0) != 0) {
-              continue;
-            }
-            std::string peer_name = c.substr(kPeerPrefix.size());
-            if (peer_name.empty()) {
-              continue;
-            }
-            auto & list = peer_contributors[e.id];
-            if (std::find(list.begin(), list.end(), peer_name) == list.end()) {
-              list.push_back(std::move(peer_name));
-            }
-          }
-        }
-      };
-      collect_contributors(areas);
-      collect_contributors(all_components);
-      collect_contributors(apps);
-      collect_contributors(functions);
-      aggregation_mgr_->update_peer_contributors(std::move(peer_contributors));
     }
 
     // Inject plugin entities (non-hybrid) and refresh entity ownership (all modes).

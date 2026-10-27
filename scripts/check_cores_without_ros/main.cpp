@@ -46,6 +46,7 @@
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
+#include "ros2_medkit_gateway/core/aggregation/aggregation_host.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -63,7 +64,10 @@
 #include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_reaper.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
@@ -509,10 +513,10 @@ class MinimalServices : public gw::GatewayServices {
     return plugins_.get();
   }
   gw::ScriptManager * script_manager() override {
-    return nullptr;
+    return scripts_;
   }
   gw::LockManager * lock_manager() override {
-    return nullptr;
+    return locks_;
   }
   gw::UpdateManager * update_manager() override {
     return nullptr;
@@ -563,6 +567,12 @@ class MinimalServices : public gw::GatewayServices {
   void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
     bulk_store_ = std::move(store);
   }
+  void set_lock_manager(gw::LockManager * locks) {
+    locks_ = locks;
+  }
+  void set_script_manager(gw::ScriptManager * scripts) {
+    scripts_ = scripts;
+  }
 
  private:
   gw::ThreadSafeEntityCache cache_;
@@ -573,6 +583,8 @@ class MinimalServices : public gw::GatewayServices {
   std::unique_ptr<gw::PluginManager> plugins_;
   gw::FreezeFrameSource * freeze_frames_{nullptr};
   gw::FaultEventSource * fault_events_{nullptr};
+  gw::LockManager * locks_{nullptr};
+  gw::ScriptManager * scripts_{nullptr};
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -606,11 +618,15 @@ bool check(bool ok, const char * what) {
 // A REST server on an ephemeral port, stopped and joined on scope exit.
 class RunningServer {
  public:
-  explicit RunningServer(MinimalServices & services) : port_(free_port()) {
+  explicit RunningServer(MinimalServices & services, gw::AggregationManager * aggregation = nullptr)
+    : port_(free_port()) {
     gw::RestConfig rest;
     rest.http_thread_pool_size = 6;
     server_ = std::make_unique<gw::RESTServer>(services, nullptr, "127.0.0.1", port_, gw::CorsConfig{},
                                                gw::AuthConfig{}, gw::RateLimitConfig{}, rest);
+    if (aggregation != nullptr) {
+      server_->set_aggregation_manager(aggregation);
+    }
     thread_ = std::thread([this] {
       server_->start();
     });
@@ -803,6 +819,175 @@ void add_sse_transport(MinimalServices & services) {
     }
   });
 }
+gw::App online_app(const std::string & id, const std::string & name) {
+  gw::App app = hosted_app();
+  app.id = id;
+  app.name = name;
+  app.is_online = true;
+  return app;
+}
+
+// Items of a collection body, or an empty array.
+nlohmann::json items_of(const httplib::Result & res) {
+  return res ? nlohmann::json::parse(res->body, nullptr, false).value("items", nlohmann::json::array())
+             : nlohmann::json::array();
+}
+
+// A lock taken over HTTP with a short expiry is reaped by the core: the lock is gone and the cyclic subscriptions in
+// its scope are removed, with no host code calling cleanup_expired.
+bool check_lock_reaping() {
+  bool ok = true;
+  MinimalServices services;
+  services.fault_transport().reports_faults = true;
+  services.mutable_cache().update_apps({online_app("lock_app", "Lock app")});
+  gw::register_builtin_samplers(services);
+  add_sse_transport(services);
+  gw::LockConfig lock_config;
+  lock_config.cleanup_interval = 1;
+  gw::LockManager locks(services.entity_cache(), lock_config);
+  services.set_lock_manager(&locks);
+  auto reaper = std::make_unique<gw::LockReaper>(locks, services.subscription_manager(), lock_config.cleanup_interval,
+                                                 gw::log::Logger("check_cores_without_ros"));
+  {
+    RunningServer running(services);
+    auto client = make_client(running.port());
+    const auto sub = subscribe(client, "/api/v1/apps/lock_app/faults", "lock_app");
+    ok &= check(!sub.first.empty(), "a cyclic subscription is created before the lock");
+    const nlohmann::json lock_body = {{"lock_expiration", 1}, {"scopes", {"cyclic-subscriptions"}}};
+    auto acquired = client.Post("/api/v1/apps/lock_app/locks", httplib::Headers{{"X-Client-Id", "check_client"}},
+                                lock_body.dump(), "application/json");
+    ok &= check(acquired && acquired->status == 201, "a lock with a one second expiry is acquired over HTTP");
+    ok &= check(locks.get_lock("lock_app").has_value(), "the lock is held before it expires");
+    const bool lock_gone = wait_until([&] {
+      return !locks.get_lock("lock_app").has_value();
+    });
+    ok &= check(lock_gone, "the expired lock is gone");
+    const bool sub_gone = wait_until([&] {
+      return items_of(client.Get("/api/v1/apps/lock_app/cyclic-subscriptions")).empty();
+    });
+    ok &= check(sub_gone, "the expiry removed the cyclic subscriptions in the lock scope");
+  }
+  reaper.reset();
+  services.transport_registry()->shutdown_all(*services.subscription_manager());
+  return ok;
+}
+
+// A script configured through the core script config runs over HTTP on the default provider, and its output is
+// readable.
+bool check_script_host() {
+  bool ok = true;
+  const auto dir = std::filesystem::temp_directory_path() / "check_cores_without_ros_scripts";
+  std::filesystem::remove_all(dir);
+  gw::ScriptsConfig config;
+  config.scripts_dir = dir.string();
+  config.default_timeout_sec = 10;
+  auto host = gw::make_script_host(config, nullptr);
+  ok &= check(host.manager && host.manager->has_backend(), "a scripts directory gives the script manager a backend");
+  {
+    const gw::ScriptsConfig none;
+    auto without = gw::make_script_host(none, nullptr);
+    ok &= check(without.manager && !without.manager->has_backend(),
+                "no scripts directory leaves the manager without a backend");
+  }
+  MinimalServices services;
+  services.mutable_cache().update_apps({online_app("script_app", "Script app")});
+  services.set_script_manager(host.manager.get());
+  {
+    RunningServer running(services);
+    auto client = make_client(running.port());
+    auto uploaded =
+        client.Post("/api/v1/apps/script_app/scripts",
+                    httplib::MultipartFormDataItems{{"file", "#!/bin/sh\necho '{\"greeting\": \"from the core\"}'\n",
+                                                     "greet.sh", "application/octet-stream"}});
+    const std::string script_id = uploaded && uploaded->status == 201
+                                      ? nlohmann::json::parse(uploaded->body, nullptr, false).value("id", "")
+                                      : "";
+    ok &= check(!script_id.empty(), "a script is uploaded over HTTP");
+    const nlohmann::json start_body = {{"execution_type", "now"}};
+    auto started = client.Post("/api/v1/apps/script_app/scripts/" + script_id + "/executions", start_body.dump(),
+                               "application/json");
+    ok &= check(started && started->status == 202, "an execution starts and answers 202");
+    const std::string exec_id =
+        started ? nlohmann::json::parse(started->body, nullptr, false).value("id", "") : std::string{};
+    nlohmann::json execution;
+    const bool finished = wait_until([&] {
+      auto res = client.Get("/api/v1/apps/script_app/scripts/" + script_id + "/executions/" + exec_id);
+      execution = res ? nlohmann::json::parse(res->body, nullptr, false) : nlohmann::json();
+      return execution.is_object() && execution.contains("status") && execution.value("status", "") != "running";
+    });
+    ok &= check(finished && execution.value("status", "") == "completed", "the execution completes");
+    ok &= check(execution.contains("parameters") && execution["parameters"].value("greeting", "") == "from the core",
+                "the script output is readable");
+  }
+  std::filesystem::remove_all(dir);
+  return ok;
+}
+
+// Two core servers in one process: the second is a peer of the first through the core aggregation config.
+bool check_aggregation_host() {
+  bool ok = true;
+  MinimalServices peer_services;
+  peer_services.mutable_cache().update_apps({online_app("peer_app", "Peer app")});
+  RunningServer peer(peer_services);
+
+  gw::AggregationConfig config;
+  config.enabled = true;
+  config.peers.push_back({"http://127.0.0.1:" + std::to_string(peer.port()), "peer_b"});
+  gw::AggregationHost host(config, 0, "", gw::log::Logger("check_cores_without_ros"));
+
+  MinimalServices front_services;
+  std::vector<gw::Area> areas;
+  std::vector<gw::Component> components;
+  std::vector<gw::App> apps{online_app("front_app", "Front app")};
+  std::vector<gw::Function> functions;
+  const auto routing = host.merge_peers(areas, components, apps, functions);
+  ok &= check(routing.has_value(), "the host merges the configured peer");
+  front_services.mutable_cache().update_all(areas, components, apps, functions);
+
+  RunningServer front(front_services, &host.manager());
+  auto client = make_client(front.port());
+  auto local = client.Get("/api/v1/apps/front_app");
+  ok &= check(local && local->status == 200, "the first server answers its own entity");
+  auto remote = client.Get("/api/v1/apps/peer_app");
+  const auto remote_json = remote ? nlohmann::json::parse(remote->body, nullptr, false) : nlohmann::json();
+  ok &= check(remote && remote->status == 200 && remote_json.value("name", "") == "Peer app",
+              "the first server reads the peer's entity from the peer");
+  host.shutdown();
+  return ok;
+}
+
+// A host without a lifecycle reader: readiness comes from graph presence, transitions are not implemented.
+bool check_lifecycle_without_reader() {
+  bool ok = true;
+  MinimalServices services;
+  auto managed = online_app("managed_app", "Managed app");
+  gw::ServiceInfo get_state;
+  get_state.name = "get_state";
+  get_state.full_path = "/managed_app/get_state";
+  get_state.type = "lifecycle_msgs/srv/GetState";
+  gw::ServiceInfo change_state;
+  change_state.name = "change_state";
+  change_state.full_path = "/managed_app/change_state";
+  change_state.type = "lifecycle_msgs/srv/ChangeState";
+  managed.services = {get_state, change_state};
+  auto offline = online_app("offline_app", "Offline app");
+  offline.is_online = false;
+  services.mutable_cache().update_apps({managed, offline});
+  RunningServer running(services);
+  auto client = make_client(running.port());
+  auto managed_status = client.Get("/api/v1/apps/managed_app/status");
+  ok &= check(managed_status && managed_status->status == 200 &&
+                  nlohmann::json::parse(managed_status->body, nullptr, false).value("status", "") == "ready",
+              "without a reader a lifecycle node reports readiness from presence");
+  auto offline_status = client.Get("/api/v1/apps/offline_app/status");
+  ok &= check(offline_status && offline_status->status == 200 &&
+                  nlohmann::json::parse(offline_status->body, nullptr, false).value("status", "") == "notReady",
+              "without a reader an offline node is notReady");
+  auto restart = client.Put("/api/v1/apps/managed_app/status/restart", "", "application/json");
+  ok &= check(restart && restart->status == 501, "without a lifecycle provider a transition answers 501");
+  return ok;
+}
+
 }  // namespace
 
 static int run() {
@@ -1380,6 +1565,12 @@ static int run() {
     const auto rosbag_caps = root_capabilities(rosbags_only);
     ok &= check(rosbag_caps.value("bulk_data", false), "rosbags without a store: bulk_data true");
   }
+
+  // Host wiring the core owns: lock reaping, script manager, aggregation, lifecycle without a reader.
+  ok &= check_lock_reaping();
+  ok &= check_script_host();
+  ok &= check_aggregation_host();
+  ok &= check_lifecycle_without_reader();
 
   return ok ? 0 : 1;
 }
