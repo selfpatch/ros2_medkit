@@ -63,6 +63,13 @@ class FaultServiceTransport {
   virtual bool wait_for_services(std::chrono::duration<double> timeout) = 0;
 
   virtual bool is_available() const = 0;
+
+  /// Whether this transport serves rosbag files (`get_rosbag`, `list_rosbags`). The bulk-data
+  /// `rosbags` category is listed only when it does. A host whose fault manager records no
+  /// rosbags overrides it to return false.
+  virtual bool serves_rosbags() const {
+    return true;
+  }
 };
 
 }  // namespace ros2_medkit_gateway

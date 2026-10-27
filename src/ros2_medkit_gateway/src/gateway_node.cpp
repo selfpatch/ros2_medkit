@@ -30,12 +30,11 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/network_utils.hpp"
+#include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
-#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
-#include "ros2_medkit_gateway/core/logs/log_scope.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -270,8 +269,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.peer_names", std::vector<std::string>{""});
 
   // Bulk data storage parameters
-  declare_parameter("bulk_data.storage_dir", "/tmp/ros2_medkit_bulk_data");
-  declare_parameter("bulk_data.max_upload_size", 104857600);  // 100MB
+  const BulkDataConfig bulk_data_defaults;
+  declare_parameter("bulk_data.storage_dir", bulk_data_defaults.storage_dir);
+  declare_parameter("bulk_data.max_upload_size", bulk_data_defaults.max_upload_size);
   declare_parameter("bulk_data.categories", std::vector<std::string>{});
 
   // Runtime (heuristic) discovery options
@@ -692,34 +692,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   fault_mgr_ = std::make_unique<FaultManager>(fault_service_transport_);
 
   // Initialize bulk data store
-  auto bd_storage_dir = get_parameter("bulk_data.storage_dir").as_string();
-  // A negative value would wrap to a huge size_t and be handed to
-  // set_payload_max_length as an effectively unlimited cap. 0 already means
-  // unlimited by documented design, so a negative cannot be folded into it
-  // without turning a typo into that same silent "no limit". Reject it and say
-  // which value was refused.
-  const int64_t bd_max_upload_raw = get_parameter("bulk_data.max_upload_size").as_int();
-  size_t bd_max_upload = 0;
-  if (bd_max_upload_raw < 0) {
-    RCLCPP_WARN(get_logger(),
-                "bulk_data.max_upload_size %" PRId64
-                " is negative. Must be >= 0 (0 = unlimited). "
-                "Using default 104857600.",
-                bd_max_upload_raw);
-    bd_max_upload = 104857600;
-  } else {
-    bd_max_upload = static_cast<size_t>(bd_max_upload_raw);
-  }
-  auto bd_categories = get_parameter("bulk_data.categories").as_string_array();
-  bd_categories.erase(std::remove_if(bd_categories.begin(), bd_categories.end(),
-                                     [](const auto & item) {
-                                       return item.empty();
-                                     }),
-                      bd_categories.end());
-
-  bulk_data_store_ = std::make_unique<BulkDataStore>(bd_storage_dir, bd_max_upload, bd_categories);
-  RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu", bd_storage_dir.c_str(),
-              bd_max_upload, bd_categories.size());
+  BulkDataConfig bulk_data_config;
+  bulk_data_config.storage_dir = get_parameter("bulk_data.storage_dir").as_string();
+  bulk_data_config.max_upload_size = get_parameter("bulk_data.max_upload_size").as_int();
+  bulk_data_config.categories = get_parameter("bulk_data.categories").as_string_array();
+  bulk_data_store_ = make_bulk_data_store(bulk_data_config);
+  RCLCPP_INFO(get_logger(), "Bulk data store: dir=%s, max_upload=%zuB, categories=%zu",
+              bulk_data_config.storage_dir.c_str(), bulk_data_store_->max_upload_bytes(),
+              bulk_data_store_->list_categories().size());
 
   // Initialize subscription manager for cyclic subscriptions
   // Same wrap hazard as bulk_data.max_upload_size: a negative here becomes a
@@ -1332,148 +1312,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Register built-in resource samplers
-  sampler_registry_->register_sampler(
-      "data",
-      [this](const std::string & /*entity_id*/,
-             const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
-        auto * dam = get_data_access_manager();
-        if (!dam) {
-          return tl::make_unexpected(std::string("DataAccessManager not available"));
-        }
-        auto * provider = dam->get_topic_data_provider();
-        if (!provider) {
-          return tl::make_unexpected(std::string("TopicDataProvider not configured"));
-        }
-        const auto timeout_ms = std::chrono::milliseconds{
-            static_cast<std::int64_t>(std::max(dam->get_topic_sample_timeout(), 0.0) * 1000.0)};
-        auto r = provider->sample(resource_path, timeout_ms);
-        if (!r) {
-          return tl::make_unexpected(std::string{"Topic sample failed: "} + r.error().message);
-        }
-        TopicSampleResult sample = *r;
-        if (sample.has_data && sample.data.has_value()) {
-          nlohmann::json payload;
-          payload["id"] = resource_path;
-          payload["data"] = *sample.data;
-          return payload;
-        }
-        return tl::make_unexpected("Topic data not available: " + resource_path);
-      },
-      /*is_builtin=*/true, /*honours_resource_path=*/true);
-
-  sampler_registry_->register_sampler(
-      "faults",
-      [this](const std::string & entity_id,
-             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
-        auto * fault_mgr = get_fault_manager();
-        if (!fault_mgr) {
-          return tl::make_unexpected(std::string("FaultManager not available"));
-        }
-        const auto & cache = get_thread_safe_cache();
-        auto entity_ref = cache.find_entity(entity_id);
-        if (!entity_ref) {
-          return tl::make_unexpected("Entity not found: " + entity_id);
-        }
-        // Same scoping as GET /{entity}/faults: shared source resolution
-        // (external app -> bare id, external component owns its own id) and
-        // the shared boundary-aware filter. A private variant here answered
-        // "Entity no longer available" for external apps whose effective_fqn
-        // is empty while REST returned the fault.
-        auto source_fqns = faults::resolve_entity_source_fqns(cache, entity_ref->type, entity_id);
-        auto result = fault_mgr->list_faults("");
-        if (!result.success) {
-          return tl::make_unexpected(result.error_message);
-        }
-        auto filtered = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
-        result.data["count"] = filtered.size();
-        result.data["faults"] = std::move(filtered);
-        return result.data;
-      },
-      /*is_builtin=*/true);
-
-  sampler_registry_->register_sampler(
-      "configurations",
-      [this](const std::string & entity_id,
-             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
-        auto * config_mgr = get_configuration_manager();
-        if (!config_mgr) {
-          return tl::make_unexpected(std::string("ConfigurationManager not available"));
-        }
-        const auto & cache = get_thread_safe_cache();
-        auto entity_configs = cache.get_entity_configurations(entity_id);
-        nlohmann::json items = nlohmann::json::array();
-        for (const auto & node : entity_configs.nodes) {
-          auto result = config_mgr->list_parameters(node.node_fqn);
-          if (result.success && result.data.is_array()) {
-            for (auto & param : result.data) {
-              items.push_back(std::move(param));
-            }
-          }
-        }
-        nlohmann::json payload;
-        payload["items"] = std::move(items);
-        return payload;
-      },
-      /*is_builtin=*/true);
-
-  sampler_registry_->register_sampler(
-      "logs",
-      [this](const std::string & entity_id,
-             const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
-        auto * log_mgr = get_log_manager();
-        if (!log_mgr) {
-          return tl::make_unexpected(std::string("LogManager not available"));
-        }
-        const auto & cache = get_thread_safe_cache();
-        auto entity_ref = cache.find_entity(entity_id);
-        if (!entity_ref) {
-          return tl::make_unexpected("Entity not found: " + entity_id);
-        }
-        // Same scoping as GET /{entity}/logs via the shared helper (external
-        // app -> bare id, external component owns its own id, plus the
-        // namespace-prefix merge for COMPONENT / AREA).
-        std::string entity_fqn;
-        if (entity_ref->type == SovdEntityType::COMPONENT) {
-          if (auto comp = cache.get_component(entity_id)) {
-            entity_fqn = comp->fqn;
-          }
-        } else if (entity_ref->type == SovdEntityType::AREA) {
-          if (auto area = cache.get_area(entity_id)) {
-            entity_fqn = area->namespace_path;
-          }
-        } else if (entity_ref->type == SovdEntityType::APP) {
-          if (auto app = cache.get_app(entity_id)) {
-            entity_fqn = app->effective_fqn();
-          }
-        }
-        auto result = logs::query_entity_logs(*log_mgr, cache, entity_ref->type, entity_id, entity_fqn, "", "");
-        if (!result.has_value()) {
-          return tl::make_unexpected(result.error());
-        }
-        nlohmann::json payload;
-        payload["items"] = std::move(*result);
-        return payload;
-      },
-      /*is_builtin=*/true);
-
-  // Register update status sampler (server-level, uses UpdateManager)
-  if (update_mgr_) {
-    sampler_registry_->register_sampler(
-        "updates",
-        [this](const std::string & /*entity_id*/,
-               const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
-          auto * mgr = get_update_manager();
-          if (!mgr || !mgr->has_backend()) {
-            return tl::make_unexpected(std::string("Update backend not available"));
-          }
-          auto result = mgr->get_status(resource_path);
-          if (!result) {
-            return tl::make_unexpected(result.error().message);
-          }
-          return update_status_to_json(*result);
-        },
-        /*is_builtin=*/true, /*honours_resource_path=*/true);
-  }
+  register_builtin_samplers(*this);
 
   RCLCPP_INFO(get_logger(), "Registered built-in resource samplers: data, faults, configurations, logs%s",
               update_mgr_ ? ", updates" : "");

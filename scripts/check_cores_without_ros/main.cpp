@@ -17,12 +17,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,18 +46,25 @@
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
+#include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
+#include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
 #include "ros2_medkit_gateway/core/http/rate_limiter.hpp"
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
 #include "ros2_medkit_gateway/core/managers/configuration_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/resource_sampler.hpp"
 #include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/transports/action_transport.hpp"
@@ -118,10 +131,17 @@ class NoFaultTransport : public gw::FaultServiceTransport {
                                const std::string & /*description*/, const std::string & /*source_id*/) override {
     return none();
   }
+  // Once set, every list answers one fault whose occurrence_count grows with each call.
   gw::FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
                               bool /*include_cleared*/, bool /*include_healed*/, bool /*include_muted*/,
                               bool /*include_clusters*/) override {
-    return none();
+    if (!reports_faults.load()) {
+      return none();
+    }
+    gw::json fault = {{"fault_code", "CHECK_FAULT"},
+                      {"occurrence_count", ++list_calls},
+                      {"reporting_sources", gw::json::array({"hosted_app"})}};
+    return {true, {{"faults", gw::json::array({fault})}}, {}, gw::FaultFailure::Declined};
   }
   gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
                                                 const std::string & /*source_id*/) override {
@@ -148,11 +168,101 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   bool is_available() const override {
     return false;
   }
+  bool serves_rosbags() const override {
+    return rosbags.load();
+  }
+  std::atomic<bool> reports_faults{false};
+  std::atomic<bool> rosbags{false};
+  std::atomic<int> list_calls{0};
 
  private:
   static gw::FaultResult none() {
     return {false, {}, "not supported", gw::FaultFailure::Unavailable};
   }
+};
+
+// Answers every sample with a value that grows by one per call.
+class CountingTopicProvider : public gw::TopicDataProvider {
+ public:
+  tl::expected<gw::TopicSampleResult, gw::ErrorInfo> sample(const std::string & topic,
+                                                            std::chrono::milliseconds /*timeout*/) override {
+    gw::TopicSampleResult out;
+    out.topic_name = topic;
+    out.message_type = "check/msg/Counter";
+    out.data = gw::json{{"value", ++samples}};
+    out.has_data = true;
+    return out;
+  }
+  tl::expected<std::vector<gw::TopicSampleResult>, gw::ErrorInfo>
+  sample_parallel(const std::vector<std::string> & topics, std::chrono::milliseconds timeout) override {
+    std::vector<gw::TopicSampleResult> out;
+    out.reserve(topics.size());
+    for (const auto & topic : topics) {
+      out.push_back(*sample(topic, timeout));
+    }
+    return out;
+  }
+  std::optional<gw::TopicInfo> get_topic_info(const std::string & /*topic*/) override {
+    return std::nullopt;
+  }
+  bool has_publishers(const std::string & /*topic*/) override {
+    return true;
+  }
+  std::vector<gw::TopicInfo> discover(const std::string & /*namespace_prefix*/) override {
+    return {};
+  }
+  std::vector<gw::TopicInfo> discover_all() override {
+    return {};
+  }
+  std::map<std::string, gw::ComponentTopics> build_component_topic_map() override {
+    return {};
+  }
+  gw::ComponentTopics get_component_topics(const std::string & /*component_fqn*/) override {
+    return {};
+  }
+  gw::TopicDiscoveryResult discover_topics_by_namespace() override {
+    return {};
+  }
+  std::set<std::string> discover_topic_namespaces() override {
+    return {};
+  }
+  gw::ComponentTopics get_topics_for_namespace(const std::string & /*ns_prefix*/) override {
+    return {};
+  }
+  std::vector<gw::TopicEndpoint> get_topic_publishers(const std::string & /*topic*/) override {
+    return {};
+  }
+  std::vector<gw::TopicEndpoint> get_topic_subscribers(const std::string & /*topic*/) override {
+    return {};
+  }
+  gw::TopicConnection get_topic_connection(const std::string & /*topic*/) override {
+    return {};
+  }
+  std::atomic<int> samples{0};
+};
+
+// A plugin that serves the data of the entities it owns; every read counts up.
+class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
+ public:
+  std::string name() const override {
+    return "check_plugin";
+  }
+  void configure(const gw::json & /*config*/) override {
+  }
+  tl::expected<gw::dto::DataListResult, gw::DataProviderErrorInfo>
+  list_data(const std::string & /*entity_id*/) override {
+    return gw::dto::DataListResult{{{"items", gw::json::array()}}};
+  }
+  tl::expected<gw::dto::DataValue, gw::DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                        const std::string & resource_name) override {
+    return gw::dto::DataValue{{{"source", "plugin"}, {"name", resource_name}, {"value", ++reads}}};
+  }
+  tl::expected<gw::dto::DataWriteResult, gw::DataProviderErrorInfo> write_data(const std::string & /*entity_id*/,
+                                                                               const std::string & /*resource_name*/,
+                                                                               const gw::json & /*value*/) override {
+    return tl::make_unexpected(gw::DataProviderErrorInfo{gw::DataProviderError::ReadOnly, "read only", 405});
+  }
+  std::atomic<int> reads{0};
 };
 
 class NoParameterTransport : public gw::ParameterTransport {
@@ -302,7 +412,8 @@ class NoTypeSchemas : public gw::TypeSchemaProvider {
 class MinimalServices : public gw::GatewayServices {
  public:
   MinimalServices()
-    : fault_(std::make_shared<NoFaultTransport>())
+    : fault_transport_(std::make_shared<NoFaultTransport>())
+    , fault_(fault_transport_)
     , config_(std::make_shared<NoParameterTransport>())
     , data_(std::make_shared<NoTopicTransport>())
     , operations_(std::make_shared<NoServiceTransport>(), std::make_shared<NoActionTransport>(), nullptr)
@@ -345,7 +456,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::PluginManager * plugin_manager() override {
-    return nullptr;
+    return plugins_.get();
   }
   gw::ScriptManager * script_manager() override {
     return nullptr;
@@ -360,7 +471,7 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
   gw::BulkDataStore * bulk_data_store() override {
-    return nullptr;
+    return bulk_store_.get();
   }
   gw::FaultTriggerEngine * fault_trigger_engine() override {
     return nullptr;
@@ -378,10 +489,32 @@ class MinimalServices : public gw::GatewayServices {
     return nullptr;
   }
 
+  gw::ThreadSafeEntityCache & mutable_cache() {
+    return cache_;
+  }
+  NoFaultTransport & fault_transport() {
+    return *fault_transport_;
+  }
+  // Plugins exist only after this call; the plugin owns the entity ids it is given.
+  CheckDataPlugin & add_data_plugin(const std::vector<std::string> & owned_entities) {
+    plugins_ = std::make_unique<gw::PluginManager>();
+    auto plugin = std::make_unique<CheckDataPlugin>();
+    auto & ref = *plugin;
+    plugins_->add_plugin(std::move(plugin));
+    plugins_->register_entity_ownership("check_plugin", owned_entities);
+    return ref;
+  }
+  void set_bulk_store(std::unique_ptr<gw::BulkDataStore> store) {
+    bulk_store_ = std::move(store);
+  }
+
  private:
   gw::ThreadSafeEntityCache cache_;
   EmptyDiscovery discovery_;
   NoTypeSchemas schemas_;
+  std::shared_ptr<NoFaultTransport> fault_transport_;
+  std::unique_ptr<gw::BulkDataStore> bulk_store_;
+  std::unique_ptr<gw::PluginManager> plugins_;
   gw::FaultManager fault_;
   gw::ConfigurationManager config_;
   gw::DataAccessManager data_;
@@ -410,6 +543,122 @@ int free_port() {
 bool check(bool ok, const char * what) {
   std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
   return ok;
+}
+
+// A REST server on an ephemeral port, stopped and joined on scope exit.
+class RunningServer {
+ public:
+  explicit RunningServer(MinimalServices & services) : port_(free_port()) {
+    gw::RestConfig rest;
+    rest.http_thread_pool_size = 6;
+    server_ = std::make_unique<gw::RESTServer>(services, nullptr, "127.0.0.1", port_, gw::CorsConfig{},
+                                               gw::AuthConfig{}, gw::RateLimitConfig{}, rest);
+    thread_ = std::thread([this] {
+      server_->start();
+    });
+    for (int i = 0; i < 100 && !server_->is_running(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  ~RunningServer() {
+    server_->stop();
+    thread_.join();
+  }
+  RunningServer(const RunningServer &) = delete;
+  RunningServer & operator=(const RunningServer &) = delete;
+  RunningServer(RunningServer &&) = delete;
+  RunningServer & operator=(RunningServer &&) = delete;
+  int port() const {
+    return port_;
+  }
+
+ private:
+  int port_;
+  std::unique_ptr<gw::RESTServer> server_;
+  std::thread thread_;
+};
+
+// Reads SSE frames from `path` until `want` of them arrived, the stream ended or the read timed out.
+std::vector<nlohmann::json> read_events(httplib::Client & client, const std::string & path, size_t want) {
+  std::vector<nlohmann::json> events;
+  std::string buffer;
+  client.Get(
+      path, httplib::Headers{},
+      [](const httplib::Response &) {
+        return true;
+      },
+      [&](const char * data, size_t len) {
+        buffer.append(data, len);
+        for (size_t end = buffer.find("\n\n"); end != std::string::npos; end = buffer.find("\n\n")) {
+          const std::string frame = buffer.substr(0, end);
+          buffer.erase(0, end + 2);
+          if (frame.rfind("data: ", 0) == 0) {
+            events.push_back(nlohmann::json::parse(frame.substr(6), nullptr, false));
+          }
+        }
+        return events.size() < want;
+      });
+  return events;
+}
+
+httplib::Client make_client(int port) {
+  httplib::Client client("127.0.0.1", port);
+  client.set_connection_timeout(5);
+  client.set_read_timeout(5);
+  return client;
+}
+
+// Creates a fast cyclic subscription on `resource`; returns {subscription id, events path}.
+std::pair<std::string, std::string> subscribe(httplib::Client & client, const std::string & resource,
+                                              const std::string & app = "hosted_app") {
+  const nlohmann::json body = {{"resource", resource}, {"interval", "fast"}, {"duration", 60}};
+  auto res = client.Post("/api/v1/apps/" + app + "/cyclic-subscriptions", body.dump(), "application/json");
+  if (!res || res->status != 201) {
+    std::printf("subscribe %s -> %d %s\n", resource.c_str(), res ? res->status : 0, res ? res->body.c_str() : "");
+    return {};
+  }
+  const auto json = nlohmann::json::parse(res->body, nullptr, false);
+  return {json.value("id", ""), json.value("event_source", "")};
+}
+
+// True when the first two sampled payloads exist and `field` differs between them.
+bool values_change(const std::vector<nlohmann::json> & events,
+                   const std::function<nlohmann::json(const nlohmann::json &)> & pick) {
+  if (events.size() < 2 || !events[0].contains("payload") || !events[1].contains("payload")) {
+    return false;
+  }
+  const auto first = pick(events[0]["payload"]);
+  const auto second = pick(events[1]["payload"]);
+  return !first.is_null() && !second.is_null() && first != second;
+}
+
+// `GET /` capabilities of a server over `services`.
+nlohmann::json root_capabilities(MinimalServices & services) {
+  RunningServer running(services);
+  auto client = make_client(running.port());
+  auto res = client.Get("/api/v1/");
+  if (!res || res->status != 200) {
+    return nlohmann::json::object();
+  }
+  return nlohmann::json::parse(res->body, nullptr, false).value("capabilities", nlohmann::json::object());
+}
+
+gw::App hosted_app() {
+  gw::App app;
+  app.id = "hosted_app";
+  app.name = "Hosted app";
+  app.external = true;
+  return app;
+}
+
+void add_sse_transport(MinimalServices & services) {
+  services.transport_registry()->register_transport(
+      std::make_unique<gw::SseTransportProvider>(*services.subscription_manager(), services.sse_client_tracker()));
+  services.subscription_manager()->set_on_removed([&services](const gw::CyclicSubscriptionInfo & info) {
+    if (auto * transport = services.transport_registry()->get_transport(info.protocol)) {
+      transport->stop(info.id);
+    }
+  });
 }
 }  // namespace
 
@@ -707,6 +956,194 @@ static int run() {
     }
     server.stop();
     server_thread.join();
+  }
+
+  // A host that registers the samplers, a transport and a bulk-data store gets subscriptions and bulk data.
+  {
+    MinimalServices services;
+    CountingTopicProvider topics;
+    services.data_access_manager()->set_topic_data_provider(&topics);
+    services.fault_transport().reports_faults = true;
+    auto plugin_app = hosted_app();
+    plugin_app.id = "plugin_app";
+    services.mutable_cache().update_apps({hosted_app(), plugin_app});
+    services.add_data_plugin({"plugin_app"});
+    const auto store_dir = std::filesystem::temp_directory_path() / "check_cores_without_ros_bulk";
+    std::filesystem::remove_all(store_dir);
+    gw::BulkDataConfig bulk;
+    bulk.storage_dir = store_dir.string();
+    bulk.max_upload_size = 1024;
+    bulk.categories = {"calibration", ""};
+    services.set_bulk_store(gw::make_bulk_data_store(bulk));
+    gw::register_builtin_samplers(services);
+    add_sse_transport(services);
+    {
+      RunningServer running(services);
+      auto client = make_client(running.port());
+
+      // Cyclic subscription on a data resource.
+      const auto data_sub = subscribe(client, "/api/v1/apps/hosted_app/data/temperature");
+      ok &= check(!data_sub.second.empty(), "a cyclic subscription on a data resource is created");
+      const auto data_events =
+          data_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, data_sub.second, 2);
+      ok &= check(data_events.size() == 2, "the data subscription streams two events");
+      ok &= check(values_change(data_events,
+                                [](const nlohmann::json & p) {
+                                  return p.contains("data") ? p["data"].value("value", nlohmann::json())
+                                                            : nlohmann::json();
+                                }),
+                  "the data value differs between the two events");
+      ok &= check(!data_events.empty() && data_events[0].contains("payload") &&
+                      data_events[0]["payload"].value("id", "") == "/temperature",
+                  "the data payload names the resource");
+      if (!data_sub.first.empty()) {
+        client.Delete("/api/v1/apps/hosted_app/cyclic-subscriptions/" + data_sub.first);
+      }
+
+      // Cyclic subscription on a resource a plugin serves.
+      const auto plugin_sub = subscribe(client, "/api/v1/apps/plugin_app/data/speed", "plugin_app");
+      ok &= check(!plugin_sub.second.empty(), "a cyclic subscription on a plugin-served data resource is created");
+      const auto plugin_events =
+          plugin_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, plugin_sub.second, 2);
+      ok &= check(plugin_events.size() == 2, "the plugin-data subscription streams two events");
+      ok &= check(!plugin_events.empty() && plugin_events[0].contains("payload") &&
+                      plugin_events[0]["payload"].value("source", "") == "plugin" &&
+                      plugin_events[0]["payload"].value("name", "") == "speed",
+                  "the plugin-data payload comes from the plugin's provider");
+      ok &= check(values_change(plugin_events,
+                                [](const nlohmann::json & p) {
+                                  return p.value("value", nlohmann::json());
+                                }),
+                  "the plugin value differs between the two events");
+      if (!plugin_sub.first.empty()) {
+        client.Delete("/api/v1/apps/plugin_app/cyclic-subscriptions/" + plugin_sub.first);
+      }
+
+      // Cyclic subscription on faults.
+      const auto fault_sub = subscribe(client, "/api/v1/apps/hosted_app/faults");
+      ok &= check(!fault_sub.second.empty(), "a cyclic subscription on faults is created");
+      const auto fault_events =
+          fault_sub.second.empty() ? std::vector<nlohmann::json>{} : read_events(client, fault_sub.second, 2);
+      ok &= check(fault_events.size() == 2, "the faults subscription streams two events");
+      ok &= check(values_change(fault_events,
+                                [](const nlohmann::json & p) {
+                                  return p.contains("faults") && p["faults"].is_array() && !p["faults"].empty()
+                                             ? p["faults"][0].value("occurrence_count", nlohmann::json())
+                                             : nlohmann::json();
+                                }),
+                  "the fault occurrence_count differs between the two events");
+      if (!fault_sub.first.empty()) {
+        client.Delete("/api/v1/apps/hosted_app/cyclic-subscriptions/" + fault_sub.first);
+      }
+
+      // Bulk data: upload, list, download, delete.
+      const std::string payload("bulk\0payload\xff\x01", 15);
+      const std::string base = "/api/v1/apps/hosted_app/bulk-data";
+      httplib::MultipartFormDataItems items = {{"file", payload, "cal.bin", "application/octet-stream"}};
+      auto uploaded = client.Post(base + "/calibration", items);
+      ok &= check(uploaded && uploaded->status == 201, "an upload to a configured category answers 201");
+      const std::string item_id = uploaded && uploaded->status == 201
+                                      ? nlohmann::json::parse(uploaded->body, nullptr, false).value("id", "")
+                                      : "";
+      auto listed = client.Get(base + "/calibration");
+      const auto listed_json = listed ? nlohmann::json::parse(listed->body, nullptr, false) : nlohmann::json();
+      ok &=
+          check(listed && listed->status == 200 && listed_json.contains("items") && listed_json["items"].size() == 1 &&
+                    listed_json["items"][0].value("id", "") == item_id && !item_id.empty(),
+                "the uploaded item is listed");
+      auto downloaded = client.Get(base + "/calibration/" + item_id);
+      ok &= check(downloaded && downloaded->status == 200 && downloaded->body == payload, "the download is byte-equal");
+      auto removed = client.Delete(base + "/calibration/" + item_id);
+      ok &= check(removed && removed->status == 204, "the delete answers 204");
+      auto relisted = client.Get(base + "/calibration");
+      const auto relisted_json = relisted ? nlohmann::json::parse(relisted->body, nullptr, false) : nlohmann::json();
+      ok &= check(relisted && relisted_json.contains("items") && relisted_json["items"].empty(),
+                  "the deleted item is gone");
+      auto too_big = client.Post(
+          base + "/calibration",
+          httplib::MultipartFormDataItems{{"file", std::string(2048, 'x'), "big.bin", "application/octet-stream"}});
+      ok &= check(too_big && too_big->status >= 400, "an upload past max_upload_size is refused");
+
+      // Categories: the store's own, and no rosbags when the fault manager serves none.
+      auto categories = client.Get(base);
+      const auto categories_json =
+          categories ? nlohmann::json::parse(categories->body, nullptr, false) : nlohmann::json();
+      const auto cat_items = categories_json.value("items", nlohmann::json::array());
+      ok &= check(categories && categories->status == 200 &&
+                      std::find(cat_items.begin(), cat_items.end(), nlohmann::json("calibration")) != cat_items.end(),
+                  "the categories list the configured category");
+      ok &= check(std::find(cat_items.begin(), cat_items.end(), nlohmann::json("rosbags")) == cat_items.end(),
+                  "the categories do not list rosbags when the fault manager serves none");
+
+      // A host without rosbags answers rosbags like any category that does not exist.
+      const auto error_code_of = [](const httplib::Result & r) {
+        return r ? nlohmann::json::parse(r->body, nullptr, false).value("error_code", "") : std::string{};
+      };
+      auto no_rosbag_list = client.Get(base + "/rosbags");
+      auto no_such_list = client.Get(base + "/no_such_category");
+      ok &= check(no_such_list && no_such_list->status == 404, "an unknown category list answers 404");
+      ok &= check(no_rosbag_list && no_such_list && no_rosbag_list->status == no_such_list->status &&
+                      error_code_of(no_rosbag_list) == error_code_of(no_such_list),
+                  "listing rosbags without rosbags answers like an unknown category");
+      auto no_rosbag_item = client.Get(base + "/rosbags/some-recording");
+      auto no_such_item = client.Get(base + "/no_such_category/some-recording");
+      ok &= check(no_rosbag_item && no_rosbag_item->body.find("Unknown category: rosbags") != std::string::npos,
+                  "the rosbag download error names the unknown category");
+      ok &= check(no_rosbag_item && no_such_item && no_rosbag_item->status == no_such_item->status &&
+                      error_code_of(no_rosbag_item) == error_code_of(no_such_item),
+                  "downloading a rosbag without rosbags answers like an unknown category");
+
+      auto root = client.Get("/api/v1/");
+      const auto caps =
+          root ? nlohmann::json::parse(root->body, nullptr, false).value("capabilities", nlohmann::json::object())
+               : nlohmann::json::object();
+      ok &= check(caps.value("bulk_data", false), "GET / reports bulk_data true with a store");
+      ok &= check(caps.value("cyclic_subscriptions", false),
+                  "GET / reports cyclic_subscriptions true with samplers and a transport");
+    }
+    services.transport_registry()->shutdown_all(*services.subscription_manager());
+    std::filesystem::remove_all(store_dir);
+  }
+
+  // Capabilities follow what the host provides.
+  {
+    MinimalServices bare;
+    const auto caps = root_capabilities(bare);
+    ok &=
+        check(caps.contains("bulk_data") && !caps.value("bulk_data", true), "no store and no rosbags: bulk_data false");
+    ok &= check(caps.contains("cyclic_subscriptions") && !caps.value("cyclic_subscriptions", true),
+                "no transport and no sampler: cyclic_subscriptions false");
+
+    MinimalServices transport_only;
+    add_sse_transport(transport_only);
+    const auto transport_caps = root_capabilities(transport_only);
+    ok &= check(transport_caps.contains("cyclic_subscriptions") && !transport_caps.value("cyclic_subscriptions", true),
+                "a transport without a sampler: cyclic_subscriptions false");
+    transport_only.transport_registry()->shutdown_all(*transport_only.subscription_manager());
+
+    MinimalServices sampler_only;
+    sampler_only.sampler_registry()->register_sampler(
+        "x-check", [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+          return nlohmann::json::object();
+        });
+    const auto sampler_caps = root_capabilities(sampler_only);
+    ok &= check(sampler_caps.contains("cyclic_subscriptions") && !sampler_caps.value("cyclic_subscriptions", true),
+                "a sampler without a transport: cyclic_subscriptions false");
+
+    MinimalServices store_only;
+    gw::BulkDataConfig store_only_config;
+    store_only_config.storage_dir =
+        (std::filesystem::temp_directory_path() / "check_cores_without_ros_store_only").string();
+    store_only.set_bulk_store(gw::make_bulk_data_store(store_only_config));
+    store_only.fault_transport().rosbags = false;
+    const auto store_caps = root_capabilities(store_only);
+    ok &= check(store_caps.value("bulk_data", false), "a store without rosbags: bulk_data true");
+    std::filesystem::remove_all(std::filesystem::temp_directory_path() / "check_cores_without_ros_store_only");
+
+    MinimalServices rosbags_only;
+    rosbags_only.fault_transport().rosbags = true;
+    const auto rosbag_caps = root_capabilities(rosbags_only);
+    ok &= check(rosbag_caps.value("bulk_data", false), "rosbags without a store: bulk_data true");
   }
 
   return ok ? 0 : 1;
