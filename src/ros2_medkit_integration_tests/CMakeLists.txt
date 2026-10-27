@@ -279,7 +279,8 @@ if(BUILD_TESTING)
     test_rest_logger_names
     test_aggregation_time_budgets
     test_peer_failure_reasons
-    test_relay_peer_credential)
+    test_relay_peer_credential
+    test_mutual_peer_faults)
   set(_MULTI_GATEWAY_DOMAINS 4)
 
   # Two-gateway tests that need the second gateway isolated from the first and

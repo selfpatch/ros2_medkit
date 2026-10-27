@@ -178,11 +178,16 @@ class PeerClient {
   /// Check if the peer was healthy at last health check
   bool is_healthy() const;
 
+  /// The peer's `x-medkit-instance-id` from its last health check, empty if it
+  /// sent none. Lets a fan-out skip a peer already on the visited path.
+  std::string instance_id() const;
+
   /**
    * @brief Perform a health check against the peer
    *
    * GETs /api/v1/health on the peer. Sets the internal healthy_ flag
-   * based on whether a 200 response was received.
+   * based on whether a 200 response was received, and records the peer's
+   * instance id.
    */
   void check_health();
 
@@ -307,6 +312,9 @@ class PeerClient {
   std::string peer_auth_header_;
   std::atomic<bool> healthy_{false};
   std::atomic<bool> shutdown_requested_{false};
+
+  mutable std::mutex instance_id_mutex_;
+  std::string instance_id_;
 
   std::mutex client_mutex_;
   std::unique_ptr<httplib::Client> client_;

@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -2200,6 +2201,13 @@ void RESTServer::setup_routes() {
       // 503 when the fault store cannot be read - same branch as the
       // per-entity list, and equally out of the recorder's reach.
       .errors({503})
+      .fan_out_aware()
+      .header_param(kFanOutVisitedHeader,
+                    "Set by an aggregating gateway on its own fan-out of this operation: the instance ids of "
+                    "the gateways the request has passed through, comma-separated. A gateway on that path "
+                    "answers an empty list, any other answers for itself and asks those of its peers not on "
+                    "it. Takes precedence over X-Medkit-No-Fan-Out. Clients do not send it.",
+                    /*required=*/false)
       .operation_id("listAllFaults")
       .query<dto::FaultListQuery>();
 

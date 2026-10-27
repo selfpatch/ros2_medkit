@@ -166,6 +166,7 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     // Add peer status when aggregation is active
     if (auto * agg = ctx_.aggregation_manager()) {
       response.peers = agg->get_peer_status();
+      response.x_medkit_instance_id = agg->instance_id();
 
       // Aggregation warnings are only collectable when there is an aggregation
       // manager; the array itself is not conditional on one.
