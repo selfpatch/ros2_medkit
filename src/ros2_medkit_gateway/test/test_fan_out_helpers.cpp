@@ -128,6 +128,100 @@ TEST(FanOutHelpers, build_fan_out_path_encodes_keys) {
 }
 
 // =============================================================================
+// plan_global_fault_fan_out
+// =============================================================================
+
+namespace {
+
+const std::string kSelf = "0123456789abcdef0123456789abcdef";
+
+httplib::Request global_faults_request() {
+  httplib::Request req;
+  req.path = "/api/v1/faults";
+  return req;
+}
+
+}  // namespace
+
+TEST(FanOutHelpers, global_fault_plan_client_request_fans_out_with_own_id) {
+  auto plan = plan_global_fault_fan_out(global_faults_request(), kSelf);
+  EXPECT_EQ(plan.mode, GlobalFaultFanOut::Mode::kFanOut);
+  EXPECT_EQ(plan.visited, kSelf);
+}
+
+TEST(FanOutHelpers, global_fault_plan_without_aggregation_is_local) {
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, "peer_a");
+  EXPECT_EQ(plan_global_fault_fan_out(req, "").mode, GlobalFaultFanOut::Mode::kLocalOnly);
+}
+
+TEST(FanOutHelpers, global_fault_plan_no_fan_out_alone_is_local) {
+  // A client opting out, or a gateway that predates the visited path.
+  auto req = global_faults_request();
+  req.headers.emplace("X-Medkit-No-Fan-Out", "1");
+  EXPECT_EQ(plan_global_fault_fan_out(req, kSelf).mode, GlobalFaultFanOut::Mode::kLocalOnly);
+}
+
+TEST(FanOutHelpers, global_fault_plan_peer_request_extends_the_path) {
+  // The middle of a chain: B must still ask C, so No-Fan-Out does not stop it.
+  auto req = global_faults_request();
+  req.headers.emplace("X-Medkit-No-Fan-Out", "1");
+  req.headers.emplace(kFanOutVisitedHeader, "aaaa, bbbb");
+  auto plan = plan_global_fault_fan_out(req, kSelf);
+  EXPECT_EQ(plan.mode, GlobalFaultFanOut::Mode::kFanOut);
+  EXPECT_EQ(plan.visited, "aaaa,bbbb," + kSelf);
+}
+
+TEST(FanOutHelpers, global_fault_plan_own_id_on_the_path_is_already_counted) {
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, "aaaa," + kSelf + ",bbbb");
+  EXPECT_EQ(plan_global_fault_fan_out(req, kSelf).mode, GlobalFaultFanOut::Mode::kAlreadyCounted);
+}
+
+TEST(FanOutHelpers, global_fault_plan_own_id_wins_over_an_unreadable_path) {
+  // Answering locally here would list this gateway's faults twice.
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, std::string(kMaxFanOutVisitedIdLength + 1, 'x') + "," + kSelf);
+  EXPECT_EQ(plan_global_fault_fan_out(req, kSelf).mode, GlobalFaultFanOut::Mode::kAlreadyCounted);
+}
+
+TEST(FanOutHelpers, global_fault_plan_long_path_is_not_extended) {
+  std::string path;
+  for (size_t i = 0; i < kMaxFanOutVisited; ++i) {
+    path += (i ? "," : "") + std::to_string(i);
+  }
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, path);
+  EXPECT_EQ(plan_global_fault_fan_out(req, kSelf).mode, GlobalFaultFanOut::Mode::kTooDeep);
+}
+
+TEST(FanOutHelpers, global_fault_plan_oversized_id_is_not_extended) {
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, std::string(kMaxFanOutVisitedIdLength + 1, 'x'));
+  EXPECT_EQ(plan_global_fault_fan_out(req, kSelf).mode, GlobalFaultFanOut::Mode::kTooDeep);
+}
+
+TEST(FanOutHelpers, global_fault_plan_one_short_of_the_limit_is_extended) {
+  std::string path;
+  for (size_t i = 0; i + 1 < kMaxFanOutVisited; ++i) {
+    path += (i ? "," : "") + std::to_string(i);
+  }
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, path);
+  auto plan = plan_global_fault_fan_out(req, kSelf);
+  EXPECT_EQ(plan.mode, GlobalFaultFanOut::Mode::kFanOut);
+  EXPECT_EQ(plan.visited, path + "," + kSelf);
+}
+
+TEST(FanOutHelpers, global_fault_plan_skips_empty_entries) {
+  auto req = global_faults_request();
+  req.headers.emplace(kFanOutVisitedHeader, " , aaaa,,");
+  auto plan = plan_global_fault_fan_out(req, kSelf);
+  EXPECT_EQ(plan.mode, GlobalFaultFanOut::Mode::kFanOut);
+  EXPECT_EQ(plan.visited, "aaaa," + kSelf);
+}
+
+// =============================================================================
 // merge_peer_items
 // =============================================================================
 
