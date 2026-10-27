@@ -58,7 +58,9 @@ struct CorePluginContextWiring {
 /// overrides only `node()`.
 class CorePluginContext : public RosPluginContext {
  public:
-  CorePluginContext(GatewayServices & services, CorePluginContextWiring wiring);
+  /// `services` may be null: entity queries then answer nothing, locks answer "disabled", and capabilities and
+  /// samplers still work.
+  CorePluginContext(GatewayServices * services, CorePluginContextWiring wiring);
 
   /// Null: this host has no ROS node.
   rclcpp::Node * node() const override;
@@ -89,7 +91,7 @@ class CorePluginContext : public RosPluginContext {
   void notify_entities_changed(const EntityChangeScope & scope) override;
 
  private:
-  GatewayServices & services_;
+  GatewayServices * services_;
   CorePluginContextWiring wiring_;
 
   mutable std::mutex capabilities_mutex_;
