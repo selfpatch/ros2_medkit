@@ -393,12 +393,13 @@ RouteEntry & RouteEntry::fan_out_aware() {
   // The prose deliberately does not promise loop-freedom in general: the
   // gateway sets this header on its own outbound peer requests, but that only
   // terminates a recursion on routes that read it - which is exactly the set
-  // carrying this declaration. The global `GET /faults` fans out without
-  // checking it and so is not declared here.
+  // carrying this declaration. The global `GET /faults` reads it too, but its
+  // own fan-out also sends `X-Medkit-Fan-Out-Visited`, which takes precedence
+  // so a chain of gateways is still listed to the end.
   return header_param("X-Medkit-No-Fan-Out",
                       "Present at any value: answer from this gateway alone and do not query "
                       "aggregated peers. The gateway sets it on its own outbound peer requests, so "
-                      "bidirectional aggregation terminates at the first peer for this operation.",
+                      "bidirectional aggregation does not recurse on this operation.",
                       false, nlohmann::json{{"type", "string"}});
 }
 

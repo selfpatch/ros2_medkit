@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -109,6 +111,69 @@ inline std::string build_fan_out_path(const httplib::Request & req) {
     sep = '&';
   }
   return path;
+}
+
+/// How a gateway answers the global `GET /faults`.
+///
+/// That list has no routing table behind it: the only way to list the faults
+/// of a gateway two hops away is for the hop in between to fan out again. So
+/// the route does not stop at `X-Medkit-No-Fan-Out` the way the per-entity
+/// collections do. Each gateway adds its instance id to
+/// `X-Medkit-Fan-Out-Visited` instead. A peer whose id is on the path is not
+/// asked, and one asked anyway (its id not yet learned from its health check)
+/// answers an empty list. A chain A -> B -> C still reaches C, and two gateways
+/// that aggregate each other do not ask each other twice.
+struct GlobalFaultFanOut {
+  enum class Mode {
+    kFanOut,          ///< Answer locally and ask the peers, sending `visited`.
+    kLocalOnly,       ///< Answer from this gateway's fault manager only.
+    kAlreadyCounted,  ///< This gateway is on the path: answer an empty list.
+    kTooDeep,         ///< The path cannot be extended: answer locally, report the peers not asked.
+  };
+  Mode mode{Mode::kLocalOnly};
+  std::string visited;
+};
+
+/// Longest `X-Medkit-Fan-Out-Visited` path that is still extended.
+inline constexpr size_t kMaxFanOutVisited = 16;
+/// Longest instance id accepted on that path. Ours are 32 hex digits.
+inline constexpr size_t kMaxFanOutVisitedIdLength = 64;
+
+/// `self_id` is `AggregationManager::instance_id()`, empty when aggregation is off.
+///
+/// `X-Medkit-No-Fan-Out` alone keeps its meaning: answer from this gateway
+/// alone. That is what a client opting out sends, and what a gateway that
+/// predates the visited path sends. Next to the visited path it is ignored,
+/// because `fan_out_get` puts it on every peer request.
+inline GlobalFaultFanOut plan_global_fault_fan_out(const httplib::Request & req, const std::string & self_id) {
+  using Mode = GlobalFaultFanOut::Mode;
+  if (self_id.empty()) {
+    return {Mode::kLocalOnly, {}};
+  }
+  if (!req.has_header(kFanOutVisitedHeader)) {
+    if (req.has_header("X-Medkit-No-Fan-Out")) {
+      return {Mode::kLocalOnly, {}};
+    }
+    return {Mode::kFanOut, self_id};
+  }
+  const auto ids = split_fan_out_visited(req.get_header_value(kFanOutVisitedHeader));
+  if (std::find(ids.begin(), ids.end(), self_id) != ids.end()) {
+    return {Mode::kAlreadyCounted, {}};
+  }
+  // A path this gateway cannot extend still gets its own faults: answering
+  // for itself is right, asking further is not.
+  bool readable = ids.size() < kMaxFanOutVisited;
+  std::string visited;
+  for (const auto & id : ids) {
+    readable = readable && id.size() <= kMaxFanOutVisitedIdLength;
+    visited += id;
+    visited += ',';
+  }
+  if (!readable) {
+    return {Mode::kTooDeep, {}};
+  }
+  visited += self_id;
+  return {Mode::kFanOut, std::move(visited)};
 }
 
 /// Fan-out GET to peer gateways and merge their items into `result["items"]`.
