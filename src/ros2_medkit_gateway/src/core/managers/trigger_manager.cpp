@@ -24,18 +24,27 @@
 
 namespace ros2_medkit_gateway {
 
+namespace {
+/// The item name of a data resource path: "/speed" is "speed".
+std::string data_item_name(const std::string & resource_path) {
+  return (!resource_path.empty() && resource_path.front() == '/') ? resource_path.substr(1) : resource_path;
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
 TriggerManager::TriggerManager(ResourceChangeNotifier & notifier, ConditionRegistry & conditions, TriggerStore & store,
                                const TriggerConfig & config,
-                               std::shared_ptr<TopicSubscriptionTransport> topic_transport)
+                               std::shared_ptr<TopicSubscriptionTransport> topic_transport,
+                               std::shared_ptr<DataItemSource> data_source)
   : notifier_(notifier)
   , conditions_(conditions)
   , store_(store)
   , config_(config)
-  , topic_transport_(std::move(topic_transport)) {
+  , topic_transport_(std::move(topic_transport))
+  , data_source_(std::move(data_source)) {
   // Subscribe to all resource changes (empty filter = catch-all)
   NotifierFilter filter;
   notifier_sub_id_ = notifier_.subscribe(filter, [this](const ResourceChange & change) {
@@ -417,39 +426,43 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
     triggers_[state->info.id] = std::move(state);
   }
 
-  // Subscribe to topic for data triggers.
-  // When resolved_topic_name is empty (topic not yet discoverable at creation time),
-  // queue for deferred resolution - retry_unresolved_triggers() will pick it up.
-  if (topic_transport_ && req.collection == "data") {
-    if (!req.resolved_topic_name.empty()) {
-      const std::string entity_id = req.entity_id;
-      const std::string resource_path = req.resource_path;
-      auto handle = topic_transport_->subscribe(
-          req.resolved_topic_name, /*msg_type=*/"", [this, entity_id, resource_path](const nlohmann::json & sample) {
-            notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
-          });
-      if (handle) {
+  // Subscribe data triggers. A known topic goes to the transport. Without one, the item source reads the item, or, with
+  // no item source, deferred resolution waits for the topic (retry_unresolved_triggers() picks it up).
+  if (req.collection == "data") {
+    const std::string entity_id = req.entity_id;
+    const std::string resource_path = req.resource_path;
+    const auto notify_sample = [this, entity_id, resource_path](const nlohmann::json & sample) {
+      notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+    };
+    // A failed subscribe rolls the trigger back, so the caller does not get a 201 for a trigger that will never
+    // deliver. A persisted record goes too, so a restart does not bring a doomed trigger back.
+    const auto roll_back = [&](const std::string & what) -> tl::expected<TriggerInfo, TriggerCreateError> {
+      {
         std::lock_guard<std::mutex> lock(triggers_mutex_);
-        topic_handles_[info_copy.id] = std::move(handle);
-      } else {
-        // Subscribe failed at trigger creation. Roll back the trigger we
-        // just added so the caller does not get a 201 for a trigger that
-        // will never deliver. The underlying TriggerTopicSubscriber has
-        // already logged the rclcpp failure. Persisted records are also
-        // rolled back so a restart does not resurrect a doomed trigger.
-        {
-          std::lock_guard<std::mutex> lock(triggers_mutex_);
-          remove_from_dispatch_index(info_copy.id, info_copy.collection, info_copy.entity_id);
-          triggers_.erase(info_copy.id);
-        }
-        if (req.persistent) {
-          (void)store_.remove(info_copy.id);
-        }
-        return tl::make_unexpected(TriggerCreateError{
-            TriggerError::SubscribeFailed, "Failed to subscribe to topic '" + req.resolved_topic_name +
-                                               "' for data trigger; see gateway log for the rclcpp root cause"});
+        remove_from_dispatch_index(info_copy.id, info_copy.collection, info_copy.entity_id);
+        triggers_.erase(info_copy.id);
       }
-    } else if (!req.resource_path.empty()) {
+      if (req.persistent) {
+        (void)store_.remove(info_copy.id);
+      }
+      return tl::make_unexpected(TriggerCreateError{TriggerError::SubscribeFailed, what});
+    };
+    if (topic_transport_ && !req.resolved_topic_name.empty()) {
+      auto handle = topic_transport_->subscribe(req.resolved_topic_name, /*msg_type=*/"", notify_sample);
+      if (!handle) {
+        return roll_back("Failed to subscribe to topic '" + req.resolved_topic_name +
+                         "' for data trigger; see gateway log for the rclcpp root cause");
+      }
+      std::lock_guard<std::mutex> lock(triggers_mutex_);
+      topic_handles_[info_copy.id] = std::move(handle);
+    } else if (data_source_ && !req.resource_path.empty()) {
+      auto handle = data_source_->watch(req.entity_id, data_item_name(req.resource_path), notify_sample);
+      if (!handle) {
+        return roll_back("Failed to watch data item '" + req.resource_path + "' of entity '" + req.entity_id + "'");
+      }
+      std::lock_guard<std::mutex> lock(triggers_mutex_);
+      topic_handles_[info_copy.id] = std::move(handle);
+    } else if (topic_transport_ && !req.resource_path.empty()) {
       std::lock_guard<std::mutex> lock(triggers_mutex_);
       // The entity was validated to exist before this request was accepted, so
       // it counts as seen and the give-up budget runs from now.
@@ -801,19 +814,39 @@ size_t TriggerManager::load_persistent_triggers() {
 
       add_to_dispatch_index(state->info.id, state->info.collection, state->info.entity_id);
 
-      // Restored data triggers go through deferred resolution rather than
-      // straight onto the persisted topic name. The entity belongs to a process
-      // this gateway has not met yet, so the subscription attempt has to stay
-      // open for as long as the record does, and deferred resolution is the
-      // only path whose budget is tied to entity_seen. Subscribing here could
-      // not honour that in any case: restore runs inside the constructor, the
-      // transport's executor is wired after it returns, so the attempt would be
-      // parked on a clock that starts now and runs out long before a late
-      // entity arrives.
-      if (topic_transport_ && state->info.collection == "data") {
-        const std::string trigger_id = state->info.id;
-        const std::string entity_id = state->info.entity_id;
-        const std::string resource_path = state->info.resource_path;
+      const std::string trigger_id = state->info.id;
+      const std::string entity_id = state->info.entity_id;
+      const std::string resource_path = state->info.resource_path;
+      // With an item source, a stored trigger that had no topic is read from its item. A reader that cannot answer yet
+      // delivers nothing and is asked again, so it needs no deferred resolution.
+      if (data_source_ && state->info.collection == "data" && !resource_path.empty() &&
+          (!topic_transport_ || state->info.resolved_topic_name.empty())) {
+        auto handle = data_source_->watch(
+            entity_id, data_item_name(resource_path), [this, entity_id, resource_path](const nlohmann::json & sample) {
+              notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+            });
+        if (handle) {
+          topic_handles_[trigger_id] = std::move(handle);
+        } else {
+          std::string notice = "persistent trigger restore: trigger '";
+          notice += trigger_id;
+          notice += "' could not watch data item '";
+          notice += resource_path;
+          notice += "' of entity '";
+          notice += entity_id;
+          notice += "'. It stays active but cannot fire; delete it and recreate it.";
+          warnings.push_back(std::move(notice));
+        }
+      } else if (topic_transport_ && state->info.collection == "data") {
+        // Restored data triggers go through deferred resolution rather than
+        // straight onto the persisted topic name. The entity belongs to a process
+        // this gateway has not met yet, so the subscription attempt has to stay
+        // open for as long as the record does, and deferred resolution is the
+        // only path whose budget is tied to entity_seen. Subscribing here could
+        // not honour that in any case: restore runs inside the constructor, the
+        // transport's executor is wired after it returns, so the attempt would be
+        // parked on a clock that starts now and runs out long before a late
+        // entity arrives.
         if (!resource_path.empty()) {
           unresolved_data_triggers_.push_back({trigger_id, entity_id, resource_path, std::chrono::steady_clock::now(),
                                                std::nullopt,

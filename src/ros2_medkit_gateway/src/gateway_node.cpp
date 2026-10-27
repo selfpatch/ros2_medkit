@@ -42,7 +42,6 @@
 #include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "ros2_medkit_gateway/core/http/handlers/sse_transport_provider.hpp"
-#include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 using namespace std::chrono_literals;
 
@@ -956,34 +955,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   });
 
   condition_registry_ = std::make_unique<ConditionRegistry>();
-  condition_registry_->register_condition("OnChange", std::make_shared<OnChangeEvaluator>());
-  condition_registry_->register_condition("OnChangeTo", std::make_shared<OnChangeToEvaluator>());
-  condition_registry_->register_condition("EnterRange", std::make_shared<EnterRangeEvaluator>());
-  condition_registry_->register_condition("LeaveRange", std::make_shared<LeaveRangeEvaluator>());
+  register_builtin_conditions(*condition_registry_);
 
   auto triggers_enabled = get_parameter("triggers.enabled").as_bool();
   if (triggers_enabled) {
-    auto storage_path = get_parameter("triggers.storage.path").as_string();
-    if (storage_path.empty()) {
-      trigger_store_ = std::make_unique<SqliteTriggerStore>(":memory:");
-    } else {
-      trigger_store_ = std::make_unique<SqliteTriggerStore>(storage_path);
-    }
-
-    TriggerConfig trigger_config;
-    // The cap is stored as int here and compared against a size_t in
-    // TriggerManager, so a negative would become a huge unsigned bound and the
-    // documented "HTTP 503 when this limit is reached" would never fire - the
-    // trigger list would grow without one. Checked as int64 before narrowing.
-    const int64_t max_triggers_raw = get_parameter("triggers.max_triggers").as_int();
-    if (max_triggers_raw < 1 || max_triggers_raw > std::numeric_limits<int>::max()) {
-      RCLCPP_WARN(get_logger(), "triggers.max_triggers %" PRId64 " out of range. Using default 1000.",
-                  max_triggers_raw);
-      trigger_config.max_triggers = 1000;
-    } else {
-      trigger_config.max_triggers = static_cast<int>(max_triggers_raw);
-    }
+    TriggerHostConfig trigger_config;
+    trigger_config.max_triggers = get_parameter("triggers.max_triggers").as_int();
     trigger_config.on_restart_behavior = get_parameter("triggers.on_restart_behavior").as_string();
+    trigger_config.storage_path = get_parameter("triggers.storage.path").as_string();
 
     // Subscribe to data topics for data triggers. The adapter is created
     // before the trigger manager because the manager takes the transport
@@ -991,46 +970,27 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     trigger_topic_subscriber_ = std::make_unique<TriggerTopicSubscriber>(this);
     trigger_topic_transport_ = std::make_shared<ros2::Ros2TopicSubscriptionTransport>(trigger_topic_subscriber_.get());
 
-    trigger_mgr_ = std::make_unique<TriggerManager>(*resource_change_notifier_, *condition_registry_, *trigger_store_,
-                                                    trigger_config, trigger_topic_transport_);
-
-    // Set entity hierarchy resolver using thread-safe cache
-    trigger_mgr_->set_entity_children_fn(
-        [this](const std::string & entity_id, const std::string & entity_type) -> std::vector<std::string> {
-          const auto & cache = get_thread_safe_cache();
-          if (entity_type == "components") {
-            return cache.get_apps_for_component(entity_id);
-          } else if (entity_type == "areas") {
-            auto comps = cache.get_components_for_area(entity_id);
-            std::vector<std::string> all_apps;
-            for (const auto & comp_id : comps) {
-              auto apps = cache.get_apps_for_component(comp_id);
-              all_apps.insert(all_apps.end(), apps.begin(), apps.end());
-            }
-            return all_apps;
-          } else if (entity_type == "functions") {
-            return cache.get_apps_for_function(entity_id);
-          }
-          return {};
-        });
-
-    // Set entity existence checker for orphan sweep
-    trigger_mgr_->set_entity_exists_fn(
-        [this](const std::string & entity_id, const std::string & /*entity_type*/) -> bool {
-          const auto & cache = get_thread_safe_cache();
-          return cache.find_entity(entity_id).has_value();
-        });
-
-    trigger_mgr_->set_warn_log_fn([this](const std::string & message) {
+    // The deferred-resolution budget must outlive at least one full discovery
+    // refresh: plugin-declared topics only reach the entity cache on a refresh
+    // pass, and refresh_interval_ms is configurable up to 60 s - equal to the
+    // old fixed budget, which made "resolves on a later tick" false at the
+    // extreme. Two refresh cycles keeps the reasoning true for every allowed
+    // configuration.
+    TriggerHostWiring trigger_wiring;
+    trigger_wiring.cache = &get_thread_safe_cache();
+    trigger_wiring.topic_transport = trigger_topic_transport_;
+    trigger_wiring.log_manager = log_mgr_.get();
+    trigger_wiring.warn = [this](const std::string & message) {
       RCLCPP_WARN(get_logger(), "%s", message.c_str());
-    });
-    // Load persistent triggers. This is the only pass: a trigger the store
-    // holds but this call does not put back stays absent until the next
-    // restart, so the count is worth having in the log of every start that
-    // asked for a restore.
-    const size_t restored_triggers = trigger_mgr_->load_persistent_triggers();
+    };
+    trigger_wiring.unresolved_timeout =
+        std::max(std::chrono::seconds(60), std::chrono::seconds(2 * refresh_interval_ms_ / 1000));
+    trigger_host_ = make_trigger_host(trigger_config, *resource_change_notifier_, *condition_registry_, trigger_wiring);
+    // Persistent triggers are restored once, inside make_trigger_host. A trigger the store holds but that pass does not
+    // put back stays absent until the next restart, so the count is worth having in the log of every start that asked
+    // for a restore.
     if (trigger_config.on_restart_behavior == "restore") {
-      RCLCPP_INFO(get_logger(), "Restored %zu persistent trigger(s) from the trigger store", restored_triggers);
+      RCLCPP_INFO(get_logger(), "Restored %zu persistent trigger(s) from the trigger store", trigger_host_.restored);
     }
 
     // Wire notifier to managers so they emit events for trigger evaluation
@@ -1041,39 +1001,14 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     // Wire LogManager <-> TriggerManager for log_settings integration
     if (log_mgr_) {
-      trigger_mgr_->set_log_manager(log_mgr_.get());
       log_mgr_->set_notifier(resource_change_notifier_.get());
     }
 
     // Subscribe to fault events and forward to notifier
     trigger_fault_subscriber_ = std::make_unique<TriggerFaultSubscriber>(this, *resource_change_notifier_);
 
-    // Wire deferred topic resolution: when a trigger's resource_path couldn't
-    // be resolved to a ROS 2 topic at creation time, retry periodically using
-    // the entity cache to find matching topics.
-    trigger_mgr_->set_resolve_topic_fn([this](const std::string & entity_id,
-                                              const std::string & resource_path) -> std::string {
-      const auto & cache = get_thread_safe_cache();
-      auto aggregated = cache.get_entity_data(entity_id);
-      for (const auto & topic : aggregated.topics) {
-        if (topic.name == resource_path ||
-            (topic.name.size() > resource_path.size() &&
-             topic.name.compare(topic.name.size() - resource_path.size(), resource_path.size(), resource_path) == 0)) {
-          return topic.name;
-        }
-      }
-      return "";
-    });
-    // The deferred-resolution budget must outlive at least one full discovery
-    // refresh: plugin-declared topics only reach the entity cache on a refresh
-    // pass, and refresh_interval_ms is configurable up to 60 s - equal to the
-    // old fixed budget, which made "resolves on a later tick" false at the
-    // extreme. Two refresh cycles keeps the reasoning true for every allowed
-    // configuration.
-    trigger_mgr_->set_unresolved_timeout(
-        std::max(std::chrono::seconds(60), std::chrono::seconds(2 * refresh_interval_ms_ / 1000)));
     trigger_topic_subscriber_->set_retry_callback([this]() {
-      trigger_mgr_->retry_unresolved_triggers();
+      trigger_host_.manager->retry_unresolved_triggers();
     });
 
     // Wire node-to-entity resolver for trigger notifications (#305).
@@ -1081,18 +1016,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     // mapping (populated from linking result). Captures 'this' - the lambda is
     // called from ROS subscription callbacks on the same node's executor.
     auto node_resolver = [this](const std::string & ros_fqn) -> std::string {
-      auto result = thread_safe_cache_.resolve_node_to_app(ros_fqn);
-      if (!result.empty()) {
-        return result;
-      }
-      // Try with normalized FQN (strip leading /)
-      if (!ros_fqn.empty() && ros_fqn[0] == '/') {
-        result = thread_safe_cache_.resolve_node_to_app(ros_fqn.substr(1));
-        if (!result.empty()) {
-          return result;
-        }
-      }
-      return "";
+      return resolve_trigger_entity(thread_safe_cache_, ros_fqn);
     };
 
     if (trigger_fault_subscriber_) {
@@ -1102,8 +1026,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       log_mgr_->set_node_to_entity_resolver(node_resolver);
     }
 
-    RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_config.max_triggers,
-                storage_path.empty() ? ":memory:" : storage_path.c_str());
+    RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_host_.max_triggers,
+                trigger_config.storage_path.empty() ? ":memory:" : trigger_config.storage_path.c_str());
   } else {
     RCLCPP_INFO(get_logger(), "Trigger subsystem: disabled");
   }
@@ -1271,8 +1195,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     refresh_cache();
 
     // Sweep triggers whose entities disappeared from discovery
-    if (trigger_mgr_) {
-      trigger_mgr_->sweep_orphaned_triggers();
+    if (trigger_host_.manager) {
+      trigger_host_.manager->sweep_orphaned_triggers();
     }
   });
 
@@ -1306,8 +1230,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
                                    cors_config_, auth_config_, rate_limit_config_, rest_config, tls_config_);
 
   // Wire trigger handlers into REST server
-  if (trigger_mgr_) {
-    rest_server_->set_trigger_handlers(*trigger_mgr_);
+  if (trigger_host_.manager) {
+    rest_server_->set_trigger_handlers(*trigger_host_.manager);
   }
 
   // Wire aggregation manager into REST server handler context
@@ -1436,8 +1360,8 @@ GatewayNode::~GatewayNode() {
     trigger_topic_subscriber_->shutdown();
   }
   // 4. Shutdown trigger subsystem (wakes SSE trigger streams)
-  if (trigger_mgr_) {
-    trigger_mgr_->shutdown();
+  if (trigger_host_.manager) {
+    trigger_host_.manager->shutdown();
   }
   // 4b. Drain in-flight update tasks BEFORE the notifier is shut down and
   //     freed. Update tasks run on their own std::async threads (not the
@@ -1838,7 +1762,7 @@ ResourceChangeNotifier * GatewayNode::get_resource_change_notifier() const {
 }
 
 TriggerManager * GatewayNode::get_trigger_manager() const {
-  return trigger_mgr_.get();
+  return trigger_host_.manager.get();
 }
 
 ConditionRegistry * GatewayNode::get_condition_registry() const {
