@@ -28,13 +28,13 @@
 
 #include <nlohmann/json.hpp>
 
-#include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_detection/fault_types.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_fault_relay.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
-#include "ros2_medkit_msgs/msg/fault_event.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -81,19 +81,19 @@ class SSEFaultHandler {
    * @brief Construct SSE fault handler with shared context.
    * @param ctx The shared handler context
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
-   * @param fault_events_topic Fully qualified topic the FaultManager publishes fault events on
+   *
+   * Fault events come from ``ctx.services().fault_events()``; with no source
+   * the stream stays open and silent.
    */
-  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                  const std::string & fault_events_topic);
+  SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker);
   /**
    * @brief Test-only constructor that overrides the keepalive interval.
    * @param ctx The shared handler context
    * @param client_tracker Shared SSE client counter (across all SSE handlers)
    * @param keepalive_interval Must be positive; non-positive values fall back to the 30s default.
-   * @param fault_events_topic Fully qualified topic the FaultManager publishes fault events on
    */
   SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClientTracker> client_tracker,
-                  std::chrono::milliseconds keepalive_interval, const std::string & fault_events_topic);
+                  std::chrono::milliseconds keepalive_interval);
 
   /// Destructor. Signals shutdown, then blocks until every stream closure has
   /// been destroyed: the per-stream unregister deleter locks queue_mutex_ and
@@ -205,8 +205,8 @@ class SSEFaultHandler {
   /// without it a chain would relay the same event back round the loop.
   std::function<bool(httplib::DataSink &)> make_stream_loop(uint64_t initial_last_event_id, bool relay_peers);
 
-  /// Callback for fault events from ROS 2 topic
-  void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
+  /// Callback for events from the fault event source
+  void on_fault_event(const ros2_medkit::fault_detection::FaultEventRecord & event);
 
   /// Callback for an event relayed from a peer's stream. Runs on that peer
   /// proxy's reader thread.
@@ -224,7 +224,7 @@ class SSEFaultHandler {
   /// flip the entity reported to consumers.
   struct QueuedEvent {
     uint64_t id;
-    ros2_medkit_msgs::msg::FaultEvent event;
+    ros2_medkit::fault_detection::FaultEventRecord event;
     std::optional<EntityContext> entity;
     /// Name of the peer this event was relayed from; empty when this gateway
     /// saw the fault on its own graph. Part of the supersede key, because the
@@ -291,13 +291,13 @@ class SSEFaultHandler {
   /// ros2_runtime_introspection.cpp's renaming rule. Only emits a value when
   /// an App with the resolved id actually exists in the cache - returns
   /// ``std::nullopt`` otherwise so the consumer falls back to discovery.
-  std::optional<EntityContext> resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fault) const;
+  std::optional<EntityContext> resolve_entity_context(const ros2_medkit::fault_detection::FaultRecord & fault) const;
 
   HandlerContext & ctx_;
   std::shared_ptr<SSEClientTracker> client_tracker_;
 
-  /// Subscription to fault events topic
-  rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
+  /// Fault event source; null on a host without a fault manager.
+  FaultEventSource * fault_source_{nullptr};
 
   /// Relays the peers' fault streams into this one on an aggregating gateway.
   /// Always constructed; it opens nothing when this gateway has no peers.
