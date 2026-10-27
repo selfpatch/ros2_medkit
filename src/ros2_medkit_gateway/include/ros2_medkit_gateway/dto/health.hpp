@@ -209,7 +209,7 @@ inline constexpr std::string_view dto_name<Health> = "HealthStatus";
 //
 // Wire shape (from health_handlers.cpp handle_version_info):
 //   version - gateway version string (required)
-//   name    - gateway name string, always "ros2_medkit" (required)
+//   name    - vendor name the host configured, "ros2_medkit" by default (required)
 // =============================================================================
 struct VersionInfoVendor {
   std::string version;
@@ -390,7 +390,7 @@ inline constexpr std::string_view dto_name<RootTls> = "RootTls";
 // RootOverview - response for GET / (API root).
 //
 // Wire shape (from health_handlers.cpp handle_root):
-//   name         - "ROS 2 Medkit Gateway" (required)
+//   name         - server name the host configured, "ROS 2 Medkit Gateway" by default (required)
 //   version      - gateway version string (required)
 //   api_base     - API base path string (required)
 //   endpoints    - array of endpoint description strings (required)
