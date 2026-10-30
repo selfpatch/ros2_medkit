@@ -1342,7 +1342,10 @@ void OpcuaPoller::poll_loop() {
     // ``nodes:``) do_poll() does nothing, so we explicitly pump iterate
     // here to keep events flowing. Cheap when there are no pending
     // notifications; bounded by the timeout.
-    if (event_subscription_id_ != 0) {
+    //
+    // Data-change subscriptions need the same pump: in subscription mode
+    // do_poll() is skipped, so without it no value would ever arrive.
+    if (event_subscription_id_ != 0 || using_subscriptions_.load()) {
       client_.run_iterate(50);
     }
 

@@ -580,6 +580,7 @@ if(BUILD_TESTING)
       test/integration/gen_test_certs.sh
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
+      test/integration/test_opcua_subscription_values.test.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -600,6 +601,15 @@ if(BUILD_TESTING)
     set_tests_properties(test_opcua_read_only PROPERTIES
       LABELS "integration"
       TIMEOUT 900)
+    # Subscription mode with plain nodes and no event_alarms: values reach the
+    # plugin and its alarms, over real HTTP against the fixture server.
+    medkit_add_wrapped_test(test_opcua_subscription_values
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_subscription_values PROPERTIES
+      LABELS "integration"
+      TIMEOUT 180)
     # This one boots a real gateway and fault manager, so it needs a domain, and
     # it builds its own command line - hence the generic wrapper rather than an
     # ament test runner.
