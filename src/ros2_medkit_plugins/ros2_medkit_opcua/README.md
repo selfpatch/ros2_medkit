@@ -314,6 +314,19 @@ nodes:
       threshold: 100.0
       above_threshold: false      # Alarm when value < threshold
 
+  # Raise qualifier: the condition must hold before the point raises a fault,
+  # so one noisy reading does not become a real fault. Works with `alarm:`,
+  # `status_bits:` and `fault_enum:`. See the note below.
+  - node_id: "ns=2;s=Tank.Pressure"
+    entity_id: tank_process
+    data_name: tank_pressure
+    data_type: float
+    raise_after_samples: 3         # optional: 3 new readings in a row (1..10000, default 1)
+    raise_after_ms: 2000           # optional: held for 2 s without a break (0..3600000, default 0)
+    alarm:
+      fault_code: PLC_TANK_OVERPRESSURE_HIGH
+      threshold: 6.0
+
   # Status-word bit decode: one integer register, one fault per named bit.
   # Mutually exclusive per node with `alarm:` / `fault_enum:`.
   - node_id: "ns=2;s=Pump.StatusWord"
@@ -374,6 +387,22 @@ nodes:
 # must be < 64 (and < `status_word_width` when set); higher positions are dead
 # config, so the loader logs a warning and skips that bit rule while still loading
 # the rest of the config.
+#
+# Raise qualifier (`raise_after_samples`, `raise_after_ms`): when both are set,
+# both must be met. A sample is a new reading of the point:
+#   - polling: one per successful read, so `raise_after_samples: N` takes about
+#     N x `poll_interval_ms`. A failed read is not a sample and does not complete
+#     `raise_after_ms`; the wait continues on the next successful read.
+#   - subscriptions: one per data change, and while the value holds, one more per
+#     `poll_interval_ms`, since the server sends nothing for a steady value.
+#     Changes of other points do not count.
+# The check runs once per `poll_interval_ms`, so a raise can come up to one poll
+# interval after `raise_after_ms` ends. A single healthy reading restarts the
+# wait. A lost connection also restarts it, since nothing was seen while the link
+# was down. Only the raise waits: the clear is immediate. Each bit of a status
+# word and each code of an enum waits on its own. A fault that is still waiting
+# is not listed in `active_alarms` on `x-plc-status`. Out-of-range values are
+# clamped with a warning.
 #
 # Fault codes must be globally unique across ALL fault sources - every `alarm` /
 # `status_bits` / `fault_enum` entry AND every `event_alarms` entry (including
