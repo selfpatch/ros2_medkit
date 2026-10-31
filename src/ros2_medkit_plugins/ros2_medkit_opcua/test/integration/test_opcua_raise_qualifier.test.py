@@ -165,7 +165,7 @@ def start_server(server_bin, port, log_path):
         text=True, start_new_session=True,
     )
     proc._log = log
-    if not wait_log(log_path, 'READY ', deadline=25):
+    if not wait_log(log_path, 'READY ', deadline=25 * SCALE):
         terminate(proc)
         return None
     return proc
@@ -177,7 +177,7 @@ def set_register(server, log_path, name, value):
     before = Path(log_path).read_text(errors='replace').count(needle)
     server.stdin.write(f'set {name} {value}\n')
     server.stdin.flush()
-    for _ in range(40):
+    for _ in range(int(40 * SCALE)):
         if Path(log_path).read_text(errors='replace').count(needle) > before:
             return True
         time.sleep(0.05)
@@ -309,10 +309,17 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         check(status.get('mode') == mode,
               f'{mode}: the plugin runs in {mode} mode (got {status.get("mode")!r})')
 
-        # 1. A blip shorter than the window.
-        set_register(server, server_log, 'StatusWord', 1)
+        # 1. A blip shorter than the window. Its real length includes the time the
+        #    fixture takes to confirm each write, so it is measured, not assumed.
+        blip_start = time.monotonic()
+        check(set_register(server, server_log, 'StatusWord', 1),
+              f'{mode}: StatusWord set to 1 for the blip')
         time.sleep(1.0)
-        set_register(server, server_log, 'StatusWord', 0)
+        check(set_register(server, server_log, 'StatusWord', 0),
+              f'{mode}: StatusWord back to 0 after the blip')
+        blip = time.monotonic() - blip_start
+        check(blip < HOLD_MS / 1000.0,
+              f'{mode}: the blip lasted {blip:.2f} s, less than {HOLD_MS} ms')
         check(stays_inactive(status_url, HELD, (HOLD_MS / 1000.0 + 2.0) * SCALE),
               f'{mode}: a 1 s StatusWord blip never raises {HELD}')
 

@@ -83,8 +83,9 @@ class DetectionPipeline {
   ros2_medkit::fault_detection::FaultTransitionTracker tracker_;
   ros2_medkit::fault_detection::RaiseQualifierFilter qualifier_;
   // Good values received per node, and the count each node had when it was
-  // last evaluated. ``evaluated_`` is rebuilt every pass from the entries
-  // evaluated, so it never holds more than the current detection entries.
+  // last evaluated. ``received_`` has one counter per node the poller reads,
+  // so it is bounded by the node map. ``evaluated_`` is rebuilt every pass from
+  // the entries evaluated, so it never holds more than the detection entries.
   std::unordered_map<std::string, std::uint64_t> received_;
   std::unordered_map<std::string, std::uint64_t> evaluated_;
 };

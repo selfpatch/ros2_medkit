@@ -1356,7 +1356,9 @@ void OpcuaPoller::poll_loop() {
     } else {
       // A subscription is silent while a value holds, so a point waiting on
       // raise_after_* would never be looked at again. While something waits,
-      // each cycle counts as one more sample of the value it holds.
+      // each cycle counts as one more sample of the value it holds. A data
+      // change between this check and the pass only moves the result by one
+      // cycle: evaluate() reads the state again under the lock.
       bool waiting = false;
       {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
