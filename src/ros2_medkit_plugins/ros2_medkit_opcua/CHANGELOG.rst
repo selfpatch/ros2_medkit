@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* With ``prefer_subscriptions`` and no ``event_alarms``, the poll loop now services the client, so data changes reach the plugin. Before, such a setup received no value at all and none of its alarms could raise
+* Node-map points accept ``raise_after_samples`` and ``raise_after_ms``, so an ``alarm``, ``status_bits`` or ``fault_enum`` rule raises only once its condition has persisted. Polling counts successful reads, subscriptions count data changes plus one sample per poll interval while a value holds, and a lost connection restarts the wait (`#654 <https://github.com/selfpatch/ros2_medkit/issues/654>`_)
+
 0.7.0 (2026-08-27)
 ------------------
 * Config-less discovery. A read-only network scan finds the OPC UA server instead of requiring its endpoint up front (`#509 <https://github.com/selfpatch/ros2_medkit/pull/509>`_), ``auto_browse`` walks the address space recursively and builds the SOVD tree from it (`#510 <https://github.com/selfpatch/ros2_medkit/pull/510>`_), and identity, writability and fault triggers are read from the device itself rather than declared in a node map (`#544 <https://github.com/selfpatch/ros2_medkit/pull/544>`_)

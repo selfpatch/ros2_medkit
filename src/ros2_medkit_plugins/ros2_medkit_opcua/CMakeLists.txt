@@ -151,6 +151,7 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
+  src/detection_pipeline.cpp
   src/network_discovery.cpp
   src/network_discovery_io.cpp
   src/address_space_browser.cpp
@@ -286,6 +287,7 @@ if(BUILD_TESTING)
     src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    src/detection_pipeline.cpp
     src/network_discovery.cpp
     src/network_discovery_io.cpp
     src/address_space_browser.cpp
@@ -316,6 +318,7 @@ if(BUILD_TESTING)
     src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    src/detection_pipeline.cpp
     src/network_discovery.cpp
     src/network_discovery_io.cpp
     src/address_space_browser.cpp
@@ -355,6 +358,27 @@ if(BUILD_TESTING)
     yaml-cpp::yaml-cpp
   )
 
+  # The polled detection path between the poller's cached values and the fault
+  # callbacks: sample counting, raise qualifiers and outages, no server needed.
+  medkit_add_gtest(test_detection_pipeline
+    test/test_detection_pipeline.cpp
+    src/detection_pipeline.cpp
+    src/node_map.cpp
+  )
+  target_include_directories(test_detection_pipeline PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_detection_pipeline
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_detection_pipeline
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+
   medkit_add_gtest(test_opcua_client
     test/test_opcua_client.cpp
     src/opcua_client.cpp
@@ -381,6 +405,7 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_opcua_poller
     test/test_opcua_poller.cpp
     src/opcua_poller.cpp
+    src/detection_pipeline.cpp
     src/opcua_client.cpp
     src/node_map.cpp
   )
@@ -580,6 +605,8 @@ if(BUILD_TESTING)
       test/integration/gen_test_certs.sh
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
+      test/integration/test_opcua_subscription_values.test.py
+      test/integration/test_opcua_raise_qualifier.test.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -600,6 +627,25 @@ if(BUILD_TESTING)
     set_tests_properties(test_opcua_read_only PROPERTIES
       LABELS "integration"
       TIMEOUT 900)
+    # Subscription mode with plain nodes and no event_alarms: values reach the
+    # plugin and its alarms, over real HTTP against the fixture server.
+    medkit_add_wrapped_test(test_opcua_subscription_values
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_subscription_values PROPERTIES
+      LABELS "integration"
+      TIMEOUT 180)
+    # raise_after_samples / raise_after_ms through a real gateway, on the poll
+    # and the subscription transport. No fault manager: x-plc-status reports
+    # which faults the plugin holds active.
+    medkit_add_wrapped_test(test_opcua_raise_qualifier
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_raise_qualifier.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_raise_qualifier PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
     # This one boots a real gateway and fault manager, so it needs a domain, and
     # it builds its own command line - hence the generic wrapper rather than an
     # ament test runner.
@@ -658,6 +704,7 @@ if(BUILD_TESTING)
       src/device_identity.cpp
       src/node_map.cpp
       src/opcua_poller.cpp
+      src/detection_pipeline.cpp
       src/network_discovery.cpp
       src/network_discovery_io.cpp
       src/address_space_browser.cpp

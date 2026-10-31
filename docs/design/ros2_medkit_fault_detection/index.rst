@@ -69,3 +69,31 @@ points emitting the same code would alternately raise and clear it each cycle.
 Consumers that share one tracker (for example the OPC UA poller across all
 node-map entries and event alarms) must enforce that uniqueness at
 config-load time and reject a colliding configuration before anything runs.
+
+Raise qualifier
+---------------
+
+One active evaluation is enough to raise a fault. A bridge reports a raise as one
+``EVENT_FAILED``, so the fault manager's event-counting debounce has nothing to count, and
+the filter has to sit where the samples are.
+
+``RaiseQualifier`` sets how long a condition must hold before a rule raises: ``min_samples``
+new samples in a row, ``min_duration`` without a break, or both. The default raises on the
+first sample.
+
+``RaiseQualifierFilter`` sits between the evaluator and the tracker, so the evaluator
+stays pure. While a fault waits, its signal goes out as inactive, and the tracker raises
+nothing. Once the qualifier is met the signal passes through until the condition goes away.
+Only the raise waits; the first inactive sample clears at once, and the next raise has to
+qualify again.
+
+The caller says whether each call carries a new sample (``fresh``). Only fresh samples
+count toward ``min_samples``. A call that is not fresh can still end ``min_duration``, so a
+consumer that is told about changes only can call again on a timer. A value that could not
+be read is unknown, not unchanged, and is not passed at all. An undecidable value, for which
+the evaluator returns nothing, keeps the wait as it is, the same way it keeps a raised
+fault.
+
+``reset_pending()`` drops the faults that are still waiting, for a consumer that loses
+sight of its source. Faults already raised stay raised. The filter has the same
+``fault_code`` uniqueness contract as the tracker.

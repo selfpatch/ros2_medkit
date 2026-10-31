@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_fault_detection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* ``RaiseQualifier`` and ``RaiseQualifierFilter`` let a rule wait until its condition has held for a number of new samples or for a duration before it raises, so one noisy reading does not become a fault. The default raises on the first sample, as before (`#654 <https://github.com/selfpatch/ros2_medkit/issues/654>`_)
+
 0.7.0 (2026-08-27)
 ------------------
 * Initial release of the package: shared, protocol-agnostic fault-detection model for medkit

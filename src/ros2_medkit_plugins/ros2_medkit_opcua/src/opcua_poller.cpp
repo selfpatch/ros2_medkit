@@ -1185,11 +1185,12 @@ void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue &
   {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     snapshot_.values[node_id] = value;
+    detection_.record_sample(node_id);
     snapshot_.timestamp = std::chrono::system_clock::now();
     snapshot_.connected = true;
     snapshot_.poll_count++;
   }
-  evaluate_alarms();
+  evaluate_alarms(DetectionPipeline::Pass::kValues);
 }
 
 bool OpcuaPoller::comms_lost_should_raise(bool enabled, bool already_raised,
@@ -1242,6 +1243,10 @@ void OpcuaPoller::poll_loop() {
       {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.connected = false;
+        // Nothing is observed while the link is down, so a point waiting on
+        // raise_after_* starts over after reconnect instead of raising at once
+        // on time it never saw. Raised faults are untouched.
+        detection_.link_lost();
       }
 
       // Issue #496: remember when the connection first went down so the
@@ -1334,6 +1339,20 @@ void OpcuaPoller::poll_loop() {
     // Poll if not using subscriptions, or as a health check
     if (!using_subscriptions_.load() || !client_.is_connected()) {
       do_poll();
+    } else {
+      // A subscription is silent while a value holds, so a point waiting on
+      // raise_after_* would never be looked at again. While something waits,
+      // each cycle counts as one more sample of the value it holds. A data
+      // change between this check and the pass only moves the result by one
+      // cycle: evaluate() reads the state again under the lock.
+      bool waiting = false;
+      {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        waiting = detection_.has_pending();
+      }
+      if (waiting) {
+        evaluate_alarms(DetectionPipeline::Pass::kTick);
+      }
     }
 
     // Issue #386: dispatch incoming AlarmCondition notifications. open62541's
@@ -1342,7 +1361,10 @@ void OpcuaPoller::poll_loop() {
     // ``nodes:``) do_poll() does nothing, so we explicitly pump iterate
     // here to keep events flowing. Cheap when there are no pending
     // notifications; bounded by the timeout.
-    if (event_subscription_id_ != 0) {
+    //
+    // Data-change subscriptions need the same pump: in subscription mode
+    // do_poll() is skipped, so without it no value would ever arrive.
+    if (event_subscription_id_ != 0 || using_subscriptions_.load()) {
       client_.run_iterate(50);
     }
 
@@ -1381,68 +1403,28 @@ void OpcuaPoller::do_poll() {
     for (const auto & r : results) {
       if (r.good) {
         snapshot_.values[r.node_id] = r.value;
+        detection_.record_sample(r.node_id);
       } else {
         snapshot_.error_count++;
       }
     }
   }
 
-  evaluate_alarms();
+  evaluate_alarms(DetectionPipeline::Pass::kValues);
 }
 
-void OpcuaPoller::evaluate_alarms() {
-  namespace fd = ros2_medkit::fault_detection;
-
+void OpcuaPoller::evaluate_alarms(DetectionPipeline::Pass pass) {
   auto detection_entries = node_map_.detection_entries();
   if (detection_entries.empty()) {
     return;
   }
 
-  // Translate a polled OPC-UA value into the shared, protocol-agnostic value
-  // type understood by the fault-detection evaluator.
-  auto to_fd_value = [](const OpcuaValue & v) -> fd::Value {
-    return std::visit(
-        [](auto && val) -> fd::Value {
-          using T = std::decay_t<decltype(val)>;
-          if constexpr (std::is_same_v<T, bool>) {
-            return fd::Value{val};
-          } else if constexpr (std::is_same_v<T, std::string>) {
-            return fd::Value{val};
-          } else if constexpr (std::is_floating_point_v<T>) {
-            return fd::Value{static_cast<double>(val)};
-          } else {
-            return fd::Value{static_cast<std::int64_t>(val)};
-          }
-        },
-        v);
-  };
-
   // Collect raise/clear edges while holding the snapshot mutex.
-  struct FaultChange {
-    std::string entity_id;
-    fd::FaultSignal signal;
-  };
-  std::vector<FaultChange> changes;
-
+  std::vector<DetectionPipeline::Change> changes;
   {
     std::lock_guard<std::mutex> snap_lock(snapshot_mutex_);
-
-    for (const auto * entry : detection_entries) {
-      auto it = snapshot_.values.find(entry->node_id_str);
-      if (it == snapshot_.values.end()) {
-        continue;
-      }
-
-      auto signals = fd::evaluate(to_fd_value(it->second), *entry->detection);
-      for (const auto & s : signals) {
-        snapshot_.alarms[s.fault_code] = s.active;
-      }
-
-      // Edge-detect raise/clear; only transitions reach the callback.
-      for (auto & edge : alarm_tracker_.apply(signals)) {
-        changes.push_back({entry->entity_id, std::move(edge)});
-      }
-    }
+    changes = detection_.evaluate(detection_entries, snapshot_.values, using_subscriptions_.load(), pass,
+                                  DetectionPipeline::Clock::now(), snapshot_.alarms);
   }  // snapshot_mutex_ released
 
   // Fire callbacks outside of locks

@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_fault_detection/fault_detection.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -315,4 +316,333 @@ TEST(TransitionTracker, EnumCodeChangeClearsOldRaisesNew) {
   ASSERT_EQ(changes.size(), 2u);
   EXPECT_FALSE(find(changes, "OVERVOLT")->active);
   EXPECT_TRUE(find(changes, "OVERCURR")->active);
+}
+
+// -- Raise qualifier ---------------------------------------------------------
+
+namespace {
+
+using Clock = fd::RaiseQualifierFilter::Clock;
+using std::chrono::milliseconds;
+
+fd::ThresholdRule hot_rule() {
+  fd::ThresholdRule r;
+  r.fault = {"HIGH_TEMP", "ERROR", "hot"};
+  r.threshold = 80.0;
+  r.above = true;
+  return r;
+}
+
+fd::RaiseQualifier samples(std::uint32_t n) {
+  fd::RaiseQualifier q;
+  q.min_samples = n;
+  return q;
+}
+
+fd::RaiseQualifier duration(milliseconds d) {
+  fd::RaiseQualifier q;
+  q.min_duration = d;
+  return q;
+}
+
+fd::Value word(std::int64_t v) {
+  return fd::Value{v};
+}
+
+// One evaluate -> filter -> tracker step, as a consumer runs it.
+struct Pipeline {
+  fd::RaiseQualifierFilter filter;
+  fd::FaultTransitionTracker tracker;
+
+  std::vector<fd::FaultSignal> step(const fd::Value & v, const fd::DetectionRule & rule, const fd::RaiseQualifier & q,
+                                    Clock::time_point now, bool fresh = true) {
+    return tracker.apply(filter.apply(fd::evaluate(v, rule), q, now, fresh));
+  }
+};
+
+}  // namespace
+
+TEST(RaiseQualifier, DefaultIsImmediate) {
+  EXPECT_TRUE(fd::RaiseQualifier{}.immediate());
+  EXPECT_TRUE(samples(0).immediate());
+  EXPECT_FALSE(samples(2).immediate());
+  EXPECT_FALSE(duration(milliseconds(1)).immediate());
+}
+
+TEST(RaiseQualifierFilter, DefaultQualifierChangesNothing) {
+  // Regression guard: with the default qualifier the filter hands back the
+  // evaluator output as is, on every call, fresh or not.
+  const auto rule = hot_rule();
+  fd::RaiseQualifierFilter filter;
+  const auto t0 = Clock::time_point{};
+  for (double v : {90.0, 70.0, 95.0}) {
+    const auto signals = fd::evaluate(fd::Value{v}, rule);
+    const auto out = filter.apply(signals, fd::RaiseQualifier{}, t0, /*fresh=*/false);
+    ASSERT_EQ(out.size(), signals.size());
+    EXPECT_EQ(out[0].active, signals[0].active);
+  }
+  EXPECT_FALSE(filter.has_pending());
+}
+
+TEST(RaiseQualifierFilter, SamplesRaiseOnTheNthConsecutiveSample) {
+  const auto rule = hot_rule();
+  const auto q = samples(3);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_TRUE(p.filter.pending("HIGH_TEMP"));
+  EXPECT_TRUE(p.step(fd::Value{91.0}, rule, q, t).empty());
+
+  auto third = p.step(fd::Value{92.0}, rule, q, t);
+  ASSERT_EQ(third.size(), 1u);
+  EXPECT_TRUE(third[0].active);
+  EXPECT_FALSE(p.filter.pending("HIGH_TEMP"));
+
+  // Exactly once: more active samples raise nothing new.
+  EXPECT_TRUE(p.step(fd::Value{93.0}, rule, q, t).empty());
+  EXPECT_TRUE(p.tracker.active("HIGH_TEMP"));
+}
+
+TEST(RaiseQualifierFilter, OneGoodSampleRestartsTheCount) {
+  // A blip is absorbed, and a healthy sample in the middle of a run means the
+  // run starts over.
+  const auto rule = hot_rule();
+  const auto q = samples(3);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_TRUE(p.step(fd::Value{70.0}, rule, q, t).empty());  // healthy, nothing was raised
+  EXPECT_FALSE(p.filter.pending("HIGH_TEMP"));
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_FALSE(p.tracker.active("HIGH_TEMP"));
+  EXPECT_EQ(p.step(fd::Value{90.0}, rule, q, t).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, RepeatedStaleValueDoesNotCount) {
+  // A caller that re-evaluates a cached value (another node changed, a timer
+  // tick) passes fresh=false. That is not a new sample.
+  const auto rule = hot_rule();
+  const auto q = samples(2);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t, true).empty());
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t, false).empty());
+  }
+  EXPECT_TRUE(p.filter.pending("HIGH_TEMP"));
+  EXPECT_EQ(p.step(fd::Value{90.0}, rule, q, t, true).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, StaleValueDoesNotStartARun) {
+  // Nothing was seen arrive, so nothing starts waiting.
+  const auto rule = hot_rule();
+  const auto q = duration(milliseconds(100));
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0, false).empty());
+  EXPECT_FALSE(p.filter.has_pending());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(500), false).empty());
+  EXPECT_FALSE(p.tracker.active("HIGH_TEMP"));
+}
+
+TEST(RaiseQualifierFilter, DurationBoundary) {
+  const auto rule = hot_rule();
+  const auto q = duration(milliseconds(500));
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0).empty());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(499)).empty());
+  auto at = p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(500));
+  ASSERT_EQ(at.size(), 1u);
+  EXPECT_TRUE(at[0].active);
+}
+
+TEST(RaiseQualifierFilter, DurationCompletesOnATickWithoutANewSample) {
+  // A subscription reports changes only. A value that goes bad and stays bad
+  // arrives once; a timer call with fresh=false still raises it on time.
+  const auto rule = hot_rule();
+  const auto q = duration(milliseconds(2000));
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0, true).empty());
+  EXPECT_TRUE(p.filter.has_pending());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(1000), false).empty());
+  EXPECT_EQ(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(2000), false).size(), 1u);
+  EXPECT_FALSE(p.filter.has_pending());
+}
+
+TEST(RaiseQualifierFilter, BlipShorterThanTheWindowNeverRaises) {
+  const auto rule = hot_rule();
+  const auto q = duration(milliseconds(1000));
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0).empty());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(900)).empty());
+  EXPECT_TRUE(p.step(fd::Value{70.0}, rule, q, t0 + milliseconds(950)).empty());
+  // The window restarts here, so 1000 ms after t0 is not enough any more.
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(1000)).empty());
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(1999)).empty());
+  EXPECT_EQ(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(2000)).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, SamplesAndDurationMustBothHold) {
+  fd::RaiseQualifier q;
+  q.min_samples = 3;
+  q.min_duration = milliseconds(100);
+  const auto rule = hot_rule();
+  const auto t0 = Clock::time_point{};
+
+  // Enough samples, too little time.
+  Pipeline fast;
+  EXPECT_TRUE(fast.step(fd::Value{90.0}, rule, q, t0).empty());
+  EXPECT_TRUE(fast.step(fd::Value{90.0}, rule, q, t0 + milliseconds(1)).empty());
+  EXPECT_TRUE(fast.step(fd::Value{90.0}, rule, q, t0 + milliseconds(2)).empty());
+  EXPECT_EQ(fast.step(fd::Value{90.0}, rule, q, t0 + milliseconds(100), false).size(), 1u);
+
+  // Enough time, too few samples.
+  Pipeline slow;
+  EXPECT_TRUE(slow.step(fd::Value{90.0}, rule, q, t0).empty());
+  EXPECT_TRUE(slow.step(fd::Value{90.0}, rule, q, t0 + milliseconds(500), false).empty());
+  EXPECT_TRUE(slow.step(fd::Value{90.0}, rule, q, t0 + milliseconds(600)).empty());
+  EXPECT_EQ(slow.step(fd::Value{90.0}, rule, q, t0 + milliseconds(700)).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, ClearIsImmediateAndTheNextRaiseQualifiesAgain) {
+  const auto rule = hot_rule();
+  const auto q = samples(2);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  p.step(fd::Value{90.0}, rule, q, t);
+  ASSERT_EQ(p.step(fd::Value{90.0}, rule, q, t).size(), 1u);
+
+  auto clear = p.step(fd::Value{70.0}, rule, q, t);
+  ASSERT_EQ(clear.size(), 1u);
+  EXPECT_FALSE(clear[0].active);
+
+  // One bad sample after the clear is not enough again.
+  EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t).empty());
+  EXPECT_EQ(p.step(fd::Value{90.0}, rule, q, t).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, UndecidableSampleKeepsTheWaitAsItIs) {
+  // NaN or a string yields no signal. It does not count, does not reset, and
+  // does not clear a fault that already qualified.
+  const auto rule = hot_rule();
+  const auto q = samples(3);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+  const fd::Value nan{std::numeric_limits<double>::quiet_NaN()};
+
+  p.step(fd::Value{90.0}, rule, q, t);
+  p.step(fd::Value{90.0}, rule, q, t);
+  EXPECT_TRUE(p.step(nan, rule, q, t).empty());
+  EXPECT_TRUE(p.step(fd::Value{std::string{"bad"}}, rule, q, t).empty());
+  EXPECT_TRUE(p.filter.pending("HIGH_TEMP"));
+  ASSERT_EQ(p.step(fd::Value{90.0}, rule, q, t).size(), 1u);  // third real sample
+
+  EXPECT_TRUE(p.step(nan, rule, q, t).empty());
+  EXPECT_TRUE(p.tracker.active("HIGH_TEMP"));
+}
+
+TEST(RaiseQualifierFilter, ResetPendingForgetsWaitingButKeepsRaised) {
+  // A lost connection: time spent blind does not count toward a raise, and a
+  // fault that already qualified stays raised.
+  fd::StatusWordRule rule;
+  rule.bits = {{0u, {"E_STOP", "CRITICAL", "e"}}, {1u, {"OVERLOAD", "ERROR", "o"}}};
+  const auto q = duration(milliseconds(1000));
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+
+  p.step(word(0b01), rule, q, t0);
+  ASSERT_EQ(p.step(word(0b11), rule, q, t0 + milliseconds(1000)).size(), 1u);
+  EXPECT_TRUE(p.tracker.active("E_STOP"));
+  EXPECT_TRUE(p.filter.pending("OVERLOAD"));
+
+  p.filter.reset_pending();
+  EXPECT_FALSE(p.filter.has_pending());
+
+  // Back online 5 s later with the same value: E_STOP is still raised, and
+  // OVERLOAD starts its wait from here instead of raising at once.
+  const auto back = t0 + milliseconds(6000);
+  EXPECT_TRUE(p.step(word(0b11), rule, q, back).empty());
+  EXPECT_TRUE(p.tracker.active("E_STOP"));
+  EXPECT_TRUE(p.filter.pending("OVERLOAD"));
+  EXPECT_EQ(p.step(word(0b11), rule, q, back + milliseconds(1000)).size(), 1u);
+}
+
+TEST(RaiseQualifierFilter, StatusBitsQualifyIndependently) {
+  fd::StatusWordRule rule;
+  rule.bits = {{0u, {"A", "ERROR", "a"}}, {1u, {"B", "ERROR", "b"}}};
+  const auto q = samples(2);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  EXPECT_TRUE(p.step(word(0b01), rule, q, t).empty());
+  auto second = p.step(word(0b11), rule, q, t);  // A: 2nd sample, B: 1st
+  ASSERT_EQ(second.size(), 1u);
+  EXPECT_EQ(second[0].fault_code, "A");
+  auto third = p.step(word(0b10), rule, q, t);  // A clears, B: 2nd sample
+  ASSERT_EQ(third.size(), 2u);
+  EXPECT_FALSE(find(third, "A")->active);
+  EXPECT_TRUE(find(third, "B")->active);
+}
+
+TEST(RaiseQualifierFilter, EnumCodeSwitchWaitsForTheNewCode) {
+  // The register moves 10 -> 11. The old code clears at once; the new code
+  // has to qualify on its own.
+  fd::EnumMapRule rule;
+  rule.codes = {{10, {"OVERVOLT", "ERROR", "ov"}}, {11, {"OVERCURR", "ERROR", "oc"}}};
+  const auto q = samples(2);
+  Pipeline p;
+  const auto t = Clock::time_point{};
+
+  p.step(word(10), rule, q, t);
+  ASSERT_EQ(p.step(word(10), rule, q, t).size(), 1u);
+
+  auto sw = p.step(word(11), rule, q, t);
+  ASSERT_EQ(sw.size(), 1u);
+  EXPECT_EQ(sw[0].fault_code, "OVERVOLT");
+  EXPECT_FALSE(sw[0].active);
+  auto next = p.step(word(11), rule, q, t);
+  ASSERT_EQ(next.size(), 1u);
+  EXPECT_EQ(next[0].fault_code, "OVERCURR");
+  EXPECT_TRUE(next[0].active);
+}
+
+TEST(RaiseQualifierFilter, WaitingSignalKeepsItsIdentity) {
+  // The inactive stand-in keeps code, severity and message, so a status view
+  // built from it still names the fault correctly.
+  const auto rule = hot_rule();
+  fd::RaiseQualifierFilter filter;
+  auto out = filter.apply(fd::evaluate(fd::Value{90.0}, rule), samples(2), Clock::time_point{});
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_FALSE(out[0].active);
+  EXPECT_EQ(out[0].fault_code, "HIGH_TEMP");
+  EXPECT_EQ(out[0].severity, "ERROR");
+  EXPECT_EQ(out[0].message, "hot");
+}
+
+TEST(RaiseQualifierFilter, LargeValuesDoNotOverflow) {
+  // A huge sample count is capped internally and a huge duration is compared
+  // without converting it to nanoseconds.
+  fd::RaiseQualifier q;
+  q.min_samples = std::numeric_limits<std::uint32_t>::max();
+  q.min_duration = milliseconds(std::numeric_limits<milliseconds::rep>::max());
+  const auto rule = hot_rule();
+  Pipeline p;
+  const auto t0 = Clock::time_point{};
+  for (int i = 0; i < 1000; ++i) {
+    EXPECT_TRUE(p.step(fd::Value{90.0}, rule, q, t0 + milliseconds(i)).empty());
+  }
+  EXPECT_TRUE(p.filter.pending("HIGH_TEMP"));
 }

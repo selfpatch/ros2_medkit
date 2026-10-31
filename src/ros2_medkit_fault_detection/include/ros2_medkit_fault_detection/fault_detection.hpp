@@ -27,7 +27,9 @@
 /// The evaluator (``evaluate``) is a pure function of ``(value, rule)`` and
 /// has no ROS / protocol dependencies, so it is trivially unit-testable and
 /// safe to compile into a dlopen-loaded plugin MODULE. Raise/clear edge
-/// detection is layered on top via ``FaultTransitionTracker``.
+/// detection is layered on top via ``FaultTransitionTracker``, and an optional
+/// ``RaiseQualifierFilter`` in between makes a rule wait for a condition to
+/// persist before it raises.
 ///
 /// Header-only on purpose: protocol plugins are built as MODULE libraries
 /// that resolve gateway symbols from the host process at load time
@@ -35,6 +37,7 @@
 /// would not be present in that host, so the detection logic is compiled
 /// directly into each plugin instead.
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -292,6 +295,145 @@ class FaultTransitionTracker {
 
  private:
   std::unordered_map<std::string, bool> last_active_;
+};
+
+/// How long a condition must hold before a rule may raise its fault.
+///
+/// ``evaluate`` judges one value, so a single noisy sample raises a fault. A
+/// qualifier makes the rule wait: the condition has to be seen on
+/// ``min_samples`` fresh samples in a row, and it has to stay true for
+/// ``min_duration`` without a break. When both are set, both must be met. The
+/// default (1 sample, 0 ms) raises on the first active sample, which is the
+/// behavior without a qualifier.
+///
+/// Only the raise waits. A clear still goes through on the first inactive
+/// sample, so a real recovery is never delayed.
+struct RaiseQualifier {
+  std::uint32_t min_samples{1};
+  std::chrono::milliseconds min_duration{0};
+
+  /// True when the qualifier does not delay anything.
+  bool immediate() const {
+    return min_samples <= 1 && min_duration.count() <= 0;
+  }
+};
+
+/// Applies a ``RaiseQualifier`` to evaluator output, between ``evaluate`` and
+/// ``FaultTransitionTracker``:
+///
+///     auto signals = evaluate(value, rule);
+///     auto qualified = filter.apply(signals, qualifier, now, fresh);
+///     auto edges = tracker.apply(qualified);
+///
+/// While a fault waits to qualify, its signal goes out as inactive, so the
+/// tracker raises nothing and a status view shows the fault as not active.
+/// Once it qualifies, the signal passes through until the condition goes away.
+///
+/// ``fresh`` tells the filter whether this call carries a new sample of the
+/// point. Only a fresh sample counts toward ``min_samples``. A call that is not
+/// fresh still lets ``min_duration`` complete, so a caller that is told about
+/// changes only (a subscription) can call again on a timer and a condition
+/// that holds steady still raises once its time is up. A caller must not pass
+/// ``fresh = false`` for a value it could not read: that is unknown, not
+/// unchanged, and should not be passed at all.
+///
+/// A signal that is missing from a call (the evaluator returned nothing for an
+/// undecidable value) keeps its waiting state as it is. A bad read neither
+/// raises a fault nor throws away the time already waited.
+///
+/// Keyed by ``fault_code``, with the same uniqueness contract as
+/// ``FaultTransitionTracker``.
+class RaiseQualifierFilter {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  std::vector<FaultSignal> apply(const std::vector<FaultSignal> & signals, const RaiseQualifier & qualifier,
+                                 Clock::time_point now, bool fresh = true) {
+    if (qualifier.immediate()) {
+      // Nothing to wait for: pass through untouched, keep no state.
+      return signals;
+    }
+    std::vector<FaultSignal> out;
+    out.reserve(signals.size());
+    for (const auto & s : signals) {
+      if (!s.active) {
+        // Condition gone: drop any waiting or raised state, so the next raise
+        // has to qualify again from the start.
+        states_.erase(s.fault_code);
+        out.push_back(s);
+        continue;
+      }
+      auto it = states_.find(s.fault_code);
+      if (it == states_.end()) {
+        if (!fresh) {
+          // A repeat of a value nobody saw arrive starts nothing: the time
+          // before it was not observed.
+          out.push_back(inactive(s));
+          continue;
+        }
+        it = states_.emplace(s.fault_code, State{now, 0, false}).first;
+      }
+      State & st = it->second;
+      if (!st.raised) {
+        if (fresh && st.samples < qualifier.min_samples) {
+          ++st.samples;
+        }
+        const bool enough_samples = st.samples >= qualifier.min_samples;
+        // Compare in milliseconds: converting a large min_duration to the
+        // clock's nanoseconds would overflow.
+        const bool long_enough =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - st.since) >= qualifier.min_duration;
+        st.raised = enough_samples && long_enough;
+      }
+      out.push_back(st.raised ? s : inactive(s));
+    }
+    return out;
+  }
+
+  /// Forget every fault that is still waiting to qualify. Faults that already
+  /// qualified stay raised. Call it when the source stops being observed (a
+  /// lost connection), so time spent blind is not counted toward a raise.
+  void reset_pending() {
+    for (auto it = states_.begin(); it != states_.end();) {
+      if (it->second.raised) {
+        ++it;
+      } else {
+        it = states_.erase(it);
+      }
+    }
+  }
+
+  /// True while some fault is waiting to qualify. A caller that is only told
+  /// about changes uses this to decide whether it needs to call again on a timer.
+  bool has_pending() const {
+    for (const auto & entry : states_) {
+      if (!entry.second.raised) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// True while ``fault_code`` is waiting to qualify.
+  bool pending(const std::string & fault_code) const {
+    auto it = states_.find(fault_code);
+    return it != states_.end() && !it->second.raised;
+  }
+
+ private:
+  struct State {
+    Clock::time_point since;  // first active sample of this run
+    std::uint32_t samples;    // fresh active samples seen in this run, capped at min_samples
+    bool raised;              // the qualifier was met and the signal passes through
+  };
+
+  static FaultSignal inactive(const FaultSignal & s) {
+    FaultSignal copy = s;
+    copy.active = false;
+    return copy;
+  }
+
+  std::unordered_map<std::string, State> states_;
 };
 
 }  // namespace ros2_medkit::fault_detection

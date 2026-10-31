@@ -36,6 +36,37 @@ or inactive). `FaultTransitionTracker` keeps the last-known state per
 `fault_code` and emits only the raise/clear edges, which a plugin forwards to
 the fault manager as report/clear.
 
+## Waiting before a raise
+
+One bad reading is enough for `evaluate` to call a fault active. A bridge that
+reports on that edge sends one `EVENT_FAILED`, which the fault manager's debounce
+cannot filter, so the filter has to sit where the samples are. A
+`RaiseQualifier` makes a rule wait: the condition must be seen on `min_samples`
+new samples in a row and must hold for `min_duration` without a break (both,
+when both are set). The default raises on the first sample, as before.
+
+```cpp
+fd::RaiseQualifier q;
+q.min_samples = 3;
+q.min_duration = std::chrono::milliseconds(2000);
+
+fd::RaiseQualifierFilter filter;  // between evaluate and the tracker
+auto edges = tracker.apply(filter.apply(fd::evaluate(value, rule), q, now, fresh));
+```
+
+- A fault that is still waiting goes out as inactive, so nothing is raised.
+- Only the raise waits. The first inactive sample clears at once and the next
+  raise has to qualify again.
+- `fresh` says whether the call carries a new sample. Only fresh samples count
+  toward `min_samples`. A call that is not fresh can still complete
+  `min_duration`, so a source that reports changes only can be re-checked on a
+  timer. Do not pass a value that could not be read: that is unknown, not
+  unchanged.
+- An undecidable value (no signal) keeps the wait as it is.
+- `reset_pending()` drops faults that are still waiting, for example when the
+  connection is lost. Faults already raised stay raised. `has_pending()` tells a
+  change-driven caller whether it needs to call again on a timer.
+
 ## Shared fault types
 
 `fault_types.hpp` holds the std-only types that the ROS-free fault reporter core and fault manager core
@@ -66,3 +97,5 @@ It lives in the open `ros2_medkit` repo so both the open OPC UA plugin
 
 `ros2_medkit_opcua` lowers its `alarm:`, `status_bits:` and `fault_enum:`
 node-map blocks onto `DetectionRule` and evaluates them through this module.
+Its `raise_after_samples` / `raise_after_ms` keys set the point's
+`RaiseQualifier`.

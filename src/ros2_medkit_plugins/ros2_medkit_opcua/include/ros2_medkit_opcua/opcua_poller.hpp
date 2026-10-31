@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_opcua/alarm_state_machine.hpp"
+#include "ros2_medkit_opcua/detection_pipeline.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
 
@@ -396,7 +397,7 @@ class OpcuaPoller {
   /// map's root component).
   void emit_comms_lost(bool active);
   void setup_subscriptions();
-  void evaluate_alarms();
+  void evaluate_alarms(DetectionPipeline::Pass pass);
   void on_data_change(const std::string & node_id, const OpcuaValue & value);
 
   // Issue #386 helpers.
@@ -490,9 +491,9 @@ class OpcuaPoller {
 
   mutable std::mutex alarm_mutex_;
   AlarmChangeCallback alarm_callback_;
-  // Shared raise/clear edge detector across all detection modes, keyed by
-  // fault_code. Replaces the previous threshold-only last-state map.
-  ros2_medkit::fault_detection::FaultTransitionTracker alarm_tracker_;
+  // Polled detection: raise/clear edges, raise qualifiers and which values are
+  // new. Guarded by snapshot_mutex_.
+  DetectionPipeline detection_;
 
   // Issue #386: event-mode AlarmCondition state.
   EventAlarmCallback event_alarm_callback_;

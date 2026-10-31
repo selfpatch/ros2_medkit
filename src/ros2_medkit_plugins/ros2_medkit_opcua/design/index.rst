@@ -103,6 +103,22 @@ edge-triggered callbacks:
 The plugin keeps per-fault state only long enough to detect edges; the fault manager owns
 persistence and fault lifecycle.
 
+A point may also set ``raise_after_samples`` and ``raise_after_ms``, so the condition has
+to persist before the raise. ``DetectionPipeline`` sits between the cached values and the
+callbacks. It feeds each evaluation through the shared ``RaiseQualifierFilter`` and decides
+which evaluations are new samples:
+
+- Polling reads every point each cycle, so a value that did not arrive in this cycle is
+  left over from a failed read. It is skipped, and every point keeps its state.
+- A subscription reports changes only. Each data change is a sample. While a fault waits,
+  the poll loop runs an extra pass each ``poll_interval_ms`` that counts one more sample of
+  the value the point holds, and lets ``raise_after_ms`` end on time. A pass caused by
+  another point's change does not count.
+
+When the connection drops, faults that are still waiting start over, because nothing was
+observed while the link was down. Faults already raised stay raised. The clear is never
+delayed.
+
 Read-only is a property of the build
 ====================================
 
