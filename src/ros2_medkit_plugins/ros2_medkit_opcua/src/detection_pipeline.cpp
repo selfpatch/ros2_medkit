@@ -40,8 +40,7 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
       continue;
     }
 
-    // Two entries may map one node. Both see the same value, so both judge it
-    // against the count the node had before this pass.
+    // A value is new when its node's count moved since the last pass.
     const auto rec = received_.find(entry->node_id_str);
     const std::uint64_t received = rec == received_.end() ? 0 : rec->second;
     const auto prev = evaluated_.find(entry->node_id_str);
