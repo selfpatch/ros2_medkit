@@ -164,7 +164,7 @@ def start_server(server_bin, port, log_path):
         text=True, start_new_session=True,
     )
     proc._log = log
-    if not wait_log(log_path, 'READY ', deadline=25):
+    if not wait_log(log_path, 'READY ', deadline=25 * SCALE):
         terminate(proc)
         return None
     return proc
@@ -176,7 +176,7 @@ def set_register(server, log_path, name, value):
     before = Path(log_path).read_text(errors='replace').count(needle)
     server.stdin.write(f'set {name} {value}\n')
     server.stdin.flush()
-    for _ in range(40):
+    for _ in range(int(40 * SCALE)):
         if Path(log_path).read_text(errors='replace').count(needle) > before:
             return True
         time.sleep(0.05)
