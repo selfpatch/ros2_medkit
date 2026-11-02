@@ -950,36 +950,49 @@ TEST_F(RuntimeLinkerTest, ExternalManifestAppGivesBackOnlyTheSameIdNodeFqn) {
   ASSERT_EQ(absorbed_result.linked_apps.size(), 1u);
   EXPECT_FALSE(absorbed_result.linked_apps[0].bound_fqn.has_value())
       << "the merged FQN is the same-id node's, so the runtime layer put it there";
-  EXPECT_FALSE(absorbed_result.linked_apps[0].is_online);
+  EXPECT_FALSE(absorbed_result.linked_apps[0].is_online) << "the node's status cannot be attributed to the app";
   EXPECT_TRUE(absorbed_result.linked_apps[0].topics.publishes.empty());
 
   // A FQN that is not the same-id node's came from the layer serving the
-  // external app (a plugin), and the linker leaves it alone.
+  // external app (a plugin), and the linker leaves it and the plugin's
+  // online status alone.
   App served = absorbed;
   served.bound_fqn = "/served/by/plugin";
+  served.is_online = true;
   served.topics.publishes = {"/factory/plc/state", "/plugin/value"};
 
   auto served_result = linker_->link({served}, {node}, {served.id}, config_);
   ASSERT_EQ(served_result.linked_apps.size(), 1u);
   EXPECT_EQ(served_result.linked_apps[0].bound_fqn.value_or(""), "/served/by/plugin");
+  EXPECT_TRUE(served_result.linked_apps[0].is_online);
   EXPECT_EQ(served_result.linked_apps[0].topics.publishes,
             (std::vector<std::string>{"/factory/plc/state", "/plugin/value"}));
+  EXPECT_TRUE(served_result.unlinked_app_ids.empty());
 }
 
 // @verifies REQ_INTEROP_003
-TEST_F(RuntimeLinkerTest, AppsTheManifestDoesNotDeclareKeepTheirBoundFqn) {
+TEST_F(RuntimeLinkerTest, AppsTheManifestDoesNotDeclarePassThroughUnchanged) {
   // The same app, once declared and once not: only the declared one is the
-  // linker's to unbind.
+  // linker's to unbind, take offline and count as unlinked.
   App node = create_runtime_app("logger", "/tools");
+  node.topics.publishes = {"/tools/logger/lines"};
   App app = with_state_of(create_app("logger", "logger", "/elsewhere"), node);
 
   auto declared = linker_->link({app}, {node}, {app.id}, config_);
   ASSERT_EQ(declared.linked_apps.size(), 1u);
   EXPECT_FALSE(declared.linked_apps[0].bound_fqn.has_value());
+  EXPECT_FALSE(declared.linked_apps[0].is_online);
+  EXPECT_EQ(declared.unlinked_app_ids, std::vector<std::string>{"logger"});
 
   auto undeclared = linker_->link({app}, {node}, {}, config_);
   ASSERT_EQ(undeclared.linked_apps.size(), 1u);
-  EXPECT_EQ(undeclared.linked_apps[0].bound_fqn.value_or(""), "/tools/logger");
+  const auto & out = undeclared.linked_apps[0];
+  EXPECT_EQ(out.bound_fqn.value_or(""), "/tools/logger");
+  EXPECT_TRUE(out.is_online) << "a heuristic app keeps the status runtime discovery gave it";
+  EXPECT_EQ(out.topics.publishes, std::vector<std::string>{"/tools/logger/lines"});
+  EXPECT_TRUE(undeclared.unlinked_app_ids.empty()) << "only manifest apps can be unlinked";
+  EXPECT_EQ(undeclared.orphan_nodes, std::vector<std::string>{"/tools/logger"})
+      << "the node is still not declared by the manifest";
 }
 
 int main(int argc, char ** argv) {

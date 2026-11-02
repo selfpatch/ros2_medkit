@@ -830,10 +830,11 @@ ros_binding Fields
 
 **The app's id plays no part in linking.** Only ``ros_binding`` ties an app to
 a node, also when the app's ``id`` is the name of a running node. An app whose
-binding matches no running node, an app without ``ros_binding`` and an
-``external`` app have no ``x-medkit.ros2.node``, report ``is_online: false``
-and expose none of a node's topics, services or actions - even while a node of
-that name runs in another namespace.
+binding matches no running node and an app without ``ros_binding`` have no
+``x-medkit.ros2.node``, report ``is_online: false`` and expose none of a node's
+topics, services or actions - even while a node of that name runs in another
+namespace. An ``external`` app gets nothing from such a node either; it keeps
+what the plugin serving it reports, its ``is_online`` included.
 
 That node is not served as an app of its own either. Runtime discovery names a
 node's app after the node (``temp_sensor``), so its app has the manifest app's

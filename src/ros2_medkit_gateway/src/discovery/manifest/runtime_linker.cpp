@@ -169,12 +169,22 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vect
     runtime_by_id.emplace(rt_app.id, &rt_app);
   }
 
-  for (const auto & manifest_app : apps) {
-    App linked_app = manifest_app;  // Copy
-    linked_app.is_online = false;
-    if (manifest_app_ids.count(manifest_app.id) > 0) {
-      strip_same_id_runtime_state(linked_app, runtime_by_id);
+  for (const auto & app : apps) {
+    // Apps the manifest does not declare - heuristic apps for unmanifested
+    // nodes, plugin apps - are not the linker's to bind. They keep the
+    // is_online, bound_fqn and resources their own layer reported, the same as
+    // in the modes without a linker, and are not counted as unlinked. They
+    // still go through the duplicate suppression below.
+    if (manifest_app_ids.count(app.id) == 0) {
+      result.linked_apps.push_back(app);
+      continue;
     }
+
+    const App & manifest_app = app;
+    App linked_app = manifest_app;  // Copy
+    // Clears is_online and bound_fqn on a ROS app; an external app keeps the
+    // values the layer serving it reported unless they came from a same-id node.
+    strip_same_id_runtime_state(linked_app, runtime_by_id);
 
     // External apps don't need ROS binding
     if (manifest_app.external.value_or(false)) {

@@ -66,12 +66,14 @@ class RuntimeLinker {
    * @param apps The merged app set (MergePipeline passes every app the merge
    *        produced, so runtime and plugin apps arrive here too).
    * @param runtime_apps Apps discovered from ROS graph (each node is an App)
-   * @param manifest_app_ids Ids of the apps the manifest declares. Before
-   *        matching, the linker takes back from these apps the bound_fqn,
-   *        is_online and topics, services and actions the merge copied in from
-   *        a runtime app of the same id, so a manifest app is tied to a node
-   *        by its ros_binding and never by its id. There is deliberately no
-   *        default: an empty set means "no manifest apps".
+   * @param manifest_app_ids Ids of the apps the manifest declares. The linker
+   *        owns the binding state of these apps only. Before matching it takes
+   *        back from them the bound_fqn, is_online and topics, services and
+   *        actions the merge copied in from a runtime app of the same id, so a
+   *        manifest app is tied to a node by its ros_binding and never by its
+   *        id. Every other app passes through unchanged and is never counted
+   *        as unlinked. There is deliberately no default: an empty set means
+   *        "no manifest apps", not "every app is one".
    * @param config Manifest config with orphan policy
    * @param protected_ids Ids whose owning discovery layer declares them
    *        protected from suppression. Passed in rather than recomputed so

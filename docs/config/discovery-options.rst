@@ -323,6 +323,8 @@ manifest declares, linking has the last word: the runtime linker takes that
 node state back and gives the app the status and resources of the node its
 ``ros_binding`` matches, or none (see
 :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
+Every other app - a gap-fill app for an unmanifested node, a plugin's app -
+keeps the merged status and live data.
 
 .. note::
 
@@ -396,8 +398,9 @@ to create:
      - Description
    * - ``allow_heuristic_apps``
      - ``true``
-     - Create apps for nodes no manifest app binds to. A node whose app id
-       equals a manifest app's id gets no app of its own (see
+     - Create apps for nodes no manifest app binds to. Such an app reports
+       its node's own status (``is_online: true`` while the node runs). A node
+       whose app id equals a manifest app's id gets no app of its own (see
        :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
    * - ``allow_heuristic_functions``
      - ``false``

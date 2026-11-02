@@ -3068,3 +3068,72 @@ TEST_F(ManifestBindingByIdTest, SelfNamedAppBoundToItsOwnNodeStaysLinkedWithTheN
   EXPECT_TRUE(result.linking_result.orphan_nodes.empty());
   EXPECT_TRUE(result.linking_result.unlinked_app_ids.empty());
 }
+
+// --- Apps the manifest does not declare are not the linker's ---
+//
+// RuntimeLinker receives every merged app, but binds only the manifest's. An
+// unmanifested node's heuristic app and a plugin's app keep the status their
+// own layer reported - as they do in the modes without a linker - and are not
+// counted as unlinked manifest apps (#769).
+
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, AppsTheManifestDoesNotDeclareKeepTheirStatusThroughLinking) {
+  App pump = make_app("pump_controller", "plc");
+  pump.source = "opcua";
+  pump.external = true;
+  pump.is_online = true;
+  pump.topics.publishes = {"/plc/pump/speed"};
+  // A beacon-style contribution under a running node's id: it only enriches
+  // the runtime layer's app, which keeps the node's status.
+  App logger_shadow = make_app("logger", "");
+  logger_shadow.source = "beacon";
+
+  auto result = run({manifest_app("planner", "planner", "/nav"), manifest_app("offline-app", "missing_node", "/nav")},
+                    {running_node("planner", "/nav/planner"), running_node("logger", "/tools/logger")},
+                    /*inherit_runtime_resources=*/true, {pump, logger_shadow});
+
+  const App * logger = find_app(result, "logger");
+  ASSERT_NE(logger, nullptr) << "the unmanifested node is served under the default warn policy";
+  EXPECT_EQ(logger->source, "heuristic");
+  EXPECT_TRUE(logger->is_online) << "a running unmanifested node is online";
+  EXPECT_EQ(logger->bound_fqn.value_or(""), "/tools/logger");
+  EXPECT_EQ(logger->topics.publishes, std::vector<std::string>{"/tools/logger/reading"});
+
+  const App * plugin_app = find_app(result, "pump_controller");
+  ASSERT_NE(plugin_app, nullptr);
+  EXPECT_TRUE(plugin_app->is_online) << "the plugin's own status must survive linking";
+  EXPECT_EQ(plugin_app->topics.publishes, std::vector<std::string>{"/plc/pump/speed"});
+
+  const App * planner = find_app(result, "planner");
+  ASSERT_NE(planner, nullptr);
+  EXPECT_TRUE(planner->is_online);
+
+  EXPECT_EQ(result.linking_result.unlinked_app_ids, std::vector<std::string>{"offline-app"})
+      << "only manifest apps can be unlinked";
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/tools/logger"))
+      << "serving the node's app does not make it declared";
+}
+
+// A manifest stub for an asset a protocol plugin serves: the plugin classifies
+// it external and reports its connection state. No node shares its id, so the
+// runtime layer contributed nothing and the plugin's status stands.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, ExternalManifestAppServedByAPluginKeepsThePluginStatus) {
+  App served = make_app("plc_process", "plc");
+  served.source = "opcua";
+  served.external = true;
+  served.is_online = true;
+  served.topics.publishes = {"/plc/process/value"};
+
+  auto result = run({manifest_app("plc_process")}, {running_node("planner", "/nav/planner")},
+                    /*inherit_runtime_resources=*/true, {served});
+
+  const App * app = find_app(result, "plc_process");
+  ASSERT_NE(app, nullptr);
+  EXPECT_EQ(app->source, "manifest");
+  EXPECT_TRUE(app->external.value_or(false));
+  EXPECT_TRUE(app->is_online) << "the serving plugin's status must survive linking";
+  EXPECT_FALSE(app->bound_fqn.has_value());
+  EXPECT_EQ(app->topics.publishes, std::vector<std::string>{"/plc/process/value"});
+  EXPECT_FALSE(contains(result.linking_result.unlinked_app_ids, "plc_process"));
+}

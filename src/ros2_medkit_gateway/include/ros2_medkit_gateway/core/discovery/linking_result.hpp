@@ -32,10 +32,13 @@ namespace discovery {
  * to runtime ROS 2 nodes, including orphan detection.
  */
 struct LinkingResult {
-  /// Apps with successfully bound ROS nodes (and those that failed)
+  /// Every app passed in, minus runtime apps that duplicate a linked node:
+  /// manifest apps with their linking outcome, other apps unchanged
   std::vector<App> linked_apps;
 
-  /// App IDs that have no matching ROS node (offline or external)
+  /// Ids of manifest apps that are not external and were not linked to a
+  /// running node (no ros_binding, no matching node, or the node was already
+  /// bound to another app). Apps the manifest does not declare are never here.
   std::vector<std::string> unlinked_app_ids;
 
   /// ROS node FQNs that have no matching manifest App (orphans)

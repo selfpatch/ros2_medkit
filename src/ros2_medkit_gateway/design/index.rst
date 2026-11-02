@@ -525,7 +525,9 @@ Each entry below is tagged with the static library it compiles into:
    - Each layer declares a ``MergePolicy`` per ``FieldGroup``: AUTHORITATIVE (wins), ENRICHMENT (fills empty), FALLBACK (last resort)
    - Runs ``RuntimeLinker`` post-merge to bind manifest apps to live ROS 2 nodes. It binds by
      ``ros_binding`` only: it first takes back the node FQN, online flag and resources the
-     id-keyed merge copied into a manifest app from a runtime app that shares its id
+     id-keyed merge copied into a manifest app from a runtime app that shares its id. Apps
+     the manifest does not declare (gap-fill and plugin apps) pass through it unchanged and
+     are never counted as unlinked
    - Suppresses runtime-origin entities that duplicate manifest entities: components/areas
      by namespace match, apps by ID match (gap-fill apps in uncovered namespaces survive)
    - Produces a ``MergeReport`` with conflict diagnostics, enrichment counts, and ID collision detection

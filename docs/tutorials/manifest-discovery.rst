@@ -227,7 +227,11 @@ After merging, the **RuntimeLinker** binds manifest apps to running ROS 2 nodes:
    ties an app to a node (see
    :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`)
 4. **Binding**: If match found, copies runtime resources (topics, services, actions)
-5. **Status**: Apps with matched nodes are marked ``is_online: true``
+5. **Status**: Manifest apps with matched nodes are marked ``is_online: true``,
+   the others ``false``; an external manifest app keeps the status of the
+   plugin that serves it. Apps the manifest does not declare (gap-fill apps for
+   unmanifested nodes, plugin apps) are not linked and keep the status their own
+   layer reported, so a running unmanifested node's app is online
 6. **Suppression**: Heuristic entities that duplicate manifest-covered namespaces
    (components/areas) or linked app IDs (apps) are removed. Gap-fill apps in
    uncovered namespaces survive.

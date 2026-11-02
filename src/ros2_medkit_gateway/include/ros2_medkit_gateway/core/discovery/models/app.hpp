@@ -88,7 +88,9 @@ struct App {
     return !(a == b);
   }
 
-  // === Runtime state (populated after linking) ===
+  // === Runtime state: set by runtime linking for a manifest app that is not
+  // external (hybrid mode), otherwise by the source that discovered or serves
+  // the app ===
   std::optional<std::string> bound_fqn;  ///< Bound ROS node FQN
   bool is_online{false};                 ///< Whether the bound node is running
   /// Tri-state classification: nullopt = no layer classified this app,

@@ -27,7 +27,10 @@ merge-by-id visible: two of its apps are named after running nodes but bind to
 a namespace where nothing runs. Runtime discovery names each node's app after
 the node, so the merge joins those runtime apps into the manifest apps by id.
 Only ``ros_binding`` may tie a manifest app to a node, so those apps must come
-out unbound and without the nodes' topics or services.
+out unbound and without the nodes' topics or services. The node the manifest
+does not mention at all is served as a gap-fill app, online, under its own
+name: the linker binds manifest apps and leaves every other app as its layer
+reported it.
 """
 
 import os
@@ -75,6 +78,10 @@ FOREIGN_TOPIC = '/powertrain/engine/temperature'
 SERVICE_APP_ID = 'calibration'
 SERVICE_NODE_FQN = '/powertrain/engine/calibration'
 FOREIGN_SERVICE = '/powertrain/engine/calibrate'
+
+# Running, declared nowhere: served as a gap-fill app under its node name.
+UNMANIFESTED_APP_ID = 'pressure_sensor'
+UNMANIFESTED_FQN = '/chassis/brakes/pressure_sensor'
 
 WARN_UNMANIFESTED_NODES = 'unmanifested_nodes'
 
@@ -312,16 +319,17 @@ class TestManifestAppBindsByRosBindingOnly(GatewayTestCase):
                 'topic_app_data': _get_json(f'/apps/{TOPIC_APP_ID}/data'),
                 'service_app': _get_json(f'/apps/{SERVICE_APP_ID}'),
                 'service_app_operations': _get_json(f'/apps/{SERVICE_APP_ID}/operations'),
+                'unmanifested_app': _get_json(f'/apps/{UNMANIFESTED_APP_ID}'),
             })
 
     @classmethod
     def _graph_seen(cls):
-        """Return True once the control app is linked and both foreign nodes are reported.
+        """Return True once the control app is linked and the unbound nodes are reported.
 
         ``unmanifested_nodes: error`` lists every running node no manifest app
         binds to in ``/health``. Both nodes the absorbed apps are named after
-        must be listed there: the gateway has seen them, and has not bound
-        them to any app.
+        must be listed there, and the undeclared node too: the gateway has seen
+        them, and has not bound them to any manifest app.
         """
         x_medkit = _get_json(f'/apps/{LINKED_APP_ID}').get('x-medkit', {})
         linked = x_medkit.get('ros2', {}).get('node')
@@ -332,7 +340,7 @@ class TestManifestAppBindsByRosBindingOnly(GatewayTestCase):
         for warning in warnings:
             if warning.get('code') == WARN_UNMANIFESTED_NODES:
                 orphans.update(warning.get('ros_node_fqns', []))
-        missing = {TOPIC_NODE_FQN, SERVICE_NODE_FQN} - orphans
+        missing = {TOPIC_NODE_FQN, SERVICE_NODE_FQN, UNMANIFESTED_FQN} - orphans
         return True if not missing else f'not reported as unmanifested yet: {sorted(missing)}'
 
     def test_app_named_after_a_node_elsewhere_is_not_bound_to_it(self):
@@ -370,6 +378,17 @@ class TestManifestAppBindsByRosBindingOnly(GatewayTestCase):
                 FOREIGN_SERVICE, services,
                 f'sample {i}: foreign service offered by {SERVICE_APP_ID}')
             self.assertEqual(items, [], f'sample {i}: {SERVICE_APP_ID} declares no operations')
+
+    def test_unmanifested_node_app_is_online(self):
+        """The gap-fill app of a running undeclared node reports the node online."""
+        for i, sample in enumerate(self.samples):
+            x_medkit = sample['unmanifested_app'].get('x-medkit', {})
+            self.assertEqual(x_medkit.get('source'), 'heuristic')
+            self.assertEqual(x_medkit.get('ros2', {}).get('node'), UNMANIFESTED_FQN)
+            self.assertTrue(
+                x_medkit.get('is_online'),
+                f'sample {i}: {UNMANIFESTED_APP_ID} runs at {UNMANIFESTED_FQN} '
+                f'but is served offline')
 
 
 @launch_testing.post_shutdown_test()
