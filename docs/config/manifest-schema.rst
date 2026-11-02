@@ -236,9 +236,9 @@ An app that declares none therefore serves empty ``/data`` and
 
 This holds however the app is named. An app whose ``id`` equals the bound
 node's name is one entity by id with the runtime layer's view of that node, so
-the merge would otherwise fold the node's live topics and services in before
-linking runs; the declared collections are restored after the merge precisely
-so the flag means the same thing in both spellings.
+the merge would otherwise hand it the node's live topics, services and actions
+before linking runs; the declared collections are restored after the merge
+precisely so the flag means the same thing in both spellings.
 
 .. _manifest-allow-manifest-override:
 
@@ -725,7 +725,7 @@ Schema
 
        ros_binding:            # Required for hybrid mode linking
          node_name: string     # Required - ROS node name
-         namespace: string     # Optional - namespace (default: /)
+         namespace: string     # Optional - namespace (default: "*", any namespace)
          topic_namespace: string  # Optional - match by topic prefix
 
        lock:                   # Optional - per-entity lock configuration
@@ -808,7 +808,8 @@ ros_binding Fields
    * - ``namespace``
      - string
      - No
-     - Namespace ("*" for wildcard)
+     - Namespace. ``"*"`` matches any namespace and is the default when
+       ``namespace`` is omitted
    * - ``topic_namespace``
      - string
      - Yes*
@@ -821,8 +822,25 @@ ros_binding Fields
 1. **Name and namespace match** (default): ``node_name`` must match exactly.
    ``namespace`` uses path-segment-boundary matching: ``/nav`` matches ``/nav``
    and ``/nav/sub`` but NOT ``/navigation``.
-2. **Wildcard namespace**: Set ``namespace: "*"`` to match node in any namespace
+2. **Wildcard namespace**: Set ``namespace: "*"``, or omit ``namespace``, to
+   match the node in any namespace
 3. **Topic namespace**: Match nodes by their published topic prefix
+
+.. _manifest-app-id-is-not-a-binding:
+
+**The app's id plays no part in linking.** Only ``ros_binding`` ties an app to
+a node, also when the app's ``id`` is the name of a running node. An app whose
+binding matches no running node, an app without ``ros_binding`` and an
+``external`` app have no ``x-medkit.ros2.node``, report ``is_online: false``
+and expose none of a node's topics, services or actions - even while a node of
+that name runs in another namespace.
+
+That node is not served as an app of its own either. Runtime discovery names a
+node's app after the node (``temp_sensor``), so its app has the manifest app's
+id and is merged into it; the node is then reported as unmanifested (it counts
+in ``orphan_count`` on ``GET /health``) but has no entity. Give manifest apps
+ids that are not node names (the hyphenated ids in these examples cannot be
+one), or declare that node with an app of its own.
 
 Example
 ~~~~~~~

@@ -63,8 +63,15 @@ class RuntimeLinker {
   /**
    * @brief Link manifest apps to runtime apps (nodes)
    *
-   * @param manifest_apps Apps from manifest
+   * @param apps The merged app set (MergePipeline passes every app the merge
+   *        produced, so runtime and plugin apps arrive here too).
    * @param runtime_apps Apps discovered from ROS graph (each node is an App)
+   * @param manifest_app_ids Ids of the apps the manifest declares. Before
+   *        matching, the linker takes back from these apps the bound_fqn,
+   *        is_online and topics, services and actions the merge copied in from
+   *        a runtime app of the same id, so a manifest app is tied to a node
+   *        by its ros_binding and never by its id. There is deliberately no
+   *        default: an empty set means "no manifest apps".
    * @param config Manifest config with orphan policy
    * @param protected_ids Ids whose owning discovery layer declares them
    *        protected from suppression. Passed in rather than recomputed so
@@ -73,8 +80,9 @@ class RuntimeLinker {
    *        alone, which is what a caller with no pipeline context gets.
    * @return LinkingResult with linked apps and orphan info
    */
-  LinkingResult link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
-                     const ManifestConfig & config, const std::unordered_set<std::string> & protected_ids = {});
+  LinkingResult link(const std::vector<App> & apps, const std::vector<App> & runtime_apps,
+                     const std::unordered_set<std::string> & manifest_app_ids, const ManifestConfig & config,
+                     const std::unordered_set<std::string> & protected_ids = {});
 
   /**
    * @brief Check if a specific app is linked to a runtime node

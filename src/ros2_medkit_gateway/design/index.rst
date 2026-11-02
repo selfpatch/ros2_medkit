@@ -523,7 +523,9 @@ Each entry below is tagged with the static library it compiles into:
    - Maintains an ordered list of ``DiscoveryLayer`` instances (first = highest priority)
    - Executes all layers, collects entities by ID, and merges them per-field-group
    - Each layer declares a ``MergePolicy`` per ``FieldGroup``: AUTHORITATIVE (wins), ENRICHMENT (fills empty), FALLBACK (last resort)
-   - Runs ``RuntimeLinker`` post-merge to bind manifest apps to live ROS 2 nodes
+   - Runs ``RuntimeLinker`` post-merge to bind manifest apps to live ROS 2 nodes. It binds by
+     ``ros_binding`` only: it first takes back the node FQN, online flag and resources the
+     id-keyed merge copied into a manifest app from a runtime app that shares its id
    - Suppresses runtime-origin entities that duplicate manifest entities: components/areas
      by namespace match, apps by ID match (gap-fill apps in uncovered namespaces survive)
    - Produces a ``MergeReport`` with conflict diagnostics, enrichment counts, and ID collision detection

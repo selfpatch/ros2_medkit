@@ -19,6 +19,8 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ros2_medkit_gateway {
 namespace discovery {
@@ -67,13 +69,91 @@ bool topic_path_matches(const std::string & topic, const std::string & topic_nam
   return false;
 }
 
+/// Erase from @p entries every entry whose key is also a key in @p theirs.
+template <typename T, typename KeyFn>
+void erase_by_key(std::vector<T> & entries, const std::vector<T> & theirs, KeyFn key_fn) {
+  if (entries.empty() || theirs.empty()) {
+    return;
+  }
+  std::unordered_set<std::string> drop;
+  drop.reserve(theirs.size());
+  for (const auto & entry : theirs) {
+    drop.insert(key_fn(entry));
+  }
+  entries.erase(std::remove_if(entries.begin(), entries.end(),
+                               [&](const T & entry) {
+                                 return drop.count(key_fn(entry)) > 0;
+                               }),
+                entries.end());
+}
+
+/// Remove from @p app the topics, services and actions @p runtime_app has:
+/// topics by name (publishes and subscribes separately), services and actions
+/// by full path - the same keys the merge uses when it combines them.
+void remove_resources_of(App & app, const App & runtime_app) {
+  const auto by_value = [](const std::string & topic) -> const std::string & {
+    return topic;
+  };
+  erase_by_key(app.topics.publishes, runtime_app.topics.publishes, by_value);
+  erase_by_key(app.topics.subscribes, runtime_app.topics.subscribes, by_value);
+  erase_by_key(app.services, runtime_app.services, [](const ServiceInfo & s) -> const std::string & {
+    return s.full_path;
+  });
+  erase_by_key(app.actions, runtime_app.actions, [](const ActionInfo & a) -> const std::string & {
+    return a.full_path;
+  });
+}
+
+/// Undo what the merge took from a runtime app that shares a manifest app's id.
+///
+/// merge_entities<App>() joins entities by id alone, and the runtime layer is
+/// authoritative for STATUS and LIVE_DATA. So when a node runs whose runtime
+/// app id equals a manifest app's id, the merged app arrives here carrying that
+/// node's bound_fqn, is_online and topics, services and actions - whatever the
+/// app's ros_binding says. Only linking may tie a manifest app to a node, so
+/// that state is taken back off before matching, and a match re-derives it.
+///
+/// - A ROS app (not external): bound_fqn and is_online are cleared outright and
+///   the same-id node's resources are removed by value. Removal, not a reset
+///   to empty, keeps entries another layer contributed under other keys.
+/// - An external app: it is not linked, and a plugin may serve it, so its
+///   bound_fqn and is_online can legitimately come from that plugin. They are
+///   taken back only when the merged bound_fqn is the same-id node's FQN - the
+///   evidence that the runtime layer contributed them. A runtime app the
+///   gap-fill filter kept out of the merge contributed nothing and has no such
+///   match.
+///
+/// The node itself stays an orphan: it has no app of its own, because the
+/// merge consumed its runtime app under the manifest app's id.
+void strip_same_id_runtime_state(App & app, const std::unordered_map<std::string, const App *> & runtime_by_id) {
+  const auto it = runtime_by_id.find(app.id);
+  const App * same_id = it != runtime_by_id.end() ? it->second : nullptr;
+
+  if (app.external.value_or(false)) {
+    if (same_id == nullptr || !same_id->bound_fqn.has_value() || app.bound_fqn != same_id->bound_fqn) {
+      return;
+    }
+    app.bound_fqn.reset();
+    app.is_online = false;
+    remove_resources_of(app, *same_id);
+    return;
+  }
+
+  app.bound_fqn.reset();
+  app.is_online = false;
+  if (same_id != nullptr) {
+    remove_resources_of(app, *same_id);
+  }
+}
+
 }  // namespace
 
 RuntimeLinker::RuntimeLinker(rclcpp::Node * node, bool filter_internal_nodes)
   : node_(node), filter_internal_nodes_(filter_internal_nodes) {
 }
 
-LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
+LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vector<App> & runtime_apps,
+                                  const std::unordered_set<std::string> & manifest_app_ids,
                                   const ManifestConfig & config,
                                   const std::unordered_set<std::string> & protected_ids) {
   LinkingResult result;
@@ -81,10 +161,20 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
   // Track which runtime nodes have been matched
   std::set<std::string> matched_nodes;
 
-  // Process each manifest app
-  for (const auto & manifest_app : manifest_apps) {
+  // Runtime apps by id, to find the one the merge may have folded into a
+  // manifest app of the same id.
+  std::unordered_map<std::string, const App *> runtime_by_id;
+  runtime_by_id.reserve(runtime_apps.size());
+  for (const auto & rt_app : runtime_apps) {
+    runtime_by_id.emplace(rt_app.id, &rt_app);
+  }
+
+  for (const auto & manifest_app : apps) {
     App linked_app = manifest_app;  // Copy
     linked_app.is_online = false;
+    if (manifest_app_ids.count(manifest_app.id) > 0) {
+      strip_same_id_runtime_state(linked_app, runtime_by_id);
+    }
 
     // External apps don't need ROS binding
     if (manifest_app.external.value_or(false)) {

@@ -317,6 +317,13 @@ Each layer declares a policy per field-group:
 - Manifest: ``authoritative`` for identity/hierarchy/metadata, ``enrichment`` for live_data, ``fallback`` for status
 - Runtime: ``authoritative`` for live_data/status, ``enrichment`` for metadata, ``fallback`` for identity/hierarchy
 
+The merge joins entities by id, so a running node whose runtime app has a
+manifest app's id hands that app its status and live data here. For an app the
+manifest declares, linking has the last word: the runtime linker takes that
+node state back and gives the app the status and resources of the node its
+``ros_binding`` matches, or none (see
+:ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
+
 .. note::
 
    The app ``external`` classification is tri-state (unset / ``true`` /
@@ -389,7 +396,9 @@ to create:
      - Description
    * - ``allow_heuristic_apps``
      - ``true``
-     - Create apps for nodes without manifest ``ros_binding``.
+     - Create apps for nodes no manifest app binds to. A node whose app id
+       equals a manifest app's id gets no app of its own (see
+       :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
    * - ``allow_heuristic_functions``
      - ``false``
      - Create heuristic functions (not recommended).

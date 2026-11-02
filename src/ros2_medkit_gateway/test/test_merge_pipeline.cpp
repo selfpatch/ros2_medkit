@@ -2653,15 +2653,16 @@ TEST_F(MergePipelineTest, PluginEnrichmentDoesNotProtectAnotherLayersEntity) {
 
 // --- inherit_runtime_resources gates the MERGE, not only enrich_app ---
 //
-// merge_entities<App>() runs before RuntimeLinker::link(), and its LIVE_DATA
-// group unions the runtime layer's topics and services into any app both
-// layers contribute under the same id. Gating only enrich_app would leave the
-// flag inert for exactly the app someone names after its own node.
+// merge_entities<App>() runs before RuntimeLinker::link(), and under the
+// shipped policies (runtime LIVE_DATA authoritative) its LIVE_DATA group
+// replaces the topics, services and actions of any app both layers contribute
+// under the same id with the runtime layer's. Gating only enrich_app would
+// leave the flag inert for exactly the app someone names after its own node.
 
 namespace {
 
 // A manifest app and a runtime app under the SAME id, each carrying its own
-// live data, so the LIVE_DATA merge has something to union.
+// live data, so the LIVE_DATA merge has something to replace.
 void seed_same_id_app_with_resources(MergePipeline & pipeline, bool inherit_runtime_resources) {
   App manifest_app = make_app("temp_sensor", "engine");
   manifest_app.source = "manifest";
@@ -2832,4 +2833,238 @@ TEST_F(MergePipelineTest, EmptyProvenanceIsGapFilledUnderFallbackMetadata) {
   auto result = pipeline_.execute();
   ASSERT_EQ(result.functions.size(), 1u);
   EXPECT_EQ(result.functions[0].source, "heuristic");
+}
+
+// --- A manifest app is tied to a node by its ros_binding, never by its id ---
+//
+// merge_entities<App>() joins entities by id alone, and the runtime layer is
+// authoritative for STATUS and LIVE_DATA. So a running node whose runtime app
+// id equals a manifest app's id hands that app its bound_fqn, is_online and
+// topics, services and actions in the merge, whatever the app's ros_binding
+// says. RuntimeLinker takes that state back before matching, so only a binding
+// match can give it to the app. These cases run the shipped layer policies
+// through the real linker (#769).
+
+class ManifestBindingByIdTest : public MergePipelineTest {
+ protected:
+  // A runtime app as the ROS graph introspection reports a running node: its
+  // id, its FQN, and one resource of each kind, all named after the FQN so a
+  // leak is visible by name. `shared_topic` is published too when given, to
+  // build two nodes that share a topic name.
+  static App running_node(const std::string & id, const std::string & fqn, const std::string & shared_topic = "") {
+    App node;
+    node.id = id;
+    node.name = id;
+    node.source = "heuristic";
+    node.is_online = true;
+    node.bound_fqn = fqn;
+    node.topics.publishes = {fqn + "/reading"};
+    if (!shared_topic.empty()) {
+      node.topics.publishes.push_back(shared_topic);
+    }
+    node.topics.subscribes = {fqn + "/command"};
+    ServiceInfo svc;
+    svc.name = "recalibrate";
+    svc.full_path = fqn + "/recalibrate";
+    svc.type = "std_srvs/srv/Trigger";
+    node.services.push_back(svc);
+    ActionInfo act;
+    act.name = "sweep";
+    act.full_path = fqn + "/sweep";
+    act.type = "example_interfaces/action/Fibonacci";
+    node.actions.push_back(act);
+    return node;
+  }
+
+  static App manifest_app(const std::string & id, const std::string & node_name = "", const std::string & ns = "") {
+    App app = make_app(id, "engine");
+    app.source = "manifest";
+    if (!node_name.empty()) {
+      App::RosBinding binding;
+      binding.node_name = node_name;
+      binding.namespace_pattern = ns;
+      binding.topic_namespace = "";
+      app.ros_binding = binding;
+    }
+    return app;
+  }
+
+  // Manifest, runtime and (when given) one plugin layer with the shipped
+  // policies, and the real linker.
+  MergeResult run(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
+                  bool inherit_runtime_resources = true, const std::vector<App> & plugin_apps = {}) {
+    LayerOutput manifest_out;
+    manifest_out.apps = manifest_apps;
+    LayerOutput runtime_out;
+    runtime_out.apps = runtime_apps;
+    pipeline_.add_layer(
+        std::make_unique<TestLayer>("manifest", manifest_out, manifest_policies(MergePolicy::AUTHORITATIVE)));
+    pipeline_.add_layer(std::make_unique<TestLayer>("runtime", runtime_out, runtime_policies()));
+    if (!plugin_apps.empty()) {
+      LayerOutput plugin_out;
+      plugin_out.apps = plugin_apps;
+      // PluginLayer: ENRICHMENT for every group (the TestLayer default), owns its entities.
+      pipeline_.add_layer(std::make_unique<TestLayer>("opcua", plugin_out,
+                                                      std::unordered_map<FieldGroup, MergePolicy>{},
+                                                      /*owns_protected=*/true));
+    }
+    ManifestConfig config;
+    config.inherit_runtime_resources = inherit_runtime_resources;
+    pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), config);
+    return pipeline_.execute();
+  }
+
+  static const App * find_app(const MergeResult & result, const std::string & id) {
+    auto it = std::find_if(result.apps.begin(), result.apps.end(), [&](const App & a) {
+      return a.id == id;
+    });
+    return it == result.apps.end() ? nullptr : &*it;
+  }
+
+  static bool contains(const std::vector<std::string> & values, const std::string & value) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+  }
+
+  static std::vector<std::string> service_paths(const App & app) {
+    std::vector<std::string> paths;
+    paths.reserve(app.services.size());
+    for (const auto & s : app.services) {
+      paths.push_back(s.full_path);
+    }
+    return paths;
+  }
+
+  static std::vector<std::string> action_paths(const App & app) {
+    std::vector<std::string> paths;
+    paths.reserve(app.actions.size());
+    for (const auto & a : app.actions) {
+      paths.push_back(a.full_path);
+    }
+    return paths;
+  }
+
+  static bool has_no_resources(const App & app) {
+    return app.topics.publishes.empty() && app.topics.subscribes.empty() && app.services.empty() && app.actions.empty();
+  }
+};
+
+// The declared node is down and a node with the same name runs in another
+// namespace. Its runtime app takes the bare name as id, so the merge folds it
+// into the manifest app - which must still come out unbound and offline.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, DeclaredNodeDownAndSameNamedNodeElsewhereLeavesTheAppUnbound) {
+  auto result = run({manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine")},
+                    {running_node("temp_sensor", "/other/temp_sensor")});
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_EQ(app->source, "manifest");
+  EXPECT_FALSE(app->bound_fqn.has_value()) << "bound to " << app->bound_fqn.value_or("");
+  EXPECT_FALSE(app->is_online);
+  EXPECT_EQ(app->effective_fqn(), "/powertrain/engine/temp_sensor")
+      << "configurations, faults and handlers must resolve the declared node, not the foreign one";
+  EXPECT_TRUE(has_no_resources(*app)) << "the foreign node's topics, services and actions leaked in";
+  EXPECT_EQ(result.linking_result.app_to_node.count("temp_sensor"), 0u);
+  EXPECT_TRUE(contains(result.linking_result.unlinked_app_ids, "temp_sensor"));
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/other/temp_sensor"))
+      << "the foreign node is not bound to any app, so it is reported as unmanifested";
+}
+
+// The binding names node Y while a node X with the app's id runs too. The app
+// is Y's: Y's FQN and Y's resources, none of X's - also where X and Y publish
+// a topic of the same name, which X's removal must not take from Y.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, BindingToAnotherNodeWinsOverTheSameIdNode) {
+  auto result = run({manifest_app("controller", "nav_controller", "/nav")},
+                    {running_node("controller", "/foo/controller", "/shared/odom"),
+                     running_node("nav_controller", "/nav/nav_controller", "/shared/odom")});
+
+  const App * app = find_app(result, "controller");
+  ASSERT_NE(app, nullptr);
+  EXPECT_TRUE(app->is_online);
+  EXPECT_EQ(app->bound_fqn.value_or(""), "/nav/nav_controller");
+  EXPECT_EQ(app->topics.publishes, (std::vector<std::string>{"/nav/nav_controller/reading", "/shared/odom"}));
+  EXPECT_EQ(app->topics.subscribes, std::vector<std::string>{"/nav/nav_controller/command"});
+  EXPECT_EQ(service_paths(*app), std::vector<std::string>{"/nav/nav_controller/recalibrate"});
+  EXPECT_EQ(action_paths(*app), std::vector<std::string>{"/nav/nav_controller/sweep"});
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/foo/controller"));
+  EXPECT_FALSE(contains(result.linking_result.orphan_nodes, "/nav/nav_controller"));
+}
+
+// Same shape with inherit_runtime_resources=false: still bound to Y, and the
+// app exposes only what the manifest declared - nothing of X, nothing of Y.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, BindingToAnotherNodeWithoutInheritExposesOnlyTheDeclaredResources) {
+  App declared = manifest_app("controller", "nav_controller", "/nav");
+  declared.topics.publishes = {"/declared/topic"};
+
+  auto result = run({declared},
+                    {running_node("controller", "/foo/controller", "/shared/odom"),
+                     running_node("nav_controller", "/nav/nav_controller", "/shared/odom")},
+                    /*inherit_runtime_resources=*/false);
+
+  const App * app = find_app(result, "controller");
+  ASSERT_NE(app, nullptr);
+  EXPECT_TRUE(app->is_online);
+  EXPECT_EQ(app->bound_fqn.value_or(""), "/nav/nav_controller");
+  EXPECT_EQ(app->topics.publishes, std::vector<std::string>{"/declared/topic"});
+  EXPECT_TRUE(app->topics.subscribes.empty());
+  EXPECT_TRUE(app->services.empty());
+  EXPECT_TRUE(app->actions.empty());
+}
+
+// A manifest app with no ros_binding is never linked, even when its id is the
+// name of a running node.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, AppWithoutBindingNamedAfterARunningNodeStaysUnbound) {
+  auto result = run({manifest_app("temp_sensor")}, {running_node("temp_sensor", "/powertrain/engine/temp_sensor")});
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_FALSE(app->bound_fqn.has_value()) << "bound to " << app->bound_fqn.value_or("");
+  EXPECT_FALSE(app->is_online);
+  EXPECT_EQ(app->effective_fqn(), "");
+  EXPECT_TRUE(has_no_resources(*app));
+  EXPECT_TRUE(contains(result.linking_result.unlinked_app_ids, "temp_sensor"));
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/powertrain/engine/temp_sensor"));
+}
+
+// An external manifest app is not a ROS node. A running node with its id must
+// not make it one: no FQN, no node resources, not online.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, ExternalAppNamedAfterARunningNodeIsNotBound) {
+  App external = manifest_app("temp_sensor");
+  external.external = true;
+
+  auto result = run({external}, {running_node("temp_sensor", "/powertrain/engine/temp_sensor")});
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_FALSE(app->bound_fqn.has_value()) << "bound to " << app->bound_fqn.value_or("");
+  EXPECT_FALSE(app->is_online) << "the runtime node's status cannot be attributed to an external app";
+  EXPECT_TRUE(has_no_resources(*app));
+  EXPECT_FALSE(contains(result.linking_result.unlinked_app_ids, "temp_sensor"))
+      << "external apps are not candidates for linking";
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/powertrain/engine/temp_sensor"));
+}
+
+// The common case is unchanged: the app is named after the node its binding
+// names, so the node the merge folded in is the one linking binds.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, SelfNamedAppBoundToItsOwnNodeStaysLinkedWithTheNodeResources) {
+  auto result = run({manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine")},
+                    {running_node("temp_sensor", "/powertrain/engine/temp_sensor")});
+
+  ASSERT_EQ(result.apps.size(), 1u);
+  const App & app = result.apps[0];
+  EXPECT_EQ(app.source, "manifest");
+  EXPECT_TRUE(app.is_online);
+  EXPECT_EQ(app.bound_fqn.value_or(""), "/powertrain/engine/temp_sensor");
+  EXPECT_EQ(app.topics.publishes, std::vector<std::string>{"/powertrain/engine/temp_sensor/reading"});
+  EXPECT_EQ(app.topics.subscribes, std::vector<std::string>{"/powertrain/engine/temp_sensor/command"});
+  EXPECT_EQ(service_paths(app), std::vector<std::string>{"/powertrain/engine/temp_sensor/recalibrate"});
+  EXPECT_EQ(action_paths(app), std::vector<std::string>{"/powertrain/engine/temp_sensor/sweep"});
+  EXPECT_EQ(result.linking_result.app_to_node.at("temp_sensor"), "/powertrain/engine/temp_sensor");
+  EXPECT_TRUE(result.linking_result.orphan_nodes.empty());
+  EXPECT_TRUE(result.linking_result.unlinked_app_ids.empty());
 }
