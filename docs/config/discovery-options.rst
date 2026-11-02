@@ -321,9 +321,12 @@ The merge joins entities by id, so with these defaults a running node whose
 runtime app has a manifest app's id hands that app its status and live data
 here. For an app the
 manifest declares, linking has the last word: the runtime linker takes that
-node state back and gives the app the status and resources of the node its
-``ros_binding`` matches, or none (see
+node state back and gives the app the status of the node its ``ros_binding``
+matches, or none (see
 :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
+It also gives the app that node's resources while
+:ref:`inherit_runtime_resources <manifest-inherit-runtime-resources>` is on;
+with it off the app keeps only the collections the manifest declares.
 Every other app - a gap-fill app for an unmanifested node, a plugin's app -
 keeps the merged status and live data.
 
