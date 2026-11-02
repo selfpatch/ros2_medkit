@@ -113,35 +113,43 @@ void remove_resources_of(App & app, const App & runtime_app) {
 /// app's ros_binding says. Only linking may tie a manifest app to a node, so
 /// that state is taken back off before matching, and a match re-derives it.
 ///
-/// - A ROS app (not external): bound_fqn and is_online are cleared outright and
-///   the same-id node's resources are removed by value. Removal, not a reset
-///   to empty, keeps entries another layer contributed under other keys.
+/// Whether the same-id node contributed at all is read from the merged
+/// bound_fqn before anything is cleared: it equals the node's FQN only when the
+/// runtime layer's app went into the merge. Gap-fill (allow_heuristic_apps
+/// false, a namespace filter) keeps that app out of the merge while the linker
+/// still sees the node, and a node that contributed nothing has nothing to
+/// take back.
+///
+/// - A ROS app (not external): bound_fqn and is_online are cleared outright.
+///   The node's topics, services and actions are removed by value, and only
+///   when the node contributed and inherit_runtime_resources is on. With the
+///   flag off the pipeline has already restored the declared collections, so
+///   removing by value could only hit a declared entry the node shares.
+///   Removal, not a reset to empty, keeps entries another layer contributed
+///   under other keys.
 /// - An external app: it is not linked, and a plugin may serve it, so its
-///   bound_fqn and is_online can legitimately come from that plugin. They are
-///   taken back only when the merged bound_fqn is the same-id node's FQN - the
-///   evidence that the runtime layer contributed them. A runtime app the
-///   gap-fill filter kept out of the merge contributed nothing and has no such
-///   match.
+///   state stays as merged when the same-id node contributed nothing. When the
+///   node did contribute, the runtime layer's authoritative status and live
+///   data have already replaced the serving plugin's in the merge, so the
+///   values here are the node's: they are taken back the same way, and the
+///   app reads offline with no resources. An external app needs an id that no
+///   ROS node uses.
 ///
 /// The node itself stays an orphan: it has no app of its own, because the
 /// merge consumed its runtime app under the manifest app's id.
-void strip_same_id_runtime_state(App & app, const std::unordered_map<std::string, const App *> & runtime_by_id) {
+void strip_same_id_runtime_state(App & app, const std::unordered_map<std::string, const App *> & runtime_by_id,
+                                 bool inherit_runtime_resources) {
   const auto it = runtime_by_id.find(app.id);
   const App * same_id = it != runtime_by_id.end() ? it->second : nullptr;
+  const bool node_contributed =
+      same_id != nullptr && same_id->bound_fqn.has_value() && app.bound_fqn == same_id->bound_fqn;
 
-  if (app.external.value_or(false)) {
-    if (same_id == nullptr || !same_id->bound_fqn.has_value() || app.bound_fqn != same_id->bound_fqn) {
-      return;
-    }
-    app.bound_fqn.reset();
-    app.is_online = false;
-    remove_resources_of(app, *same_id);
+  if (app.external.value_or(false) && !node_contributed) {
     return;
   }
-
   app.bound_fqn.reset();
   app.is_online = false;
-  if (same_id != nullptr) {
+  if (node_contributed && inherit_runtime_resources) {
     remove_resources_of(app, *same_id);
   }
 }
@@ -183,8 +191,8 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vect
     const App & manifest_app = app;
     App linked_app = manifest_app;  // Copy
     // Clears is_online and bound_fqn on a ROS app; an external app keeps the
-    // values the layer serving it reported unless they came from a same-id node.
-    strip_same_id_runtime_state(linked_app, runtime_by_id);
+    // merged values unless a same-id node contributed them in the merge.
+    strip_same_id_runtime_state(linked_app, runtime_by_id, config.inherit_runtime_resources);
 
     // External apps don't need ROS binding
     if (manifest_app.external.value_or(false)) {

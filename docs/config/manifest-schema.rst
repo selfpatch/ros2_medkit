@@ -833,8 +833,7 @@ a node, also when the app's ``id`` is the name of a running node. An app whose
 binding matches no running node and an app without ``ros_binding`` have no
 ``x-medkit.ros2.node``, report ``is_online: false`` and expose none of a node's
 topics, services or actions - even while a node of that name runs in another
-namespace. An ``external`` app gets nothing from such a node either; it keeps
-what the plugin serving it reports, its ``is_online`` included.
+namespace.
 
 That node is not served as an app of its own either. Runtime discovery names a
 node's app after the node (``temp_sensor``), so its app has the manifest app's
@@ -842,6 +841,13 @@ id and is merged into it; the node is then reported as unmanifested (it counts
 in ``orphan_count`` on ``GET /health``) but has no entity. Give manifest apps
 ids that are not node names (the hyphenated ids in these examples cannot be
 one), or declare that node with an app of its own.
+
+An ``external`` app keeps the status and resources the plugin serving it
+reports - unless a running ROS node's app has the same id and gap-fill lets it
+into the merge. The runtime layer's status and live data then replace the
+plugin's in the merge, before linking, and the app reads ``is_online: false``
+with no ``x-medkit.ros2.node`` and no topics, services or actions. Give
+external apps ids that no ROS node uses.
 
 Example
 ~~~~~~~

@@ -3137,3 +3137,112 @@ TEST_F(ManifestBindingByIdTest, ExternalManifestAppServedByAPluginKeepsThePlugin
   EXPECT_EQ(app->topics.publishes, std::vector<std::string>{"/plc/process/value"});
   EXPECT_FALSE(contains(result.linking_result.unlinked_app_ids, "plc_process"));
 }
+
+// The limit of the case above: a running ROS node whose runtime app has the
+// external app's id. The runtime layer is authoritative for STATUS and
+// LIVE_DATA and the plugin only enriches, so the merge has already replaced
+// the plugin's status and topics with the node's before linking runs. What
+// reaches the linker is the node's state, which it must not attribute to the
+// app: the app reads offline, unbound and without resources. The fix for a
+// deployment is an external app id that no ROS node uses.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, ExternalManifestAppServedByAPluginReadsOfflineWhileASameIdNodeRuns) {
+  App served = make_app("plc_process", "plc");
+  served.source = "opcua";
+  served.external = true;
+  served.is_online = true;
+  served.topics.publishes = {"/plc/process/value"};
+
+  auto result = run({manifest_app("plc_process")}, {running_node("plc_process", "/bridge/plc_process")},
+                    /*inherit_runtime_resources=*/true, {served});
+
+  const App * app = find_app(result, "plc_process");
+  ASSERT_NE(app, nullptr);
+  EXPECT_TRUE(app->external.value_or(false));
+  EXPECT_FALSE(app->is_online) << "the merged status is the node's, not the plugin's";
+  EXPECT_FALSE(app->bound_fqn.has_value()) << "bound to " << app->bound_fqn.value_or("");
+  EXPECT_TRUE(has_no_resources(*app)) << "the merge replaced the plugin's topics with the node's";
+  EXPECT_TRUE(contains(result.linking_result.orphan_nodes, "/bridge/plc_process"));
+}
+
+namespace {
+
+// The runtime layer as RuntimeLayer behaves with gap-fill keeping a node's app
+// out of the merge (allow_heuristic_apps=false, or a namespace filter): it
+// contributes no app, but still hands every node to the linker.
+class GapFilledRuntimeLayer : public DiscoveryLayer {
+ public:
+  explicit GapFilledRuntimeLayer(std::vector<App> linking_apps) : linking_apps_(std::move(linking_apps)) {
+  }
+  std::string name() const override {
+    return "runtime";
+  }
+  bool provides_runtime_apps() const override {
+    return true;
+  }
+  std::vector<App> get_linking_apps() const override {
+    return linking_apps_;
+  }
+  LayerOutput discover() override {
+    return {};
+  }
+  MergePolicy policy_for(FieldGroup group) const override {
+    return runtime_policies().at(group);
+  }
+
+ private:
+  std::vector<App> linking_apps_;
+};
+
+}  // namespace
+
+// A same-id node the gap-fill filter kept out of the merge contributed
+// nothing to the app, so nothing may be removed on its account - not even an
+// entry another layer contributed under a name the node also publishes.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, SameIdNodeKeptOutOfTheMergeRemovesNothingFromTheApp) {
+  App bridged = make_app("temp_sensor", "");
+  bridged.topics.publishes = {"/powertrain/engine/temperature"};
+
+  LayerOutput manifest_out;
+  manifest_out.apps = {manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine")};
+  pipeline_.add_layer(
+      std::make_unique<TestLayer>("manifest", manifest_out, manifest_policies(MergePolicy::AUTHORITATIVE)));
+  pipeline_.add_layer(std::make_unique<GapFilledRuntimeLayer>(
+      std::vector<App>{running_node("temp_sensor", "/other/temp_sensor", "/powertrain/engine/temperature")}));
+  LayerOutput plugin_out;
+  plugin_out.apps = {bridged};
+  pipeline_.add_layer(std::make_unique<TestLayer>("bridge", plugin_out, std::unordered_map<FieldGroup, MergePolicy>{},
+                                                  /*owns_protected=*/true));
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), ManifestConfig{});
+
+  auto result = pipeline_.execute();
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_FALSE(app->bound_fqn.has_value());
+  EXPECT_FALSE(app->is_online);
+  EXPECT_EQ(app->topics.publishes, std::vector<std::string>{"/powertrain/engine/temperature"})
+      << "the plugin's topic was removed because a node that never entered the merge publishes it too";
+}
+
+// With inherit_runtime_resources=false the pipeline has already restored the
+// declared collections before linking, so there are no runtime resources left
+// to remove - and a declared entry the bound node also exposes must survive.
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, InheritFalseKeepsADeclaredTopicTheBoundNodeAlsoPublishes) {
+  App declared = manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine");
+  declared.topics.publishes = {"/powertrain/engine/temp_sensor/reading"};
+
+  auto result = run({declared}, {running_node("temp_sensor", "/powertrain/engine/temp_sensor")},
+                    /*inherit_runtime_resources=*/false);
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_TRUE(app->is_online);
+  EXPECT_EQ(app->bound_fqn.value_or(""), "/powertrain/engine/temp_sensor");
+  EXPECT_EQ(app->topics.publishes, std::vector<std::string>{"/powertrain/engine/temp_sensor/reading"})
+      << "a declared topic was removed because the bound node publishes it too";
+  EXPECT_TRUE(app->services.empty());
+  EXPECT_TRUE(app->actions.empty());
+}
