@@ -236,9 +236,14 @@ An app that declares none therefore serves empty ``/data`` and
 
 This holds however the app is named. An app whose ``id`` equals the bound
 node's name is one entity by id with the runtime layer's view of that node, so
-the merge would otherwise hand it the node's live topics, services and actions
-before linking runs; the declared collections are restored after the merge
+with the default merge policies the merge would otherwise hand it the node's
+live topics, services and actions before linking runs; the declared collections are restored after the merge
 precisely so the flag means the same thing in both spellings.
+
+The declared collections are restored on every app the manifest declares,
+linked or not and external ones included, so with ``false`` the topics,
+services and actions a discovery plugin reports for such an app are dropped
+too.
 
 .. _manifest-allow-manifest-override:
 
@@ -842,12 +847,16 @@ in ``orphan_count`` on ``GET /health``) but has no entity. Give manifest apps
 ids that are not node names (the hyphenated ids in these examples cannot be
 one), or declare that node with an app of its own.
 
-An ``external`` app keeps the status and resources the plugin serving it
-reports - unless a running ROS node's app has the same id and gap-fill lets it
-into the merge. The runtime layer's status and live data then replace the
-plugin's in the merge, before linking, and the app reads ``is_online: false``
-with no ``x-medkit.ros2.node`` and no topics, services or actions. Give
-external apps ids that no ROS node uses.
+An ``external`` app keeps the status the plugin serving it reports, and the
+topics, services and actions it reports while ``inherit_runtime_resources`` is
+on; with it off, every app the manifest declares, external ones included,
+exposes only what the manifest declares (see
+:ref:`manifest-inherit-runtime-resources`). The exception is a running ROS node
+whose app has the same id and that gap-fill lets into the merge: with the
+default merge policies its status and live data replace the plugin's there,
+before linking, and the app reads ``is_online: false`` with no
+``x-medkit.ros2.node`` and no topics, services or actions. Give external apps
+ids that no ROS node uses.
 
 Example
 ~~~~~~~

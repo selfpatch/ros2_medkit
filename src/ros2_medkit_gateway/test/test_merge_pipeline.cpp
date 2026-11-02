@@ -3139,12 +3139,13 @@ TEST_F(ManifestBindingByIdTest, ExternalManifestAppServedByAPluginKeepsThePlugin
 }
 
 // The limit of the case above: a running ROS node whose runtime app has the
-// external app's id. The runtime layer is authoritative for STATUS and
-// LIVE_DATA and the plugin only enriches, so the merge has already replaced
-// the plugin's status and topics with the node's before linking runs. What
-// reaches the linker is the node's state, which it must not attribute to the
-// app: the app reads offline, unbound and without resources. The fix for a
-// deployment is an external app id that no ROS node uses.
+// external app's id. With the default policies the runtime layer is
+// authoritative for STATUS and LIVE_DATA and the plugin only enriches, so the
+// merge has already replaced the plugin's status and topics with the node's
+// before linking runs. What reaches the linker is the node's state, which it
+// must not attribute to the app: the app reads offline, unbound and without
+// resources. The fix for a deployment is an external app id that no ROS node
+// uses.
 // @verifies REQ_INTEROP_003
 TEST_F(ManifestBindingByIdTest, ExternalManifestAppServedByAPluginReadsOfflineWhileASameIdNodeRuns) {
   App served = make_app("plc_process", "plc");
@@ -3245,4 +3246,104 @@ TEST_F(ManifestBindingByIdTest, InheritFalseKeepsADeclaredTopicTheBoundNodeAlsoP
       << "a declared topic was removed because the bound node publishes it too";
   EXPECT_TRUE(app->services.empty());
   EXPECT_TRUE(app->actions.empty());
+}
+
+// Whether the same-id node contributed to the merge must not be inferred from
+// the STATUS group: the documented status overrides keep the node's FQN off the
+// app while the authoritative runtime LIVE_DATA still copies the node's topics,
+// services and actions in. The node's app went into the merge, so its
+// resources must still come back off.
+namespace {
+
+MergeResult run_with_status_policies(MergePipeline & pipeline, MergePolicy manifest_status, MergePolicy runtime_status,
+                                     const App & manifest_app, const App & node) {
+  auto manifest_policy = manifest_policies(MergePolicy::AUTHORITATIVE);
+  manifest_policy[FieldGroup::STATUS] = manifest_status;
+  auto runtime_policy = runtime_policies();
+  runtime_policy[FieldGroup::STATUS] = runtime_status;
+
+  LayerOutput manifest_out;
+  manifest_out.apps = {manifest_app};
+  LayerOutput runtime_out;
+  runtime_out.apps = {node};
+  pipeline.add_layer(std::make_unique<TestLayer>("manifest", manifest_out, manifest_policy));
+  pipeline.add_layer(std::make_unique<TestLayer>("runtime", runtime_out, runtime_policy));
+  pipeline.set_linker(std::make_unique<RuntimeLinker>(nullptr), ManifestConfig{});
+  return pipeline.execute();
+}
+
+}  // namespace
+
+// discovery.merge_pipeline.layers.manifest.status: authoritative
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, ManifestStatusAuthoritativeStillTakesBackTheSameIdNodeResources) {
+  auto result = run_with_status_policies(pipeline_, MergePolicy::AUTHORITATIVE, MergePolicy::AUTHORITATIVE,
+                                         manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine"),
+                                         running_node("temp_sensor", "/other/temp_sensor"));
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_FALSE(app->bound_fqn.has_value());
+  EXPECT_FALSE(app->is_online);
+  EXPECT_TRUE(has_no_resources(*app)) << "the same-id node's resources stayed on the unlinked app";
+}
+
+// layers.manifest.status: enrichment with layers.runtime.status: fallback
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, RuntimeStatusFallbackStillTakesBackTheSameIdNodeResources) {
+  auto result =
+      run_with_status_policies(pipeline_, MergePolicy::ENRICHMENT, MergePolicy::FALLBACK, manifest_app("temp_sensor"),
+                               running_node("temp_sensor", "/powertrain/engine/temp_sensor"));
+
+  const App * app = find_app(result, "temp_sensor");
+  ASSERT_NE(app, nullptr);
+  EXPECT_FALSE(app->bound_fqn.has_value());
+  EXPECT_FALSE(app->is_online);
+  EXPECT_TRUE(has_no_resources(*app)) << "the same-id node's resources stayed on the unbound app";
+}
+
+// A plugin serving manifest apps reports a FQN that happens to be a same-id
+// node's, while gap-fill keeps those nodes out of the merge. The nodes
+// contributed nothing, so nothing the plugin supplied may be taken away: the
+// external app keeps all of it, the ROS app its resources (its bound_fqn and
+// is_online are the linker's in any case).
+// @verifies REQ_INTEROP_003
+TEST_F(ManifestBindingByIdTest, PluginFqnEqualToAKeptOutNodeFqnRemovesNothing) {
+  App plc = make_app("plc_process", "plc");
+  plc.source = "opcua";
+  plc.external = true;
+  plc.is_online = true;
+  plc.bound_fqn = "/bridge/plc_process";
+  plc.topics.publishes = {"/bridge/plc_process/reading"};
+  App bridged = make_app("temp_sensor", "");
+  bridged.bound_fqn = "/other/temp_sensor";
+  bridged.topics.publishes = {"/other/temp_sensor/reading"};
+
+  LayerOutput manifest_out;
+  manifest_out.apps = {manifest_app("plc_process"), manifest_app("temp_sensor", "temp_sensor", "/powertrain/engine")};
+  pipeline_.add_layer(
+      std::make_unique<TestLayer>("manifest", manifest_out, manifest_policies(MergePolicy::AUTHORITATIVE)));
+  pipeline_.add_layer(std::make_unique<GapFilledRuntimeLayer>(std::vector<App>{
+      running_node("plc_process", "/bridge/plc_process"), running_node("temp_sensor", "/other/temp_sensor")}));
+  LayerOutput plugin_out;
+  plugin_out.apps = {plc, bridged};
+  pipeline_.add_layer(std::make_unique<TestLayer>("opcua", plugin_out, std::unordered_map<FieldGroup, MergePolicy>{},
+                                                  /*owns_protected=*/true));
+  pipeline_.set_linker(std::make_unique<RuntimeLinker>(nullptr), ManifestConfig{});
+
+  auto result = pipeline_.execute();
+
+  const App * external = find_app(result, "plc_process");
+  ASSERT_NE(external, nullptr);
+  EXPECT_TRUE(external->is_online);
+  EXPECT_EQ(external->bound_fqn.value_or(""), "/bridge/plc_process");
+  EXPECT_EQ(external->topics.publishes, std::vector<std::string>{"/bridge/plc_process/reading"})
+      << "the plugin's topic was removed on account of a node that never entered the merge";
+
+  const App * ros_app = find_app(result, "temp_sensor");
+  ASSERT_NE(ros_app, nullptr);
+  EXPECT_FALSE(ros_app->bound_fqn.has_value());
+  EXPECT_FALSE(ros_app->is_online);
+  EXPECT_EQ(ros_app->topics.publishes, std::vector<std::string>{"/other/temp_sensor/reading"})
+      << "the plugin's topic was removed on account of a node that never entered the merge";
 }

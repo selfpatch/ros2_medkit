@@ -508,6 +508,11 @@ MergeResult MergePipeline::execute() {
   // linker takes back whatever the id merge copied in from a same-id node.
   std::vector<App> runtime_apps;
 
+  // The runtime layer's apps that go into the merge (after gap-fill), so the
+  // linker knows which same-id node, if any, the merge folded into a manifest
+  // app instead of guessing it from the merged fields.
+  std::vector<App> merged_runtime_apps;
+
   // The manifest's apps exactly as declared, before any merging. Needed to
   // honour inherit_runtime_resources=false (see the restore below) and to tell
   // the linker which apps the manifest declares.
@@ -549,6 +554,7 @@ MergeResult MergePipeline::execute() {
     // the linker needs all runtime apps to bind manifest apps to live nodes.
     if (layers_[i]->provides_runtime_apps()) {
       runtime_apps = layers_[i]->get_linking_apps();
+      merged_runtime_apps = output.apps;
     }
     if (layers_[i]->name() == "manifest") {
       manifest_declared_apps = output.apps;
@@ -650,7 +656,8 @@ MergeResult MergePipeline::execute() {
     for (const auto & app : manifest_declared_apps) {
       declared_app_ids.insert(app.id);
     }
-    auto linking = linker_->link(result.apps, runtime_apps, declared_app_ids, manifest_config_, protected_entity_ids_);
+    auto linking = linker_->link(result.apps, runtime_apps, merged_runtime_apps, declared_app_ids, manifest_config_,
+                                 protected_entity_ids_);
 
     // Replace apps with linked versions (have is_online, bound_fqn set)
     result.apps = std::move(linking.linked_apps);

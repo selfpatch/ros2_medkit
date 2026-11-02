@@ -90,9 +90,9 @@ struct App {
 
   // === Runtime state. In hybrid mode RuntimeLinker decides it for every
   // manifest app: from its binding when it is not external; an external one
-  // keeps the merged value unless a same-id ROS node supplied it, which is
-  // cleared. Any other app keeps what the source that discovered or serves it
-  // set ===
+  // keeps the merged value unless a same-id ROS node's app went into the
+  // merge, and then it is cleared. Any other app keeps what the source that
+  // discovered or serves it set ===
   std::optional<std::string> bound_fqn;  ///< Bound ROS node FQN
   bool is_online{false};                 ///< Whether the bound node is running
   /// Tri-state classification: nullopt = no layer classified this app,
