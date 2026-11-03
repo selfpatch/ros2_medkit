@@ -869,7 +869,14 @@ from ``x-medkit.ros2.namespace``, a Component's node from
 ``x-medkit.fqn`` and ``translationId`` are still read when the served key is
 absent, for a peer that sends a field there. A subarea is read off the
 peer's ``/areas/{id}/subareas`` route, which serves its description and tags
-the way the top-level ``/areas`` list does. A Function's dependencies come from
+the way the top-level ``/areas`` list does, and takes that route's Area as its
+parent: the list item names none. The top-level ``/areas`` and ``/components``
+lists leave nested entities out, so subareas and subcomponents are read level
+by level, each level from the routes of the one above, down to eight levels
+below the top-level entity. An id already read is not read again, so a tree
+that loops back on itself ends there. A subcomponent takes its parent from its
+detail, and from the route when the detail names none or cannot be read. A
+Function's dependencies come from
 the ``_links["depends-on"]`` references its detail serves, each reduced to the
 Function id it names.
 

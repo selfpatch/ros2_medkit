@@ -20,6 +20,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -40,6 +41,12 @@ constexpr size_t MAX_PEER_RESPONSE_SIZE = 10 * 1024 * 1024;
 /// Maximum number of entities per collection (areas, components, apps, functions)
 /// before detail fetches are skipped to prevent excessive HTTP requests.
 constexpr size_t MAX_ENTITIES_PER_COLLECTION = 1000;
+
+/// Deepest level of subareas or subcomponents read below a top-level Area or
+/// Component. The top-level lists leave nested entities out, so each level
+/// costs one request per entity of the level above; the bound keeps a deep or
+/// cyclic tree from turning one refresh into an unbounded walk.
+constexpr size_t MAX_NESTING_DEPTH = 8;
 
 /**
  * @brief Percent-encode a query parameter key or value (RFC 3986)
@@ -185,6 +192,12 @@ Area parse_area(const nlohmann::json & j) {
     const auto & xm = j["x-medkit"];
     area.namespace_path = ros2_field(xm, "namespace", "namespace");
     area.source = xm.value("source", "");
+    // Served on the detail only. A subarea read off its parent's subareas
+    // route takes its parent from the route instead (see fetch_entities).
+    area.parent_area_id = string_at(xm, "parent_area_id");
+    if (!is_valid_entity_id(area.parent_area_id)) {
+      area.parent_area_id.clear();
+    }
   }
   if (j.contains("translationId")) {
     area.translation_id = j["translationId"].get<std::string>();
@@ -854,36 +867,56 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       area.source = peer_source;
     }
 
-    // Fetch subareas for each top-level area (list endpoint filters them out).
-    // Collect into a separate vector first to avoid push_back during iteration
-    // (which can invalidate references if the vector reallocates).
+    // Subareas, read level by level below the top-level Areas (the list leaves
+    // them out), down to MAX_NESTING_DEPTH. Collected into a separate vector so
+    // nothing is pushed into the vector being iterated. A subarea's list item
+    // names no parent, so the route it was read from does: it is a child of the
+    // Area that route belongs to. An id already read is not read again, which
+    // is what ends a tree that loops back on itself.
     std::vector<Area> all_subareas;
+    std::unordered_set<std::string> seen_areas;
+    std::vector<std::string> area_level;
     for (const auto & area : entities.areas) {
-      const std::string route = "/areas/" + area.id + "/subareas";
-      auto sub =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
-      if (sub.kind == SubResponse::Kind::kIncomplete) {
-        return tl::unexpected<std::string>(sub.error);
-      }
-      if (sub.kind == SubResponse::Kind::kRouteAbsent) {
-        note_absent_route("/areas/{id}/subareas");
-        continue;
-      }
-      if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
-        // The peer holds this Area's id but the gateway contributing it is
-        // silent, so its members are out of reach. That is one Area's worth of
-        // detail missing, not a failed read of the peer.
-        continue;
-      }
-      auto subareas = parse_collection<Area>(sub.body, parse_area);
-      for (auto & subarea : subareas) {
-        if (!is_valid_entity_id(subarea.id)) {
+      seen_areas.insert(area.id);
+      area_level.push_back(area.id);
+    }
+    for (size_t depth = 0; depth < MAX_NESTING_DEPTH && !area_level.empty(); ++depth) {
+      std::vector<std::string> next_level;
+      for (const auto & parent_id : area_level) {
+        const std::string route = "/areas/" + parent_id + "/subareas";
+        auto sub =
+            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        if (sub.kind == SubResponse::Kind::kIncomplete) {
+          return tl::unexpected<std::string>(sub.error);
+        }
+        if (sub.kind == SubResponse::Kind::kRouteAbsent) {
+          note_absent_route("/areas/{id}/subareas");
           continue;
         }
-        subarea.declared_source = subarea.source;
-        subarea.source = peer_source;
-        all_subareas.push_back(std::move(subarea));
+        if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
+          // The peer holds this Area's id but the gateway contributing it is
+          // silent, so its members are out of reach. That is one Area's worth of
+          // detail missing, not a failed read of the peer.
+          continue;
+        }
+        for (auto & subarea : parse_collection<Area>(sub.body, parse_area)) {
+          if (!is_valid_entity_id(subarea.id) || !seen_areas.insert(subarea.id).second) {
+            continue;
+          }
+          subarea.parent_area_id = parent_id;
+          subarea.declared_source = subarea.source;
+          subarea.source = peer_source;
+          next_level.push_back(subarea.id);
+          all_subareas.push_back(std::move(subarea));
+        }
       }
+      if (entities.areas.size() + all_subareas.size() > MAX_ENTITIES_PER_COLLECTION) {
+        return tl::unexpected<std::string>("Peer '" + name_ + "' returned " +
+                                           std::to_string(entities.areas.size() + all_subareas.size()) +
+                                           " areas and subareas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) +
+                                           ")");
+      }
+      area_level = std::move(next_level);
     }
     entities.areas.insert(entities.areas.end(), std::make_move_iterator(all_subareas.begin()),
                           std::make_move_iterator(all_subareas.end()));
@@ -929,51 +962,71 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       comp.declared_source = comp.source;
       comp.source = peer_source;
     }
-    // Fetch subcomponents for each top-level component (list endpoint filters them out).
-    // Collect into a separate vector first to avoid push_back during iteration
-    // (which can invalidate references if the vector reallocates).
+    // Subcomponents, level by level below the top-level Components (the list
+    // leaves them out), down to MAX_NESTING_DEPTH, the same way as subareas.
+    // Collected into a separate vector so nothing is pushed into the vector
+    // being iterated.
     std::vector<Component> all_subcomps;
+    std::unordered_set<std::string> seen_components;
+    std::vector<std::string> component_level;
     for (const auto & comp : comp_list) {
-      const std::string route = "/components/" + comp.id + "/subcomponents";
-      auto sub =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
-      if (sub.kind == SubResponse::Kind::kIncomplete) {
-        return tl::unexpected<std::string>(sub.error);
-      }
-      if (sub.kind == SubResponse::Kind::kRouteAbsent) {
-        note_absent_route("/components/{id}/subcomponents");
-        continue;
-      }
-      if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
-        // Same as for subareas: the parent is retained and unreachable, so what
-        // it contains cannot be read. The parent itself already carries that.
-        continue;
-      }
-      auto subcomps = parse_collection<Component>(sub.body, parse_component);
-      for (auto & subcomp : subcomps) {
-        if (!is_valid_entity_id(subcomp.id)) {
+      seen_components.insert(comp.id);
+      component_level.push_back(comp.id);
+    }
+    for (size_t depth = 0; depth < MAX_NESTING_DEPTH && !component_level.empty(); ++depth) {
+      std::vector<std::string> next_level;
+      for (const auto & parent_id : component_level) {
+        const std::string route = "/components/" + parent_id + "/subcomponents";
+        auto sub =
+            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        if (sub.kind == SubResponse::Kind::kIncomplete) {
+          return tl::unexpected<std::string>(sub.error);
+        }
+        if (sub.kind == SubResponse::Kind::kRouteAbsent) {
+          note_absent_route("/components/{id}/subcomponents");
           continue;
         }
-        // Fetch detail for each subcomponent to get full relationships
-        const std::string detail_route = "/components/" + subcomp.id;
-        auto detail = read_sub_response(cli.Get(std::string(API_PREFIX) + detail_route), name_, detail_route,
-                                        RouteKind::kAddressableDetail);
-        if (detail.kind == SubResponse::Kind::kIncomplete) {
-          return tl::unexpected<std::string>(detail.error);
+        if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
+          // Same as for subareas: the parent is retained and unreachable, so what
+          // it contains cannot be read. The parent itself already carries that.
+          continue;
         }
-        if (detail.kind == SubResponse::Kind::kBody) {
-          subcomp = parse_component(detail.body);
-        } else {
-          subcomp.available = false;
-          // The route this id came from is itself the statement that `comp` is
-          // its parent, so the tree keeps its shape even though the entity's
-          // own description is out of reach.
-          subcomp.parent_component_id = comp.id;
+        for (auto & subcomp : parse_collection<Component>(sub.body, parse_component)) {
+          if (!is_valid_entity_id(subcomp.id) || !seen_components.insert(subcomp.id).second) {
+            continue;
+          }
+          // Fetch detail for each subcomponent to get full relationships
+          const std::string sub_id = subcomp.id;
+          const std::string detail_route = "/components/" + sub_id;
+          auto detail = read_sub_response(cli.Get(std::string(API_PREFIX) + detail_route), name_, detail_route,
+                                          RouteKind::kAddressableDetail);
+          if (detail.kind == SubResponse::Kind::kIncomplete) {
+            return tl::unexpected<std::string>(detail.error);
+          }
+          if (detail.kind == SubResponse::Kind::kBody) {
+            subcomp = parse_component(detail.body);
+          } else {
+            subcomp.available = false;
+          }
+          // The route this id came from is itself the statement that the
+          // Component it belongs to is its parent, so the tree keeps its shape
+          // even when the entity's own description is out of reach.
+          if (subcomp.parent_component_id.empty()) {
+            subcomp.parent_component_id = parent_id;
+          }
+          subcomp.declared_source = subcomp.source;
+          subcomp.source = peer_source;
+          next_level.push_back(sub_id);
+          all_subcomps.push_back(std::move(subcomp));
         }
-        subcomp.declared_source = subcomp.source;
-        subcomp.source = peer_source;
-        all_subcomps.push_back(std::move(subcomp));
       }
+      if (comp_list.size() + all_subcomps.size() > MAX_ENTITIES_PER_COLLECTION) {
+        return tl::unexpected<std::string>("Peer '" + name_ + "' returned " +
+                                           std::to_string(comp_list.size() + all_subcomps.size()) +
+                                           " components and subcomponents (max " +
+                                           std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+      }
+      component_level = std::move(next_level);
     }
     comp_list.insert(comp_list.end(), std::make_move_iterator(all_subcomps.begin()),
                      std::make_move_iterator(all_subcomps.end()));
