@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -32,9 +33,10 @@ class ThreadSafeEntityCache;
 /// `/components|apps|areas|functions/<id>` segment.
 struct EntitySegment {
   SovdEntityType type{SovdEntityType::UNKNOWN};
-  size_t id_pos{0};         ///< Offset of `<id>` in the path
-  size_t id_len{0};         ///< Length of `<id>`, never 0
-  bool has_subpath{false};  ///< `/<id>/...`: a resource of the entity, not its detail
+  size_t collection_pos{0};  ///< Offset of the `/` that starts `/<collection>/`
+  size_t id_pos{0};          ///< Offset of `<id>` in the path
+  size_t id_len{0};          ///< Length of `<id>`, never 0
+  bool has_subpath{false};   ///< `/<id>/...`: a resource of the entity, not its detail
 };
 
 /// The first entity segment of `path`, std::nullopt when there is none or its
@@ -66,7 +68,7 @@ inline std::optional<EntitySegment> locate_entity_segment(const std::string & pa
   if (id_len == 0) {
     return std::nullopt;
   }
-  return EntitySegment{best_type, id_pos, id_len, end != std::string::npos};
+  return EntitySegment{best_type, best, id_pos, id_len, end != std::string::npos};
 }
 
 /// `path` with the id of the entity segment `segment` replaced by `id`.
@@ -145,5 +147,27 @@ std::string served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType
 /// when one was renamed from that ID, else its Component.
 std::string served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
                              const std::string & member_id);
+
+/// True for a discovery route: an entity's detail (`/<collection>/<id>`) or one
+/// of the relationship collections discovery serves under it (`subareas`,
+/// `components`, `contains`, `subcomponents`, `hosts`, `depends-on`,
+/// `is-located-on`, `belongs-to`).
+bool is_discovery_route(const std::string & path);
+
+/// Rewrite a discovery response `peer` answered so that every entity it names
+/// is named by the ID this gateway serves it under (served_entity_id).
+///
+/// A peer describes its own tree in its own IDs, and an entity this gateway
+/// renamed on collision is something else here under the peer's ID: followed
+/// through this gateway, the peer's ID addresses the local entity that took
+/// its place. Rewritten are the `id` of every object that names its `type`
+/// (the detail itself, the items of a relationship collection), every entity
+/// URI - the self link, the resource collection links, the relationship
+/// links, relative or absolute - and the relationship IDs `x-medkit` carries
+/// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
+/// `component_id`, `hosts`). IDs nothing was renamed from are left as they are.
+///
+/// @return true when anything was rewritten
+bool rewrite_to_served_ids(nlohmann::json & body, const std::string & peer, const ThreadSafeEntityCache & cache);
 
 }  // namespace ros2_medkit_gateway
