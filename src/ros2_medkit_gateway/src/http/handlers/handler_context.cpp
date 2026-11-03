@@ -53,10 +53,12 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   EntityInfo info;
   info.id = entity_id;
 
-  // Helper: check routing table for remote entity metadata
-  auto apply_routing = [this](EntityInfo & ei) {
+  // Helper: check routing table for remote entity metadata. The table is keyed
+  // by id alone, so the entry counts only when the entity found here is that
+  // peer's contribution; a local entity sharing a routed id stays local.
+  auto apply_routing = [this](EntityInfo & ei, const auto & entity) {
     if (aggregation_mgr_) {
-      auto peer = aggregation_mgr_->find_peer_for_entity(ei.id);
+      auto peer = aggregation_mgr_->find_owning_peer(entity);
       if (peer) {
         ei.is_remote = true;
         ei.peer_name = *peer;
@@ -87,7 +89,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = component->fqn;
           info.id_field = "component_id";
           info.error_name = "Component";
-          apply_routing(info);
+          apply_routing(info, *component);
           return info;
         }
         break;
@@ -100,7 +102,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = fqn;
           info.id_field = "app_id";
           info.error_name = "App";
-          apply_routing(info);
+          apply_routing(info, *app);
           return info;
         }
         break;
@@ -112,7 +114,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = area->namespace_path;
           info.id_field = "area_id";
           info.error_name = "Area";
-          apply_routing(info);
+          apply_routing(info, *area);
           return info;
         }
         break;
@@ -124,7 +126,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = "";
           info.id_field = "function_id";
           info.error_name = "Function";
-          apply_routing(info);
+          apply_routing(info, *func);
           return info;
         }
         break;
@@ -148,7 +150,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = component->fqn;
     info.id_field = "component_id";
     info.error_name = "Component";
-    apply_routing(info);
+    apply_routing(info, *component);
     return info;
   }
 
@@ -160,7 +162,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = fqn;
     info.id_field = "app_id";
     info.error_name = "App";
-    apply_routing(info);
+    apply_routing(info, *app);
     return info;
   }
 
@@ -171,7 +173,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = area->namespace_path;
     info.id_field = "area_id";
     info.error_name = "Area";
-    apply_routing(info);
+    apply_routing(info, *area);
     return info;
   }
 
@@ -182,7 +184,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = "";
     info.id_field = "function_id";
     info.error_name = "Function";
-    apply_routing(info);
+    apply_routing(info, *func);
     return info;
   }
 
@@ -363,21 +365,25 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   if (aggregation_mgr_ == nullptr) {
     return MemberDispatch::kServeLocally;
   }
-  auto peer = aggregation_mgr_->find_peer_for_entity(member_id);
-  if (!peer) {
-    return MemberDispatch::kServeLocally;
-  }
 
   // Only an App or a Component can be addressed on the peer; those are the two
   // collections a resource route exists under. A member that is neither names
-  // nothing this gateway can re-address, so the local path answers for it.
+  // nothing this gateway can re-address, so the local path answers for it. The
+  // owner is read off the member found, not off its id alone, so a local member
+  // whose id a peer's entity also routes under stays local.
   const auto & cache = services_.entity_cache();
   std::string collection;
-  if (cache.get_app(member_id)) {
+  std::optional<std::string> peer;
+  if (auto app = cache.get_app(member_id)) {
     collection = "apps";
-  } else if (cache.get_component(member_id)) {
+    peer = aggregation_mgr_->find_owning_peer(*app);
+  } else if (auto component = cache.get_component(member_id)) {
     collection = "components";
+    peer = aggregation_mgr_->find_owning_peer(*component);
   } else {
+    return MemberDispatch::kServeLocally;
+  }
+  if (!peer) {
     return MemberDispatch::kServeLocally;
   }
 

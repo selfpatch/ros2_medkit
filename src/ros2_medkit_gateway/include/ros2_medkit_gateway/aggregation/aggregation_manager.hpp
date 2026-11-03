@@ -322,6 +322,27 @@ class AggregationManager {
   std::optional<std::string> find_peer_for_entity(const std::string & entity_id) const;
 
   /**
+   * @brief The peer a request for an entity this gateway holds is forwarded to.
+   *
+   * The routing table is keyed by id alone, so an entry decides only for the
+   * entity that peer contributed: its own declaration (`source` is
+   * `peer:<name>`) or a merge it took part in (`contributors` names it). An
+   * entity of another type, or a local one, that happens to share a routed id
+   * is served here. Every caller that is about to forward a request for an
+   * entity it looked up goes through this rather than find_peer_for_entity.
+   *
+   * @return Peer name, or std::nullopt when the entity is served locally
+   */
+  std::optional<std::string> find_owning_peer(const std::string & entity_id, const std::string & source,
+                                              const std::vector<std::string> & contributors) const;
+
+  /// find_owning_peer for a discovered entity (Area, Component, App, Function).
+  template <class Entity>
+  std::optional<std::string> find_owning_peer(const Entity & entity) const {
+    return find_owning_peer(entity.id, entity.source, entity.contributors);
+  }
+
+  /**
    * @brief The id this gateway uses for a member `peer_name` calls `member_id`.
    *
    * An App whose id collides with a local one is merged under `<peer>__<id>`,

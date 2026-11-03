@@ -423,8 +423,9 @@ class HandlerContextForwardingTest : public ::testing::Test {
     ASSERT_NE(suite_node_, nullptr);
 
     // Seed the entity cache with a local component and a "remote" component.
-    // The "remote" component is just a normal component in the cache; the routing
-    // table in the AggregationManager is what marks it as remote.
+    // The "remote" entities carry the provenance the merge gives a peer's
+    // entity; the routing table in the AggregationManager is what marks them as
+    // remote, and it counts only for an entity that peer contributed.
     Component local_comp;
     local_comp.id = "local_ecu";
     local_comp.name = "Local ECU";
@@ -436,11 +437,15 @@ class HandlerContextForwardingTest : public ::testing::Test {
     remote_comp.name = "Remote Sensor";
     remote_comp.namespace_path = "/remote";
     remote_comp.fqn = "/remote/remote_sensor";
+    remote_comp.source = "peer:peer_subsystem";
+    remote_comp.contributors = {"peer:peer_subsystem"};
 
     App remote_app;
     remote_app.id = "remote_driver";
     remote_app.name = "Remote Driver";
     remote_app.component_id = "remote_sensor";
+    remote_app.source = "peer:peer_subsystem";
+    remote_app.contributors = {"peer:peer_subsystem"};
 
     auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
     cache.update_all({}, {local_comp, remote_comp}, {remote_app}, {});
