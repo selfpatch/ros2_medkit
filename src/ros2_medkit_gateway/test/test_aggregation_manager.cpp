@@ -383,67 +383,64 @@ TEST(AggregationManager, routing_table_update_and_find) {
   EXPECT_FALSE(manager.find_peer_for_entity("unknown_entity").has_value());
 }
 
-TEST(AggregationManager, has_peer_contributors_covers_routing_and_merged_entities) {
+TEST(AggregationManager, has_peer_contributors_covers_routed_and_merged_entities) {
   auto config = make_config(0);
   AggregationManager manager(config);
 
   // Initially no contributions known - everything is "local-only".
-  EXPECT_FALSE(manager.has_peer_contributors("anything"));
+  EXPECT_FALSE(manager.has_peer_contributors(SovdEntityType::COMPONENT, "anything"));
 
-  // Routed leaf: entry in routing table means the entity lives on a peer,
-  // which implies it has a peer contributor.
-  std::unordered_map<std::string, std::string> routing;
-  routing["remote_leaf"] = "peer_x";
-  manager.update_routing_table(routing);
-  EXPECT_TRUE(manager.has_peer_contributors("remote_leaf"));
+  // Routed leaf: the merge names the peer it is forwarded to among the
+  // entity's contributors. Merged / hierarchical: no routing entry, but the
+  // peers are contributors all the same. Without this signal the fan-out gate
+  // would treat aggregated Areas/Functions/parent Components as local-only.
+  AggregationManager::PeerContributors contributors;
+  contributors.components["remote_leaf"] = {"peer_x"};
+  contributors.areas["merged_area"] = {"peer_a", "peer_b"};
+  contributors.components["hierarchical_parent"] = {"peer_b"};
+  manager.update_peer_contributors(contributors);
+  EXPECT_TRUE(manager.has_peer_contributors(SovdEntityType::COMPONENT, "remote_leaf"));
+  EXPECT_TRUE(manager.has_peer_contributors(SovdEntityType::AREA, "merged_area"));
+  EXPECT_TRUE(manager.has_peer_contributors(SovdEntityType::COMPONENT, "hierarchical_parent"));
 
-  // Merged / hierarchical: no routing entry, but gateway tracks peer
-  // contributions separately. Without this signal the fan-out gate would
-  // treat aggregated Areas/Functions/parent Components as local-only.
-  manager.update_peer_contributors({
-      {"merged_area", {"peer_a", "peer_b"}},
-      {"hierarchical_parent", {"peer_b"}},
-  });
-  EXPECT_TRUE(manager.has_peer_contributors("merged_area"));
-  EXPECT_TRUE(manager.has_peer_contributors("hierarchical_parent"));
+  // Still false for genuinely local entities (not in any map).
+  EXPECT_FALSE(manager.has_peer_contributors(SovdEntityType::APP, "local_only"));
 
-  // Still false for genuinely local entities (not in either map).
-  EXPECT_FALSE(manager.has_peer_contributors("local_only"));
-
-  // Replacing the contributor map drops entries no longer reported.
-  manager.update_peer_contributors({{"merged_area", {"peer_a"}}});
-  EXPECT_TRUE(manager.has_peer_contributors("merged_area"));
-  EXPECT_FALSE(manager.has_peer_contributors("hierarchical_parent"));
-  // Routing table is independent and still applies.
-  EXPECT_TRUE(manager.has_peer_contributors("remote_leaf"));
+  // Replacing the contributor maps drops entries no longer reported.
+  AggregationManager::PeerContributors replaced;
+  replaced.areas["merged_area"] = {"peer_a"};
+  manager.update_peer_contributors(replaced);
+  EXPECT_TRUE(manager.has_peer_contributors(SovdEntityType::AREA, "merged_area"));
+  EXPECT_FALSE(manager.has_peer_contributors(SovdEntityType::COMPONENT, "hierarchical_parent"));
+  // A routing entry alone names no contributor: the table is keyed by id and
+  // cannot tell which entity the id belongs to.
+  manager.update_routing_table({{"remote_leaf", "peer_x"}});
+  EXPECT_FALSE(manager.has_peer_contributors(SovdEntityType::COMPONENT, "remote_leaf"));
 }
 
-TEST(AggregationManager, get_peer_contributors_unions_routing_and_contributor_map) {
+TEST(AggregationManager, get_peer_contributors_reads_the_contributors_of_that_type) {
   auto config = make_config(0);
   AggregationManager manager(config);
 
   // Unknown entity: empty result.
-  EXPECT_TRUE(manager.get_peer_contributors("unknown").empty());
+  EXPECT_TRUE(manager.get_peer_contributors(SovdEntityType::APP, "unknown").empty());
 
-  // Routed-leaf only: single peer from routing table.
+  // Routed leaf: the peer it is forwarded to comes from its contributors.
+  // Merged (not in routing table): every contributing peer, in order.
+  AggregationManager::PeerContributors contributors;
+  contributors.apps["routed_leaf"] = {"peer_x"};
+  contributors.functions["merged"] = {"peer_a", "peer_b"};
   manager.update_routing_table({{"routed_leaf", "peer_x"}});
-  EXPECT_EQ(manager.get_peer_contributors("routed_leaf"), std::vector<std::string>{"peer_x"});
-
-  // Merged-only (not in routing table): peers come from contributor map.
-  manager.update_peer_contributors({{"merged", {"peer_a", "peer_b"}}});
-  auto merged_peers = manager.get_peer_contributors("merged");
+  manager.update_peer_contributors(contributors);
+  EXPECT_EQ(manager.get_peer_contributors(SovdEntityType::APP, "routed_leaf"), std::vector<std::string>{"peer_x"});
+  auto merged_peers = manager.get_peer_contributors(SovdEntityType::FUNCTION, "merged");
   ASSERT_EQ(merged_peers.size(), 2u);
   EXPECT_EQ(merged_peers[0], "peer_a");
   EXPECT_EQ(merged_peers[1], "peer_b");
 
-  // Entity present in both: routing-table owner first, extra contributors
-  // appended without duplicates.
-  manager.update_routing_table({{"both", "peer_x"}});
-  manager.update_peer_contributors({{"both", {"peer_x", "peer_y"}}});
-  auto both_peers = manager.get_peer_contributors("both");
-  ASSERT_EQ(both_peers.size(), 2u);
-  EXPECT_EQ(both_peers[0], "peer_x");
-  EXPECT_EQ(both_peers[1], "peer_y");
+  // The lookup is per type: the same id under another type has no contributors.
+  EXPECT_TRUE(manager.get_peer_contributors(SovdEntityType::AREA, "merged").empty());
+  EXPECT_TRUE(manager.get_peer_contributors(SovdEntityType::SERVER, "routed_leaf").empty());
 }
 
 TEST(AggregationManager, local_member_id_reads_a_peers_own_name_through_the_collision_rename) {
@@ -476,14 +473,16 @@ TEST(AggregationManager, update_peer_contributors_drops_empty_entries) {
   auto config = make_config(0);
   AggregationManager manager(config);
 
-  manager.update_peer_contributors({
+  AggregationManager::PeerContributors contributors;
+  contributors.areas = {
       {"with_peers", {"peer_a"}}, {"empty_entry", {}},  // caller bug / stale placeholder - must be dropped
-  });
-  EXPECT_TRUE(manager.has_peer_contributors("with_peers"));
+  };
+  manager.update_peer_contributors(contributors);
+  EXPECT_TRUE(manager.has_peer_contributors(SovdEntityType::AREA, "with_peers"));
   // Empty list must not count as "has peer contributors" - otherwise the
   // fan-out gate would skip fan-out with no contributor to fall back on.
-  EXPECT_FALSE(manager.has_peer_contributors("empty_entry"));
-  EXPECT_TRUE(manager.get_peer_contributors("empty_entry").empty());
+  EXPECT_FALSE(manager.has_peer_contributors(SovdEntityType::AREA, "empty_entry"));
+  EXPECT_TRUE(manager.get_peer_contributors(SovdEntityType::AREA, "empty_entry").empty());
 }
 
 TEST(AggregationManager, routing_table_replaces_on_update) {

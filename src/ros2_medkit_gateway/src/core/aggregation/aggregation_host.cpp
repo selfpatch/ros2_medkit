@@ -135,13 +135,14 @@ AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> &
   manager_->update_routing_table(routing_table);
   manager_->set_leaf_warnings(std::move(merged.leaf_warnings));
 
-  // Per-entity peer contributors: entity id -> names of the peers that host or contribute to it. This covers routed
-  // leaves (also in the routing table) and merged or hierarchical entities (areas, functions, parent components).
-  // Fan-out helpers use the map to ask only the peers that own the entity. EntityMerger writes "peer:<name>"
-  // entries; anything else, including "local", is ignored.
-  std::unordered_map<std::string, std::vector<std::string>> peer_contributors;
+  // Per-entity peer contributors, per entity type: entity id -> names of the peers that host or contribute to it.
+  // This covers routed leaves (the merge names the peer they are forwarded to) and merged or hierarchical entities
+  // (areas, functions, parent components). Fan-out helpers use the maps to ask only the peers that own the entity
+  // the request names, which is why they are kept per type: an App and an Area can share an id. EntityMerger writes
+  // "peer:<name>" entries; anything else, including "local", is ignored.
+  AggregationManager::PeerContributors peer_contributors;
   static constexpr std::string_view kPeerPrefix = "peer:";
-  auto collect_contributors = [&peer_contributors](const auto & entities) {
+  auto collect_contributors = [](const auto & entities, auto & out) {
     for (const auto & e : entities) {
       for (const auto & c : e.contributors) {
         if (c.rfind(kPeerPrefix, 0) != 0) {
@@ -151,17 +152,17 @@ AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> &
         if (peer_name.empty()) {
           continue;
         }
-        auto & list = peer_contributors[e.id];
+        auto & list = out[e.id];
         if (std::find(list.begin(), list.end(), peer_name) == list.end()) {
           list.push_back(std::move(peer_name));
         }
       }
     }
   };
-  collect_contributors(areas);
-  collect_contributors(components);
-  collect_contributors(apps);
-  collect_contributors(functions);
+  collect_contributors(areas, peer_contributors.areas);
+  collect_contributors(components, peer_contributors.components);
+  collect_contributors(apps, peer_contributors.apps);
+  collect_contributors(functions, peer_contributors.functions);
   manager_->update_peer_contributors(std::move(peer_contributors));
   return routing_table;
 }
