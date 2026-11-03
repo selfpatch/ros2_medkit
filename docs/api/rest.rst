@@ -3904,7 +3904,8 @@ why, one entry per name, with ``reason`` one of:
      - The peer's body passed the peer-response size limit.
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
-       promises.
+       promises, including a body that nests arrays and objects more than 64
+       levels deep.
    * - ``too-deep``
      - Global ``GET /faults`` only. The request had already passed through 16
        gateways, so this gateway did not ask the peer.

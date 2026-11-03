@@ -403,6 +403,13 @@ classification pass over the full Component set:
   collections (data, faults, operations and the rest) are passed through as
   the peer sent them.
 
+  The body comes from the peer, so the walk is bounded: a body nested deeper
+  than ``kMaxPeerJsonDepth`` (64) levels is judged on its text before it is
+  parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming the
+  depth). It is not passed through untranslated, which would present the
+  peer's IDs as this gateway's, and it is never translated in part. No
+  discovery response nests anywhere near that deep.
+
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for
 entities whose runtime state lives on the peer: remote-only Areas and
@@ -878,7 +885,8 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 
 ``PeerClient::fetch_entities()`` reads a peer over several requests and either
 describes it whole or reports failure: a dead connection, a status a route has
-no other meaning for, an oversized body or unparsable JSON on any of them fails
+no other meaning for, an oversized body, a body nested deeper than
+``kMaxPeerJsonDepth`` (64) levels or unparsable JSON on any of them fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,

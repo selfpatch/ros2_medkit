@@ -546,7 +546,7 @@ struct SubResponse {
  * @brief True for a SOVD error body carrying the ``not-responding`` code.
  */
 bool says_not_responding(const std::string & body) {
-  if (body.size() > MAX_PEER_RESPONSE_SIZE) {
+  if (body.size() > MAX_PEER_RESPONSE_SIZE || json_nesting_exceeds(body)) {
     return false;
   }
   auto parsed = nlohmann::json::parse(body, nullptr, false);
@@ -583,6 +583,11 @@ SubResponse read_sub_response(const httplib::Result & result, const std::string 
   }
   if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
     out.error = "Response from peer '" + peer_name + "' for " + path + " exceeds size limit";
+    return out;
+  }
+  if (json_nesting_exceeds(result->body)) {
+    out.error = "Response from peer '" + peer_name + "' for " + path + " nests deeper than " +
+                std::to_string(kMaxPeerJsonDepth) + " levels";
     return out;
   }
   auto parsed = nlohmann::json::parse(result->body, nullptr, false);
@@ -794,7 +799,7 @@ void PeerClient::check_health() {
   auto result = client_->Get(std::string(API_PREFIX) + "/health", headers);
   const bool healthy = result && result->status == 200;
   std::string instance_id;
-  if (healthy) {
+  if (healthy && !json_nesting_exceeds(result->body)) {
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();
@@ -911,10 +916,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
         }
       }
       if (entities.areas.size() + all_subareas.size() > MAX_ENTITIES_PER_COLLECTION) {
-        return tl::unexpected<std::string>("Peer '" + name_ + "' returned " +
-                                           std::to_string(entities.areas.size() + all_subareas.size()) +
-                                           " areas and subareas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) +
-                                           ")");
+        return tl::unexpected<std::string>(
+            "Peer '" + name_ + "' returned " + std::to_string(entities.areas.size() + all_subareas.size()) +
+            " areas and subareas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
       }
       area_level = std::move(next_level);
     }
@@ -1021,10 +1025,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
         }
       }
       if (comp_list.size() + all_subcomps.size() > MAX_ENTITIES_PER_COLLECTION) {
-        return tl::unexpected<std::string>("Peer '" + name_ + "' returned " +
-                                           std::to_string(comp_list.size() + all_subcomps.size()) +
-                                           " components and subcomponents (max " +
-                                           std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+        return tl::unexpected<std::string>(
+            "Peer '" + name_ + "' returned " + std::to_string(comp_list.size() + all_subcomps.size()) +
+            " components and subcomponents (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
       }
       component_level = std::move(next_level);
     }
@@ -1371,7 +1374,7 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
   // as "nothing from this peer", not as a call that failed.
   auto status_failure = [&](int status, const std::string & body) {
     auto kind = PeerFailureKind::kErrorStatus;
-    if (status == 404) {
+    if (status == 404 && !json_nesting_exceeds(body)) {
       auto error = nlohmann::json::parse(body, nullptr, false);
       if (error.is_object() && string_at(error, "error_code") == ERR_ENTITY_NOT_FOUND) {
         kind = PeerFailureKind::kEntityNotFound;
@@ -1408,6 +1411,14 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     accumulated_body = std::move(result->body);
   }
 
+  // The caller copies, merges and serializes what comes back, all of which
+  // recurse once per level of nesting: a body nested past the limit is not
+  // the JSON any route promises, and is refused before it is parsed.
+  if (json_nesting_exceeds(accumulated_body)) {
+    return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,
+                                    "Response from peer '" + name_ + "' for " + method + " " + path +
+                                        " nests deeper than " + std::to_string(kMaxPeerJsonDepth) + " levels"});
+  }
   auto parsed = nlohmann::json::parse(accumulated_body, nullptr, false);
   if (parsed.is_discarded()) {
     return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,

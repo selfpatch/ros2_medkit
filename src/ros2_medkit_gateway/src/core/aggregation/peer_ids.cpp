@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 namespace ros2_medkit_gateway {
@@ -102,75 +103,112 @@ bool rewrite_uri(nlohmann::json & value, const std::string & peer, const ThreadS
   return true;
 }
 
-bool rewrite_node(nlohmann::json & node, const std::string & peer, const ThreadSafeEntityCache & cache);
+/// The walk rewrite_to_served_ids makes over a body. It descends at most
+/// kMaxPeerJsonDepth levels; a deeper body stops the walk and is reported as
+/// too deep, never as rewritten in part.
+class ServedIdWalk {
+ public:
+  ServedIdWalk(const std::string & peer, const ThreadSafeEntityCache & cache) : peer_(peer), cache_(cache) {
+  }
 
-/// The relationship IDs an `x-medkit` block carries, then anything else in it.
-bool rewrite_x_medkit(nlohmann::json & xm, const std::string & peer, const ThreadSafeEntityCache & cache) {
-  bool changed = false;
-  for (auto it = xm.begin(); it != xm.end(); ++it) {
-    const auto & key = it.key();
-    if (key == "parent_area_id" || key == "area") {
-      changed = rewrite_id(it.value(), SovdEntityType::AREA, peer, cache) || changed;
-    } else if (key == "parentComponentId" || key == "component_id") {
-      changed = rewrite_id(it.value(), SovdEntityType::COMPONENT, peer, cache) || changed;
-    } else if (key == "dependsOn") {
-      changed = rewrite_ids(it.value(), SovdEntityType::COMPONENT, peer, cache) || changed;
-    } else if (key == "hosts") {
-      if (it.value().is_array()) {
+  ServedIdRewrite run(nlohmann::json & body) {
+    node(body, 0);
+    if (too_deep_) {
+      return ServedIdRewrite::kTooDeep;
+    }
+    return changed_ ? ServedIdRewrite::kRewritten : ServedIdRewrite::kUnchanged;
+  }
+
+ private:
+  /// True, and the walk over, when `depth` is past the bound.
+  bool past_bound(size_t depth) {
+    if (depth >= kMaxPeerJsonDepth) {
+      too_deep_ = true;
+    }
+    return too_deep_;
+  }
+
+  void id(nlohmann::json & value, SovdEntityType type) {
+    changed_ = rewrite_id(value, type, peer_, cache_) || changed_;
+  }
+
+  /// The relationship IDs an `x-medkit` block carries, then anything else in it.
+  void x_medkit(nlohmann::json & xm, size_t depth) {
+    if (past_bound(depth)) {
+      return;
+    }
+    for (auto it = xm.begin(); it != xm.end() && !too_deep_; ++it) {
+      const auto & key = it.key();
+      if (key == "parent_area_id" || key == "area") {
+        id(it.value(), SovdEntityType::AREA);
+      } else if (key == "parentComponentId" || key == "component_id") {
+        id(it.value(), SovdEntityType::COMPONENT);
+      } else if (key == "dependsOn") {
+        changed_ = rewrite_ids(it.value(), SovdEntityType::COMPONENT, peer_, cache_) || changed_;
+      } else if (key == "hosts" && it.value().is_array()) {
         for (auto & host : it.value()) {
           if (host.is_string()) {
             const auto peer_id = host.get<std::string>();
-            auto served = served_member_id(cache, peer, peer_id);
+            auto served = served_member_id(cache_, peer_, peer_id);
             if (served != peer_id) {
               host = std::move(served);
-              changed = true;
+              changed_ = true;
             }
           }
         }
+      } else {
+        node(it.value(), depth + 1);
       }
-    } else {
-      changed = rewrite_node(it.value(), peer, cache) || changed;
     }
   }
-  return changed;
-}
 
-bool rewrite_node(nlohmann::json & node, const std::string & peer, const ThreadSafeEntityCache & cache) {
-  if (node.is_string()) {
-    return rewrite_uri(node, peer, cache);
-  }
-  bool changed = false;
-  if (node.is_array()) {
-    for (auto & item : node) {
-      changed = rewrite_node(item, peer, cache) || changed;
+  void node(nlohmann::json & value, size_t depth) {
+    if (value.is_string()) {
+      changed_ = rewrite_uri(value, peer_, cache_) || changed_;
+      return;
     }
-    return changed;
-  }
-  if (!node.is_object()) {
-    return false;
-  }
-  // The entity an object describes names its type: a detail, or an item of a
-  // relationship collection.
-  const auto type = node.find("type");
-  const auto id = node.find("id");
-  if (type != node.end() && type->is_string() && id != node.end()) {
-    const auto entity_type = entity_type_named(type->get<std::string>());
-    if (entity_type != SovdEntityType::UNKNOWN) {
-      changed = rewrite_id(*id, entity_type, peer, cache) || changed;
+    if (!value.is_array() && !value.is_object()) {
+      return;
+    }
+    if (past_bound(depth)) {
+      return;
+    }
+    if (value.is_array()) {
+      for (auto & item : value) {
+        node(item, depth + 1);
+        if (too_deep_) {
+          return;
+        }
+      }
+      return;
+    }
+    // The entity an object describes names its type: a detail, or an item of a
+    // relationship collection.
+    const auto type = value.find("type");
+    const auto entity_id = value.find("id");
+    if (type != value.end() && type->is_string() && entity_id != value.end()) {
+      const auto entity_type = entity_type_named(type->get<std::string>());
+      if (entity_type != SovdEntityType::UNKNOWN) {
+        id(*entity_id, entity_type);
+      }
+    }
+    for (auto it = value.begin(); it != value.end() && !too_deep_; ++it) {
+      if (it.key() == "id") {
+        continue;
+      }
+      if (it.key() == "x-medkit" && it.value().is_object()) {
+        x_medkit(it.value(), depth + 1);
+      } else {
+        node(it.value(), depth + 1);
+      }
     }
   }
-  for (auto it = node.begin(); it != node.end(); ++it) {
-    if (it.key() == "id") {
-      continue;
-    }
-    if (it.key() == "x-medkit" && it.value().is_object()) {
-      changed = rewrite_x_medkit(it.value(), peer, cache) || changed;
-    } else {
-      changed = rewrite_node(it.value(), peer, cache) || changed;
-    }
-  }
-  return changed;
-}
+
+  const std::string & peer_;
+  const ThreadSafeEntityCache & cache_;
+  bool changed_{false};
+  bool too_deep_{false};
+};
 
 }  // namespace
 
@@ -234,11 +272,12 @@ bool is_discovery_route(const std::string & path) {
   return std::find(kRelations.begin(), kRelations.end(), relation) != kRelations.end();
 }
 
-bool rewrite_to_served_ids(nlohmann::json & body, const std::string & peer, const ThreadSafeEntityCache & cache) {
+ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
+                                      const ThreadSafeEntityCache & cache) {
   if (peer.empty()) {
-    return false;
+    return ServedIdRewrite::kUnchanged;
   }
-  return rewrite_node(body, peer, cache);
+  return ServedIdWalk(peer, cache).run(body);
 }
 
 }  // namespace ros2_medkit_gateway

@@ -167,7 +167,17 @@ bool is_discovery_route(const std::string & path);
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
 /// `component_id`, `hosts`). IDs nothing was renamed from are left as they are.
 ///
-/// @return true when anything was rewritten
-bool rewrite_to_served_ids(nlohmann::json & body, const std::string & peer, const ThreadSafeEntityCache & cache);
+/// The walk descends at most kMaxPeerJsonDepth levels (see peer_json.hpp): the
+/// body comes from a peer, and a walk that followed it down without a bound
+/// would let a deeply nested answer overflow the stack. A deeper body returns
+/// kTooDeep with the walk abandoned and `body` partly rewritten; the caller
+/// must not serve it as a translated response.
+enum class ServedIdRewrite {
+  kUnchanged,  ///< Nothing in the body names a renamed entity.
+  kRewritten,  ///< Every renamed entity the body names is named by its served ID.
+  kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
+};
+ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
+                                      const ThreadSafeEntityCache & cache);
 
 }  // namespace ros2_medkit_gateway

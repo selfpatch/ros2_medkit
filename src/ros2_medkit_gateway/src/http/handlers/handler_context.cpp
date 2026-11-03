@@ -18,6 +18,7 @@
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -272,6 +273,21 @@ std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
   return path;
 }
 
+/// Replace a forwarded discovery response with a 502 naming why it is not
+/// served. The peer's headers that describe its body go with it.
+void refuse_forwarded_discovery(httplib::Response & res, const std::string & peer) {
+  for (const char * header : {"ETag", "Cache-Control", "Last-Modified", "Location", "X-Medkit-Local-Only"}) {
+    res.headers.erase(header);
+  }
+  json error_body;
+  error_body["error_code"] = ERR_VENDOR_ERROR;
+  error_body["vendor_code"] = "x-medkit-peer-unavailable";
+  error_body["message"] = "Discovery response from peer '" + peer + "' nests deeper than " +
+                          std::to_string(kMaxPeerJsonDepth) + " levels and is not served";
+  res.status = 502;
+  res.set_content(error_body.dump(), "application/json");
+}
+
 /// A discovery response `peer` answered for a forwarded GET, with every entity
 /// it names named by the id this gateway serves it under. The peer describes
 /// its own tree in its own ids, and an entity this gateway renamed on
@@ -279,14 +295,34 @@ std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
 /// resource links and relationships would lead a client following them to the
 /// wrong entity. A response whose body changes loses the peer's ETag, which
 /// describes the body the peer sent.
+///
+/// A body nested deeper than kMaxPeerJsonDepth is refused (502), not passed
+/// through: it cannot be walked safely, and served untranslated it would name
+/// entities by the peer's ids as if they were this gateway's, which is the
+/// answer the rewrite exists to prevent. No discovery response nests that deep,
+/// so only a broken or hostile peer is refused. The text is judged before it is
+/// parsed, so no deep value is built.
 void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer, httplib::Response & res,
                                  const ThreadSafeEntityCache & cache) {
   if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
     return;
   }
-  auto body = nlohmann::json::parse(res.body, nullptr, false);
-  if (body.is_discarded() || !rewrite_to_served_ids(body, peer, cache)) {
+  if (json_nesting_exceeds(res.body)) {
+    refuse_forwarded_discovery(res, peer);
     return;
+  }
+  auto body = nlohmann::json::parse(res.body, nullptr, false);
+  if (body.is_discarded()) {
+    return;
+  }
+  switch (rewrite_to_served_ids(body, peer, cache)) {
+    case ServedIdRewrite::kUnchanged:
+      return;
+    case ServedIdRewrite::kTooDeep:
+      refuse_forwarded_discovery(res, peer);
+      return;
+    case ServedIdRewrite::kRewritten:
+      break;
   }
   auto content_type = res.get_header_value("Content-Type");
   res.set_content(body.dump(), content_type.empty() ? "application/json" : content_type);

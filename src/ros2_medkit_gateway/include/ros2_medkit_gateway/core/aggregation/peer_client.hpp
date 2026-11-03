@@ -27,6 +27,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"

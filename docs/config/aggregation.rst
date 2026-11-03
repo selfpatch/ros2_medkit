@@ -547,8 +547,8 @@ A cache refresh reads a peer over several requests: the four entity lists, the
 nested ``subareas`` and ``subcomponents`` collections, the per-entity detail
 that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
-the route has no other meaning for, an oversized body, unparsable JSON - the
-refresh for that peer is discarded whole. A partial picture is never published
+the route has no other meaning for, an oversized body, a body nested more than
+64 levels deep, unparsable JSON - the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 
 What clients see then depends on the peer's health check:
