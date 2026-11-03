@@ -774,7 +774,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // means the peer is not answering, and the tree still knows what it declared.
   const bool fan_out_suppressed = raw_req.has_header("X-Medkit-No-Fan-Out");
   auto * agg = ctx_.aggregation_manager();
-  auto fan_out = fan_out_collection<dto::OperationItem>(agg, raw_req);
+  auto fan_out = fan_out_collection<dto::OperationItem>(agg, raw_req, &entity_info.peer_targets);
 
   // A peer names its members as its own tree names them, and an App whose id
   // collided with a local one was merged under `<peer>__<id>` - so the name the

@@ -432,19 +432,22 @@ its own contributor list.
 Request Routing
 ---------------
 
-When a request arrives for an entity, ``HandlerContext`` checks the routing
-table. If the entity is local, processing continues normally. If the entity
-maps to a peer, the request is forwarded transparently.
+When a request arrives for an entity, ``HandlerContext`` looks the entity up
+and reads where it is answered off the entity itself. If the entity is local,
+processing continues normally. If it is routed to a peer, the request is
+forwarded transparently.
 
-The routing table is keyed by ID, and the entity a request names is resolved
-by type, so the two are checked against each other: a routing entry counts
-only when the entity found is that peer's contribution - its ``source`` is
-``peer:<name>`` or its ``contributors`` name the peer
-(``AggregationManager::find_owning_peer``). The merge already keeps a remote
-entity out of any ID a local entity holds; this check is what keeps a local
-entity local should the table and the cache ever disagree, for instance while a
-refresh has published the new table and not yet the entities. Member dispatch
-and the configuration reset read the owner the same way.
+The merge builds the routing table and records each entry on the entity it
+belongs to, as ``routed_to``: an Area, App or Function when the peer declared
+it alone (its ``source`` is ``peer:<name>``), a Component also when the peer is
+merged into it. ``AggregationManager::find_owning_peer`` reads ``routed_to``
+and nothing else. The routing table is keyed by ID and published separately
+from the entity cache, so a request that consulted it could pair an entity
+from one refresh with a routing entry from the next, or with an entry that
+belongs to another entity sharing the ID. Read off the entity, the decision is
+always that entity's, from the same cache generation. Member dispatch and the
+configuration reset read the owner the same way. The table itself is still
+published (``find_peer_for_entity``) for code that runs inside the refresh.
 
 .. plantuml::
    :caption: Request Routing - Local vs Remote
@@ -459,7 +462,7 @@ and the configuration reset read the owner the same way.
 
    Client -> primary : GET /api/v1/components/robot_arm__lidar/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : Look up "robot_arm__lidar" in routing table
+   ctx -> ctx : Look up Component "robot_arm__lidar", read its routed_to
    ctx --> primary : entity found, peer = "robot_arm"
 
    primary -> agg : forward_request("robot_arm", req, res)
@@ -476,7 +479,7 @@ and the configuration reset read the owner the same way.
 
    Client -> primary : GET /api/v1/apps/my_node/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : "my_node" not in routing table
+   ctx -> ctx : App "my_node" has no routed_to
    ctx --> primary : entity found, local
 
    primary -> primary : Process locally via DataAccessManager
@@ -732,18 +735,22 @@ The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.
 
 **Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
-and ``fan_out_collection()`` read the entity's type off the path's collection
-segment and ask ``AggregationManager::get_peer_contributors(type, id)`` for the
-peers that host or contribute to that entity, and pass the list as a filter to
-``fan_out_get()``. Requests reach only those peers; non-contributors are never
-queried so they cannot appear in ``failed_peers``.
+and ``fan_out_collection()`` ask only the peers the handler passes them: the
+``EntityInfo::peer_targets`` of the entity the request was validated against,
+which ``HandlerContext::get_entity_info`` reads off that cached entity's
+``contributors`` (``peer_targets_of``, stripping the ``"peer:"`` prefix). The
+list is passed as a filter to ``fan_out_get()``. Requests reach only those
+peers; non-contributors are never queried so they cannot appear in
+``failed_peers``. The ROS 2 fault listing (``list_entity_faults``) reads the
+entity's type and contributors off one copy of the entity the same way.
 
-The contributors are kept per entity type (``PeerContributors``).
-``AggregationHost::merge_peers`` rebuilds them after every discovery cycle by
-walking ``contributors`` on the merged Areas/Components/Apps/Functions,
-stripping the ``"peer:"`` prefix and accumulating peer names per id within each
-type. That covers remote leaves (the merge names the peer a routed entity is
-forwarded to), collision-renamed peer-only entities, and merged
+Read off the entity, the targets come from the same cache generation the
+request was validated against. A table rebuilt by the merge and published
+before the cache would, for the length of a refresh, name the peers of the
+next generation's entity for this generation's - including a peer asked
+about, and handed the caller's credential for, an entity that is still local
+here. The contributors cover remote leaves (the merge names the peer a routed
+entity is forwarded to), collision-renamed peer-only entities, and merged
 Areas/Functions and hierarchical parent Components, which are deliberately
 absent from the routing table. The id-keyed routing table is not consulted: an
 App and an Area can share an id, and the peer contributing one has nothing to

@@ -494,7 +494,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
     // knows what it declared.
     const bool fan_out_suppressed = raw_req.has_header("X-Medkit-No-Fan-Out");
     auto * agg = ctx_.aggregation_manager();
-    auto fan_out = fan_out_collection<dto::DataItem>(agg, raw_req);
+    auto fan_out = fan_out_collection<dto::DataItem>(agg, raw_req, &entity_info.peer_targets);
 
     // The ROS topic an item names. Empty when the item names none, which is
     // what a peer's malformed item - or a plugin's data point - looks like.

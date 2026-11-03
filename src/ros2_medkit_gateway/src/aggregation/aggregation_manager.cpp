@@ -616,10 +616,10 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     // folded in. The merger keeps the peer's entities out of those IDs unless the
     // two are the same entity merged by design. The peer's own IDs are passed too,
     // so an ID generated for one of its entities is never one it declares.
-    EntityMerger merger(
-        pfr.peer_name, EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
-        EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
-                                  pfr.entities.functions));
+    EntityMerger merger(pfr.peer_name,
+                        EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
+                        EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
+                                                  pfr.entities.functions));
     // Areas, then Components, then Apps, then Functions: each step reads the
     // renames of the ones before it to keep the peer's references pointing at
     // the IDs its entities are served under.
@@ -728,6 +728,34 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     }
   }
 
+  // Each entity carries its own routing decision, so a request reads it off
+  // the entity it found, from the same cache generation, and never off a table
+  // a later merge has already replaced. An entry is the entity's only when the
+  // entity is that peer's: an Area, App or Function is routed when the peer
+  // declared it alone (its `source`), a Component also when the peer is merged
+  // into it - the classification above leaves Component entries only for
+  // Components. Set on every entity, so nothing from a previous merge survives.
+  auto stamp_routes = [&merged](auto & entities, bool merged_contributor_routes) {
+    for (auto & entity : entities) {
+      entity.routed_to.clear();
+      auto it = merged.routing_table.find(entity.id);
+      if (it == merged.routing_table.end()) {
+        continue;
+      }
+      const std::string tag = "peer:" + it->second;
+      const bool own = entity.source == tag ||
+                       (merged_contributor_routes && std::find(entity.contributors.begin(), entity.contributors.end(),
+                                                               tag) != entity.contributors.end());
+      if (own) {
+        entity.routed_to = it->second;
+      }
+    }
+  };
+  stamp_routes(merged.areas, false);
+  stamp_routes(merged.components, true);
+  stamp_routes(merged.apps, false);
+  stamp_routes(merged.functions, false);
+
   return merged;
 }
 
@@ -755,20 +783,6 @@ std::optional<std::string> AggregationManager::find_peer_for_entity(const std::s
   return std::nullopt;
 }
 
-std::optional<std::string> AggregationManager::find_owning_peer(const std::string & entity_id,
-                                                                const std::string & source,
-                                                                const std::vector<std::string> & contributors) const {
-  auto peer = find_peer_for_entity(entity_id);
-  if (!peer) {
-    return std::nullopt;
-  }
-  const std::string tag = "peer:" + *peer;
-  if (source == tag || std::find(contributors.begin(), contributors.end(), tag) != contributors.end()) {
-    return peer;
-  }
-  return std::nullopt;
-}
-
 std::string AggregationManager::local_member_id(const std::string & peer_name, const std::string & member_id) const {
   if (peer_name.empty() || member_id.empty()) {
     return member_id;
@@ -780,61 +794,6 @@ std::string AggregationManager::local_member_id(const std::string & peer_name, c
   // entity whose id happens to read like this peer's prefix, and answering with
   // it would re-address the item to a gateway that never sent it.
   return (it != routing_table_.end() && it->second == peer_name) ? prefixed : member_id;
-}
-
-namespace {
-
-/// The map in `contributors` that holds entities of `type`, or nullptr for a
-/// type that has none.
-template <class Contributors>
-auto * contributors_of(Contributors & contributors, SovdEntityType type) {
-  switch (type) {
-    case SovdEntityType::AREA:
-      return &contributors.areas;
-    case SovdEntityType::COMPONENT:
-      return &contributors.components;
-    case SovdEntityType::APP:
-      return &contributors.apps;
-    case SovdEntityType::FUNCTION:
-      return &contributors.functions;
-    case SovdEntityType::SERVER:
-    case SovdEntityType::UNKNOWN:
-      break;
-  }
-  return static_cast<decltype(&contributors.areas)>(nullptr);
-}
-
-}  // namespace
-
-void AggregationManager::update_peer_contributors(PeerContributors contributors) {
-  // Drop entries with empty contributor lists - they would be indistinguishable
-  // from "local-only" lookups and only waste space.
-  for (auto * map : {&contributors.areas, &contributors.components, &contributors.apps, &contributors.functions}) {
-    for (auto it = map->begin(); it != map->end();) {
-      if (it->second.empty()) {
-        it = map->erase(it);
-      } else {
-        ++it;
-      }
-    }
-  }
-  std::unique_lock<std::shared_mutex> lock(mutex_);
-  peer_contributors_ = std::move(contributors);
-}
-
-bool AggregationManager::has_peer_contributors(SovdEntityType type, const std::string & entity_id) const {
-  return !get_peer_contributors(type, entity_id).empty();
-}
-
-std::vector<std::string> AggregationManager::get_peer_contributors(SovdEntityType type,
-                                                                   const std::string & entity_id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  const auto * map = contributors_of(peer_contributors_, type);
-  if (map == nullptr) {
-    return {};
-  }
-  auto it = map->find(entity_id);
-  return it != map->end() ? it->second : std::vector<std::string>{};
 }
 
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {

@@ -439,6 +439,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
     remote_comp.fqn = "/remote/remote_sensor";
     remote_comp.source = "peer:peer_subsystem";
     remote_comp.contributors = {"peer:peer_subsystem"};
+    remote_comp.routed_to = "peer_subsystem";
 
     App remote_app;
     remote_app.id = "remote_driver";
@@ -446,6 +447,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
     remote_app.component_id = "remote_sensor";
     remote_app.source = "peer:peer_subsystem";
     remote_app.contributors = {"peer:peer_subsystem"};
+    remote_app.routed_to = "peer_subsystem";
 
     auto & cache = const_cast<ThreadSafeEntityCache &>(suite_node_->get_thread_safe_cache());
     cache.update_all({}, {local_comp, remote_comp}, {remote_app}, {});
@@ -460,11 +462,8 @@ class HandlerContextForwardingTest : public ::testing::Test {
     agg_config.peers.push_back(peer);
     agg_mgr_ = std::make_unique<AggregationManager>(agg_config);
 
-    // Set up routing table: remote_sensor and remote_driver are owned by peer_subsystem
-    std::unordered_map<std::string, std::string> routing;
-    routing["remote_sensor"] = "peer_subsystem";
-    routing["remote_driver"] = "peer_subsystem";
-    agg_mgr_->update_routing_table(routing);
+    // remote_sensor and remote_driver are routed to peer_subsystem: the merge
+    // records that on each entity (routed_to), which is what a request reads.
   }
 
   void TearDown() override {

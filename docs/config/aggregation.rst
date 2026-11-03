@@ -443,9 +443,10 @@ When aggregation is enabled, entities from peers are merged with local entities:
   another entity and is prefixed in turn.
 
 Requests for remote entities are transparently forwarded to the owning peer.
-The routing table maps entity IDs to peer names. An entry is followed only for
-the entity the peer contributed, so a local entity never takes the route of a
-peer entity that shares its ID.
+The routing table maps entity IDs to peer names, and the merge records each
+entry on the entity the peer contributed. A request reads it off the entity it
+looked up, so a local entity never takes the route of a peer entity that
+shares its ID, and the route always belongs to the same refresh as the entity.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because
