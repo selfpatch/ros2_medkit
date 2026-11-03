@@ -607,6 +607,23 @@ dead gateway as reachable. Retention never contradicts what a peer said - it
 only ever sets ``available`` to false, and it does so when the peer itself
 stopped answering, which already covers everything behind it.
 
+Peer Response Limits
+~~~~~~~~~~~~~~~~~~~~
+
+The body of a peer's answer is read no further than 10 MB, whatever its
+status, on the health check, the entity fetch of a refresh, a forwarded
+request and a fan-out. A body past that is an oversized body: the health
+check fails, the refresh for that peer is discarded, a forward answers
+``502`` and a fan-out names the peer ``too-large``.
+
+The limit covers the body and nothing else. The status line, the header
+fields, the chunk-size lines of a chunked body and the trailer fields are read
+by cpp-httplib before the limit applies, and they are not bounded: a peer that
+does not end them grows this gateway's memory for as long as it keeps sending.
+The SSE relay of a peer's event stream is not covered either: it reads the
+stream with its own client and no total limit, holds at most 1 MB of an event
+that has not ended, and drops the connection past that.
+
 .. _aggregation-breaking-changes:
 
 Breaking Changes (Entity Model Simplification)

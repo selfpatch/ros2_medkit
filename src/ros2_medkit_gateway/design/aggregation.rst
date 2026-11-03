@@ -1243,15 +1243,29 @@ gigabytes.
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
 
-All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``),
-whatever their status: the health check, every request of an entity fetch,
-forwarded requests and fan-out requests. The limit is enforced while the body
-arrives (``send_capped`` counts the bytes in its content receiver and stops
-the read at the limit), so a peer that sends more never has more than 10 MB of
-it buffered here. cpp-httplib's own calls read the whole body before they
-return it, which is why none of them is used against a peer. A response past
-the limit is rejected: a health check counts as failed, an entity fetch
-fails, a forward answers ``502`` and a fan-out names the peer ``too-large``.
+The body of every HTTP response from a peer is limited to 10 MB
+(``MAX_PEER_RESPONSE_SIZE``), whatever its status: the health check, every
+request of an entity fetch, forwarded requests and fan-out requests. The limit
+is enforced while the body arrives (``send_capped`` counts the bytes in its
+content receiver and stops the read at the limit), so a peer that sends more
+never has more than 10 MB of it buffered here. cpp-httplib's own calls read
+the whole body before they return it, which is why none of them is used
+against a peer. A response past the limit is rejected: a health check counts
+as failed, an entity fetch fails, a forward answers ``502`` and a fan-out
+names the peer ``too-large``.
+
+The limit covers the body and nothing else. The status line, the header
+fields, the chunk-size lines of a chunked body (with any chunk extension) and
+the trailer fields are read by cpp-httplib before the content receiver sees a
+byte, and they are not bounded: cpp-httplib 0.14 grows a line for as long as
+the peer sends it and keeps every header and trailer field it receives, so a
+peer that does not end them grows this gateway's memory for as long as it
+keeps sending.
+
+The SSE relay is not covered by the limit either. ``SSEStreamProxy`` reads a
+peer's event stream with its own cpp-httplib client and no total limit, since
+a stream has no end. It holds at most 1 MB of an event that has not ended
+(``kMaxSSEBufferSize``) and drops the connection past that.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~
