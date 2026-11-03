@@ -182,7 +182,8 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
     local_index[result[i].id] = i;
   }
 
-  std::vector<size_t> added_index;
+  // Entries holding dependencies read from the peer.
+  std::vector<size_t> renamed_refs_index;
   for (auto remote_func : remote) {
     // A host names the peer's own App or Component; a prefixed one is served under the prefixed ID. An App is
     // looked up first because that is what a Function host usually is.
@@ -215,6 +216,13 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
         }
       }
 
+      // A local declaration that names no dependencies takes the peer's. One
+      // that names some keeps them.
+      if (merged.depends_on.empty() && !remote_func.depends_on.empty()) {
+        merged.depends_on = remote_func.depends_on;
+        renamed_refs_index.push_back(it->second);
+      }
+
       append_contributor_unique(merged.contributors, peer_source());
 
       // Merged functions do NOT go into routing table
@@ -240,10 +248,11 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
     // Remote-only functions get a routing entry
     routing_table_[added.id] = peer_name_;
     result.push_back(added);
-    added_index.push_back(result.size() - 1);
+    renamed_refs_index.push_back(result.size() - 1);
   }
 
-  for (auto i : added_index) {
+  // Dependencies the peer named, by the IDs the Functions are served under.
+  for (auto i : renamed_refs_index) {
     apply_renames(result[i].depends_on, renames_.functions);
   }
 

@@ -26,7 +26,7 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/version-info` - SOVD version info (supported SOVD versions and base URIs)
 - `GET /api/v1/areas` - List all discovered areas (powertrain, chassis, body, root)
 - `GET /api/v1/areas/{area_id}` - Get area capabilities
-- `GET /api/v1/areas/{area_id}/subareas` - List sub-areas within an area
+- `GET /api/v1/areas/{area_id}/subareas` - List sub-areas within an area, each with its description and tags
 - `GET /api/v1/areas/{area_id}/contains` - List components contained in an area
 - `GET /api/v1/components` - List all discovered components across all areas
 - `GET /api/v1/components/{component_id}` - Get component capabilities

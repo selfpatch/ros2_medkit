@@ -273,7 +273,8 @@ classification pass over the full Component set:
 
 - **Functions**: Merge by ID, combining the ``hosts`` lists from both sides.
   If both gateways expose a ``navigation`` Function, the merged entity lists
-  hosts from both gateways. Same ownership semantics as Areas. A peer host that
+  hosts from both gateways, and a local declaration that names no
+  dependencies takes the peer's. Same ownership semantics as Areas. A peer host that
   names a peer App the App merge prefixed takes the prefixed id, so it cannot
   bind to the local App with the same id. The merge keeps the other hosts as
   the peer listed them. After the merge and the internal-node filter, the
@@ -862,7 +863,11 @@ from ``x-medkit.ros2.namespace``, a Component's node from
 ``x-medkit.ros2.node``, and a Function's translation id from the top-level
 ``translation_id``. ``x-medkit.description``, ``x-medkit.namespace``,
 ``x-medkit.fqn`` and ``translationId`` are still read when the served key is
-absent, for a peer that sends a field there.
+absent, for a peer that sends a field there. A subarea is read off the
+peer's ``/areas/{id}/subareas`` route, which serves its description and tags
+the way the top-level ``/areas`` list does. A Function's dependencies come from
+the ``_links["depends-on"]`` references its detail serves, each reduced to the
+Function id it names.
 
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
