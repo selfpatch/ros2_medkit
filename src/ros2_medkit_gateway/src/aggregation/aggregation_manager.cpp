@@ -783,19 +783,6 @@ std::optional<std::string> AggregationManager::find_peer_for_entity(const std::s
   return std::nullopt;
 }
 
-std::string AggregationManager::local_member_id(const std::string & peer_name, const std::string & member_id) const {
-  if (peer_name.empty() || member_id.empty()) {
-    return member_id;
-  }
-  const std::string prefixed = peer_name + EntityMerger::SEPARATOR + member_id;
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  auto it = routing_table_.find(prefixed);
-  // The routing entry has to belong to THIS peer. Another peer can own an
-  // entity whose id happens to read like this peer's prefix, and answering with
-  // it would re-address the item to a gateway that never sent it.
-  return (it != routing_table_.end() && it->second == peer_name) ? prefixed : member_id;
-}
-
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
 
@@ -845,21 +832,13 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
     return;
   }
 
-  // Strip peer prefix from entity ID in the path if present.
-  // When entity ID collision causes renaming (e.g., camera_driver -> peer_b__camera_driver),
-  // the peer only knows the entity by its original ID (camera_driver), so we must strip
-  // the prefix before forwarding.
-  // Anchor to path segment boundary: the prefix must appear right after '/' to avoid
-  // false matches inside other path segments (e.g., "v1" matching "/api/v1/").
-  std::string forwarded_path = target_path;
-  std::string prefix = peer_name + EntityMerger::SEPARATOR;
-  auto prefix_pos = forwarded_path.find(prefix);
-  if (prefix_pos != std::string::npos && prefix_pos > 0 && forwarded_path[prefix_pos - 1] == '/') {
-    forwarded_path.erase(prefix_pos, prefix.size());
-  }
-
+  // The path is sent as given. A caller that forwards a request for an entity
+  // this gateway renamed on collision names it by the id the peer knows it by,
+  // which only the rename the merge recorded on the entity can say: reading
+  // `<peer>__` off the path would also strip it from a peer's own entity whose
+  // id merely starts that way.
   httplib::Request modified_req = req;
-  modified_req.path = forwarded_path;
+  modified_req.path = target_path;
 
   peer->forward_request(modified_req, res);
 }

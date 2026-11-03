@@ -517,7 +517,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       const std::string peer_name = index < fan_out.item_peers.size() ? fan_out.item_peers[index] : std::string{};
       if (agg != nullptr && !peer_name.empty() && item.x_medkit.has_value() && item.x_medkit->member_ids.has_value()) {
         for (auto & member_id : *item.x_medkit->member_ids) {
-          member_id = agg->local_member_id(peer_name, member_id);
+          member_id = served_member_id(cache, peer_name, member_id);
         }
       }
       if (auto topic = topic_of(item); !topic.empty()) {

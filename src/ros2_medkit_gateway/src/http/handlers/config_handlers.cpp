@@ -879,8 +879,10 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
       reason += member;
       reason += "' is owned by gateway '";
       reason += *peer;
+      // That gateway knows the App by the id it was renamed from, if the merge
+      // renamed it.
       reason += "'. Reset it on that gateway, through its own /apps/";
-      reason += member;
+      reason += peer_entity_id(*app, *peer);
       reason += "/configurations route.";
 
       dto::ConfigurationDeleteResultItem entry;

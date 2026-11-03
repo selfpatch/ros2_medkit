@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -456,30 +457,38 @@ TEST(AggregationManager, peer_targets_read_the_entity_not_its_id) {
   EXPECT_EQ(peer_targets_of(renamed), (std::vector<PeerTarget>{{"peer_x", "shared"}}));
 }
 
-TEST(AggregationManager, local_member_id_reads_a_peers_own_name_through_the_collision_rename) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
+TEST(AggregationManager, served_member_id_reads_a_peers_own_name_through_the_recorded_rename) {
+  ThreadSafeEntityCache cache;
+  auto app = [](const std::string & id, const std::string & original_id, const std::string & peer) {
+    App a;
+    a.id = id;
+    a.original_id = original_id;
+    a.source = "peer:" + peer;
+    a.contributors = {"peer:" + peer};
+    return a;
+  };
 
   // A member nothing collided with keeps the name its peer uses.
-  manager.update_routing_table({{"pressure_sensor", "peer_a"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "pressure_sensor"), "pressure_sensor");
+  cache.update_all({}, {}, {app("pressure_sensor", "", "peer_a")}, {});
+  EXPECT_EQ(served_member_id(cache, "peer_a", "pressure_sensor"), "pressure_sensor");
 
   // A member whose id collided is merged under the prefixed id, and that is
   // the only name that addresses it here.
-  manager.update_routing_table({{"peer_a__shared_sensor", "peer_a"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "shared_sensor"), "peer_a__shared_sensor");
+  cache.update_all({}, {}, {app("peer_a__shared_sensor", "shared_sensor", "peer_a")}, {});
+  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), "peer_a__shared_sensor");
 
-  // The prefixed id has to be routed to the peer that sent the item. Another
-  // peer can own an entity whose id reads like this peer's prefix, and
-  // answering with it would re-address the item to a gateway that never sent
-  // it - here peer_b owns an entity literally called `peer_a__shared_sensor`,
-  // so peer_a's own uncollided `shared_sensor` must not be rewritten to it.
-  manager.update_routing_table({{"peer_a__shared_sensor", "peer_b"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "shared_sensor"), "shared_sensor");
+  // Only a recorded rename is reversed. Another peer can own an entity whose id
+  // reads like this peer's prefix - here peer_b owns one literally called
+  // `peer_a__shared_sensor` - and peer_a can own one itself that was never
+  // renamed; neither re-addresses peer_a's own uncollided `shared_sensor`.
+  cache.update_all({}, {}, {app("peer_a__shared_sensor", "", "peer_b")}, {});
+  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), "shared_sensor");
+  cache.update_all({}, {}, {app("peer_a__shared_sensor", "", "peer_a")}, {});
+  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), "shared_sensor");
 
   // An empty half names nothing to look up.
-  EXPECT_EQ(manager.local_member_id("", "shared_sensor"), "shared_sensor");
-  EXPECT_EQ(manager.local_member_id("peer_a", ""), "");
+  EXPECT_EQ(served_member_id(cache, "", "shared_sensor"), "shared_sensor");
+  EXPECT_EQ(served_member_id(cache, "peer_a", ""), "");
 }
 
 TEST(AggregationManager, peer_targets_skip_contributors_that_name_no_peer) {
@@ -545,10 +554,11 @@ TEST(AggregationManager, get_peer_url_returns_empty_for_unknown_peer) {
 // =============================================================================
 
 // @verifies REQ_INTEROP_003
-TEST(AggregationManager, forward_strips_peer_prefix_from_path) {
-  // This tests the path rewriting logic: when a collision-renamed entity
-  // (e.g., peer_0__camera_driver) is forwarded to the peer, the peer prefix
-  // must be stripped so the peer receives the original entity ID.
+TEST(AggregationManager, forward_sends_a_peer_prefixed_path_as_given) {
+  // The path is not rewritten here: a caller forwarding a request for an entity
+  // renamed on collision (e.g., peer_0__camera_driver) names it by the id the
+  // peer knows it by, from the rename recorded on the entity. A path that still
+  // carries the prefix is sent as it is, because it can be a peer's own id.
   auto config = make_config(1);
   AggregationManager manager(config);
 
@@ -558,10 +568,8 @@ TEST(AggregationManager, forward_strips_peer_prefix_from_path) {
   req.path = "/api/v1/apps/peer_0__camera_driver/data";
   httplib::Response res;
 
-  // The peer is unreachable, so we get 502. But the test verifies the path
-  // rewriting happened. The peer_client receives the stripped path.
-  // We verify the forward completes without crashing and returns 502
-  // (peer unreachable), not 404 (wrong entity ID).
+  // The peer is unreachable, so we get 502. We verify the forward completes
+  // without crashing and returns 502 (peer unreachable).
   manager.forward_request("peer_0", req, res);
 
   // The peer is unreachable, so we get 502 (not a routing error like 404)
@@ -585,9 +593,10 @@ TEST(AggregationManager, forward_preserves_path_without_prefix) {
   EXPECT_EQ(res.status, 502);
 }
 
-TEST(AggregationManager, forward_strips_only_matching_peer_prefix) {
-  // Verify that prefix stripping only removes the correct peer prefix,
-  // not an arbitrary occurrence of the separator.
+TEST(AggregationManager, forward_to_the_peer_a_path_prefix_names_sends_it_as_given) {
+  // Forwarding to the peer whose name the entity id starts with does not
+  // strip it either: whether `peer_1__` is a rename is recorded on the entity,
+  // not spelled in the path.
   auto config = make_config(2);
   AggregationManager manager(config);
 
@@ -934,10 +943,11 @@ TEST(AggregationManager, forward_to_target_path_addresses_the_path_the_caller_ch
   EXPECT_EQ(seen_path, "/api/v1/apps/pressure_sensor/data/chassis/brakes/pressure");
 }
 
-TEST(AggregationManager, forward_to_target_path_strips_the_peer_prefix_from_the_target) {
+TEST(AggregationManager, forward_to_target_path_sends_the_target_as_given) {
   // A member renamed on collision is known to its own gateway by the original
-  // id, and the target path is built from the merged id, so the rewrite has to
-  // reach the path the caller supplied rather than the one the client sent.
+  // id, and the caller builds the target path from the rename recorded on the
+  // member. The target is sent as given: one that still reads `peer_0__...` is
+  // the peer's own id, which stripping by spelling would turn into another.
   MockPeerServer mock;
   std::string seen_path;
   mock.server().Get(R"(/api/v1/(.+))", [&seen_path](const httplib::Request & req, httplib::Response & res) {
@@ -963,7 +973,7 @@ TEST(AggregationManager, forward_to_target_path_strips_the_peer_prefix_from_the_
   manager.forward_request("peer_0", req, res, "/api/v1/apps/peer_0__shared_sensor/data/chassis/brakes/pressure");
 
   EXPECT_EQ(res.status, 200);
-  EXPECT_EQ(seen_path, "/api/v1/apps/shared_sensor/data/chassis/brakes/pressure");
+  EXPECT_EQ(seen_path, "/api/v1/apps/peer_0__shared_sensor/data/chassis/brakes/pressure");
 }
 
 TEST(AggregationManager, forward_to_target_path_refuses_a_target_outside_the_api) {

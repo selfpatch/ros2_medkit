@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
@@ -161,25 +160,26 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
   // contributed it, and from no other, as the HTTP per-entity route does. A
   // local-only entity asks no peer at all. The peer path mirrors the HTTP REST
   // route: /api/v1/<type_plural>/<id>/faults, with the id the peer knows the
-  // entity by - the merge serves an entity it prefixed as `<peer>__<id>`.
+  // entity by. That id comes from the rename the merge recorded on the entity
+  // (`original_id`), never from the spelling of the served id: a peer's own
+  // entity whose id merely starts with `<peer>__` is asked for under that id.
   // Auth: the ROS 2 service path has no inbound HTTP Authorization header to
-  // forward, so peers are queried with an empty credential - fan-out over this
-  // path only surfaces faults from peers that do not gate their /faults route.
+  // forward. Each peer is asked with this gateway's own credential
+  // (aggregation.peer_auth_header) when one is configured; without one the
+  // request carries none, and a peer that gates its /faults route contributes
+  // nothing.
   auto * agg = wiring_.aggregation ? wiring_.aggregation() : nullptr;
   if (agg) {
     const std::string type_segment = entity_type_to_url_segment(entity->type);
     std::map<std::string, std::vector<std::string>> peers_by_path;
     if (!type_segment.empty()) {
       for (auto & target : entity->peers) {
-        auto & peer = target.peer;
-        const std::string prefix = peer + EntityMerger::SEPARATOR;
-        const bool renamed = entity_id.size() > prefix.size() && entity_id.compare(0, prefix.size(), prefix) == 0;
         std::string peer_path = "/api/v1/";
         peer_path += type_segment;
         peer_path += '/';
-        peer_path += renamed ? entity_id.substr(prefix.size()) : entity_id;
+        peer_path += target.id;
         peer_path += "/faults";
-        peers_by_path[peer_path].push_back(std::move(peer));
+        peers_by_path[peer_path].push_back(std::move(target.peer));
       }
     }
     for (const auto & [peer_path, peers] : peers_by_path) {

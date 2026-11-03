@@ -783,13 +783,13 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // that attribution - by this gateway or by a client reading the list - is
   // resolved against the wrong member. The member half of the id the peer
   // already qualified carries the same name and is rewritten with it.
-  const auto retarget_to_local_member = [agg](dto::OperationItem & item, const std::string & peer_name) {
+  const auto retarget_to_local_member = [agg, &cache](dto::OperationItem & item, const std::string & peer_name) {
     if (agg == nullptr || peer_name.empty() || !item.x_medkit.has_value() || !item.x_medkit->member_ids.has_value() ||
         item.x_medkit->member_ids->size() != 1) {
       return;
     }
     const std::string reported = item.x_medkit->member_ids->front();
-    const std::string local = agg->local_member_id(peer_name, reported);
+    const std::string local = served_member_id(cache, peer_name, reported);
     if (local == reported) {
       return;
     }
