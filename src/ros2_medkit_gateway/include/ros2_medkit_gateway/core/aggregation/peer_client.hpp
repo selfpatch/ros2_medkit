@@ -269,10 +269,10 @@ class PeerClient {
    *
    * The result describes the peer or it does not. Any sub-request that could
    * not be read - a dead connection, a non-200 the route has no other meaning
-   * for, an oversized body, unparsable JSON - fails the whole fetch, because a
-   * picture missing a branch is indistinguishable on the wire from a peer that
-   * does not have that branch. Two statuses do carry a meaning of their own and
-   * are read rather than failed:
+   * for, an oversized body, unparsable JSON, a field of the wrong type - fails
+   * the whole fetch, because a picture missing a branch is indistinguishable on
+   * the wire from a peer that does not have that branch. Two statuses do carry
+   * a meaning of their own and are read rather than failed:
    *
    * - 404 on a nested collection route: the peer predates the route. Those
    *   members are omitted and the route is named in

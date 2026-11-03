@@ -945,7 +945,13 @@ std::string PeerClient::instance_id() const {
   return instance_id_;
 }
 
-tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
+// The whole body is a function-try-block. The parsers read fields with the
+// JSON library's typed accessors, which throw on a value of the wrong type -
+// `"name": 5`, a tag that is a number - and nothing below the cache refresh
+// caught that: one such peer failed every refresh of the cache, the local
+// entities included. Here it fails this peer's fetch, like any other answer
+// that cannot be read, and the peer's last complete declaration stays.
+tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
   if (shutdown_requested_.load(std::memory_order_acquire)) {
     return tl::unexpected<std::string>("Peer '" + name_ + "': fetch_entities skipped, shutdown in progress");
   }
@@ -1273,6 +1279,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   }
 
   return entities;
+} catch (const nlohmann::json::exception & e) {
+  return tl::unexpected<std::string>("Response from peer '" + name_ + "' could not be read: " + e.what());
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {

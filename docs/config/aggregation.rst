@@ -585,7 +585,8 @@ that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
 the route has no other meaning for, an oversized body, a body nested more than
 64 levels deep or holding more than 1,000,000 values (see Peer Response Limits),
-unparsable JSON, a request still unanswered at ``aggregation.request_deadline_ms`` -
+unparsable JSON, a field of the wrong type (a name that is a number, a tag that
+is not a string), a request still unanswered at ``aggregation.request_deadline_ms`` -
 the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 
