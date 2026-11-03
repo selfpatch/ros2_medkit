@@ -17,8 +17,10 @@
 
 #include <algorithm>
 #include <future>
+#include <initializer_list>
 #include <random>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -400,6 +402,20 @@ void mark_all_unreachable(std::vector<Entity> & entities) {
   }
 }
 
+/// `parts` joined into one string, built in a single pass.
+std::string concat(std::initializer_list<std::string_view> parts) {
+  size_t size = 0;
+  for (auto part : parts) {
+    size += part.size();
+  }
+  std::string out;
+  out.reserve(size);
+  for (auto part : parts) {
+    out += part;
+  }
+  return out;
+}
+
 }  // namespace
 
 void AggregationManager::remember_declaration(const std::string & peer_name, const PeerEntities & entities) {
@@ -592,6 +608,9 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     to_merge.push_back(std::move(replayed));
   }
 
+  // Every collision met this pass: a stable key and the line that reports it.
+  std::vector<std::pair<std::string, std::string>> collisions;
+
   for (auto & pfr : to_merge) {
     // Every ID already in the merged set, whatever its type, before this peer is
     // folded in. The merger keeps the peer's entities out of those IDs unless the
@@ -623,20 +642,25 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;
     }
-    // Log collision-prefixed entities to help operators diagnose naming conflicts
-    if (logger) {
-      const auto & renames = merger.get_renames();
-      for (const auto * renamed : {&renames.areas, &renames.components, &renames.apps, &renames.functions}) {
-        for (const auto & [original_id, served_id] : *renamed) {
-          MEDKIT_LOG_WARN(*logger, "Entity ID collision: '%s' from peer '%s' prefixed to '%s'", original_id.c_str(),
-                          pfr.peer_name.c_str(), served_id.c_str());
-        }
+    // Collision-prefixed and dropped entities, logged to help operators
+    // diagnose naming conflicts - once each, see `collisions` below.
+    const auto & renames = merger.get_renames();
+    const std::pair<const char *, const std::unordered_map<std::string, std::string> *> renamed_by_type[] = {
+        {"Area", &renames.areas},
+        {"Component", &renames.components},
+        {"App", &renames.apps},
+        {"Function", &renames.functions}};
+    for (const auto & [type_name, renamed] : renamed_by_type) {
+      for (const auto & [original_id, served_id] : *renamed) {
+        collisions.emplace_back(concat({pfr.peer_name, "\n", type_name, "\n", original_id}),
+                                concat({"Entity ID collision: ", type_name, " '", original_id, "' from peer '",
+                                        pfr.peer_name, "' prefixed to '", served_id, "'"}));
       }
-      for (const auto & dropped : merger.get_dropped()) {
-        MEDKIT_LOG_WARN(*logger,
-                        "Entity ID collision: %s from peer '%s' not served, its prefixed ID is held locally too",
-                        dropped.c_str(), pfr.peer_name.c_str());
-      }
+    }
+    for (const auto & dropped : merger.get_dropped()) {
+      collisions.emplace_back(concat({pfr.peer_name, "\n", dropped}),
+                              concat({"Entity ID collision: ", dropped, " from peer '", pfr.peer_name,
+                                      "' not served, its prefixed ID is held locally too"}));
     }
   }
 
@@ -663,20 +687,41 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   }
   merged.leaf_warnings = std::move(classified.leaf_warnings);
 
+  for (const auto & w : merged.leaf_warnings) {
+    std::string peers_str;
+    for (size_t i = 0; i < w.peer_names.size(); ++i) {
+      if (i > 0u) {
+        peers_str += ", ";
+      }
+      peers_str += w.peer_names[i];
+    }
+    collisions.emplace_back(concat({"leaf\n", w.entity_id, "\n", peers_str}),
+                            concat({"Leaf Component '", w.entity_id, "' announced by multiple peers: ", peers_str,
+                                    ". Routing uses last-writer-wins."}));
+  }
+
+  // A collision is a standing property of the peers' declarations and is met
+  // again on every refresh, so it is logged when it first appears and not
+  // again until it has gone away and come back. The current set replaces the
+  // remembered one, which is what re-arms a collision that went away.
+  std::vector<const std::string *> new_collisions;
+  {
+    std::lock_guard<std::mutex> lock(logged_collisions_mutex_);
+    std::unordered_set<std::string> current;
+    for (const auto & [key, message] : collisions) {
+      if (current.insert(key).second && logged_collisions_.count(key) == 0u) {
+        new_collisions.push_back(&message);
+      }
+    }
+    logged_collisions_ = std::move(current);
+  }
+
   if (logger) {
     for (const auto & msg : classified.malformed_parent_warnings) {
       MEDKIT_LOG_WARN(*logger, "Aggregation: %s", msg.c_str());
     }
-    for (const auto & w : merged.leaf_warnings) {
-      std::string peers_str;
-      for (size_t i = 0; i < w.peer_names.size(); ++i) {
-        if (i > 0u) {
-          peers_str += ", ";
-        }
-        peers_str += w.peer_names[i];
-      }
-      MEDKIT_LOG_WARN(*logger, "Leaf Component '%s' announced by multiple peers: %s. Routing uses last-writer-wins.",
-                      w.entity_id.c_str(), peers_str.c_str());
+    for (const auto * message : new_collisions) {
+      MEDKIT_LOG_WARN(*logger, "%s", message->c_str());
     }
   }
 
