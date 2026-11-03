@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <nlohmann/json.hpp>
@@ -41,6 +42,10 @@ struct EntitySegment {
 
 /// The first entity segment of `path`, std::nullopt when there is none or its
 /// id is empty (`/components//logs`).
+///
+/// Only the path part is read: a `?` query or `#` fragment ends it, so in
+/// `/api/v1/apps/x?view=full` the id is `x`, and with_entity_id keeps the query
+/// and fragment as they are.
 inline std::optional<EntitySegment> locate_entity_segment(const std::string & path) {
   static constexpr std::array<std::pair<std::string_view, SovdEntityType>, 4> kEntityCollections = {{
       {"/components/", SovdEntityType::COMPONENT},
@@ -48,12 +53,13 @@ inline std::optional<EntitySegment> locate_entity_segment(const std::string & pa
       {"/areas/", SovdEntityType::AREA},
       {"/functions/", SovdEntityType::FUNCTION},
   }};
+  const size_t path_end = std::min(path.find('?'), path.find('#'));
   size_t best = std::string::npos;
   size_t best_prefix_len = 0;
   SovdEntityType best_type = SovdEntityType::UNKNOWN;
   for (const auto & [prefix, type] : kEntityCollections) {
     auto start = path.find(prefix);
-    if (start < best) {
+    if (start < best && (path_end == std::string::npos || start + prefix.size() <= path_end)) {
       best = start;
       best_prefix_len = prefix.size();
       best_type = type;
@@ -63,12 +69,14 @@ inline std::optional<EntitySegment> locate_entity_segment(const std::string & pa
     return std::nullopt;
   }
   const size_t id_pos = best + best_prefix_len;
-  const size_t end = path.find('/', id_pos);
+  const size_t slash = path.find('/', id_pos);
+  const size_t end = std::min(slash, path_end);
   const size_t id_len = (end == std::string::npos ? path.size() : end) - id_pos;
   if (id_len == 0) {
     return std::nullopt;
   }
-  return EntitySegment{best_type, best, id_pos, id_len, end != std::string::npos};
+  const bool has_subpath = slash != std::string::npos && (path_end == std::string::npos || slash < path_end);
+  return EntitySegment{best_type, best, id_pos, id_len, has_subpath};
 }
 
 /// `path` with the id of the entity segment `segment` replaced by `id`.

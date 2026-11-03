@@ -315,7 +315,8 @@ bool is_discovery_route(const std::string & path) {
   }
   static const std::array<std::string_view, 8> kRelations = {"subareas", "components", "contains",      "subcomponents",
                                                              "hosts",    "depends-on", "is-located-on", "belongs-to"};
-  const std::string_view relation = std::string_view(path).substr(segment->id_pos + segment->id_len + 1);
+  std::string_view relation = std::string_view(path).substr(segment->id_pos + segment->id_len + 1);
+  relation = relation.substr(0, relation.find_first_of("?#"));
   return std::find(kRelations.begin(), kRelations.end(), relation) != kRelations.end();
 }
 

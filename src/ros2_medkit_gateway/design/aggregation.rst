@@ -396,9 +396,11 @@ classification pass over the full Component set:
   of every object that names its ``type`` - with its ``name``, which takes the
   served one so a forwarded detail names the entity as the listings do -
   every entity URI (the self link, the resource collection links, the
-  relationship links, relative or absolute), and the relationship IDs
-  ``x-medkit`` carries (``parent_area_id``, ``parentComponentId``,
-  ``dependsOn``, ``area``, ``component_id``, ``hosts``). A reference to an
+  relationship links, relative or absolute; the ID is read from the path
+  alone, and a query or fragment after it is kept as sent), and the
+  relationship IDs ``x-medkit`` carries (``parent_area_id``,
+  ``parentComponentId``, ``dependsOn``, ``area``, ``component_id``,
+  ``hosts``). A reference to an
   entity the merge dropped is removed - the collection item that describes
   it, the link or relationship field that names it, the entry of a list of
   IDs - because by the peer's ID it would name the local entity that took its
