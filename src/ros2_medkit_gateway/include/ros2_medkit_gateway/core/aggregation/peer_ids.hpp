@@ -14,11 +14,68 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
+
+class ThreadSafeEntityCache;
+
+/// Where the entity a path names sits in it: the first
+/// `/components|apps|areas|functions/<id>` segment.
+struct EntitySegment {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  size_t id_pos{0};         ///< Offset of `<id>` in the path
+  size_t id_len{0};         ///< Length of `<id>`, never 0
+  bool has_subpath{false};  ///< `/<id>/...`: a resource of the entity, not its detail
+};
+
+/// The first entity segment of `path`, std::nullopt when there is none or its
+/// id is empty (`/components//logs`).
+inline std::optional<EntitySegment> locate_entity_segment(const std::string & path) {
+  static constexpr std::array<std::pair<std::string_view, SovdEntityType>, 4> kEntityCollections = {{
+      {"/components/", SovdEntityType::COMPONENT},
+      {"/apps/", SovdEntityType::APP},
+      {"/areas/", SovdEntityType::AREA},
+      {"/functions/", SovdEntityType::FUNCTION},
+  }};
+  size_t best = std::string::npos;
+  size_t best_prefix_len = 0;
+  SovdEntityType best_type = SovdEntityType::UNKNOWN;
+  for (const auto & [prefix, type] : kEntityCollections) {
+    auto start = path.find(prefix);
+    if (start < best) {
+      best = start;
+      best_prefix_len = prefix.size();
+      best_type = type;
+    }
+  }
+  if (best == std::string::npos) {
+    return std::nullopt;
+  }
+  const size_t id_pos = best + best_prefix_len;
+  const size_t end = path.find('/', id_pos);
+  const size_t id_len = (end == std::string::npos ? path.size() : end) - id_pos;
+  if (id_len == 0) {
+    return std::nullopt;
+  }
+  return EntitySegment{best_type, id_pos, id_len, end != std::string::npos};
+}
+
+/// `path` with the id of the entity segment `segment` replaced by `id`.
+inline std::string with_entity_id(const std::string & path, const EntitySegment & segment, const std::string & id) {
+  std::string out = path.substr(0, segment.id_pos);
+  out += id;
+  out += path.substr(segment.id_pos + segment.id_len);
+  return out;
+}
 
 /// A peer that contributes an entity, and the ID that peer knows it by.
 struct PeerTarget {
@@ -71,5 +128,22 @@ std::vector<PeerTarget> peer_targets_of(const Entity & entity) {
   }
   return targets;
 }
+
+/// The ID this gateway serves an entity of `type` under that `peer` calls `peer_id`.
+///
+/// The reverse of peer_entity_id, for an ID a peer reports: an entity the merge
+/// renamed is served as `<peer>__<peer_id>`, and the unprefixed ID names a
+/// local entity here. Only a recorded rename is reversed - the cached entity
+/// under the prefixed ID must be that peer's, renamed from `peer_id` - so a
+/// peer's own entity whose ID merely reads like a prefix is left alone, and so
+/// is another peer's entity that happens to carry the prefixed ID. Returns
+/// `peer_id` when nothing was renamed, which is the ordinary case.
+std::string served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType type, const std::string & peer,
+                             const std::string & peer_id);
+
+/// served_entity_id for a member a peer names without saying its type: its App
+/// when one was renamed from that ID, else its Component.
+std::string served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
+                             const std::string & member_id);
 
 }  // namespace ros2_medkit_gateway

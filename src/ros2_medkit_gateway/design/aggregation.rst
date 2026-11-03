@@ -465,11 +465,13 @@ published (``find_peer_for_entity``) for code that runs inside the refresh.
    ctx -> ctx : Look up Component "robot_arm__lidar", read its routed_to
    ctx --> primary : entity found, peer = "robot_arm"
 
-   primary -> agg : forward_request("robot_arm", req, res)
+   primary -> agg : forward_request("robot_arm", req, res, path)
    agg -> peer : GET /api/v1/components/lidar/data
    note right
-       Path rewritten: strips peer prefix
-       from entity ID before forwarding
+       The entity is named by the id the peer
+       knows it by: the rename the merge
+       recorded on it (original_id), not the
+       spelling of the served id
    end note
    peer --> agg : 200 OK + JSON data
    agg --> primary : Copy response to client
@@ -500,8 +502,8 @@ every member the other contributors hold.
 A request naming one member is a different question, and it does have a single
 answer. ``HandlerContext::dispatch_to_member`` re-addresses such a request to
 the member's own entity route - ``/apps/{member}/...`` or
-``/components/{member}/...`` - on the gateway the routing table names for that
-member:
+``/components/{member}/...``, by the id that gateway knows the member by - on
+the gateway the member is routed to:
 
 .. code-block:: text
 
@@ -541,8 +543,11 @@ means anything here. A peer describes its own tree in its own names, and an App
 whose id collided with a local one was merged under ``<peer>__<id>``, so the
 name the peer sends names the LOCAL leaf on this gateway. ``fan_out_get``
 therefore records the peer each item came from in
-``FanOutResult::item_peers``, and ``AggregationManager::local_member_id``
-resolves that name against the routing table: an item arriving through the
+``FanOutResult::item_peers``, and ``served_member_id`` resolves that name
+against the rename the merge recorded: the cached entity under
+``<peer>__<id>`` counts only when it is that peer's and was renamed from
+``<id>``, so a peer's own entity whose id merely reads like a prefix is never
+taken for one. An item arriving through the
 fan-out is re-attributed to the id the merge gave its owner, in
 ``x-medkit.member_ids`` and in the member half of the item id, before any of it
 is offered to a client. Read verbatim instead, the peer's item is attributed to
@@ -765,11 +770,24 @@ tables were built - contributes nothing and is not counted as failed either
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
 fan-out-to-all-healthy behavior.
 
+Each targeted peer is asked about the entity by the id it knows it by
+(``PeerTarget::id``, from ``peer_entity_id``): an entity the merge renamed is
+known to its peer by ``original_id``, every other contributor by the served id.
+A grouping Component prefixed on collision and kept local by the
+classification would otherwise be asked for as ``<peer>__<id>``, an id the peer
+holds nothing under, and its ``404`` would read as an empty answer. The rename
+is read off the entity, never off the spelling of the served id. The same
+holds for a request forwarded whole (``validate_entity_for_route``) and for one
+re-addressed to a member (``dispatch_to_member``): ``forward_request`` sends the
+path it is given.
+
 ``CorePluginContext::list_entity_faults``, behind the ROS 2
 ``list_entity_faults`` service, applies the same rule. It asks only the peers
-the cached entity names among its ``contributors``, and it addresses an entity
-the merge prefixed by the id the peer knows it by. An entity only this gateway
-holds asks no peer and logs no partial fan-out.
+the cached entity names among its ``contributors``, each by the id it knows the
+entity by. An entity only this gateway holds asks no peer and logs no partial
+fan-out. The service has no inbound HTTP credential to forward, so each peer is
+asked with this gateway's own (``aggregation.peer_auth_header``) when one is
+configured.
 
 Entities freshly announced on a peer but not yet reflected in the local
 routing/contributor tables (a brief window between discovery cycles) are

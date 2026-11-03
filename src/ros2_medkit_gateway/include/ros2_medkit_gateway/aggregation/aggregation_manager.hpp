@@ -345,20 +345,6 @@ class AggregationManager {
   }
 
   /**
-   * @brief The id this gateway uses for a member `peer_name` calls `member_id`.
-   *
-   * An App whose id collides with a local one is merged under `<peer>__<id>`,
-   * and the routing table is where that renaming is recorded. A peer knows
-   * nothing of it and keeps naming the member as it always did, so anything a
-   * peer says about its own members has to be read through this before it can
-   * be used to address something here - the unprefixed id names the LOCAL leaf.
-   *
-   * Returns `member_id` unchanged when nothing was renamed, which is the
-   * ordinary case. Thread-safe.
-   */
-  std::string local_member_id(const std::string & peer_name, const std::string & member_id) const;
-
-  /**
    * @brief Get the URL for a known peer by name
    * @param peer_name Name of the peer
    * @return URL if found, empty string otherwise
@@ -368,8 +354,9 @@ class AggregationManager {
   /**
    * @brief Forward an HTTP request to a specific peer
    *
-   * Finds the PeerClient by name and calls forward_request().
-   * If the peer is not found, sends a 502 error response.
+   * Finds the PeerClient by name and calls forward_request() with the
+   * incoming path as given. If the peer is not found, sends a 502 error
+   * response.
    *
    * @param peer_name Name of the target peer
    * @param req Incoming HTTP request to forward
@@ -386,9 +373,11 @@ class AggregationManager {
    * entity, only the member. The target path names the member's own route
    * there, so the peer answers a request about something it actually holds.
    *
-   * `target_path` goes through the same SSRF guard and peer-prefix rewrite as
-   * the incoming path, because it is built from client-supplied ids. Query
-   * parameters and body come from `req` unchanged.
+   * `target_path` goes through the same SSRF guard as the incoming path,
+   * because it is built from client-supplied ids, and is sent as given: it has
+   * to name an entity this gateway renamed on collision by the id the peer
+   * knows it by (see peer_entity_id). Query parameters and body come from
+   * `req` unchanged.
    *
    * @param peer_name Name of the target peer
    * @param req Incoming HTTP request supplying method, headers, body and query

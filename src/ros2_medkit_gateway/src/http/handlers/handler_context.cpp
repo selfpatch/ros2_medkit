@@ -17,6 +17,7 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -253,6 +254,24 @@ namespace {
 
 using http::detail::tl_forward_response;
 
+/// `path` as sent to the peer `entity` is routed to: the entity it names is
+/// named by the id that peer knows it by. That id is read off the entity's
+/// recorded rename (its peer targets), so an entity this gateway renamed on
+/// collision is asked for under its original id and a peer's own entity
+/// whose id merely starts with `<peer>__` under that id.
+std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
+  auto segment = locate_entity_segment(path);
+  if (!segment || path.compare(segment->id_pos, segment->id_len, entity.id) != 0) {
+    return path;
+  }
+  for (const auto & target : entity.peer_targets) {
+    if (target.peer == entity.peer_name) {
+      return with_entity_id(path, *segment, target.id);
+    }
+  }
+  return path;
+}
+
 }  // namespace
 
 http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
@@ -334,7 +353,8 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
       return tl::unexpected(ErrorVariant{std::move(err)});
     }
     if (tl_forward_response != nullptr) {
-      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response);
+      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
+                                        path_on_peer(raw_req.path, entity_info));
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
@@ -373,15 +393,21 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   // nothing this gateway can re-address, so the local path answers for it. The
   // owner is read off the member found, not off its id alone, so a local member
   // whose id a peer's entity also routes under stays local.
+  //
+  // The member is addressed on the peer by the id that peer knows it by, read
+  // off the member's recorded rename like its owner.
   const auto & cache = services_.entity_cache();
   std::string collection;
   std::optional<std::string> peer;
+  std::string member_on_peer;
   if (auto app = cache.get_app(member_id)) {
     collection = "apps";
     peer = aggregation_mgr_->find_owning_peer(*app);
+    member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
   } else if (auto component = cache.get_component(member_id)) {
     collection = "components";
     peer = aggregation_mgr_->find_owning_peer(*component);
+    member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
   } else {
     return MemberDispatch::kServeLocally;
   }
@@ -398,7 +424,7 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
 #pragma GCC diagnostic pop
   if (tl_forward_response != nullptr) {
     aggregation_mgr_->forward_request(*peer, raw_req, *tl_forward_response,
-                                      api_path("/" + collection + "/" + member_id + "/" + member_resource_path));
+                                      api_path("/" + collection + "/" + member_on_peer + "/" + member_resource_path));
   }
   return MemberDispatch::kForwarded;
 }
