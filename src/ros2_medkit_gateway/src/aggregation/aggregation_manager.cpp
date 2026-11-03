@@ -614,9 +614,12 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   for (auto & pfr : to_merge) {
     // Every ID already in the merged set, whatever its type, before this peer is
     // folded in. The merger keeps the peer's entities out of those IDs unless the
-    // two are the same entity merged by design.
-    EntityMerger merger(pfr.peer_name,
-                        EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions));
+    // two are the same entity merged by design. The peer's own IDs are passed too,
+    // so an ID generated for one of its entities is never one it declares.
+    EntityMerger merger(
+        pfr.peer_name, EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
+        EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
+                                  pfr.entities.functions));
     // Areas, then Components, then Apps, then Functions: each step reads the
     // renames of the ones before it to keep the peer's references pointing at
     // the IDs its entities are served under.
@@ -660,7 +663,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     for (const auto & dropped : merger.get_dropped()) {
       collisions.emplace_back(concat({pfr.peer_name, "\n", dropped}),
                               concat({"Entity ID collision: ", dropped, " from peer '", pfr.peer_name,
-                                      "' not served, its prefixed ID is held locally too"}));
+                                      "' not served, and the peer's references to it are removed"}));
     }
   }
 

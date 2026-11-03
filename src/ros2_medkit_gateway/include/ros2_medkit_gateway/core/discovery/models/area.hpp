@@ -40,6 +40,7 @@ struct Area {
   std::vector<std::string> tags;          ///< Tags for filtering
   std::string parent_area_id;             ///< Parent area ID for sub-areas
   std::string source;                     ///< Origin of this area (e.g., "manifest", "heuristic")
+  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -141,8 +142,8 @@ struct Area {
 inline bool operator==(const Area & a, const Area & b) {
   return a.id == b.id && a.name == b.name && a.namespace_path == b.namespace_path && a.type == b.type &&
          a.translation_id == b.translation_id && a.description == b.description && a.tags == b.tags &&
-         a.parent_area_id == b.parent_area_id && a.source == b.source && a.contributors == b.contributors &&
-         a.declared_source == b.declared_source;
+         a.parent_area_id == b.parent_area_id && a.source == b.source && a.original_id == b.original_id &&
+         a.contributors == b.contributors && a.declared_source == b.declared_source;
 }
 inline bool operator!=(const Area & a, const Area & b) {
   return !(a == b);

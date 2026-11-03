@@ -49,6 +49,7 @@ struct Function {
 
   // === Discovery metadata ===
   std::string source = "manifest";        ///< Discovery source: manifest or runtime
+  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -81,7 +82,7 @@ struct Function {
 inline bool operator==(const Function & a, const Function & b) {
   return a.id == b.id && a.name == b.name && a.translation_id == b.translation_id && a.description == b.description &&
          a.tags == b.tags && a.hosts == b.hosts && a.depends_on == b.depends_on && a.source == b.source &&
-         a.contributors == b.contributors && a.declared_source == b.declared_source;
+         a.original_id == b.original_id && a.contributors == b.contributors && a.declared_source == b.declared_source;
 }
 inline bool operator!=(const Function & a, const Function & b) {
   return !(a == b);
