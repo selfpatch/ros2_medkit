@@ -218,12 +218,13 @@ std::vector<OperationMatch> matching_operations(const AggregatedOperations & ops
 /// The distinct members among `matches`, dropping the empty owner an entity
 /// that exposes its own operations reports.
 std::vector<std::string> distinct_members(const std::vector<OperationMatch> & matches) {
+  // A set beside the list, so each match costs one lookup: a peer reports the
+  // operations these matches come from, and searching the list for each one
+  // cost the square of their number.
   std::vector<std::string> members;
+  std::unordered_set<std::string> seen;
   for (const auto & match : matches) {
-    if (match.member_id.empty()) {
-      continue;
-    }
-    if (std::find(members.begin(), members.end(), match.member_id) == members.end()) {
+    if (!match.member_id.empty() && seen.insert(match.member_id).second) {
       members.push_back(match.member_id);
     }
   }

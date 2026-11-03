@@ -58,6 +58,10 @@ constexpr size_t MAX_NESTING_DEPTH = 8;
 /// items.
 constexpr size_t MAX_PEER_ENTRIES_PER_APP = 1000;
 
+/// Most dependencies kept for one Component or Function a peer reports: no
+/// more than the entities of one collection there can be to depend on.
+constexpr size_t MAX_PEER_DEPENDENCIES = MAX_ENTITIES_PER_COLLECTION;
+
 /// Most records, and most bytes of text in them, kept from one peer in one
 /// refresh. A record is an entity, an operation, a topic an App publishes or
 /// subscribes to, or one entry of a list an entity carries (tags, hosts,
@@ -397,6 +401,11 @@ Component parse_component(const nlohmann::json & j) {
     comp.variant = xm.value("variant", "");
     comp.parent_component_id = xm.value("parentComponentId", "");
     if (xm.contains("dependsOn") && xm["dependsOn"].is_array()) {
+      // Counted before anything is built from it, like the links of a Function.
+      if (xm["dependsOn"].size() > MAX_PEER_DEPENDENCIES) {
+        throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_DEPENDENCIES) +
+                               " dependencies for Component '" + comp.id + "'");
+      }
       comp.depends_on = xm["dependsOn"].get<std::vector<std::string>>();
     }
     // Asset-identity nameplate (with per-field provenance). Emitted by peers under
@@ -463,8 +472,13 @@ std::string component_id_from_located_on(const std::string & uri) {
  * an array of ``/api/v1/functions/{id}`` references (a HAL ``{"href": ...}``
  * object is read too). Each id is extracted and validated the way an
  * ``is-located-on`` reference is; a link that yields no valid id is skipped.
+ *
+ * Each id is kept once, in the order the peer listed it: a set beside the list
+ * says whether it is already there, since searching the list for every link
+ * cost the square of its length. A Function past MAX_PEER_DEPENDENCIES
+ * distinct dependencies, `owner`, refuses the fetch.
  */
-std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j) {
+std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j, const std::string & owner) {
   std::vector<std::string> ids;
   auto links = j.find("_links");
   if (links == j.end() || !links->is_object()) {
@@ -474,12 +488,19 @@ std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j) 
   if (depends_on == links->end() || !depends_on->is_array()) {
     return ids;
   }
+  std::unordered_set<std::string> seen;
   for (const auto & link : *depends_on) {
     std::string uri = link.is_string() ? link.get<std::string>() : (link.is_object() ? string_at(link, "href") : "");
     auto id = entity_id_after(uri, "/functions/");
-    if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) {
-      ids.push_back(std::move(id));
+    if (id.empty() || seen.count(id) > 0u) {
+      continue;
     }
+    if (ids.size() >= MAX_PEER_DEPENDENCIES) {
+      throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_DEPENDENCIES) +
+                             " dependencies for Function '" + owner + "'");
+    }
+    seen.insert(id);
+    ids.push_back(std::move(id));
   }
   return ids;
 }
@@ -681,7 +702,7 @@ Function parse_function(const nlohmann::json & j) {
   if (j.contains("tags") && j["tags"].is_array()) {
     func.tags = j["tags"].get<std::vector<std::string>>();
   }
-  func.depends_on = function_ids_from_depends_on(j);
+  func.depends_on = function_ids_from_depends_on(j, func.id);
   return func;
 }
 

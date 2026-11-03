@@ -980,7 +980,7 @@ requests in one refresh. A subcomponent takes its parent from its
 detail, and from the route when the detail names none or cannot be read. A
 Function's dependencies come from
 the ``_links["depends-on"]`` references its detail serves, each reduced to the
-Function id it names.
+Function id it names and kept once (see Refresh Size Limits).
 
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
@@ -1341,7 +1341,11 @@ or subscribes to - and refuses the fetch past ``MAX_PEER_FETCH_RECORDS``
 detail that replaces the entity its list named hands the list's charge back.
 One App is also refused past ``MAX_PEER_ENTRIES_PER_APP`` (1000) operations or
 data items naming a topic, which bounds its published and subscribed topics to
-1000 each. A refusal is thrown where the bound is reached (``PeerFetchRefused``)
+1000 each, and one Component or Function past ``MAX_PEER_DEPENDENCIES`` (1000)
+dependencies. A Function's ``depends-on`` links are kept once each in the order
+the peer listed them, with a set beside the list: searching the list for every
+link cost the square of its length, in a parse that runs after the request's
+deadline is disarmed. A refusal is thrown where the bound is reached (``PeerFetchRefused``)
 and turned into the fetch's failure, so the refresh for that peer is discarded
 whole and its last complete declaration stays, as for an oversized answer. A
 gateway serving the demo nodes reports 16 entities, 3 operations and 33 topics
