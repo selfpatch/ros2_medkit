@@ -1117,13 +1117,21 @@ Key Classes
     HTTP client for communicating with a single peer gateway. Supports health
     checking, entity fetching, transparent request forwarding (proxy), and
     JSON-parsed responses for fan-out merging. Thread-safe via atomic health
-    flag and mutex-guarded lazy client creation.
+    flag and mutex-guarded lazy client creation. ``shutdown()`` sets a flag
+    after which no call against the peer starts, and stops the per-call
+    clients in flight. Starting a call and shutting down are exclusive: a
+    call holds the admission lock shared from its check of the flag until its
+    socket exists, and ``shutdown()`` holds it exclusively while it stops the
+    clients, so a call is either refused (``canceled``) or in flight when its
+    client is stopped. A client stopped between two calls of an entity fetch
+    would otherwise dial the next one, since cpp-httplib's ``stop()`` only
+    closes the socket of the call in progress.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App, prefix for any type whose ID a local entity of another
-    type holds). Produces a provisional routing table mapping remote
+    collision for App, prefix for any type whose ID an entity of another type
+    holds). Produces a provisional routing table mapping remote
     entity IDs to peer names - the Component entries are later refined by
     ``classify_component_routing``.
 

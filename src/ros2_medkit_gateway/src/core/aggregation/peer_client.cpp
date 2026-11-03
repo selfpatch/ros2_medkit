@@ -19,6 +19,7 @@
 #include <chrono>
 #include <iterator>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -535,17 +536,40 @@ struct PeerReply {
   bool too_large{false};   ///< The read stopped at the limit; `result` is then empty
 };
 
+/// What a call against the peer is admitted by: the owner's admission mutex
+/// and its shutdown flag (see PeerClient::admission_mutex_).
+struct Admission {
+  std::shared_mutex & mutex;
+  const std::atomic<bool> & shutdown_requested;
+};
+
 /**
  * @brief Send `req` to the peer, reading its body no further than
- * MAX_PEER_RESPONSE_SIZE.
+ * MAX_PEER_RESPONSE_SIZE, unless shutdown has begun.
  *
  * httplib's own calls read the whole body into memory before they return it,
  * so a size check on what they return runs after the gateway has already held
  * everything the peer chose to send. Here the bytes are counted as they arrive
  * and the read stops at the limit, which holds whatever the status is.
+ *
+ * Once shutdown has begun the call is not made and fails as canceled. The
+ * admission lock taken for that check is released when the call's socket
+ * exists, from the socket-options callback, which cpp-httplib runs while it
+ * holds the lock its stop() takes; a call that never gets that far releases
+ * it on return.
  */
-PeerReply send_capped(httplib::Client & cli, httplib::Request & req) {
+PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admission & admission) {
   PeerReply reply;
+  std::shared_lock<std::shared_mutex> admitted(admission.mutex);
+  if (admission.shutdown_requested.load(std::memory_order_acquire)) {
+    reply.result = httplib::Result{nullptr, httplib::Error::Canceled};
+    return reply;
+  }
+  cli.set_socket_options([&admitted](socket_t /*sock*/) {
+    if (admitted.owns_lock()) {
+      admitted.unlock();
+    }
+  });
   std::string body;
   req.content_receiver = [&body, &reply](const char * data, size_t length, uint64_t /*offset*/, uint64_t /*total*/) {
     if (length > MAX_PEER_RESPONSE_SIZE - body.size()) {
@@ -557,7 +581,10 @@ PeerReply send_capped(httplib::Client & cli, httplib::Request & req) {
   };
   auto res = std::make_unique<httplib::Response>();
   auto error = httplib::Error::Success;
-  if (cli.send(req, *res, error)) {
+  const bool sent = cli.send(req, *res, error);
+  // The callback refers to `admitted`, which ends with this call.
+  cli.set_socket_options(nullptr);
+  if (sent) {
     res->body = std::move(body);
     reply.result = httplib::Result{std::move(res), error};
   } else {
@@ -567,12 +594,13 @@ PeerReply send_capped(httplib::Client & cli, httplib::Request & req) {
 }
 
 /// A GET to the peer, read no further than MAX_PEER_RESPONSE_SIZE.
-PeerReply get_capped(httplib::Client & cli, const std::string & path, const httplib::Headers & headers = {}) {
+PeerReply get_capped(httplib::Client & cli, const Admission & admission, const std::string & path,
+                     const httplib::Headers & headers = {}) {
   httplib::Request req;
   req.method = "GET";
   req.path = path;
   req.headers = headers;
-  return send_capped(cli, req);
+  return send_capped(cli, req, admission);
 }
 
 /**
@@ -619,7 +647,9 @@ SubResponse read_sub_response(const PeerReply & reply, const std::string & peer_
   }
   const auto & result = reply.result;
   if (!result) {
-    out.error = "Failed to connect to peer '" + peer_name + "' for " + path;
+    out.error = result.error() == httplib::Error::Canceled
+                    ? "Call to peer '" + peer_name + "' for " + path + " canceled, shutdown in progress"
+                    : "Failed to connect to peer '" + peer_name + "' for " + path;
     return out;
   }
   if (result->status == 404 && kind == RouteKind::kNestedCollection) {
@@ -847,7 +877,8 @@ void PeerClient::check_health() {
     headers.emplace("Authorization", peer_auth_header_);
   }
   // A health answer past the size limit is no answer: the peer is unhealthy.
-  const auto reply = get_capped(*client_, std::string(API_PREFIX) + "/health", headers);
+  const auto reply = get_capped(*client_, Admission{admission_mutex_, shutdown_requested_},
+                                std::string(API_PREFIX) + "/health", headers);
   const auto & result = reply.result;
   const bool healthy = result && result->status == 200;
   std::string instance_id;
@@ -879,6 +910,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   // active-client registry so shutdown() can stop() the in-flight call.
   ScopedClient scoped(*this, url_, timeouts_.metadata_read_ms);
   auto & cli = *scoped;
+  const Admission admission{admission_mutex_, shutdown_requested_};
   // Fetching the peer's entities is this gateway asking on its own behalf, so
   // it carries the gateway's own credential. Set once on the client rather
   // than on each of the requests below - that is also what stops the next
@@ -903,8 +935,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch areas
   {
-    auto response =
-        read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/areas"), name_, "/areas", RouteKind::kCollection);
+    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/areas"), name_, "/areas",
+                                      RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -941,7 +973,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       std::vector<std::string> next_level;
       for (const auto & parent_id : area_level) {
         const std::string route = "/areas/" + parent_id + "/subareas";
-        auto sub = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+        auto sub = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
                                      RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
@@ -982,8 +1014,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch components (list then detail per entity for full relationship data)
   {
-    auto response = read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/components"), name_, "/components",
-                                      RouteKind::kCollection);
+    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/components"), name_,
+                                      "/components", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -1004,7 +1036,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     // Component asserted to have none.
     for (auto & comp : comp_list) {
       const std::string route = "/components/" + comp.id;
-      auto detail = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+      auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
                                       RouteKind::kAddressableDetail);
       if (detail.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(detail.error);
@@ -1035,7 +1067,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       std::vector<std::string> next_level;
       for (const auto & parent_id : component_level) {
         const std::string route = "/components/" + parent_id + "/subcomponents";
-        auto sub = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+        auto sub = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
                                      RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
@@ -1065,8 +1097,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
-          auto detail = read_sub_response(get_capped(cli, std::string(API_PREFIX) + detail_route), name_, detail_route,
-                                          RouteKind::kAddressableDetail);
+          auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + detail_route), name_,
+                                          detail_route, RouteKind::kAddressableDetail);
           if (detail.kind == SubResponse::Kind::kIncomplete) {
             return tl::unexpected<std::string>(detail.error);
           }
@@ -1097,8 +1129,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch apps
   {
-    auto response =
-        read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/apps"), name_, "/apps", RouteKind::kCollection);
+    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/apps"), name_, "/apps",
+                                      RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -1141,8 +1173,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       const httplib::Headers no_fan_out{{"X-Medkit-No-Fan-Out", "1"}};
 
       const std::string ops_route = "/apps/" + app.id + "/operations";
-      auto ops = read_sub_response(get_capped(cli, std::string(API_PREFIX) + ops_route, no_fan_out), name_, ops_route,
-                                   RouteKind::kNestedCollection);
+      auto ops = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + ops_route, no_fan_out), name_,
+                                   ops_route, RouteKind::kNestedCollection);
       if (ops.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(ops.error);
       }
@@ -1156,7 +1188,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       // already reported; there is nothing further to read.
 
       const std::string data_route = "/apps/" + app.id + "/data";
-      auto data = read_sub_response(get_capped(cli, std::string(API_PREFIX) + data_route, no_fan_out), name_,
+      auto data = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + data_route, no_fan_out), name_,
                                     data_route, RouteKind::kNestedCollection);
       if (data.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(data.error);
@@ -1171,8 +1203,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch functions (list then detail per entity for hosts data)
   {
-    auto response = read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/functions"), name_, "/functions",
-                                      RouteKind::kCollection);
+    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/functions"), name_,
+                                      "/functions", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -1193,8 +1225,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     // group nothing, which is a statement the peer never made.
     for (auto & func : func_list) {
       const std::string route = "/functions/" + func.id;
-      auto detail =
-          read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route, RouteKind::kGroupingDetail);
+      auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
+                                      RouteKind::kGroupingDetail);
       if (detail.kind != SubResponse::Kind::kBody) {
         return tl::unexpected<std::string>(detail.error);
       }
@@ -1272,7 +1304,7 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
       }
       out.body = req.body;
     }
-    auto reply = send_capped(cli, out);
+    auto reply = send_capped(cli, out, Admission{admission_mutex_, shutdown_requested_});
     result = std::move(reply.result);
     too_large = reply.too_large;
   }
@@ -1383,7 +1415,7 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
   const auto started_at = std::chrono::steady_clock::now();
   PeerReply reply;
   if (method == "GET" || method == "POST" || method == "PUT" || method == "DELETE") {
-    reply = send_capped(cli, out);
+    reply = send_capped(cli, out, Admission{admission_mutex_, shutdown_requested_});
   }
   const auto & result = reply.result;
 
@@ -1474,7 +1506,14 @@ void PeerClient::shutdown() {
   // thread)". The health check is short-lived (single GET, short
   // timeout) so blocking on it is bounded; the multi-second hang we
   // are fixing came from in-flight forward_request / fetch_entities
-  // calls, which use ScopedClient and ARE in to_stop.
+  // calls, which use ScopedClient and ARE in active_clients_.
+  //
+  // Exclusive admission waits out every call between its check of the flag
+  // and its socket, so each call is either refused or in flight below. A
+  // call still resolving or connecting holds its client's socket lock, so
+  // the wait, and the stop() of that client, last until the connect ends,
+  // which aggregation.timeout_ms bounds.
+  std::unique_lock<std::shared_mutex> admission(admission_mutex_);
   std::lock_guard<std::mutex> lock(active_mutex_);
   for (auto * cli : active_clients_) {
     cli->stop();
@@ -1502,11 +1541,6 @@ PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & u
   // off however high the read budget is set.
   cli_.set_write_timeout(write_ms / 1000, (write_ms % 1000) * 1000);
   owner_.register_active(&cli_);
-  // If shutdown landed between the timeout setup and registration, pre-stop
-  // the client so the first Get/Post returns Error::Canceled immediately.
-  if (owner_.shutdown_requested_.load(std::memory_order_acquire)) {
-    cli_.stop();
-  }
 }
 
 PeerClient::ScopedClient::~ScopedClient() {

@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <shared_mutex>
 #include <string>
 #include <tl/expected.hpp>
 #include <unordered_set>
@@ -258,12 +259,14 @@ class PeerClient {
   /**
    * @brief Cancel every in-flight HTTP call against this peer.
    *
-   * Sets a shutdown flag (so subsequent forwards return 503 immediately
-   * without dialing the peer) and invokes ``stop()`` on every active
-   * ``httplib::Client`` registered by an in-flight forward / fetch / health
-   * call. This unblocks worker threads sitting in ``cli.Get/Post/...`` so
-   * gateway shutdown does not have to wait out the full peer read timeout.
-   * Idempotent. Safe to call from any thread.
+   * Sets a shutdown flag, after which no call against the peer starts: a
+   * forward answers 503 and every other call fails as canceled without
+   * dialing. Then invokes ``stop()`` on every active per-call
+   * ``httplib::Client`` (forward / fetch), which unblocks worker threads
+   * sitting in a call so gateway shutdown does not have to wait out the full
+   * peer read timeout. A call that read the flag before it was set has its
+   * socket by the time ``stop()`` runs, so ``stop()`` shuts it (see
+   * admission_mutex_). Idempotent. Safe to call from any thread.
    */
   void shutdown();
 
@@ -280,6 +283,8 @@ class PeerClient {
   /// active_clients_ and calls stop() on each so blocked I/O unwinds. It does
   /// so under active_mutex_, which unregistering also takes, so destruction
   /// waits for a stop() in progress rather than freeing the client under it.
+  /// Whether a call made on it may start at all is decided per call, by
+  /// admission_mutex_.
   class ScopedClient {
    public:
     /// @param read_timeout_ms Read budget for this call. Connect and write
@@ -325,6 +330,17 @@ class PeerClient {
 
   std::mutex active_mutex_;
   std::unordered_set<httplib::Client *> active_clients_;
+
+  /// What makes starting a call and shutdown() exclusive. A call holds it
+  /// shared from the moment it reads shutdown_requested_ until its socket
+  /// exists (released from the client's socket-options callback, which
+  /// cpp-httplib runs under the lock its stop() takes); shutdown() holds it
+  /// exclusively while it stops the active clients. So a call either sees the
+  /// flag and never dials, or is in flight when stop() runs and is shut down
+  /// by it. Without it, a call that read the flag just before shutdown() set
+  /// it dialed after stop() had found no socket to shut, and stop() on a
+  /// client between two calls did not keep the next call from dialing.
+  std::shared_mutex admission_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway
