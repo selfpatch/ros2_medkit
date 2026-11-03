@@ -212,7 +212,7 @@ type-specific merge rules:
        endif
    elseif (Component) then
        if (Same ID exists locally?) then (yes)
-           :Merge metadata (tags, description);
+           :Merge metadata (tags, description,\nArea when the local has none);
            :Add provisional routing entry;
        else (no)
            :Add as new entity;
@@ -289,7 +289,13 @@ classification pass over the full Component set:
     as ``parent_component_id``. Leaves are tied to exactly one ECU, so on
     collision the peer owns the runtime state (data, logs, hosts,
     operations, faults). Leaves get a routing table entry and every request
-    - detail endpoint and all sub-resources - is forwarded to the peer.
+    to their resource collections is forwarded to the peer. The detail
+    endpoint is forwarded too, except for a leaf this gateway declares itself
+    (``contributors`` includes ``"local"``): its detail is served from the
+    merged view, as its other discovery routes (``/subcomponents``,
+    ``/hosts``, ``/depends-on``) and the Area listings are, so the Area the
+    detail names is the Area that lists the Component. The local declaration
+    keeps its Area; one that names none takes the peer's.
   * **Hierarchical parent Component** - referenced as
     ``parent_component_id`` by at least one other Component in the merged
     set (local, remote, or transitively merged from any peer). The parent

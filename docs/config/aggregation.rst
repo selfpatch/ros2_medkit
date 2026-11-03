@@ -410,6 +410,9 @@ When aggregation is enabled, entities from peers are merged with local entities:
   have the same ID, they become one entity. Areas and Functions represent logical
   groupings that span hosts. Components represent physical hosts or ECUs defined
   in manifests - the same Component across peers is the same physical entity.
+  A merged Component's resource collections are answered by the peer; its
+  detail, like its Area membership, comes from the merged view, where the local
+  declaration's Area wins and an empty one takes the peer's.
 
 - **Apps**: Prefixed on collision. If a remote App has the same ID as a local
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).

@@ -286,6 +286,13 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
         merged.description = remote_comp.description;
       }
 
+      // The same for the Area: a local declaration that names none takes the
+      // peer's, so the Area listings place the Component where its detail does.
+      // An Area the local side declared is never overridden.
+      if (merged.area.empty() && !remote_comp.area.empty()) {
+        merged.area = remote_comp.area;
+      }
+
       // Merge the remote asset-identity nameplate into the local one. The peer is
       // tagged as the lowest authority (peer:<name> is not in the default precedence),
       // so this is a gap-fill: empty local fields are populated from the remote, but a
