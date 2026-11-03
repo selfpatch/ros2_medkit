@@ -710,36 +710,37 @@ The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.
 
 **Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
-asks ``AggregationManager::get_peer_contributors(id)`` for the list of
-peers that host or contribute to the entity, and passes it as a filter to
-``fan_out_get()``. Requests reach only those peers; non-contributors are
-never queried so they cannot appear in ``failed_peers``. The set unions:
+and ``fan_out_collection()`` read the entity's type off the path's collection
+segment and ask ``AggregationManager::get_peer_contributors(type, id)`` for the
+peers that host or contribute to that entity, and pass the list as a filter to
+``fan_out_get()``. Requests reach only those peers; non-contributors are never
+queried so they cannot appear in ``failed_peers``.
 
-- The routing table (remote leaves, collision-renamed peer-only entities).
-- A ``peer_contributors_by_entity_`` map maintained alongside the routing
-  table. ``gateway_node`` rebuilds both after every discovery cycle by
-  walking ``contributors`` on the merged Areas/Components/Apps/Functions,
-  stripping the ``"peer:"`` prefix and accumulating peer names per id.
-  Merged Areas/Functions with ID collisions and hierarchical parent
-  Components - both deliberately stripped from the routing table - still
-  reach their peers through this map.
+The contributors are kept per entity type (``PeerContributors``).
+``AggregationHost::merge_peers`` rebuilds them after every discovery cycle by
+walking ``contributors`` on the merged Areas/Components/Apps/Functions,
+stripping the ``"peer:"`` prefix and accumulating peer names per id within each
+type. That covers remote leaves (the merge names the peer a routed entity is
+forwarded to), collision-renamed peer-only entities, and merged
+Areas/Functions and hierarchical parent Components, which are deliberately
+absent from the routing table. The id-keyed routing table is not consulted: an
+App and an Area can share an id, and the peer contributing one has nothing to
+say about the other.
 
 When the resolved list is empty (local-only entity), fan-out is skipped:
 no peer hosts the entity, so hitting peers would only produce spurious
 ``partial: true`` / ``failed_peers``. A targeted peer that answers ``404``
 with ``entity-not-found`` - one that stopped holding the entity since the
 tables were built - contributes nothing and is not counted as failed either
-(``PeerFailureKind::kEntityNotFound``).
+(``PeerFailureKind::kEntityNotFound``). Global endpoints (paths with no
+entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
+fan-out-to-all-healthy behavior.
 
 ``CorePluginContext::list_entity_faults``, behind the ROS 2
 ``list_entity_faults`` service, applies the same rule. It asks only the peers
-the cached entity names among its ``contributors``, read off that entity
-rather than off the id-keyed map so a peer contributing a different entity
-with the same id is not asked, and it addresses an entity the merge prefixed
-by the id the peer knows it by. An entity only this gateway holds asks no peer
-and logs no partial fan-out. Global endpoints (paths with no
-entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
-fan-out-to-all-healthy behavior.
+the cached entity names among its ``contributors``, and it addresses an entity
+the merge prefixed by the id the peer knows it by. An entity only this gateway
+holds asks no peer and logs no partial fan-out.
 
 Entities freshly announced on a peer but not yet reflected in the local
 routing/contributor tables (a brief window between discovery cycles) are

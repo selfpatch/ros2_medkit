@@ -27,6 +27,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
@@ -60,23 +61,34 @@ inline std::string url_encode_param(const std::string & value) {
   return result;
 }
 
-// Extract the entity id from a per-entity collection path like
+/// The entity a per-entity collection path names: its type and its id.
+struct FanOutEntity {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::string id;
+};
+
+// Extract the entity from a per-entity collection path like
 // `/api/v1/components/<id>/logs` or `/api/v1/apps/<id>/data/<sub>`.
 // Matching is intentionally permissive: any path containing
 // `/components|apps|areas|functions/<id>/<anything>` is treated as
 // per-entity, regardless of what the segment after `<id>` is. This keeps
 // future per-entity sub-endpoints eligible for target-filtered fan-out
-// without requiring a whitelist bump every time.
+// without requiring a whitelist bump every time. The collection gives the
+// type, which the contributor lookup needs: ids are not unique across types.
 //
 // Returns std::nullopt for:
 //   - global endpoints (`/api/v1/faults`, `/api/v1/health`, ...),
 //   - entity-detail endpoints (`/api/v1/components/<id>` with no trailing
 //     `/...` - these go through the forwarding path, not fan-out),
 //   - malformed paths with an empty entity segment (`/components//logs`).
-inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
-  static constexpr std::array<std::string_view, 4> kEntityCollections = {"/components/", "/apps/", "/areas/",
-                                                                         "/functions/"};
-  for (const auto & prefix : kEntityCollections) {
+inline std::optional<FanOutEntity> extract_entity_for_fan_out(const std::string & path) {
+  static constexpr std::array<std::pair<std::string_view, SovdEntityType>, 4> kEntityCollections = {{
+      {"/components/", SovdEntityType::COMPONENT},
+      {"/apps/", SovdEntityType::APP},
+      {"/areas/", SovdEntityType::AREA},
+      {"/functions/", SovdEntityType::FUNCTION},
+  }};
+  for (const auto & [prefix, type] : kEntityCollections) {
     auto start = path.find(prefix);
     if (start == std::string::npos) {
       continue;
@@ -92,9 +104,18 @@ inline std::optional<std::string> extract_entity_id_for_fan_out(const std::strin
     if (id.empty()) {
       return std::nullopt;
     }
-    return id;
+    return FanOutEntity{type, std::move(id)};
   }
   return std::nullopt;
+}
+
+/// The id part of extract_entity_for_fan_out.
+inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
+  auto entity = extract_entity_for_fan_out(path);
+  if (!entity) {
+    return std::nullopt;
+  }
+  return std::move(entity->id);
 }
 
 inline std::string build_fan_out_path(const httplib::Request & req) {
@@ -192,8 +213,8 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   }
   std::optional<std::vector<std::string>> contributors_buffer;
   const std::vector<std::string> * target_peers = nullptr;
-  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
-    contributors_buffer = agg->get_peer_contributors(*entity_id);
+  if (auto entity = extract_entity_for_fan_out(req.path); entity.has_value()) {
+    contributors_buffer = agg->get_peer_contributors(entity->type, entity->id);
     if (contributors_buffer->empty()) {
       return;
     }
@@ -256,8 +277,9 @@ struct FanOutResult {
 /// Behavior parity with merge_peer_items:
 ///   - null `agg`, `X-Medkit-No-Fan-Out` header, or zero healthy peers all
 ///     short-circuit to an empty result (no fan-out attempted).
-///   - per-entity paths consult the routing/contributor tables to target only
-///     the peers that host the entity; global paths fan out to all healthy peers.
+///   - per-entity paths consult the contributors of the entity of the path's
+///     type to target only the peers that host it; global paths fan out to all
+///     healthy peers.
 ///   - peer failures are surfaced via `partial` + `failed_peers`, and the
 ///     reason for each via `peer_failures`.
 ///
@@ -282,8 +304,8 @@ inline FanOutResult<T> fan_out_collection(AggregationManager * agg, const httpli
 
   std::optional<std::vector<std::string>> contributors_buffer;
   const std::vector<std::string> * target_peers = nullptr;
-  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
-    contributors_buffer = agg->get_peer_contributors(*entity_id);
+  if (auto entity = extract_entity_for_fan_out(req.path); entity.has_value()) {
+    contributors_buffer = agg->get_peer_contributors(entity->type, entity->id);
     if (contributors_buffer->empty()) {
       return result;
     }

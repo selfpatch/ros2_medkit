@@ -28,6 +28,7 @@
 #include "ros2_medkit_gateway/core/aggregation/classification.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 
 namespace ros2_medkit_gateway {
@@ -356,42 +357,55 @@ class AggregationManager {
    */
   std::string local_member_id(const std::string & peer_name, const std::string & member_id) const;
 
+  /// Peers that contribute to each entity, one map per entity type: entity id
+  /// -> names of the peers that host it or contribute to it.
+  ///
+  /// Per type because ids are not unique across types once peers are
+  /// merged in: an Area and an App can share an id, and a peer contributing
+  /// the Area has nothing to say about the App.
+  struct PeerContributors {
+    std::unordered_map<std::string, std::vector<std::string>> areas;
+    std::unordered_map<std::string, std::vector<std::string>> components;
+    std::unordered_map<std::string, std::vector<std::string>> apps;
+    std::unordered_map<std::string, std::vector<std::string>> functions;
+  };
+
   /**
-   * @brief Replace the map of per-entity peer contributors.
+   * @brief Replace the per-entity peer contributors.
    *
-   * Covers both routed leaf entities (entity fully hosted by a peer - also
-   * tracked via the routing table) and merged/hierarchical entities (served
-   * locally with contributions from one or more peers - e.g. a Component
-   * aggregating subcomponents from multiple gateways, or an Area/Function
-   * with an ID shared across peers).
+   * Covers both routed leaf entities (entity fully hosted by a peer - the
+   * merge names that peer among its contributors) and merged/hierarchical
+   * entities (served locally with contributions from one or more peers - e.g.
+   * a Component aggregating subcomponents from multiple gateways, or an
+   * Area/Function with an ID shared across peers).
    *
-   * Fan-out helpers consult this map to target per-entity collection
+   * Fan-out helpers consult these maps to target per-entity collection
    * requests only at the peers that actually host / contribute to a given
-   * entity, avoiding spurious 404s from non-contributing peers.
+   * entity of the given type, avoiding spurious 404s from non-contributing
+   * peers.
    *
-   * @param contributors New map: entity id -> list of peer names that
-   *        contribute to it. Entries with empty lists are discarded.
+   * @param contributors New maps. Entries with empty lists are discarded.
    */
-  void update_peer_contributors(std::unordered_map<std::string, std::vector<std::string>> contributors);
+  void update_peer_contributors(PeerContributors contributors);
 
   /**
-   * @brief Check whether an entity id has at least one peer contributor.
+   * @brief Check whether an entity of `type` has at least one peer contributor.
    *
-   * Returns true when the entity is either routed to a peer (remote leaf) or
-   * served locally but aggregated from peers (hierarchical / merged). Returns
-   * false for local-only entities and for unknown IDs. Thread-safe.
+   * Returns false for local-only entities, for unknown IDs, and for an id
+   * only an entity of another type has peer contributors for. Thread-safe.
    */
-  bool has_peer_contributors(const std::string & entity_id) const;
+  bool has_peer_contributors(SovdEntityType type, const std::string & entity_id) const;
 
   /**
-   * @brief List the peers that host / contribute to a given entity.
+   * @brief List the peers that host / contribute to the entity `entity_id` of `type`.
    *
-   * Combines information from the routing table (routed leaves) and the
-   * per-entity contributors map (merged / hierarchical entities). Duplicates
-   * are removed while preserving first-seen order. Returns an empty vector
-   * for local-only entities and unknown IDs. Thread-safe.
+   * Read from the contributors the merge recorded for that entity, which name
+   * the peer a routed entity is forwarded to as well as every peer merged into
+   * it. The id-keyed routing table is not consulted: it cannot tell which
+   * entity an id belongs to. Returns an empty vector for local-only entities,
+   * unknown IDs and SERVER/UNKNOWN types. Thread-safe.
    */
-  std::vector<std::string> get_peer_contributors(const std::string & entity_id) const;
+  std::vector<std::string> get_peer_contributors(SovdEntityType type, const std::string & entity_id) const;
 
   /**
    * @brief Get the URL for a known peer by name
@@ -511,7 +525,7 @@ class AggregationManager {
   /// of a live graph this gateway can no longer observe, so it is allowed to
   /// disappear.
   std::unordered_map<std::string, PeerEntities> retained_peer_entities_;
-  std::unordered_map<std::string, std::vector<std::string>> peer_contributors_by_entity_;
+  PeerContributors peer_contributors_;
   std::vector<LeafCollisionWarning> leaf_warnings_;
 
   /**

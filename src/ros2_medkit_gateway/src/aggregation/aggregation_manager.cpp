@@ -734,48 +734,59 @@ std::string AggregationManager::local_member_id(const std::string & peer_name, c
   return (it != routing_table_.end() && it->second == peer_name) ? prefixed : member_id;
 }
 
-void AggregationManager::update_peer_contributors(
-    std::unordered_map<std::string, std::vector<std::string>> contributors) {
+namespace {
+
+/// The map in `contributors` that holds entities of `type`, or nullptr for a
+/// type that has none.
+template <class Contributors>
+auto * contributors_of(Contributors & contributors, SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return &contributors.areas;
+    case SovdEntityType::COMPONENT:
+      return &contributors.components;
+    case SovdEntityType::APP:
+      return &contributors.apps;
+    case SovdEntityType::FUNCTION:
+      return &contributors.functions;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return static_cast<decltype(&contributors.areas)>(nullptr);
+}
+
+}  // namespace
+
+void AggregationManager::update_peer_contributors(PeerContributors contributors) {
   // Drop entries with empty contributor lists - they would be indistinguishable
   // from "local-only" lookups and only waste space.
-  for (auto it = contributors.begin(); it != contributors.end();) {
-    if (it->second.empty()) {
-      it = contributors.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  std::unique_lock<std::shared_mutex> lock(mutex_);
-  peer_contributors_by_entity_ = std::move(contributors);
-}
-
-bool AggregationManager::has_peer_contributors(const std::string & entity_id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  if (routing_table_.count(entity_id) > 0u) {
-    return true;
-  }
-  auto it = peer_contributors_by_entity_.find(entity_id);
-  return it != peer_contributors_by_entity_.end() && !it->second.empty();
-}
-
-std::vector<std::string> AggregationManager::get_peer_contributors(const std::string & entity_id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  std::vector<std::string> result;
-  // Routed-leaf entry wins ordering: it always reflects the authoritative
-  // owner of the entity's runtime state.
-  auto rt_it = routing_table_.find(entity_id);
-  if (rt_it != routing_table_.end()) {
-    result.push_back(rt_it->second);
-  }
-  auto pc_it = peer_contributors_by_entity_.find(entity_id);
-  if (pc_it != peer_contributors_by_entity_.end()) {
-    for (const auto & name : pc_it->second) {
-      if (std::find(result.begin(), result.end(), name) == result.end()) {
-        result.push_back(name);
+  for (auto * map : {&contributors.areas, &contributors.components, &contributors.apps, &contributors.functions}) {
+    for (auto it = map->begin(); it != map->end();) {
+      if (it->second.empty()) {
+        it = map->erase(it);
+      } else {
+        ++it;
       }
     }
   }
-  return result;
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  peer_contributors_ = std::move(contributors);
+}
+
+bool AggregationManager::has_peer_contributors(SovdEntityType type, const std::string & entity_id) const {
+  return !get_peer_contributors(type, entity_id).empty();
+}
+
+std::vector<std::string> AggregationManager::get_peer_contributors(SovdEntityType type,
+                                                                   const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  const auto * map = contributors_of(peer_contributors_, type);
+  if (map == nullptr) {
+    return {};
+  }
+  auto it = map->find(entity_id);
+  return it != map->end() ? it->second : std::vector<std::string>{};
 }
 
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {

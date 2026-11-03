@@ -336,9 +336,11 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  // Routing table maps the entity in the path to the peer; without this the
-  // fan-out helper treats the entity as local-only and skips fan-out.
-  agg.update_routing_table({{"f1", "test_peer"}});
+  // The peer contributes the Function in the path; without this the fan-out
+  // helper treats the entity as local-only and skips fan-out.
+  AggregationManager::PeerContributors contributors;
+  contributors.functions["f1"] = {"test_peer"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -374,7 +376,9 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"f1", "failing_peer"}});
+  AggregationManager::PeerContributors contributors;
+  contributors.functions["f1"] = {"failing_peer"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -413,7 +417,9 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"a", "peer"}});
+  AggregationManager::PeerContributors contributors;
+  contributors.apps["a"] = {"peer"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/apps/a/data";
@@ -490,8 +496,8 @@ TEST(FanOutHelpers, extract_entity_id_ignores_query_string_because_httplib_split
 // =============================================================================
 
 TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
-  // A local-only entity has no peer contributors: it is absent from both the
-  // routing table and the peer-contributed-id set. Peers do not host it so
+  // A local-only entity has no peer contributors: no peer is recorded for it,
+  // only for another entity. Peers do not host it so
   // fan-out would always 404 and produce spurious `failed_peers`. Regression
   // test for the component-logs bug.
   MockServer mock;
@@ -513,7 +519,9 @@ TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"something-else", "other_peer"}});
+  AggregationManager::PeerContributors contributors;
+  contributors.components["something-else"] = {"other_peer"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/components/local-only-comp/logs";
@@ -555,7 +563,9 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_
   AggregationManager agg(config);
   agg.check_all_health();
   // "root" is not routed (merged Area) but was contributed by a peer.
-  agg.update_peer_contributors({{"root", {"peer"}}});
+  AggregationManager::PeerContributors contributors;
+  contributors.areas["root"] = {"peer"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/areas/root/logs";
@@ -611,7 +621,10 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_routed_leaf_owner) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"temp_sensor", "peer_owner"}});
+  // The merge names the peer a routed leaf is forwarded to among its contributors.
+  AggregationManager::PeerContributors contributors;
+  contributors.apps["temp_sensor"] = {"peer_owner"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/apps/temp_sensor/logs";
@@ -670,7 +683,9 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_listed_contributors) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_peer_contributors({{"vehicle", {"peer_a", "peer_c"}}});
+  AggregationManager::PeerContributors contributors;
+  contributors.areas["vehicle"] = {"peer_a", "peer_c"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/areas/vehicle/faults";
@@ -733,7 +748,9 @@ TEST(FanOutHelpers, merge_peer_items_partial_only_when_contributor_fails) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_peer_contributors({{"cluster", {"peer_ok", "peer_broken"}}});
+  AggregationManager::PeerContributors contributors;
+  contributors.components["cluster"] = {"peer_ok", "peer_broken"};
+  agg.update_peer_contributors(std::move(contributors));
 
   httplib::Request req;
   req.path = "/api/v1/components/cluster/logs";
