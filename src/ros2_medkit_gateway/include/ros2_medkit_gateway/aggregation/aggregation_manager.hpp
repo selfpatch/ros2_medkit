@@ -18,11 +18,13 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/classification.hpp"
@@ -526,6 +528,10 @@ class AggregationManager {
   /// disappear.
   std::unordered_map<std::string, PeerEntities> retained_peer_entities_;
   PeerContributors peer_contributors_;
+  /// Keys of the entity-id and leaf collisions the last merge pass met, so each
+  /// is logged once until it goes away. Own lock: written only by the merge pass.
+  std::mutex logged_collisions_mutex_;
+  std::unordered_set<std::string> logged_collisions_;
   std::vector<LeafCollisionWarning> leaf_warnings_;
 
   /**

@@ -312,7 +312,9 @@ classification pass over the full Component set:
 
   **Multi-peer leaf collisions** (two or more peers announce the same leaf
   Component ID) are surfaced as structured ``/health.warnings`` entries and
-  RCLCPP_WARN log lines. Routing falls back to last-writer-wins;
+  RCLCPP_WARN log lines; the log line is written when the collision first
+  appears and again only after it has gone away and come back, since every
+  refresh meets it. Routing falls back to last-writer-wins;
   rejection would not fix the deployment and would only take the gateway
   offline.
 
@@ -365,7 +367,9 @@ classification pass over the full Component set:
   prefixed rather than merged, because the merged Component's routing entry
   would cover the other entity. Merged Areas and Functions create no routing
   entry and merge regardless. A remote entity whose prefixed ID is itself held
-  locally is not served at all, and a warning names it.
+  locally is not served at all, and a warning names it. Each rename and each
+  drop is logged once, when it first appears, and again only after it has gone
+  away and come back.
 
   A prefixed entity keeps its references valid: a subarea names its prefixed
   parent, a Component its prefixed Area, parent or dependency, an App its
