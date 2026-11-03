@@ -584,8 +584,8 @@ nested ``subareas`` and ``subcomponents`` collections, the per-entity detail
 that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
 the route has no other meaning for, an oversized body, a body nested more than
-64 levels deep or holding more than 1,000,000 values (see Peer Response Limits),
-unparsable JSON, a field of the wrong type (a name that is a number, a tag that
+64 levels deep or holding more than 1,000,000 values, a refresh keeping more of the
+peer than its bounds allow (both in Peer Response Limits), unparsable JSON, a field of the wrong type (a name that is a number, a tag that
 is not a string), a request still unanswered at ``aggregation.request_deadline_ms`` -
 the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
@@ -661,6 +661,22 @@ is refused unparsed, the same as an oversized one. That is 1000 entities of
 gateway serving the demo nodes holds about 160 values, its largest answer about
 3000. The relayed events of a peer's fault stream are judged the same way, and
 one past either bound is dropped with a warning.
+
+A refresh also bounds what it keeps of one peer across all of its requests,
+because each answer is bounded on its own but a refresh makes requests per
+entity: 1000 Apps answering 100000 operations each stay inside every bound
+above and would keep some 100 million records. One App may report at most
+1000 operations and 1000 data items naming a topic (so at most 1000 topics it
+publishes and 1000 it subscribes to), and one refresh keeps at most 250,000
+records of one peer - entities, operations, topics, and the entries of the
+lists entities carry (tags, hosts, dependencies, identity fields) - holding at
+most 16 MiB of text. Each record is counted before it is kept. Past any of
+these the refresh for that peer is discarded whole, like an oversized answer:
+it is logged at ``WARN`` as a failed fetch naming the bound, and the peer's last
+complete declaration stays. A gateway serving the demo nodes reports 16
+entities, 3 operations and 33 topics in under 1 kB of text; a peer of 245 Apps
+with 1000 operations each, just inside the record bound, took this gateway to
+about 200 MB, and one Component carrying a 9 MB description to about 210 MB.
 
 One request to a peer, the health check included, runs for at most
 ``aggregation.request_deadline_ms`` (see Core Parameters) however steadily the

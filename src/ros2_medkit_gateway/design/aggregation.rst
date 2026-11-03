@@ -923,7 +923,8 @@ describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
 ``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
 (1,000,000) values, a request still unanswered at its deadline, unparsable
-JSON or a field of the wrong type on any of them fails
+JSON or a field of the wrong type on any of them, or a refresh keeping more of
+the peer than ``FetchBudget`` allows (see Refresh Size Limits), fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -1325,6 +1326,27 @@ runs wherever a peer body is parsed: every request of an entity fetch, the
 health answer, a fan-out, the error body of a ``404`` or ``504``, a forwarded
 discovery response before it is rewritten (``502`` when refused), and each
 event the fault stream relays (dropped with a warning).
+
+Refresh Size Limits
+~~~~~~~~~~~~~~~~~~~
+
+Every answer of a refresh is bounded on its own, but a refresh makes requests
+per entity, so the bounds above multiply: 1000 Apps answering 100000
+operations each stay inside every one of them and would keep some 100 million
+records. ``fetch_entities()`` therefore charges every record it keeps to a
+``FetchBudget`` before keeping it - an entity, with the entries of its tags,
+hosts, dependencies and identity fields, an operation, a topic an App publishes
+or subscribes to - and refuses the fetch past ``MAX_PEER_FETCH_RECORDS``
+(250,000) records or ``MAX_PEER_FETCH_TEXT`` (16 MiB) of text in them. A
+detail that replaces the entity its list named hands the list's charge back.
+One App is also refused past ``MAX_PEER_ENTRIES_PER_APP`` (1000) operations or
+data items naming a topic, which bounds its published and subscribed topics to
+1000 each. A refusal is thrown where the bound is reached (``PeerFetchRefused``)
+and turned into the fetch's failure, so the refresh for that peer is discarded
+whole and its last complete declaration stays, as for an oversized answer. A
+gateway serving the demo nodes reports 16 entities, 3 operations and 33 topics
+in under 1 kB of text; a peer of 245 Apps with 1000 operations each, just
+inside the record bound, took the gateway to about 200 MB.
 
 Request Deadlines
 ~~~~~~~~~~~~~~~~~

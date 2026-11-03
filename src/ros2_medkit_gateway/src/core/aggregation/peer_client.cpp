@@ -18,8 +18,10 @@
 #include <cctype>
 #include <chrono>
 #include <iterator>
+#include <map>
 #include <set>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -48,6 +50,129 @@ constexpr size_t MAX_ENTITIES_PER_COLLECTION = 1000;
 /// costs one request per entity of the level above; the bound keeps a deep or
 /// cyclic tree from turning one refresh into an unbounded walk.
 constexpr size_t MAX_NESTING_DEPTH = 8;
+
+/// Most operations, and most data items naming a topic, kept for one App a
+/// peer reports. Each data item names one topic, so an App records at most
+/// this many topics it publishes and this many it subscribes to. The largest
+/// App of a gateway serving the demo nodes has 1 operation and 4 such data
+/// items.
+constexpr size_t MAX_PEER_ENTRIES_PER_APP = 1000;
+
+/// Most records, and most bytes of text in them, kept from one peer in one
+/// refresh. A record is an entity, an operation, a topic an App publishes or
+/// subscribes to, or one entry of a list an entity carries (tags, hosts,
+/// dependencies, identity fields). Every response of a refresh stays within
+/// the size and value bounds, but a refresh makes one request per entity, and
+/// 1000 Apps answering 100000 operations each would keep some 100 million
+/// records. A gateway serving the demo nodes reports 16 entities, 3 operations
+/// and 33 topics, in under 1 kB of text; a peer of 245 Apps with 1000
+/// operations each, just inside the record bound, took the gateway to about
+/// 200 MB.
+constexpr size_t MAX_PEER_FETCH_RECORDS = 250 * 1000;
+constexpr size_t MAX_PEER_FETCH_TEXT = 16 * 1024 * 1024;
+
+/// A peer's answer that is past one of the bounds above: what it does, after
+/// the peer's name. Thrown by the parsers, where the bound is reached, and
+/// turned into the fetch's failure by fetch_entities.
+class PeerFetchRefused : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+/// What one record costs against MAX_PEER_FETCH_RECORDS and MAX_PEER_FETCH_TEXT.
+struct RecordCost {
+  size_t records{0};
+  size_t text{0};
+};
+
+size_t text_of(const std::vector<std::string> & strings) {
+  size_t text = 0;
+  for (const auto & s : strings) {
+    text += s.size();
+  }
+  return text;
+}
+
+size_t text_of(const std::map<std::string, std::string> & fields) {
+  size_t text = 0;
+  for (const auto & [key, value] : fields) {
+    text += key.size() + value.size();
+  }
+  return text;
+}
+
+/// The records and text an entity keeps of what its peer said. An App's
+/// operations and topics are charged one by one as they are read.
+RecordCost cost_of(const Area & a) {
+  return {1 + a.tags.size(), a.id.size() + a.name.size() + a.description.size() + a.namespace_path.size() +
+                                 a.source.size() + a.parent_area_id.size() + a.translation_id.size() + text_of(a.tags)};
+}
+
+RecordCost cost_of(const Component & c) {
+  const auto & id = c.identity;
+  return {1 + c.tags.size() + c.depends_on.size() + id.extra.size() + id.provenance.size(),
+          c.id.size() + c.name.size() + c.description.size() + c.namespace_path.size() + c.fqn.size() + c.area.size() +
+              c.source.size() + c.variant.size() + c.parent_component_id.size() + c.translation_id.size() +
+              text_of(c.tags) + text_of(c.depends_on) + id.manufacturer.size() + id.model.size() +
+              id.order_code.size() + id.serial_number.size() + id.hardware_revision.size() +
+              id.firmware_version.size() + id.software_version.size() + id.network_endpoint.size() + id.role.size() +
+              text_of(id.extra) + text_of(id.provenance)};
+}
+
+RecordCost cost_of(const App & a) {
+  return {1 + a.tags.size(), a.id.size() + a.name.size() + a.description.size() + a.component_id.size() +
+                                 a.source.size() + a.translation_id.size() + text_of(a.tags)};
+}
+
+RecordCost cost_of(const Function & f) {
+  return {1 + f.tags.size() + f.hosts.size() + f.depends_on.size(),
+          f.id.size() + f.name.size() + f.description.size() + f.source.size() + f.translation_id.size() +
+              text_of(f.tags) + text_of(f.hosts) + text_of(f.depends_on)};
+}
+
+/// What one refresh has kept of one peer, against MAX_PEER_FETCH_RECORDS and
+/// MAX_PEER_FETCH_TEXT. Charged before a record is kept; past either bound
+/// the fetch is refused.
+class FetchBudget {
+ public:
+  void take(RecordCost cost) {
+    records_ += cost.records;
+    text_ += cost.text;
+    if (records_ > MAX_PEER_FETCH_RECORDS) {
+      throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_FETCH_RECORDS) +
+                             " records in one refresh (entities, operations, topics and the lists they carry)");
+    }
+    if (text_ > MAX_PEER_FETCH_TEXT) {
+      throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_FETCH_TEXT / (1024 * 1024)) +
+                             " MiB of text in one refresh");
+    }
+  }
+
+  /// Hand back what a record that is being replaced cost, before its
+  /// replacement is taken.
+  void give_back(RecordCost cost) {
+    records_ -= std::min(records_, cost.records);
+    text_ -= std::min(text_, cost.text);
+  }
+
+  template <class Entity>
+  void charge(const Entity & entity) {
+    take(cost_of(entity));
+  }
+
+  /// `kept` is replaced by `replacement`: the detail of an entity its list
+  /// named.
+  template <class Entity>
+  void replace(Entity & kept, Entity replacement) {
+    give_back(cost_of(kept));
+    take(cost_of(replacement));
+    kept = std::move(replacement);
+  }
+
+ private:
+  size_t records_{0};
+  size_t text_{0};
+};
 
 /**
  * @brief Percent-encode a query parameter key or value (RFC 3986)
@@ -167,11 +292,14 @@ bool names_valid_entity(const nlohmann::json & item) {
  * whole entity, so building first and checking the cap after let a body
  * within the size limit allocate gigabytes.
  *
+ * Each entity is charged to `budget` before it is kept.
+ *
  * @return The entities in the order the peer listed them, or the number of
  *   items naming one when it is past `max`.
  */
 template <typename T, typename Parser>
-tl::expected<std::vector<T>, size_t> parse_collection(const nlohmann::json & response_json, Parser parser, size_t max) {
+tl::expected<std::vector<T>, size_t> parse_collection(const nlohmann::json & response_json, Parser parser, size_t max,
+                                                      FetchBudget & budget) {
   std::vector<T> result;
   const auto * items = items_of(response_json);
   if (items == nullptr) {
@@ -184,7 +312,9 @@ tl::expected<std::vector<T>, size_t> parse_collection(const nlohmann::json & res
   result.reserve(count);
   for (const auto & item : *items) {
     if (names_valid_entity(item)) {
-      result.push_back(parser(item));
+      auto entity = parser(item);
+      budget.charge(entity);
+      result.push_back(std::move(entity));
     }
   }
   return result;
@@ -362,8 +492,11 @@ std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j) 
  * peer's business, not ours. `name` is always the bare short name, which is what
  * ambiguity is keyed on, and the full ROS path comes from x-medkit.ros2 so two
  * same-named operations stay distinguishable.
+ *
+ * Each operation is charged to `budget` before it is kept, and an App past
+ * MAX_PEER_ENTRIES_PER_APP operations refuses the fetch.
  */
-void parse_operations_into(const nlohmann::json & j, App & app) {
+void parse_operations_into(const nlohmann::json & j, App & app, FetchBudget & budget) {
   if (!j.contains("items") || !j["items"].is_array()) {
     return;
   }
@@ -397,6 +530,11 @@ void parse_operations_into(const nlohmann::json & j, App & app) {
     if (full_path.empty()) {
       continue;
     }
+    if (app.services.size() + app.actions.size() >= MAX_PEER_ENTRIES_PER_APP) {
+      throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_ENTRIES_PER_APP) + " operations for App '" +
+                             app.id + "'");
+    }
+    budget.take({1, name.size() + full_path.size() + type.size()});
     if (is_action) {
       app.actions.push_back(ActionInfo{name, full_path, type, std::nullopt});
     } else {
@@ -419,11 +557,15 @@ void parse_operations_into(const nlohmann::json & j, App & app) {
  * publisher it may not be: the ownership built out of these lists is what a
  * bare item id is dispatched by, and a guess there sends a read to a gateway
  * that does not have the topic.
+ *
+ * Each topic is charged to `budget` before it is kept, and an App past
+ * MAX_PEER_ENTRIES_PER_APP data items naming a topic refuses the fetch.
  */
-void parse_data_items_into(const nlohmann::json & j, App & app) {
+void parse_data_items_into(const nlohmann::json & j, App & app, FetchBudget & budget) {
   if (!j.contains("items") || !j["items"].is_array()) {
     return;
   }
+  size_t topic_items = 0;
   for (const auto & item : j["items"]) {
     if (!item.is_object() || !item.contains("x-medkit") || !item["x-medkit"].is_object()) {
       continue;
@@ -437,10 +579,16 @@ void parse_data_items_into(const nlohmann::json & j, App & app) {
     if (topic.empty()) {
       continue;
     }
+    if (++topic_items > MAX_PEER_ENTRIES_PER_APP) {
+      throw PeerFetchRefused("reports more than " + std::to_string(MAX_PEER_ENTRIES_PER_APP) + " data items for App '" +
+                             app.id + "'");
+    }
     if (direction == "publish" || direction == "both") {
+      budget.take({1, topic.size()});
       app.topics.publishes.push_back(topic);
     }
     if (direction == "subscribe" || direction == "both") {
+      budget.take({1, topic.size()});
       app.topics.subscribes.push_back(topic);
     }
   }
@@ -973,6 +1121,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
 
   PeerEntities entities;
   const std::string peer_source = "peer:" + name_;
+  // Every record kept below is charged to this before it is kept: each
+  // response is bounded on its own, but a refresh makes a request per entity.
+  FetchBudget budget;
 
   // A route the peer does not offer is a property of the peer, not of the
   // entity that happened to hit it first, so it is recorded once however many
@@ -991,7 +1142,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
-    auto areas = parse_collection<Area>(response.body, parse_area, MAX_ENTITIES_PER_COLLECTION);
+    auto areas = parse_collection<Area>(response.body, parse_area, MAX_ENTITIES_PER_COLLECTION, budget);
     if (!areas) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(areas.error()) +
                                          " areas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
@@ -1050,6 +1201,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
                                                std::to_string(MAX_ENTITIES_PER_COLLECTION) + " areas and subareas");
           }
           auto subarea = parse_area(item);
+          budget.charge(subarea);
           subarea.parent_area_id = parent_id;
           subarea.declared_source = subarea.source;
           subarea.source = peer_source;
@@ -1071,7 +1223,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       return tl::unexpected<std::string>(response.error);
     }
     // Parse IDs from list, then fetch detail per entity for relationships
-    auto components = parse_collection<Component>(response.body, parse_component, MAX_ENTITIES_PER_COLLECTION);
+    auto components = parse_collection<Component>(response.body, parse_component, MAX_ENTITIES_PER_COLLECTION, budget);
     if (!components) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(components.error()) +
                                          " components (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
@@ -1088,7 +1240,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
         return tl::unexpected<std::string>(detail.error);
       }
       if (detail.kind == SubResponse::Kind::kBody) {
-        comp = parse_component(detail.body);
+        budget.replace(comp, parse_component(detail.body));
       } else {
         // The peer holds this Component's id but cannot describe it: whoever
         // contributes it has gone quiet. What the list gave is everything the
@@ -1145,6 +1297,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
                                                " components and subcomponents");
           }
           auto subcomp = parse_component(item);
+          budget.charge(subcomp);
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
@@ -1154,7 +1307,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
             return tl::unexpected<std::string>(detail.error);
           }
           if (detail.kind == SubResponse::Kind::kBody) {
-            subcomp = parse_component(detail.body);
+            budget.replace(subcomp, parse_component(detail.body));
           } else {
             subcomp.available = false;
           }
@@ -1185,7 +1338,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
-    auto apps = parse_collection<App>(response.body, parse_app, MAX_ENTITIES_PER_COLLECTION);
+    auto apps = parse_collection<App>(response.body, parse_app, MAX_ENTITIES_PER_COLLECTION, budget);
     if (!apps) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(apps.error()) +
                                          " apps (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
@@ -1227,7 +1380,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       if (ops.kind == SubResponse::Kind::kRouteAbsent) {
         note_absent_route("/apps/{id}/operations");
       } else if (ops.kind == SubResponse::Kind::kBody) {
-        parse_operations_into(ops.body, app);
+        parse_operations_into(ops.body, app, budget);
       }
       // kEntityUnreachable: the App is retained and its gateway is silent, so
       // the peer answers for it rather than proxying. It keeps what the peer
@@ -1242,7 +1395,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       if (data.kind == SubResponse::Kind::kRouteAbsent) {
         note_absent_route("/apps/{id}/data");
       } else if (data.kind == SubResponse::Kind::kBody) {
-        parse_data_items_into(data.body, app);
+        parse_data_items_into(data.body, app, budget);
       }
     }
   }
@@ -1255,7 +1408,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       return tl::unexpected<std::string>(response.error);
     }
     // Parse IDs from list, then fetch detail per entity for hosts
-    auto functions = parse_collection<Function>(response.body, parse_function, MAX_ENTITIES_PER_COLLECTION);
+    auto functions = parse_collection<Function>(response.body, parse_function, MAX_ENTITIES_PER_COLLECTION, budget);
     if (!functions) {
       return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(functions.error()) +
                                          " functions (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
@@ -1271,7 +1424,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       if (detail.kind != SubResponse::Kind::kBody) {
         return tl::unexpected<std::string>(detail.error);
       }
-      func = parse_function(detail.body);
+      budget.replace(func, parse_function(detail.body));
       func.declared_source = func.source;
       func.source = peer_source;
     }
@@ -1281,6 +1434,10 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
   return entities;
 } catch (const nlohmann::json::exception & e) {
   return tl::unexpected<std::string>("Response from peer '" + name_ + "' could not be read: " + e.what());
+} catch (const PeerFetchRefused & e) {
+  // Past a bound on what one refresh keeps of a peer: refused like an
+  // oversized answer, and the last complete declaration stays.
+  return tl::unexpected<std::string>("Peer '" + name_ + "' " + e.what());
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {
