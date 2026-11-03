@@ -770,8 +770,12 @@ its first health check) or one that predates the id.
 
 A peer that answers partial makes the result partial too. Its failed peers are
 named ``<peer>/<its peer>`` with the reason it gave, so a dead gateway at the
-end of a chain shows up at the head. ``x-medkit.count`` is the length of the
-merged ``items``.
+end of a chain shows up at the head. The peer writes that list, so one answer
+contributes at most ``kMaxNestedPeerFailures`` (1024) names, and their
+reasons are read in one pass over its ``peer_failures``, the first entry
+naming a peer giving its reason; matching each name against every entry made
+the work grow with the square of what the peer sent. ``x-medkit.count`` is the
+length of the merged ``items``.
 
 The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.

@@ -3916,7 +3916,9 @@ neither marks the answer partial nor appears in ``failed_peers``.
 
 On the global ``GET /faults`` a peer that could not reach one of its own
 peers is reported partial in turn. The entry names both hops,
-``<peer>/<its peer>``, with the reason the peer gave.
+``<peer>/<its peer>``, with the reason the peer gave. One peer's answer adds
+at most 1024 such entries; a peer that names more still makes the answer
+partial, and the names past the first 1024 are not listed.
 
 Without ``peer_failures`` a client cannot tell a busy subsystem from a dead
 one, which is the whole of what a partial answer is asked.

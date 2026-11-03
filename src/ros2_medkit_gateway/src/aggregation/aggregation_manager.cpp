@@ -18,9 +18,11 @@
 #include <algorithm>
 #include <future>
 #include <initializer_list>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -34,6 +36,12 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+/// The most entries one peer's partial answer adds to a fan-out's
+/// failed_peers: the peers that peer could not reach itself. The list comes
+/// from a body the peer writes, so without this bound only the size limit on
+/// that body would limit the entries, and the answer built from them.
+constexpr size_t kMaxNestedPeerFailures = 1024;
 
 std::string make_instance_id() {
   static constexpr char kHex[] = "0123456789abcdef";
@@ -946,34 +954,52 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
                                 x_medkit->contains("partial") && (*x_medkit)["partial"].is_boolean() &&
                                 (*x_medkit)["partial"].get<bool>();
       if (peer_partial) {
+        // The failed peers the peer names, up to kMaxNestedPeerFailures, then
+        // the reason it gives for each, read in one pass over peer_failures:
+        // matching every name against every entry is quadratic in what the
+        // peer chose to send. The first entry naming a peer is its reason.
         std::vector<std::string> nested_names;
         if (auto names = x_medkit->find("failed_peers"); names != x_medkit->end() && names->is_array()) {
           for (const auto & name : *names) {
+            if (nested_names.size() == kMaxNestedPeerFailures) {
+              break;
+            }
             if (name.is_string()) {
               nested_names.push_back(name.get<std::string>());
             }
           }
         }
+        // A peer that predates peer_failures names no reason. Its partial flag
+        // meant a peer call that failed, which is what unreachable says.
+        std::unordered_map<std::string, std::optional<std::string>> reasons;
         for (const auto & name : nested_names) {
-          // A peer that predates peer_failures names no reason. Its partial
-          // flag meant a peer call that failed, which is what unreachable says.
-          std::string reason = "unreachable";
-          if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
-            for (const auto & failure : *failures) {
-              if (!failure.is_object()) {
-                continue;
-              }
-              const auto named = failure.find("peer");
-              const auto why = failure.find("reason");
-              if (named != failure.end() && named->is_string() && named->get<std::string>() == name) {
-                if (why != failure.end() && why->is_string()) {
-                  reason = why->get<std::string>();
-                }
-                break;
-              }
+          reasons.emplace(name, std::nullopt);
+        }
+        size_t unsettled = reasons.size();
+        if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
+          for (const auto & failure : *failures) {
+            if (unsettled == 0) {
+              break;
             }
+            if (!failure.is_object()) {
+              continue;
+            }
+            const auto named = failure.find("peer");
+            if (named == failure.end() || !named->is_string()) {
+              continue;
+            }
+            auto reason = reasons.find(named->get_ref<const std::string &>());
+            if (reason == reasons.end() || reason->second.has_value()) {
+              continue;
+            }
+            const auto why = failure.find("reason");
+            reason->second = why != failure.end() && why->is_string() ? why->get<std::string>() : "unreachable";
+            --unsettled;
           }
-          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name + "/" + name, std::move(reason)});
+        }
+        for (const auto & name : nested_names) {
+          const auto & reason = reasons[name];
+          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name + "/" + name, reason.value_or("unreachable")});
         }
         // Partial with nobody named breaks the contract this route promises.
         if (pr.nested_failures.empty()) {
