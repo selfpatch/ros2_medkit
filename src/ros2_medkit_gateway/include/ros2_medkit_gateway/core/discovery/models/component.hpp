@@ -46,6 +46,7 @@ struct Component {
   std::vector<std::string> tags;          ///< Tags for filtering
   std::string parent_component_id;        ///< Parent component ID for sub-components
   std::vector<std::string> depends_on;    ///< Component IDs this component depends on
+  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -206,7 +207,7 @@ inline bool operator==(const Component & a, const Component & b) {
          a.type == b.type && a.area == b.area && a.source == b.source && a.translation_id == b.translation_id &&
          a.description == b.description && a.variant == b.variant && a.tags == b.tags &&
          a.parent_component_id == b.parent_component_id && a.depends_on == b.depends_on &&
-         a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
+         a.original_id == b.original_id && a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
          a.topics == b.topics && a.host_metadata == b.host_metadata && a.identity == b.identity &&
          a.external == b.external && a.declared_source == b.declared_source && a.available == b.available;
 }

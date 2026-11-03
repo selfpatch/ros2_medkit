@@ -353,7 +353,9 @@ classification pass over the full Component set:
   separator). Apps represent individual ROS 2 nodes with unique behavior - two
   Apps with the same ID from different peers are different entities.
 
-- **Any type, ID held locally by another type**: Prefixed the same way. The
+- **Any type, ID held locally by another type**: Prefixed the same way,
+  except that a remote Area or Function first merges with a local entity of its
+  own type that shares the ID, as above. The
   routing table is keyed by ID alone, so a routing entry for a remote Area,
   Component, Function or App whose ID a local entity of another type holds
   would hand that local entity's requests - writes included - to the peer.
@@ -366,10 +368,23 @@ classification pass over the full Component set:
   when no local entity of another type shares it too; otherwise it is
   prefixed rather than merged, because the merged Component's routing entry
   would cover the other entity. Merged Areas and Functions create no routing
-  entry and merge regardless. A remote entity whose prefixed ID is itself held
-  locally is not served at all, and a warning names it. Each rename and each
-  drop is logged once, when it first appears, and again only after it has gone
-  away and come back.
+  entry and merge regardless.
+
+  A prefixed ID is reserved: it must be free of every ID already merged,
+  whatever its type, of every ID the peer itself declares (the peer's own
+  ``peername__x`` would otherwise collapse with the one generated for its
+  ``x``), and of every ID this merge generated for another remote entity. The
+  same remote ID of two types may share its prefixed ID, the way the peer's own
+  entities share theirs. A remote entity whose prefixed ID is taken is not
+  served at all, and a warning names it. The drop is recorded per type, and
+  every reference the peer's other entities make to it - a subarea's parent, a
+  Component's Area, parent or dependency, an App's Component or dependency, a
+  Function's host or dependency - is removed: by the peer's own ID it would
+  name the local entity that took its place. An ID a merge generated is never
+  merged into, even by an Area or Function: an entity a later peer declares
+  under that ID is another entity, and is prefixed in turn. Each rename and
+  each drop is logged once, when it first appears, and again only after it has
+  gone away and come back.
 
   A prefixed entity keeps its references valid: a subarea names its prefixed
   parent, a Component its prefixed Area, parent or dependency, an App its

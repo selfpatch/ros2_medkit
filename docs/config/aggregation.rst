@@ -422,13 +422,25 @@ When aggregation is enabled, entities from peers are merged with local entities:
   aggregator does not filter a peer's Apps again: the peer applied its own
   ``filter_internal_nodes``.
 
-- **An ID held locally by another type**: Prefixed the same way, whatever the
-  remote entity's type. A peer Area ``camera_driver`` next to a local App
-  ``camera_driver`` is served as Area ``arm__camera_driver``, so requests for
-  the local App stay local. A peer Component whose ID a local Component shares
-  is merged only when no local entity of another type shares the ID too;
-  otherwise it is prefixed. References the peer's entities make to a prefixed
-  entity (an Area, a parent, a host, a dependency) name the prefixed ID.
+- **An ID held locally by another type**: A peer Area or Function merges with a
+  local entity of its own type when one shares its ID, whatever else holds that
+  ID. Only when none does is it prefixed for a local entity of another type: a
+  peer Area ``camera_driver`` next to a local App ``camera_driver`` (and no
+  local Area by that ID) is served as Area ``arm__camera_driver``, so requests
+  for the local App stay local. A peer Component whose ID a local Component
+  shares is merged only when no local entity of another type shares the ID too;
+  otherwise it is prefixed. A peer App is prefixed on any collision. References
+  the peer's entities make to a prefixed entity (an Area, a parent, a host, a
+  dependency) name the prefixed ID.
+
+- **A prefixed ID that is taken**: The prefixed ID must be free of every ID
+  already served, whatever its type, of every ID the peer itself declares, and
+  of every ID generated for another entity. When it is not, the remote entity is
+  not served, a warning names it, and the peer's references to it (an Area, a
+  parent, a host, a dependency, a Component an App is located on) are removed
+  rather than left to name the local entity that shares its ID. An ID generated
+  by prefixing is never merged into: a peer entity declared under one is
+  another entity and is prefixed in turn.
 
 Requests for remote entities are transparently forwarded to the owning peer.
 The routing table maps entity IDs to peer names. An entry is followed only for
