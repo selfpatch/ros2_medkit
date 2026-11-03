@@ -873,41 +873,22 @@ bool PeerClient::is_healthy() const {
   return healthy_.load();
 }
 
-void PeerClient::ensure_client() {
-  if (!client_) {
-    client_ = std::make_unique<httplib::Client>(url_);
-    // Cap the health-check timeouts at 1s regardless of the configured
-    // forward timeout. Reasoning:
-    //   * cpp-httplib's Client::stop() called concurrently with an
-    //     in-flight Get() / Post() unlocks an internal mutex from a
-    //     thread that did not lock it; glibc + pthread debug mode
-    //     (Ubuntu Noble) treats that as fatal mutex misuse and aborts
-    //     with SIGABRT (TestShutdown.test_exit_codes saw exit code -6).
-    //     So we cannot use Client::stop() to interrupt the health check.
-    //   * Without an interrupt, the worst-case shutdown delay equals
-    //     the health-check read timeout. A 5s nominal timeout becomes
-    //     ~25s under TSan, exceeding the launch_test SIGINT->SIGKILL
-    //     grace and producing an exit code -9.
-    //   * Health checks should be fast by their nature; an unresponsive
-    //     peer is "unhealthy" whether we wait 1s or 5s. Capping at 1s
-    //     bounds shutdown delay to ~5s under TSan, well within the 15s
-    //     grace window, without affecting forward semantics (which still
-    //     use the configured timeout via ScopedClient).
-    int health_timeout_ms = std::min(timeouts_.metadata_read_ms, 1000);
-    client_->set_connection_timeout(std::min(timeouts_.connect_ms, health_timeout_ms) / 1000,
-                                    (std::min(timeouts_.connect_ms, health_timeout_ms) % 1000) * 1000);
-    client_->set_read_timeout(health_timeout_ms / 1000, (health_timeout_ms % 1000) * 1000);
-    client_->set_write_timeout(timeouts_.write_ms / 1000, (timeouts_.write_ms % 1000) * 1000);
-    // cpp-httplib's Client has no payload limit (set_payload_max_length is
-    // server-only), so every call against a peer goes through send_capped,
-    // which stops reading at MAX_PEER_RESPONSE_SIZE. The read timeout bounds
-    // a peer that drips its answer instead.
-  }
-}
-
 void PeerClient::check_health() {
-  std::lock_guard<std::mutex> lock(client_mutex_);
-  ensure_client();
+  // A per-call client, as every other call makes, so shutdown() stops one in
+  // flight. The read timeout bounds each read, not the answer: a peer that
+  // sends its answer a byte at a time, each inside the timeout, holds the call
+  // and the refresh waiting on it for as long as it keeps sending. A shared
+  // client kept for health checks was left out of shutdown(), so such a peer
+  // held the executor that runs the refresh past SIGTERM.
+  //
+  // Both budgets are capped at 1 s whatever is configured: an unresponsive
+  // peer is unhealthy whether the gateway waits one second or five, and a
+  // refresh checks every peer before it reads any.
+  const int health_ms = std::min(timeouts_.metadata_read_ms, 1000);
+  const int connect_ms = std::min(timeouts_.connect_ms, health_ms);
+  ScopedClient scoped(*this, url_, health_ms);
+  auto & cli = *scoped;
+  cli.set_connection_timeout(connect_ms / 1000, (connect_ms % 1000) * 1000);
   // The health check is this gateway asking on its own behalf, so it carries
   // the gateway's own credential. Without it a peer that requires auth on
   // reads answers 401, is recorded as unhealthy, and then appears in no
@@ -918,8 +899,8 @@ void PeerClient::check_health() {
     headers.emplace("Authorization", peer_auth_header_);
   }
   // A health answer past the size limit is no answer: the peer is unhealthy.
-  const auto reply = get_capped(*client_, Admission{admission_mutex_, shutdown_requested_},
-                                std::string(API_PREFIX) + "/health", headers);
+  const auto reply =
+      get_capped(cli, Admission{admission_mutex_, shutdown_requested_}, std::string(API_PREFIX) + "/health", headers);
   const auto & result = reply.result;
   const bool healthy = result && result->status == 200;
   std::string instance_id;
@@ -945,10 +926,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   if (shutdown_requested_.load(std::memory_order_acquire)) {
     return tl::unexpected<std::string>("Peer '" + name_ + "': fetch_entities skipped, shutdown in progress");
   }
-  // Use a dedicated client for this long-running operation (4 sequential HTTP
-  // requests, up to 8s with 2s timeout) to avoid blocking health checks and
-  // forwarding on the shared client_mutex_. ScopedClient registers with the
-  // active-client registry so shutdown() can stop() the in-flight call.
+  // A dedicated client for this call, as for every call against the peer.
+  // ScopedClient registers with the active-client registry so shutdown() can
+  // stop() the in-flight call.
   ScopedClient scoped(*this, url_, timeouts_.metadata_read_ms);
   auto & cli = *scoped;
   const Admission admission{admission_mutex_, shutdown_requested_};
@@ -1279,10 +1259,8 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     res.set_content(error_body.dump(), "application/json");
     return;
   }
-  // Create a dedicated client per forwarding call to avoid holding client_mutex_
-  // during potentially long I/O operations. The shared client_ is reserved for
-  // short health checks only. ScopedClient registers with the active-client
-  // registry so shutdown() can stop() the in-flight call.
+  // A dedicated client per forwarding call. ScopedClient registers with the
+  // active-client registry so shutdown() can stop() the in-flight call.
   //
   // The forward budget, not the metadata one: what comes back is whatever the
   // peer had to do to answer, which for a synchronous operation is that
@@ -1414,10 +1392,8 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     return tl::unexpected(PeerError{PeerFailureKind::kCanceled,
                                     "Peer '" + name_ + "': forward_and_get_json skipped, shutdown in progress"});
   }
-  // Create a dedicated client per call to avoid holding client_mutex_ during I/O.
-  // The shared client_ is reserved for short health checks only. ScopedClient
-  // registers with the active-client registry so shutdown() can stop() the
-  // in-flight call.
+  // A dedicated client per call. ScopedClient registers with the active-client
+  // registry so shutdown() can stop() the in-flight call.
   //
   // The metadata budget: a fan-out runs against every peer at once with a
   // client waiting on the slowest of them, so this is bounded by what a
@@ -1527,17 +1503,6 @@ void PeerClient::shutdown() {
   // shutdown a wait of one stop() per active client; stop() only shuts the
   // socket down and never waits for the call it cancels, and nothing that
   // stop() locks is held by a worker while it waits for this mutex.
-  //
-  // We deliberately do NOT stop the lazily-created health-check client_
-  // here. That client is exclusively used inside check_health() which
-  // holds client_mutex_ for the duration of a single short Get();
-  // calling stop() on it from another thread while check_health holds
-  // the same socket internals races with cpp-httplib's own socket_mutex_
-  // and TSan flags it as "unlock of an unlocked mutex (or by a wrong
-  // thread)". The health check is short-lived (single GET, short
-  // timeout) so blocking on it is bounded; the multi-second hang we
-  // are fixing came from in-flight forward_request / fetch_entities
-  // calls, which use ScopedClient and ARE in active_clients_.
   //
   // Exclusive admission waits out every call between its check of the flag
   // and its socket, so each call is either refused or in flight below. A

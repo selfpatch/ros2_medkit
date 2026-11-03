@@ -1123,15 +1123,20 @@ Key Classes
     HTTP client for communicating with a single peer gateway. Supports health
     checking, entity fetching, transparent request forwarding (proxy), and
     JSON-parsed responses for fan-out merging. Thread-safe via atomic health
-    flag and mutex-guarded lazy client creation. ``shutdown()`` sets a flag
-    after which no call against the peer starts, and stops the per-call
-    clients in flight. Starting a call and shutting down are exclusive: a
-    call holds the admission lock shared from its check of the flag until its
-    socket exists, and ``shutdown()`` holds it exclusively while it stops the
-    clients, so a call is either refused (``canceled``) or in flight when its
-    client is stopped. A client stopped between two calls of an entity fetch
-    would otherwise dial the next one, since cpp-httplib's ``stop()`` only
-    closes the socket of the call in progress. ``GatewayNode`` calls
+    flag; every call, the health check included, makes its own client.
+    ``shutdown()`` sets a flag after which no call against the peer starts,
+    and stops the per-call clients in flight. A read budget bounds each read,
+    not the answer, so a peer sending its answer a byte at a time holds a
+    call until it stops or shutdown stops the call; the health check once
+    used a shared client that shutdown left alone, and such a peer held the
+    refresh, and the executor running it, past SIGTERM. Starting a call and
+    shutting down are exclusive: a call holds the admission lock shared from
+    its check of the flag until its socket exists, and ``shutdown()`` holds it
+    exclusively while it stops the clients, so a call is either refused
+    (``canceled``) or in flight when its client is stopped. A client stopped
+    between two calls of an entity fetch would otherwise dial the next one,
+    since cpp-httplib's ``stop()`` only closes the socket of the call in
+    progress. ``GatewayNode`` calls
     ``AggregationHost::shutdown()`` from a pre-shutdown callback on its
     context as well as from its destructor (only the first call acts): on
     SIGINT or SIGTERM the destructor runs only after the executor has finished
