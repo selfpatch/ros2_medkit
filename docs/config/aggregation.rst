@@ -447,6 +447,10 @@ The routing table maps entity IDs to peer names, and the merge records each
 entry on the entity the peer contributed. A request reads it off the entity it
 looked up, so a local entity never takes the route of a peer entity that
 shares its ID, and the route always belongs to the same refresh as the entity.
+A prefixed entity is forwarded under the ID its peer knows it by, and the
+discovery responses that come back (its detail, its relationship collections)
+are rewritten to the IDs this gateway serves: the entity's own ID, its self,
+resource and relationship links, and the related entities' IDs.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because

@@ -389,8 +389,19 @@ classification pass over the full Component set:
   A prefixed entity keeps its references valid: a subarea names its prefixed
   parent, a Component its prefixed Area, parent or dependency, an App its
   prefixed Component, and a Function its prefixed hosts and dependencies.
-  Responses the peer answers for it - its forwarded detail, for one - name it,
-  and what it refers to, by the peer's own IDs.
+  A discovery response the peer answers for it - a forwarded detail, or a
+  relationship collection such as an App's ``depends-on`` - comes back in the
+  peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
+  is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
+  of every object that names its ``type``, every entity URI (the self link,
+  the resource collection links, the relationship links, relative or
+  absolute), and the relationship IDs ``x-medkit`` carries
+  (``parent_area_id``, ``parentComponentId``, ``dependsOn``, ``area``,
+  ``component_id``, ``hosts``). Only recorded renames are reversed: the cached
+  entity under ``<peer>__<id>`` has to be that peer's, renamed from ``<id>``.
+  A rewritten body drops the peer's ``ETag``. Responses of the resource
+  collections (data, faults, operations and the rest) are passed through as
+  the peer sent them.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for

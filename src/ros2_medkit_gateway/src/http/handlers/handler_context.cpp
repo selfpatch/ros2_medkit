@@ -272,6 +272,27 @@ std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
   return path;
 }
 
+/// A discovery response `peer` answered for a forwarded GET, with every entity
+/// it names named by the id this gateway serves it under. The peer describes
+/// its own tree in its own ids, and an entity this gateway renamed on
+/// collision is another entity here under the peer's id, so its self link,
+/// resource links and relationships would lead a client following them to the
+/// wrong entity. A response whose body changes loses the peer's ETag, which
+/// describes the body the peer sent.
+void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer, httplib::Response & res,
+                                 const ThreadSafeEntityCache & cache) {
+  if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
+    return;
+  }
+  auto body = nlohmann::json::parse(res.body, nullptr, false);
+  if (body.is_discarded() || !rewrite_to_served_ids(body, peer, cache)) {
+    return;
+  }
+  auto content_type = res.get_header_value("Content-Type");
+  res.set_content(body.dump(), content_type.empty() ? "application/json" : content_type);
+  res.headers.erase("ETag");
+}
+
 }  // namespace
 
 http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
@@ -355,6 +376,7 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
     if (tl_forward_response != nullptr) {
       aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
                                         path_on_peer(raw_req.path, entity_info));
+      rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, services_.entity_cache());
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
