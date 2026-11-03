@@ -785,13 +785,15 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // already qualified carries the same name and is rewritten with it. A member
   // the merge dropped is not served here at all, and neither is any operation
   // of it: returns false for such an item, which is left out of the list.
-  const auto retarget_to_local_member = [agg, &cache](dto::OperationItem & item, const std::string & peer_name) {
+  // Read against the peer ID index of the generation the request was validated
+  // against, which is the one the fan-out targeted.
+  const auto retarget_to_local_member = [agg, &entity_info](dto::OperationItem & item, const std::string & peer_name) {
     if (agg == nullptr || peer_name.empty() || !item.x_medkit.has_value() || !item.x_medkit->member_ids.has_value() ||
         item.x_medkit->member_ids->size() != 1) {
       return true;
     }
     const std::string reported = item.x_medkit->member_ids->front();
-    const auto local = served_member_id(cache, peer_name, reported);
+    const auto local = served_member_id(entity_info.peer_ids, peer_name, reported);
     if (!local) {
       return false;
     }

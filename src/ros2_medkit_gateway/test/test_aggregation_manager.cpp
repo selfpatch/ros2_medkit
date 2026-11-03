@@ -476,32 +476,37 @@ TEST(AggregationManager, served_member_id_reads_a_peers_own_name_through_the_rec
 
   // A member nothing collided with keeps the name its peer uses.
   publish({app("pressure_sensor", "", "peer_a")});
-  EXPECT_EQ(served_member_id(cache, "peer_a", "pressure_sensor"), std::optional<std::string>("pressure_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "pressure_sensor"),
+            std::optional<std::string>("pressure_sensor"));
 
   // A member whose id collided is merged under the prefixed id, and that is
   // the only name that addresses it here.
   publish({app("peer_a__shared_sensor", "shared_sensor", "peer_a")});
-  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), std::optional<std::string>("peer_a__shared_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("peer_a__shared_sensor"));
 
   // Only a recorded rename is reversed. Another peer can own an entity whose id
   // reads like this peer's prefix - here peer_b owns one literally called
   // `peer_a__shared_sensor` - and peer_a can own one itself that was never
   // renamed; neither re-addresses peer_a's own uncollided `shared_sensor`.
   publish({app("peer_a__shared_sensor", "", "peer_b")});
-  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), std::optional<std::string>("shared_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
   publish({app("peer_a__shared_sensor", "", "peer_a")});
-  EXPECT_EQ(served_member_id(cache, "peer_a", "shared_sensor"), std::optional<std::string>("shared_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
 
   // A member the merge dropped is served under no id: its own names the local
   // entity that took its place.
   PeerDrops dropped;
   dropped.apps = {"shared_sensor"};
   publish({}, {{"peer_a", dropped}});
-  EXPECT_FALSE(served_member_id(cache, "peer_a", "shared_sensor").has_value());
+  EXPECT_FALSE(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor").has_value());
 
   // An empty half names nothing to look up.
-  EXPECT_EQ(served_member_id(cache, "", "shared_sensor"), std::optional<std::string>("shared_sensor"));
-  EXPECT_EQ(served_member_id(cache, "peer_a", ""), std::optional<std::string>(""));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", ""), std::optional<std::string>(""));
 }
 
 TEST(AggregationManager, peer_targets_skip_contributors_that_name_no_peer) {
