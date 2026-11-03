@@ -97,7 +97,8 @@ class EntityMerger {
    * @brief Merge local and remote Components by ID.
    *
    * Same component ID from both local and remote yields one Component entity
-   * with merged tags and description. The merged Component routes to the peer. A local entity of another type
+   * with merged tags and description, and the remote's area when the local one
+   * names none. The merged Component routes to the peer. A local entity of another type
    * holding the ID would be routed with it, so in that case the remote
    * Component is prefixed instead of merged. Remote-only components are added
    * with source tagged as "peer:<name>". References to an Area merge_areas
