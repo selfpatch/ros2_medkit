@@ -236,31 +236,67 @@ Component parse_component(const nlohmann::json & j) {
 }
 
 /**
- * @brief Extract the component ID from an ``is-located-on`` URI.
+ * @brief Extract the entity ID that follows `marker` (e.g. ``/components/``) in a relationship URI.
  *
- * SOVD exposes the app-to-component binding as a standard relationship
- * URI (ISO 17978-3, §7.6). Peers may emit it as either an absolute URL
- * (``http://host:port/api/v1/components/{id}``) or a path-only reference
- * (``/api/v1/components/{id}``). Extract the trailing segment after the
- * ``/components/`` marker and validate it with ``is_valid_entity_id`` so
- * that a malformed or hostile peer URI cannot smuggle path traversal or
- * percent-encoded junk into the aggregator's entity cache.
+ * Peers may emit a relationship either as an absolute URL
+ * (``http://host:port/api/v1/components/{id}``) or as a path-only reference
+ * (``/api/v1/components/{id}``). Extract the segment after the last
+ * `marker` and validate it with ``is_valid_entity_id`` so that a malformed
+ * or hostile peer URI cannot smuggle path traversal or percent-encoded junk
+ * into the aggregator's entity cache.
  * Returns an empty string if the URI contains no marker or if the
  * extracted segment fails validation.
  */
-std::string component_id_from_located_on(const std::string & uri) {
-  static const std::string kMarker = "/components/";
-  auto pos = uri.rfind(kMarker);
+std::string entity_id_after(const std::string & uri, const std::string & marker) {
+  auto pos = uri.rfind(marker);
   if (pos == std::string::npos) {
     return "";
   }
-  auto id_start = pos + kMarker.size();
+  auto id_start = pos + marker.size();
   if (id_start >= uri.size()) {
     return "";
   }
   auto id_end = uri.find_first_of("/?#", id_start);
   auto candidate = uri.substr(id_start, id_end - id_start);
   return is_valid_entity_id(candidate) ? candidate : std::string{};
+}
+
+/**
+ * @brief Extract the component ID from an ``is-located-on`` URI.
+ *
+ * SOVD exposes the app-to-component binding as a standard relationship
+ * URI (ISO 17978-3, §7.6).
+ */
+std::string component_id_from_located_on(const std::string & uri) {
+  return entity_id_after(uri, "/components/");
+}
+
+/**
+ * @brief Read a Function's ``depends-on`` links into Function ids.
+ *
+ * The Function detail serves its dependencies only as ``_links["depends-on"]``,
+ * an array of ``/api/v1/functions/{id}`` references (a HAL ``{"href": ...}``
+ * object is read too). Each id is extracted and validated the way an
+ * ``is-located-on`` reference is; a link that yields no valid id is skipped.
+ */
+std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j) {
+  std::vector<std::string> ids;
+  auto links = j.find("_links");
+  if (links == j.end() || !links->is_object()) {
+    return ids;
+  }
+  auto depends_on = links->find("depends-on");
+  if (depends_on == links->end() || !depends_on->is_array()) {
+    return ids;
+  }
+  for (const auto & link : *depends_on) {
+    std::string uri = link.is_string() ? link.get<std::string>() : (link.is_object() ? string_at(link, "href") : "");
+    auto id = entity_id_after(uri, "/functions/");
+    if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) {
+      ids.push_back(std::move(id));
+    }
+  }
+  return ids;
 }
 
 /**
@@ -442,6 +478,7 @@ Function parse_function(const nlohmann::json & j) {
   if (j.contains("tags") && j["tags"].is_array()) {
     func.tags = j["tags"].get<std::vector<std::string>>();
   }
+  func.depends_on = function_ids_from_depends_on(j);
   return func;
 }
 

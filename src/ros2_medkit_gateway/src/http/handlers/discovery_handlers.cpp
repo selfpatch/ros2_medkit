@@ -459,6 +459,16 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_subareas
       item.href = "/api/v1/areas/" + subarea.id;
       item.type = "area";
 
+      // The same fields the top-level /areas list carries, so a subarea is
+      // described as fully here, and a gateway aggregating this one can read
+      // its description off this route as it does for a top-level Area.
+      if (!subarea.description.empty()) {
+        item.description = subarea.description;
+      }
+      if (!subarea.tags.empty()) {
+        item.tags = subarea.tags;
+      }
+
       if (!subarea.namespace_path.empty()) {
         dto::XMedkitRos2 ros2;
         ros2.ns = subarea.namespace_path;
