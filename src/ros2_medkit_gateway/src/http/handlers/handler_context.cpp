@@ -53,9 +53,10 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   EntityInfo info;
   info.id = entity_id;
 
-  // Helper: check routing table for remote entity metadata. The table is keyed
-  // by id alone, so the entry counts only when the entity found here is that
-  // peer's contribution; a local entity sharing a routed id stays local.
+  // Helper: the aggregation metadata of the entity found, read off that entity:
+  // the peer it is forwarded to and the peers it fans out to come from the same
+  // cache generation as the entity itself, and a local entity sharing a routed
+  // id stays local.
   auto apply_routing = [this](EntityInfo & ei, const auto & entity) {
     if (aggregation_mgr_) {
       auto peer = aggregation_mgr_->find_owning_peer(entity);
@@ -64,6 +65,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
         ei.peer_name = *peer;
         ei.peer_url = aggregation_mgr_->get_peer_url(*peer);
       }
+      ei.peer_targets = peer_targets_of(entity);
     }
     // Check plugin ownership (only if not already a remote entity)
     if (!ei.is_remote) {

@@ -31,16 +31,20 @@ using json = nlohmann::json;
  * They provide a hierarchical organization of components.
  */
 struct Area {
-  std::string id;                         ///< Unique identifier (e.g., "powertrain")
-  std::string name;                       ///< Human-readable name (e.g., "Powertrain System")
-  std::string namespace_path;             ///< ROS 2 namespace path (e.g., "/powertrain")
-  std::string type = "Area";              ///< Entity type (always "Area")
-  std::string translation_id;             ///< Internationalization key
-  std::string description;                ///< Human-readable description
-  std::vector<std::string> tags;          ///< Tags for filtering
-  std::string parent_area_id;             ///< Parent area ID for sub-areas
-  std::string source;                     ///< Origin of this area (e.g., "manifest", "heuristic")
-  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
+  std::string id;                 ///< Unique identifier (e.g., "powertrain")
+  std::string name;               ///< Human-readable name (e.g., "Powertrain System")
+  std::string namespace_path;     ///< ROS 2 namespace path (e.g., "/powertrain")
+  std::string type = "Area";      ///< Entity type (always "Area")
+  std::string translation_id;     ///< Internationalization key
+  std::string description;        ///< Human-readable description
+  std::vector<std::string> tags;  ///< Tags for filtering
+  std::string parent_area_id;     ///< Parent area ID for sub-areas
+  std::string source;             ///< Origin of this area (e.g., "manifest", "heuristic")
+  std::string original_id;        ///< Pre-rename ID when collision-prefixed by aggregation
+  /// The peer this gateway forwards the entity's requests to, empty when it
+  /// answers them itself. Set by the aggregation merge on the entity, so a
+  /// request reads it from the same cache generation as the entity it found.
+  std::string routed_to;
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -143,7 +147,7 @@ inline bool operator==(const Area & a, const Area & b) {
   return a.id == b.id && a.name == b.name && a.namespace_path == b.namespace_path && a.type == b.type &&
          a.translation_id == b.translation_id && a.description == b.description && a.tags == b.tags &&
          a.parent_area_id == b.parent_area_id && a.source == b.source && a.original_id == b.original_id &&
-         a.contributors == b.contributors && a.declared_source == b.declared_source;
+         a.routed_to == b.routed_to && a.contributors == b.contributors && a.declared_source == b.declared_source;
 }
 inline bool operator!=(const Area & a, const Area & b) {
   return !(a == b);

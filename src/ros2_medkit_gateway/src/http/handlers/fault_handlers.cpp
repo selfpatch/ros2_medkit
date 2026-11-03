@@ -657,7 +657,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
-      merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json);
+      merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json, &entity_info.peer_targets);
       xm_json["count"] = static_cast<int64_t>(response["items"].size());
       response["x-medkit"] = std::move(xm_json);
       return wrap_list_result(std::move(response));
@@ -699,7 +699,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
-      merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json);
+      merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json, &entity_info.peer_targets);
       xm_json["count"] = static_cast<int64_t>(response["items"].size());
       response["x-medkit"] = std::move(xm_json);
       return wrap_list_result(std::move(response));
@@ -737,7 +737,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
-    merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json);
+    merge_peer_items(ctx_.aggregation_manager(), raw_req, response, xm_json, &entity_info.peer_targets);
     xm_json["count"] = static_cast<int64_t>(response["items"].size());
     xm_json["muted_count"] = result.data.value("muted_count", static_cast<int64_t>(0));
     xm_json["cluster_count"] = result.data.value("cluster_count", static_cast<int64_t>(0));

@@ -485,7 +485,8 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
-  auto fan_out = fan_out_collection<dto::ConfigurationMetaData>(ctx_.aggregation_manager(), raw_req);
+  auto fan_out =
+      fan_out_collection<dto::ConfigurationMetaData>(ctx_.aggregation_manager(), raw_req, &entity_result->peer_targets);
   for (auto & item : fan_out.items) {
     response.items.push_back(std::move(item));
   }

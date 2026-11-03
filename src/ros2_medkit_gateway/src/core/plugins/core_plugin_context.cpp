@@ -15,13 +15,14 @@
 #include "ros2_medkit_gateway/core/plugins/core_plugin_context.hpp"
 
 #include <map>
+#include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
@@ -56,45 +57,29 @@ std::string entity_type_to_url_segment(SovdEntityType type) {
   return "";
 }
 
-/// The peers the cached entity `id` of `type` names among its contributors.
-/// Read off the entity itself rather than off a table keyed by id, so a peer
-/// that contributed some other entity sharing the id is not asked about this one.
-std::vector<std::string> contributing_peers(const ThreadSafeEntityCache & cache, SovdEntityType type,
-                                            const std::string & id) {
-  std::vector<std::string> contributors;
-  switch (type) {
-    case SovdEntityType::APP:
-      if (auto app = cache.get_app(id)) {
-        contributors = std::move(app->contributors);
-      }
-      break;
-    case SovdEntityType::COMPONENT:
-      if (auto comp = cache.get_component(id)) {
-        contributors = std::move(comp->contributors);
-      }
-      break;
-    case SovdEntityType::AREA:
-      if (auto area = cache.get_area(id)) {
-        contributors = std::move(area->contributors);
-      }
-      break;
-    case SovdEntityType::FUNCTION:
-      if (auto func = cache.get_function(id)) {
-        contributors = std::move(func->contributors);
-      }
-      break;
-    case SovdEntityType::SERVER:
-    case SovdEntityType::UNKNOWN:
-      break;
+/// The entity `id` names, found in the order get_entity looks, and the peers
+/// it names among its contributors. Both are read off the one copy of the
+/// entity found, so they come from the same cache generation, and a peer that
+/// contributed some other entity sharing the id is not among them.
+struct EntityPeers {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::vector<PeerTarget> peers;
+};
+
+std::optional<EntityPeers> find_entity_peers(const ThreadSafeEntityCache & cache, const std::string & id) {
+  if (auto comp = cache.get_component(id)) {
+    return EntityPeers{SovdEntityType::COMPONENT, peer_targets_of(*comp)};
   }
-  static constexpr std::string_view kPeerPrefix = "peer:";
-  std::vector<std::string> peers;
-  for (const auto & contributor : contributors) {
-    if (contributor.size() > kPeerPrefix.size() && contributor.compare(0, kPeerPrefix.size(), kPeerPrefix) == 0) {
-      peers.push_back(contributor.substr(kPeerPrefix.size()));
-    }
+  if (auto app = cache.get_app(id)) {
+    return EntityPeers{SovdEntityType::APP, peer_targets_of(*app)};
   }
-  return peers;
+  if (auto area = cache.get_area(id)) {
+    return EntityPeers{SovdEntityType::AREA, peer_targets_of(*area)};
+  }
+  if (auto func = cache.get_function(id)) {
+    return EntityPeers{SovdEntityType::FUNCTION, peer_targets_of(*func)};
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -147,7 +132,10 @@ std::vector<PluginEntityInfo> CorePluginContext::get_child_apps(const std::strin
 
 nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_id) const {
   // Determine entity type (needed for both local query and peer path construction).
-  auto entity = get_entity(entity_id);
+  if (!services_) {
+    return nlohmann::json::array();
+  }
+  auto entity = find_entity_peers(services_->entity_cache(), entity_id);
   if (!entity) {
     return nlohmann::json::array();
   }
@@ -182,7 +170,8 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
     const std::string type_segment = entity_type_to_url_segment(entity->type);
     std::map<std::string, std::vector<std::string>> peers_by_path;
     if (!type_segment.empty()) {
-      for (auto & peer : contributing_peers(services_->entity_cache(), entity->type, entity_id)) {
+      for (auto & target : entity->peers) {
+        auto & peer = target.peer;
         const std::string prefix = peer + EntityMerger::SEPARATOR;
         const bool renamed = entity_id.size() > prefix.size() && entity_id.compare(0, prefix.size(), prefix) == 0;
         std::string peer_path = "/api/v1/";

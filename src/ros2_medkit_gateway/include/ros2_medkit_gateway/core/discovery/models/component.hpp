@@ -33,20 +33,24 @@ using json = nlohmann::json;
  * They expose operations (services/actions), data (topics), and configurations (parameters).
  */
 struct Component {
-  std::string id;                         ///< Unique identifier (node name)
-  std::string name;                       ///< Human-readable name
-  std::string namespace_path;             ///< ROS 2 namespace path
-  std::string fqn;                        ///< Fully qualified name (namespace + id)
-  std::string type = "Component";         ///< Entity type (always "Component")
-  std::string area;                       ///< Parent area ID
-  std::string source = "node";            ///< Discovery source: "node", "topic", or "manifest"
-  std::string translation_id;             ///< Internationalization key
-  std::string description;                ///< Human-readable description
-  std::string variant;                    ///< Hardware variant identifier
-  std::vector<std::string> tags;          ///< Tags for filtering
-  std::string parent_component_id;        ///< Parent component ID for sub-components
-  std::vector<std::string> depends_on;    ///< Component IDs this component depends on
-  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
+  std::string id;                       ///< Unique identifier (node name)
+  std::string name;                     ///< Human-readable name
+  std::string namespace_path;           ///< ROS 2 namespace path
+  std::string fqn;                      ///< Fully qualified name (namespace + id)
+  std::string type = "Component";       ///< Entity type (always "Component")
+  std::string area;                     ///< Parent area ID
+  std::string source = "node";          ///< Discovery source: "node", "topic", or "manifest"
+  std::string translation_id;           ///< Internationalization key
+  std::string description;              ///< Human-readable description
+  std::string variant;                  ///< Hardware variant identifier
+  std::vector<std::string> tags;        ///< Tags for filtering
+  std::string parent_component_id;      ///< Parent component ID for sub-components
+  std::vector<std::string> depends_on;  ///< Component IDs this component depends on
+  std::string original_id;              ///< Pre-rename ID when collision-prefixed by aggregation
+  /// The peer this gateway forwards the entity's requests to, empty when it
+  /// answers them itself. Set by the aggregation merge on the entity, so a
+  /// request reads it from the same cache generation as the entity it found.
+  std::string routed_to;
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -207,9 +211,10 @@ inline bool operator==(const Component & a, const Component & b) {
          a.type == b.type && a.area == b.area && a.source == b.source && a.translation_id == b.translation_id &&
          a.description == b.description && a.variant == b.variant && a.tags == b.tags &&
          a.parent_component_id == b.parent_component_id && a.depends_on == b.depends_on &&
-         a.original_id == b.original_id && a.contributors == b.contributors && a.services == b.services && a.actions == b.actions &&
-         a.topics == b.topics && a.host_metadata == b.host_metadata && a.identity == b.identity &&
-         a.external == b.external && a.declared_source == b.declared_source && a.available == b.available;
+         a.original_id == b.original_id && a.routed_to == b.routed_to && a.contributors == b.contributors &&
+         a.services == b.services && a.actions == b.actions && a.topics == b.topics &&
+         a.host_metadata == b.host_metadata && a.identity == b.identity && a.external == b.external &&
+         a.declared_source == b.declared_source && a.available == b.available;
 }
 inline bool operator!=(const Component & a, const Component & b) {
   return !(a == b);
