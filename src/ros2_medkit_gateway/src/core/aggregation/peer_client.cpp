@@ -960,17 +960,19 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           if (!is_valid_entity_id(subarea.id) || !seen_areas.insert(subarea.id).second) {
             continue;
           }
+          // The cap is checked before each subarea is taken, not once a level
+          // is done: a level is as wide as the peer makes it, and every
+          // subarea taken costs a request for its own subareas.
+          if (entities.areas.size() + all_subareas.size() >= MAX_ENTITIES_PER_COLLECTION) {
+            return tl::unexpected<std::string>("Peer '" + name_ + "' returned more than " +
+                                               std::to_string(MAX_ENTITIES_PER_COLLECTION) + " areas and subareas");
+          }
           subarea.parent_area_id = parent_id;
           subarea.declared_source = subarea.source;
           subarea.source = peer_source;
           next_level.push_back(subarea.id);
           all_subareas.push_back(std::move(subarea));
         }
-      }
-      if (entities.areas.size() + all_subareas.size() > MAX_ENTITIES_PER_COLLECTION) {
-        return tl::unexpected<std::string>(
-            "Peer '" + name_ + "' returned " + std::to_string(entities.areas.size() + all_subareas.size()) +
-            " areas and subareas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
       }
       area_level = std::move(next_level);
     }
@@ -1051,6 +1053,15 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           if (!is_valid_entity_id(subcomp.id) || !seen_components.insert(subcomp.id).second) {
             continue;
           }
+          // Checked before the subcomponent is taken and before its detail is
+          // asked for: a level is as wide as the peer makes it, and checking
+          // once it is done let one level cost a request per child of every
+          // parent in it.
+          if (comp_list.size() + all_subcomps.size() >= MAX_ENTITIES_PER_COLLECTION) {
+            return tl::unexpected<std::string>("Peer '" + name_ + "' returned more than " +
+                                               std::to_string(MAX_ENTITIES_PER_COLLECTION) +
+                                               " components and subcomponents");
+          }
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
@@ -1075,11 +1086,6 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           next_level.push_back(sub_id);
           all_subcomps.push_back(std::move(subcomp));
         }
-      }
-      if (comp_list.size() + all_subcomps.size() > MAX_ENTITIES_PER_COLLECTION) {
-        return tl::unexpected<std::string>(
-            "Peer '" + name_ + "' returned " + std::to_string(comp_list.size() + all_subcomps.size()) +
-            " components and subcomponents (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
       }
       component_level = std::move(next_level);
     }

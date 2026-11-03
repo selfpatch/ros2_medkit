@@ -956,7 +956,12 @@ parent: the list item names none. The top-level ``/areas`` and ``/components``
 lists leave nested entities out, so subareas and subcomponents are read level
 by level, each level from the routes of the one above, down to eight levels
 below the top-level entity. An id already read is not read again, so a tree
-that loops back on itself ends there. A subcomponent takes its parent from its
+that loops back on itself ends there. The 1000-entity limit of the collection
+counts the nested entities with the top-level ones, and it is checked before
+each nested entity is taken, before its detail is asked for: a level is as
+wide as the peer makes it, so a check once the level was done let a peer that
+lists 1000 children under each of 999 parents cost close to a million
+requests in one refresh. A subcomponent takes its parent from its
 detail, and from the route when the detail names none or cannot be read. A
 Function's dependencies come from
 the ``_links["depends-on"]`` references its detail serves, each reduced to the
@@ -1204,9 +1209,10 @@ Per-Collection Limits
 ~~~~~~~~~~~~~~~~~~~~~
 
 Each entity collection (areas, components, apps, functions) is limited to 1000
-entities per peer response. If a peer returns more, the entire fetch for that
-peer is rejected. This prevents a malicious peer from causing excessive HTTP
-requests via N+1 detail fetches.
+entities per peer, nested subareas and subcomponents included. If a peer
+returns more, the entire fetch for that peer is rejected, as soon as the
+1001st is read and before any request it would cost. This prevents a
+malicious peer from causing excessive HTTP requests via N+1 detail fetches.
 
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
