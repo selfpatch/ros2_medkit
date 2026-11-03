@@ -469,7 +469,7 @@ TEST(AggregationManager, served_member_id_reads_a_peers_own_name_through_the_rec
     return a;
   };
   // The cache publishes what the merge renamed and dropped with the entities.
-  auto publish = [&cache](std::vector<App> apps, std::unordered_map<std::string, PeerDrops> drops = {}) {
+  auto publish = [&cache](std::vector<App> apps, const std::unordered_map<std::string, PeerDrops> & drops = {}) {
     auto index = std::make_shared<const PeerIdIndex>(make_peer_id_index({}, {}, apps, {}, drops));
     cache.update_all({}, {}, std::move(apps), {}, {}, index);
   };
