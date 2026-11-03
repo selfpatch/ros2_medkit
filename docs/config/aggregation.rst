@@ -534,6 +534,12 @@ and architecture diagrams.
 Health and Partial Results
 --------------------------
 
+At startup the gateway serves its local entities from the first request on and
+reads its peers right after, in the first refresh its executor runs: the
+constructor does not wait for them, so SIGINT or SIGTERM during startup is not
+held up by a slow peer. Until that first merge has read every peer, a peer's
+entities answer ``404`` and ``/health`` lists each peer as ``offline``.
+
 Entity collection endpoints (``GET /api/v1/areas``, ``/components``, ``/apps``,
 ``/functions``) serve data from the local entity cache, which is populated
 during periodic cache refresh cycles. These endpoints do not perform real-time

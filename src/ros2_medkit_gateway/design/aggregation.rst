@@ -1159,7 +1159,8 @@ Key Classes
     slowest peer took to read. It serves the local entities from the first
     request on, and the first peer merge runs on the executor from a one-shot
     timer as soon as it spins; peer entities are served once it has read every
-    peer.
+    peer. Until then their ids answer ``404`` and ``/health`` lists each peer
+    as ``offline``, since no health check has run yet.
 
 ``PeerCallRegistry``
     The per-call clients in flight against one peer, each with the deadline
