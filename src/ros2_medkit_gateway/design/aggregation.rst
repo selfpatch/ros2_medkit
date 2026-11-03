@@ -356,7 +356,9 @@ classification pass over the full Component set:
   would hand that local entity's requests - writes included - to the peer.
   The remote entity is served as ``peername__<id>`` and routed under that ID
   instead. "Local" here is everything already merged when the peer is folded
-  in: this gateway's own entities and those of every peer merged before it.
+  in: this gateway's own entities, plugin-provided ones included (they are
+  injected before the merge in every discovery mode), and those of every peer
+  merged before it.
   A remote Component whose ID a local Component shares merges as above only
   when no local entity of another type shares it too; otherwise it is
   prefixed rather than merged, because the merged Component's routing entry

@@ -1837,25 +1837,11 @@ void GatewayNode::refresh_cache() {
       }
     }
 
-    // Merge remote peer entities if aggregation is active.
-    // Keep the routing table accessible for the internal-node filter below.
-    std::unordered_map<std::string, std::string> peer_routing_table;
-    if (aggregation_host_) {
-      if (auto routing_table = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
-        peer_routing_table = std::move(*routing_table);
-        for (const auto & func : functions) {
-          for (const auto & contributor : func.contributors) {
-            if (contributor.rfind("peer:", 0) == 0) {
-              introspection_only_ids.erase(func.id);
-              break;
-            }
-          }
-        }
-      }
-    }
-
     // Inject plugin entities (non-hybrid) and refresh entity ownership (all modes).
-    // Single introspect() call per plugin handles both concerns.
+    // Single introspect() call per plugin handles both concerns. This runs before
+    // the peer merge so the merge sees plugin entities as local ones: a peer entity
+    // that shares a plugin entity's id is then merged or renamed like one that shares
+    // any other local id, instead of being listed beside it and routed by that id.
     if (plugin_mgr_ && plugin_mgr_->has_plugins()) {
       bool inject_entities = (discovery_mgr_->get_mode() != DiscoveryMode::HYBRID);
       auto providers = plugin_mgr_->get_named_introspection_providers();
@@ -1950,6 +1936,23 @@ void GatewayNode::refresh_cache() {
         // Refresh ownership with validated IDs only
         plugin_mgr_->clear_entity_ownership(name);
         plugin_mgr_->register_entity_ownership(name, entity_ids);
+      }
+    }
+
+    // Merge remote peer entities if aggregation is active.
+    // Keep the routing table accessible for the internal-node filter below.
+    std::unordered_map<std::string, std::string> peer_routing_table;
+    if (aggregation_host_) {
+      if (auto routing_table = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
+        peer_routing_table = std::move(*routing_table);
+        for (const auto & func : functions) {
+          for (const auto & contributor : func.contributors) {
+            if (contributor.rfind("peer:", 0) == 0) {
+              introspection_only_ids.erase(func.id);
+              break;
+            }
+          }
+        }
       }
     }
 
