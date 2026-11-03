@@ -110,6 +110,9 @@ AggregationHost::~AggregationHost() {
 }
 
 void AggregationHost::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
   // mDNS first: it must not add peers while the calls are being cancelled.
   if (mdns_) {
     mdns_->stop();
@@ -121,7 +124,7 @@ std::optional<AggregationHost::MergedPeers> AggregationHost::merge_peers(std::ve
                                                                          std::vector<Component> & components,
                                                                          std::vector<App> & apps,
                                                                          std::vector<Function> & functions) {
-  if (manager_->peer_count() == 0) {
+  if (shutdown_requested_.load() || manager_->peer_count() == 0) {
     return std::nullopt;
   }
   manager_->check_all_health();

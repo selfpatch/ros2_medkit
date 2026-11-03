@@ -1125,7 +1125,13 @@ Key Classes
     clients, so a call is either refused (``canceled``) or in flight when its
     client is stopped. A client stopped between two calls of an entity fetch
     would otherwise dial the next one, since cpp-httplib's ``stop()`` only
-    closes the socket of the call in progress.
+    closes the socket of the call in progress. ``GatewayNode`` calls
+    ``AggregationHost::shutdown()`` from a pre-shutdown callback on its
+    context as well as from its destructor (only the first call acts): on
+    SIGINT or SIGTERM the destructor runs only after the executor has finished
+    the refresh it is in, and a refresh reading peers would keep calling them
+    until it had read every one. The refreshes the constructor runs are not
+    covered: ``main`` keeps the signals blocked until startup is done.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using

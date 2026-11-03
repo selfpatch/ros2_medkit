@@ -1253,6 +1253,22 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     startup_summary_timer_.reset();
     log_startup_summary();
   });
+
+  // SIGINT or SIGTERM shuts the context down from rclcpp's signal thread while
+  // the executor may be inside a refresh, and ~GatewayNode runs only after that
+  // refresh returns. A refresh reading peers asks each one for every entity in
+  // turn, so it would keep calling peers for as long as that takes. Shutting
+  // aggregation down here stops it at its next peer call. The refreshes this
+  // constructor runs itself are not covered: main keeps SIGINT and SIGTERM
+  // blocked until startup is done. MUST stay the last statement of this
+  // constructor: the callback captures `this`, and only the destructor
+  // deregisters it, which does not run if the constructor throws.
+  if (aggregation_host_) {
+    aggregation_shutdown_context_ = get_node_base_interface()->get_context();
+    aggregation_pre_shutdown_ = aggregation_shutdown_context_->add_pre_shutdown_callback([this] {
+      aggregation_host_->shutdown();
+    });
+  }
 }
 
 size_t GatewayNode::count_peer_nodes(const std::vector<std::pair<std::string, std::string>> & nodes_and_namespaces,
@@ -1334,6 +1350,12 @@ void GatewayNode::log_startup_summary() {
 
 GatewayNode::~GatewayNode() {
   RCLCPP_INFO(get_logger(), "Shutting down ROS 2 Medkit Gateway...");
+  // Deregister first: the callback captures `this`. The context takes the
+  // mutex it runs the callbacks under, so this waits for one in flight, and
+  // the shutdown below is then a no-op when the callback already ran.
+  if (aggregation_shutdown_context_) {
+    aggregation_shutdown_context_->remove_pre_shutdown_callback(aggregation_pre_shutdown_);
+  }
   // 0. Stop the lock reaper: it removes subscriptions through the transports shut down below.
   if (lock_reaper_) {
     lock_reaper_->stop();

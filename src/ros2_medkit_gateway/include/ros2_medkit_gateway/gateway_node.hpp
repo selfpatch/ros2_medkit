@@ -516,6 +516,11 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // The host stops its mDNS threads in ~GatewayNode, before rest_server, to avoid callbacks during shutdown.
   // AggregationManager must outlive rest_server because handlers reference it.
   std::unique_ptr<AggregationHost> aggregation_host_;
+  /// Shuts aggregation_host_ down when the context shuts down (SIGINT, SIGTERM), which is before ~GatewayNode:
+  /// the executor finishes the callback it is in first, and a refresh fetching from peers would otherwise read
+  /// every peer to the end. Registered as the last step of the constructor, deregistered first in the destructor.
+  std::shared_ptr<rclcpp::Context> aggregation_shutdown_context_;
+  rclcpp::PreShutdownCallbackHandle aggregation_pre_shutdown_;
 
   std::unique_ptr<RESTServer> rest_server_;
 
