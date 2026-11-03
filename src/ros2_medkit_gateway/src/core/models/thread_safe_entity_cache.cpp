@@ -199,8 +199,12 @@ void ThreadSafeEntityCache::reserve(size_t capacity) {
 
 void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Component> components,
                                        std::vector<App> apps, std::vector<Function> functions,
-                                       std::unordered_map<std::string, std::string> node_to_app) {
+                                       std::unordered_map<std::string, std::string> node_to_app,
+                                       std::shared_ptr<const PeerIdIndex> peer_ids) {
   std::unique_lock lock(mutex_);
+  // Replaced whether or not the entities changed: a drop alone is a change the
+  // entity comparison below cannot see.
+  peer_id_index_ = std::move(peer_ids);
 
   bool changed = false;
   changed |= reconcile(areas_, area_index_, std::move(areas));
@@ -219,6 +223,11 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
   last_update_ = std::chrono::system_clock::now();
   refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
+}
+
+std::shared_ptr<const PeerIdIndex> ThreadSafeEntityCache::get_peer_id_index() const {
+  std::shared_lock lock(mutex_);
+  return peer_id_index_;
 }
 
 void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {

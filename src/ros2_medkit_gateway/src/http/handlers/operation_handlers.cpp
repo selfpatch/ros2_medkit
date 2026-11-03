@@ -782,27 +782,37 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // peer's operation to a member that does not own it, and every id built from
   // that attribution - by this gateway or by a client reading the list - is
   // resolved against the wrong member. The member half of the id the peer
-  // already qualified carries the same name and is rewritten with it.
+  // already qualified carries the same name and is rewritten with it. A member
+  // the merge dropped is not served here at all, and neither is any operation
+  // of it: returns false for such an item, which is left out of the list.
   const auto retarget_to_local_member = [agg, &cache](dto::OperationItem & item, const std::string & peer_name) {
     if (agg == nullptr || peer_name.empty() || !item.x_medkit.has_value() || !item.x_medkit->member_ids.has_value() ||
         item.x_medkit->member_ids->size() != 1) {
-      return;
+      return true;
     }
     const std::string reported = item.x_medkit->member_ids->front();
-    const std::string local = served_member_id(cache, peer_name, reported);
-    if (local == reported) {
-      return;
+    const auto local = served_member_id(cache, peer_name, reported);
+    if (!local) {
+      return false;
     }
-    item.x_medkit->member_ids = std::vector<std::string>{local};
+    if (*local == reported) {
+      return true;
+    }
+    item.x_medkit->member_ids = std::vector<std::string>{*local};
     auto parsed = http::parse_member_qualified_id(item.id, true);
     if (parsed.has_member && parsed.member_id == reported) {
-      item.id = http::make_member_qualified_id(local, parsed.item_id);
+      item.id = http::make_member_qualified_id(*local, parsed.item_id);
     }
+    return true;
   };
 
   std::unordered_set<std::string> paths_from_peers;
   for (size_t index = 0; index < fan_out.items.size(); ++index) {
     auto & item = fan_out.items[index];
+    if (!retarget_to_local_member(item,
+                                  index < fan_out.item_peers.size() ? fan_out.item_peers[index] : std::string{})) {
+      continue;
+    }
     if (item.x_medkit.has_value() && item.x_medkit->ros2.has_value()) {
       const auto & ros2 = *item.x_medkit->ros2;
       auto path = ros2.service.value_or(ros2.action.value_or(std::string{}));
@@ -810,7 +820,6 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
         paths_from_peers.insert(std::move(path));
       }
     }
-    retarget_to_local_member(item, index < fan_out.item_peers.size() ? fan_out.item_peers[index] : std::string{});
     qualify_from_declared_tree(item);
     collection.items.push_back(std::move(item));
   }

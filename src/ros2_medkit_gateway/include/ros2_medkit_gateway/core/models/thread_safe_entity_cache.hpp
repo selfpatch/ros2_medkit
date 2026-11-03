@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ros2_medkit_gateway/core/aggregation/peer_id_index.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -25,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -208,9 +210,18 @@ class ThreadSafeEntityCache {
    * @param apps All discovered apps
    * @param functions All discovered functions
    * @param node_to_app Node FQN to app entity ID mapping from linking result (optional)
+   * @param peer_ids What the aggregation merge renamed and dropped of each peer's
+   *        entities (optional). Published under the same lock as the entities, so
+   *        it is always of their generation; replaced on every call, nullptr
+   *        meaning nothing was renamed or dropped.
    */
   void update_all(std::vector<Area> areas, std::vector<Component> components, std::vector<App> apps,
-                  std::vector<Function> functions, std::unordered_map<std::string, std::string> node_to_app = {});
+                  std::vector<Function> functions, std::unordered_map<std::string, std::string> node_to_app = {},
+                  std::shared_ptr<const PeerIdIndex> peer_ids = nullptr);
+
+  /// The peer ID index published by the last update_all, or nullptr. One
+  /// snapshot answers every lookup a reader makes from one generation.
+  std::shared_ptr<const PeerIdIndex> get_peer_id_index() const;
 
   /**
    * @brief Incremental update for single entity type
@@ -553,6 +564,9 @@ class ThreadSafeEntityCache {
 
   // Timestamp
   std::chrono::system_clock::time_point last_update_;
+
+  // What the aggregation merge renamed and dropped, of the same generation as the entities.
+  std::shared_ptr<const PeerIdIndex> peer_id_index_;
 
   // Primary indexes (ID -> stable slot id)
   FlatHashMap<std::string, uint32_t> area_index_;
