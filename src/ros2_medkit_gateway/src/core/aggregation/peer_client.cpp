@@ -1252,11 +1252,14 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 }
 
 void PeerClient::forward_request(const httplib::Request & req, httplib::Response & res) {
-  if (shutdown_requested_.load(std::memory_order_acquire)) {
+  const auto refuse_for_shutdown = [&res]() {
     res.status = 503;
     auto error_body =
         make_error_body(ERR_VENDOR_ERROR, "Gateway shutting down; peer forward refused", ERR_X_MEDKIT_PEER_UNAVAILABLE);
     res.set_content(error_body.dump(), "application/json");
+  };
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    refuse_for_shutdown();
     return;
   }
   // A dedicated client per forwarding call. ScopedClient registers with the
@@ -1323,6 +1326,14 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     auto error_body = make_error_body(ERR_VENDOR_ERROR, "Response from peer '" + name_ + "' exceeds size limit",
                                       ERR_X_MEDKIT_PEER_UNAVAILABLE);
     res.set_content(error_body.dump(), "application/json");
+    return;
+  }
+
+  // A call refused at admission, or stopped in flight, because shutdown began
+  // after the check above is the same answer as one refused by that check.
+  // Classified as a transport failure it read as the peer being unavailable.
+  if (!result && shutdown_requested_.load(std::memory_order_acquire)) {
+    refuse_for_shutdown();
     return;
   }
 

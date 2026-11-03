@@ -233,6 +233,8 @@ class PeerClient {
    * outgoing response.
    *
    * On connection failure, returns 502 with x-medkit-peer-unavailable error.
+   * Once shutdown has begun, whether before the call or while it is being
+   * admitted or is in flight, returns 503 with the same vendor code.
    *
    * @param req Incoming HTTP request to forward
    * @param res Outgoing HTTP response to populate
