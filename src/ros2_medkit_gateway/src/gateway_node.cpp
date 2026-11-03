@@ -1136,7 +1136,10 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   // Connect type introspection for operation schema enrichment
   discovery_mgr_->set_type_introspection(type_schemas_->introspection());
 
-  // Initial discovery
+  // Initial discovery: the local entities, so the tree has them from the
+  // first request on. Peers are not read here (peer_merge_enabled_ is still
+  // false); the first merge runs on the executor, see the end of this
+  // constructor.
   refresh_cache();
 
   // Primary refresh trigger: ROS 2 graph events.
@@ -1254,15 +1257,27 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     log_startup_summary();
   });
 
+  // Peers are read by the refreshes the executor runs, never by this
+  // constructor: main keeps SIGINT and SIGTERM blocked until startup is done,
+  // so a peer fetch run here held a shutdown requested meanwhile for as long as
+  // the slowest peer took to read. The first merge is a one-shot timer that
+  // fires as soon as the executor spins; peer entities follow the local ones
+  // once it has read every peer.
+  if (aggregation_host_) {
+    peer_merge_enabled_.store(true);
+    first_peer_merge_timer_ = create_wall_timer(std::chrono::milliseconds(0), [this](rclcpp::TimerBase & timer) {
+      timer.cancel();
+      refresh_cache();
+    });
+  }
+
   // SIGINT or SIGTERM shuts the context down from rclcpp's signal thread while
   // the executor may be inside a refresh, and ~GatewayNode runs only after that
   // refresh returns. A refresh reading peers asks each one for every entity in
   // turn, so it would keep calling peers for as long as that takes. Shutting
-  // aggregation down here stops it at its next peer call. The refreshes this
-  // constructor runs itself are not covered: main keeps SIGINT and SIGTERM
-  // blocked until startup is done. MUST stay the last statement of this
-  // constructor: the callback captures `this`, and only the destructor
-  // deregisters it, which does not run if the constructor throws.
+  // aggregation down here stops it at its next peer call. MUST stay the last
+  // statement of this constructor: the callback captures `this`, and only the
+  // destructor deregisters it, which does not run if the constructor throws.
   if (aggregation_host_) {
     aggregation_shutdown_context_ = get_node_base_interface()->get_context();
     aggregation_pre_shutdown_ = aggregation_shutdown_context_->add_pre_shutdown_callback([this] {
@@ -1445,6 +1460,10 @@ GatewayNode::~GatewayNode() {
   if (startup_summary_timer_) {
     startup_summary_timer_->cancel();
     startup_summary_timer_.reset();
+  }
+  if (first_peer_merge_timer_) {
+    first_peer_merge_timer_->cancel();
+    first_peer_merge_timer_.reset();
   }
   graph_event_.reset();
   // 10. Normal member destruction (managers safe - all transports stopped)
@@ -1787,10 +1806,11 @@ void GatewayNode::stop_discovery_refresh_for_testing() {
   // refresh_cache() pass can clobber a test-injected entity cache. Safe to
   // call right after construction (the constructor already ran one refresh).
   //
-  // Mirror the destructor's teardown order: cancel AND reset all three timers
-  // before releasing graph_event_. The racing party is rclcpp's graph-listener
-  // thread (started by get_graph_event() in the constructor, independent of the
-  // executor), which may concurrently iterate the registered graph events.
+  // Mirror the destructor's teardown order: cancel AND reset all the refresh
+  // timers before releasing graph_event_. The racing party is rclcpp's
+  // graph-listener thread (started by get_graph_event() in the constructor,
+  // independent of the executor), which may concurrently iterate the
+  // registered graph events.
   // Resetting the timers first drops their [this]-captured graph_event_ copies,
   // so the reset below shrinks the window on the Event control block exactly as
   // ~GatewayNode does.
@@ -1805,6 +1825,10 @@ void GatewayNode::stop_discovery_refresh_for_testing() {
   if (startup_summary_timer_) {
     startup_summary_timer_->cancel();
     startup_summary_timer_.reset();
+  }
+  if (first_peer_merge_timer_) {
+    first_peer_merge_timer_->cancel();
+    first_peer_merge_timer_.reset();
   }
   graph_event_.reset();
 }
@@ -1961,11 +1985,12 @@ void GatewayNode::refresh_cache() {
       }
     }
 
-    // Merge remote peer entities if aggregation is active.
+    // Merge remote peer entities if aggregation is active, once the
+    // constructor is done (peer_merge_enabled_).
     // Keep the routing table accessible for the internal-node filter below.
     std::unordered_map<std::string, std::string> peer_routing_table;
     std::unordered_map<std::string, PeerDrops> peer_drops;
-    if (aggregation_host_) {
+    if (aggregation_host_ && peer_merge_enabled_.load()) {
       if (auto merged_peers = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
         peer_routing_table = std::move(merged_peers->routing_table);
         peer_drops = std::move(merged_peers->drops);

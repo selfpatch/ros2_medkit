@@ -1146,8 +1146,13 @@ Key Classes
     context as well as from its destructor (only the first call acts): on
     SIGINT or SIGTERM the destructor runs only after the executor has finished
     the refresh it is in, and a refresh reading peers would keep calling them
-    until it had read every one. The refreshes the constructor runs are not
-    covered: ``main`` keeps the signals blocked until startup is done.
+    until it had read every one. The constructor's own refresh reads no
+    peers: ``main`` keeps the signals blocked until startup is done, so a peer
+    fetch run there held a shutdown requested meanwhile for as long as the
+    slowest peer took to read. It serves the local entities from the first
+    request on, and the first peer merge runs on the executor from a one-shot
+    timer as soon as it spins; peer entities are served once it has read every
+    peer.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using

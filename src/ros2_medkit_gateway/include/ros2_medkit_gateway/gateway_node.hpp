@@ -395,8 +395,9 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   /**
    * @brief Test hook: stop the gateway's own discovery refresh.
    *
-   * Cancels the graph-event and backstop refresh timers and drops the graph
-   * event so `refresh_cache()` never runs again after this call. Tests that
+   * Cancels the graph-event, backstop and first-peer-merge refresh timers and
+   * drops the graph event so `refresh_cache()` never runs again after this
+   * call. Tests that
    * inject a known entity-cache state directly (via `get_thread_safe_cache()`)
    * must call this first, otherwise a graph-event-driven `refresh_cache()`
    * reconciles the cache back to the live ROS graph and silently wipes the
@@ -578,6 +579,16 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // One-shot timer that fires the post-startup discovery summary (see
   // log_startup_summary). Reset after it runs.
   rclcpp::TimerBase::SharedPtr startup_summary_timer_;
+
+  // Whether refresh_cache() reads peers. False while the constructor runs its
+  // own refresh, which main runs with SIGINT and SIGTERM blocked, so a slow
+  // peer cannot hold a shutdown requested during startup; set at the end of
+  // the constructor. Atomic because a plugin may refresh from its own thread.
+  std::atomic<bool> peer_merge_enabled_{false};
+
+  // One-shot timer that runs the first peer merge as soon as the executor
+  // spins. Cancelled by its own callback.
+  rclcpp::TimerBase::SharedPtr first_peer_merge_timer_;
 
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
