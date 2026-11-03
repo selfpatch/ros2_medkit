@@ -200,7 +200,7 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (A local entity of another type\nholds the ID?) then (yes)
+   if (An entity of another type, local\nor this peer's, holds the ID?) then (yes)
        :Prefix remote ID with\npeername__ separator;
        :Add routing entry\n(prefixed ID);
    elseif (Entity type?) then (Area or Function)
@@ -363,7 +363,12 @@ classification pass over the full Component set:
   instead. "Local" here is everything already merged when the peer is folded
   in: this gateway's own entities, plugin-provided ones included (they are
   injected before the merge in every discovery mode), and those of every peer
-  merged before it.
+  merged before it. An entity of the same peer merged earlier in the same
+  pass counts too (Areas, then Components, Apps, Functions): a peer that
+  declares Area ``x`` and Component ``x`` is served as Area ``x`` and
+  Component ``peername__x``. Served under one ID, the two would share one
+  routing entry, and the classification below, which takes the entries of
+  Component IDs out of the table, would take the Area's with them.
   A remote Component whose ID a local Component shares merges as above only
   when no local entity of another type shares it too; otherwise it is
   prefixed rather than merged, because the merged Component's routing entry
@@ -373,9 +378,11 @@ classification pass over the full Component set:
   A prefixed ID is reserved: it must be free of every ID already merged,
   whatever its type, of every ID the peer itself declares (the peer's own
   ``peername__x`` would otherwise collapse with the one generated for its
-  ``x``), and of every ID this merge generated for another remote entity. The
-  same remote ID of two types may share its prefixed ID, the way the peer's own
-  entities share theirs. A remote entity whose prefixed ID is taken is not
+  ``x``), and of every ID this merge generated for another remote entity,
+  whatever its type: a remote Area ``x`` and a remote Component ``x`` that
+  both collide are not both served as ``peername__x`` (the Area, merged first,
+  is). Only the same remote entity listed twice gets its ID again. A remote
+  entity whose prefixed ID is taken is not
   served at all, and a warning names it. The drop is recorded per type, and
   every reference the peer's other entities make to it - a subarea's parent, a
   Component's Area, parent or dependency, an App's Component or dependency, a
