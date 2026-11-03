@@ -177,7 +177,9 @@ Server Capabilities
 
    - ``peers`` - array of peer status objects for every configured or
      discovered peer. Each carries ``name``, ``url`` and ``status``
-     (``"online"`` or ``"offline"``).
+     (``"online"`` or ``"offline"``). A peer is ``"offline"`` until its first
+     health check, which runs with the first peer merge right after startup;
+     until that merge is done the peer's entities answer ``404``.
 
    The ``discovery`` object carries a ``linking`` sub-object describing
    how manifest apps were bound to runtime ROS nodes: ``linked_count``,
